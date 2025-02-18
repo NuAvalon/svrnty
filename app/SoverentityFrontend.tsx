@@ -7,6 +7,13 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Shield, Key, UserCheck, Lock, Mail } from 'lucide-react';
 
+interface VerificationState {
+  loading: boolean;
+  error: string | null;
+  status: 'unverified' | 'verification_sent' | 'verified';
+  challenge?: string;
+}
+
 export function SoverentityFrontend() {
   const [identity, setIdentity] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -16,7 +23,7 @@ export function SoverentityFrontend() {
     email: '',
   });
 
-  const [verificationState, setVerificationState] = useState({
+  const [verificationState, setVerificationState] = useState<VerificationState>({
     loading: false,
     error: null,
     status: 'unverified'
@@ -25,38 +32,12 @@ export function SoverentityFrontend() {
   const [verificationCode, setVerificationCode] = useState('');
 
   const handleCreateIdentity = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      
-      const response = await fetch('/api/identity', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to create identity');
-      }
-
-      setIdentity(data.identity);
-    } catch (err) {
-      console.error('Error creating identity:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
-    }
+    // ... existing identity creation code ...
   };
 
   const handleVerification = async () => {
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-
-      console.log('Current identity state:', identity);
 
       const payload = {
         fingerprint: identity.identity.fingerprint,
@@ -73,12 +54,7 @@ export function SoverentityFrontend() {
         body: JSON.stringify(payload)
       });
 
-      console.log('Response status:', response.status);
-      const text = await response.text();
-      console.log('Raw response:', text);
-
-      const data = JSON.parse(text);
-      console.log('Parsed response data:', data);
+      const data = await response.json();
 
       if (!response.ok) {
         throw new Error(data.error || 'Verification failed');
@@ -87,6 +63,7 @@ export function SoverentityFrontend() {
       setVerificationState(prev => ({ 
         ...prev, 
         status: 'verification_sent',
+        challenge: data.challenge,
         loading: false 
       }));
     } catch (err) {
@@ -110,7 +87,8 @@ export function SoverentityFrontend() {
         },
         body: JSON.stringify({
           fingerprint: identity.identity.fingerprint,
-          code: verificationCode
+          code: verificationCode,
+          challenge: verificationState.challenge
         })
       });
 
@@ -125,6 +103,9 @@ export function SoverentityFrontend() {
         status: 'verified',
         loading: false 
       }));
+      console.log("Received identity response:", data);
+      setIdentity(data.identity ?? null);
+
       setIdentity(data.identity);
     } catch (err) {
       setVerificationState(prev => ({ 

@@ -4,6 +4,9 @@ import { writeFile, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import { decryptKey } from 'openpgp';
+import { sign } from 'openpgp';
+
 
 interface IdentityOptions {
   storageDir?: string;
@@ -34,6 +37,7 @@ interface IdentityData {
     key_type: string;
     key_usage: string[];
   };
+  claims?: IdentityClaim[];  // Add this line
 }
 
 interface KeyData {
@@ -46,6 +50,18 @@ interface ExportData {
   exported_at: string;
   private_key?: string;
   passphrase?: string;
+}
+
+// Add this with other interfaces at the top of core.ts
+interface IdentityClaim {
+  type: 'email' | 'phone';
+  value: string;  // Hashed value
+  verified: boolean;
+  proof: {
+    type: 'pgp_signed_otp';
+    timestamp: string;
+    signature: string;  // PGP signature of proof
+  };
 }
 
 export class SoverentityIdentity {
@@ -117,9 +133,12 @@ export class SoverentityIdentity {
       await this.storeIdentity(fingerprint, identity);
 
       return {
-        identity,
+        identity: {
+          ...identity, // ✅ Ensures correct structure
+        },
         fingerprint
       };
+      
     } catch (error) {
       console.error('Failed to generate identity:', error);
       throw error;
@@ -202,6 +221,136 @@ export class SoverentityIdentity {
     }
   }
 
+  async generateVerificationChallenge(
+    fingerprint: string,
+    claimType: 'email' | 'phone',
+    value: string
+  ): Promise<{
+    challenge: string;
+    otp: string;
+    expires: Date;
+  }> {
+    try {
+      // Load the identity's private key
+      const keys = await this.loadKey(fingerprint);
+      
+      // Parse the private key
+      const privateKey = await readKey({ armoredKey: keys.privateKey });
+
+      // Decrypt the private key
+      const decryptedPrivateKey = await decryptKey({
+        privateKey,
+        passphrase: keys.passphrase
+      });
+            
+      // Generate OTP
+      const otp = randomBytes(3).toString('hex').toUpperCase();
+      
+      // Create challenge data
+      const challengeData = {
+        fingerprint,
+        claimType,
+        value,
+        otp,
+        timestamp: new Date().toISOString(),
+        expires: new Date(Date.now() + 15 * 60 * 1000) // 15 minutes
+      };
+  
+      // Sign challenge with identity's key
+      const message = await createMessage({
+        text: JSON.stringify(challengeData)
+      });
+  
+      // Use the parsed private key for signing
+
+      const signedChallenge = await sign({
+        message,
+        signingKeys: decryptedPrivateKey, // ✅ Correct way to pass the key
+        format: 'armored' // ✅ Ensures the output is in proper PGP format
+      });
+      
+      console.log("Signed Challenge:", signedChallenge); // Debugging
+      
+      return {
+        challenge: signedChallenge, // ✅ Ensure it's properly armored
+        otp,
+        expires: challengeData.expires
+      };
+      
+    } catch (error) {
+      console.error('Failed to generate challenge:', error);
+      throw error;
+    }
+  }
+
+  // Should be updated to:
+  async verifySignedOTP(
+    fingerprint: string,
+    claimType: 'email' | 'phone',
+    value: string,
+    otp: string,
+    signedChallenge: string
+  ): Promise<IdentityClaim> {
+    try {
+      console.log('Starting verification with:', { fingerprint, claimType, value, otp });
+      console.log('Signed challenge:', signedChallenge);
+  
+      const identity = await this.loadIdentity(fingerprint);
+      const publicKey = await readKey({ armoredKey: identity.identity.public_key });
+      
+      // Parse the signed message
+      const message = await readMessage({ armoredMessage: signedChallenge });
+      console.log('Parsed message:', message);
+  
+      // Get the message content directly
+      const messageContent = await message.getText();
+      console.log('Message content:', messageContent);
+  
+      if (!messageContent) {
+        throw new Error('No message content found');
+      }
+  
+      const verificationResult = await message.verify([publicKey]);
+      if (!verificationResult.length) {
+        throw new Error('Invalid challenge signature');
+      }
+  
+      const challengeData = JSON.parse(messageContent);
+      console.log('Challenge data:', challengeData);
+  
+      // Verify OTP matches
+      if (challengeData.otp !== otp) {
+        throw new Error('Invalid OTP');
+      }
+  
+      // Create claim
+      const claim: IdentityClaim = {
+        type: claimType,
+        value,
+        verified: true,
+        proof: {
+          type: 'pgp_signed_otp',
+          timestamp: new Date().toISOString(),
+          signature: signedChallenge
+        }
+      };
+  
+      // Update identity with new claim
+      identity.claims = identity.claims || [];
+      identity.claims.push(claim);
+      identity.verification.status = 'verified';
+      identity.verification.method = claimType;
+      identity.verification.verified_at = new Date().toISOString();
+      
+      await this.storeIdentity(fingerprint, identity);
+  
+      return claim;
+    } catch (error) {
+      console.error('Failed to verify OTP:', error);
+      throw error;
+    }
+  }
+
 // Add to the public interface
 async loadIdentityData(fingerprint: string): Promise<IdentityData> {
   return this.loadIdentity(fingerprint);
@@ -257,3 +406,4 @@ const main = async (): Promise<void> => {
 if (import.meta.url === fileURLToPath(import.meta.url)) {
   main().catch(console.error);
 }
+
