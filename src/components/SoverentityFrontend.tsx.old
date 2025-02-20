@@ -1,22 +1,14 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Shield, Key, UserCheck, Lock, Mail } from 'lucide-react';
 
-interface SoverentityFrontendProps {
-  existingIdentity?: any;
-  onIdentityUpdate?: (identity: any) => void;
-}
-
-export function SoverentityFrontend({ 
-  existingIdentity, 
-  onIdentityUpdate 
-}: SoverentityFrontendProps) {
-  const [identity, setIdentity] = useState(existingIdentity || null);
+export function SoverentityFrontend() {
+  const [identity, setIdentity] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [formData, setFormData] = useState({
@@ -27,21 +19,10 @@ export function SoverentityFrontend({
   const [verificationState, setVerificationState] = useState({
     loading: false,
     error: null,
-    status: identity?.verification?.status || 'unverified'
+    status: 'unverified'
   });
 
   const [verificationCode, setVerificationCode] = useState('');
-
-  // Update internal state when existingIdentity prop changes
-  useEffect(() => {
-    if (existingIdentity) {
-      setIdentity(existingIdentity);
-      setVerificationState(prev => ({
-        ...prev,
-        status: existingIdentity.verification?.status || 'unverified'
-      }));
-    }
-  }, [existingIdentity]);
 
   const handleCreateIdentity = async () => {
     try {
@@ -62,11 +43,7 @@ export function SoverentityFrontend({
         throw new Error(data.error || 'Failed to create identity');
       }
 
-      // Update both local state and parent component
       setIdentity(data.identity);
-      if (onIdentityUpdate) {
-        onIdentityUpdate(data.identity);
-      }
     } catch (err) {
       console.error('Error creating identity:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -143,17 +120,12 @@ export function SoverentityFrontend({
         throw new Error(data.error || 'Code verification failed');
       }
 
-      // Update both local state and parent component
       setVerificationState(prev => ({ 
         ...prev, 
         status: 'verified',
         loading: false 
       }));
-      
       setIdentity(data.identity);
-      if (onIdentityUpdate) {
-        onIdentityUpdate(data.identity);
-      }
     } catch (err) {
       setVerificationState(prev => ({ 
         ...prev, 

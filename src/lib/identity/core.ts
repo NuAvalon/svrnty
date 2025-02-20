@@ -213,10 +213,15 @@ async loadIdentityData(fingerprint: string): Promise<IdentityData> {
     await writeFile(keyPath, JSON.stringify({ privateKey, passphrase }));
   }
 
-  private async loadKey(fingerprint: string): Promise<KeyData> {
-    const keyPath = join(this.storageDir, `${fingerprint}.key`);
-    const data = await readFile(keyPath, 'utf8');
-    return JSON.parse(data);
+  async loadKey(fingerprint: string): Promise<KeyData> {
+    try {
+      const keyPath = join(this.storageDir, `${fingerprint}.key`);
+      const data = await readFile(keyPath, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      console.error(`Failed to load key for fingerprint ${fingerprint}:`, error);
+      throw new Error(`Failed to load key: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   }
 
   private async storeIdentity(fingerprint: string, identity: IdentityData): Promise<void> {

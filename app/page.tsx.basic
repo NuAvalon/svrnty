@@ -1,18 +1,22 @@
 // app/page.tsx
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export default function Home() {
   const [identity, setIdentity] = useState<any>(null);
+  const [activeTab, setActiveTab] = useState<'identity' | 'contacts'>(identity ? 'contacts' : 'identity');
   
   // Function to handle identity update coming from SoverentityFrontend
   const handleIdentityUpdate = (newIdentity: any) => {
     console.log('Identity updated:', newIdentity);
     setIdentity(newIdentity);
+    // Switch to contacts tab after creating identity
+    if (newIdentity && !identity) {
+      setActiveTab('contacts');
+    }
   };
 
   return (
@@ -27,24 +31,34 @@ export default function Home() {
           // If no identity is present, show only the identity creation component
           <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} />
         ) : (
-          // If identity exists, show tabs for both identity and contacts
-          <Tabs defaultValue="contacts" className="w-full">
-            <TabsList className="w-full max-w-md mx-auto mb-8">
-              <TabsTrigger value="identity" className="flex-1">Identity</TabsTrigger>
-              <TabsTrigger value="contacts" className="flex-1">Contacts</TabsTrigger>
-            </TabsList>
+          // If identity exists, show simple tab navigation instead of Tabs component
+          <div>
+            <div className="flex border-b mb-8 max-w-md mx-auto">
+              <button 
+                className={`py-2 px-4 font-medium ${activeTab === 'identity' ? 'border-b-2 border-black' : ''}`}
+                onClick={() => setActiveTab('identity')}
+              >
+                Identity
+              </button>
+              <button
+                className={`py-2 px-4 font-medium ${activeTab === 'contacts' ? 'border-b-2 border-black' : ''}`}
+                onClick={() => setActiveTab('contacts')}
+              >
+                Contacts
+              </button>
+            </div>
             
-            <TabsContent value="identity">
+            {activeTab === 'identity' && (
               <SoverentityFrontend 
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
               />
-            </TabsContent>
+            )}
             
-            <TabsContent value="contacts">
+            {activeTab === 'contacts' && (
               <ContactManagement identity={identity} />
-            </TabsContent>
-          </Tabs>
+            )}
+          </div>
         )}
       </main>
 
