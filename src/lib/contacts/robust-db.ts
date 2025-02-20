@@ -160,6 +160,13 @@ export class RobustContactManager {
       throw new Error(`Missing required fields: ${missingFields.join(', ')}`);
     }
 
+    // Verify fingerprint matches key
+    const publicKey = await readKey({ armoredKey: contactData.public_key });
+    const actualFingerprint = publicKey.getFingerprint().toUpperCase();
+    if (actualFingerprint !== contactData.fingerprint.toUpperCase()) {
+      throw new Error(`Fingerprint mismatch: provided "${contactData.fingerprint}" but key has "${actualFingerprint}"`);
+    }
+
     const newContact: Contact = {
       ...contactData,
       id: randomUUID(),

@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { ContactManager } from '@/lib/contacts/db';
 import { SoverentityIdentity } from '@/lib/identity/core';
 import { RobustContactManager } from '@/lib/contacts/robust-db';
+import { readKey } from 'openpgp';
 
 const identityManager = new SoverentityIdentity();
 
@@ -144,7 +145,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     console.log('[POST /api/contacts] Received request body');
     
-    // Fix: Make sure we extract these variables from the body
+    // Extract these variables from the body
     const { fingerprint, contact } = body;
     
     if (!fingerprint || !contact) {
@@ -154,10 +155,37 @@ export async function POST(request: Request) {
       );
     }
     
+    // Validate fingerprint and public key match
+    try {
+      const publicKey = await readKey({ armoredKey: contact.public_key });
+      const actualFingerprint = publicKey.getFingerprint().toUpperCase();
+      
+      if (actualFingerprint !== contact.fingerprint.toUpperCase()) {
+        console.error(`Fingerprint mismatch: provided "${contact.fingerprint}" but key has "${actualFingerprint}"`);
+        return NextResponse.json(
+          { 
+            success: false, 
+            error: `Fingerprint mismatch: The provided fingerprint doesn't match the public key` 
+          },
+          { status: 400 }
+        );
+      }
+    } catch (validationError) {
+      console.error('[POST /api/contacts] Error validating contact:', validationError);
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: validationError instanceof Error 
+            ? validationError.message 
+            : 'Failed to validate public key format' 
+        },
+        { status: 400 }
+      );
+    }
+    
     // Try encrypted storage first
     try {
       console.log('[POST /api/contacts] Attempting to add contact with encrypted storage');
-      // This line had the error - fingerprint wasn't defined in this scope
       const contactManager = await getContactManager(fingerprint);
       
       // Debug the contact data
@@ -187,31 +215,14 @@ export async function POST(request: Request) {
       console.error('[POST /api/contacts] Error type:', encryptedError instanceof Error ? encryptedError.constructor.name : typeof encryptedError);
       console.error('[POST /api/contacts] Stack trace:', encryptedError instanceof Error ? encryptedError.stack : 'No stack trace');
       
-      // Fall back to in-memory if encrypted fails
-      console.error('[POST /api/contacts] Encrypted storage failed:', encryptedError);
-      
-      // Initialize in-memory storage if needed
-      if (!inMemoryContacts[fingerprint]) {
-        inMemoryContacts[fingerprint] = [];
-      }
-      
-      // Create a new contact with ID
-      const newContact = {
-        ...contact,
-        id: Math.random().toString(36).substring(2, 11),
-        added_at: new Date().toISOString()
-      };
-      
-      inMemoryContacts[fingerprint].push(newContact);
-      
-      return NextResponse.json({
-        success: true,
-        contact: newContact,
-        storage: 'in-memory',
-        fallbackReason: encryptedError instanceof Error ? encryptedError.message : 'Unknown error'
-      });
+      return NextResponse.json(
+        { 
+          success: false, 
+          error: encryptedError instanceof Error ? encryptedError.message : 'Failed to add contact'
+        },
+        { status: 500 }
+      );
     }
-    
   } catch (error) {
     console.error('[POST /api/contacts] Unhandled error:', error);
     return NextResponse.json(

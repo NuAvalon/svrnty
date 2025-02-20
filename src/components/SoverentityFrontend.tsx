@@ -1,11 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent, CardDescription, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Shield, Key, UserCheck, Lock, Mail } from 'lucide-react';
+import { Shield, Key, UserCheck, Lock, Mail, CheckCircle2, Fingerprint, RefreshCw } from 'lucide-react';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -163,91 +163,208 @@ export function SoverentityFrontend({
     }
   };
 
+  // Render the fingerprint in formatted groups
+  const formatFingerprint = (fingerprint) => {
+    return fingerprint?.match(/.{1,4}/g)?.join(' ') || fingerprint;
+  };
+
   return (
-    <Card className="w-full max-w-2xl mx-auto">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Shield className="h-6 w-6" />
-          Soverentity Identity
-        </CardTitle>
+    <Card className="w-full shadow-md overflow-hidden">
+      <CardHeader className="bg-gradient-to-r from-indigo-50 to-sky-50 dark:from-indigo-950/30 dark:to-sky-950/30">
+        <div className="flex items-center gap-3">
+          <div className="bg-white dark:bg-slate-800 rounded-full p-2 shadow-sm">
+            <Shield className="h-6 w-6 text-indigo-600 dark:text-indigo-400" />
+          </div>
+          <CardTitle className="text-xl sm:text-2xl">Sovereign Identity</CardTitle>
+        </div>
+        <CardDescription className="mt-2">
+          Create and control your digital identity with PGP encryption. Your keys, your data.
+        </CardDescription>
       </CardHeader>
-      <CardContent>
+      
+      <CardContent className="p-5 sm:p-6">
         {error && (
-          <Alert variant="destructive" className="mb-4">
+          <Alert variant="destructive" className="mb-6">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
 
         {!identity ? (
-          <div className="space-y-4">
-            <Input
-              placeholder="Name"
-              value={formData.name}
-              onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-            />
+          <div className="space-y-6 max-w-md mx-auto py-4">
+            <div className="bg-indigo-50 dark:bg-indigo-950/30 rounded-xl p-5 text-center mb-6">
+              <Key className="h-10 w-10 mx-auto mb-3 text-indigo-600 dark:text-indigo-400" />
+              <h3 className="text-lg font-medium mb-2">Create Your Digital Identity</h3>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Generate a secure PGP keypair that you control. Your identity stays private and secure.
+              </p>
+            </div>
 
-            <Input
-              type="email"
-              placeholder="Email address"
-              value={formData.email}
-              onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
-            />
+            <div>
+              <label className="block text-sm font-medium mb-1 text-slate-700 dark:text-slate-300">Full Name</label>
+              <Input
+                placeholder="Your name"
+                className="bg-white dark:bg-slate-900"
+                value={formData.name}
+                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1 text-slate-700 dark:text-slate-300">Email Address</label>
+              <Input
+                type="email"
+                placeholder="your.email@example.com"
+                className="bg-white dark:bg-slate-900"
+                value={formData.email}
+                onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+              />
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                We'll verify this email to confirm your identity
+              </p>
+            </div>
 
             <Button 
               onClick={handleCreateIdentity}
-              className="w-full"
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 h-auto"
               disabled={loading || !formData.name || !formData.email}
             >
-              {loading ? 'Creating...' : 'Create Sovereign Identity'}
+              {loading ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Creating Identity...
+                </>
+              ) : (
+                <>
+                  <Key className="h-4 w-4 mr-2" />
+                  Create Sovereign Identity
+                </>
+              )}
             </Button>
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="p-4 bg-gray-50 rounded-lg space-y-2">
-              <div className="flex items-center gap-2">
-                <Key className="h-5 w-5" />
-                <span className="font-medium">Identity Created</span>
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+              <div className="bg-slate-50 dark:bg-slate-900 p-4 border-b dark:border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className={`rounded-full p-1.5 ${
+                    identity.verification?.status === 'verified' 
+                      ? 'bg-green-100 dark:bg-green-900/30' 
+                      : 'bg-yellow-100 dark:bg-yellow-900/30'
+                  }`}>
+                    <Key className={`h-5 w-5 ${
+                      identity.verification?.status === 'verified'
+                        ? 'text-green-600 dark:text-green-500'
+                        : 'text-yellow-600 dark:text-yellow-500'
+                    }`} />
+                  </div>
+                  <div>
+                    <h3 className="font-medium">{identity.identity.name}</h3>
+                    <div className="flex items-center text-sm text-slate-600 dark:text-slate-400">
+                      <Mail className="h-3.5 w-3.5 mr-1 inline" />
+                      {identity.identity.email}
+                    </div>
+                  </div>
+                </div>
               </div>
               
-              <div className="text-sm text-gray-600">
-                Fingerprint: {identity.identity.fingerprint?.slice(0, 16)}...
-              </div>
-
-              <div className="flex items-center gap-2 text-sm">
-                <Lock className={identity.verification?.status === 'verified' ? 'text-green-500' : 'text-yellow-500'} />
-                Status: {identity.verification?.status || 'unverified'}
+              <div className="p-4">
+                <div className="mb-4">
+                  <div className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1 flex items-center">
+                    <Fingerprint className="h-4 w-4 mr-1" /> 
+                    PGP Fingerprint
+                  </div>
+                  <div className="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 p-2 rounded border border-slate-200 dark:border-slate-700 break-all">
+                    {formatFingerprint(identity.identity.fingerprint)}
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  <div className={`flex-shrink-0 rounded-full h-6 w-6 flex items-center justify-center ${
+                    identity.verification?.status === 'verified'
+                      ? 'bg-green-100 dark:bg-green-900/30'
+                      : 'bg-yellow-100 dark:bg-yellow-900/30'
+                  }`}>
+                    {identity.verification?.status === 'verified' ? (
+                      <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500" />
+                    ) : (
+                      <Lock className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
+                    )}
+                  </div>
+                  <div className="text-sm">
+                    <span className="font-medium">Status: </span>
+                    <span className={
+                      identity.verification?.status === 'verified'
+                        ? 'text-green-600 dark:text-green-500 font-medium'
+                        : 'text-yellow-600 dark:text-yellow-500 font-medium'
+                    }>
+                      {identity.verification?.status || 'unverified'}
+                    </span>
+                  </div>
+                </div>
               </div>
             </div>
 
             {identity.verification?.status !== 'verified' && (
-              <div className="mt-4 space-y-4">
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+                <h3 className="text-base font-medium mb-4">Verify Your Identity</h3>
+                
                 {verificationState.status === 'verification_sent' ? (
                   <div className="space-y-4">
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                      We've sent a verification code to your email. Enter it below to verify your identity.
+                    </p>
                     <Input
                       placeholder="Enter verification code"
                       value={verificationCode}
                       onChange={(e) => setVerificationCode(e.target.value)}
                       maxLength={6}
+                      className="text-center tracking-wider font-mono text-lg"
                     />
                     <Button
                       onClick={handleVerifyCode}
                       disabled={verificationState.loading || !verificationCode}
-                      className="w-full"
+                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
                     >
-                      {verificationState.loading ? 'Verifying...' : 'Submit Code'}
+                      {verificationState.loading ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                          Verifying...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="h-4 w-4 mr-2" />
+                          Verify Identity
+                        </>
+                      )}
                     </Button>
                   </div>
                 ) : (
-                  <Button
-                    onClick={handleVerification}
-                    disabled={verificationState.loading}
-                    className="w-full"
-                  >
-                    {verificationState.loading ? 'Sending Code...' : 'Verify Email'}
-                  </Button>
+                  <div className="space-y-4">
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                      Verify your email address to prove ownership of this identity.
+                    </p>
+                    <Button
+                      onClick={handleVerification}
+                      disabled={verificationState.loading}
+                      className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
+                    >
+                      {verificationState.loading ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                          Sending Code...
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="h-4 w-4 mr-2" />
+                          Send Verification Email
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 )}
+                
                 {verificationState.error && (
-                  <Alert variant="destructive">
+                  <Alert variant="destructive" className="mt-4">
                     <AlertDescription>{verificationState.error}</AlertDescription>
                   </Alert>
                 )}
@@ -255,15 +372,25 @@ export function SoverentityFrontend({
             )}
 
             {identity.verification?.status === 'verified' && (
-              <Alert className="mt-4">
+              <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900 text-green-800 dark:text-green-300">
+                <CheckCircle2 className="h-4 w-4 mr-2" />
                 <AlertDescription>
-                  Identity verified successfully!
+                  Your identity has been successfully verified!
                 </AlertDescription>
               </Alert>
             )}
           </div>
         )}
       </CardContent>
+      
+      {!identity && (
+        <CardFooter className="bg-slate-50 dark:bg-slate-900 border-t px-6 py-4">
+          <p className="text-xs text-slate-500 dark:text-slate-400 w-full text-center">
+            Your keys are generated securely in your browser and never leave your device.
+            We only store your public key and encrypted information you choose to share.
+          </p>
+        </CardFooter>
+      )}
     </Card>
   );
 }
