@@ -777,12 +777,15 @@ const handleDeleteContact = async (contactId: string) => {
                             Trust
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent>
+                        <DropdownMenuContent 
+                          className="!bg-slate-900 !text-white !border !border-slate-700 !shadow-lg"
+                        >
                           <DropdownMenuLabel>Set Trust Level</DropdownMenuLabel>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem 
                             onClick={() => handleUpdateTrustLevel(contact.id, 'trusted')}
                             disabled={contact.trust_level === 'trusted'}
+                            className="!hover:bg-green-600 !hover:text-white"
                           >
                             <Check className="h-4 w-4 mr-2 text-green-500" />
                             Trusted
@@ -790,6 +793,7 @@ const handleDeleteContact = async (contactId: string) => {
                           <DropdownMenuItem 
                             onClick={() => handleUpdateTrustLevel(contact.id, 'verified')}
                             disabled={contact.trust_level === 'verified'}
+                            className="!hover:bg-blue-600 !hover:text-white"
                           >
                             <UserCheck className="h-4 w-4 mr-2 text-blue-500" />
                             Verified
@@ -797,6 +801,7 @@ const handleDeleteContact = async (contactId: string) => {
                           <DropdownMenuItem 
                             onClick={() => handleUpdateTrustLevel(contact.id, 'unverified')}
                             disabled={contact.trust_level === 'unverified'}
+                            className="!hover:bg-yellow-600 !hover:text-black"
                           >
                             <X className="h-4 w-4 mr-2 text-yellow-500" />
                             Unverified
