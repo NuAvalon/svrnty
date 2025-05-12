@@ -1,13 +1,13 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Card, CardHeader, CardTitle, CardContent, CardFooter,
   CardDescription
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription,AlertTitle } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Shield, Key, UserCheck, Lock, Mail, UserPlus, Search, 
   QrCode, Link, Share2, Trash2, Check, X, Edit, Filter, Download, Upload, RefreshCw
@@ -23,6 +23,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import QRCode from 'react-qr-code';
+import { SimpleQRCode } from '@/components/SimpleQRCode';
 
 // Define the Contact type here since you might not have the full import path ready
 interface Contact {
@@ -44,6 +46,25 @@ interface Contact {
 
 interface ContactsProps {
   identity: any; // Using any for now since we don't have the full identity type
+}
+
+interface ExchangePackage {
+  version: string;
+  sender: {
+    fingerprint: string;
+    public_key: string;
+  };
+  recipient_fingerprint?: string; // Optional, only for directed exchanges
+  contact_data: {
+    name: string;
+    email: string;
+    fingerprint: string;
+    public_key: string;
+  };
+  expires_at?: string; // For burner links
+  mutual_contacts?: string[]; // Encrypted list of fingerprints for PSI
+  signature: string;
+  created_at: string;
 }
 
 export function ContactManagement({ identity }: ContactsProps) {
@@ -76,11 +97,60 @@ export function ContactManagement({ identity }: ContactsProps) {
   const [importError, setImportError] = useState<string | null>(null);
   
   // Load contacts on component mount and when identity changes
+  const loadContacts = useCallback(async () => {
+    if (!identity?.identity?.fingerprint) {
+      console.log('No identity fingerprint found, skipping contact load');
+      return;
+    }
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      console.log(`Loading contacts for fingerprint: ${identity.identity.fingerprint}`);
+      const response = await fetch(
+        `/api/contacts?fingerprint=${identity.identity.fingerprint}`, 
+        { method: 'GET' }
+      );
+      
+      console.log('Response status:', response.status);
+      const contentType = response.headers.get('content-type');
+      console.log('Content type:', contentType);
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Non-JSON response received');
+        throw new Error('Invalid response from server');
+      }
+      
+      const data = await response.json();
+      console.log('Contact API response:', data);
+      
+      if (!response.ok) {
+        console.error('API returned error:', data);
+        throw new Error(data.error || 'Failed to load contacts');
+      }
+      
+      setContacts(data.contacts || []);
+      console.log(`Loaded ${data.contacts?.length || 0} contacts using ${data.storage} storage`);
+      
+      // Show a storage mode warning for in-memory
+      if (data.storage === 'in-memory') {
+        console.warn('Using in-memory storage. Reason:', data.fallbackReason);
+      }
+    } catch (err) {
+      console.error('Error loading contacts:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred loading contacts');
+      setContacts([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [identity?.identity?.fingerprint]);
+
   useEffect(() => {
     if (identity?.identity?.fingerprint) {
       loadContacts();
     }
-  }, [identity]);
+  }, [identity, loadContacts]);
   
   // Filter contacts based on active tab and search query
   const filteredContacts = contacts.filter(contact => {
@@ -102,182 +172,130 @@ export function ContactManagement({ identity }: ContactsProps) {
     return true;
   });
 
-// Change API base back to regular endpoint
-const API_BASE = '/api/contacts';
-
-// Update loadContacts method with improved error handling
-const loadContacts = async () => {
-  if (!identity?.identity?.fingerprint) {
-    console.log('No identity fingerprint found, skipping contact load');
-    return;
-  }
-  
-  try {
-    setLoading(true);
-    setError(null);
+  // Add contact function
+  const handleAddContact = async () => {
+    if (!identity?.identity?.fingerprint) return;
     
-    console.log(`Loading contacts for fingerprint: ${identity.identity.fingerprint}`);
-    const response = await fetch(
-      `${API_BASE}?fingerprint=${identity.identity.fingerprint}`, 
-      { method: 'GET' }
-    );
-    
-    console.log('Response status:', response.status);
-    const contentType = response.headers.get('content-type');
-    console.log('Content type:', contentType);
-    
-    if (!contentType || !contentType.includes('application/json')) {
-      console.error('Non-JSON response received');
-      throw new Error('Invalid response from server');
-    }
-    
-    const data = await response.json();
-    console.log('Contact API response:', data);
-    
-    if (!response.ok) {
-      console.error('API returned error:', data);
-      throw new Error(data.error || 'Failed to load contacts');
-    }
-    
-    setContacts(data.contacts || []);
-    console.log(`Loaded ${data.contacts?.length || 0} contacts using ${data.storage} storage`);
-    
-    // Show a storage mode warning for in-memory
-    if (data.storage === 'in-memory') {
-      console.warn('Using in-memory storage. Reason:', data.fallbackReason);
-    }
-  } catch (err) {
-    console.error('Error loading contacts:', err);
-    setError(err instanceof Error ? err.message : 'An error occurred loading contacts');
-    setContacts([]);
-  } finally {
-    setLoading(false);
-  }
-};
-  
-const handleAddContact = async () => {
-  if (!identity?.identity?.fingerprint) return;
-  
-  try {
-    setLoading(true);
-    setError(null);
-    
-    // Validate form
-    if (!newContactForm.name || !newContactForm.email || !newContactForm.fingerprint || !newContactForm.public_key) {
-      throw new Error('All fields are required');
-    }
-    
-    const normalizedPublicKey = newContactForm.public_key.trim();
-    if (!normalizedPublicKey.startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----')) {
-      setError('Invalid PGP public key format');
-      return;
-    }
-
-    // Add this check before submission:
-    if (newContactForm.fingerprint === identity.identity.fingerprint) {
-      setError('You cannot add yourself as a contact');
-      return;
-    }
-
-    console.log('Adding contact with data:', {
-      fingerprint: identity.identity.fingerprint,
-      contactData: {
-        ...newContactForm,
-        trust_level: 'unverified'
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Validate form
+      if (!newContactForm.name || !newContactForm.email || !newContactForm.fingerprint || !newContactForm.public_key) {
+        throw new Error('All fields are required');
       }
-    });
+      
+      const normalizedPublicKey = newContactForm.public_key.trim();
+      if (!normalizedPublicKey.startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----')) {
+        setError('Invalid PGP public key format');
+        return;
+      }
 
-    const response = await fetch(`${API_BASE}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
+      // Add this check before submission:
+      if (newContactForm.fingerprint === identity.identity.fingerprint) {
+        setError('You cannot add yourself as a contact');
+        return;
+      }
+
+      console.log('Adding contact with data:', {
         fingerprint: identity.identity.fingerprint,
-        contact: {
+        contactData: {
           ...newContactForm,
           trust_level: 'unverified'
         }
-      }),
-    });
-    
-    const contentType = response.headers.get('content-type');
-    console.log('Response content type:', contentType);
-    console.log('Response status:', response.status);
-    
-    if (!contentType || !contentType.includes('application/json')) {
-      console.error('Non-JSON response received');
-      const textResponse = await response.text();
-      console.error('Raw response:', textResponse);
-      throw new Error('Invalid response from server');
+      });
+
+      const response = await fetch(`/api/contacts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identity.identity.fingerprint,
+          contact: {
+            ...newContactForm,
+            trust_level: 'unverified'
+          }
+        }),
+      });
+      
+      const contentType = response.headers.get('content-type');
+      console.log('Response content type:', contentType);
+      console.log('Response status:', response.status);
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Non-JSON response received');
+        const textResponse = await response.text();
+        console.error('Raw response:', textResponse);
+        throw new Error('Invalid response from server');
+      }
+      
+      const data = await response.json();
+      console.log('Add contact API response:', data);
+      
+      if (!response.ok) {
+        const errorMessage = data.error || `Failed to add contact (${response.status})`;
+        console.log('Contact validation failed:', errorMessage); // Changed from error to log
+        throw new Error(errorMessage);
+      }
+      
+      // Add the contact to local state immediately
+      setContacts(prev => [...prev, data.contact]);
+      
+      // Reset form
+      setNewContactForm({
+        name: '',
+        email: '',
+        fingerprint: '',
+        public_key: '',
+      });
+      setShowAddDialog(false);
+      
+      // Also reload contacts to be sure
+      await loadContacts();
+      
+    } catch (err) {
+      console.error('Error adding contact:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
     }
-    
-    const data = await response.json();
-    console.log('Add contact API response:', data);
-    
-    if (!response.ok) {
-      const errorMessage = data.error || `Failed to add contact (${response.status})`;
-      console.log('Contact validation failed:', errorMessage); // Changed from error to log
-      throw new Error(errorMessage);
-    }
-    
-    // Add the contact to local state immediately
-    setContacts(prev => [...prev, data.contact]);
-    
-    // Reset form
-    setNewContactForm({
-      name: '',
-      email: '',
-      fingerprint: '',
-      public_key: '',
-    });
-    setShowAddDialog(false);
-    
-    // Also reload contacts to be sure
-    await loadContacts();
-    
-  } catch (err) {
-    console.error('Error adding contact:', err);
-    setError(err instanceof Error ? err.message : 'An error occurred');
-  } finally {
-    setLoading(false);
-  }
-};
+  };
   
-// Update handleDeleteContact method
-const handleDeleteContact = async (contactId: string) => {
-  if (!identity?.identity?.fingerprint) return;
-  
-  try {
-    setLoading(true);
-    setError(null);
+  // Delete contact function
+  const handleDeleteContact = async (contactId: string) => {
+    if (!identity?.identity?.fingerprint) return;
     
-    const response = await fetch(
-      `${API_BASE}?fingerprint=${identity.identity.fingerprint}&contactId=${contactId}`,
-      { method: 'DELETE' }
-    );
-    
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      throw new Error('Invalid response from server');
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const response = await fetch(
+        `/api/contacts?fingerprint=${identity.identity.fingerprint}&contactId=${contactId}`,
+        { method: 'DELETE' }
+      );
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Invalid response from server');
+      }
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to delete contact');
+      }
+      
+      // Reload contacts
+      await loadContacts();
+      
+    } catch (err) {
+      console.error('Error deleting contact:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
     }
-    
-    const data = await response.json();
-    
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to delete contact');
-    }
-    
-    // Reload contacts
-    await loadContacts();
-    
-  } catch (err) {
-    console.error('Error deleting contact:', err);
-    setError(err instanceof Error ? err.message : 'An error occurred');
-  } finally {
-    setLoading(false);
-  }
-};
+  };
   
   // Update contact trust level
   const handleUpdateTrustLevel = async (contactId: string, trustLevel: 'unverified' | 'verified' | 'trusted') => {
@@ -533,7 +551,7 @@ const handleDeleteContact = async (contactId: string) => {
               variant="outline" 
               size="sm"
               className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-slate-700"
-              onClick={() => setShowQRDialog(true)}
+              onClick={handleGenerateQRCode}
             >
               <QrCode className="h-4 w-4 mr-2 text-indigo-600 dark:text-indigo-400" />
               Share via QR
@@ -579,7 +597,7 @@ const handleDeleteContact = async (contactId: string) => {
       <CardContent className="p-4 sm:p-6">
         {error && (
           <Alert variant="destructive" className="mb-4">
-            <div className="font-semibold">Error</div>
+            <AlertTitle>Error</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
@@ -603,6 +621,7 @@ const handleDeleteContact = async (contactId: string) => {
           </Button>
         </div>
 
+        {/* Add Contact Dialog */}
         <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
@@ -614,7 +633,7 @@ const handleDeleteContact = async (contactId: string) => {
             
             {error && (
               <Alert variant="destructive" className="mb-4">
-                <div className="font-semibold">Error</div>
+                <AlertTitle>Error</AlertTitle>
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
@@ -675,6 +694,139 @@ const handleDeleteContact = async (contactId: string) => {
                 {loading ? 
                   <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Adding...</> : 
                   <><UserPlus className="h-4 w-4 mr-2" />Add Contact</>
+                }
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* QR Code Dialog */}
+        <Dialog open={showQRDialog} onOpenChange={setShowQRDialog}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Share via QR Code</DialogTitle>
+              <DialogDescription>
+                Scan this QR code with the Soverentity app to add your contact.
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="flex justify-center p-4">
+              {qrCodeData ? (
+                <div className="border rounded p-4 bg-white">
+                  <SimpleQRCode value={qrCodeData} />
+                  <p className="text-center mt-3 text-sm text-gray-600">
+                    Scan with another Soverentity app
+                  </p>
+                </div>
+              ) : (
+                <div className="animate-pulse h-64 w-64 bg-slate-200"></div>
+              )}
+            </div>
+            
+            <DialogFooter>
+              <Button 
+                variant="outline" 
+                onClick={() => setShowQRDialog(false)}
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Share Burner Link Dialog */}
+        <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Share via Burner Link</DialogTitle>
+              <DialogDescription>
+                Share this temporary link to add your contact. Link expires in 48 hours.
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="p-4">
+              {burnerLink ? (
+                <div className="space-y-4">
+                  <div className="flex items-center">
+                    <Input 
+                      readOnly 
+                      value={burnerLink} 
+                      className="font-mono text-xs"
+                    />
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      className="ml-2"
+                      onClick={() => {
+                        navigator.clipboard.writeText(burnerLink);
+                        // You could add a toast notification here
+                      }}
+                    >
+                      Copy
+                    </Button>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    This link will expire in 48 hours.
+                  </p>
+                </div>
+              ) : (
+                <div className="animate-pulse h-10 w-full bg-slate-200 rounded"></div>
+              )}
+            </div>
+            
+            <DialogFooter>
+              <Button 
+                variant="outline" 
+                onClick={() => setShowShareDialog(false)}
+              >
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Import Contacts Dialog */}
+        <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Import Contacts</DialogTitle>
+              <DialogDescription>
+                Paste exported contacts JSON to import.
+              </DialogDescription>
+            </DialogHeader>
+            
+            {importError && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTitle>Error</AlertTitle>
+                <AlertDescription>{importError}</AlertDescription>
+              </Alert>
+            )}
+            
+            <div className="space-y-4 py-4">
+              <Textarea
+                value={importData}
+                onChange={(e) => setImportData(e.target.value)}
+                placeholder="Paste contacts JSON here..."
+                className="font-mono text-xs"
+                rows={10}
+              />
+            </div>
+            
+            <DialogFooter>
+              <Button 
+                variant="outline" 
+                onClick={() => setShowImportDialog(false)}
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={handleImportContacts} 
+                disabled={loading || !importData}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {loading ? 
+                  <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> : 
+                  <><Upload className="h-4 w-4 mr-2" />Import Contacts</>
                 }
               </Button>
             </DialogFooter>

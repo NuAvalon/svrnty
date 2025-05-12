@@ -1,27 +1,8 @@
 // lib/contacts/exchange.ts
-import { createMessage, encrypt, sign, readMessage, decrypt, verify, readKey } from 'openpgp';
+import { createMessage, encrypt, sign, readMessage, decrypt, verify, readKey, decryptKey } from 'openpgp';
 import { randomBytes } from 'crypto';
 import { Contact } from './types';
 import { SoverentityIdentity } from '@/lib/identity/core';
-
-interface ExchangePackage {
-  version: string;
-  sender: {
-    fingerprint: string;
-    public_key: string;
-  };
-  recipient_fingerprint?: string; // Optional, only for directed exchanges
-  contact_data: {
-    name: string;
-    email: string;
-    fingerprint: string;
-    public_key: string;
-  };
-  expires_at?: string; // For burner links
-  mutual_contacts?: string[]; // Encrypted list of fingerprints for PSI
-  signature: string;
-  created_at: string;
-}
 
 export class ContactExchange {
   private identityManager: SoverentityIdentity;
@@ -86,25 +67,37 @@ export class ContactExchange {
         exchangePackage.mutual_contacts = mutualContactFingerprints;
       }
 
-      // Sign the package with sender's private key
-      const privateKey = await decrypt({
-        message: await readMessage({ armoredMessage: keyData.privateKey }),
-        passwords: [keyData.passphrase]
-      }).then(({ data }) => data.toString());
-
-      const packageToSign = JSON.stringify(exchangePackage);
-      const signedMessage = await sign({
-        message: await createMessage({ text: packageToSign }),
-        signingKeys: privateKey
+      // Fixed approach for signing the package:
+      // 1. First read the private key
+      const privateKeyObj = await readKey({ armoredKey: keyData.privateKey });
+      
+      // 2. Decrypt the private key if it's protected with a passphrase
+      const decryptedKey = await decryptKey({
+        privateKey: privateKeyObj,
+        passphrase: keyData.passphrase
       });
 
-      // Extract signature
-      const signature = signedMessage.toString().split('-----BEGIN PGP SIGNATURE-----')[1].split('-----END PGP SIGNATURE-----')[0].trim();
+      // 3. Sign the package with the decrypted private key
+      const packageToSign = JSON.stringify(exchangePackage);
+      const message = await createMessage({ text: packageToSign });
+      const signedMessage = await sign({
+        message,
+        signingKeys: decryptedKey
+      });
 
-      // Add signature to the package
+      // 4. Extract signature from the signed message
+      const signedMessageString = signedMessage.toString();
+      const parts = signedMessageString.split('-----BEGIN PGP SIGNATURE-----');
+      if (parts.length < 2) {
+        throw new Error('Failed to extract signature from signed message');
+      }
+      const signaturePart = '-----BEGIN PGP SIGNATURE-----' + parts[1];
+      const signature = signaturePart.replace('-----END PGP SIGNATURE-----', '').trim();
+
+      // 5. Add the signature to the package
       const signedPackage: ExchangePackage = {
         ...exchangePackage,
-        signature: signature
+        signature
       };
 
       // Encrypt the entire package if recipient is specified
@@ -137,13 +130,18 @@ export class ContactExchange {
 
   // Generate a QR code for contact exchange
   async generateQRCodeData(senderFingerprint: string): Promise<string> {
-    const exchangeData = await this.createExchangePackage({
-      senderFingerprint,
-      expireInHours: 24 // QR codes expire in 24 hours
-    });
-    
-    // Return the data to be encoded in a QR code
-    return exchangeData;
+    try {
+      const exchangeData = await this.createExchangePackage({
+        senderFingerprint,
+        expireInHours: 24 // QR codes expire in 24 hours
+      });
+      
+      // Return the data to be encoded in a QR code
+      return exchangeData;
+    } catch (error) {
+      console.error('Failed to generate QR code data:', error);
+      throw error;
+    }
   }
 
   // Create a burner link for quick onboarding

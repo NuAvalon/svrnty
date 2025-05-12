@@ -1,9 +1,9 @@
 // app/api/contacts/share/route.ts
+// A super simplified version that doesn't rely on any complex cryptography
+
 import { NextResponse } from 'next/server';
-import { ContactExchange } from '@/lib/contacts/exchange';
 import { SoverentityIdentity } from '@/lib/identity/core';
 
-const contactExchange = new ContactExchange();
 const identityManager = new SoverentityIdentity();
 
 export async function POST(request: Request) {
@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     console.log('Received share request:', body);
     
-    const { fingerprint, type, expireInHours = 48, recipientFingerprint } = body;
+    const { fingerprint, type, expireInHours = 48 } = body;
     
     if (!fingerprint || !type) {
       return NextResponse.json(
@@ -22,53 +22,53 @@ export async function POST(request: Request) {
       );
     }
     
-    // Check if the identity exists
     try {
-      await identityManager.loadIdentityData(fingerprint);
-    } catch (error) {
+      // Attempt to load the identity
+      const identity = await identityManager.loadIdentityData(fingerprint);
+      
+      if (!identity) {
+        return NextResponse.json(
+          { error: 'Identity not found' },
+          { status: 404 }
+        );
+      }
+      
+      if (type === 'qr') {
+        // Generate a simple QR code data
+        const simpleQrData = JSON.stringify({
+          name: identity.identity.name,
+          email: identity.identity.email,
+          fingerprint: identity.identity.fingerprint,
+          public_key: identity.identity.public_key,
+          expires: new Date(Date.now() + (expireInHours || 24) * 60 * 60 * 1000).toISOString()
+        });
+        
+        return NextResponse.json({
+          success: true,
+          qrData: simpleQrData
+        });
+      }
+      
+      if (type === 'burner') {
+        // Generate a burner link
+        const burnerLink = `https://soverentity.app/contact/${fingerprint.substring(0, 8)}`;
+        
+        return NextResponse.json({
+          success: true,
+          burnerLink
+        });
+      }
+      
       return NextResponse.json(
-        { error: 'Identity not found' },
-        { status: 404 }
-      );
-    }
-    
-    if (type === 'qr') {
-      // Generate QR code data
-      const qrData = await contactExchange.generateQRCodeData(fingerprint);
-      
-      return NextResponse.json({
-        success: true,
-        qrData
-      });
-      
-    } else if (type === 'burner') {
-      // Generate burner link
-      const burnerLink = await contactExchange.createBurnerLink(
-        fingerprint,
-        expireInHours
-      );
-      
-      return NextResponse.json({
-        success: true,
-        burnerLink
-      });
-      
-    } else if (type === 'direct' && recipientFingerprint) {
-      // Create directed exchange package
-      const exchangeData = await contactExchange.createExchangePackage({
-        senderFingerprint: fingerprint,
-        recipientFingerprint,
-      });
-      
-      return NextResponse.json({
-        success: true,
-        exchangeData
-      });
-      
-    } else {
-      return NextResponse.json(
-        { error: 'Invalid share type or missing recipient for direct share' },
+        { error: 'Invalid share type' },
         { status: 400 }
+      );
+      
+    } catch (error) {
+      console.error('Failed to load identity:', error);
+      return NextResponse.json(
+        { error: 'Failed to load identity' },
+        { status: 500 }
       );
     }
     
