@@ -2,15 +2,15 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
-  Card, CardHeader, CardTitle, CardContent, CardFooter,
-  CardDescription
+  Card, CardHeader, CardTitle, CardContent, CardDescription
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Shield, Key, UserCheck, Lock, Mail, UserPlus, Search, 
-  QrCode, Link, Share2, Trash2, Check, X, Edit, Filter, Download, Upload, RefreshCw
+  QrCode, Link, Share2, Trash2, Check, X, Edit, Filter, Download, Upload, RefreshCw,
+  FileJson, Shield as ShieldIcon, Eye, EyeOff
 } from 'lucide-react';
 import { 
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -23,8 +23,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import QRCode from 'react-qr-code';
-import { SimpleQRCode } from '@/components/SimpleQRCode';
+
+// Import the secure import/export dialogs
+import { SecureExportDialog, SecureImportDialog } from '@/components/SecureImportExportDialogs';
 
 // Define the Contact type here since you might not have the full import path ready
 interface Contact {
@@ -48,25 +49,6 @@ interface ContactsProps {
   identity: any; // Using any for now since we don't have the full identity type
 }
 
-interface ExchangePackage {
-  version: string;
-  sender: {
-    fingerprint: string;
-    public_key: string;
-  };
-  recipient_fingerprint?: string; // Optional, only for directed exchanges
-  contact_data: {
-    name: string;
-    email: string;
-    fingerprint: string;
-    public_key: string;
-  };
-  expires_at?: string; // For burner links
-  mutual_contacts?: string[]; // Encrypted list of fingerprints for PSI
-  signature: string;
-  created_at: string;
-}
-
 export function ContactManagement({ identity }: ContactsProps) {
   // State for contacts
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -79,6 +61,10 @@ export function ContactManagement({ identity }: ContactsProps) {
   const [showQRDialog, setShowQRDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [showDetailDialog, setShowDetailDialog] = useState(false);
+  const [showSecureExportDialog, setShowSecureExportDialog] = useState(false);
+  const [showSecureImportDialog, setShowSecureImportDialog] = useState(false);
   
   // Form state for adding contacts
   const [newContactForm, setNewContactForm] = useState({
@@ -86,6 +72,17 @@ export function ContactManagement({ identity }: ContactsProps) {
     email: '',
     fingerprint: '',
     public_key: '',
+  });
+
+  // Edit Contact form state
+  const [editContactForm, setEditContactForm] = useState({
+    id: '',
+    name: '',
+    email: '',
+    fingerprint: '',
+    public_key: '',
+    trust_level: 'unverified' as 'unverified' | 'verified' | 'trusted',
+    notes: ''
   });
 
   // QR code state
@@ -172,7 +169,27 @@ export function ContactManagement({ identity }: ContactsProps) {
     return true;
   });
 
-  // Add contact function
+  // Open the edit dialog for a contact
+  const openEditDialog = (contact: Contact) => {
+    setSelectedContact(contact);
+    setEditContactForm({
+      id: contact.id,
+      name: contact.name,
+      email: contact.email,
+      fingerprint: contact.fingerprint,
+      public_key: contact.public_key,
+      trust_level: contact.trust_level,
+      notes: contact.metadata?.notes || ''
+    });
+    setShowEditDialog(true);
+  };
+
+  // Open the detail view for a contact
+  const openDetailView = (contact: Contact) => {
+    setSelectedContact(contact);
+    setShowDetailDialog(true);
+  };
+
   const handleAddContact = async () => {
     if (!identity?.identity?.fingerprint) return;
     
@@ -261,8 +278,77 @@ export function ContactManagement({ identity }: ContactsProps) {
       setLoading(false);
     }
   };
+
+  const handleUpdateContact = async () => {
+    if (!identity?.identity?.fingerprint) return;
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Validate form
+      if (!editContactForm.name || !editContactForm.email) {
+        throw new Error('Name and email are required');
+      }
+      
+      const updates = {
+        name: editContactForm.name,
+        email: editContactForm.email,
+        metadata: { 
+          notes: editContactForm.notes,
+          ...(selectedContact?.metadata ? {
+            tags: selectedContact.metadata.tags,
+            connection_method: selectedContact.metadata.connection_method,
+            mutual_contacts: selectedContact.metadata.mutual_contacts
+          } : {})
+        }
+      };
+      
+      console.log('Updating contact with data:', {
+        fingerprint: identity.identity.fingerprint,
+        contactId: editContactForm.id,
+        updates
+      });
+      
+      const response = await fetch('/api/contacts', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identity.identity.fingerprint,
+          contactId: editContactForm.id,
+          updates
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to update contact');
+      }
+      
+      // Update the contact in local state
+      setContacts(prevContacts => 
+        prevContacts.map(c => 
+          c.id === editContactForm.id ? { ...c, ...updates } : c
+        )
+      );
+      
+      // Reset form and close dialog
+      setShowEditDialog(false);
+      
+      // Reload contacts to be sure
+      await loadContacts();
+      
+    } catch (err) {
+      console.error('Error updating contact:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
   
-  // Delete contact function
   const handleDeleteContact = async (contactId: string) => {
     if (!identity?.identity?.fingerprint) return;
     
@@ -285,6 +371,10 @@ export function ContactManagement({ identity }: ContactsProps) {
       if (!response.ok) {
         throw new Error(data.error || 'Failed to delete contact');
       }
+      
+      // Close any open dialogs that might be showing the deleted contact
+      setShowDetailDialog(false);
+      setShowEditDialog(false);
       
       // Reload contacts
       await loadContacts();
@@ -324,6 +414,15 @@ export function ContactManagement({ identity }: ContactsProps) {
       
       if (!response.ok) {
         throw new Error(data.error || 'Failed to update contact');
+      }
+      
+      // Update local state if detail dialog is open
+      if (selectedContact && selectedContact.id === contactId) {
+        setSelectedContact({
+          ...selectedContact,
+          trust_level: trustLevel,
+          ...(trustLevel === 'verified' && { verified_at: new Date().toISOString() })
+        });
       }
       
       // Reload contacts
@@ -526,18 +625,6 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
 
-  // Render trust level badge
-  const renderTrustBadge = (trustLevel: string) => {
-    switch(trustLevel) {
-      case 'trusted':
-        return <Badge className="bg-green-500">Trusted</Badge>;
-      case 'verified':
-        return <Badge className="bg-blue-500">Verified</Badge>;
-      default:
-        return <Badge className="bg-yellow-500">Unverified</Badge>;
-    }
-  };
-
   return (
     <Card className="w-full shadow-md">
       <CardHeader className="bg-gradient-to-r from-slate-100 to-slate-50 dark:from-slate-900 dark:to-slate-800">
@@ -551,7 +638,7 @@ export function ContactManagement({ identity }: ContactsProps) {
               variant="outline" 
               size="sm"
               className="bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-slate-700"
-              onClick={handleGenerateQRCode}
+              onClick={() => setShowQRDialog(true)}
             >
               <QrCode className="h-4 w-4 mr-2 text-indigo-600 dark:text-indigo-400" />
               Share via QR
@@ -577,13 +664,24 @@ export function ContactManagement({ identity }: ContactsProps) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
+                <DropdownMenuLabel>Import & Export</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setShowSecureExportDialog(true)}>
+                  <ShieldIcon className="h-4 w-4 mr-2 text-green-600" />
+                  Secure Export (Encrypted)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowSecureImportDialog(true)}>
+                  <Lock className="h-4 w-4 mr-2 text-blue-600" />
+                  Secure Import (Encrypted)
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleExportContacts}>
-                  <Download className="h-4 w-4 mr-2" />
-                  Export Contacts
+                  <FileJson className="h-4 w-4 mr-2" />
+                  Export as JSON
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowImportDialog(true)}>
                   <Upload className="h-4 w-4 mr-2" />
-                  Import Contacts
+                  Import from JSON
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -700,26 +798,272 @@ export function ContactManagement({ identity }: ContactsProps) {
           </DialogContent>
         </Dialog>
 
+        {/* Edit Contact Dialog */}
+        <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Edit Contact</DialogTitle>
+              <DialogDescription>
+                Update contact details.
+              </DialogDescription>
+            </DialogHeader>
+            
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTitle>Error</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+            
+            <div className="space-y-4 py-4">
+              <div className="grid w-full items-center gap-1.5">
+                <label htmlFor="edit-name" className="text-sm font-medium">Name</label>
+                <Input
+                  id="edit-name"
+                  value={editContactForm.name}
+                  onChange={(e) => setEditContactForm(prev => ({ ...prev, name: e.target.value }))}
+                  placeholder="Contact name"
+                />
+              </div>
+              
+              <div className="grid w-full items-center gap-1.5">
+                <label htmlFor="edit-email" className="text-sm font-medium">Email</label>
+                <Input
+                  id="edit-email"
+                  type="email"
+                  value={editContactForm.email}
+                  onChange={(e) => setEditContactForm(prev => ({ ...prev, email: e.target.value }))}
+                  placeholder="contact@example.com"
+                />
+              </div>
+              
+              <div className="grid w-full items-center gap-1.5">
+                <label htmlFor="edit-notes" className="text-sm font-medium">Notes</label>
+                <Textarea
+                  id="edit-notes"
+                  value={editContactForm.notes}
+                  onChange={(e) => setEditContactForm(prev => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Add notes about this contact..."
+                  rows={3}
+                />
+              </div>
+              
+              <div className="grid w-full items-center gap-1.5">
+                <label htmlFor="edit-fingerprint" className="text-sm font-medium">PGP Fingerprint</label>
+                <Input
+                  id="edit-fingerprint"
+                  value={editContactForm.fingerprint}
+                  readOnly
+                  className="bg-slate-50 dark:bg-slate-800 font-mono text-xs"
+                />
+                <p className="text-xs text-slate-500">Fingerprint cannot be changed</p>
+              </div>
+            </div>
+            
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
+              <Button 
+                onClick={handleUpdateContact} 
+                disabled={loading || !editContactForm.name || !editContactForm.email}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {loading ? 
+                  <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Updating...</> : 
+                  <><Check className="h-4 w-4 mr-2" />Save Changes</>
+                }
+              </Button>
+            </DialogFooter>
+            </DialogContent>
+        </Dialog>
+
+        {/* Contact Detail Dialog */}
+
+        <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <div className={`flex-shrink-0 rounded-full h-8 w-8 flex items-center justify-center 
+                  ${selectedContact?.trust_level === 'trusted' ? 'bg-green-100 dark:bg-green-900/30' : 
+                    selectedContact?.trust_level === 'verified' ? 'bg-blue-100 dark:bg-blue-900/30' : 
+                    'bg-yellow-100 dark:bg-yellow-900/30'}`}
+                >
+                  {selectedContact?.trust_level === 'trusted' ? (
+                    <Check className="h-5 w-5 text-green-600 dark:text-green-500" />
+                  ) : selectedContact?.trust_level === 'verified' ? (
+                    <UserCheck className="h-5 w-5 text-blue-600 dark:text-blue-500" />
+                  ) : (
+                    <Lock className="h-5 w-5 text-yellow-600 dark:text-yellow-500" />
+                  )}
+                </div>
+                <span>{selectedContact?.name}</span>
+              </DialogTitle>
+              <DialogDescription>
+                Contact details and management options.
+              </DialogDescription>
+            </DialogHeader>
+            
+            {selectedContact && (
+              <div className="space-y-6">
+                {/* Basic info */}
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-500 dark:text-gray-400">Email</h4>
+                      <div className="flex items-center gap-1 mt-1">
+                        <Mail className="h-4 w-4 text-slate-400" />
+                        <span className="text-base">{selectedContact.email}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-500 dark:text-gray-400">Trust Level</h4>
+                      <div className="mt-1">
+                        <Badge className={`
+                          ${selectedContact.trust_level === 'trusted' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-100' : 
+                            selectedContact.trust_level === 'verified' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-100' : 
+                            'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-100'}
+                        `}>
+                          {selectedContact.trust_level === 'trusted' ? 'Trusted' : 
+                          selectedContact.trust_level === 'verified' ? 'Verified' : 'Unverified'}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-500 dark:text-gray-400">PGP Fingerprint</h4>
+                    <div className="mt-1 font-mono text-sm bg-slate-50 dark:bg-slate-800 p-2 rounded border border-slate-200 dark:border-slate-700">
+                      {selectedContact.fingerprint.match(/.{1,4}/g)?.join(' ')}
+                    </div>
+                  </div>
+
+                  {selectedContact.metadata?.notes && (
+                    <div>
+                      <h4 className="text-sm font-medium text-gray-500 dark:text-gray-400">Notes</h4>
+                      <div className="mt-1 p-3 bg-slate-50 dark:bg-slate-800 rounded-md">
+                        <p className="text-sm whitespace-pre-wrap">{selectedContact.metadata.notes}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Additional info */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <h4 className="font-medium text-gray-500 dark:text-gray-400">Added</h4>
+                      <p>{new Date(selectedContact.added_at).toLocaleDateString()}</p>
+                    </div>
+                    {selectedContact.verified_at && (
+                      <div>
+                        <h4 className="font-medium text-gray-500 dark:text-gray-400">Verified</h4>
+                        <p>{new Date(selectedContact.verified_at).toLocaleDateString()}</p>
+                      </div>
+                    )}
+                    {selectedContact.metadata?.connection_method && (
+                      <div>
+                        <h4 className="font-medium text-gray-500 dark:text-gray-400">Connection Method</h4>
+                        <p className="capitalize">
+                          {selectedContact.metadata.connection_method.replace('_', ' ')}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="border-t pt-4 flex flex-col sm:flex-row gap-2 justify-between">
+                  <div className="flex gap-2">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <Filter className="h-4 w-4 mr-1" />
+                          Trust Level
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent>
+                        <DropdownMenuLabel>Set Trust Level</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem 
+                          onClick={() => {
+                            handleUpdateTrustLevel(selectedContact.id, 'trusted');
+                            setShowDetailDialog(false);
+                          }}
+                          disabled={selectedContact.trust_level === 'trusted'}
+                        >
+                          <Check className="h-4 w-4 mr-2 text-green-500" />
+                          Trusted
+                        </DropdownMenuItem>
+                        <DropdownMenuItem 
+                          onClick={() => {
+                            handleUpdateTrustLevel(selectedContact.id, 'verified');
+                            setShowDetailDialog(false);
+                          }}
+                          disabled={selectedContact.trust_level === 'verified'}
+                        >
+                          <UserCheck className="h-4 w-4 mr-2 text-blue-500" />
+                          Verified
+                        </DropdownMenuItem>
+                        <DropdownMenuItem 
+                          onClick={() => {
+                            handleUpdateTrustLevel(selectedContact.id, 'unverified');
+                            setShowDetailDialog(false);
+                          }}
+                          disabled={selectedContact.trust_level === 'unverified'}
+                        >
+                          <X className="h-4 w-4 mr-2 text-yellow-500" />
+                          Unverified
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                    
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => {
+                        openEditDialog(selectedContact);
+                        setShowDetailDialog(false);
+                      }}
+                    >
+                      <Edit className="h-4 w-4 mr-1" />
+                      Edit
+                    </Button>
+                  </div>
+                  
+                  <Button 
+                    variant="destructive" 
+                    size="sm"
+                    onClick={() => {
+                      handleDeleteContact(selectedContact.id);
+                      setShowDetailDialog(false);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
         {/* QR Code Dialog */}
         <Dialog open={showQRDialog} onOpenChange={setShowQRDialog}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Share via QR Code</DialogTitle>
+              <DialogTitle>Share Contact via QR Code</DialogTitle>
               <DialogDescription>
-                Scan this QR code with the Soverentity app to add your contact.
+                Let others scan this QR code to add you to their contacts.
               </DialogDescription>
             </DialogHeader>
             
-            <div className="flex justify-center p-4">
+            <div className="flex justify-center py-4">
               {qrCodeData ? (
-                <div className="border rounded p-4 bg-white">
-                  <SimpleQRCode value={qrCodeData} />
-                  <p className="text-center mt-3 text-sm text-gray-600">
-                    Scan with another Soverentity app
-                  </p>
+                <div className="bg-white p-4 rounded-lg">
+                  {/* This would be where you render the QR code using a library */}
+                  <div className="text-center text-sm text-slate-500">
+                    QR Code would be displayed here.
+                  </div>
                 </div>
               ) : (
-                <div className="animate-pulse h-64 w-64 bg-slate-200"></div>
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
               )}
             </div>
             
@@ -734,43 +1078,43 @@ export function ContactManagement({ identity }: ContactsProps) {
           </DialogContent>
         </Dialog>
 
-        {/* Share Burner Link Dialog */}
+        {/* Share Link Dialog */}
         <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>Share via Burner Link</DialogTitle>
+              <DialogTitle>Share Contact via Link</DialogTitle>
               <DialogDescription>
-                Share this temporary link to add your contact. Link expires in 48 hours.
+                Share this link with others to add you to their contacts. The link expires in 48 hours.
               </DialogDescription>
             </DialogHeader>
             
-            <div className="p-4">
+            <div className="py-4">
               {burnerLink ? (
                 <div className="space-y-4">
-                  <div className="flex items-center">
-                    <Input 
-                      readOnly 
-                      value={burnerLink} 
-                      className="font-mono text-xs"
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={burnerLink}
+                      readOnly
+                      className="font-mono text-sm"
                     />
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      className="ml-2"
+                    <Button
+                      variant="outline"
+                      size="sm"
                       onClick={() => {
                         navigator.clipboard.writeText(burnerLink);
-                        // You could add a toast notification here
                       }}
                     >
                       Copy
                     </Button>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    This link will expire in 48 hours.
+                  <p className="text-sm text-slate-500">
+                    This link will expire in 48 hours and can only be used once.
                   </p>
                 </div>
               ) : (
-                <div className="animate-pulse h-10 w-full bg-slate-200 rounded"></div>
+                <div className="flex justify-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                </div>
               )}
             </div>
             
@@ -888,7 +1232,9 @@ export function ContactManagement({ identity }: ContactsProps) {
               <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
                 {filteredContacts.map(contact => (
                   <div key={contact.id} className="border rounded-lg overflow-hidden bg-white dark:bg-slate-900 hover:shadow-md transition-shadow duration-200">
-                    <div className="p-4">
+                    <div className="p-4 cursor-pointer"
+                      onClick={() => openDetailView(contact)}
+                    >
                       <div className="flex justify-between items-start">
                         <div className="space-y-1">
                           <h3 className="font-medium text-lg truncate">{contact.name}</h3>
@@ -959,7 +1305,10 @@ export function ContactManagement({ identity }: ContactsProps) {
                         variant="ghost" 
                         size="sm"
                         className="flex-1 rounded-none text-slate-600 dark:text-slate-400"
-                        onClick={() => setSelectedContact(contact)}
+                        onClick={(e) => {
+                          e.stopPropagation(); // Prevent triggering the card click
+                          openEditDialog(contact);
+                        }}
                       >
                         <Edit className="h-4 w-4 mr-1" />
                         Edit
@@ -968,7 +1317,10 @@ export function ContactManagement({ identity }: ContactsProps) {
                         variant="ghost" 
                         size="sm"
                         className="flex-1 rounded-none text-red-600 hover:text-red-700 dark:text-red-400"
-                        onClick={() => handleDeleteContact(contact.id)}
+                        onClick={(e) => {
+                          e.stopPropagation(); // Prevent triggering the card click
+                          handleDeleteContact(contact.id);
+                        }}
                       >
                         <Trash2 className="h-4 w-4 mr-1" />
                         Delete
@@ -980,7 +1332,28 @@ export function ContactManagement({ identity }: ContactsProps) {
             )}
           </TabsContent>
         </Tabs>
+
+        {/* Secure Export Dialog */}
+        <SecureExportDialog
+          open={showSecureExportDialog}
+          onClose={() => setShowSecureExportDialog(false)}
+          identityFingerprint={identity?.identity?.fingerprint || ''}
+          onExportComplete={(exportedData, encryptionMethod) => {
+            console.log(`Export completed using ${encryptionMethod} encryption`);
+          }}
+        />
+
+        {/* Secure Import Dialog */}
+        <SecureImportDialog
+          open={showSecureImportDialog}
+          onClose={() => setShowSecureImportDialog(false)}
+          identityFingerprint={identity?.identity?.fingerprint || ''}
+          onImportComplete={(importCount) => {
+            console.log(`Imported ${importCount} contacts`);
+            loadContacts();
+          }}
+        />
       </CardContent>
     </Card>
   );
-}
+}            

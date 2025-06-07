@@ -1,0 +1,225 @@
+// src/lib/contacts/crypto-util.ts
+import { encrypt, decrypt, readKey, readMessage, createMessage } from 'openpgp';
+import { Contact } from './types';
+
+interface ContactExportOptions {
+  /** Whether to include full public keys in the export */
+  includePublicKeys?: boolean;
+  /** Whether to use the user's PGP key for encryption (if false, password encryption is used) */
+  usePgpEncryption?: boolean;
+  /** Password to use for symmetric encryption (only used if usePgpEncryption is false) */
+  password?: string;
+}
+
+interface ContactImportOptions {
+  /** Whether to overwrite existing contacts with the same fingerprint */
+  overwriteExisting?: boolean;
+  /** Password to use for symmetric decryption (only used for password-encrypted exports) */
+  password?: string;
+}
+
+const DEFAULT_EXPORT_OPTIONS: ContactExportOptions = {
+  includePublicKeys: true,
+  usePgpEncryption: true
+};
+
+const DEFAULT_IMPORT_OPTIONS: ContactImportOptions = {
+  overwriteExisting: false
+};
+
+/**
+ * Utility for securely exporting and importing contacts with encryption
+ */
+export class ContactCryptoUtil {
+  /**
+   * Create an encrypted export of contacts
+   * 
+   * @param contacts The contacts to export
+   * @param userPublicKey The user's public key (for encryption)
+   * @param options Export options
+   * @returns Encrypted contacts data as a string
+   */
+  public static async exportContacts(
+    contacts: Contact[],
+    userPublicKey: string,
+    options: ContactExportOptions = DEFAULT_EXPORT_OPTIONS
+  ): Promise<string> {
+    try {
+      // Clone and sanitize contacts if needed
+      const exportContacts = contacts.map(contact => {
+        const { public_key, ...rest } = contact;
+        
+        return options.includePublicKeys 
+          ? contact 
+          : { ...rest, public_key: '<redacted>' };
+      });
+
+      // Create export package with metadata
+      const exportPackage = {
+        version: '1.0.0',
+        exported_at: new Date().toISOString(),
+        encrypted: true,
+        encryption_method: options.usePgpEncryption ? 'pgp' : 'password',
+        contact_count: exportContacts.length,
+        contacts: exportContacts
+      };
+
+      // Convert to JSON
+      const exportJson = JSON.stringify(exportPackage, null, 2);
+
+      // Encrypt the export
+      if (options.usePgpEncryption) {
+        // Use PGP encryption with user's public key
+        const message = await createMessage({ text: exportJson });
+        const publicKey = await readKey({ armoredKey: userPublicKey });
+        
+        const encrypted = await encrypt({
+          message,
+          encryptionKeys: publicKey
+        });
+        
+        return encrypted.toString();
+      } else {
+        // Use symmetric encryption with password
+        if (!options.password) {
+          throw new Error('Password is required for symmetric encryption');
+        }
+        
+        const message = await createMessage({ text: exportJson });
+        
+        const encrypted = await encrypt({
+          message,
+          passwords: [options.password]
+        });
+        
+        return encrypted.toString();
+      }
+    } catch (error) {
+      console.error('Failed to export contacts:', error);
+      throw new Error(`Failed to export contacts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+  
+  /**
+   * Import contacts from an encrypted export
+   * 
+   * @param encryptedData The encrypted contacts data
+   * @param userPrivateKey The user's private key (for decryption)
+   * @param passphrase The passphrase for the private key
+   * @param options Import options
+   * @returns The imported contacts
+   */
+  public static async importContacts(
+    encryptedData: string,
+    userPrivateKey: string,
+    passphrase: string,
+    options: ContactImportOptions = DEFAULT_IMPORT_OPTIONS
+  ): Promise<{ contacts: Contact[], isPassword: boolean }> {
+    try {
+      // Check if this looks like PGP data
+      const isPgpMessage = encryptedData.includes('-----BEGIN PGP MESSAGE-----');
+      
+      if (!isPgpMessage) {
+        // Attempt to parse as JSON directly (unencrypted)
+        try {
+          const parsedData = JSON.parse(encryptedData);
+          
+          if (Array.isArray(parsedData)) {
+            // Simple array of contacts
+            return { 
+              contacts: parsedData, 
+              isPassword: false 
+            };
+          } else if (parsedData.contacts && Array.isArray(parsedData.contacts)) {
+            // Export package with metadata
+            return { 
+              contacts: parsedData.contacts, 
+              isPassword: false 
+            };
+          }
+        } catch (e) {
+          throw new Error('Invalid contacts data format');
+        }
+      }
+      
+      // Decrypt the data
+      let decrypted: string;
+      let isPassword = false;
+      
+      try {
+        // First try to decrypt with private key
+        const message = await readMessage({ armoredMessage: encryptedData });
+        
+        const privateKey = await decrypt({
+          message: await readMessage({ armoredMessage: userPrivateKey }),
+          passwords: [passphrase]
+        }).then(({ data }) => data.toString());
+        
+        const { data } = await decrypt({
+          message,
+          decryptionKeys: privateKey
+        });
+        
+        decrypted = data.toString();
+      } catch (keyError) {
+        // If that fails, try password decryption if a password was provided
+        if (options.password) {
+          try {
+            const message = await readMessage({ armoredMessage: encryptedData });
+            
+            const { data } = await decrypt({
+              message,
+              passwords: [options.password]
+            });
+            
+            decrypted = data.toString();
+            isPassword = true;
+          } catch (passwordError) {
+            throw new Error('Failed to decrypt: Invalid password or key');
+          }
+        } else {
+          throw new Error('Failed to decrypt: Contacts may be password-protected');
+        }
+      }
+      
+      // Parse the decrypted data
+      try {
+        const parsed = JSON.parse(decrypted);
+        
+        if (Array.isArray(parsed)) {
+          // Simple array of contacts
+          return { contacts: parsed, isPassword };
+        } else if (parsed.contacts && Array.isArray(parsed.contacts)) {
+          // Export package with metadata
+          return { contacts: parsed.contacts, isPassword };
+        } else {
+          throw new Error('Invalid contacts data format');
+        }
+      } catch (parseError) {
+        throw new Error('Failed to parse decrypted data');
+      }
+    } catch (error) {
+      console.error('Failed to import contacts:', error);
+      throw new Error(`Failed to import contacts: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Check if data appears to be password-encrypted
+   * 
+   * @param encryptedData The encrypted data to check
+   * @returns True if the data appears to be password encrypted
+   */
+  public static isPasswordEncrypted(encryptedData: string): boolean {
+    // This is a best-effort guess since we can't know for sure without trying to decrypt
+    const isPgpMessage = encryptedData.includes('-----BEGIN PGP MESSAGE-----');
+    
+    if (!isPgpMessage) {
+      return false;
+    }
+    
+    // Look for hints that suggest password encryption vs. public key encryption
+    // This is not foolproof but can give a hint
+    return encryptedData.includes('PASSPHRASE') || encryptedData.includes('SYMMETRIC');
+  }
+}
