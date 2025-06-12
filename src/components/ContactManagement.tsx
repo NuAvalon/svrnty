@@ -873,11 +873,10 @@ export function ContactManagement({ identity }: ContactsProps) {
                 }
               </Button>
             </DialogFooter>
-            </DialogContent>
+          </DialogContent>
         </Dialog>
 
         {/* Contact Detail Dialog */}
-
         <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
           <DialogContent className="sm:max-w-lg">
             <DialogHeader>
@@ -1356,4 +1355,4 @@ export function ContactManagement({ identity }: ContactsProps) {
       </CardContent>
     </Card>
   );
-}            
+}

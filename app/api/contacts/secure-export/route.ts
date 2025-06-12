@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { SoverentityIdentity } from '@/lib/identity/core';
 import { ContactManager } from '@/lib/contacts/db';
 import { ContactCryptoUtil } from '@/lib/contacts/crypto-util';
+import { RobustContactManager } from '@/lib/contacts/robust-db';
 
 const identityManager = new SoverentityIdentity();
 
@@ -36,35 +37,44 @@ export async function GET(request: Request) {
     // Load key data
     const keyData = await identityManager.loadKey(fingerprint);
     
-    // Initialize contact manager
-    const contactManager = new ContactManager({
-      userFingerprint: fingerprint,
-      userPublicKey: identity.identity.public_key,
-      userPrivateKey: keyData.privateKey,
-      userPassphrase: keyData.passphrase
-    });
-    
-    // Get all contacts
-    const contacts = await contactManager.getAllContacts();
-    
-    // Create encrypted export
-    const encryptedExport = await ContactCryptoUtil.exportContacts(
-      contacts,
-      identity.identity.public_key,
-      {
-        includePublicKeys,
-        usePgpEncryption: !usePassword,
-        password: usePassword ? password || undefined : undefined
-      }
-    );
-    
-    return NextResponse.json({
-      success: true,
-      encryptedContacts: encryptedExport,
-      count: contacts.length,
-      encryptionMethod: usePassword ? 'password' : 'pgp'
-    });
-    
+    // Try using RobustContactManager instead
+    try {
+      console.log('Initializing RobustContactManager for secure export');
+      const contactManager = new RobustContactManager({
+        userFingerprint: fingerprint,
+        userPublicKey: identity.identity.public_key,
+        userPrivateKey: keyData.privateKey,
+        userPassphrase: keyData.passphrase
+      });
+      
+      // Explicitly initialize the manager
+      await contactManager.initialize();
+      
+      // Get all contacts
+      const contacts = await contactManager.getAllContacts();
+      console.log(`Successfully loaded ${contacts.length} contacts for export`);
+      
+      // Create encrypted export
+      const encryptedExport = await ContactCryptoUtil.exportContacts(
+        contacts,
+        identity.identity.public_key,
+        {
+          includePublicKeys,
+          usePgpEncryption: !usePassword,
+          password: usePassword ? password || undefined : undefined
+        }
+      );
+      
+      return NextResponse.json({
+        success: true,
+        encryptedContacts: encryptedExport,
+        count: contacts.length,
+        encryptionMethod: usePassword ? 'password' : 'pgp'
+      });
+    } catch (robustError) {
+      console.error('RobustContactManager failed:', robustError);
+      throw new Error(`Failed to load contacts with robust manager: ${robustError instanceof Error ? robustError.message : 'Unknown error'}`);
+    }
   } catch (error) {
     console.error('Failed to export contacts securely:', error);
     return NextResponse.json(

@@ -1,3 +1,4 @@
+// src/components/SoverentityFrontend.tsx
 "use client";
 
 import React, { useState, useEffect } from 'react';
@@ -27,7 +28,7 @@ export function SoverentityFrontend({
   const [verificationState, setVerificationState] = useState({
     loading: false,
     error: null,
-    status: identity?.verification?.status || 'unverified'
+    status: identity?.verification?.status || identity?.identity?.verification?.status || 'unverified'
   });
 
   const [verificationCode, setVerificationCode] = useState('');
@@ -35,13 +36,36 @@ export function SoverentityFrontend({
   // Update internal state when existingIdentity prop changes
   useEffect(() => {
     if (existingIdentity) {
+      console.log('SoverentityFrontend received identity:', existingIdentity);
       setIdentity(existingIdentity);
+      
+      // Extract verification status from the nested structure
+      const verificationStatus = existingIdentity?.verification?.status || 
+                               existingIdentity?.identity?.verification?.status || 
+                               'unverified';
+      
       setVerificationState(prev => ({
         ...prev,
-        status: existingIdentity.verification?.status || 'unverified'
+        status: verificationStatus
       }));
     }
   }, [existingIdentity]);
+
+  // Helper function to safely extract identity data
+  const getIdentityData = (identity: any) => {
+    if (!identity) return null;
+    
+    // Try different possible structures
+    const identityData = identity?.identity?.identity || identity?.identity || identity;
+    const fingerprint = identity?.fingerprint || identityData?.fingerprint;
+    
+    return {
+      name: identityData?.name,
+      email: identityData?.email,
+      fingerprint: fingerprint,
+      verification: identity?.verification || identity?.identity?.verification || { status: 'unverified' }
+    };
+  };
 
   const handleCreateIdentity = async () => {
     try {
@@ -62,10 +86,12 @@ export function SoverentityFrontend({
         throw new Error(data.error || 'Failed to create identity');
       }
 
+      console.log('Created identity response:', data);
+      
       // Update both local state and parent component
-      setIdentity(data.identity);
+      setIdentity(data.identity || data);
       if (onIdentityUpdate) {
-        onIdentityUpdate(data.identity);
+        onIdentityUpdate(data.identity || data);
       }
     } catch (err) {
       console.error('Error creating identity:', err);
@@ -79,13 +105,19 @@ export function SoverentityFrontend({
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
 
-      console.log('Current identity state:', identity);
+      console.log('Starting verification for identity:', identity);
+      
+      const identityData = getIdentityData(identity);
+      if (!identityData) {
+        throw new Error('No identity data available');
+      }
 
       const payload = {
-        fingerprint: identity.identity.fingerprint,
+        fingerprint: identityData.fingerprint,
         type: 'email',
-        value: identity.identity.email
+        value: identityData.email
       };
+      
       console.log('Sending verification payload:', payload);
 
       const response = await fetch('/api/identity/verify', {
@@ -96,12 +128,9 @@ export function SoverentityFrontend({
         body: JSON.stringify(payload)
       });
 
-      console.log('Response status:', response.status);
-      const text = await response.text();
-      console.log('Raw response:', text);
-
-      const data = JSON.parse(text);
-      console.log('Parsed response data:', data);
+      console.log('Verification response status:', response.status);
+      const data = await response.json();
+      console.log('Verification response data:', data);
 
       if (!response.ok) {
         throw new Error(data.error || 'Verification failed');
@@ -126,13 +155,18 @@ export function SoverentityFrontend({
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
 
+      const identityData = getIdentityData(identity);
+      if (!identityData) {
+        throw new Error('No identity data available');
+      }
+
       const response = await fetch('/api/identity/verify', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          fingerprint: identity.identity.fingerprint,
+          fingerprint: identityData.fingerprint,
           code: verificationCode
         })
       });
@@ -165,8 +199,11 @@ export function SoverentityFrontend({
 
   // Render the fingerprint in formatted groups
   const formatFingerprint = (fingerprint) => {
+    if (!fingerprint) return 'No fingerprint';
     return fingerprint?.match(/.{1,4}/g)?.join(' ') || fingerprint;
   };
+
+  const identityData = getIdentityData(identity);
 
   return (
     <Card className="w-full shadow-md overflow-hidden">
@@ -247,21 +284,21 @@ export function SoverentityFrontend({
               <div className="bg-slate-50 dark:bg-slate-900 p-4 border-b dark:border-slate-800">
                 <div className="flex items-center gap-3">
                   <div className={`rounded-full p-1.5 ${
-                    identity.verification?.status === 'verified' 
+                    identityData?.verification?.status === 'verified' 
                       ? 'bg-green-100 dark:bg-green-900/30' 
                       : 'bg-yellow-100 dark:bg-yellow-900/30'
                   }`}>
                     <Key className={`h-5 w-5 ${
-                      identity.verification?.status === 'verified'
+                      identityData?.verification?.status === 'verified'
                         ? 'text-green-600 dark:text-green-500'
                         : 'text-yellow-600 dark:text-yellow-500'
                     }`} />
                   </div>
                   <div>
-                    <h3 className="font-medium">{identity.identity.name}</h3>
+                    <h3 className="font-medium">{identityData?.name || 'Unknown'}</h3>
                     <div className="flex items-center text-sm text-slate-600 dark:text-slate-400">
                       <Mail className="h-3.5 w-3.5 mr-1 inline" />
-                      {identity.identity.email}
+                      {identityData?.email || 'No email'}
                     </div>
                   </div>
                 </div>
@@ -274,17 +311,17 @@ export function SoverentityFrontend({
                     PGP Fingerprint
                   </div>
                   <div className="font-mono text-xs tracking-wider text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 p-2 rounded border border-slate-200 dark:border-slate-700 break-all">
-                    {formatFingerprint(identity.identity.fingerprint)}
+                    {formatFingerprint(identityData?.fingerprint)}
                   </div>
                 </div>
                 
                 <div className="flex items-center gap-2">
                   <div className={`flex-shrink-0 rounded-full h-6 w-6 flex items-center justify-center ${
-                    identity.verification?.status === 'verified'
+                    identityData?.verification?.status === 'verified'
                       ? 'bg-green-100 dark:bg-green-900/30'
                       : 'bg-yellow-100 dark:bg-yellow-900/30'
                   }`}>
-                    {identity.verification?.status === 'verified' ? (
+                    {identityData?.verification?.status === 'verified' ? (
                       <CheckCircle2 className="h-4 w-4 text-green-600 dark:text-green-500" />
                     ) : (
                       <Lock className="h-4 w-4 text-yellow-600 dark:text-yellow-500" />
@@ -293,18 +330,18 @@ export function SoverentityFrontend({
                   <div className="text-sm">
                     <span className="font-medium">Status: </span>
                     <span className={
-                      identity.verification?.status === 'verified'
+                      identityData?.verification?.status === 'verified'
                         ? 'text-green-600 dark:text-green-500 font-medium'
                         : 'text-yellow-600 dark:text-yellow-500 font-medium'
                     }>
-                      {identity.verification?.status || 'unverified'}
+                      {identityData?.verification?.status || 'unverified'}
                     </span>
                   </div>
                 </div>
               </div>
             </div>
 
-            {identity.verification?.status !== 'verified' && (
+            {identityData?.verification?.status !== 'verified' && (
               <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
                 <h3 className="text-base font-medium mb-4">Verify Your Identity</h3>
                 
@@ -371,7 +408,7 @@ export function SoverentityFrontend({
               </div>
             )}
 
-            {identity.verification?.status === 'verified' && (
+            {identityData?.verification?.status === 'verified' && (
               <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900 text-green-800 dark:text-green-300">
                 <CheckCircle2 className="h-4 w-4 mr-2" />
                 <AlertDescription>

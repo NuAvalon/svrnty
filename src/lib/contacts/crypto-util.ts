@@ -1,6 +1,7 @@
 // src/lib/contacts/crypto-util.ts
 import { encrypt, decrypt, readKey, readMessage, createMessage } from 'openpgp';
 import { Contact } from './types';
+import { RobustDecrypt } from './robust-decrypt';
 
 interface ContactExportOptions {
   /** Whether to include full public keys in the export */
@@ -45,6 +46,8 @@ export class ContactCryptoUtil {
     options: ContactExportOptions = DEFAULT_EXPORT_OPTIONS
   ): Promise<string> {
     try {
+      console.log('Starting contact export process...');
+      
       // Clone and sanitize contacts if needed
       const exportContacts = contacts.map(contact => {
         const { public_key, ...rest } = contact;
@@ -66,9 +69,11 @@ export class ContactCryptoUtil {
 
       // Convert to JSON
       const exportJson = JSON.stringify(exportPackage, null, 2);
+      console.log(`Prepared JSON export of ${exportContacts.length} contacts`);
 
       // Encrypt the export
       if (options.usePgpEncryption) {
+        console.log('Using PGP encryption with public key');
         // Use PGP encryption with user's public key
         const message = await createMessage({ text: exportJson });
         const publicKey = await readKey({ armoredKey: userPublicKey });
@@ -85,6 +90,7 @@ export class ContactCryptoUtil {
           throw new Error('Password is required for symmetric encryption');
         }
         
+        console.log('Using symmetric password encryption');
         const message = await createMessage({ text: exportJson });
         
         const encrypted = await encrypt({
@@ -116,10 +122,13 @@ export class ContactCryptoUtil {
     options: ContactImportOptions = DEFAULT_IMPORT_OPTIONS
   ): Promise<{ contacts: Contact[], isPassword: boolean }> {
     try {
+      console.log('Starting robust contact import process...');
+      
       // Check if this looks like PGP data
       const isPgpMessage = encryptedData.includes('-----BEGIN PGP MESSAGE-----');
       
       if (!isPgpMessage) {
+        console.log('Data does not appear to be encrypted, attempting to parse as JSON');
         // Attempt to parse as JSON directly (unencrypted)
         try {
           const parsedData = JSON.parse(encryptedData);
@@ -136,50 +145,36 @@ export class ContactCryptoUtil {
               contacts: parsedData.contacts, 
               isPassword: false 
             };
+          } else {
+            throw new Error('Invalid contacts data format');
           }
         } catch (e) {
-          throw new Error('Invalid contacts data format');
+          console.error('Failed to parse as JSON:', e);
+          throw new Error('Invalid data format - not a valid PGP message or JSON');
         }
       }
       
-      // Decrypt the data
+      console.log('Data appears to be PGP encrypted');
+      // Decrypt the data using our robust approach
       let decrypted: string;
       let isPassword = false;
       
-      try {
-        // First try to decrypt with private key
-        const message = await readMessage({ armoredMessage: encryptedData });
-        
-        const privateKey = await decrypt({
-          message: await readMessage({ armoredMessage: userPrivateKey }),
-          passwords: [passphrase]
-        }).then(({ data }) => data.toString());
-        
-        const { data } = await decrypt({
-          message,
-          decryptionKeys: privateKey
-        });
-        
-        decrypted = data.toString();
-      } catch (keyError) {
-        // If that fails, try password decryption if a password was provided
-        if (options.password) {
-          try {
-            const message = await readMessage({ armoredMessage: encryptedData });
-            
-            const { data } = await decrypt({
-              message,
-              passwords: [options.password]
-            });
-            
-            decrypted = data.toString();
-            isPassword = true;
-          } catch (passwordError) {
-            throw new Error('Failed to decrypt: Invalid password or key');
-          }
-        } else {
-          throw new Error('Failed to decrypt: Contacts may be password-protected');
+      // First try with password if provided
+      if (options.password) {
+        try {
+          console.log('Attempting password decryption first...');
+          decrypted = await RobustDecrypt.decryptWithPassword(encryptedData, options.password);
+          isPassword = true;
+          console.log('Successfully decrypted with password');
+        } catch (passwordError) {
+          console.log('Password decryption failed, trying PGP key...');
+          // Try PGP key decryption instead
+          decrypted = await RobustDecrypt.decryptData(encryptedData, userPrivateKey, passphrase);
+          console.log('Successfully decrypted with PGP key');
         }
+      } else {
+        // No password provided, try PGP key directly
+        decrypted = await RobustDecrypt.decryptData(encryptedData, userPrivateKey, passphrase);
       }
       
       // Parse the decrypted data
@@ -196,6 +191,7 @@ export class ContactCryptoUtil {
           throw new Error('Invalid contacts data format');
         }
       } catch (parseError) {
+        console.error('Failed to parse decrypted data:', parseError);
         throw new Error('Failed to parse decrypted data');
       }
     } catch (error) {
