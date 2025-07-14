@@ -24,6 +24,9 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 
+// Import the secure import/export dialogs
+import { SecureExportDialog, SecureImportDialog } from '@/components/SecureImportExportDialogs';
+
 // Define the Contact type
 interface Contact {
   id: string;
@@ -102,30 +105,12 @@ export function ContactManagement({ identity }: ContactsProps) {
       email: identity?.identity?.identity?.email || identity?.identity?.email || identity?.email
     };
   };
+  
+  // Use the more reliable API endpoint
+  const API_BASE = '/api/simple-contacts';
 
-  // Helper functions for browser storage
-  const getContacts = (fingerprint: string): Contact[] => {
-    try {
-      const stored = localStorage.getItem(`soverentity_contacts_${fingerprint}`);
-      return stored ? JSON.parse(stored) : [];
-    } catch (err) {
-      console.error('Error reading contacts from browser storage:', err);
-      return [];
-    }
-  };
-
-  const saveContacts = (fingerprint: string, contacts: Contact[]) => {
-    try {
-      localStorage.setItem(`soverentity_contacts_${fingerprint}`, JSON.stringify(contacts));
-      console.log(`Saved ${contacts.length} contacts to browser storage`);
-    } catch (err) {
-      console.error('Error saving contacts to browser storage:', err);
-      throw new Error('Failed to save contacts');
-    }
-  };
-
-  // Load contacts from browser storage
-  const loadContacts = useCallback(() => {
+  // Load contacts on component mount and when identity changes
+  const loadContacts = useCallback(async () => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) {
       console.log('No identity fingerprint found, skipping contact load');
@@ -137,10 +122,35 @@ export function ContactManagement({ identity }: ContactsProps) {
       setError(null);
       
       console.log(`Loading contacts for fingerprint: ${identityData.fingerprint}`);
-      const loadedContacts = getContacts(identityData.fingerprint);
-      setContacts(loadedContacts);
-      console.log(`Loaded ${loadedContacts.length} contacts from browser storage`);
+      const response = await fetch(
+        `${API_BASE}?fingerprint=${identityData.fingerprint}`, 
+        { method: 'GET' }
+      );
       
+      console.log('Response status:', response.status);
+      const contentType = response.headers.get('content-type');
+      console.log('Content type:', contentType);
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Non-JSON response received');
+        throw new Error('Invalid response from server');
+      }
+      
+      const data = await response.json();
+      console.log('Contact API response:', data);
+      
+      if (!response.ok) {
+        console.error('API returned error:', data);
+        throw new Error(data.error || 'Failed to load contacts');
+      }
+      
+      setContacts(data.contacts || []);
+      console.log(`Loaded ${data.contacts?.length || 0} contacts using ${data.storage} storage`);
+      
+      // Show a storage mode warning for in-memory
+      if (data.storage === 'in-memory') {
+        console.warn('Using in-memory storage. Reason:', data.fallbackReason);
+      }
     } catch (err) {
       console.error('Error loading contacts:', err);
       setError(err instanceof Error ? err.message : 'An error occurred loading contacts');
@@ -199,7 +209,7 @@ export function ContactManagement({ identity }: ContactsProps) {
     setShowDetailDialog(true);
   };
 
-  const handleAddContact = () => {
+  const handleAddContact = async () => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) {
       setError('No valid identity found');
@@ -227,15 +237,6 @@ export function ContactManagement({ identity }: ContactsProps) {
         return;
       }
 
-      // Get existing contacts
-      const existing = getContacts(identityData.fingerprint);
-      
-      // Check for duplicates
-      if (existing.some(c => c.fingerprint === newContactForm.fingerprint)) {
-        setError('Contact with this fingerprint already exists');
-        return;
-      }
-
       console.log('Adding contact with data:', {
         fingerprint: identityData.fingerprint,
         contactData: {
@@ -244,21 +245,42 @@ export function ContactManagement({ identity }: ContactsProps) {
         }
       });
 
-      // Create new contact
-      const newContact: Contact = {
-        id: crypto.randomUUID(),
-        name: newContactForm.name,
-        email: newContactForm.email,
-        fingerprint: newContactForm.fingerprint,
-        public_key: newContactForm.public_key,
-        trust_level: 'unverified',
-        added_at: new Date().toISOString()
-      };
+      const response = await fetch(`${API_BASE}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identityData.fingerprint,
+          contact: {
+            ...newContactForm,
+            trust_level: 'unverified'
+          }
+        }),
+      });
       
-      // Save to browser storage
-      const updated = [...existing, newContact];
-      saveContacts(identityData.fingerprint, updated);
-      setContacts(updated);
+      const contentType = response.headers.get('content-type');
+      console.log('Response content type:', contentType);
+      console.log('Response status:', response.status);
+      
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Non-JSON response received');
+        const textResponse = await response.text();
+        console.error('Raw response:', textResponse);
+        throw new Error('Invalid response from server');
+      }
+      
+      const data = await response.json();
+      console.log('Add contact API response:', data);
+      
+      if (!response.ok) {
+        const errorMessage = data.error || `Failed to add contact (${response.status})`;
+        console.log('Contact validation failed:', errorMessage);
+        throw new Error(errorMessage);
+      }
+      
+      // Add the contact to local state immediately
+      setContacts(prev => [...prev, data.contact]);
       
       // Reset form
       setNewContactForm({
@@ -269,7 +291,8 @@ export function ContactManagement({ identity }: ContactsProps) {
       });
       setShowAddDialog(false);
       
-      console.log('Contact added successfully');
+      // Also reload contacts to be sure
+      await loadContacts();
       
     } catch (err) {
       console.error('Error adding contact:', err);
@@ -279,7 +302,7 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
 
-  const handleUpdateContact = () => {
+  const handleUpdateContact = async () => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) return;
     
@@ -311,27 +334,36 @@ export function ContactManagement({ identity }: ContactsProps) {
         updates
       });
       
-      // Get existing contacts and update
-      const existing = getContacts(identityData.fingerprint);
-      const index = existing.findIndex(c => c.id === editContactForm.id);
+      const response = await fetch(`${API_BASE}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identityData.fingerprint,
+          contactId: editContactForm.id,
+          updates
+        }),
+      });
       
-      if (index !== -1) {
-        existing[index] = { ...existing[index], ...updates };
-        saveContacts(identityData.fingerprint, existing);
-        setContacts(existing);
-        
-        // Update the contact in local state
-        setContacts(prevContacts => 
-          prevContacts.map(c => 
-            c.id === editContactForm.id ? { ...c, ...updates } : c
-          )
-        );
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to update contact');
       }
+      
+      // Update the contact in local state
+      setContacts(prevContacts => 
+        prevContacts.map(c => 
+          c.id === editContactForm.id ? { ...c, ...updates } : c
+        )
+      );
       
       // Reset form and close dialog
       setShowEditDialog(false);
       
-      console.log('Contact updated successfully');
+      // Reload contacts to be sure
+      await loadContacts();
       
     } catch (err) {
       console.error('Error updating contact:', err);
@@ -341,7 +373,7 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
   
-  const handleDeleteContact = (contactId: string) => {
+  const handleDeleteContact = async (contactId: string) => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) return;
     
@@ -349,18 +381,28 @@ export function ContactManagement({ identity }: ContactsProps) {
       setLoading(true);
       setError(null);
       
-      // Get existing contacts and filter out the deleted one
-      const existing = getContacts(identityData.fingerprint);
-      const filtered = existing.filter(c => c.id !== contactId);
+      const response = await fetch(
+        `${API_BASE}?fingerprint=${identityData.fingerprint}&contactId=${contactId}`,
+        { method: 'DELETE' }
+      );
       
-      saveContacts(identityData.fingerprint, filtered);
-      setContacts(filtered);
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Invalid response from server');
+      }
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to delete contact');
+      }
       
       // Close any open dialogs that might be showing the deleted contact
       setShowDetailDialog(false);
       setShowEditDialog(false);
       
-      console.log('Contact deleted successfully');
+      // Reload contacts
+      await loadContacts();
       
     } catch (err) {
       console.error('Error deleting contact:', err);
@@ -370,7 +412,7 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
 
-  const handleUpdateTrustLevel = (contactId: string, newTrustLevel: 'unverified' | 'verified' | 'trusted') => {
+  const handleUpdateTrustLevel = async (contactId: string, newTrustLevel: 'unverified' | 'verified' | 'trusted') => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) return;
     
@@ -383,24 +425,30 @@ export function ContactManagement({ identity }: ContactsProps) {
         ...(newTrustLevel === 'verified' ? { verified_at: new Date().toISOString() } : {})
       };
       
-      // Get existing contacts and update trust level
-      const existing = getContacts(identityData.fingerprint);
-      const index = existing.findIndex(c => c.id === contactId);
+      const response = await fetch(`${API_BASE}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identityData.fingerprint,
+          contactId,
+          updates
+        }),
+      });
       
-      if (index !== -1) {
-        existing[index] = { ...existing[index], ...updates };
-        saveContacts(identityData.fingerprint, existing);
-        setContacts(existing);
-        
-        // Update the contact in local state
-        setContacts(prevContacts => 
-          prevContacts.map(c => 
-            c.id === contactId ? { ...c, ...updates } : c
-          )
-        );
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to update trust level');
       }
       
-      console.log('Trust level updated successfully');
+      // Update the contact in local state
+      setContacts(prevContacts => 
+        prevContacts.map(c => 
+          c.id === contactId ? { ...c, ...updates } : c
+        )
+      );
       
     } catch (err) {
       console.error('Error updating trust level:', err);
@@ -410,42 +458,45 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
   
-  // Export contacts to JSON
-  const handleExportContacts = () => {
+  // Export contacts
+  const handleExportContacts = async () => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) return;
     
     try {
-      const contactsToExport = getContacts(identityData.fingerprint);
+      setLoading(true);
+      setError(null);
       
-      const exportData = {
-        version: '1.0',
-        exported_at: new Date().toISOString(),
-        identity_fingerprint: identityData.fingerprint,
-        contacts: contactsToExport
-      };
+      const response = await fetch(`/api/contacts/export?fingerprint=${identityData.fingerprint}`, {
+        method: 'GET'
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to export contacts');
+      }
       
       // Create download link
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      const blob = new Blob([data.contacts], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `soverentity-contacts-${identityData.fingerprint.slice(0, 8)}.json`;
+      a.download = 'soverentity-contacts.json';
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
-      
-      console.log(`Exported ${contactsToExport.length} contacts`);
       
     } catch (err) {
       console.error('Error exporting contacts:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Import contacts from JSON
-  const handleImportContacts = () => {
+  // Import contacts
+  const handleImportContacts = async () => {
     const identityData = getIdentityData();
     if (!identityData?.fingerprint) return;
     
@@ -453,58 +504,70 @@ export function ContactManagement({ identity }: ContactsProps) {
       setLoading(true);
       setImportError(null);
       
-      const importedData = JSON.parse(importData);
+      const response = await fetch('/api/contacts/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identityData.fingerprint,
+          contactsData: importData
+        }),
+      });
       
-      // Validate import data structure
-      let contactsToImport: Contact[] = [];
+      const data = await response.json();
       
-      if (Array.isArray(importedData)) {
-        contactsToImport = importedData;
-      } else if (importedData.contacts && Array.isArray(importedData.contacts)) {
-        contactsToImport = importedData.contacts;
-      } else {
-        throw new Error('Invalid import format. Expected an array of contacts or an object with a contacts array.');
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to import contacts');
       }
-      
-      // Get existing contacts
-      const existing = getContacts(identityData.fingerprint);
-      const existingFingerprints = new Set(existing.map(c => c.fingerprint));
-      
-      // Filter out duplicates and invalid contacts
-      const newContacts = contactsToImport.filter(contact => {
-        if (!contact.fingerprint || !contact.name || !contact.email) {
-          console.warn('Skipping invalid contact:', contact);
-          return false;
-        }
-        if (existingFingerprints.has(contact.fingerprint)) {
-          console.warn('Skipping duplicate contact:', contact.fingerprint);
-          return false;
-        }
-        return true;
-      }).map(contact => ({
-        ...contact,
-        id: contact.id || crypto.randomUUID(),
-        added_at: contact.added_at || new Date().toISOString()
-      }));
-      
-      if (newContacts.length === 0) {
-        throw new Error('No new contacts to import (all contacts already exist or are invalid)');
-      }
-      
-      // Save merged contacts
-      const merged = [...existing, ...newContacts];
-      saveContacts(identityData.fingerprint, merged);
-      setContacts(merged);
       
       // Reset form and close dialog
       setImportData('');
       setShowImportDialog(false);
       
-      console.log(`Imported ${newContacts.length} new contacts`);
+      // Reload contacts
+      await loadContacts();
       
     } catch (err) {
       console.error('Error importing contacts:', err);
       setImportError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
+  // Process a contact exchange package
+  const handleProcessExchangeData = async (exchangeData: string) => {
+    const identityData = getIdentityData();
+    if (!identityData?.fingerprint) return;
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const response = await fetch('/api/contacts/process', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fingerprint: identityData.fingerprint,
+          exchangeData
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to process contact data');
+      }
+      
+      // Reload contacts
+      await loadContacts();
+      
+    } catch (err) {
+      console.error('Error processing contact data:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
@@ -539,7 +602,16 @@ export function ContactManagement({ identity }: ContactsProps) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Browser Storage</DropdownMenuLabel>
+                <DropdownMenuLabel>Secure Options</DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => setShowSecureExportDialog(true)}>
+                  <ShieldIcon className="h-4 w-4 mr-2 text-green-600" />
+                  Secure Export (Encrypted)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowSecureImportDialog(true)}>
+                  <Lock className="h-4 w-4 mr-2 text-blue-600" />
+                  Secure Import (Encrypted)
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleExportContacts}>
                   <FileJson className="h-4 w-4 mr-2" />
                   Export as JSON
@@ -553,7 +625,7 @@ export function ContactManagement({ identity }: ContactsProps) {
           </div>
         </div>
         <CardDescription className="mt-2">
-          Your decentralized contact book. All data is stored securely in your browser.
+          Your encrypted contact book. All data is secured with PGP encryption.
           {identityData && (
             <div className="mt-2 text-xs">
               Identity: {identityData.name} ({identityData.fingerprint?.slice(0, 8)}...)
@@ -702,21 +774,9 @@ export function ContactManagement({ identity }: ContactsProps) {
                         <Button 
                           variant="ghost" 
                           size="sm"
-                          className="flex-1 rounded-none text-slate-600 dark:text-slate-400"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openEditDialog(contact);
-                          }}
-                        >
-                          <Edit className="h-4 w-4 mr-1" />
-                          Edit
-                        </Button>
-                        <Button 
-                          variant="ghost" 
-                          size="sm"
                           className="flex-1 rounded-none text-red-600 hover:text-red-700 dark:text-red-400"
                           onClick={(e) => {
-                            e.stopPropagation();
+                            e.stopPropagation(); // Prevent triggering the card click
                             handleDeleteContact(contact.id);
                           }}
                         >
@@ -1027,6 +1087,27 @@ export function ContactManagement({ identity }: ContactsProps) {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Secure Export Dialog */}
+        <SecureExportDialog
+          open={showSecureExportDialog}
+          onClose={() => setShowSecureExportDialog(false)}
+          identityFingerprint={identityData?.fingerprint || ''}
+          onExportComplete={(exportedData, encryptionMethod) => {
+            console.log(`Export completed using ${encryptionMethod} encryption`);
+          }}
+        />
+
+        {/* Secure Import Dialog */}
+        <SecureImportDialog
+          open={showSecureImportDialog}
+          onClose={() => setShowSecureImportDialog(false)}
+          identityFingerprint={identityData?.fingerprint || ''}
+          onImportComplete={(importCount) => {
+            console.log(`Imported ${importCount} contacts`);
+            loadContacts();
+          }}
+        />
       </CardContent>
     </Card>
   );

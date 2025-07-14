@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Shield, Key, UserCheck, Lock, Mail, CheckCircle2, Fingerprint, RefreshCw } from 'lucide-react';
+import { PersistentIdentityManager } from '@/lib/identity/persistent-manager';
+
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -72,13 +74,29 @@ export function SoverentityFrontend({
       setLoading(true);
       setError(null);
       
-      const response = await fetch('/api/identity', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(formData),
-      });
+
+      const handleCreateIdentity = async () => {
+        try {
+          setLoading(true);
+          setError(null);
+          
+          const manager = new PersistentIdentityManager();
+          const result = await manager.createIdentity(
+            formData.name,
+            formData.email
+          );
+          
+          setIdentity(result);
+          if (onIdentityUpdate) {
+            onIdentityUpdate(result);
+          }
+        } catch (err) {
+          console.error('Error creating identity:', err);
+          setError(err instanceof Error ? err.message : 'An error occurred');
+        } finally {
+          setLoading(false);
+        }
+      };
 
       const data = await response.json();
 
@@ -151,52 +169,93 @@ export function SoverentityFrontend({
     }
   };
 
-  const handleVerifyCode = async () => {
+// Update this function in your SoverentityFrontend.tsx
+
+const handleVerifyCode = async () => {
+  try {
+    setVerificationState(prev => ({ ...prev, loading: true, error: null }));
+
+    const identityData = getIdentityData(identity);
+    if (!identityData) {
+      throw new Error('No identity data available');
+    }
+
+    const response = await fetch('/api/identity/verify', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        fingerprint: identityData.fingerprint,
+        code: verificationCode
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Code verification failed');
+    }
+
+    // Update the identity in browser storage (client-side)
     try {
-      setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-
-      const identityData = getIdentityData(identity);
-      if (!identityData) {
-        throw new Error('No identity data available');
+      const storageKey = `soverentity_identity_${identityData.fingerprint}`;
+      const storedIdentity = localStorage.getItem(storageKey);
+      
+      if (storedIdentity) {
+        const identityObj = JSON.parse(storedIdentity);
+        
+        // Update verification status
+        identityObj.verification = data.verification;
+        
+        // Save back to browser storage
+        localStorage.setItem(storageKey, JSON.stringify(identityObj));
+        
+        console.log('✅ Updated identity verification in browser storage');
+        
+        // Update local component state
+        setVerificationState(prev => ({ 
+          ...prev, 
+          status: 'verified',
+          loading: false 
+        }));
+        
+        // Update the identity state with new verification status
+        const updatedIdentity = {
+          ...identity,
+          identity: {
+            ...identity.identity,
+            verification: data.verification
+          }
+        };
+        
+        setIdentity(updatedIdentity);
+        if (onIdentityUpdate) {
+          onIdentityUpdate(updatedIdentity);
+        }
+        
+      } else {
+        console.warn('Identity not found in browser storage');
       }
-
-      const response = await fetch('/api/identity/verify', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          fingerprint: identityData.fingerprint,
-          code: verificationCode
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Code verification failed');
-      }
-
-      // Update both local state and parent component
+      
+    } catch (storageError) {
+      console.error('Failed to update browser storage:', storageError);
+      // Still show success since verification worked
       setVerificationState(prev => ({ 
         ...prev, 
         status: 'verified',
         loading: false 
       }));
-      
-      setIdentity(data.identity);
-      if (onIdentityUpdate) {
-        onIdentityUpdate(data.identity);
-      }
-    } catch (err) {
-      setVerificationState(prev => ({ 
-        ...prev, 
-        error: err instanceof Error ? err.message : 'Code verification failed',
-        loading: false 
-      }));
     }
-  };
 
+  } catch (err) {
+    setVerificationState(prev => ({ 
+      ...prev, 
+      error: err instanceof Error ? err.message : 'Code verification failed',
+      loading: false 
+    }));
+  }
+};
   // Render the fingerprint in formatted groups
   const formatFingerprint = (fingerprint) => {
     if (!fingerprint) return 'No fingerprint';
