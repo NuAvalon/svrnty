@@ -16,7 +16,6 @@ import type {
   IntroductionRecord,
   LegacyContact,
 } from './types';
-import { TRUST_LABELS } from './types';
 import { migrateContacts } from './migration';
 
 export interface TrustGraphManagerOptions {
@@ -71,8 +70,8 @@ export class TrustGraphManager {
         decryptionKeys: decryptedKey,
       });
       return JSON.parse(decrypted.toString());
-    } catch (error: any) {
-      if (error.code === 'ENOENT') {
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return this.emptyGraph();
       }
       throw error;
