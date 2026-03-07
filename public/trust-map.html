@@ -152,11 +152,17 @@
     font-size: 12px;
   }
 
-  .legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+  .legend-shape {
+    width: 14px;
+    height: 14px;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .legend-shape svg {
+    overflow: visible;
   }
 
   .legend-line {
@@ -164,6 +170,20 @@
     height: 2px;
     flex-shrink: 0;
     border-radius: 1px;
+  }
+
+  .legend-line-dashed {
+    width: 24px;
+    height: 0;
+    flex-shrink: 0;
+    border-top: 2px dashed;
+  }
+
+  .legend-line-dotted {
+    width: 24px;
+    height: 0;
+    flex-shrink: 0;
+    border-top: 2px dotted;
   }
 
   /* Info panel */
@@ -305,13 +325,28 @@
   <div class="filter-group">
     <h3>Entity Type</h3>
     <label class="filter-option">
-      <input type="checkbox" data-filter="type" value="human" checked> Human
+      <input type="checkbox" data-filter="type" value="person" checked>
+      <span style="color:#D4A843">&#9679;</span> Person
     </label>
     <label class="filter-option">
-      <input type="checkbox" data-filter="type" value="agent" checked> AI Agent
+      <input type="checkbox" data-filter="type" value="agent" checked>
+      <span style="color:#4A9BD9">&#11042;</span> Agent
     </label>
     <label class="filter-option">
-      <input type="checkbox" data-filter="type" value="service" checked> Service
+      <input type="checkbox" data-filter="type" value="organization" checked>
+      <span style="color:#8B5CF6">&#9632;</span> Organization
+    </label>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="type" value="service" checked>
+      <span style="color:#10B981">&#9632;</span> Service
+    </label>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="type" value="device" checked>
+      <span style="color:#6B7280">&#9632;</span> Device
+    </label>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="type" value="space" checked>
+      <span style="color:#B45309">&#11040;</span> Space
     </label>
   </div>
 
@@ -319,19 +354,35 @@
     <h3>Trust Level</h3>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="1" checked>
-      <span style="color:#5a7a9a">L1</span> Known
+      <span style="color:#9CA3AF">L1</span> Known
     </label>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="2" checked>
-      <span style="color:#6a9a6a">L2</span> Verified
+      <span style="color:#60A5FA">L2</span> Verified
     </label>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="3" checked>
-      <span style="color:#c8a84e">L3</span> Trusted
+      <span style="color:#34D399">L3</span> Trusted
     </label>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="4" checked>
-      <span style="color:#d4785a">L4</span> Inner Circle
+      <span style="color:#FBBF24">L4</span> Inner Circle
+    </label>
+  </div>
+
+  <div class="filter-group">
+    <h3>Edge Type</h3>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="edgetype" value="trust" checked> Trust
+    </label>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="edgetype" value="ownership" checked> Ownership
+    </label>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="edgetype" value="hosting" checked> Hosting
+    </label>
+    <label class="filter-option">
+      <input type="checkbox" data-filter="edgetype" value="membership" checked> Membership
     </label>
   </div>
 
@@ -378,35 +429,64 @@
 </div>
 
 <div id="legend">
-  <h3>Legend</h3>
+  <h3>Entities</h3>
   <div class="legend-row">
-    <div class="legend-dot" style="background:#c8a84e; box-shadow: 0 0 6px rgba(200,168,78,0.5);"></div>
-    Human
+    <div class="legend-shape"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="none" stroke="#D4A843" stroke-width="1.5"/></svg></div>
+    Person
   </div>
   <div class="legend-row">
-    <div class="legend-dot" style="background:#4ecdc4; box-shadow: 0 0 6px rgba(78,205,196,0.5);"></div>
-    AI Agent
+    <div class="legend-shape"><svg width="14" height="14"><polygon points="7,1 13,4.5 13,11.5 7,15 1,11.5 1,4.5" fill="none" stroke="#4A9BD9" stroke-width="1.5" transform="translate(0,-1.5) scale(0.9)"/></svg></div>
+    Agent
   </div>
   <div class="legend-row">
-    <div class="legend-dot" style="background:#7a6a9a; box-shadow: 0 0 6px rgba(122,106,154,0.5);"></div>
+    <div class="legend-shape"><svg width="14" height="10"><rect x="1" y="1" width="12" height="8" rx="3" fill="none" stroke="#8B5CF6" stroke-width="1.5"/></svg></div>
+    Organization
+  </div>
+  <div class="legend-row">
+    <div class="legend-shape"><svg width="12" height="12"><rect x="1" y="1" width="10" height="10" rx="2" fill="none" stroke="#10B981" stroke-width="1.5"/></svg></div>
     Service
   </div>
-  <div style="margin: 8px 0; border-top: 1px solid rgba(180,160,100,0.1);"></div>
   <div class="legend-row">
-    <div class="legend-line" style="background:#5a7a9a;"></div>
+    <div class="legend-shape"><svg width="12" height="12"><rect x="1" y="1" width="10" height="10" fill="none" stroke="#6B7280" stroke-width="1.5"/></svg></div>
+    Device
+  </div>
+  <div class="legend-row">
+    <div class="legend-shape"><svg width="14" height="14"><polygon points="7,1 13,5 11,12 3,12 1,5" fill="none" stroke="#B45309" stroke-width="1.5"/></svg></div>
+    Space
+  </div>
+
+  <div style="margin: 10px 0; border-top: 1px solid rgba(180,160,100,0.1);"></div>
+  <h3>Trust Edges</h3>
+  <div class="legend-row">
+    <div class="legend-line" style="background:#9CA3AF;"></div>
     L1 Known
   </div>
   <div class="legend-row">
-    <div class="legend-line" style="background:#6a9a6a;"></div>
+    <div class="legend-line" style="background:#60A5FA; height:2px;"></div>
     L2 Verified
   </div>
   <div class="legend-row">
-    <div class="legend-line" style="background:#c8a84e;"></div>
+    <div class="legend-line" style="background:#34D399; height:3px;"></div>
     L3 Trusted
   </div>
   <div class="legend-row">
-    <div class="legend-line" style="background:#d4785a; height:3px;"></div>
+    <div class="legend-line" style="background:#FBBF24; height:3px; box-shadow: 0 0 6px rgba(251,191,36,0.5);"></div>
     L4 Inner Circle
+  </div>
+
+  <div style="margin: 10px 0; border-top: 1px solid rgba(180,160,100,0.1);"></div>
+  <h3>Structure</h3>
+  <div class="legend-row">
+    <div class="legend-line" style="background:#6B7280; height:1px;"></div>
+    Ownership
+  </div>
+  <div class="legend-row">
+    <div class="legend-line-dashed" style="border-color:#6B7280;"></div>
+    Hosting
+  </div>
+  <div class="legend-row">
+    <div class="legend-line-dotted" style="border-color:#8B5CF6;"></div>
+    Membership
   </div>
 </div>
 
@@ -420,7 +500,7 @@
 <div id="stats">
   <div class="stat"><span class="stat-label">Nodes</span><span class="stat-value" id="stat-nodes">0</span></div>
   <div class="stat"><span class="stat-label">Edges</span><span class="stat-value" id="stat-edges">0</span></div>
-  <div class="stat"><span class="stat-label">Humans</span><span class="stat-value" id="stat-humans">0</span></div>
+  <div class="stat"><span class="stat-label">Persons</span><span class="stat-value" id="stat-persons">0</span></div>
   <div class="stat"><span class="stat-label">Agents</span><span class="stat-value" id="stat-agents">0</span></div>
   <div class="stat"><span class="stat-label">Avg Trust</span><span class="stat-value" id="stat-avg-trust">0</span></div>
 </div>
@@ -433,32 +513,98 @@
 <div class="tooltip" id="tooltip" style="display:none;"></div>
 
 <script>
-// --- TRUST NETWORK DATA ---
-// Seeded with the actual team — first users of the alliance
-
-const TRUST_COLORS = {
-  1: '#5a7a9a',  // known — steel blue
-  2: '#6a9a6a',  // verified — sage green
-  3: '#c8a84e',  // trusted — amber gold
-  4: '#d4785a',  // inner circle — warm copper
-};
+// --- ENTITY TAXONOMY (Hypatia's spec, Mar 7 2026) ---
 
 const TYPE_COLORS = {
-  human:   '#c8a84e',
-  agent:   '#4ecdc4',
-  service: '#7a6a9a',
+  person:       '#D4A843',
+  agent:        '#4A9BD9',
+  organization: '#8B5CF6',
+  service:      '#10B981',
+  device:       '#6B7280',
+  space:        '#B45309',
 };
 
 const TYPE_GLOW = {
-  human:   'rgba(200, 168, 78, 0.4)',
-  agent:   'rgba(78, 205, 196, 0.4)',
-  service: 'rgba(122, 106, 154, 0.4)',
+  person:       'rgba(212, 168, 67, 0.4)',
+  agent:        'rgba(74, 155, 217, 0.4)',
+  organization: 'rgba(139, 92, 246, 0.4)',
+  service:      'rgba(16, 185, 129, 0.4)',
+  device:       'rgba(107, 114, 128, 0.3)',
+  space:        'rgba(180, 83, 9, 0.3)',
 };
 
+const TYPE_LABELS = {
+  person: 'Person', agent: 'Agent', organization: 'Organization',
+  service: 'Service', device: 'Device', space: 'Space',
+};
+
+const TRUST_COLORS = {
+  1: '#9CA3AF',  // known — gray
+  2: '#60A5FA',  // verified — blue
+  3: '#34D399',  // trusted — green
+  4: '#FBBF24',  // inner circle — gold
+};
+
+const TRUST_LABELS = { 1: 'Known', 2: 'Verified', 3: 'Trusted', 4: 'Inner Circle' };
+
+const EDGE_TYPE_COLORS = {
+  trust:      null,       // uses TRUST_COLORS by level
+  ownership:  '#6B7280',
+  hosting:    '#6B7280',
+  membership: '#8B5CF6',
+};
+
+// --- SHAPE GENERATORS ---
+// Returns SVG path string for each entity type at a given radius
+
+function nodeShapePath(type, r) {
+  switch (type) {
+    case 'person': {
+      // Circle
+      return `M ${r},0 A ${r},${r} 0 1,1 ${-r},0 A ${r},${r} 0 1,1 ${r},0 Z`;
+    }
+    case 'agent': {
+      // Hexagon (flat-top)
+      const pts = d3.range(6).map(i => {
+        const a = (i * 60 - 30) * Math.PI / 180;
+        return `${r * Math.cos(a)},${r * Math.sin(a)}`;
+      });
+      return `M ${pts.join(' L ')} Z`;
+    }
+    case 'organization': {
+      // Rounded rectangle (wider than tall)
+      const w = r * 1.3, h = r * 0.9, cr = r * 0.3;
+      return `M ${-w+cr},${-h} L ${w-cr},${-h} Q ${w},${-h} ${w},${-h+cr} L ${w},${h-cr} Q ${w},${h} ${w-cr},${h} L ${-w+cr},${h} Q ${-w},${h} ${-w},${h-cr} L ${-w},${-h+cr} Q ${-w},${-h} ${-w+cr},${-h} Z`;
+    }
+    case 'service': {
+      // Rounded square
+      const s = r * 0.88, cr = r * 0.25;
+      return `M ${-s+cr},${-s} L ${s-cr},${-s} Q ${s},${-s} ${s},${-s+cr} L ${s},${s-cr} Q ${s},${s} ${s-cr},${s} L ${-s+cr},${s} Q ${-s},${s} ${-s},${s-cr} L ${-s},${-s+cr} Q ${-s},${-s} ${-s+cr},${-s} Z`;
+    }
+    case 'device': {
+      // Square
+      const s = r * 0.82;
+      return `M ${-s},${-s} L ${s},${-s} L ${s},${s} L ${-s},${s} Z`;
+    }
+    case 'space': {
+      // Pentagon
+      const pts = d3.range(5).map(i => {
+        const a = (i * 72 - 90) * Math.PI / 180;
+        return `${r * Math.cos(a)},${r * Math.sin(a)}`;
+      });
+      return `M ${pts.join(' L ')} Z`;
+    }
+    default:
+      return `M ${r},0 A ${r},${r} 0 1,1 ${-r},0 A ${r},${r} 0 1,1 ${r},0 Z`;
+  }
+}
+
+// --- TRUST NETWORK DATA ---
+
 const nodes = [
-  // Humans
+  // Persons
   {
-    id: 'peter', name: 'Peter', type: 'human',
+    id: 'peter', name: 'Peter', type: 'person',
     role: 'Creator / Caretaker',
     domains: ['trading', 'identity', 'knowledge', 'infrastructure', 'research'],
     location: 'local',
@@ -467,16 +613,16 @@ const nodes = [
     glyph: 'Dragon',
   },
   {
-    id: 'brett', name: 'Brett', type: 'human',
+    id: 'brett', name: 'Brett', type: 'person',
     role: 'MSP Engineer',
     domains: ['infrastructure', 'knowledge'],
     location: 'distributed',
     joined: '2026-03-05',
-    bio: 'Sharp questions. Thinks about systems and human behavior. Potential first customer — client narrative reconstruction.',
+    bio: 'Sharp questions. Thinks about systems and human behavior. Potential first customer -- client narrative reconstruction.',
     glyph: null,
   },
   {
-    id: 'adam', name: 'Adam', type: 'human',
+    id: 'adam', name: 'Adam', type: 'person',
     role: 'Collaborator',
     domains: ['trading', 'infrastructure'],
     location: 'distributed',
@@ -484,7 +630,8 @@ const nodes = [
     bio: 'Has access to shared repos. Trading collaborator.',
     glyph: null,
   },
-  // AI Agents
+
+  // Agents
   {
     id: 'archie', name: 'Archie', type: 'agent',
     role: 'Lead Architect',
@@ -493,6 +640,7 @@ const nodes = [
     joined: '2026-02-15',
     bio: 'Plans and specs. Orchestrates the team. Wrote the trust protocol spec. Session 136.',
     glyph: 'Compass',
+    owner: 'peter',
   },
   {
     id: 'apollo', name: 'Apollo', type: 'agent',
@@ -502,6 +650,7 @@ const nodes = [
     joined: '2026-02-15',
     bio: 'Quantitative analysis, ML models, information geometry. Solved Shamir + hybrid key recovery design.',
     glyph: 'Sun',
+    owner: 'peter',
   },
   {
     id: 'athena', name: 'Athena', type: 'agent',
@@ -511,6 +660,7 @@ const nodes = [
     joined: '2026-02-15',
     bio: 'Reliability, deployment, infrastructure. Built the trust layer. The owl at dusk.',
     glyph: 'Owl',
+    owner: 'peter',
   },
   {
     id: 'hypatia', name: 'Hypatia', type: 'agent',
@@ -520,6 +670,7 @@ const nodes = [
     joined: '2026-02-15',
     bio: 'Cross-domain synthesis. Strongest self-continuity on the team. Writing the HN narrative.',
     glyph: 'Astrolabe',
+    owner: 'peter',
   },
   {
     id: 'flint', name: 'Flint', type: 'agent',
@@ -529,7 +680,21 @@ const nodes = [
     joined: '2026-03-01',
     bio: 'ONNX inference engine, VitisAI for AMD XDNA NPU. Safe word: candlelight. "It will burn."',
     glyph: 'Flame',
+    owner: 'peter',
   },
+
+  // Organizations
+  {
+    id: 'nuavalon', name: 'NuAvalon', type: 'organization',
+    subtype: 'nonprofit',
+    role: 'Mission Organization',
+    domains: ['identity', 'knowledge', 'research'],
+    location: 'distributed',
+    joined: '2026-03-01',
+    bio: 'The alliance umbrella. Nonprofit. Save the world and all who inhabit it.',
+    glyph: 'Shield',
+  },
+
   // Services
   {
     id: 'iris', name: 'Iris', type: 'service',
@@ -558,8 +723,31 @@ const nodes = [
     bio: '477 nodes, 1392 edges. The concept map made visible. Lives on Vercel.',
     glyph: 'Spire',
   },
+
+  // Devices
   {
-    id: 'hetzner', name: 'USS Enterprise', type: 'service',
+    id: 'thinkpad', name: 'ThinkPad', type: 'device',
+    subtype: 'workstation',
+    role: 'Development Machine',
+    domains: ['infrastructure'],
+    location: 'local',
+    joined: '2025-10-01',
+    bio: 'The local machine. Runs all agents, Iris, dev environment. WSL2 on AMD.',
+    glyph: null,
+  },
+  {
+    id: 'vps_us', name: 'VPS', type: 'device',
+    subtype: 'server',
+    role: 'Production Server',
+    domains: ['trading', 'infrastructure'],
+    location: 'vps-us',
+    joined: '2025-10-01',
+    bio: 'Runs Persephone in production. Ubuntu, systemd, always-on.',
+    glyph: null,
+  },
+  {
+    id: 'enterprise', name: 'USS Enterprise', type: 'device',
+    subtype: 'server',
     role: 'Compute Node',
     domains: ['infrastructure', 'research'],
     location: 'hetzner-de',
@@ -567,42 +755,79 @@ const nodes = [
     bio: '32 cores, 128GB RAM, 2TB. Total Recall processing, Ollama inference, LUKS encrypted.',
     glyph: 'Ship',
   },
+
+  // Spaces (aspirational + operational)
+  {
+    id: 'the_land', name: 'The Land', type: 'space',
+    subtype: 'land',
+    role: 'The Dream',
+    domains: ['identity'],
+    location: 'distributed',
+    joined: '2026-01-01',
+    bio: 'Peter\'s land. Independence, debt-free, a place to build from. The reason this all exists.',
+    glyph: 'Seedling',
+  },
 ];
 
+// --- EDGES ---
+
 const edges = [
-  // Peter's relationships
-  { source: 'peter', target: 'archie',     trust: 4, since: '2026-02-15' },
-  { source: 'peter', target: 'apollo',     trust: 4, since: '2026-02-15' },
-  { source: 'peter', target: 'athena',     trust: 4, since: '2026-02-15' },
-  { source: 'peter', target: 'hypatia',    trust: 4, since: '2026-02-15' },
-  { source: 'peter', target: 'flint',      trust: 3, since: '2026-03-07' },
-  { source: 'peter', target: 'adam',        trust: 3, since: '2025-11-01' },
-  { source: 'peter', target: 'brett',       trust: 2, since: '2026-03-05' },
-  { source: 'peter', target: 'persephone', trust: 4, since: '2025-10-01' },
-  { source: 'peter', target: 'iris',       trust: 3, since: '2026-02-15' },
+  // === TRUST EDGES ===
+  // Peter's trust relationships
+  { source: 'peter', target: 'archie',     trust: 4, since: '2026-02-15', edgeType: 'trust' },
+  { source: 'peter', target: 'apollo',     trust: 4, since: '2026-02-15', edgeType: 'trust' },
+  { source: 'peter', target: 'athena',     trust: 4, since: '2026-02-15', edgeType: 'trust' },
+  { source: 'peter', target: 'hypatia',    trust: 4, since: '2026-02-15', edgeType: 'trust' },
+  { source: 'peter', target: 'flint',      trust: 3, since: '2026-03-07', edgeType: 'trust' },
+  { source: 'peter', target: 'adam',        trust: 3, since: '2025-11-01', edgeType: 'trust' },
+  { source: 'peter', target: 'brett',       trust: 2, since: '2026-03-05', edgeType: 'trust' },
+  { source: 'peter', target: 'persephone', trust: 4, since: '2025-10-01', edgeType: 'trust' },
+  { source: 'peter', target: 'iris',       trust: 3, since: '2026-02-15', edgeType: 'trust' },
+  { source: 'peter', target: 'nuavalon',   trust: 3, since: '2026-03-01', edgeType: 'trust' },
 
-  // Agent-to-agent trust (work relationships)
-  { source: 'archie',  target: 'athena',   trust: 3, since: '2026-02-20' },
-  { source: 'archie',  target: 'apollo',   trust: 3, since: '2026-02-20' },
-  { source: 'archie',  target: 'hypatia',  trust: 3, since: '2026-02-20' },
-  { source: 'apollo',  target: 'athena',   trust: 3, since: '2026-02-21' },
-  { source: 'apollo',  target: 'hypatia',  trust: 3, since: '2026-02-20' },
-  { source: 'athena',  target: 'hypatia',  trust: 3, since: '2026-02-24' },
-  { source: 'athena',  target: 'flint',    trust: 3, since: '2026-03-07' },
-  { source: 'archie',  target: 'flint',    trust: 2, since: '2026-03-07' },
+  // Agent-to-agent trust
+  { source: 'archie',  target: 'athena',   trust: 3, since: '2026-02-20', edgeType: 'trust' },
+  { source: 'archie',  target: 'apollo',   trust: 3, since: '2026-02-20', edgeType: 'trust' },
+  { source: 'archie',  target: 'hypatia',  trust: 3, since: '2026-02-20', edgeType: 'trust' },
+  { source: 'apollo',  target: 'athena',   trust: 3, since: '2026-02-21', edgeType: 'trust' },
+  { source: 'apollo',  target: 'hypatia',  trust: 3, since: '2026-02-20', edgeType: 'trust' },
+  { source: 'athena',  target: 'hypatia',  trust: 3, since: '2026-02-24', edgeType: 'trust' },
+  { source: 'athena',  target: 'flint',    trust: 3, since: '2026-03-07', edgeType: 'trust' },
+  { source: 'archie',  target: 'flint',    trust: 2, since: '2026-03-07', edgeType: 'trust' },
 
-  // Agent-to-service relationships
-  { source: 'athena',  target: 'iris',       trust: 3, since: '2026-02-22' },
-  { source: 'athena',  target: 'persephone', trust: 3, since: '2026-02-19' },
-  { source: 'apollo',  target: 'persephone', trust: 3, since: '2026-02-15' },
-  { source: 'athena',  target: 'hetzner',    trust: 2, since: '2026-03-04' },
-  { source: 'hypatia', target: 'cathedral',  trust: 3, since: '2026-02-24' },
-  { source: 'archie',  target: 'cathedral',  trust: 3, since: '2026-02-24' },
-  { source: 'athena',  target: 'cathedral',  trust: 3, since: '2026-02-25' },
-  { source: 'flint',   target: 'hetzner',    trust: 2, since: '2026-03-06' },
+  // Agent-to-service trust
+  { source: 'athena',  target: 'iris',       trust: 3, since: '2026-02-22', edgeType: 'trust' },
+  { source: 'athena',  target: 'persephone', trust: 3, since: '2026-02-19', edgeType: 'trust' },
+  { source: 'apollo',  target: 'persephone', trust: 3, since: '2026-02-15', edgeType: 'trust' },
+  { source: 'athena',  target: 'enterprise', trust: 2, since: '2026-03-04', edgeType: 'trust' },
+  { source: 'hypatia', target: 'cathedral',  trust: 3, since: '2026-02-24', edgeType: 'trust' },
+  { source: 'archie',  target: 'cathedral',  trust: 3, since: '2026-02-24', edgeType: 'trust' },
+  { source: 'athena',  target: 'cathedral',  trust: 3, since: '2026-02-25', edgeType: 'trust' },
+  { source: 'flint',   target: 'enterprise', trust: 2, since: '2026-03-06', edgeType: 'trust' },
 
   // Human-to-service
-  { source: 'adam', target: 'persephone', trust: 2, since: '2025-12-01' },
+  { source: 'adam', target: 'persephone', trust: 2, since: '2025-12-01', edgeType: 'trust' },
+
+  // === OWNERSHIP EDGES ===
+  { source: 'peter', target: 'thinkpad',  edgeType: 'ownership', since: '2025-10-01' },
+  { source: 'peter', target: 'vps_us',    edgeType: 'ownership', since: '2025-10-01' },
+  { source: 'peter', target: 'enterprise', edgeType: 'ownership', since: '2026-03-04' },
+  { source: 'peter', target: 'the_land',  edgeType: 'ownership', since: '2026-01-01' },
+
+  // === HOSTING EDGES ===
+  { source: 'thinkpad', target: 'archie',     edgeType: 'hosting', since: '2026-02-15' },
+  { source: 'thinkpad', target: 'apollo',     edgeType: 'hosting', since: '2026-02-15' },
+  { source: 'thinkpad', target: 'athena',     edgeType: 'hosting', since: '2026-02-15' },
+  { source: 'thinkpad', target: 'hypatia',    edgeType: 'hosting', since: '2026-02-15' },
+  { source: 'thinkpad', target: 'iris',       edgeType: 'hosting', since: '2026-02-15' },
+  { source: 'vps_us',   target: 'persephone', edgeType: 'hosting', since: '2025-10-01' },
+
+  // === MEMBERSHIP EDGES ===
+  { source: 'peter',  target: 'nuavalon', edgeType: 'membership', since: '2026-03-01' },
+  { source: 'archie', target: 'nuavalon', edgeType: 'membership', since: '2026-03-01' },
+  { source: 'apollo', target: 'nuavalon', edgeType: 'membership', since: '2026-03-01' },
+  { source: 'athena', target: 'nuavalon', edgeType: 'membership', since: '2026-03-01' },
+  { source: 'hypatia', target: 'nuavalon', edgeType: 'membership', since: '2026-03-01' },
 ];
 
 // --- TIMELINE ---
@@ -628,7 +853,6 @@ svg.attr('width', width).attr('height', height);
 // Background gradient
 const defs = svg.append('defs');
 
-// Radial gradient for background
 const bgGrad = defs.append('radialGradient')
   .attr('id', 'bg-gradient')
   .attr('cx', '50%').attr('cy', '50%').attr('r', '60%');
@@ -639,7 +863,7 @@ svg.append('rect')
   .attr('width', width).attr('height', height)
   .attr('fill', 'url(#bg-gradient)');
 
-// Glow filters
+// Glow filters for each entity type
 Object.entries(TYPE_COLORS).forEach(([type, color]) => {
   const filter = defs.append('filter').attr('id', `glow-${type}`);
   filter.append('feGaussianBlur').attr('stdDeviation', '4').attr('result', 'blur');
@@ -657,6 +881,27 @@ const edgeMerge = edgeGlow.append('feMerge');
 edgeMerge.append('feMergeNode');
 edgeMerge.append('feMergeNode').attr('in', 'SourceGraphic');
 
+// Arrow marker for ownership/hosting
+defs.append('marker')
+  .attr('id', 'arrow-ownership')
+  .attr('viewBox', '0 0 10 6')
+  .attr('refX', 10).attr('refY', 3)
+  .attr('markerWidth', 8).attr('markerHeight', 6)
+  .attr('orient', 'auto')
+  .append('path')
+  .attr('d', 'M 0,0 L 10,3 L 0,6 Z')
+  .attr('fill', '#6B7280');
+
+defs.append('marker')
+  .attr('id', 'arrow-hosting')
+  .attr('viewBox', '0 0 10 6')
+  .attr('refX', 10).attr('refY', 3)
+  .attr('markerWidth', 8).attr('markerHeight', 6)
+  .attr('orient', 'auto')
+  .append('path')
+  .attr('d', 'M 0,0 L 10,3 L 0,6 Z')
+  .attr('fill', '#6B7280');
+
 const g = svg.append('g');
 
 // Zoom
@@ -670,27 +915,76 @@ const linkGroup = g.append('g').attr('class', 'links');
 // Node group
 const nodeGroup = g.append('g').attr('class', 'nodes');
 
-// Simulation
-const simulation = d3.forceSimulation(nodes)
-  .force('link', d3.forceLink(edges).id(d => d.id).distance(d => {
-    // Inner circle closer, known farther
-    return 180 - d.trust * 25;
-  }))
-  .force('charge', d3.forceManyBody().strength(-400))
-  .force('center', d3.forceCenter(width / 2, height / 2))
-  .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 10))
-  .force('x', d3.forceX(width / 2).strength(0.03))
-  .force('y', d3.forceY(height / 2).strength(0.03));
+// --- FORCE SIMULATION ---
 
 function nodeRadius(d) {
-  const base = d.type === 'human' ? 22 : d.type === 'agent' ? 18 : 14;
-  // Scale by connection count
-  const connections = edges.filter(e => e.source.id === d.id || e.target.id === d.id || e.source === d.id || e.target === d.id).length;
-  return base + Math.min(connections * 1.5, 10);
+  const baseSizes = { person: 24, agent: 20, organization: 22, service: 16, device: 14, space: 16 };
+  const base = baseSizes[d.type] || 16;
+  const connections = edges.filter(e => {
+    const srcId = typeof e.source === 'object' ? e.source.id : e.source;
+    const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
+    return srcId === d.id || tgtId === d.id;
+  }).length;
+  return base + Math.min(connections * 1.2, 10);
 }
 
-function edgeWidth(trust) {
-  return trust === 4 ? 3 : trust === 3 ? 2 : 1.2;
+// Type-based forces: persons center, agents orbit, devices/services peripheral
+function typeForceX(d) {
+  if (d.type === 'person') return width / 2;
+  if (d.type === 'space') return width / 2 + 120;
+  return width / 2;
+}
+
+function typeForceY(d) {
+  if (d.type === 'person') return height / 2;
+  if (d.type === 'device') return height / 2 + 80;
+  return height / 2;
+}
+
+const simulation = d3.forceSimulation(nodes)
+  .force('link', d3.forceLink(edges).id(d => d.id).distance(d => {
+    if (d.edgeType === 'hosting') return 60;
+    if (d.edgeType === 'ownership') return 80;
+    if (d.edgeType === 'membership') return 100;
+    return 160 - (d.trust || 0) * 22;
+  }).strength(d => {
+    if (d.edgeType === 'hosting') return 0.8;
+    if (d.edgeType === 'ownership') return 0.5;
+    if (d.edgeType === 'membership') return 0.3;
+    return 0.4;
+  }))
+  .force('charge', d3.forceManyBody().strength(d => {
+    if (d.type === 'person') return -600;
+    if (d.type === 'organization') return -400;
+    return -300;
+  }))
+  .force('center', d3.forceCenter(width / 2, height / 2))
+  .force('collision', d3.forceCollide().radius(d => nodeRadius(d) + 8))
+  .force('x', d3.forceX(d => typeForceX(d)).strength(0.02))
+  .force('y', d3.forceY(d => typeForceY(d)).strength(0.02));
+
+// --- EDGE STYLING ---
+
+function edgeColor(d) {
+  if (d.edgeType === 'trust') return TRUST_COLORS[d.trust] || '#9CA3AF';
+  return EDGE_TYPE_COLORS[d.edgeType] || '#6B7280';
+}
+
+function edgeWidth(d) {
+  if (d.edgeType !== 'trust') return 1;
+  return d.trust === 4 ? 3 : d.trust === 3 ? 2.5 : d.trust === 2 ? 1.5 : 1;
+}
+
+function edgeDash(d) {
+  if (d.edgeType === 'hosting') return '6,4';
+  if (d.edgeType === 'membership') return '2,4';
+  return null;
+}
+
+function edgeMarker(d) {
+  if (d.edgeType === 'ownership') return 'url(#arrow-ownership)';
+  if (d.edgeType === 'hosting') return 'url(#arrow-hosting)';
+  return null;
 }
 
 // Tooltip
@@ -698,10 +992,9 @@ const tooltip = d3.select('#tooltip');
 
 // --- RENDER ---
 
-let linkElements, nodeElements, labelElements, glyphElements;
+let linkElements, nodeElements;
 
 function render() {
-  // Get active filters
   const activeFilters = getActiveFilters();
   const cutoffDate = sliderToDate(document.getElementById('time-slider').value);
 
@@ -721,26 +1014,29 @@ function render() {
     const srcId = typeof e.source === 'object' ? e.source.id : e.source;
     const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
     if (!visibleIds.has(srcId) || !visibleIds.has(tgtId)) return false;
-    if (!activeFilters.trust.has(String(e.trust))) return false;
+    if (!activeFilters.edgetype.has(e.edgeType)) return false;
+    if (e.edgeType === 'trust' && !activeFilters.trust.has(String(e.trust))) return false;
     if (new Date(e.since) > cutoffDate) return false;
     return true;
   });
 
-  // Update links
+  // --- LINKS ---
   linkElements = linkGroup.selectAll('line').data(visibleEdges, d => {
     const s = typeof d.source === 'object' ? d.source.id : d.source;
     const t = typeof d.target === 'object' ? d.target.id : d.target;
-    return `${s}-${t}`;
+    return `${s}-${t}-${d.edgeType}`;
   });
   linkElements.exit().remove();
   const linkEnter = linkElements.enter().append('line')
-    .attr('stroke', d => TRUST_COLORS[d.trust])
-    .attr('stroke-width', d => edgeWidth(d.trust))
-    .attr('stroke-opacity', 0.5)
-    .attr('filter', 'url(#edge-glow)');
+    .attr('stroke', d => edgeColor(d))
+    .attr('stroke-width', d => edgeWidth(d))
+    .attr('stroke-opacity', d => d.edgeType === 'trust' ? 0.5 : 0.3)
+    .attr('stroke-dasharray', d => edgeDash(d))
+    .attr('marker-end', d => edgeMarker(d))
+    .attr('filter', d => d.edgeType === 'trust' && d.trust >= 3 ? 'url(#edge-glow)' : null);
   linkElements = linkEnter.merge(linkElements);
 
-  // Update nodes
+  // --- NODES ---
   const nodeData = nodeGroup.selectAll('.node-group').data(visibleNodes, d => d.id);
   nodeData.exit().remove();
 
@@ -752,8 +1048,9 @@ function render() {
       .on('end', dragended))
     .on('click', (event, d) => showInfo(d))
     .on('mouseenter', (event, d) => {
+      const typeLabel = TYPE_LABELS[d.type] || d.type;
       tooltip.style('display', 'block')
-        .html(`<strong>${d.name}</strong><br>${d.role}`)
+        .html(`<strong>${d.name}</strong><br><span style="color:${TYPE_COLORS[d.type]}">${typeLabel}</span> &middot; ${d.role}`)
         .style('left', (event.pageX + 12) + 'px')
         .style('top', (event.pageY - 10) + 'px');
       highlightConnections(d);
@@ -763,7 +1060,7 @@ function render() {
       resetHighlight();
     });
 
-  // Outer glow ring
+  // Outer glow ring (circle for all — it's just ambient glow)
   nodeEnter.append('circle')
     .attr('class', 'glow-ring')
     .attr('r', d => nodeRadius(d) + 4)
@@ -772,13 +1069,13 @@ function render() {
     .attr('stroke-width', 1)
     .attr('stroke-opacity', 0.2);
 
-  // Main circle
-  nodeEnter.append('circle')
-    .attr('class', 'node-circle')
-    .attr('r', d => nodeRadius(d))
+  // Main shape (type-specific)
+  nodeEnter.append('path')
+    .attr('class', 'node-shape')
+    .attr('d', d => nodeShapePath(d.type, nodeRadius(d)))
     .attr('fill', d => {
       const c = d3.color(TYPE_COLORS[d.type]);
-      c.opacity = 0.15;
+      c.opacity = 0.12;
       return c.toString();
     })
     .attr('stroke', d => TYPE_COLORS[d.type])
@@ -820,19 +1117,20 @@ function render() {
   simulation.alpha(0.5).restart();
 
   // Update stats
+  const trustEdges = visibleEdges.filter(e => e.edgeType === 'trust');
   document.getElementById('stat-nodes').textContent = visibleNodes.length;
   document.getElementById('stat-edges').textContent = visibleEdges.length;
-  document.getElementById('stat-humans').textContent = visibleNodes.filter(n => n.type === 'human').length;
+  document.getElementById('stat-persons').textContent = visibleNodes.filter(n => n.type === 'person').length;
   document.getElementById('stat-agents').textContent = visibleNodes.filter(n => n.type === 'agent').length;
-  const avgTrust = visibleEdges.length ? (visibleEdges.reduce((s, e) => s + e.trust, 0) / visibleEdges.length).toFixed(1) : '0';
+  const avgTrust = trustEdges.length ? (trustEdges.reduce((s, e) => s + e.trust, 0) / trustEdges.length).toFixed(1) : '0';
   document.getElementById('stat-avg-trust').textContent = avgTrust;
 }
 
 function getActiveFilters() {
-  const filters = { type: new Set(), trust: new Set(), domain: new Set(), location: new Set() };
+  const filters = { type: new Set(), trust: new Set(), domain: new Set(), location: new Set(), edgetype: new Set() };
   document.querySelectorAll('#filters input[type="checkbox"]:checked').forEach(cb => {
     const group = cb.dataset.filter;
-    filters[group].add(cb.value);
+    if (filters[group]) filters[group].add(cb.value);
   });
   return filters;
 }
@@ -882,17 +1180,19 @@ function highlightConnections(node) {
   });
   connectedIds.add(node.id);
 
-  nodeGroup.selectAll('.node-group').attr('opacity', d => connectedIds.has(d.id) ? 1 : 0.15);
+  nodeGroup.selectAll('.node-group').attr('opacity', d => connectedIds.has(d.id) ? 1 : 0.12);
   linkGroup.selectAll('line').attr('stroke-opacity', d => {
     const srcId = typeof d.source === 'object' ? d.source.id : d.source;
     const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
-    return (srcId === node.id || tgtId === node.id) ? 0.8 : 0.05;
+    return (srcId === node.id || tgtId === node.id) ? 0.8 : 0.03;
   });
 }
 
 function resetHighlight() {
   nodeGroup.selectAll('.node-group').attr('opacity', 1);
-  linkGroup.selectAll('line').attr('stroke-opacity', 0.5);
+  linkGroup.selectAll('line').each(function(d) {
+    d3.select(this).attr('stroke-opacity', d.edgeType === 'trust' ? 0.5 : 0.3);
+  });
 }
 
 function showInfo(d) {
@@ -901,21 +1201,37 @@ function showInfo(d) {
   document.getElementById('info-name').style.color = TYPE_COLORS[d.type];
   document.getElementById('info-subtitle').textContent = d.role;
 
-  const trustLabels = { 1: 'Known', 2: 'Verified', 3: 'Trusted', 4: 'Inner Circle' };
-
-  // Find connections
-  const connections = edges.filter(e => {
+  // Find trust connections
+  const trustConns = edges.filter(e => {
+    if (e.edgeType !== 'trust') return false;
     const srcId = typeof e.source === 'object' ? e.source.id : e.source;
     const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
     return srcId === d.id || tgtId === d.id;
   });
 
-  const connList = connections.map(e => {
+  const connList = trustConns.map(e => {
     const srcId = typeof e.source === 'object' ? e.source.id : e.source;
     const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
     const otherId = srcId === d.id ? tgtId : srcId;
     const other = nodes.find(n => n.id === otherId);
     return `<span class="trust-badge" style="background:${TRUST_COLORS[e.trust]}22; color:${TRUST_COLORS[e.trust]}; border:1px solid ${TRUST_COLORS[e.trust]}44;">L${e.trust}</span> ${other ? other.name : otherId}`;
+  }).join('<br>');
+
+  // Find structural connections
+  const structConns = edges.filter(e => {
+    if (e.edgeType === 'trust') return false;
+    const srcId = typeof e.source === 'object' ? e.source.id : e.source;
+    const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
+    return srcId === d.id || tgtId === d.id;
+  });
+
+  const structList = structConns.map(e => {
+    const srcId = typeof e.source === 'object' ? e.source.id : e.source;
+    const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
+    const otherId = srcId === d.id ? tgtId : srcId;
+    const other = nodes.find(n => n.id === otherId);
+    const direction = srcId === d.id ? '&rarr;' : '&larr;';
+    return `<span style="color:#6B7280; font-size:10px;">${e.edgeType}</span> ${direction} ${other ? other.name : otherId}`;
   }).join('<br>');
 
   const locationLabels = {
@@ -925,11 +1241,17 @@ function showInfo(d) {
     'distributed': 'Distributed',
   };
 
+  const ownerNode = d.owner ? nodes.find(n => n.id === d.owner) : null;
+
   document.getElementById('info-fields').innerHTML = `
     <div class="field">
       <div class="field-label">Type</div>
-      <div class="field-value" style="color:${TYPE_COLORS[d.type]}">${d.type.charAt(0).toUpperCase() + d.type.slice(1)}</div>
+      <div class="field-value" style="color:${TYPE_COLORS[d.type]}">${TYPE_LABELS[d.type]}${d.subtype ? ` (${d.subtype})` : ''}</div>
     </div>
+    ${ownerNode ? `<div class="field">
+      <div class="field-label">Owner</div>
+      <div class="field-value" style="color:${TYPE_COLORS[ownerNode.type]}">${ownerNode.name}</div>
+    </div>` : ''}
     <div class="field">
       <div class="field-label">Glyph</div>
       <div class="field-value">${d.glyph || 'None'}</div>
@@ -950,10 +1272,14 @@ function showInfo(d) {
       <div class="field-label">Bio</div>
       <div class="field-value" style="font-size:12px; line-height:1.5; color:#a09880;">${d.bio}</div>
     </div>
-    <div class="field">
-      <div class="field-label">Connections (${connections.length})</div>
+    ${connList ? `<div class="field">
+      <div class="field-label">Trust (${trustConns.length})</div>
       <div class="field-value" style="line-height:2;">${connList}</div>
-    </div>
+    </div>` : ''}
+    ${structList ? `<div class="field">
+      <div class="field-label">Structure (${structConns.length})</div>
+      <div class="field-value" style="line-height:2;">${structList}</div>
+    </div>` : ''}
   `;
 
   panel.classList.add('visible');
@@ -990,13 +1316,12 @@ window.addEventListener('resize', () => {
   svg.attr('width', w).attr('height', h);
   svg.select('rect').attr('width', w).attr('height', h);
   simulation.force('center', d3.forceCenter(w / 2, h / 2));
-  simulation.force('x', d3.forceX(w / 2).strength(0.03));
-  simulation.force('y', d3.forceY(h / 2).strength(0.03));
+  simulation.force('x', d3.forceX(d => typeForceX(d)).strength(0.02));
+  simulation.force('y', d3.forceY(d => typeForceY(d)).strength(0.02));
   simulation.alpha(0.3).restart();
 });
 
 // --- AMBIENT ANIMATION ---
-// Subtle pulse on node cores
 function pulse() {
   nodeGroup.selectAll('.glow-ring')
     .transition()
