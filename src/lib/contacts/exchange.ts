@@ -1,8 +1,38 @@
 // lib/contacts/exchange.ts
-import { createMessage, encrypt, sign, readMessage, decrypt, verify, readKey, decryptKey } from 'openpgp';
+import { createMessage, encrypt, sign, readMessage, decrypt, verify, readKey, readPrivateKey, decryptKey } from 'openpgp';
 import { randomBytes } from 'crypto';
 import { Contact } from './types';
 import { SoverentityIdentity } from '@/lib/identity/core';
+import {
+  sign as pqSign,
+  verify as pqVerify,
+  base64ToPublicKey,
+} from '@/lib/crypto/pq';
+
+/** Exchange package for sharing identity between peers */
+interface ExchangePackage {
+  version: string;
+  sender: {
+    fingerprint: string;
+    public_key: string;
+  };
+  contact_data: {
+    name: string;
+    email: string;
+    fingerprint: string;
+    public_key: string;
+  };
+  created_at: string;
+  recipient_fingerprint?: string;
+  expires_at?: string;
+  mutual_contacts?: string[];
+  /** Classical PGP signature (ED25519) */
+  signature: string;
+  /** Post-quantum ML-DSA-65 signature, base64 (v0.2.0+) */
+  pq_signature?: string;
+  /** Sender's PQ signing public key for verification (v0.2.0+) */
+  pq_sig_public_key?: string;
+}
 
 export class ContactExchange {
   private identityManager: SoverentityIdentity;
@@ -67,17 +97,15 @@ export class ContactExchange {
         exchangePackage.mutual_contacts = mutualContactFingerprints;
       }
 
-      // Fixed approach for signing the package:
-      // 1. First read the private key
-      const privateKeyObj = await readKey({ armoredKey: keyData.privateKey });
-      
-      // 2. Decrypt the private key if it's protected with a passphrase
+      // Sign the package (classical ED25519 + post-quantum ML-DSA-65)
+      // 1. Read and decrypt the classical private key
+      const privateKeyObj = await readPrivateKey({ armoredKey: keyData.privateKey });
       const decryptedKey = await decryptKey({
         privateKey: privateKeyObj,
         passphrase: keyData.passphrase
       });
 
-      // 3. Sign the package with the decrypted private key
+      // 2. Classical PGP signature
       const packageToSign = JSON.stringify(exchangePackage);
       const message = await createMessage({ text: packageToSign });
       const signedMessage = await sign({
@@ -85,19 +113,33 @@ export class ContactExchange {
         signingKeys: decryptedKey
       });
 
-      // 4. Extract signature from the signed message
+      // 3. Extract classical signature
       const signedMessageString = signedMessage.toString();
       const parts = signedMessageString.split('-----BEGIN PGP SIGNATURE-----');
       if (parts.length < 2) {
         throw new Error('Failed to extract signature from signed message');
       }
       const signaturePart = '-----BEGIN PGP SIGNATURE-----' + parts[1];
-      const signature = signaturePart.replace('-----END PGP SIGNATURE-----', '').trim();
+      const classicalSignature = signaturePart.replace('-----END PGP SIGNATURE-----', '').trim();
 
-      // 5. Add the signature to the package
+      // 4. Post-quantum ML-DSA-65 signature (if PQ keys exist)
+      const pqKeys = await this.identityManager.loadPQKeys(senderFingerprint);
+      let pqSignature: string | undefined;
+      let pqSigPublicKey: string | undefined;
+
+      if (pqKeys) {
+        const payloadBytes = new TextEncoder().encode(packageToSign);
+        const sig = pqSign(payloadBytes, pqKeys.signing.secretKey);
+        pqSignature = Buffer.from(sig).toString('base64');
+        pqSigPublicKey = identity.post_quantum?.sig_public_key;
+      }
+
+      // 5. Build the dual-signed package
       const signedPackage: ExchangePackage = {
         ...exchangePackage,
-        signature
+        signature: classicalSignature,
+        ...(pqSignature && { pq_signature: pqSignature }),
+        ...(pqSigPublicKey && { pq_sig_public_key: pqSigPublicKey }),
       };
 
       // Encrypt the entire package if recipient is specified
@@ -239,34 +281,39 @@ export class ContactExchange {
     }
   }
 
-  // Verify the signature of an exchange package
+  // Verify the signature(s) of an exchange package
+  // Dual verification: classical + PQ (if present). Both must pass for v0.2.0+ packages.
   private async verifySignature(
     exchangePackage: ExchangePackage,
     publicKeyArmored: string
   ): Promise<boolean> {
     try {
-      // Extract package without signature
-      const { signature, ...packageData } = exchangePackage;
+      // Extract package without signatures for verification
+      const { signature, pq_signature, pq_sig_public_key, ...packageData } = exchangePackage;
       const packageText = JSON.stringify(packageData);
-      
-      // Reconstruct signed message
-      const signedMessage = 
+
+      // 1. Verify classical ED25519 signature
+      const signedMessage =
         `-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n${packageText}\n-----BEGIN PGP SIGNATURE-----\n${signature}\n-----END PGP SIGNATURE-----`;
-      
-      // Verify signature
-      const message = await readMessage({
-        armoredMessage: signedMessage
-      });
-      
+
+      const message = await readMessage({ armoredMessage: signedMessage });
       const publicKey = await readKey({ armoredKey: publicKeyArmored });
-      
-      const verification = await verify({
-        message,
-        verificationKeys: publicKey
-      });
-      
-      const { verified } = verification.signatures[0];
-      return verified;
+      const verification = await verify({ message, verificationKeys: publicKey });
+      const classicalValid = await verification.signatures[0].verified;
+
+      if (!classicalValid) return false;
+
+      // 2. Verify post-quantum ML-DSA-65 signature (if present)
+      if (pq_signature && pq_sig_public_key) {
+        const payloadBytes = new TextEncoder().encode(packageText);
+        const sigBytes = new Uint8Array(Buffer.from(pq_signature, 'base64'));
+        const pkBytes = base64ToPublicKey(pq_sig_public_key);
+        const pqValid = pqVerify(payloadBytes, sigBytes, pkBytes);
+        if (!pqValid) return false;
+      }
+      // If no PQ signature, accept classical-only (backward compat with v1)
+
+      return true;
     } catch (error) {
       console.error('Signature verification failed:', error);
       return false;

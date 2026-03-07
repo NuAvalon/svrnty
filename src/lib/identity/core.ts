@@ -4,6 +4,19 @@ import { writeFile, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
+import {
+  generatePQKeypairBundle,
+  serializeKeypairBundle,
+  deserializeKeypairBundle,
+  publicKeyToBase64,
+  type PQKeypairBundle,
+} from '@/lib/crypto/pq';
+import {
+  createKeyVault,
+  type KeyVault,
+  type Shard,
+  type PrivateKeyBundle,
+} from '@/lib/crypto/recovery';
 
 interface IdentityOptions {
   storageDir?: string;
@@ -33,6 +46,13 @@ interface IdentityData {
     client_version: string;
     key_type: string;
     key_usage: string[];
+  };
+  /** Post-quantum public keys (v0.2.0+) */
+  post_quantum?: {
+    sig_algorithm: 'ML-DSA-65';
+    sig_public_key: string;      // base64
+    kem_algorithm: 'ML-KEM-768';
+    kem_public_key: string;      // base64
   };
 }
 
@@ -64,15 +84,26 @@ export class SoverentityIdentity {
     }
   }
 
-  async generateIdentity({ name, email }: UserID): Promise<{
+  async generateIdentity({ name, email }: UserID, options?: {
+    /** Shamir threshold (default: 3) */
+    shamirThreshold?: number;
+    /** Shamir total shares (default: 5) */
+    shamirShares?: number;
+  }): Promise<{
     identity: IdentityData;
     fingerprint: string;
+    /** Recovery seed phrase — show ONCE, user writes down. Do NOT store. */
+    seedPhrase: string;
+    /** Shamir shards — distribute to L3+ contacts */
+    shards: Shard[];
+    /** Key vault — stored locally, encrypted */
+    vault: KeyVault;
   }> {
     try {
-      // Generate random passphrase
+      // Generate random passphrase for classical key
       const passphrase = randomBytes(32).toString('base64');
 
-      // Generate PGP key pair
+      // Generate PGP key pair (classical)
       const { privateKey, publicKey } = await generateKey({
         type: 'ecc', // Curve25519
         curve: 'ed25519',
@@ -85,9 +116,12 @@ export class SoverentityIdentity {
       const pubKeyObj = await readKey({ armoredKey: publicKey });
       const fingerprint = pubKeyObj.getFingerprint();
 
-      // Create identity claim
+      // Generate post-quantum keys
+      const pqBundle = generatePQKeypairBundle();
+
+      // Create identity claim (v0.2.0 with PQ)
       const identity: IdentityData = {
-        version: '0.1.0',
+        version: '0.2.0',
         created_at: new Date().toISOString(),
         identity: {
           name,
@@ -101,25 +135,49 @@ export class SoverentityIdentity {
           verified_at: null
         },
         metadata: {
-          client_version: '0.1.0',
-          key_type: 'ED25519',
-          key_usage: ['identity', 'signing']
-        }
+          client_version: '0.2.0',
+          key_type: 'ED25519+ML-DSA-65+ML-KEM-768',
+          key_usage: ['identity', 'signing', 'key-encapsulation']
+        },
+        post_quantum: {
+          sig_algorithm: 'ML-DSA-65',
+          sig_public_key: publicKeyToBase64(pqBundle.signing.publicKey),
+          kem_algorithm: 'ML-KEM-768',
+          kem_public_key: publicKeyToBase64(pqBundle.kem.publicKey),
+        },
       };
 
-      // Store private key securely
-      await this.storeKey(fingerprint, {
-        privateKey,
-        passphrase,
-      });
+      // Store classical private key (backward compat)
+      await this.storeKey(fingerprint, { privateKey, passphrase });
+
+      // Store PQ private keys
+      await this.storePQKeys(fingerprint, pqBundle);
+
+      // Create key vault with Shamir shards for recovery
+      const threshold = options?.shamirThreshold ?? 3;
+      const totalShares = options?.shamirShares ?? 5;
+
+      const keyBundle: PrivateKeyBundle = {
+        classical_private_key: privateKey,
+        classical_passphrase: passphrase,
+        pq_signing_secret_key: Buffer.from(pqBundle.signing.secretKey).toString('base64'),
+        pq_kem_secret_key: Buffer.from(pqBundle.kem.secretKey).toString('base64'),
+      };
+
+      const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(
+        keyBundle, threshold, totalShares, fingerprint
+      );
+
+      // Store vault locally
+      await this.storeVault(fingerprint, vault);
+
+      // Zero master secret — it must not persist in memory
+      masterSecret.fill(0);
 
       // Store identity claim
       await this.storeIdentity(fingerprint, identity);
 
-      return {
-        identity,
-        fingerprint
-      };
+      return { identity, fingerprint, seedPhrase, shards, vault };
     } catch (error) {
       console.error('Failed to generate identity:', error);
       throw error;
@@ -221,6 +279,37 @@ async loadIdentityData(fingerprint: string): Promise<IdentityData> {
     } catch (error) {
       console.error(`Failed to load key for fingerprint ${fingerprint}:`, error);
       throw new Error(`Failed to load key: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  private async storePQKeys(fingerprint: string, bundle: PQKeypairBundle): Promise<void> {
+    const pqKeyPath = join(this.storageDir, `${fingerprint}.pq.key`);
+    await writeFile(pqKeyPath, JSON.stringify(serializeKeypairBundle(bundle)));
+  }
+
+  async loadPQKeys(fingerprint: string): Promise<PQKeypairBundle | null> {
+    try {
+      const pqKeyPath = join(this.storageDir, `${fingerprint}.pq.key`);
+      const data = await readFile(pqKeyPath, 'utf8');
+      return deserializeKeypairBundle(JSON.parse(data));
+    } catch {
+      // v1 identities don't have PQ keys — return null
+      return null;
+    }
+  }
+
+  private async storeVault(fingerprint: string, vault: KeyVault): Promise<void> {
+    const vaultPath = join(this.storageDir, `${fingerprint}.vault`);
+    await writeFile(vaultPath, JSON.stringify(vault, null, 2));
+  }
+
+  async loadVault(fingerprint: string): Promise<KeyVault | null> {
+    try {
+      const vaultPath = join(this.storageDir, `${fingerprint}.vault`);
+      const data = await readFile(vaultPath, 'utf8');
+      return JSON.parse(data);
+    } catch {
+      return null;
     }
   }
 
