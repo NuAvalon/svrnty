@@ -354,19 +354,19 @@
     <h3>Trust Level</h3>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="1" checked>
-      <span style="color:#9CA3AF">L1</span> Known
+      <span style="color:#9CA3AF">&#9679;</span> Known
     </label>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="2" checked>
-      <span style="color:#60A5FA">L2</span> Verified
+      <span style="color:#60A5FA">&#9679;</span> Verified
     </label>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="3" checked>
-      <span style="color:#34D399">L3</span> Trusted
+      <span style="color:#34D399">&#9679;</span> Trusted
     </label>
     <label class="filter-option">
       <input type="checkbox" data-filter="trust" value="4" checked>
-      <span style="color:#FBBF24">L4</span> Inner Circle
+      <span style="color:#FBBF24">&#9679;</span> Inner Circle
     </label>
   </div>
 
@@ -459,19 +459,19 @@
   <h3>Trust Edges</h3>
   <div class="legend-row">
     <div class="legend-line" style="background:#9CA3AF;"></div>
-    L1 Known
+    Known
   </div>
   <div class="legend-row">
     <div class="legend-line" style="background:#60A5FA; height:2px;"></div>
-    L2 Verified
+    Verified
   </div>
   <div class="legend-row">
     <div class="legend-line" style="background:#34D399; height:3px;"></div>
-    L3 Trusted
+    Trusted
   </div>
   <div class="legend-row">
     <div class="legend-line" style="background:#FBBF24; height:3px; box-shadow: 0 0 6px rgba(251,191,36,0.5);"></div>
-    L4 Inner Circle
+    Inner Circle
   </div>
 
   <div style="margin: 10px 0; border-top: 1px solid rgba(180,160,100,0.1);"></div>
@@ -1214,7 +1214,7 @@ function showInfo(d) {
     const tgtId = typeof e.target === 'object' ? e.target.id : e.target;
     const otherId = srcId === d.id ? tgtId : srcId;
     const other = nodes.find(n => n.id === otherId);
-    return `<span class="trust-badge" style="background:${TRUST_COLORS[e.trust]}22; color:${TRUST_COLORS[e.trust]}; border:1px solid ${TRUST_COLORS[e.trust]}44;">L${e.trust}</span> ${other ? other.name : otherId}`;
+    return `<span class="trust-badge" style="background:${TRUST_COLORS[e.trust]}22; color:${TRUST_COLORS[e.trust]}; border:1px solid ${TRUST_COLORS[e.trust]}44;">${TRUST_LABELS[e.trust]}</span> ${other ? other.name : otherId}`;
   }).join('<br>');
 
   // Find structural connections
