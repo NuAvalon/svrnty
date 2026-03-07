@@ -1,14 +1,14 @@
 import './globals.css'
 
 export const metadata = {
-  title: 'Soverentity — Self-Sovereign Trust Network',
-  description: 'Your keys, your data, your trust. Decentralized identity and contact management with post-quantum encryption.',
+  title: 'SVRNTY — Self-Sovereign Trust Network',
+  description: 'Your keys, your data, your trust. Decentralized identity and encrypted contact management. From NuAvalon.',
   manifest: '/manifest.json',
   themeColor: '#c8a84e',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Soverentity',
+    title: 'SVRNTY',
   },
 }
 
@@ -24,12 +24,13 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark">
       <head>
         <link rel="icon" href="/icon-192.svg" type="image/svg+xml" />
         <link rel="apple-touch-icon" href="/icon-192.svg" />
       </head>
       <body>
+        <div className="stars" />
         {children}
         <script
           dangerouslySetInnerHTML={{

@@ -2,60 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
-    --radius: 0.5rem;
-    --chart-1: 12 76% 61%;
-    --chart-2: 173 58% 39%;
-    --chart-3: 197 37% 24%;
-    --chart-4: 43 74% 66%;
-    --chart-5: 27 87% 67%;
-  }
-
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --chart-1: 220 70% 50%;
-    --chart-2: 160 60% 45%;
-    --chart-3: 30 80% 55%;
-    --chart-4: 280 65% 60%;
-    --chart-5: 340 75% 55%;
+    /* SVRNTY Dark Space Theme */
+    --background: 240 33% 4%;
+    --foreground: 40 15% 87%;
+    --card: 240 25% 6%;
+    --card-foreground: 40 15% 87%;
+    --popover: 240 25% 6%;
+    --popover-foreground: 40 15% 87%;
+    --primary: 43 60% 55%;
+    --primary-foreground: 240 33% 4%;
+    --secondary: 240 15% 12%;
+    --secondary-foreground: 40 15% 87%;
+    --muted: 240 15% 12%;
+    --muted-foreground: 35 10% 50%;
+    --accent: 174 55% 55%;
+    --accent-foreground: 240 33% 4%;
+    --destructive: 10 55% 55%;
+    --destructive-foreground: 40 15% 87%;
+    --border: 43 25% 18%;
+    --input: 240 15% 10%;
+    --ring: 43 60% 55%;
+    --radius: 0.75rem;
+    --chart-1: 43 60% 55%;
+    --chart-2: 174 55% 55%;
+    --chart-3: 270 30% 50%;
+    --chart-4: 10 55% 55%;
+    --chart-5: 150 40% 45%;
   }
 }
 
@@ -63,7 +39,200 @@
   * {
     @apply border-border;
   }
+
   body {
     @apply bg-background text-foreground;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: #0a0a0f;
+    min-height: 100vh;
+  }
+
+  /* Radial background glow */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(ellipse at 50% 30%, rgba(18, 18, 31, 0.8) 0%, rgba(10, 10, 15, 1) 70%);
+    pointer-events: none;
+    z-index: -1;
   }
 }
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(180, 160, 100, 0.2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(180, 160, 100, 0.35); }
+
+/* --- Glass panels --- */
+.glass {
+  background: rgba(15, 15, 25, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(180, 160, 100, 0.12);
+}
+
+/* --- Glow effects --- */
+.glow-amber {
+  box-shadow: 0 0 20px rgba(200, 168, 78, 0.08), 0 0 60px rgba(200, 168, 78, 0.03);
+}
+
+.glow-teal {
+  box-shadow: 0 0 20px rgba(78, 205, 196, 0.08), 0 0 60px rgba(78, 205, 196, 0.03);
+}
+
+/* --- Card overrides --- */
+[data-slot="card"] {
+  background: rgba(15, 15, 25, 0.75) !important;
+  backdrop-filter: blur(12px);
+  border-color: rgba(180, 160, 100, 0.12) !important;
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+}
+
+[data-slot="card"]:hover {
+  border-color: rgba(180, 160, 100, 0.22) !important;
+}
+
+/* --- Input overrides --- */
+input, textarea, select {
+  background: rgba(10, 10, 15, 0.7) !important;
+  border-color: rgba(180, 160, 100, 0.15) !important;
+  color: #e0dcd0 !important;
+  font-family: 'JetBrains Mono', monospace !important;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: rgba(200, 168, 78, 0.4) !important;
+  box-shadow: 0 0 0 2px rgba(200, 168, 78, 0.08) !important;
+  outline: none !important;
+}
+
+input::placeholder, textarea::placeholder {
+  color: rgba(138, 128, 112, 0.5) !important;
+}
+
+/* --- Button overrides --- */
+button[data-slot="button"] {
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.5px;
+  transition: all 0.2s ease;
+}
+
+/* Primary buttons */
+button[data-variant="default"] {
+  background: rgba(200, 168, 78, 0.15) !important;
+  border: 1px solid rgba(200, 168, 78, 0.3) !important;
+  color: #c8a84e !important;
+}
+
+button[data-variant="default"]:hover {
+  background: rgba(200, 168, 78, 0.25) !important;
+  box-shadow: 0 0 16px rgba(200, 168, 78, 0.12);
+}
+
+/* Outline buttons */
+button[data-variant="outline"] {
+  background: transparent !important;
+  border-color: rgba(180, 160, 100, 0.2) !important;
+  color: #8a8070 !important;
+}
+
+button[data-variant="outline"]:hover {
+  background: rgba(180, 160, 100, 0.08) !important;
+  color: #e0dcd0 !important;
+}
+
+/* --- Tab overrides --- */
+[role="tablist"] {
+  background: rgba(15, 15, 25, 0.6) !important;
+  border: 1px solid rgba(180, 160, 100, 0.1) !important;
+  backdrop-filter: blur(12px);
+  border-radius: 10px !important;
+  padding: 4px !important;
+}
+
+[role="tab"] {
+  color: #5a5548 !important;
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 12px !important;
+  letter-spacing: 1px !important;
+  text-transform: uppercase !important;
+  border-radius: 7px !important;
+  transition: all 0.2s ease !important;
+}
+
+[role="tab"][data-state="active"] {
+  background: rgba(200, 168, 78, 0.12) !important;
+  color: #c8a84e !important;
+  box-shadow: 0 0 12px rgba(200, 168, 78, 0.06) !important;
+}
+
+[role="tab"]:hover:not([data-state="active"]) {
+  color: #8a8070 !important;
+}
+
+/* --- Badge overrides --- */
+[data-slot="badge"] {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+/* --- Alert overrides --- */
+[role="alert"] {
+  background: rgba(15, 15, 25, 0.7) !important;
+  border-color: rgba(180, 160, 100, 0.15) !important;
+}
+
+/* --- Dialog overrides --- */
+[role="dialog"] {
+  background: rgba(15, 15, 25, 0.95) !important;
+  border: 1px solid rgba(180, 160, 100, 0.15) !important;
+  backdrop-filter: blur(16px);
+}
+
+/* --- Selection --- */
+::selection {
+  background: rgba(200, 168, 78, 0.25);
+  color: #fff;
+}
+
+/* --- Ambient star field (subtle) --- */
+@keyframes twinkle {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+}
+
+.stars {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: -1;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(200, 168, 78, 0.3) 0%, transparent 100%),
+    radial-gradient(1px 1px at 40% 70%, rgba(78, 205, 196, 0.2) 0%, transparent 100%),
+    radial-gradient(1px 1px at 70% 20%, rgba(180, 160, 100, 0.25) 0%, transparent 100%),
+    radial-gradient(1px 1px at 90% 60%, rgba(122, 106, 154, 0.2) 0%, transparent 100%),
+    radial-gradient(1px 1px at 15% 80%, rgba(200, 168, 78, 0.15) 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 45%, rgba(78, 205, 196, 0.15) 0%, transparent 100%),
+    radial-gradient(1px 1px at 80% 85%, rgba(180, 160, 100, 0.2) 0%, transparent 100%),
+    radial-gradient(1px 1px at 35% 15%, rgba(200, 168, 78, 0.2) 0%, transparent 100%);
+}
+
+/* --- Text utilities --- */
+.text-amber { color: #c8a84e; }
+.text-teal { color: #4ecdc4; }
+.text-copper { color: #d4785a; }
+.text-lavender { color: #7a6a9a; }
+.text-steel { color: #5a7a9a; }
+.text-sage { color: #6a9a6a; }
+.text-dust { color: #8a8070; }
+.text-bone { color: #e0dcd0; }
+
+.border-amber { border-color: rgba(200, 168, 78, 0.2); }
+.bg-amber-subtle { background: rgba(200, 168, 78, 0.08); }
