@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="32" fill="#0a0a0f"/>
+  <!-- Shield outline -->
+  <path d="M96 28 L148 52 L148 100 C148 132 124 156 96 168 C68 156 44 132 44 100 L44 52 Z"
+        fill="none" stroke="#c8a84e" stroke-width="3" opacity="0.8"/>
+  <!-- Inner shield -->
+  <path d="M96 42 L136 60 L136 98 C136 124 116 144 96 154 C76 144 56 124 56 98 L56 60 Z"
+        fill="#c8a84e" opacity="0.1"/>
+  <!-- Key symbol -->
+  <circle cx="96" cy="82" r="14" fill="none" stroke="#c8a84e" stroke-width="2.5"/>
+  <line x1="96" y1="96" x2="96" y2="128" stroke="#c8a84e" stroke-width="2.5"/>
+  <line x1="96" y1="112" x2="108" y2="112" stroke="#c8a84e" stroke-width="2.5"/>
+  <line x1="96" y1="122" x2="106" y2="122" stroke="#c8a84e" stroke-width="2.5"/>
+  <!-- Trust nodes (small circles around shield) -->
+  <circle cx="52" cy="46" r="4" fill="#4ecdc4" opacity="0.6"/>
+  <circle cx="140" cy="46" r="4" fill="#4ecdc4" opacity="0.6"/>
+  <circle cx="38" cy="90" r="3" fill="#4ecdc4" opacity="0.4"/>
+  <circle cx="154" cy="90" r="3" fill="#4ecdc4" opacity="0.4"/>
+  <circle cx="62" cy="148" r="3" fill="#c8a84e" opacity="0.4"/>
+  <circle cx="130" cy="148" r="3" fill="#c8a84e" opacity="0.4"/>
+  <!-- Connection lines to trust nodes -->
+  <line x1="62" y1="52" x2="52" y2="46" stroke="#4ecdc4" stroke-width="0.5" opacity="0.3"/>
+  <line x1="130" y1="52" x2="140" y2="46" stroke="#4ecdc4" stroke-width="0.5" opacity="0.3"/>
+</svg>
