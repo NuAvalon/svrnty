@@ -19,6 +19,17 @@ export {
 
 export { migrateContact, migrateContacts } from './migration';
 
+export {
+  formatSignalMessage,
+  parseSignalMessage,
+  SignalTransport,
+  ClipboardTransport,
+  registerTransport,
+  getAvailableTransports,
+  getTransport,
+} from './transport';
+export type { TransportAdapter } from './transport';
+
 export type {
   TrustEdge,
   TrustGraph,
