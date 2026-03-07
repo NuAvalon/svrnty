@@ -33,7 +33,7 @@ export async function GET() {
     
     let baseDirExists = false;
     let contactsDirExists = false;
-    let baseDirContents = [];
+    let baseDirContents: string[] = [];
     let baseDirWritable = false;
     let contactsDirWritable = false;
     
@@ -61,7 +61,7 @@ export async function GET() {
     }
     
     // Try to find any existing identity files for testing
-    let identityFiles = [];
+    let identityFiles: { name: string; fingerprint: string; type: string }[] = [];
     if (baseDirExists) {
       try {
         identityFiles = (await readdir(baseDir))
