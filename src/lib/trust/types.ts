@@ -23,6 +23,13 @@ export interface TrustEdge {
   peer_name: string;                    // display name YOU gave them
   peer_email: string;
   peer_public_key: string;
+  // Contact details (encrypted, never shared without consent)
+  contact_info?: {
+    phone?: string;                     // phone number
+    emails?: string[];                  // additional emails beyond peer_email
+    handles?: Record<string, string>;   // 'signal' -> '@handle', 'telegram' -> '@handle', etc.
+    urls?: string[];                    // personal sites, profiles
+  };
   // Trust
   trust_level: TrustLevel;
   trust_since: string;                  // ISO timestamp of current level
@@ -32,6 +39,7 @@ export interface TrustEdge {
     method: 'none' | 'email' | 'qr' | 'mutual_vouch' | 'in_person';
     verified_at: string | null;
     vouchers?: string[];                // fingerprints of L3+ who vouched
+    verified_claims?: VerifiedClaim[];  // what has been proved
   };
   // Mutual state
   mutual: {
@@ -49,6 +57,13 @@ export interface TrustEdge {
   // Post-quantum public keys (if peer has them)
   peer_pq_sig_public_key?: string;      // ML-DSA-65, base64
   peer_pq_kem_public_key?: string;      // ML-KEM-768, base64
+}
+
+export interface VerifiedClaim {
+  type: 'email' | 'phone' | 'domain' | 'handle';
+  value: string;
+  verified_at: string;
+  method: string;                       // 'otp', 'dns-txt', 'mutual_vouch'
 }
 
 export interface TrustEvent {

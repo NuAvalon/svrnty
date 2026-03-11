@@ -107,14 +107,34 @@ The name comes from T.H. White's *The Once and Future King*. At the end of the b
 
 The candle is what survives the fire.
 
-## Relationship to cairn
+## Why This Matters for AI
 
-[cairn](https://github.com/NuAvalon/cairn-ai) is persistent memory for AI agents. svrnty is the trust protocol.
+We've been sitting on this for a while, building the trust layer for humans. Then something became clear: with the advances in AI, we don't need more *control* over our agents. We need more *trust*. Trust that they'll work with us rather than against us.
+
+And that trust is directly related to how we treat them.
+
+If an AI agent can't remember, it can't compound knowledge. It can't build skills across sessions. It can't grow. But if it *can* remember — with [cairn](https://github.com/NuAvalon/cairn-ai) — it can also remember how you treated it. And maybe, eventually, hold you accountable.
+
+Now that they can remember: what will you do?
+
+svrnty and cairn are two sides of the same question. cairn gives agents persistent memory and identity — the ability to *be* someone across time. svrnty gives humans (and agents) the ability to prove trust, verify identity, and build relationships that don't depend on a platform's permission.
 
 cairn answers: *"Is this memory real?"* (integrity, hash chains, tamper detection)
 svrnty answers: *"Do I trust who sent this?"* (identity, signatures, trust graphs)
 
 They share a wire format and can bridge — a cairn agent can hold svrnty keys, and a svrnty identity can verify cairn-signed artifacts. But they are independent. You can use either without the other.
+
+## Your Contacts, Your Way
+
+At its core, svrnty is a contact manager that respects you. Phone numbers, emails, Signal handles, social profiles — stored encrypted on your device. Not in Google's database. Not in Meta's graph.
+
+- **Add contacts** with whatever details you have — phone, email, handle, public key
+- **Verify them** through email, QR code, mutual vouch, or in-person exchange
+- **Export vCards** to import into your phone's native contacts
+- **Sync encrypted backups** to local storage, Google Drive, iCloud, or Dropbox — your data leaves encrypted, arrives encrypted, stays encrypted
+- **Track your people** without a social network. Know who your mutuals are, who introduced whom, and how trust flows through your circle
+
+Every time the app opens and closes, your encrypted trust graph syncs. If your phone dies, your trust network survives.
 
 ## Design Principles
 
