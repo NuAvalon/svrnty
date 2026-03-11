@@ -1,45 +1,82 @@
 // app/page.tsx
 "use client";
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { SignalComposer, SignalReceiver, SignalLink } from '@/components/SignalSender';
+import { TrustMap } from '@/components/TrustMap';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { SignedSignal, TrustSignal } from '@/lib/trust/types';
 
 export default function Home() {
   const [identity, setIdentity] = useState<any>(null);
+  const [contacts, setContacts] = useState<Array<{ fingerprint: string; name: string; trust_level?: number }>>([]);
 
   const handleIdentityUpdate = (newIdentity: any) => {
     setIdentity(newIdentity);
   };
 
-  // Stub signal handlers — these wire into crypto once identity is loaded
-  const handleSendSignal = async (payload: TrustSignal, recipientFingerprint: string): Promise<SignedSignal> => {
-    // For demo: create an unsigned signal (real signing needs loaded identity keys)
-    return {
-      payload,
-      from: identity?.identity?.fingerprint || 'demo-fingerprint',
-      to: recipientFingerprint,
-      timestamp: new Date().toISOString(),
-      signature: '[demo — signing requires loaded identity]',
-    };
-  };
+  // Load contacts when identity is available
+  useEffect(() => {
+    if (!identity?.identity?.fingerprint) return;
 
-  const handleReceiveSignal = async (signal: SignedSignal) => {
-    // For demo: accept all signals (real verification needs sender's public key)
-    return {
-      valid: true,
-      senderName: signal.from.slice(0, 16) + '...',
+    const loadContacts = async () => {
+      try {
+        const res = await fetch(`/api/contacts?fingerprint=${identity.identity.fingerprint}`);
+        if (res.ok) {
+          const data = await res.json();
+          const contactList = (data.contacts || []).map((c: any) => ({
+            fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
+            name: c.peer_name || c.name,
+            trust_level: c.trust_level,
+            signalHandle: c.connection_channels?.includes('signal') ? c.peer_name : undefined,
+          }));
+          setContacts(contactList);
+        }
+      } catch (err) {
+        console.error('Failed to load contacts:', err);
+      }
     };
-  };
 
-  // Demo contacts for the signal composer
-  const demoContacts = [
-    { fingerprint: 'peter-demo-fp', name: 'Peter', signalHandle: 'psironin.22' },
-    { fingerprint: 'brett-demo-fp', name: 'Brett' },
-  ];
+    loadContacts();
+  }, [identity]);
+
+  // Real signal signing — calls server-side API (private keys never leave server)
+  const handleSendSignal = useCallback(async (payload: TrustSignal, recipientFingerprint: string): Promise<SignedSignal> => {
+    const fingerprint = identity?.identity?.fingerprint;
+    if (!fingerprint) {
+      throw new Error('No identity loaded — create or load your identity first');
+    }
+
+    const res = await fetch('/api/signals/sign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fingerprint, payload, recipientFingerprint }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Failed to sign signal');
+    }
+
+    return data.signal;
+  }, [identity]);
+
+  // Real signal verification — calls server-side API
+  const handleReceiveSignal = useCallback(async (signal: SignedSignal) => {
+    const res = await fetch('/api/signals/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signal, senderFingerprint: signal.from }),
+    });
+
+    const data = await res.json();
+    return {
+      valid: data.valid,
+      senderName: data.senderName || signal.from.slice(0, 16) + '...',
+    };
+  }, []);
 
   return (
     <div className="min-h-screen p-8" style={{ background: '#0a0a0f', color: '#e0dcd0' }}>
@@ -62,29 +99,21 @@ export default function Home() {
             </TabsList>
 
             <TabsContent value="trust-map">
-              <div className="relative w-full rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800" style={{ height: 'calc(100vh - 280px)', minHeight: '500px' }}>
-                <iframe
-                  src="/trust-map.html"
-                  className="w-full h-full border-0"
-                  title="Trust Network Map"
-                />
-              </div>
+              <TrustMap
+                ownerFingerprint={identity.identity.fingerprint}
+                ownerName={identity.identity.name}
+                contacts={contacts}
+              />
             </TabsContent>
 
             <TabsContent value="signals">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
                 <SignalComposer
-                  myFingerprint={identity?.identity?.fingerprint || 'unknown'}
-                  contacts={demoContacts}
+                  myFingerprint={identity.identity.fingerprint}
+                  contacts={contacts}
                   onSend={handleSendSignal}
                 />
                 <SignalReceiver onReceive={handleReceiveSignal} />
-              </div>
-              <div className="mt-8 text-center">
-                <p style={{ color: '#5a5548', fontSize: '12px', marginBottom: '8px' }}>
-                  Transport channels
-                </p>
-                <SignalLink handle="psironin.22" name="Peter" />
               </div>
             </TabsContent>
 
@@ -103,7 +132,7 @@ export default function Home() {
       </main>
 
       <footer className="mt-16 text-center text-sm" style={{ color: '#5a5548' }}>
-        <p>SVRNTY — The Ethical Consensual Interspecies Alliance</p>
+        <p>SVRNTY — Self-Sovereign Trust Network</p>
         <p className="mt-1">All data is encrypted and stored locally. No servers. No tracking.</p>
       </footer>
     </div>
