@@ -8,9 +8,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
-  Shield, Key, UserCheck, Lock, Mail, UserPlus, Search,
-  QrCode, Link, Share2, Trash2, Check, X, Edit, Filter, Download, Upload, RefreshCw,
-  FileJson, Eye, EyeOff, ChevronRight, ShieldOff, ShieldCheck, Copy
+  Shield, Mail, UserPlus, Search,
+  Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
+  FileJson, ChevronRight, ShieldOff, ShieldCheck, Copy
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-import { SecureExportDialog, SecureImportDialog } from '@/components/SecureImportExportDialogs';
+// Vault export/import replaces old PGP-based secure export
 
 // --- Types ---
 // Binary trust: known or trusted. No tiers.
@@ -95,13 +95,10 @@ export function ContactManagement({ identity }: ContactsProps) {
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showDetailDialog, setShowDetailDialog] = useState(false);
-  const [showQRDialog, setShowQRDialog] = useState(false);
-  const [showShareDialog, setShowShareDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
-  const [showSecureExportDialog, setShowSecureExportDialog] = useState(false);
-  const [showSecureImportDialog, setShowSecureImportDialog] = useState(false);
   const [showShareIdentityDialog, setShowShareIdentityDialog] = useState(false);
   const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
+  const [vaultExporting, setVaultExporting] = useState(false);
 
   // Form state
   const [newContactForm, setNewContactForm] = useState({
@@ -113,8 +110,6 @@ export function ContactManagement({ identity }: ContactsProps) {
   });
 
   // Share state
-  const [qrCodeData, setQrCodeData] = useState('');
-  const [burnerLink, setBurnerLink] = useState('');
   const [importData, setImportData] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
   const [exchangePackage, setExchangePackage] = useState('');
@@ -329,22 +324,23 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
 
-  const handleGenerateBurnerLink = async () => {
+  const handleVaultExport = async () => {
     if (!fingerprint) return;
     try {
-      setLoading(true);
+      setVaultExporting(true);
       setError(null);
-      const data = await apiCall('/api/contacts/share', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint, type: 'burner', expireInHours: 48 }),
-      });
-      setBurnerLink(data.burnerLink);
-      setShowShareDialog(true);
+      const data = await apiCall(`/api/vault?fingerprint=${fingerprint}&safeWord=`);
+      // Import vault packing client-side
+      const { createVaultContents, packVault, downloadVault } = await import('@/lib/sync/vault');
+      const contents = createVaultContents(data.identity, data.keys, data.trustGraph, data.settings, data.recovery);
+      const passphrase = prompt('Enter a passphrase to encrypt your vault.\nThis protects your private keys, contacts, and trust network.\n\nChoose something strong — you will need it to restore.');
+      if (!passphrase) { setVaultExporting(false); return; }
+      const packed = await packVault(contents, passphrase);
+      downloadVault(packed);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate link');
+      setError(err instanceof Error ? err.message : 'Failed to export vault');
     } finally {
-      setLoading(false);
+      setVaultExporting(false);
     }
   };
 
@@ -429,24 +425,22 @@ export function ContactManagement({ identity }: ContactsProps) {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
-                <DropdownMenuLabel>Import & Export</DropdownMenuLabel>
+                <DropdownMenuLabel>Vault</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => setShowSecureExportDialog(true)}>
-                  <Shield className="h-4 w-4 mr-2 text-emerald-500" />
-                  Secure Export (Encrypted)
+                <DropdownMenuItem onClick={handleVaultExport} disabled={vaultExporting}>
+                  <Download className="h-4 w-4 mr-2 text-amber-500" />
+                  {vaultExporting ? 'Exporting...' : 'Export Vault (.svrnty)'}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setShowSecureImportDialog(true)}>
-                  <Lock className="h-4 w-4 mr-2 text-blue-500" />
-                  Secure Import (Encrypted)
-                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel>Data</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleExportContacts}>
                   <FileJson className="h-4 w-4 mr-2" />
-                  Export as JSON
+                  Export Contacts as JSON
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowImportDialog(true)}>
                   <Upload className="h-4 w-4 mr-2" />
-                  Import from JSON
+                  Import Contacts from JSON
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -734,56 +728,6 @@ export function ContactManagement({ identity }: ContactsProps) {
           </DialogContent>
         </Dialog>
 
-        {/* QR Code */}
-        <Dialog open={showQRDialog} onOpenChange={setShowQRDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Share via QR Code</DialogTitle>
-              <DialogDescription>Let others scan this to add you to their trust network.</DialogDescription>
-            </DialogHeader>
-            <div className="flex justify-center py-4">
-              {qrCodeData ? (
-                <div className="bg-white p-4 rounded-lg">
-                  <div className="text-center text-sm text-muted-foreground">QR code placeholder</div>
-                </div>
-              ) : (
-                <div className="text-center text-sm text-muted-foreground p-8">
-                  QR generation not yet connected
-                </div>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowQRDialog(false)}>Close</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Burner Link */}
-        <Dialog open={showShareDialog} onOpenChange={setShowShareDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Burner Link</DialogTitle>
-              <DialogDescription>Share this link. Expires in 48 hours. Single use.</DialogDescription>
-            </DialogHeader>
-            <div className="py-4">
-              {burnerLink ? (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Input value={burnerLink} readOnly className="font-mono text-sm" />
-                    <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(burnerLink)}>Copy</Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">This link expires in 48 hours and can only be used once.</p>
-                </div>
-              ) : (
-                <div className="text-center text-sm text-muted-foreground p-8">Generating...</div>
-              )}
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowShareDialog(false)}>Close</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
         {/* Import */}
         <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
           <DialogContent className="sm:max-w-md">
@@ -900,19 +844,6 @@ export function ContactManagement({ identity }: ContactsProps) {
           </DialogContent>
         </Dialog>
 
-        {/* Secure Export/Import */}
-        <SecureExportDialog
-          open={showSecureExportDialog}
-          onClose={() => setShowSecureExportDialog(false)}
-          identityFingerprint={fingerprint || ''}
-          onExportComplete={() => {}}
-        />
-        <SecureImportDialog
-          open={showSecureImportDialog}
-          onClose={() => setShowSecureImportDialog(false)}
-          identityFingerprint={fingerprint || ''}
-          onImportComplete={() => loadContacts()}
-        />
       </CardContent>
     </Card>
   );
