@@ -132,7 +132,7 @@ At its core, svrnty is a contact manager that respects you. Phone numbers, email
 - **Verify them** through email, QR code, mutual vouch, or in-person exchange
 - **Export vCards** to import into your phone's native contacts
 - **Sync encrypted backups** to local storage, Google Drive, iCloud, or Dropbox — your data leaves encrypted, arrives encrypted, stays encrypted
-- **Track your people** without a social network. Know who your mutuals are, who introduced whom, and how trust flows through your circle
+- **Stay connected** without a social network. See who your mutuals are, who introduced whom, and how trust flows through your circle
 
 Every time the app opens and closes, your encrypted trust graph syncs. If your phone dies, your trust network survives.
 
