@@ -1,57 +1,43 @@
 // src/components/TrustMap.tsx
 // Constellation-style trust graph visualization using Canvas API.
-// No external dependencies — pure React + Canvas.
+// Binary trust: known (outer ring) or trusted (inner ring).
+// Decayed trust fades — stars dim and drift outward.
 
 "use client";
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-
-interface TrustContact {
-  fingerprint: string;
-  name: string;
-  trust_level?: number;
-}
+import { isDecayed, daysUntilDecay } from '@/lib/trust/types';
+import type { TrustEdge } from '@/lib/trust/types';
 
 interface TrustMapProps {
   ownerFingerprint: string;
   ownerName: string;
-  contacts: TrustContact[];
+  contacts: TrustEdge[];
 }
 
 interface Node {
   id: string;
   name: string;
-  level: number;
+  trusted: boolean;
+  decayed: boolean;
+  daysLeft: number;
   x: number;
   y: number;
-  vx: number;
-  vy: number;
   isOwner: boolean;
 }
 
-const LEVEL_COLORS: Record<number, string> = {
-  0: '#3a3a4a',  // stranger — dim
-  1: '#5a7a9a',  // known — cool blue
-  2: '#6a9a6a',  // verified — green
-  3: '#c8a84e',  // trusted — gold
-  4: '#d4785a',  // inner circle — warm amber
+const COLORS = {
+  trusted: '#c8a84e',    // gold — inside the walls
+  known: '#5a7a9a',      // cool blue — outside
+  decayed: '#4a3a2a',    // faded amber — trust expired
+  owner: '#c8a84e',      // gold
+  bg: '#0a0a0f',
 };
 
-const LEVEL_LABELS: Record<number, string> = {
-  0: 'stranger',
-  1: 'known',
-  2: 'verified',
-  3: 'trusted',
-  4: 'inner circle',
-};
-
-// Distance from center by trust level (closer = higher trust)
-const LEVEL_RADIUS: Record<number, number> = {
-  4: 80,
-  3: 150,
-  2: 220,
-  1: 290,
-  0: 360,
+const RADIUS = {
+  trusted: 130,   // inner ring
+  known: 280,     // outer ring
+  decayed: 340,   // drifted out
 };
 
 export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProps) {
@@ -70,35 +56,44 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
     const owner: Node = {
       id: ownerFingerprint,
       name: ownerName,
-      level: -1,
+      trusted: true,
+      decayed: false,
+      daysLeft: Infinity,
       x: cx,
       y: cy,
-      vx: 0,
-      vy: 0,
       isOwner: true,
     };
 
-    const contactNodes: Node[] = contacts.map((c, i) => {
-      const level = c.trust_level ?? 1;
-      const radius = LEVEL_RADIUS[level] || 290;
-      // Distribute evenly around the circle with slight randomness
-      const angleStep = (2 * Math.PI) / Math.max(contacts.length, 1);
-      const angle = angleStep * i + (Math.random() - 0.5) * 0.3;
-      const r = radius + (Math.random() - 0.5) * 40;
+    // Group contacts by state for even distribution
+    const trustedContacts = contacts.filter(c => c.trusted && !isDecayed(c));
+    const knownContacts = contacts.filter(c => !c.trusted);
+    const decayedContacts = contacts.filter(c => c.trusted && isDecayed(c));
 
-      return {
-        id: c.fingerprint,
-        name: c.name,
-        level,
-        x: cx + Math.cos(angle) * r,
-        y: cy + Math.sin(angle) * r,
-        vx: 0,
-        vy: 0,
-        isOwner: false,
-      };
-    });
+    const placeInRing = (items: TrustEdge[], radius: number, trusted: boolean, decayed: boolean): Node[] => {
+      return items.map((c, i) => {
+        const angleStep = (2 * Math.PI) / Math.max(items.length, 1);
+        const angle = angleStep * i + (Math.random() - 0.5) * 0.3;
+        const r = radius + (Math.random() - 0.5) * 40;
 
-    nodesRef.current = [owner, ...contactNodes];
+        return {
+          id: c.peer_fingerprint,
+          name: c.peer_name,
+          trusted,
+          decayed,
+          daysLeft: trusted ? daysUntilDecay(c) : 0,
+          x: cx + Math.cos(angle) * r,
+          y: cy + Math.sin(angle) * r,
+          isOwner: false,
+        };
+      });
+    };
+
+    nodesRef.current = [
+      owner,
+      ...placeInRing(trustedContacts, RADIUS.trusted, true, false),
+      ...placeInRing(decayedContacts, RADIUS.decayed, true, true),
+      ...placeInRing(knownContacts, RADIUS.known, false, false),
+    ];
   }, [contacts, ownerFingerprint, ownerName, dimensions]);
 
   // Resize observer
@@ -140,7 +135,7 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
       ctx.scale(dpr, dpr);
 
       // Clear
-      ctx.fillStyle = '#0a0a0f';
+      ctx.fillStyle = COLORS.bg;
       ctx.fillRect(0, 0, width, height);
 
       const nodes = nodesRef.current;
@@ -148,40 +143,45 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
 
       const owner = nodes[0];
 
-      // Draw orbital rings
-      for (const [level, radius] of Object.entries(LEVEL_RADIUS)) {
-        const l = parseInt(level);
-        ctx.beginPath();
-        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-        ctx.strokeStyle = `${LEVEL_COLORS[l]}20`;
-        ctx.lineWidth = 1;
-        ctx.stroke();
+      // Draw the two walls
+      // Inner wall — trusted
+      ctx.beginPath();
+      ctx.arc(cx, cy, RADIUS.trusted + 30, 0, Math.PI * 2);
+      ctx.strokeStyle = `${COLORS.trusted}25`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
 
-        // Level label on the ring
-        ctx.fillStyle = `${LEVEL_COLORS[l]}40`;
-        ctx.font = '9px monospace';
-        ctx.fillText(LEVEL_LABELS[l], cx + radius + 8, cy - 4);
-      }
+      ctx.fillStyle = `${COLORS.trusted}30`;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('trusted', cx + RADIUS.trusted + 36, cy - 4);
+
+      // Outer wall — known
+      ctx.beginPath();
+      ctx.arc(cx, cy, RADIUS.known + 30, 0, Math.PI * 2);
+      ctx.strokeStyle = `${COLORS.known}20`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = `${COLORS.known}30`;
+      ctx.fillText('known', cx + RADIUS.known + 36, cy - 4);
 
       // Draw edges (connections to owner)
       for (let i = 1; i < nodes.length; i++) {
         const node = nodes[i];
-        const color = LEVEL_COLORS[node.level] || LEVEL_COLORS[1];
+        const color = node.decayed ? COLORS.decayed : node.trusted ? COLORS.trusted : COLORS.known;
+        const alpha = node.decayed ? 0.06 : node.trusted ? 0.2 : 0.08;
 
         ctx.beginPath();
         ctx.moveTo(owner.x, owner.y);
         ctx.lineTo(node.x, node.y);
-
-        // Edge opacity based on trust level
-        const alpha = 0.08 + node.level * 0.07;
         ctx.strokeStyle = color + Math.round(alpha * 255).toString(16).padStart(2, '0');
-        ctx.lineWidth = 0.5 + node.level * 0.3;
+        ctx.lineWidth = node.trusted && !node.decayed ? 1 : 0.5;
         ctx.stroke();
       }
 
       // Draw nodes
       for (const node of nodes) {
-        // Gentle float animation
         const floatX = Math.sin(time * 2 + node.x * 0.01) * 1.5;
         const floatY = Math.cos(time * 1.5 + node.y * 0.01) * 1.5;
         const drawX = node.x + floatX;
@@ -191,21 +191,18 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
           // Owner node — gold star
           const pulse = 1 + Math.sin(time * 3) * 0.1;
 
-          // Glow
           const gradient = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, 30 * pulse);
           gradient.addColorStop(0, 'rgba(200, 168, 78, 0.3)');
           gradient.addColorStop(1, 'rgba(200, 168, 78, 0)');
           ctx.fillStyle = gradient;
           ctx.fillRect(drawX - 30, drawY - 30, 60, 60);
 
-          // Core
           ctx.beginPath();
           ctx.arc(drawX, drawY, 8, 0, Math.PI * 2);
-          ctx.fillStyle = '#c8a84e';
+          ctx.fillStyle = COLORS.owner;
           ctx.fill();
 
-          // Label
-          ctx.fillStyle = '#c8a84e';
+          ctx.fillStyle = COLORS.owner;
           ctx.font = 'bold 11px monospace';
           ctx.textAlign = 'center';
           ctx.fillText(node.name, drawX, drawY + 22);
@@ -213,12 +210,12 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
           ctx.fillStyle = '#8a8070';
           ctx.fillText('you', drawX, drawY + 34);
         } else {
-          const color = LEVEL_COLORS[node.level] || LEVEL_COLORS[1];
+          const color = node.decayed ? COLORS.decayed : node.trusted ? COLORS.trusted : COLORS.known;
           const isHovered = hoveredNode?.id === node.id;
-          const radius = isHovered ? 7 : 4 + node.level * 0.5;
+          const radius = isHovered ? 7 : node.trusted ? 5 : 4;
 
-          // Glow for higher trust
-          if (node.level >= 3) {
+          // Glow for trusted
+          if (node.trusted && !node.decayed) {
             const gradient = ctx.createRadialGradient(drawX, drawY, 0, drawX, drawY, 20);
             gradient.addColorStop(0, color + '30');
             gradient.addColorStop(1, color + '00');
@@ -230,10 +227,12 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
           ctx.beginPath();
           ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
           ctx.fillStyle = isHovered ? '#ffffff' : color;
+          ctx.globalAlpha = node.decayed ? 0.5 : 1;
           ctx.fill();
+          ctx.globalAlpha = 1;
 
           // Label
-          ctx.fillStyle = isHovered ? '#e0dcd0' : color + 'aa';
+          ctx.fillStyle = isHovered ? '#e0dcd0' : color + (node.decayed ? '80' : 'aa');
           ctx.font = `${isHovered ? '11px' : '10px'} monospace`;
           ctx.textAlign = 'center';
           ctx.fillText(node.name, drawX, drawY + radius + 14);
@@ -241,8 +240,16 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
           if (isHovered) {
             ctx.fillStyle = '#8a8070';
             ctx.font = '9px monospace';
-            ctx.fillText(`L${node.level} ${LEVEL_LABELS[node.level]}`, drawX, drawY + radius + 26);
+            const status = node.decayed ? 'decayed' : node.trusted ? 'trusted' : 'known';
+            ctx.fillText(status, drawX, drawY + radius + 26);
             ctx.fillText(node.id.slice(0, 16) + '...', drawX, drawY + radius + 38);
+            if (node.trusted && !node.decayed) {
+              const decayText = node.daysLeft > 365
+                ? `${Math.round(node.daysLeft / 365)}y until decay`
+                : `${node.daysLeft}d until decay`;
+              ctx.fillStyle = node.daysLeft < 90 ? '#d47a7a' : '#6a8a5a';
+              ctx.fillText(decayText, drawX, drawY + radius + 50);
+            }
           }
         }
       }
@@ -252,19 +259,35 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
       let ly = 24;
       ctx.fillStyle = '#5a5548';
       ctx.font = '9px monospace';
-      ctx.fillText('TRUST LEVELS', 16, ly);
+      ctx.fillText('TRUST MAP', 16, ly);
+      ly += 20;
+
+      // Trusted
+      ctx.beginPath();
+      ctx.arc(24, ly - 3, 4, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.trusted;
+      ctx.fill();
+      ctx.fillStyle = COLORS.trusted + 'cc';
+      ctx.font = '9px monospace';
+      ctx.fillText('trusted', 34, ly);
       ly += 16;
 
-      for (let l = 4; l >= 1; l--) {
-        ctx.beginPath();
-        ctx.arc(24, ly - 3, 4, 0, Math.PI * 2);
-        ctx.fillStyle = LEVEL_COLORS[l];
-        ctx.fill();
-        ctx.fillStyle = LEVEL_COLORS[l] + 'cc';
-        ctx.font = '9px monospace';
-        ctx.fillText(`L${l} ${LEVEL_LABELS[l]}`, 34, ly);
-        ly += 16;
-      }
+      // Known
+      ctx.beginPath();
+      ctx.arc(24, ly - 3, 4, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.known;
+      ctx.fill();
+      ctx.fillStyle = COLORS.known + 'cc';
+      ctx.fillText('known', 34, ly);
+      ly += 16;
+
+      // Decayed
+      ctx.beginPath();
+      ctx.arc(24, ly - 3, 4, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.decayed;
+      ctx.fill();
+      ctx.fillStyle = COLORS.decayed + 'cc';
+      ctx.fillText('decayed', 34, ly);
 
       animRef.current = requestAnimationFrame(draw);
     };
@@ -283,7 +306,7 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
 
     const nodes = nodesRef.current;
     let closest: Node | null = null;
-    let closestDist = 30; // hover threshold
+    let closestDist = 30;
 
     for (const node of nodes) {
       if (node.isOwner) continue;
@@ -309,7 +332,7 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
         height: 'calc(100vh - 280px)',
         minHeight: '500px',
         borderColor: 'rgba(180, 160, 100, 0.15)',
-        background: '#0a0a0f',
+        background: COLORS.bg,
       }}
     >
       <canvas

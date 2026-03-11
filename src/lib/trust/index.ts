@@ -14,7 +14,7 @@ export {
   introduceSignal,
   keyRotationSignal,
   shouldPropagate,
-  maxIntroductionLevel,
+  introductionCreatesTrust,
 } from './signals';
 
 export { migrateContact, migrateContacts } from './migration';
@@ -33,13 +33,18 @@ export type { TransportAdapter } from './transport';
 export type {
   TrustEdge,
   TrustGraph,
-  TrustLevel,
   TrustEvent,
   TrustSignal,
   SignedSignal,
   Tribe,
   IntroductionRecord,
   LegacyContact,
+  VerifiedClaim,
 } from './types';
 
-export { TRUST_LABELS, PRIVACY_FILTERS, LEGACY_TRUST_MAP } from './types';
+export {
+  isDecayed,
+  daysUntilDecay,
+  migrateTrustLevel,
+  PRIVACY_FILTERS,
+} from './types';

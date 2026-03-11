@@ -1,81 +1,43 @@
 // app/api/contacts/share/route.ts
-// A super simplified version that doesn't rely on any complex cryptography
+// Create a signed identity exchange package for sharing with peers.
+// Dual-signed: ED25519 + ML-DSA-65.
 
 import { NextResponse } from 'next/server';
-import { SoverentityIdentity } from '@/lib/identity/core';
+import { ContactExchange } from '@/lib/contacts/exchange';
 
-const identityManager = new SoverentityIdentity();
+const contactExchange = new ContactExchange();
 
 export async function POST(request: Request) {
-  console.log('API route hit: /api/contacts/share [POST]');
-  
   try {
     const body = await request.json();
-    console.log('Received share request:', body);
-    
-    const { fingerprint, type, expireInHours = 48 } = body;
-    
-    if (!fingerprint || !type) {
+    const { fingerprint, type, recipientFingerprint, expireInHours } = body;
+
+    if (!fingerprint) {
       return NextResponse.json(
-        { error: 'Fingerprint and share type are required' },
+        { error: 'Fingerprint is required' },
         { status: 400 }
       );
     }
-    
-    try {
-      // Attempt to load the identity
-      const identity = await identityManager.loadIdentityData(fingerprint);
-      
-      if (!identity) {
-        return NextResponse.json(
-          { error: 'Identity not found' },
-          { status: 404 }
-        );
-      }
-      
-      if (type === 'qr') {
-        // Generate a simple QR code data
-        const simpleQrData = JSON.stringify({
-          name: identity.identity.name,
-          email: identity.identity.email,
-          fingerprint: identity.identity.fingerprint,
-          public_key: identity.identity.public_key,
-          expires: new Date(Date.now() + (expireInHours || 24) * 60 * 60 * 1000).toISOString()
-        });
-        
-        return NextResponse.json({
-          success: true,
-          qrData: simpleQrData
-        });
-      }
-      
-      if (type === 'burner') {
-        // Generate a burner link
-        const burnerLink = `https://soverentity.app/contact/${fingerprint.substring(0, 8)}`;
-        
-        return NextResponse.json({
-          success: true,
-          burnerLink
-        });
-      }
-      
-      return NextResponse.json(
-        { error: 'Invalid share type' },
-        { status: 400 }
-      );
-      
-    } catch (error) {
-      console.error('Failed to load identity:', error);
-      return NextResponse.json(
-        { error: 'Failed to load identity' },
-        { status: 500 }
-      );
-    }
-    
+
+    // Create a signed exchange package
+    const exchangePackage = await contactExchange.createExchangePackage({
+      senderFingerprint: fingerprint,
+      recipientFingerprint: recipientFingerprint || undefined,
+      expireInHours: expireInHours || (type === 'burner' ? 48 : 0),
+    });
+
+    return NextResponse.json({
+      success: true,
+      exchangePackage,
+      // For backward compat with QR/burner UI
+      ...(type === 'qr' && { qrData: exchangePackage }),
+      ...(type === 'burner' && { burnerLink: `svrnty://import/${Buffer.from(exchangePackage).toString('base64url').slice(0, 32)}` }),
+    });
+
   } catch (error) {
-    console.error('Failed to share contact:', error);
+    console.error('Failed to create exchange package:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to share contact' },
+      { success: false, error: error instanceof Error ? error.message : 'Failed to create exchange package' },
       { status: 500 }
     );
   }

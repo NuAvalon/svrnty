@@ -7,11 +7,12 @@ import { ContactManagement } from '@/components/ContactManagement';
 import { SignalComposer, SignalReceiver, SignalLink } from '@/components/SignalSender';
 import { TrustMap } from '@/components/TrustMap';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { SignedSignal, TrustSignal } from '@/lib/trust/types';
+import type { SignedSignal, TrustSignal, TrustEdge } from '@/lib/trust/types';
 
 export default function Home() {
   const [identity, setIdentity] = useState<any>(null);
-  const [contacts, setContacts] = useState<Array<{ fingerprint: string; name: string; trust_level?: number }>>([]);
+  const [contacts, setContacts] = useState<TrustEdge[]>([]);
+  const [contactsForSignals, setContactsForSignals] = useState<Array<{ fingerprint: string; name: string; trusted: boolean; signalHandle?: string }>>([]);
 
   const handleIdentityUpdate = (newIdentity: any) => {
     setIdentity(newIdentity);
@@ -26,13 +27,37 @@ export default function Home() {
         const res = await fetch(`/api/contacts?fingerprint=${identity.identity.fingerprint}`);
         if (res.ok) {
           const data = await res.json();
-          const contactList = (data.contacts || []).map((c: any) => ({
-            fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
-            name: c.peer_name || c.name,
-            trust_level: c.trust_level,
-            signalHandle: c.connection_channels?.includes('signal') ? c.peer_name : undefined,
+          const rawContacts = data.contacts || [];
+
+          // Map to TrustEdge format for TrustMap
+          const edges: TrustEdge[] = rawContacts.map((c: any) => ({
+            id: c.id,
+            peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
+            peer_name: c.peer_name || c.name,
+            peer_email: c.peer_email || c.email || '',
+            peer_public_key: c.peer_public_key || c.public_key || '',
+            trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
+            trusted_since: c.trusted_since || c.verified_at || null,
+            last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
+            decay_days: c.decay_days || 730,
+            trust_history: c.trust_history || [],
+            verification: c.verification || { method: 'none', verified_at: null },
+            mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
+            tags: c.tags || c.metadata?.tags || [],
+            notes: c.notes || c.metadata?.notes || '',
+            connection_channels: c.connection_channels || [],
+            added_at: c.added_at || new Date().toISOString(),
           }));
-          setContacts(contactList);
+
+          setContacts(edges);
+
+          // Simplified list for signal composer
+          setContactsForSignals(edges.map(e => ({
+            fingerprint: e.peer_fingerprint,
+            name: e.peer_name,
+            trusted: e.trusted,
+            signalHandle: e.connection_channels?.includes('signal') ? e.peer_name : undefined,
+          })));
         }
       } catch (err) {
         console.error('Failed to load contacts:', err);
@@ -110,7 +135,7 @@ export default function Home() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
                 <SignalComposer
                   myFingerprint={identity.identity.fingerprint}
-                  contacts={contacts}
+                  contacts={contactsForSignals}
                   onSend={handleSendSignal}
                 />
                 <SignalReceiver onReceive={handleReceiveSignal} />

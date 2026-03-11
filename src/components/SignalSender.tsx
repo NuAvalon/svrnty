@@ -7,8 +7,7 @@ import {
   SignalTransport,
   getAvailableTransports,
 } from '@/lib/trust/transport';
-import type { SignedSignal, TrustSignal, TrustLevel } from '@/lib/trust/types';
-import { TRUST_LABELS } from '@/lib/trust/types';
+import type { SignedSignal, TrustSignal } from '@/lib/trust/types';
 
 // --- Signal Composer ---
 
@@ -16,19 +15,19 @@ interface SignalComposerProps {
   /** Current user's fingerprint */
   myFingerprint: string;
   /** Known contacts for recipient picker */
-  contacts: Array<{ fingerprint: string; name: string; signalHandle?: string }>;
+  contacts: Array<{ fingerprint: string; name: string; trusted: boolean; signalHandle?: string }>;
   /** Called when a signal is ready to send (caller handles crypto signing) */
   onSend: (payload: TrustSignal, recipientFingerprint: string) => Promise<SignedSignal>;
 }
 
-type SignalType = 'vouch' | 'concern' | 'introduce' | 'sync';
+type SignalType = 'vouch' | 'break' | 'concern' | 'introduce';
 
 export function SignalComposer({ myFingerprint, contacts, onSend }: SignalComposerProps) {
   const [signalType, setSignalType] = useState<SignalType>('vouch');
   const [recipient, setRecipient] = useState('');
   const [subject, setSubject] = useState('');
-  const [level, setLevel] = useState<TrustLevel>(2);
   const [detail, setDetail] = useState('');
+  const [reason, setReason] = useState('');
   const [introName, setIntroName] = useState('');
   const [introPubKey, setIntroPubKey] = useState('');
   const [sending, setSending] = useState(false);
@@ -39,19 +38,20 @@ export function SignalComposer({ myFingerprint, contacts, onSend }: SignalCompos
     switch (signalType) {
       case 'vouch':
         if (!subject) return null;
-        return { type: 'vouch', subject, level };
+        return { type: 'vouch', subject };
+      case 'break':
+        if (!subject) return null;
+        return { type: 'break', subject, reason: reason || undefined };
       case 'concern':
         if (!subject || !detail) return null;
         return { type: 'concern', subject, detail };
       case 'introduce':
         if (!subject || !introName || !introPubKey) return null;
         return { type: 'introduce', subject, pub_key: introPubKey, name: introName };
-      case 'sync':
-        return { type: 'sync', my_level: level };
       default:
         return null;
     }
-  }, [signalType, subject, level, detail, introName, introPubKey]);
+  }, [signalType, subject, detail, reason, introName, introPubKey]);
 
   const handleSend = async (transportName: string) => {
     const payload = buildPayload();
@@ -106,16 +106,17 @@ export function SignalComposer({ myFingerprint, contacts, onSend }: SignalCompos
       <div style={styles.field}>
         <label style={styles.label}>TYPE</label>
         <div style={styles.typeGrid}>
-          {(['vouch', 'concern', 'introduce', 'sync'] as const).map(t => (
+          {(['vouch', 'break', 'concern', 'introduce'] as const).map(t => (
             <button
               key={t}
               onClick={() => { setSignalType(t); setResult(null); setPreviewSignal(null); }}
               style={{
                 ...styles.typeBtn,
                 ...(signalType === t ? styles.typeBtnActive : {}),
+                ...(signalType === t && t === 'break' ? { borderColor: '#9a5a5a', color: '#d47a7a', background: 'rgba(154, 90, 90, 0.1)' } : {}),
               }}
             >
-              {t === 'vouch' ? 'Vouch' : t === 'concern' ? 'Concern' : t === 'introduce' ? 'Introduce' : 'Sync'}
+              {t.charAt(0).toUpperCase() + t.slice(1)}
             </button>
           ))}
         </div>
@@ -132,48 +133,37 @@ export function SignalComposer({ myFingerprint, contacts, onSend }: SignalCompos
           <option value="">Select recipient...</option>
           {contacts.map(c => (
             <option key={c.fingerprint} value={c.fingerprint}>
-              {c.name} ({c.fingerprint.slice(0, 8)}...)
+              {c.name} {c.trusted ? '(trusted)' : '(known)'} ({c.fingerprint.slice(0, 8)}...)
             </option>
           ))}
         </select>
       </div>
 
-      {/* Subject (vouch, concern, introduce) */}
-      {signalType !== 'sync' && (
+      {/* Subject (vouch, break, concern, introduce) */}
+      <div style={styles.field}>
+        <label style={styles.label}>
+          {signalType === 'introduce' ? 'SUBJECT FINGERPRINT' : 'ABOUT (fingerprint)'}
+        </label>
+        <input
+          type="text"
+          value={subject}
+          onChange={e => setSubject(e.target.value)}
+          placeholder="Fingerprint of the person this signal is about"
+          style={styles.input}
+        />
+      </div>
+
+      {/* Reason (break) */}
+      {signalType === 'break' && (
         <div style={styles.field}>
-          <label style={styles.label}>
-            {signalType === 'introduce' ? 'SUBJECT FINGERPRINT' : 'ABOUT (fingerprint)'}
-          </label>
+          <label style={styles.label}>REASON (optional)</label>
           <input
             type="text"
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            placeholder="Fingerprint of the person this signal is about"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="Why are you breaking trust?"
             style={styles.input}
           />
-        </div>
-      )}
-
-      {/* Trust Level (vouch, sync) */}
-      {(signalType === 'vouch' || signalType === 'sync') && (
-        <div style={styles.field}>
-          <label style={styles.label}>TRUST LEVEL</label>
-          <div style={styles.levelGrid}>
-            {([1, 2, 3, 4] as TrustLevel[]).map(l => (
-              <button
-                key={l}
-                onClick={() => setLevel(l)}
-                style={{
-                  ...styles.levelBtn,
-                  borderColor: level === l ? LEVEL_COLORS[l] : 'rgba(180,160,100,0.2)',
-                  color: level === l ? LEVEL_COLORS[l] : '#8a8070',
-                  background: level === l ? `${LEVEL_COLORS[l]}15` : 'transparent',
-                }}
-              >
-                L{l} {TRUST_LABELS[l]}
-              </button>
-            ))}
-          </div>
         </div>
       )}
 
@@ -263,7 +253,6 @@ export function SignalComposer({ myFingerprint, contacts, onSend }: SignalCompos
 // --- Signal Receiver ---
 
 interface SignalReceiverProps {
-  /** Called with the parsed signal for verification */
   onReceive: (signal: SignedSignal) => Promise<{ valid: boolean; senderName?: string }>;
 }
 
@@ -390,13 +379,6 @@ export function SignalLink({ handle, name }: SignalLinkProps) {
 
 // --- Styles ---
 
-const LEVEL_COLORS: Record<number, string> = {
-  1: '#5a7a9a',
-  2: '#6a9a6a',
-  3: '#c8a84e',
-  4: '#d4785a',
-};
-
 const styles: Record<string, React.CSSProperties> = {
   container: {
     background: 'rgba(15, 15, 25, 0.92)',
@@ -469,22 +451,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderColor: '#c8a84e',
     color: '#c8a84e',
     background: 'rgba(200, 168, 78, 0.1)',
-  },
-  levelGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, 1fr)',
-    gap: '6px',
-  },
-  levelBtn: {
-    background: 'transparent',
-    border: '1px solid rgba(180, 160, 100, 0.2)',
-    borderRadius: '6px',
-    padding: '8px',
-    fontSize: '11px',
-    cursor: 'pointer',
-    transition: 'all 0.2s',
-    textTransform: 'capitalize' as const,
-    fontFamily: "'SF Mono', 'Fira Code', monospace",
   },
   preview: {
     marginBottom: '16px',

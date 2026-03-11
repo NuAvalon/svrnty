@@ -10,7 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Key, UserCheck, Lock, Mail, UserPlus, Search,
   QrCode, Link, Share2, Trash2, Check, X, Edit, Filter, Download, Upload, RefreshCw,
-  FileJson, Eye, EyeOff, ChevronRight
+  FileJson, Eye, EyeOff, ChevronRight, ShieldOff, ShieldCheck, Copy
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -25,52 +25,8 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { SecureExportDialog, SecureImportDialog } from '@/components/SecureImportExportDialogs';
 
-// --- Trust Level Configuration ---
-// API still uses legacy strings. This maps them to the graduated display model.
-// When the API migrates to TrustEdge, swap the keys to numeric TrustLevel.
-
-type LegacyTrustLevel = 'unverified' | 'verified' | 'trusted';
-
-const TRUST_CONFIG: Record<LegacyTrustLevel, {
-  label: string;
-  level: number;
-  color: string;
-  badgeClass: string;
-  iconColor: string;
-}> = {
-  unverified: {
-    label: 'Known',
-    level: 1,
-    color: '#9CA3AF',
-    badgeClass: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
-    iconColor: 'text-gray-400',
-  },
-  verified: {
-    label: 'Verified',
-    level: 2,
-    color: '#60A5FA',
-    badgeClass: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    iconColor: 'text-blue-400',
-  },
-  trusted: {
-    label: 'Trusted',
-    level: 3,
-    color: '#34D399',
-    badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    iconColor: 'text-emerald-400',
-  },
-};
-
-const TRUST_ICON: Record<LegacyTrustLevel, typeof Eye> = {
-  unverified: Eye,
-  verified: UserCheck,
-  trusted: Shield,
-};
-
-// All levels for tabs and dropdowns, ordered by trust
-const TRUST_LEVELS: LegacyTrustLevel[] = ['unverified', 'verified', 'trusted'];
-
 // --- Types ---
+// Binary trust: known or trusted. No tiers.
 
 interface Contact {
   id: string;
@@ -78,7 +34,7 @@ interface Contact {
   email: string;
   fingerprint: string;
   public_key: string;
-  trust_level: LegacyTrustLevel;
+  trust_level: 'unverified' | 'verified' | 'trusted'; // legacy API format
   added_at: string;
   verified_at?: string;
   metadata?: {
@@ -89,25 +45,40 @@ interface Contact {
   };
 }
 
+// Map legacy API values to binary trust
+function isTrusted(contact: Contact): boolean {
+  return contact.trust_level === 'verified' || contact.trust_level === 'trusted';
+}
+
+function trustLabel(contact: Contact): string {
+  return isTrusted(contact) ? 'Trusted' : 'Known';
+}
+
 interface ContactsProps {
   identity: any;
 }
 
 // --- Helpers ---
 
-function TrustBadge({ level }: { level: LegacyTrustLevel }) {
-  const config = TRUST_CONFIG[level];
+function TrustBadge({ contact }: { contact: Contact }) {
+  const trusted = isTrusted(contact);
   return (
-    <Badge className={`${config.badgeClass} border font-medium`}>
-      {config.label}
+    <Badge className={`border font-medium ${
+      trusted
+        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+        : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
+    }`}>
+      {trustLabel(contact)}
     </Badge>
   );
 }
 
-function TrustIcon({ level, className = "h-5 w-5" }: { level: LegacyTrustLevel; className?: string }) {
-  const Icon = TRUST_ICON[level];
-  const config = TRUST_CONFIG[level];
-  return <Icon className={`${className} ${config.iconColor}`} />;
+function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; className?: string }) {
+  const trusted = isTrusted(contact);
+  if (trusted) {
+    return <ShieldCheck className={`${className} text-amber-400`} />;
+  }
+  return <Eye className={`${className} text-gray-400`} />;
 }
 
 // --- Main Component ---
@@ -129,6 +100,8 @@ export function ContactManagement({ identity }: ContactsProps) {
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showSecureExportDialog, setShowSecureExportDialog] = useState(false);
   const [showSecureImportDialog, setShowSecureImportDialog] = useState(false);
+  const [showShareIdentityDialog, setShowShareIdentityDialog] = useState(false);
+  const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
 
   // Form state
   const [newContactForm, setNewContactForm] = useState({
@@ -136,7 +109,7 @@ export function ContactManagement({ identity }: ContactsProps) {
   });
   const [editContactForm, setEditContactForm] = useState({
     id: '', name: '', email: '', fingerprint: '', public_key: '',
-    trust_level: 'unverified' as LegacyTrustLevel, notes: '',
+    notes: '',
   });
 
   // Share state
@@ -144,6 +117,9 @@ export function ContactManagement({ identity }: ContactsProps) {
   const [burnerLink, setBurnerLink] = useState('');
   const [importData, setImportData] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [exchangePackage, setExchangePackage] = useState('');
+  const [exchangeImportData, setExchangeImportData] = useState('');
+  const [exchangeResult, setExchangeResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const fingerprint = identity?.identity?.fingerprint;
 
@@ -184,9 +160,10 @@ export function ContactManagement({ identity }: ContactsProps) {
     if (fingerprint) loadContacts();
   }, [fingerprint, loadContacts]);
 
-  // Filter contacts
+  // Filter contacts — binary: all, trusted, known
   const filteredContacts = contacts.filter(contact => {
-    if (activeTab !== 'all' && contact.trust_level !== activeTab) return false;
+    if (activeTab === 'trusted' && !isTrusted(contact)) return false;
+    if (activeTab === 'known' && isTrusted(contact)) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return contact.name.toLowerCase().includes(q) ||
@@ -195,6 +172,9 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
     return true;
   });
+
+  const trustedCount = contacts.filter(c => isTrusted(c)).length;
+  const knownCount = contacts.filter(c => !isTrusted(c)).length;
 
   // --- Handlers ---
 
@@ -212,6 +192,7 @@ export function ContactManagement({ identity }: ContactsProps) {
       if (newContactForm.fingerprint === fingerprint) {
         throw new Error('You cannot add yourself as a contact');
       }
+      // New contacts start as known (unverified in legacy API)
       const data = await apiCall('/api/contacts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -281,8 +262,9 @@ export function ContactManagement({ identity }: ContactsProps) {
     }
   };
 
-  const handleUpdateTrustLevel = async (contactId: string, trustLevel: LegacyTrustLevel) => {
+  const handleToggleTrust = async (contact: Contact) => {
     if (!fingerprint) return;
+    const newLevel = isTrusted(contact) ? 'unverified' : 'trusted';
     try {
       setLoading(true);
       setError(null);
@@ -291,19 +273,57 @@ export function ContactManagement({ identity }: ContactsProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fingerprint,
-          contactId,
+          contactId: contact.id,
           updates: {
-            trust_level: trustLevel,
-            ...(trustLevel === 'verified' && { verified_at: new Date().toISOString() }),
+            trust_level: newLevel,
+            ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
           },
         }),
       });
-      if (selectedContact && selectedContact.id === contactId) {
-        setSelectedContact({ ...selectedContact, trust_level: trustLevel });
+      if (selectedContact && selectedContact.id === contact.id) {
+        setSelectedContact({ ...selectedContact, trust_level: newLevel });
       }
       await loadContacts();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update trust level');
+      setError(err instanceof Error ? err.message : 'Failed to update trust');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleShareIdentity = async () => {
+    if (!fingerprint) return;
+    try {
+      setLoading(true);
+      setError(null);
+      const data = await apiCall('/api/contacts/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint }),
+      });
+      setExchangePackage(data.exchangePackage);
+      setShowShareIdentityDialog(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create exchange package');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleImportExchange = async () => {
+    if (!fingerprint || !exchangeImportData.trim()) return;
+    try {
+      setLoading(true);
+      setExchangeResult(null);
+      const data = await apiCall('/api/contacts/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint, exchangeData: exchangeImportData.trim() }),
+      });
+      setExchangeResult({ success: true, message: data.message || 'Contact added successfully' });
+      await loadContacts();
+    } catch (err) {
+      setExchangeResult({ success: false, message: err instanceof Error ? err.message : 'Failed to import' });
     } finally {
       setLoading(false);
     }
@@ -377,47 +397,10 @@ export function ContactManagement({ identity }: ContactsProps) {
       email: contact.email,
       fingerprint: contact.fingerprint,
       public_key: contact.public_key,
-      trust_level: contact.trust_level,
       notes: contact.metadata?.notes || '',
     });
     setShowEditDialog(true);
   };
-
-  // --- Trust Level Dropdown (reused in card + detail) ---
-
-  function TrustLevelMenu({ contact, onClose }: { contact: Contact; onClose?: () => void }) {
-    return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="text-muted-foreground">
-            <Filter className="h-4 w-4 mr-1" />
-            Trust
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent>
-          <DropdownMenuLabel>Set Trust Level</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          {TRUST_LEVELS.slice().reverse().map(level => {
-            const config = TRUST_CONFIG[level];
-            const Icon = TRUST_ICON[level];
-            return (
-              <DropdownMenuItem
-                key={level}
-                onClick={() => {
-                  handleUpdateTrustLevel(contact.id, level);
-                  onClose?.();
-                }}
-                disabled={contact.trust_level === level}
-              >
-                <Icon className={`h-4 w-4 mr-2 ${config.iconColor}`} />
-                {config.label}
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    );
-  }
 
   // --- Render ---
 
@@ -430,13 +413,13 @@ export function ContactManagement({ identity }: ContactsProps) {
             <span>Trust Network</span>
           </CardTitle>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" onClick={() => setShowQRDialog(true)}>
-              <QrCode className="h-4 w-4 mr-2" />
-              Share via QR
+            <Button size="sm" onClick={handleShareIdentity} className="bg-amber-600 hover:bg-amber-700">
+              <Share2 className="h-4 w-4 mr-2" />
+              Share Identity
             </Button>
-            <Button variant="outline" size="sm" onClick={handleGenerateBurnerLink}>
-              <Link className="h-4 w-4 mr-2" />
-              Burner Link
+            <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)}>
+              <Download className="h-4 w-4 mr-2" />
+              Import Contact
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -499,17 +482,18 @@ export function ContactManagement({ identity }: ContactsProps) {
           </Button>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — binary: all, trusted, known */}
         <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 w-full sm:w-auto">
             <TabsTrigger value="all">
               All ({contacts.length})
             </TabsTrigger>
-            {TRUST_LEVELS.slice().reverse().map(level => (
-              <TabsTrigger key={level} value={level}>
-                {TRUST_CONFIG[level].label} ({contacts.filter(c => c.trust_level === level).length})
-              </TabsTrigger>
-            ))}
+            <TabsTrigger value="trusted">
+              Trusted ({trustedCount})
+            </TabsTrigger>
+            <TabsTrigger value="known">
+              Known ({knownCount})
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value={activeTab} className="mt-0">
@@ -541,7 +525,7 @@ export function ContactManagement({ identity }: ContactsProps) {
                       <div className="flex justify-between items-start">
                         <div className="space-y-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <TrustIcon level={contact.trust_level} className="h-4 w-4 flex-shrink-0" />
+                            <TrustIcon contact={contact} className="h-4 w-4 flex-shrink-0" />
                             <h3 className="font-medium text-lg truncate">{contact.name}</h3>
                           </div>
                           <div className="text-sm text-muted-foreground flex items-center gap-1">
@@ -555,7 +539,7 @@ export function ContactManagement({ identity }: ContactsProps) {
                         <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors flex-shrink-0 mt-1" />
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <TrustBadge level={contact.trust_level} />
+                        <TrustBadge contact={contact} />
                         {contact.metadata?.connection_method && (
                           <Badge variant="outline" className="text-xs">
                             {contact.metadata.connection_method === 'mutual' ? 'Mutual' :
@@ -566,7 +550,14 @@ export function ContactManagement({ identity }: ContactsProps) {
                       </div>
                     </div>
                     <div className="flex divide-x divide-border/40 border-t border-border/40 bg-muted/30" onClick={e => e.stopPropagation()}>
-                      <TrustLevelMenu contact={contact} />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className={`flex-1 rounded-none ${isTrusted(contact) ? 'text-amber-400' : 'text-muted-foreground'}`}
+                        onClick={() => handleToggleTrust(contact)}
+                      >
+                        {isTrusted(contact) ? <><ShieldOff className="h-4 w-4 mr-1" /> Break</> : <><ShieldCheck className="h-4 w-4 mr-1" /> Vouch</>}
+                      </Button>
                       <Button variant="ghost" size="sm" className="flex-1 rounded-none text-muted-foreground" onClick={() => openEditDialog(contact)}>
                         <Edit className="h-4 w-4 mr-1" /> Edit
                       </Button>
@@ -588,7 +579,7 @@ export function ContactManagement({ identity }: ContactsProps) {
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Add Contact</DialogTitle>
-              <DialogDescription>Enter their details to add them as Known.</DialogDescription>
+              <DialogDescription>Enter their details. New contacts start as Known.</DialogDescription>
             </DialogHeader>
             {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
             <div className="space-y-4 py-4">
@@ -657,86 +648,89 @@ export function ContactManagement({ identity }: ContactsProps) {
         {/* Contact Detail */}
         <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
           <DialogContent className="sm:max-w-lg">
-            {selectedContact && (() => {
-              const config = TRUST_CONFIG[selectedContact.trust_level];
-              return (
-                <>
-                  <DialogHeader>
-                    <DialogTitle className="flex items-center gap-2">
-                      <div className="flex-shrink-0 rounded-full h-8 w-8 flex items-center justify-center" style={{ background: `${config.color}15` }}>
-                        <TrustIcon level={selectedContact.trust_level} />
-                      </div>
-                      <span>{selectedContact.name}</span>
-                    </DialogTitle>
-                    <DialogDescription>Contact details and trust management.</DialogDescription>
-                  </DialogHeader>
-
-                  <div className="space-y-5">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Email</h4>
-                        <div className="flex items-center gap-1 mt-1">
-                          <Mail className="h-4 w-4 text-muted-foreground" />
-                          <span>{selectedContact.email}</span>
-                        </div>
-                      </div>
-                      <div>
-                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trust Level</h4>
-                        <div className="mt-1"><TrustBadge level={selectedContact.trust_level} /></div>
-                      </div>
+            {selectedContact && (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <div className={`flex-shrink-0 rounded-full h-8 w-8 flex items-center justify-center ${
+                      isTrusted(selectedContact) ? 'bg-amber-500/15' : 'bg-gray-500/15'
+                    }`}>
+                      <TrustIcon contact={selectedContact} />
                     </div>
+                    <span>{selectedContact.name}</span>
+                  </DialogTitle>
+                  <DialogDescription>Contact details and trust management.</DialogDescription>
+                </DialogHeader>
 
+                <div className="space-y-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Fingerprint</h4>
-                      <div className="mt-1 font-mono text-sm bg-muted p-2 rounded border border-border/40">
-                        {selectedContact.fingerprint.match(/.{1,4}/g)?.join(' ')}
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Email</h4>
+                      <div className="flex items-center gap-1 mt-1">
+                        <Mail className="h-4 w-4 text-muted-foreground" />
+                        <span>{selectedContact.email}</span>
                       </div>
                     </div>
-
-                    {selectedContact.metadata?.notes && (
-                      <div>
-                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes</h4>
-                        <div className="mt-1 p-3 bg-muted rounded-md">
-                          <p className="text-sm whitespace-pre-wrap">{selectedContact.metadata.notes}</p>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                      <div>
-                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Added</h4>
-                        <p className="mt-1">{new Date(selectedContact.added_at).toLocaleDateString()}</p>
-                      </div>
-                      {selectedContact.verified_at && (
-                        <div>
-                          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Verified</h4>
-                          <p className="mt-1">{new Date(selectedContact.verified_at).toLocaleDateString()}</p>
-                        </div>
-                      )}
-                      {selectedContact.metadata?.connection_method && (
-                        <div>
-                          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Connection</h4>
-                          <p className="mt-1 capitalize">{selectedContact.metadata.connection_method.replace('_', ' ')}</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Actions */}
-                    <div className="border-t border-border/40 pt-4 flex flex-col sm:flex-row gap-2 justify-between">
-                      <div className="flex gap-2">
-                        <TrustLevelMenu contact={selectedContact} onClose={() => setShowDetailDialog(false)} />
-                        <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
-                          <Edit className="h-4 w-4 mr-1" /> Edit
-                        </Button>
-                      </div>
-                      <Button variant="destructive" size="sm" onClick={() => { handleDeleteContact(selectedContact.id); setShowDetailDialog(false); }}>
-                        <Trash2 className="h-4 w-4 mr-1" /> Remove
-                      </Button>
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trust</h4>
+                      <div className="mt-1"><TrustBadge contact={selectedContact} /></div>
                     </div>
                   </div>
-                </>
-              );
-            })()}
+
+                  <div>
+                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Fingerprint</h4>
+                    <div className="mt-1 font-mono text-sm bg-muted p-2 rounded border border-border/40">
+                      {selectedContact.fingerprint.match(/.{1,4}/g)?.join(' ')}
+                    </div>
+                  </div>
+
+                  {selectedContact.metadata?.notes && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes</h4>
+                      <div className="mt-1 p-3 bg-muted rounded-md">
+                        <p className="text-sm whitespace-pre-wrap">{selectedContact.metadata.notes}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Added</h4>
+                      <p className="mt-1">{new Date(selectedContact.added_at).toLocaleDateString()}</p>
+                    </div>
+                    {selectedContact.verified_at && (
+                      <div>
+                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trusted Since</h4>
+                        <p className="mt-1">{new Date(selectedContact.verified_at).toLocaleDateString()}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="border-t border-border/40 pt-4 flex flex-col sm:flex-row gap-2 justify-between">
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => { handleToggleTrust(selectedContact); }}
+                        className={isTrusted(selectedContact) ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}
+                      >
+                        {isTrusted(selectedContact)
+                          ? <><ShieldOff className="h-4 w-4 mr-1" /> Break Trust</>
+                          : <><ShieldCheck className="h-4 w-4 mr-1" /> Vouch</>
+                        }
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
+                        <Edit className="h-4 w-4 mr-1" /> Edit
+                      </Button>
+                    </div>
+                    <Button variant="destructive" size="sm" onClick={() => { handleDeleteContact(selectedContact.id); setShowDetailDialog(false); }}>
+                      <Trash2 className="h-4 w-4 mr-1" /> Remove
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
           </DialogContent>
         </Dialog>
 
@@ -805,6 +799,102 @@ export function ContactManagement({ identity }: ContactsProps) {
               <Button variant="outline" onClick={() => setShowImportDialog(false)}>Cancel</Button>
               <Button onClick={handleImportContacts} disabled={loading || !importData}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> : <><Upload className="h-4 w-4 mr-2" />Import</>}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Share Identity — signed exchange package */}
+        <Dialog open={showShareIdentityDialog} onOpenChange={setShowShareIdentityDialog}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Share Your Identity</DialogTitle>
+              <DialogDescription>
+                Copy this signed package and send it to someone via Signal, email, or any trusted channel. They can import it to add you as a contact.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4 space-y-3">
+              <Textarea
+                value={exchangePackage}
+                readOnly
+                className="font-mono text-xs h-48"
+                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+              />
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => {
+                    navigator.clipboard.writeText(exchangePackage);
+                  }}
+                >
+                  <Copy className="h-4 w-4 mr-2" />
+                  Copy to Clipboard
+                </Button>
+                {typeof navigator !== 'undefined' && 'share' in navigator && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => {
+                      navigator.share({
+                        title: 'SVRNTY Identity',
+                        text: exchangePackage,
+                      }).catch(() => {});
+                    }}
+                  >
+                    <Share2 className="h-4 w-4 mr-2" />
+                    Share
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                This package is dual-signed (ED25519 + ML-DSA-65). The recipient can verify it came from you.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowShareIdentityDialog(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Import Contact from Exchange Package */}
+        <Dialog open={showImportExchangeDialog} onOpenChange={(open) => {
+          setShowImportExchangeDialog(open);
+          if (!open) { setExchangeImportData(''); setExchangeResult(null); }
+        }}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Import Contact</DialogTitle>
+              <DialogDescription>
+                Paste a signed identity package from someone who wants to connect. Their signature will be verified automatically.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4 space-y-3">
+              <Textarea
+                value={exchangeImportData}
+                onChange={(e) => setExchangeImportData(e.target.value)}
+                placeholder="Paste the signed identity package here..."
+                className="font-mono text-xs h-48"
+              />
+              {exchangeResult && (
+                <Alert variant={exchangeResult.success ? 'default' : 'destructive'}>
+                  <AlertDescription className={exchangeResult.success ? 'text-emerald-400' : ''}>
+                    {exchangeResult.message}
+                  </AlertDescription>
+                </Alert>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setShowImportExchangeDialog(false); setExchangeImportData(''); setExchangeResult(null); }}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleImportExchange}
+                disabled={loading || !exchangeImportData.trim()}
+              >
+                {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Verifying...</> : <><ShieldCheck className="h-4 w-4 mr-2" />Verify & Import</>}
               </Button>
             </DialogFooter>
           </DialogContent>

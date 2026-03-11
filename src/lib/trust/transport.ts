@@ -6,8 +6,7 @@
 // Phase 2: Signal bot (programmatic), email adapter
 // Phase 3: Mesh relay (agent-to-agent)
 
-import type { SignedSignal, TrustSignal, TrustLevel } from './types';
-import { TRUST_LABELS } from './types';
+import type { SignedSignal, TrustSignal } from './types';
 
 // --- Transport Interface ---
 
@@ -146,23 +145,15 @@ export class SignalTransport implements TransportAdapter {
 
   /**
    * Generate a Signal.me link for a phone number or username.
-   * Users can click to open a conversation in Signal.
    */
   static userLink(handle: string): string {
-    // Signal usernames: signal.me/#eu/<username>
-    // Phone numbers: signal.me/#p/<e164>
     if (handle.startsWith('+')) {
       return `https://signal.me/#p/${encodeURIComponent(handle)}`;
     }
-    // Assume username (with or without leading dot notation)
     const username = handle.startsWith('@') ? handle.slice(1) : handle;
     return `https://signal.me/#eu/${encodeURIComponent(username)}`;
   }
 
-  /**
-   * Generate a Signal group invite link.
-   * For tribe creation — user creates group in Signal, pastes invite link.
-   */
   static isGroupLink(url: string): boolean {
     return url.startsWith('https://signal.group/');
   }
@@ -213,13 +204,12 @@ registerTransport(new ClipboardTransport());
 
 function signalTypeLabel(payload: TrustSignal): string {
   switch (payload.type) {
-    case 'vouch': return `Vouch — ${TRUST_LABELS[payload.level] || `L${payload.level}`}`;
+    case 'vouch': return 'Vouch';
     case 'concern': return 'Concern';
-    case 'break': return `Trust Break (${payload.severity})`;
-    case 'sync': return `Sync — ${TRUST_LABELS[payload.my_level] || `L${payload.my_level}`}`;
+    case 'break': return 'Trust Break';
+    case 'sync': return `Sync — ${payload.trusted ? 'Trusted' : 'Known'}`;
     case 'introduce': return `Introduction — ${payload.name}`;
     case 'key_rotation': return 'Key Rotation';
-    case 'upgrade': return `Upgrade — L${payload.from} to L${payload.to}`;
     case 'recovery_request': return 'Recovery Request';
     default: return 'Signal';
   }
@@ -229,7 +219,7 @@ function signalContext(payload: TrustSignal): string | null {
   switch (payload.type) {
     case 'vouch': return `Subject: ${payload.subject.slice(0, 16)}...`;
     case 'concern': return `Subject: ${payload.subject.slice(0, 16)}...\nDetail: ${payload.detail.slice(0, 60)}`;
-    case 'break': return `Subject: ${payload.subject.slice(0, 16)}...`;
+    case 'break': return `Subject: ${payload.subject.slice(0, 16)}...${payload.reason ? `\nReason: ${payload.reason.slice(0, 60)}` : ''}`;
     case 'introduce': return `Introducing: ${payload.name}\nKey: ${payload.pub_key.slice(0, 32)}...`;
     case 'key_rotation': return `Old: ${payload.old_fingerprint.slice(0, 16)}...\nNew: ${payload.new_fingerprint.slice(0, 16)}...`;
     default: return null;

@@ -1,18 +1,8 @@
 // src/lib/trust/types.ts
-// TrustEdge data model — replaces flat Contact with graduated trust levels.
-// Spec: autobots/specs/soverentity_trust_protocol.md (Archie, v2)
-
-// --- Trust Levels ---
-
-export type TrustLevel = 0 | 1 | 2 | 3 | 4;
-
-export const TRUST_LABELS: Record<TrustLevel, string> = {
-  0: 'stranger',
-  1: 'known',
-  2: 'verified',
-  3: 'trusted',
-  4: 'inner_circle',
-};
+// Trust is binary: you know someone, or you trust them.
+// Known = contact exists. Trusted = vouched.
+// Trust decays over time without interaction. Default: 2 years.
+// No levels. No tiers. No popularity contest.
 
 // --- Core Types ---
 
@@ -29,23 +19,25 @@ export interface TrustEdge {
     emails?: string[];                  // additional emails beyond peer_email
     handles?: Record<string, string>;   // 'signal' -> '@handle', 'telegram' -> '@handle', etc.
     urls?: string[];                    // personal sites, profiles
+    verified_claims?: VerifiedClaim[];  // what has been proved
   };
-  // Trust
-  trust_level: TrustLevel;
-  trust_since: string;                  // ISO timestamp of current level
+  // Trust — binary
+  trusted: boolean;                     // vouched or not
+  trusted_since: string | null;         // when trust was last granted (null = never trusted)
+  last_interaction: string;             // last meaningful contact — decay clock starts here
+  decay_days: number;                   // customizable per-edge, default from graph settings
   trust_history: TrustEvent[];          // full audit trail
   // Verification
   verification: {
     method: 'none' | 'email' | 'qr' | 'mutual_vouch' | 'in_person';
     verified_at: string | null;
-    vouchers?: string[];                // fingerprints of L3+ who vouched
-    verified_claims?: VerifiedClaim[];  // what has been proved
+    vouchers?: string[];                // fingerprints of people who vouched
   };
   // Mutual state
   mutual: {
-    their_level_for_me: TrustLevel | null;  // what THEY set (if they share it)
-    last_sync: string | null;               // last mutual state exchange
-    reciprocal: boolean;                    // are we at same level?
+    they_trust_me: boolean | null;      // do THEY trust me? (null = unknown)
+    last_sync: string | null;           // last mutual state exchange
+    reciprocal: boolean;                // do we both trust each other?
   };
   // Metadata
   tags: string[];
@@ -54,7 +46,7 @@ export interface TrustEdge {
   added_at: string;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
-  // Post-quantum public keys (if peer has them)
+  // Post-quantum public keys
   peer_pq_sig_public_key?: string;      // ML-DSA-65, base64
   peer_pq_kem_public_key?: string;      // ML-KEM-768, base64
 }
@@ -68,10 +60,35 @@ export interface VerifiedClaim {
 
 export interface TrustEvent {
   timestamp: string;
-  from_level: TrustLevel;
-  to_level: TrustLevel;
+  action: 'trust' | 'break' | 'decay' | 'reverify';
   reason: string;
-  initiated_by: 'self' | 'peer' | 'signal';
+  initiated_by: 'self' | 'peer' | 'system';  // system = decay
+}
+
+// --- Trust Decay ---
+
+/**
+ * Check if trust has decayed (no interaction within decay_days).
+ * Returns true if the edge is trusted but past its decay window.
+ */
+export function isDecayed(edge: TrustEdge): boolean {
+  if (!edge.trusted) return false;
+  const lastContact = new Date(edge.last_interaction).getTime();
+  const now = Date.now();
+  const decayMs = edge.decay_days * 24 * 60 * 60 * 1000;
+  return (now - lastContact) > decayMs;
+}
+
+/**
+ * Days remaining until trust decays. Negative = already decayed.
+ */
+export function daysUntilDecay(edge: TrustEdge): number {
+  if (!edge.trusted) return 0;
+  const lastContact = new Date(edge.last_interaction).getTime();
+  const now = Date.now();
+  const decayMs = edge.decay_days * 24 * 60 * 60 * 1000;
+  const remaining = (lastContact + decayMs - now) / (24 * 60 * 60 * 1000);
+  return Math.round(remaining);
 }
 
 // --- Trust Graph ---
@@ -81,9 +98,14 @@ export interface TrustGraph {
   owner_fingerprint: string;
   edges: TrustEdge[];
   tribes: Tribe[];
+  settings: {
+    default_decay_days: number;         // 730 = 2 years
+  };
   stats: {
     total_contacts: number;
-    by_level: Record<number, number>;
+    trusted_count: number;
+    known_count: number;
+    decayed_count: number;
     last_modified: string;
   };
 }
@@ -91,12 +113,11 @@ export interface TrustGraph {
 // --- Signals ---
 
 export type TrustSignal =
-  | { type: 'vouch';       subject: string; level: TrustLevel; }
+  | { type: 'vouch';       subject: string; }
   | { type: 'concern';     subject: string; detail: string; }
-  | { type: 'break';       subject: string; severity: 'soft' | 'hard'; }
-  | { type: 'upgrade';     subject: string; from: TrustLevel; to: TrustLevel; }
-  | { type: 'sync';        my_level: TrustLevel; }
+  | { type: 'break';       subject: string; reason?: string; }
   | { type: 'introduce';   subject: string; pub_key: string; name: string; }
+  | { type: 'sync';        trusted: boolean; }
   | { type: 'key_rotation'; old_fingerprint: string; new_fingerprint: string; }
   | { type: 'recovery_request'; shard_holders: string[]; };
 
@@ -115,9 +136,7 @@ export interface Tribe {
   id: string;
   name: string;
   members: string[];                    // member fingerprints
-  trust_level: TrustLevel;             // your trust of the GROUP
-  member_overrides: Record<string, TrustLevel>;  // individual overrides
-  audit_chain: IntroductionRecord[];   // who introduced whom
+  audit_chain: IntroductionRecord[];    // who introduced whom
   created_at: string;
   notes: string;
 }
@@ -130,16 +149,19 @@ export interface IntroductionRecord {
 }
 
 // --- Privacy Filters ---
+// Simple: known contacts get name/fingerprint/key.
+// Trusted contacts get what you choose to share.
+// Notes and history are never exported.
 
-export const PRIVACY_FILTERS: Record<TrustLevel, string[]> = {
-  0: [],
-  1: ['name', 'fingerprint', 'public_key'],
-  2: ['name', 'fingerprint', 'public_key', 'verification_status', 'mutual_count'],
-  3: ['name', 'fingerprint', 'public_key', 'verification_status', 'mutual_contacts', 'connection_channels'],
-  4: ['name', 'fingerprint', 'public_key', 'verification_status', 'mutual_contacts', 'connection_channels', 'graph_topology'],
-};
+export const PRIVACY_FILTERS = {
+  known: ['peer_name', 'peer_fingerprint', 'peer_public_key'],
+  trusted: ['peer_name', 'peer_fingerprint', 'peer_public_key', 'verification', 'connection_channels', 'contact_info'],
+} as const;
 
-// --- Migration ---
+// --- Migration from v1 (5-level system) ---
+
+/** Legacy 5-level TrustLevel */
+export type LegacyTrustLevel = 0 | 1 | 2 | 3 | 4;
 
 /** Legacy Contact type (pre-TrustEdge) */
 export interface LegacyContact {
@@ -159,8 +181,12 @@ export interface LegacyContact {
   };
 }
 
-export const LEGACY_TRUST_MAP: Record<string, TrustLevel> = {
-  'unverified': 1,
-  'verified': 2,
-  'trusted': 3,
-};
+/**
+ * Map old 5-level or string trust to binary.
+ * L0-L1 / 'unverified' = known (not trusted)
+ * L2+ / 'verified'+ = trusted
+ */
+export function migrateTrustLevel(level: LegacyTrustLevel | string): boolean {
+  if (typeof level === 'number') return level >= 2;
+  return level === 'verified' || level === 'trusted';
+}

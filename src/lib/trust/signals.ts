@@ -2,7 +2,7 @@
 // Trust signal creation, signing, and verification.
 // Signals are signed JSON blobs — channel-agnostic (email, Signal, QR, direct).
 
-import type { TrustSignal, SignedSignal, TrustLevel } from './types';
+import type { TrustSignal, SignedSignal } from './types';
 import { hybridSign, hybridVerify } from '@/lib/crypto/hybrid';
 
 /**
@@ -67,22 +67,22 @@ export async function verifySignal(
   );
 }
 
-// --- Signal factories (convenience) ---
+// --- Signal factories ---
 
-export function vouchSignal(subject: string, level: TrustLevel): TrustSignal {
-  return { type: 'vouch', subject, level };
+export function vouchSignal(subject: string): TrustSignal {
+  return { type: 'vouch', subject };
 }
 
 export function concernSignal(subject: string, detail: string): TrustSignal {
   return { type: 'concern', subject, detail };
 }
 
-export function breakSignal(subject: string, severity: 'soft' | 'hard'): TrustSignal {
-  return { type: 'break', subject, severity };
+export function breakSignal(subject: string, reason?: string): TrustSignal {
+  return { type: 'break', subject, reason };
 }
 
-export function syncSignal(myLevel: TrustLevel): TrustSignal {
-  return { type: 'sync', my_level: myLevel };
+export function syncSignal(trusted: boolean): TrustSignal {
+  return { type: 'sync', trusted };
 }
 
 export function introduceSignal(subject: string, pubKey: string, name: string): TrustSignal {
@@ -96,36 +96,28 @@ export function keyRotationSignal(oldFingerprint: string, newFingerprint: string
 // --- Signal propagation rules ---
 
 /**
- * Should this signal be propagated to a contact at the given level?
- * Rule 1: signals from L3+ propagate. L1 signals suppressed.
- * Rule 2: break signals always propagate to L2+.
+ * Should this signal be propagated to a contact?
+ * Break signals always propagate to trusted contacts.
+ * Other signals propagate from trusted senders to trusted contacts.
  */
 export function shouldPropagate(
   signal: TrustSignal,
-  senderLevelForMe: TrustLevel,
-  recipientLevel: TrustLevel
+  isSenderTrusted: boolean,
+  isRecipientTrusted: boolean
 ): boolean {
-  // Break signals always reach L2+
-  if (signal.type === 'break' && recipientLevel >= 2) {
+  // Break signals always reach trusted contacts
+  if (signal.type === 'break' && isRecipientTrusted) {
     return true;
   }
 
-  // Other signals require sender at L3+
-  if (senderLevelForMe < 3) {
-    return false;
-  }
-
-  // Propagate to L2+ contacts
-  return recipientLevel >= 2;
+  // Other signals require trusted sender → trusted recipient
+  return isSenderTrusted && isRecipientTrusted;
 }
 
 /**
- * Max trust level through introduction.
- * Rule 3: min(introducer's level, introduced's level) - 1
+ * Introduction creates a known contact, not a trusted one.
+ * Trust must be explicitly granted by the person.
  */
-export function maxIntroductionLevel(
-  introducerLevel: TrustLevel,
-  introducedLevel: TrustLevel
-): TrustLevel {
-  return Math.max(0, Math.min(introducerLevel, introducedLevel) - 1) as TrustLevel;
+export function introductionCreatesTrust(): boolean {
+  return false; // introductions make you known, never trusted
 }

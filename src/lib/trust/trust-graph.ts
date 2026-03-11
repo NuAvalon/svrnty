@@ -1,5 +1,6 @@
 // src/lib/trust/trust-graph.ts
-// Local-first encrypted trust graph. Replaces ContactManager.
+// Local-first encrypted trust graph.
+// Binary trust: known or trusted. Trust decays without interaction.
 // Storage: ~/.soverentity/<fingerprint>.trust.enc (PGP-encrypted JSON)
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
@@ -10,13 +11,14 @@ import { randomUUID } from 'crypto';
 import type {
   TrustEdge,
   TrustGraph,
-  TrustLevel,
   TrustEvent,
   Tribe,
   IntroductionRecord,
   LegacyContact,
 } from './types';
-import { migrateContacts } from './migration';
+import { isDecayed, migrateTrustLevel } from './types';
+
+const DEFAULT_DECAY_DAYS = 730; // 2 years
 
 export interface TrustGraphManagerOptions {
   storageDir?: string;
@@ -46,8 +48,6 @@ export class TrustGraphManager {
   private async initialize(): Promise<void> {
     await mkdir(this.storageDir, { recursive: true });
   }
-
-  // --- File paths ---
 
   private graphPath(): string {
     return join(this.storageDir, `${this.ownerFingerprint}.trust.enc`);
@@ -91,26 +91,45 @@ export class TrustGraphManager {
 
   private emptyGraph(): TrustGraph {
     return {
-      version: '1.0.0',
+      version: '2.0.0',
       owner_fingerprint: this.ownerFingerprint,
       edges: [],
       tribes: [],
+      settings: {
+        default_decay_days: DEFAULT_DECAY_DAYS,
+      },
       stats: {
         total_contacts: 0,
-        by_level: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 },
+        trusted_count: 0,
+        known_count: 0,
+        decayed_count: 0,
         last_modified: new Date().toISOString(),
       },
     };
   }
 
   private computeStats(graph: TrustGraph): TrustGraph['stats'] {
-    const byLevel: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 };
+    let trusted = 0;
+    let known = 0;
+    let decayed = 0;
+
     for (const edge of graph.edges) {
-      byLevel[edge.trust_level] = (byLevel[edge.trust_level] || 0) + 1;
+      if (edge.trusted) {
+        if (isDecayed(edge)) {
+          decayed++;
+        } else {
+          trusted++;
+        }
+      } else {
+        known++;
+      }
     }
+
     return {
       total_contacts: graph.edges.length,
-      by_level: byLevel,
+      trusted_count: trusted,
+      known_count: known,
+      decayed_count: decayed,
       last_modified: new Date().toISOString(),
     };
   }
@@ -122,7 +141,7 @@ export class TrustGraphManager {
     peer_name: string;
     peer_email: string;
     peer_public_key: string;
-    trust_level?: TrustLevel;
+    trusted?: boolean;
     connection_channels?: string[];
     notes?: string;
     tags?: string[];
@@ -135,8 +154,8 @@ export class TrustGraphManager {
       throw new Error('Edge already exists for this fingerprint');
     }
 
-    const level = params.trust_level ?? 1;
     const now = new Date().toISOString();
+    const trusted = params.trusted ?? false;
 
     const edge: TrustEdge = {
       id: randomUUID(),
@@ -144,13 +163,14 @@ export class TrustGraphManager {
       peer_name: params.peer_name,
       peer_email: params.peer_email,
       peer_public_key: params.peer_public_key,
-      trust_level: level,
-      trust_since: now,
+      trusted,
+      trusted_since: trusted ? now : null,
+      last_interaction: now,
+      decay_days: graph.settings.default_decay_days,
       trust_history: [{
         timestamp: now,
-        from_level: 0,
-        to_level: level,
-        reason: 'Initial contact added',
+        action: trusted ? 'trust' : 'reverify' as const,
+        reason: trusted ? 'Initial contact — trusted' : 'Contact added',
         initiated_by: 'self',
       }],
       verification: {
@@ -158,7 +178,7 @@ export class TrustGraphManager {
         verified_at: null,
       },
       mutual: {
-        their_level_for_me: null,
+        they_trust_me: null,
         last_sync: null,
         reciprocal: false,
       },
@@ -190,19 +210,24 @@ export class TrustGraphManager {
     return graph.edges;
   }
 
-  async getEdgesByLevel(level: TrustLevel): Promise<TrustEdge[]> {
+  async getTrustedEdges(): Promise<TrustEdge[]> {
     const graph = await this.loadGraph();
-    return graph.edges.filter(e => e.trust_level === level);
+    return graph.edges.filter(e => e.trusted && !isDecayed(e));
   }
 
-  async getEdgesAtOrAbove(level: TrustLevel): Promise<TrustEdge[]> {
+  async getKnownEdges(): Promise<TrustEdge[]> {
     const graph = await this.loadGraph();
-    return graph.edges.filter(e => e.trust_level >= level);
+    return graph.edges.filter(e => !e.trusted);
+  }
+
+  async getDecayedEdges(): Promise<TrustEdge[]> {
+    const graph = await this.loadGraph();
+    return graph.edges.filter(e => e.trusted && isDecayed(e));
   }
 
   async updateEdge(
     fingerprint: string,
-    updates: Partial<Pick<TrustEdge, 'peer_name' | 'peer_email' | 'tags' | 'notes' | 'connection_channels' | 'agent_fingerprint'>>
+    updates: Partial<Pick<TrustEdge, 'peer_name' | 'peer_email' | 'tags' | 'notes' | 'connection_channels' | 'agent_fingerprint' | 'contact_info' | 'decay_days'>>
   ): Promise<TrustEdge> {
     const graph = await this.loadGraph();
     const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
@@ -211,31 +236,6 @@ export class TrustGraphManager {
     graph.edges[idx] = { ...graph.edges[idx], ...updates };
     await this.saveGraph(graph);
     return graph.edges[idx];
-  }
-
-  async removeEdge(fingerprint: string, reason: string): Promise<void> {
-    const graph = await this.loadGraph();
-    const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
-    if (idx === -1) throw new Error('Edge not found');
-
-    // Record the break in history before removing
-    const edge = graph.edges[idx];
-    edge.trust_history.push({
-      timestamp: new Date().toISOString(),
-      from_level: edge.trust_level,
-      to_level: 0,
-      reason: `Trust break: ${reason}`,
-      initiated_by: 'self',
-    });
-
-    // Remove from tribes
-    for (const tribe of graph.tribes) {
-      tribe.members = tribe.members.filter(m => m !== fingerprint);
-      delete tribe.member_overrides[fingerprint];
-    }
-
-    graph.edges.splice(idx, 1);
-    await this.saveGraph(graph);
   }
 
   async searchEdges(query: string): Promise<TrustEdge[]> {
@@ -249,44 +249,130 @@ export class TrustGraphManager {
     );
   }
 
-  // --- Trust Level Management ---
+  // --- Trust Operations ---
 
   /**
-   * Change trust level with mandatory reason. Records audit trail.
-   * L3->L4 is always manual (enforced by caller, not here — this is the data layer).
+   * Vouch for someone — grant trust. Resets the decay clock.
    */
-  async setTrustLevel(
-    fingerprint: string,
-    newLevel: TrustLevel,
-    reason: string,
-    initiatedBy: TrustEvent['initiated_by'] = 'self'
-  ): Promise<TrustEdge> {
+  async vouch(fingerprint: string, reason: string): Promise<TrustEdge> {
     const graph = await this.loadGraph();
     const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
     if (idx === -1) throw new Error('Edge not found');
 
     const edge = graph.edges[idx];
-    const oldLevel = edge.trust_level;
+    const now = new Date().toISOString();
 
-    if (oldLevel === newLevel) return edge;
+    edge.trusted = true;
+    edge.trusted_since = edge.trusted_since || now;
+    edge.last_interaction = now;
 
     edge.trust_history.push({
-      timestamp: new Date().toISOString(),
-      from_level: oldLevel,
-      to_level: newLevel,
+      timestamp: now,
+      action: 'trust',
       reason,
-      initiated_by: initiatedBy,
+      initiated_by: 'self',
     });
-
-    edge.trust_level = newLevel;
-    edge.trust_since = new Date().toISOString();
 
     await this.saveGraph(graph);
     return edge;
   }
 
   /**
-   * Record verification. Upgrades L1 -> L2 if currently at L1.
+   * Break trust. Visible to both sides on next sync.
+   * The person drops from trusted to known. They'll notice.
+   */
+  async breakTrust(fingerprint: string, reason: string): Promise<TrustEdge> {
+    const graph = await this.loadGraph();
+    const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
+    if (idx === -1) throw new Error('Edge not found');
+
+    const edge = graph.edges[idx];
+    const now = new Date().toISOString();
+
+    edge.trusted = false;
+    edge.trusted_since = null;
+
+    edge.trust_history.push({
+      timestamp: now,
+      action: 'break',
+      reason,
+      initiated_by: 'self',
+    });
+
+    // Remove from tribes
+    for (const tribe of graph.tribes) {
+      tribe.members = tribe.members.filter(m => m !== fingerprint);
+    }
+
+    await this.saveGraph(graph);
+    return edge;
+  }
+
+  /**
+   * Process decay for all edges. Call periodically (e.g., on app open).
+   * Returns edges that just decayed.
+   */
+  async processDecay(): Promise<TrustEdge[]> {
+    const graph = await this.loadGraph();
+    const decayed: TrustEdge[] = [];
+    const now = new Date().toISOString();
+
+    for (const edge of graph.edges) {
+      if (edge.trusted && isDecayed(edge)) {
+        // Check if we already recorded this decay
+        const lastEvent = edge.trust_history[edge.trust_history.length - 1];
+        if (lastEvent?.action !== 'decay') {
+          edge.trusted = false;
+          edge.trusted_since = null;
+          edge.trust_history.push({
+            timestamp: now,
+            action: 'decay',
+            reason: `No interaction for ${edge.decay_days} days`,
+            initiated_by: 'system',
+          });
+          decayed.push(edge);
+        }
+      }
+    }
+
+    if (decayed.length > 0) {
+      await this.saveGraph(graph);
+    }
+
+    return decayed;
+  }
+
+  /**
+   * Reverify — any meaningful interaction resets the decay clock.
+   * Can also restore trust after decay.
+   */
+  async reverify(fingerprint: string, restoreTrust: boolean = false): Promise<TrustEdge> {
+    const graph = await this.loadGraph();
+    const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
+    if (idx === -1) throw new Error('Edge not found');
+
+    const edge = graph.edges[idx];
+    const now = new Date().toISOString();
+
+    edge.last_interaction = now;
+
+    if (restoreTrust && !edge.trusted) {
+      edge.trusted = true;
+      edge.trusted_since = now;
+      edge.trust_history.push({
+        timestamp: now,
+        action: 'reverify',
+        reason: 'Trust restored after reverification',
+        initiated_by: 'self',
+      });
+    }
+
+    await this.saveGraph(graph);
+    return edge;
+  }
+
+  /**
+   * Record verification method (email, QR, in-person, mutual vouch).
    */
   async verify(
     fingerprint: string,
@@ -303,19 +389,7 @@ export class TrustGraphManager {
       verified_at: new Date().toISOString(),
       vouchers,
     };
-
-    // Auto-upgrade L1 -> L2 on verification
-    if (edge.trust_level === 1) {
-      edge.trust_history.push({
-        timestamp: new Date().toISOString(),
-        from_level: 1,
-        to_level: 2,
-        reason: `Verified via ${method}`,
-        initiated_by: 'self',
-      });
-      edge.trust_level = 2;
-      edge.trust_since = new Date().toISOString();
-    }
+    edge.last_interaction = new Date().toISOString();
 
     await this.saveGraph(graph);
     return edge;
@@ -326,7 +400,7 @@ export class TrustGraphManager {
    */
   async updateMutualState(
     fingerprint: string,
-    theirLevel: TrustLevel
+    theyTrustMe: boolean
   ): Promise<TrustEdge> {
     const graph = await this.loadGraph();
     const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
@@ -334,13 +408,31 @@ export class TrustGraphManager {
 
     const edge = graph.edges[idx];
     edge.mutual = {
-      their_level_for_me: theirLevel,
+      they_trust_me: theyTrustMe,
       last_sync: new Date().toISOString(),
-      reciprocal: edge.trust_level === theirLevel,
+      reciprocal: edge.trusted && theyTrustMe,
     };
+    edge.last_interaction = new Date().toISOString();
 
     await this.saveGraph(graph);
     return edge;
+  }
+
+  /**
+   * Remove a contact entirely (not just break trust — remove from graph).
+   */
+  async removeEdge(fingerprint: string, reason: string): Promise<void> {
+    const graph = await this.loadGraph();
+    const idx = graph.edges.findIndex(e => e.peer_fingerprint === fingerprint);
+    if (idx === -1) throw new Error('Edge not found');
+
+    // Remove from tribes
+    for (const tribe of graph.tribes) {
+      tribe.members = tribe.members.filter(m => m !== fingerprint);
+    }
+
+    graph.edges.splice(idx, 1);
+    await this.saveGraph(graph);
   }
 
   // --- Tribes ---
@@ -348,7 +440,6 @@ export class TrustGraphManager {
   async createTribe(params: {
     name: string;
     members?: string[];
-    trust_level?: TrustLevel;
     notes?: string;
   }): Promise<Tribe> {
     const graph = await this.loadGraph();
@@ -357,8 +448,6 @@ export class TrustGraphManager {
       id: randomUUID(),
       name: params.name,
       members: params.members || [],
-      trust_level: params.trust_level ?? 2,
-      member_overrides: {},
       audit_chain: [],
       created_at: new Date().toISOString(),
       notes: params.notes || '',
@@ -383,7 +472,7 @@ export class TrustGraphManager {
       throw new Error('Already a member');
     }
 
-    // Verify the member exists in our graph
+    // Must be a known contact
     if (!graph.edges.some(e => e.peer_fingerprint === memberFingerprint)) {
       throw new Error('Must be a known contact before adding to tribe');
     }
@@ -406,39 +495,8 @@ export class TrustGraphManager {
     if (!tribe) throw new Error('Tribe not found');
 
     tribe.members = tribe.members.filter(m => m !== memberFingerprint);
-    delete tribe.member_overrides[memberFingerprint];
-
     await this.saveGraph(graph);
     return tribe;
-  }
-
-  /**
-   * Set individual trust override within a tribe.
-   * Individual always overrides group.
-   */
-  async setTribeOverride(
-    tribeId: string,
-    memberFingerprint: string,
-    level: TrustLevel
-  ): Promise<Tribe> {
-    const graph = await this.loadGraph();
-    const tribe = graph.tribes.find(t => t.id === tribeId);
-    if (!tribe) throw new Error('Tribe not found');
-
-    tribe.member_overrides[memberFingerprint] = level;
-    await this.saveGraph(graph);
-    return tribe;
-  }
-
-  /**
-   * Get effective trust level for a tribe member.
-   * Individual override > group level.
-   */
-  getEffectiveTrustLevel(tribe: Tribe, memberFingerprint: string): TrustLevel {
-    if (memberFingerprint in tribe.member_overrides) {
-      return tribe.member_overrides[memberFingerprint];
-    }
-    return tribe.trust_level;
   }
 
   async getAllTribes(): Promise<Tribe[]> {
@@ -451,9 +509,6 @@ export class TrustGraphManager {
     return graph.tribes.find(t => t.id === tribeId) || null;
   }
 
-  /**
-   * Trace the introduction chain for a tribe member.
-   */
   async traceIntroductionChain(
     tribeId: string,
     memberFingerprint: string
@@ -462,7 +517,6 @@ export class TrustGraphManager {
     const tribe = graph.tribes.find(t => t.id === tribeId);
     if (!tribe) return [];
 
-    // Walk the chain: who introduced this member, who introduced that person, etc.
     const chain: IntroductionRecord[] = [];
     let current = memberFingerprint;
     const visited = new Set<string>();
@@ -478,40 +532,117 @@ export class TrustGraphManager {
     return chain;
   }
 
-  // --- Graph Stats ---
+  // --- Settings ---
+
+  async setDefaultDecayDays(days: number): Promise<void> {
+    const graph = await this.loadGraph();
+    graph.settings.default_decay_days = days;
+    await this.saveGraph(graph);
+  }
+
+  // --- Stats ---
 
   async getStats(): Promise<TrustGraph['stats']> {
     const graph = await this.loadGraph();
-    return graph.stats;
+    return this.computeStats(graph);
   }
 
   async getFullGraph(): Promise<TrustGraph> {
     return this.loadGraph();
   }
 
+  // --- Export (privacy-filtered) ---
+
+  /**
+   * Export edges visible to a peer.
+   * Known contacts see: name, fingerprint, public key.
+   * Trusted contacts see: + verification, channels, contact info.
+   * Never exported: notes, trust_history.
+   */
+  async exportForPeer(peerIsTrusted: boolean): Promise<Partial<TrustEdge>[]> {
+    const graph = await this.loadGraph();
+
+    if (!peerIsTrusted) {
+      // Known peers get minimal info
+      return graph.edges
+        .filter(e => e.trusted && !isDecayed(e))
+        .map(edge => ({
+          peer_fingerprint: edge.peer_fingerprint,
+          peer_name: edge.peer_name,
+          peer_public_key: edge.peer_public_key,
+        }));
+    }
+
+    // Trusted peers get more
+    return graph.edges
+      .filter(e => e.trusted && !isDecayed(e))
+      .map(edge => ({
+        peer_fingerprint: edge.peer_fingerprint,
+        peer_name: edge.peer_name,
+        peer_public_key: edge.peer_public_key,
+        verification: {
+          method: edge.verification.method,
+          verified_at: edge.verification.verified_at,
+        },
+        connection_channels: edge.connection_channels,
+      }));
+  }
+
   // --- Migration ---
 
   /**
-   * Import legacy contacts into the trust graph.
-   * Merges with existing edges (skips duplicates by fingerprint).
+   * Import legacy contacts (flat or 5-level) into binary trust graph.
    */
   async importLegacyContacts(contacts: LegacyContact[]): Promise<{
     imported: number;
     skipped: number;
   }> {
     const graph = await this.loadGraph();
-    const migrated = migrateContacts(contacts);
-
+    const now = new Date().toISOString();
     let imported = 0;
     let skipped = 0;
 
-    for (const edge of migrated) {
-      if (graph.edges.some(e => e.peer_fingerprint === edge.peer_fingerprint)) {
+    for (const contact of contacts) {
+      if (graph.edges.some(e => e.peer_fingerprint === contact.fingerprint)) {
         skipped++;
-      } else {
-        graph.edges.push(edge);
-        imported++;
+        continue;
       }
+
+      const trusted = migrateTrustLevel(contact.trust_level);
+
+      const edge: TrustEdge = {
+        id: contact.id || randomUUID(),
+        peer_fingerprint: contact.fingerprint,
+        peer_name: contact.name,
+        peer_email: contact.email,
+        peer_public_key: contact.public_key,
+        trusted,
+        trusted_since: trusted ? (contact.verified_at || contact.added_at) : null,
+        last_interaction: contact.verified_at || contact.added_at,
+        decay_days: graph.settings.default_decay_days,
+        trust_history: [{
+          timestamp: contact.added_at,
+          action: trusted ? 'trust' as const : 'reverify' as const,
+          reason: `Migrated from legacy (${contact.trust_level})`,
+          initiated_by: 'self' as const,
+        }],
+        verification: {
+          method: contact.verified_at ? 'email' : 'none',
+          verified_at: contact.verified_at || null,
+        },
+        mutual: {
+          they_trust_me: null,
+          last_sync: null,
+          reciprocal: false,
+        },
+        tags: contact.metadata?.tags || [],
+        notes: contact.metadata?.notes || '',
+        connection_channels: contact.metadata?.connection_method ? [contact.metadata.connection_method] : [],
+        added_at: contact.added_at,
+      };
+
+      graph.edges.push(edge);
+      imported++;
     }
 
     if (imported > 0) {
@@ -519,45 +650,5 @@ export class TrustGraphManager {
     }
 
     return { imported, skipped };
-  }
-
-  // --- Export (privacy-filtered) ---
-
-  /**
-   * Export edges visible to a peer at a given trust level.
-   * L1: name, fingerprint, public key only.
-   * L4: full graph topology (no private notes).
-   */
-  async exportForPeer(peerLevel: TrustLevel): Promise<Partial<TrustEdge>[]> {
-    const graph = await this.loadGraph();
-
-    if (peerLevel <= 0) return [];
-
-    return graph.edges.map(edge => {
-      const base: Partial<TrustEdge> = {
-        peer_fingerprint: edge.peer_fingerprint,
-        peer_name: edge.peer_name,
-        peer_public_key: edge.peer_public_key,
-      };
-
-      if (peerLevel >= 2) {
-        base.verification = {
-          method: edge.verification.method,
-          verified_at: edge.verification.verified_at,
-        };
-      }
-
-      if (peerLevel >= 3) {
-        base.connection_channels = edge.connection_channels;
-      }
-
-      if (peerLevel >= 4) {
-        base.trust_level = edge.trust_level;
-        base.trust_since = edge.trust_since;
-      }
-
-      // Never export: notes, trust_history (private)
-      return base;
-    });
   }
 }
