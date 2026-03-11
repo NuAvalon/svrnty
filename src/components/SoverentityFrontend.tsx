@@ -1,26 +1,160 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
+  onVaultRestore?: (contents: any) => void;
+}
+
+type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify';
+
+// --- Constellation Background ---
+// Generates fixed node positions once (via useMemo) and animates with CSS.
+// Nodes drift slowly, lines pulse between nearby nodes — a living trust map.
+
+interface ConstellationNode {
+  id: number;
+  x: number;
+  y: number;
+  size: number;
+  delay: number;
+  duration: number;
+  drift: number;
+}
+
+function generateNodes(count: number): ConstellationNode[] {
+  const nodes: ConstellationNode[] = [];
+  for (let i = 0; i < count; i++) {
+    nodes.push({
+      id: i,
+      x: Math.random() * 100,
+      y: Math.random() * 100,
+      size: 1.5 + Math.random() * 2.5,
+      delay: Math.random() * 8,
+      duration: 12 + Math.random() * 16,
+      drift: 8 + Math.random() * 20,
+    });
+  }
+  return nodes;
+}
+
+function ConstellationBg() {
+  const nodes = useMemo(() => generateNodes(24), []);
+
+  // Find connections — nodes within 30% distance
+  const lines = useMemo(() => {
+    const result: { x1: number; y1: number; x2: number; y2: number; delay: number }[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 28) {
+          result.push({
+            x1: nodes[i].x,
+            y1: nodes[i].y,
+            x2: nodes[j].x,
+            y2: nodes[j].y,
+            delay: Math.random() * 6,
+          });
+        }
+      }
+    }
+    return result;
+  }, [nodes]);
+
+  return (
+    <div style={{
+      position: 'absolute',
+      inset: 0,
+      overflow: 'hidden',
+      pointerEvents: 'none',
+      zIndex: 0,
+    }}>
+      <style>{`
+        @keyframes drift {
+          0%, 100% { transform: translate(0, 0); }
+          25% { transform: translate(var(--dx), var(--dy)); }
+          50% { transform: translate(calc(var(--dx) * -0.5), calc(var(--dy) * 0.7)); }
+          75% { transform: translate(calc(var(--dx) * 0.3), calc(var(--dy) * -0.6)); }
+        }
+        @keyframes pulse-node {
+          0%, 100% { opacity: 0.15; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(1.4); }
+        }
+        @keyframes pulse-line {
+          0%, 100% { opacity: 0.03; }
+          50% { opacity: 0.1; }
+        }
+        @keyframes amber-pulse {
+          0%, 100% { box-shadow: 0 0 30px rgba(200, 168, 78, 0.08); }
+          50% { box-shadow: 0 0 50px rgba(200, 168, 78, 0.2), 0 0 80px rgba(200, 168, 78, 0.06); }
+        }
+      `}</style>
+      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
+        {lines.map((line, i) => (
+          <line
+            key={`l${i}`}
+            x1={`${line.x1}%`} y1={`${line.y1}%`}
+            x2={`${line.x2}%`} y2={`${line.y2}%`}
+            stroke="#c8a84e"
+            strokeWidth="0.5"
+            style={{
+              animation: `pulse-line ${10 + line.delay * 2}s ease-in-out ${line.delay}s infinite`,
+            }}
+          />
+        ))}
+      </svg>
+      {nodes.map(node => (
+        <div
+          key={node.id}
+          style={{
+            position: 'absolute',
+            left: `${node.x}%`,
+            top: `${node.y}%`,
+            width: `${node.size}px`,
+            height: `${node.size}px`,
+            borderRadius: '50%',
+            background: '#c8a84e',
+            boxShadow: '0 0 6px rgba(200, 168, 78, 0.3)',
+            // @ts-ignore — CSS custom properties for drift direction
+            '--dx': `${node.drift}px`,
+            '--dy': `${node.drift * 0.7}px`,
+            animation: `drift ${node.duration}s ease-in-out ${node.delay}s infinite, pulse-node ${6 + node.delay}s ease-in-out ${node.delay}s infinite`,
+          } as React.CSSProperties}
+        />
+      ))}
+    </div>
+  );
 }
 
 export function SoverentityFrontend({
   existingIdentity,
-  onIdentityUpdate
+  onIdentityUpdate,
+  onVaultRestore,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({ name: '', email: '' });
+  const [gateMode, setGateMode] = useState<GateMode>('choose');
   const [verificationState, setVerificationState] = useState({
     loading: false,
     error: null as string | null,
     status: existingIdentity?.verification?.status || 'unverified',
   });
   const [verificationCode, setVerificationCode] = useState('');
+
+  // Vault restore state
+  const [vaultFile, setVaultFile] = useState<File | null>(null);
+  const [vaultHeader, setVaultHeader] = useState<any>(null);
+  const [vaultPassphrase, setVaultPassphrase] = useState('');
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [restoreLoading, setRestoreLoading] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (existingIdentity) {
@@ -101,13 +235,156 @@ export function SoverentityFrontend({
     }
   };
 
+  // --- Vault Restore ---
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setVaultFile(file);
+    setRestoreError(null);
+
+    try {
+      // Read the unencrypted header to show safe word
+      const arrayBuffer = await file.arrayBuffer();
+
+      // Dynamically import vault module (client-side only)
+      const { readVaultHeader } = await import('@/lib/sync/vault');
+      const header = readVaultHeader(arrayBuffer);
+      setVaultHeader(header);
+      setGateMode('restore-verify');
+    } catch (err) {
+      setRestoreError(
+        err instanceof Error ? err.message : 'Could not read vault file. Is this a valid .svrnty file?'
+      );
+    }
+  };
+
+  const handleVaultRestore = async () => {
+    if (!vaultFile || !vaultPassphrase) return;
+
+    try {
+      setRestoreLoading(true);
+      setRestoreError(null);
+
+      const arrayBuffer = await vaultFile.arrayBuffer();
+      const { unpackVault } = await import('@/lib/sync/vault');
+      const { contents } = await unpackVault(arrayBuffer, vaultPassphrase);
+
+      // Set identity from vault
+      setIdentity(contents.identity);
+      onIdentityUpdate?.(contents.identity);
+      onVaultRestore?.(contents);
+    } catch (err) {
+      setRestoreError(
+        err instanceof Error
+          ? err.message.includes('decrypt')
+            ? 'Wrong passphrase. Check your spelling and try again.'
+            : err.message
+          : 'Failed to restore vault'
+      );
+    } finally {
+      setRestoreLoading(false);
+    }
+  };
+
   const formatFingerprint = (fp: string) => fp?.match(/.{1,4}/g)?.join(' ') || fp;
 
-  // --- Creation Screen ---
-  if (!identity) {
+  // --- Gate: Choose Mode ---
+  if (!identity && gateMode === 'choose') {
+    return (
+      <div style={s.outerWrap}>
+        <div style={s.gateOuter}>
+          <ConstellationBg />
+          <div style={s.gatePanel}>
+            {/* Hero */}
+            <div style={s.hero}>
+              <div style={s.shieldIcon}>
+                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                </svg>
+              </div>
+              <h1 style={s.gateTitle}>svrnty</h1>
+              <p style={s.gateSub}>
+                Your identity. Your trust. Your sovereignty.
+              </p>
+            </div>
+
+            {/* Two Doors */}
+            <div style={s.doorContainer}>
+              <button
+                onClick={() => setGateMode('forge')}
+                style={s.doorBtn}
+                onMouseEnter={e => {
+                  const el = e.currentTarget;
+                  el.style.borderColor = 'rgba(200, 168, 78, 0.4)';
+                  el.style.background = 'rgba(200, 168, 78, 0.08)';
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget;
+                  el.style.borderColor = 'rgba(180, 160, 100, 0.15)';
+                  el.style.background = 'rgba(15, 15, 25, 0.6)';
+                }}
+              >
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
+                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                </svg>
+                <span style={s.doorTitle}>Begin anew.</span>
+                <span style={s.doorDesc}>
+                  Generate a new cryptographic identity.
+                  Your keys never leave your device.
+                </span>
+              </button>
+
+              <button
+                onClick={() => setGateMode('restore')}
+                style={s.doorBtn}
+                onMouseEnter={e => {
+                  const el = e.currentTarget;
+                  el.style.borderColor = 'rgba(78, 205, 196, 0.4)';
+                  el.style.background = 'rgba(78, 205, 196, 0.06)';
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget;
+                  el.style.borderColor = 'rgba(180, 160, 100, 0.15)';
+                  el.style.background = 'rgba(15, 15, 25, 0.6)';
+                }}
+              >
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4ecdc4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Open your vault.</span>
+                <span style={s.doorDesc}>
+                  Restore your identity from a vault file.
+                  Pick up where you left off.
+                </span>
+              </button>
+            </div>
+
+            <p style={s.footer}>
+              ED25519 + ML-DSA-65 signing. Curve25519 + ML-KEM-768 encryption.
+              <br />Post-quantum. Zero-knowledge. Sovereign.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Gate: Forge Identity ---
+  if (!identity && gateMode === 'forge') {
     return (
       <div style={s.outerWrap}>
         <div style={s.createPanel}>
+          {/* Back button */}
+          <button onClick={() => setGateMode('choose')} style={s.backBtn}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+            Back
+          </button>
+
           {/* Hero */}
           <div style={s.hero}>
             <div style={s.keyIcon}>
@@ -115,7 +392,7 @@ export function SoverentityFrontend({
                 <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Forge Your Identity</h2>
+            <h2 style={s.heroTitle}>Begin anew.</h2>
             <p style={s.heroSub}>
               Generate a sovereign keypair. Your keys never leave your device.
               Post-quantum encryption. No servers. No tracking.
@@ -161,7 +438,7 @@ export function SoverentityFrontend({
                 <Spinner /> Generating keys...
               </span>
             ) : (
-              <span style={s.btnInner}>Forge Identity</span>
+              <span style={s.btnInner}>Begin anew.</span>
             )}
           </button>
 
@@ -174,8 +451,213 @@ export function SoverentityFrontend({
     );
   }
 
+  // --- Gate: Restore Vault (file selection) ---
+  if (!identity && gateMode === 'restore') {
+    return (
+      <div style={s.outerWrap}>
+        <div style={s.createPanel}>
+          {/* Back button */}
+          <button onClick={() => setGateMode('choose')} style={s.backBtn}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+            Back
+          </button>
+
+          {/* Hero */}
+          <div style={s.hero}>
+            <div style={{ ...s.keyIcon, borderColor: 'rgba(78, 205, 196, 0.2)', background: 'rgba(78, 205, 196, 0.08)' }}>
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#4ecdc4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+            </div>
+            <h2 style={s.heroTitle}>Open Your Vault</h2>
+            <p style={s.heroSub}>
+              Upload your .svrnty vault file to restore your identity,
+              contacts, and trust network on this device.
+            </p>
+          </div>
+
+          {restoreError && <div style={s.error}>{restoreError}</div>}
+
+          {/* File Upload */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".svrnty"
+            onChange={handleFileSelect}
+            style={{ display: 'none' }}
+          />
+
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            style={s.uploadBtn}
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <span>Choose vault file (.svrnty)</span>
+          </button>
+
+          {vaultFile && (
+            <div style={s.fileInfo}>
+              <span style={s.fileName}>{vaultFile.name}</span>
+              <span style={s.fileSize}>{(vaultFile.size / 1024).toFixed(1)} KB</span>
+            </div>
+          )}
+
+          <p style={s.footer}>
+            Your vault is encrypted with AES-256-GCM.
+            <br />The file never leaves this device unencrypted.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Gate: Restore Vault (verify safe word + enter passphrase) ---
+  if (!identity && gateMode === 'restore-verify' && vaultHeader) {
+    return (
+      <div style={s.outerWrap}>
+        <div style={s.createPanel}>
+          {/* Back button */}
+          <button onClick={() => { setGateMode('restore'); setVaultHeader(null); }} style={s.backBtn}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+            Back
+          </button>
+
+          {/* Vault Identity */}
+          <div style={s.hero}>
+            <div style={{ ...s.keyIcon, borderColor: 'rgba(78, 205, 196, 0.2)', background: 'rgba(78, 205, 196, 0.08)' }}>
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#4ecdc4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+            </div>
+            <h2 style={s.heroTitle}>Verify Your Vault</h2>
+          </div>
+
+          {/* Vault Info Card */}
+          <div style={s.vaultInfoCard}>
+            <div style={s.vaultInfoRow}>
+              <span style={s.vaultInfoLabel}>NAME</span>
+              <span style={s.vaultInfoValue}>{vaultHeader.displayName}</span>
+            </div>
+            <div style={s.vaultInfoRow}>
+              <span style={s.vaultInfoLabel}>FINGERPRINT</span>
+              <span style={{ ...s.vaultInfoValue, fontFamily: "'JetBrains Mono', monospace", fontSize: '11px' }}>
+                ...{vaultHeader.fingerprintHint}
+              </span>
+            </div>
+            <div style={s.vaultInfoRow}>
+              <span style={s.vaultInfoLabel}>CONTACTS</span>
+              <span style={s.vaultInfoValue}>{vaultHeader.entryCount} entries</span>
+            </div>
+            <div style={s.vaultInfoRow}>
+              <span style={s.vaultInfoLabel}>LAST MODIFIED</span>
+              <span style={s.vaultInfoValue}>
+                {new Date(vaultHeader.lastModified).toLocaleDateString()}
+              </span>
+            </div>
+
+            {/* Safe Word */}
+            {vaultHeader.safeWord && (
+              <div style={s.safeWordSection}>
+                <span style={s.vaultInfoLabel}>YOUR SAFE WORD</span>
+                <div style={s.safeWordValue}>{vaultHeader.safeWord}</div>
+                <p style={s.safeWordHint}>
+                  If this is not the safe word you set, do not proceed.
+                  This file may have been tampered with.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {restoreError && <div style={s.error}>{restoreError}</div>}
+
+          {/* Trust Warning */}
+          <div style={s.trustWarning}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <div>
+              <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Only enter your passphrase on a device you trust.</strong>
+              <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                Your passphrase decrypts your private keys, trust network, and contacts.
+                Never enter it on a shared, public, or untrusted device.
+              </p>
+            </div>
+          </div>
+
+          {/* Passphrase Input */}
+          <div style={s.field}>
+            <label style={s.label}>VAULT PASSPHRASE</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showPassphrase ? 'text' : 'password'}
+                placeholder="Enter your vault passphrase"
+                value={vaultPassphrase}
+                onChange={e => setVaultPassphrase(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
+                style={s.input}
+                autoFocus
+              />
+              <button
+                onClick={() => setShowPassphrase(!showPassphrase)}
+                style={s.eyeBtn}
+                tabIndex={-1}
+              >
+                {showPassphrase ? (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                    <line x1="1" y1="1" x2="23" y2="23" />
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          </div>
+
+          <button
+            onClick={handleVaultRestore}
+            disabled={restoreLoading || !vaultPassphrase}
+            style={{
+              ...s.restoreBtn,
+              opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
+            }}
+          >
+            {restoreLoading ? (
+              <span style={s.btnInner}>
+                <Spinner /> Decrypting vault...
+              </span>
+            ) : (
+              <span style={s.btnInner}>Unlock Vault</span>
+            )}
+          </button>
+
+          <p style={s.footer}>
+            Decryption happens locally in your browser.
+            <br />Your passphrase never leaves this device.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // --- Identity View ---
-  const isVerified = verificationState.status === 'verified' || identity.verification?.status === 'verified';
+  const isVerified = verificationState.status === 'verified' || identity?.verification?.status === 'verified';
+
+  if (!identity) return null;
 
   return (
     <div style={s.outerWrap}>
@@ -306,6 +788,69 @@ const s: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     padding: '20px 0',
   },
+  // --- Gate ---
+  gateOuter: {
+    position: 'relative' as const,
+    maxWidth: '540px',
+    width: '100%',
+    minHeight: '480px',
+  },
+  gatePanel: {
+    position: 'relative' as const,
+    zIndex: 1,
+    background: 'rgba(15, 15, 25, 0.85)',
+    backdropFilter: 'blur(16px)',
+    border: '1px solid rgba(180, 160, 100, 0.12)',
+    borderRadius: '16px',
+    padding: '40px',
+    width: '100%',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.4), 0 0 40px rgba(200, 168, 78, 0.03)',
+  },
+  gateTitle: {
+    fontSize: '28px',
+    fontWeight: 700,
+    color: '#e0dcd0',
+    letterSpacing: '4px',
+    textTransform: 'lowercase' as const,
+    marginBottom: '8px',
+  },
+  gateSub: {
+    fontSize: '13px',
+    color: '#8a8070',
+    lineHeight: '1.6',
+  },
+  doorContainer: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '12px',
+    marginBottom: '24px',
+  },
+  doorBtn: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    padding: '28px 24px',
+    background: 'rgba(15, 15, 25, 0.6)',
+    border: '1px solid rgba(180, 160, 100, 0.15)',
+    borderRadius: '12px',
+    cursor: 'pointer',
+    transition: 'all 0.25s ease',
+    textAlign: 'center' as const,
+  },
+  doorTitle: {
+    fontSize: '15px',
+    fontWeight: 600,
+    color: '#c8a84e',
+    letterSpacing: '0.5px',
+    marginBottom: '8px',
+  },
+  doorDesc: {
+    fontSize: '12px',
+    color: '#6a6558',
+    lineHeight: '1.5',
+    maxWidth: '280px',
+  },
+  // --- Shared ---
   createPanel: {
     background: 'rgba(15, 15, 25, 0.85)',
     backdropFilter: 'blur(16px)',
@@ -316,9 +861,36 @@ const s: Record<string, React.CSSProperties> = {
     width: '100%',
     boxShadow: '0 4px 60px rgba(0, 0, 0, 0.4), 0 0 40px rgba(200, 168, 78, 0.03)',
   },
+  backBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    background: 'none',
+    border: 'none',
+    color: '#8a8070',
+    fontSize: '12px',
+    cursor: 'pointer',
+    padding: '0',
+    marginBottom: '20px',
+    fontFamily: "'JetBrains Mono', monospace",
+    letterSpacing: '0.5px',
+  },
   hero: {
     textAlign: 'center' as const,
     marginBottom: '32px',
+  },
+  shieldIcon: {
+    width: '80px',
+    height: '80px',
+    borderRadius: '50%',
+    background: 'rgba(200, 168, 78, 0.06)',
+    border: '1px solid rgba(200, 168, 78, 0.15)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 20px',
+    boxShadow: '0 0 40px rgba(200, 168, 78, 0.08)',
+    animation: 'amber-pulse 4s ease-in-out infinite',
   },
   keyIcon: {
     width: '72px',
@@ -369,6 +941,7 @@ const s: Record<string, React.CSSProperties> = {
     fontFamily: "'JetBrains Mono', monospace",
     outline: 'none',
     transition: 'border-color 0.2s',
+    boxSizing: 'border-box' as const,
   },
   hint: {
     fontSize: '11px',
@@ -382,6 +955,21 @@ const s: Record<string, React.CSSProperties> = {
     borderRadius: '8px',
     padding: '14px 20px',
     color: '#c8a84e',
+    fontSize: '13px',
+    fontWeight: 600,
+    fontFamily: "'JetBrains Mono', monospace",
+    letterSpacing: '1px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    marginTop: '8px',
+  },
+  restoreBtn: {
+    width: '100%',
+    background: 'rgba(78, 205, 196, 0.12)',
+    border: '1px solid rgba(78, 205, 196, 0.35)',
+    borderRadius: '8px',
+    padding: '14px 20px',
+    color: '#4ecdc4',
     fontSize: '13px',
     fontWeight: 600,
     fontFamily: "'JetBrains Mono', monospace",
@@ -404,6 +992,109 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'all 0.2s',
     marginTop: '8px',
+  },
+  uploadBtn: {
+    width: '100%',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: '12px',
+    background: 'rgba(10, 10, 15, 0.5)',
+    border: '2px dashed rgba(78, 205, 196, 0.2)',
+    borderRadius: '12px',
+    padding: '32px 20px',
+    color: '#4ecdc4',
+    fontSize: '13px',
+    fontFamily: "'JetBrains Mono', monospace",
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+  },
+  fileInfo: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    background: 'rgba(78, 205, 196, 0.06)',
+    border: '1px solid rgba(78, 205, 196, 0.15)',
+    borderRadius: '8px',
+    padding: '12px 16px',
+    marginTop: '12px',
+  },
+  fileName: {
+    fontSize: '12px',
+    color: '#4ecdc4',
+    fontFamily: "'JetBrains Mono', monospace",
+  },
+  fileSize: {
+    fontSize: '11px',
+    color: '#6a6558',
+  },
+  // --- Vault Info Card ---
+  vaultInfoCard: {
+    background: 'rgba(10, 10, 15, 0.5)',
+    border: '1px solid rgba(78, 205, 196, 0.12)',
+    borderRadius: '12px',
+    padding: '20px',
+    marginBottom: '20px',
+  },
+  vaultInfoRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '8px 0',
+    borderBottom: '1px solid rgba(180, 160, 100, 0.06)',
+  },
+  vaultInfoLabel: {
+    fontSize: '9px',
+    color: '#6a6558',
+    letterSpacing: '1.5px',
+    fontWeight: 600,
+  },
+  vaultInfoValue: {
+    fontSize: '13px',
+    color: '#e0dcd0',
+  },
+  safeWordSection: {
+    marginTop: '16px',
+    padding: '16px',
+    background: 'rgba(200, 168, 78, 0.06)',
+    border: '1px solid rgba(200, 168, 78, 0.15)',
+    borderRadius: '8px',
+    textAlign: 'center' as const,
+  },
+  safeWordValue: {
+    fontSize: '20px',
+    fontWeight: 600,
+    color: '#c8a84e',
+    fontFamily: "'JetBrains Mono', monospace",
+    letterSpacing: '2px',
+    margin: '12px 0 8px',
+  },
+  safeWordHint: {
+    fontSize: '11px',
+    color: '#8a8070',
+    lineHeight: '1.5',
+    margin: 0,
+  },
+  // --- Trust Warning ---
+  trustWarning: {
+    display: 'flex',
+    gap: '12px',
+    background: 'rgba(200, 168, 78, 0.06)',
+    border: '1px solid rgba(200, 168, 78, 0.2)',
+    borderRadius: '10px',
+    padding: '14px 16px',
+    marginBottom: '20px',
+  },
+  // --- Eye toggle ---
+  eyeBtn: {
+    position: 'absolute' as const,
+    right: '12px',
+    top: '50%',
+    transform: 'translateY(-50%)',
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    padding: '4px',
   },
   btnInner: {
     display: 'flex',

@@ -13,8 +13,9 @@ The platforms solved the *convenience* problem. They never solved the *trust* pr
 svrnty is a local-first encrypted trust protocol. It lets you:
 
 - **Own your identity** — cryptographic keypairs generated on your device, stored on your device, controlled by you alone
-- **Build a trust graph** — graduated trust levels (Stranger → Known → Verified → Trusted → Inner Circle) with full audit trails
-- **Exchange signed signals** — vouch for someone, raise a concern, make an introduction, rotate a key — all cryptographically signed, all verifiable
+- **Build a trust graph** — binary trust (Known / Trusted) with decay, vouching, and full audit trails. No tiers to climb. No popularity contests.
+- **Exchange signed signals** — vouch for someone, break trust visibly, raise a concern privately, make an introduction, rotate a key — all cryptographically signed, all verifiable
+- **Back up your vault** — encrypted `.svrnty` vault files (AES-256-GCM, PBKDF2 600K iterations). Export locally, or sync to Google Drive, Dropbox, iCloud, or your own WebDAV server. The file is encrypted before it leaves your device. The cloud sees a binary blob, nothing more.
 - **Recover your keys** — Shamir secret sharing splits your master key across trusted contacts. No single point of failure. No "forgot password" flow that routes through a corporation.
 
 Nothing personal ever leaves your device unless you choose to send it.
@@ -32,21 +33,15 @@ Both signatures travel together. If one breaks, the other holds.
 
 ## The Trust Model
 
-Trust in svrnty is **directional**, **graduated**, and **local**.
+Trust in svrnty is **binary**, **visible**, and **local**.
 
-**Directional**: I can trust you at L3 while you trust me at L2. Trust is a statement about *my* confidence, not a mutual contract.
+**Binary**: You either know someone or you trust them. Two states. Known means you've exchanged keys. Trusted means you vouch for them. There are no tiers to climb, no levels to unlock, no reputation scores. Inner circles exist by nature of who you share what with — not as a feature toggle.
 
-**Graduated**: Five levels, each with different privacy boundaries:
+**Visible**: Trust is mutual or it doesn't exist. You can see someone's trust state for you. They can see yours. Breaking trust is visible to both sides — it forces the conversation. Concerns are shared privately with people you trust, not broadcast.
 
-| Level | Name | What They See |
-|-------|------|---------------|
-| L0 | Stranger | Nothing |
-| L1 | Known | Name, fingerprint, public key |
-| L2 | Verified | + verification status, mutual count |
-| L3 | Trusted | + mutual contacts, connection channels |
-| L4 | Inner Circle | + graph topology |
+**Local**: Trust does not propagate automatically. An introduction from a trusted contact starts the new person as Known. You still have to verify them yourself. There is no transitive trust beyond one hop. No PageRank. No reputation scores. No popularity contests.
 
-**Local**: Trust does not propagate automatically. An introduction from a trusted contact starts the new person at L1 — *Known*, not *Trusted*. You still have to verify them yourself. There is no transitive trust beyond one hop. No PageRank. No reputation scores. No popularity contests.
+**Decay**: Trust decays over time (2 years by default, customizable per edge). Like a rotating PGP key — if you haven't re-verified someone in two years, the system nudges you. Reverify or let it fade.
 
 This is a hard architectural constraint, not a setting you can change. Trust that scales without friction isn't trust — it's social credit.
 
@@ -56,11 +51,11 @@ Signals are how trust moves between people. Every signal is signed (dual-signed:
 
 | Signal | Purpose |
 |--------|---------|
-| **vouch** | "I trust this person at level N" |
-| **concern** | "Something is wrong — here's what I know" |
-| **break** | "Trust is severed" (soft or hard) |
+| **vouch** | "I trust this person" |
+| **concern** | "Something is wrong — here's what I know" (private, shared only with people you trust) |
+| **break** | "Trust is severed" (visible to both sides, optional reason) |
 | **introduce** | "Meet this person — here's their public key" |
-| **sync** | "Here's my current trust level for you" |
+| **sync** | "Here's my current trust state for you" |
 | **key_rotation** | "My keys changed — here's proof it's still me" |
 | **recovery_request** | "I need my key shards back" |
 
@@ -142,7 +137,7 @@ Every time the app opens and closes, your encrypted trust graph syncs. If your p
 
 **Trust is mutual or it doesn't exist.** You can see someone's trust level for you. They can see yours. Asymmetry is visible, not hidden.
 
-**Two hops, hard stop.** An introduction gets you to L1. After that, you earn trust directly. No friend-of-a-friend-of-a-friend chains. No six degrees of separation. This is deliberate — trust that propagates without friction becomes meaningless.
+**Two hops, hard stop.** An introduction makes you Known. After that, you earn trust directly. No friend-of-a-friend-of-a-friend chains. No six degrees of separation. This is deliberate — trust that propagates without friction becomes meaningless.
 
 **No vendor lock-in, even if it hurts.** Your keys are standard formats. Your trust graph is an encrypted JSON file on your disk. Export everything, take it somewhere else. We'd rather you leave freely than stay because you can't.
 
