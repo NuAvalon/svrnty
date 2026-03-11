@@ -1,14 +1,13 @@
-// Soverentity Service Worker — offline-first, local-first
-const CACHE_NAME = 'soverentity-v1';
+// svrnty Service Worker — offline-first, local-first
+const CACHE_NAME = 'svrnty-v1';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
   '/icon-192.svg',
   '/icon-512.svg',
-  '/trust-map.html',
 ];
 
-// Install: cache static assets
+// Install: cache static shell
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
@@ -26,7 +25,7 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: network-first for API, cache-first for assets
+// Fetch: network-first for API, cache-first for static assets
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
@@ -34,7 +33,7 @@ self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (request.method !== 'GET') return;
 
-  // API calls: network-first
+  // API routes: network-first
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(request).catch(() => caches.match(request))
@@ -47,7 +46,6 @@ self.addEventListener('fetch', (event) => {
     caches.match(request).then((cached) => {
       if (cached) return cached;
       return fetch(request).then((response) => {
-        // Cache successful responses
         if (response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));

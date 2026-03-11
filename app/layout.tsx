@@ -1,15 +1,8 @@
 import './globals.css'
 
 export const metadata = {
-  title: 'SVRNTY — Self-Sovereign Trust Network',
-  description: 'Your keys, your data, your trust. Decentralized identity and encrypted contact management. From NuAvalon.',
-  manifest: '/manifest.json',
-  themeColor: '#c8a84e',
-  appleWebApp: {
-    capable: true,
-    statusBarStyle: 'black-translucent',
-    title: 'SVRNTY',
-  },
+  title: 'svrnty — Self-Sovereign Trust Network',
+  description: 'Self-Sovereign Trust Network',
 }
 
 export const viewport = {
@@ -26,7 +19,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <head>
-        <link rel="icon" href="/icon-192.svg" type="image/svg+xml" />
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#c8a84e" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <link rel="icon" href="/icon-192.svg" type="image/png" />
         <link rel="apple-touch-icon" href="/icon-192.svg" />
       </head>
       <body>

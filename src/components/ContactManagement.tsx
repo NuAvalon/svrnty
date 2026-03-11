@@ -10,7 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
   Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, ChevronRight, ShieldOff, ShieldCheck, Copy
+  FileJson, Eye, ChevronRight, ShieldOff, ShieldCheck, Copy
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
-// Vault export/import replaces old PGP-based secure export
+import { ContactShareDialog } from '@/components/ContactShareDialog';
 
 // --- Types ---
 // Binary trust: known or trusted. No tiers.
@@ -748,60 +748,13 @@ export function ContactManagement({ identity }: ContactsProps) {
           </DialogContent>
         </Dialog>
 
-        {/* Share Identity — signed exchange package */}
-        <Dialog open={showShareIdentityDialog} onOpenChange={setShowShareIdentityDialog}>
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>Share Your Identity</DialogTitle>
-              <DialogDescription>
-                Copy this signed package and send it to someone via Signal, email, or any trusted channel. They can import it to add you as a contact.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="py-4 space-y-3">
-              <Textarea
-                value={exchangePackage}
-                readOnly
-                className="font-mono text-xs h-48"
-                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
-              />
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => {
-                    navigator.clipboard.writeText(exchangePackage);
-                  }}
-                >
-                  <Copy className="h-4 w-4 mr-2" />
-                  Copy to Clipboard
-                </Button>
-                {typeof navigator !== 'undefined' && 'share' in navigator && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => {
-                      navigator.share({
-                        title: 'SVRNTY Identity',
-                        text: exchangePackage,
-                      }).catch(() => {});
-                    }}
-                  >
-                    <Share2 className="h-4 w-4 mr-2" />
-                    Share
-                  </Button>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                This package is dual-signed (ED25519 + ML-DSA-65). The recipient can verify it came from you.
-              </p>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowShareIdentityDialog(false)}>Close</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        {/* Share Identity — QR, NFC, Short Code, Copy */}
+        <ContactShareDialog
+          open={showShareIdentityDialog}
+          onClose={() => setShowShareIdentityDialog(false)}
+          exchangePackage={exchangePackage}
+          fingerprint={fingerprint || ''}
+        />
 
         {/* Import Contact from Exchange Package */}
         <Dialog open={showImportExchangeDialog} onOpenChange={(open) => {

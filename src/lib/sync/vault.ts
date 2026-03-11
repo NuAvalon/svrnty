@@ -141,7 +141,7 @@ export function createVaultContents(
     settings: {
       defaultDecayDays: settings.defaultDecayDays ?? 730,
       safeWord: settings.safeWord ?? '',
-      cloudSync: settings.cloudSync ?? null,
+      cloudSync: settings.cloudSync ?? undefined,
     },
     recovery,
     sync: {

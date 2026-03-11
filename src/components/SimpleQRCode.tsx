@@ -1,99 +1,80 @@
-// src/components/SimpleQRCode.tsx
 "use client";
 
-import React from 'react';
+import React, { useRef, useCallback } from 'react';
+import QRCode from 'react-qr-code';
+import { Download } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
-// A simple SVG-based QR Code component
-// This is for demonstration purposes only
-// It doesn't actually generate a real QR code, but gives the appearance of one
+interface SimpleQRCodeProps {
+  value: string;
+  size?: number;
+}
 
-export function SimpleQRCode({ value }: { value: string }) {
-  const size = 256;
-  const squareSize = 8; // Size of each "module" (square)
-  const borderSize = 4 * squareSize; // Quiet zone
-  const actualSize = size - 2 * borderSize;
-  
-  // Generate a deterministic but random-looking pattern based on the value
-  const generatePattern = (value: string) => {
-    // Basic hash function to generate a 32-bit number from a string
-    const hash = (str: string) => {
-      let hash = 0;
-      for (let i = 0; i < str.length; i++) {
-        hash = ((hash << 5) - hash) + str.charCodeAt(i);
-        hash |= 0; // Convert to 32bit integer
-      }
-      return hash;
+export function SimpleQRCode({ value, size = 256 }: SimpleQRCodeProps) {
+  const qrRef = useRef<HTMLDivElement>(null);
+
+  const handleDownload = useCallback(() => {
+    const svg = qrRef.current?.querySelector('svg');
+    if (!svg) return;
+
+    const canvas = document.createElement('canvas');
+    const padding = 32;
+    canvas.width = size + padding * 2;
+    canvas.height = size + padding * 2;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // White background with padding
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Serialize SVG and draw to canvas
+    const svgData = new XMLSerializer().serializeToString(svg);
+    const img = new Image();
+    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+    const url = URL.createObjectURL(svgBlob);
+
+    img.onload = () => {
+      ctx.drawImage(img, padding, padding, size, size);
+      URL.revokeObjectURL(url);
+
+      // Trigger download
+      const dataUrl = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = 'svrnty-identity-qr.png';
+      link.href = dataUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     };
-    
-    // Generate a pattern
-    const pattern = [];
-    const rows = Math.floor(actualSize / squareSize);
-    const cols = Math.floor(actualSize / squareSize);
-    
-    // Always have finder patterns (the three large squares in corners)
-    const finderPattern = [
-      // Top-left
-      { x: 0, y: 0, width: 7, height: 7 },
-      // Top-right
-      { x: cols - 7, y: 0, width: 7, height: 7 },
-      // Bottom-left
-      { x: 0, y: rows - 7, width: 7, height: 7 },
-    ];
-    
-    // Add finder pattern outlines
-    finderPattern.forEach(fp => {
-      for (let r = fp.y; r < fp.y + fp.height; r++) {
-        for (let c = fp.x; c < fp.x + fp.width; c++) {
-          if (r === fp.y || r === fp.y + fp.height - 1 || c === fp.x || c === fp.x + fp.width - 1 ||
-              (r >= fp.y + 2 && r <= fp.y + fp.height - 3 && c >= fp.x + 2 && c <= fp.x + fp.width - 3)) {
-            pattern.push({ row: r, col: c });
-          }
-        }
-      }
-    });
-    
-    // Add data-like pattern
-    let seedValue = hash(value);
-    for (let i = 0; i < cols * rows / 4; i++) {
-      // Generate next pseudo-random number
-      seedValue = (seedValue * 1664525 + 1013904223) % 4294967296;
-      const row = Math.floor(seedValue / (4294967296 / rows));
-      const col = Math.floor((seedValue % 4294967296) / (4294967296 / cols));
-      
-      // Check if this position is already in a finder pattern
-      const inFinderPattern = finderPattern.some(fp => 
-        row >= fp.y && row < fp.y + fp.height && 
-        col >= fp.x && col < fp.x + fp.width
-      );
-      
-      if (!inFinderPattern) {
-        pattern.push({ row, col });
-      }
-    }
-    
-    return pattern;
-  };
-  
-  const pattern = generatePattern(value);
-  
+
+    img.src = url;
+  }, [size]);
+
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      style={{ background: 'white' }}
-    >
-      {/* Add QR code pattern */}
-      {pattern.map((p, index) => (
-        <rect
-          key={index}
-          x={borderSize + p.col * squareSize}
-          y={borderSize + p.row * squareSize}
-          width={squareSize}
-          height={squareSize}
-          fill="black"
+    <div className="flex flex-col items-center gap-4">
+      <div
+        ref={qrRef}
+        className="bg-white p-6 rounded-xl shadow-lg shadow-black/20"
+        style={{ lineHeight: 0 }}
+      >
+        <QRCode
+          value={value}
+          size={size}
+          level="M"
+          bgColor="#ffffff"
+          fgColor="#000000"
         />
-      ))}
-    </svg>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleDownload}
+        className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+      >
+        <Download className="h-4 w-4 mr-2" />
+        Download QR as PNG
+      </Button>
+    </div>
   );
 }

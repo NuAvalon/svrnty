@@ -37,7 +37,7 @@ export interface CloudAdapter {
   readonly name: string;
 
   /** Provider identifier */
-  readonly provider: 'google-drive' | 'dropbox' | 'icloud' | 'webdav';
+  readonly provider: 'local-file' | 'google-drive' | 'dropbox' | 'icloud' | 'webdav';
 
   /** Connect to the cloud provider. Call before any operations. */
   connect(config: CloudConfig): Promise<void>;
