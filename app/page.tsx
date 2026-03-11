@@ -6,6 +6,7 @@ import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { SignalComposer, SignalReceiver, SignalLink } from '@/components/SignalSender';
 import { TrustMap } from '@/components/TrustMap';
+import { HelpGuide } from '@/components/HelpGuide';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { SignedSignal, TrustSignal, TrustEdge } from '@/lib/trust/types';
 
@@ -105,10 +106,11 @@ export default function Home() {
 
   return (
     <div className="min-h-screen p-8" style={{ background: '#0a0a0f', color: '#e0dcd0' }}>
-      <header className="mb-12 text-center">
+      <header className="mb-12 text-center relative">
         <h1 className="text-3xl font-bold mb-2" style={{ color: '#c8a84e', letterSpacing: '3px' }}>SVRNTY</h1>
         <p style={{ color: '#8a8070', fontSize: '14px' }}>Self-Sovereign Trust Network</p>
         <p style={{ color: '#5a5548', fontSize: '11px', marginTop: '4px' }}>from NuAvalon</p>
+        <HelpGuide />
       </header>
 
       <main className="max-w-6xl mx-auto">
