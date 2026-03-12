@@ -4,9 +4,11 @@
 
 import type { TrustSignal, SignedSignal } from './types';
 import { hybridSign, hybridVerify } from '@/lib/crypto/hybrid';
+import { createMessage, readPrivateKey, decryptKey, sign as pgpSign } from 'openpgp';
 
 /**
  * Create and sign a trust signal.
+ * Supports both hybrid (v2) and classical-only (v1) signing.
  */
 export async function createSignal(
   payload: TrustSignal,
@@ -19,20 +21,40 @@ export async function createSignal(
   const timestamp = new Date().toISOString();
   const dataToSign = JSON.stringify({ payload, to, timestamp });
 
-  const signature = await hybridSign(
-    dataToSign,
-    classicalPrivateKey,
-    classicalPassphrase,
-    pqSigningSecretKey!
-  );
+  if (pqSigningSecretKey) {
+    // v2: hybrid dual signature (classical + PQ)
+    const signature = await hybridSign(
+      dataToSign,
+      classicalPrivateKey,
+      classicalPassphrase,
+      pqSigningSecretKey
+    );
+
+    return {
+      payload,
+      from,
+      to,
+      timestamp,
+      signature: signature.classical,
+      pq_signature: signature.post_quantum,
+    };
+  }
+
+  // v1: classical-only signature
+  const privateKeyObj = await readPrivateKey({ armoredKey: classicalPrivateKey });
+  const decryptedKey = await decryptKey({
+    privateKey: privateKeyObj,
+    passphrase: classicalPassphrase,
+  });
+  const message = await createMessage({ text: dataToSign });
+  const classicalSig = await pgpSign({ message, signingKeys: decryptedKey });
 
   return {
     payload,
     from,
     to,
     timestamp,
-    signature: signature.classical,
-    pq_signature: signature.post_quantum,
+    signature: classicalSig.toString(),
   };
 }
 

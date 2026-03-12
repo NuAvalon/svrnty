@@ -3,7 +3,6 @@ import { randomBytes } from 'crypto';
 import { writeFile, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
-import { fileURLToPath } from 'url';
 import {
   generatePQKeypairBundle,
   serializeKeypairBundle,
@@ -70,18 +69,15 @@ interface ExportData {
 
 export class SoverentityIdentity {
   private storageDir: string;
+  private initialized: Promise<void>;
 
   constructor(options: IdentityOptions = {}) {
     this.storageDir = options.storageDir || join(homedir(), '.soverentity');
-    this.initialize();
+    this.initialized = this.initialize();
   }
 
   private async initialize(): Promise<void> {
-    try {
-      await mkdir(this.storageDir, { recursive: true });
-    } catch (error: any) {
-      if (error.code !== 'EEXIST') throw error;
-    }
+    await mkdir(this.storageDir, { recursive: true });
   }
 
   async generateIdentity({ name, email }: UserID, options?: {
@@ -99,6 +95,7 @@ export class SoverentityIdentity {
     /** Key vault — stored locally, encrypted */
     vault: KeyVault;
   }> {
+    await this.initialized;
     try {
       // Generate random passphrase for classical key
       const passphrase = randomBytes(32).toString('base64');
@@ -193,6 +190,7 @@ export class SoverentityIdentity {
     type: string;
     value: string;
   }): Promise<IdentityData> {
+    await this.initialized;
     try {
       // Load the identity
       const identity = await this.loadIdentity(fingerprint);
@@ -219,6 +217,7 @@ export class SoverentityIdentity {
   }
   
   async exportIdentity(fingerprint: string, includePrivate: boolean = false): Promise<ExportData> {
+    await this.initialized;
     try {
       const identity = await this.loadIdentity(fingerprint);
       const exportData: ExportData = {
@@ -240,6 +239,7 @@ export class SoverentityIdentity {
   }
 
   async importIdentity(importData: ExportData): Promise<IdentityData> {
+    await this.initialized;
     try {
       const { identity } = importData;
       const fingerprint = identity.identity.fingerprint;
@@ -325,29 +325,3 @@ async loadIdentityData(fingerprint: string): Promise<IdentityData> {
   }
 }
 
-// Example usage
-const main = async (): Promise<void> => {
-  const identity = new SoverentityIdentity();
-  
-  // Generate new identity
-  const result = await identity.generateIdentity({
-    name: 'Test User',
-    email: 'test@example.com'
-  });
-  
-  console.log('Generated identity:', result);
-  
-  // Verify email
-  const verified = await identity.verifyIdentifier({
-    fingerprint: result.fingerprint,
-    type: 'email',
-    value: 'test@example.com'
-  });
-  
-  console.log('Verified identity:', verified);
-};
-
-// ES modules way to check if file is being run directly
-if (import.meta.url === fileURLToPath(import.meta.url)) {
-  main().catch(console.error);
-}
