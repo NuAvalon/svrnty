@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { PrivateKeyExportDialog } from './SecureImportExportDialogs';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -146,6 +147,7 @@ export function SoverentityFrontend({
     status: existingIdentity?.verification?.status || 'unverified',
   });
   const [verificationCode, setVerificationCode] = useState('');
+  const [showKeyExport, setShowKeyExport] = useState(false);
 
   // Vault restore state
   const [vaultFile, setVaultFile] = useState<File | null>(null);
@@ -759,12 +761,60 @@ export function SoverentityFrontend({
         )}
 
         {isVerified && (
-          <div style={s.verifiedBanner}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-            <span>Identity verified. You are sovereign.</span>
-          </div>
+          <>
+            <div style={s.verifiedBanner}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+              </svg>
+              <span>Identity verified. You are sovereign.</span>
+            </div>
+
+            <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
+              <button
+                onClick={() => {
+                  const fp = identity?.identity?.fingerprint;
+                  if (fp) {
+                    navigator.clipboard.writeText(fp);
+                  }
+                }}
+                style={{
+                  ...s.outlineBtn,
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+                Copy Fingerprint
+              </button>
+              <button
+                onClick={() => setShowKeyExport(true)}
+                style={{
+                  ...s.outlineBtn,
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Export Keys
+              </button>
+            </div>
+
+            <PrivateKeyExportDialog
+              open={showKeyExport}
+              onClose={() => setShowKeyExport(false)}
+              identityFingerprint={identity?.identity?.fingerprint || ''}
+            />
+          </>
         )}
       </div>
     </div>
