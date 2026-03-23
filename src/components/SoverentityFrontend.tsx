@@ -107,6 +107,14 @@ function SacredGeometryBg() {
           0%, 100% { opacity: 0.04; transform: scale(1) rotate(0deg); }
           50% { opacity: 0.08; transform: scale(1.02) rotate(0.5deg); }
         }
+        @keyframes spin-dome {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+        @keyframes pulse-key {
+          0%, 100% { opacity: 0.7; }
+          50% { opacity: 1; }
+        }
         @keyframes amber-pulse {
           0%, 100% { box-shadow: 0 0 30px rgba(200, 168, 78, 0.08); }
           50% { box-shadow: 0 0 50px rgba(200, 168, 78, 0.2), 0 0 80px rgba(200, 168, 78, 0.06); }
@@ -356,8 +364,44 @@ export function SoverentityFrontend({
             {/* Hero */}
             <div style={s.hero}>
               <div style={s.shieldIcon}>
-                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                {/* Geodesic dome wireframe with key inside */}
+                <svg width="100" height="100" viewBox="-55 -55 110 110" style={{ overflow: 'visible' }}>
+                  <defs>
+                    <linearGradient id="domeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor="#34d399" stopOpacity="0.6" />
+                      <stop offset="100%" stopColor="#c8a84e" stopOpacity="0.4" />
+                    </linearGradient>
+                  </defs>
+                  {/* Outer geodesic wireframe — icosahedron projection */}
+                  <g style={{ animation: 'spin-dome 20s linear infinite' }}>
+                    {/* Pentagon ring top */}
+                    <polygon points="0,-48 45.6,-14.8 28.2,38.8 -28.2,38.8 -45.6,-14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.5" />
+                    {/* Pentagon ring bottom (rotated) */}
+                    <polygon points="0,48 -45.6,14.8 -28.2,-38.8 28.2,-38.8 45.6,14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.3" />
+                    {/* Connecting triangles */}
+                    <line x1="0" y1="-48" x2="45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
+                    <line x1="0" y1="-48" x2="-45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
+                    <line x1="45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
+                    <line x1="-45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
+                    <line x1="28.2" y1="38.8" x2="-28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
+                    <line x1="-28.2" y1="38.8" x2="28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
+                    {/* Inner triangulation */}
+                    <line x1="45.6" y1="-14.8" x2="-28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
+                    <line x1="-45.6" y1="-14.8" x2="28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
+                    <line x1="28.2" y1="38.8" x2="45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
+                    <line x1="-28.2" y1="38.8" x2="-45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
+                  </g>
+                  {/* Key at center — doesn't rotate */}
+                  <g opacity="0.9" style={{ animation: 'pulse-key 4s ease-in-out infinite' }}>
+                    <svg x="-12" y="-16" width="24" height="32" viewBox="0 0 24 32" fill="none" stroke="#c8a84e" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="9" r="6" />
+                      <line x1="12" y1="15" x2="12" y2="28" />
+                      <line x1="12" y1="22" x2="16" y2="22" />
+                      <line x1="12" y1="26" x2="15" y2="26" />
+                    </svg>
+                  </g>
+                  {/* Glow */}
+                  <circle cx="0" cy="0" r="50" fill="none" stroke="#34d399" strokeWidth="0.3" opacity="0.08" style={{ animation: 'pulse-node 6s ease-in-out infinite' }} />
                 </svg>
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
@@ -996,17 +1040,12 @@ const s: Record<string, React.CSSProperties> = {
     marginBottom: '32px',
   },
   shieldIcon: {
-    width: '80px',
-    height: '80px',
-    borderRadius: '50%',
-    background: 'rgba(200, 168, 78, 0.06)',
-    border: '1px solid rgba(200, 168, 78, 0.15)',
+    width: '120px',
+    height: '120px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    margin: '0 auto 20px',
-    boxShadow: '0 0 40px rgba(200, 168, 78, 0.08)',
-    animation: 'amber-pulse 4s ease-in-out infinite',
+    margin: '0 auto 16px',
   },
   keyIcon: {
     width: '72px',

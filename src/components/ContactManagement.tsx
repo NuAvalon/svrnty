@@ -476,17 +476,14 @@ export function ContactManagement({ identity }: ContactsProps) {
           </Button>
         </div>
 
-        {/* Tabs — binary: all, trusted, known */}
+        {/* Tabs — contacts (all) and trusted (subset) */}
         <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="mb-4 w-full sm:w-auto">
             <TabsTrigger value="all">
-              All ({contacts.length})
+              Contacts ({contacts.length})
             </TabsTrigger>
             <TabsTrigger value="trusted">
               Trusted ({trustedCount})
-            </TabsTrigger>
-            <TabsTrigger value="known">
-              Known ({knownCount})
             </TabsTrigger>
           </TabsList>
 
@@ -550,7 +547,7 @@ export function ContactManagement({ identity }: ContactsProps) {
                         className={`flex-1 rounded-none ${isTrusted(contact) ? 'text-amber-400' : 'text-muted-foreground'}`}
                         onClick={() => handleToggleTrust(contact)}
                       >
-                        {isTrusted(contact) ? <><ShieldOff className="h-4 w-4 mr-1" /> Break</> : <><ShieldCheck className="h-4 w-4 mr-1" /> Vouch</>}
+                        {isTrusted(contact) ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</> : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>}
                       </Button>
                       <Button variant="ghost" size="sm" className="flex-1 rounded-none text-muted-foreground" onClick={() => openEditDialog(contact)}>
                         <Edit className="h-4 w-4 mr-1" /> Edit
@@ -710,8 +707,8 @@ export function ContactManagement({ identity }: ContactsProps) {
                         className={isTrusted(selectedContact) ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}
                       >
                         {isTrusted(selectedContact)
-                          ? <><ShieldOff className="h-4 w-4 mr-1" /> Break Trust</>
-                          : <><ShieldCheck className="h-4 w-4 mr-1" /> Vouch</>
+                          ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</>
+                          : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>
                         }
                       </Button>
                       <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
