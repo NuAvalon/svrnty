@@ -216,6 +216,10 @@ export function SoverentityFrontend({
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showKeyExportDialog, setShowKeyExportDialog] = useState(false);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
+  const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
+  const [claimSlug, setClaimSlug] = useState('');
+  const [claimStatus, setClaimStatus] = useState<'idle' | 'checking' | 'claiming' | 'success' | 'taken' | 'error'>('idle');
+  const [claimedUrl, setClaimedUrl] = useState('');
   const [newPassphrase, setNewPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [passphraseError, setPassphraseError] = useState('');
@@ -258,6 +262,38 @@ export function SoverentityFrontend({
         setPassphraseError('Failed to set passphrase');
       }
     } catch { setPassphraseError('Failed to set passphrase'); }
+  };
+
+  const handleClaimUrl = async () => {
+    const slug = claimSlug.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    if (slug.length < 3) { setClaimStatus('error'); return; }
+    setClaimStatus('checking');
+    try {
+      // Check availability
+      const checkRes = await fetch(`/api/auth/slug/${slug}`);
+      if (checkRes.ok) { setClaimStatus('taken'); return; }
+      // Register with satellite
+      const fp = identity?.identity?.fingerprint;
+      const pk = identity?.identity?.publicKey;
+      const email = identity?.identity?.email || '';
+      const regRes = await fetch('/api/satellite/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, display_name: slug, public_key: pk || '', slug }),
+      });
+      if (regRes.ok || regRes.status === 409) {
+        // Claim the slug
+        const claimRes = await fetch(`/api/satellite/slug/${slug}/claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fingerprint: fp }),
+        });
+        if (claimRes.ok) {
+          setClaimStatus('success');
+          setClaimedUrl(`svrnty.is/${slug}`);
+        } else { setClaimStatus('taken'); }
+      } else { setClaimStatus('error'); }
+    } catch { setClaimStatus('error'); }
   };
 
   const handleCreateIdentity = async () => {
@@ -963,6 +999,28 @@ export function SoverentityFrontend({
               </svg>
               Set Passphrase
             </button>
+            <button
+              onClick={() => { setShowClaimUrlDialog(true); setClaimStatus('idle'); setClaimSlug(''); }}
+              style={{
+                background: 'rgba(200, 168, 78, 0.08)',
+                border: '1px solid rgba(200, 168, 78, 0.25)',
+                borderRadius: '10px',
+                padding: '10px 16px',
+                color: '#c8a84e',
+                fontSize: '13px',
+                fontFamily: "'Space Grotesk', sans-serif",
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+              </svg>
+              Claim URL
+            </button>
           </div>
         )}
 
@@ -1061,6 +1119,73 @@ export function SoverentityFrontend({
                     }}
                   >
                     SET PASSPHRASE
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Claim URL Dialog */}
+        {showClaimUrlDialog && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+            display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 50,
+          }} onClick={() => setShowClaimUrlDialog(false)}>
+            <div style={{
+              background: 'rgba(10, 14, 12, 0.98)', border: '1px solid rgba(200, 168, 78, 0.15)',
+              borderRadius: '16px', padding: '32px', maxWidth: '380px', width: '100%', margin: '20px',
+            }} onClick={e => e.stopPropagation()}>
+              <h3 style={{
+                fontFamily: "'Cormorant Garamond', serif", fontSize: '20px',
+                color: '#e8e4d9', marginBottom: '8px', textAlign: 'center' as const,
+              }}>
+                {claimStatus === 'success' ? 'URL Claimed' : 'Claim Your URL'}
+              </h3>
+              {claimStatus === 'success' ? (
+                <div style={{ textAlign: 'center' as const }}>
+                  <p style={{ color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', marginBottom: '12px' }}>
+                    Your identity is now at:
+                  </p>
+                  <p style={{ color: '#c8a84e', fontFamily: "'Space Grotesk', sans-serif", fontSize: '16px', fontWeight: 600 }}>
+                    {claimedUrl}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p style={{ color: 'rgba(232,228,217,0.5)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
+                    Choose a URL for your public profile
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
+                    <span style={{ color: 'rgba(232,228,217,0.4)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '14px', whiteSpace: 'nowrap' as const }}>svrnty.is/</span>
+                    <input
+                      type="text"
+                      placeholder="yourname"
+                      value={claimSlug}
+                      onChange={e => { setClaimSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setClaimStatus('idle'); }}
+                      style={{
+                        flex: 1, background: 'rgba(6, 10, 8, 0.8)', border: '1px solid rgba(200, 168, 78, 0.15)',
+                        borderRadius: '8px', padding: '12px 14px', color: '#e8e4d9', fontSize: '14px',
+                        fontFamily: "'Space Grotesk', sans-serif", outline: 'none', boxSizing: 'border-box' as const,
+                      }}
+                    />
+                  </div>
+                  {claimStatus === 'taken' && (
+                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>This URL is already claimed</p>
+                  )}
+                  {claimStatus === 'error' && (
+                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
+                  )}
+                  <button
+                    onClick={handleClaimUrl}
+                    disabled={claimSlug.length < 3 || claimStatus === 'checking' || claimStatus === 'claiming'}
+                    style={{
+                      width: '100%', background: 'rgba(200, 168, 78, 0.12)', border: '1px solid rgba(200, 168, 78, 0.3)',
+                      borderRadius: '8px', padding: '12px', color: '#c8a84e', fontSize: '12px',
+                      fontFamily: "'Space Grotesk', sans-serif", letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
+                    }}
+                  >
+                    {claimStatus === 'checking' ? 'CHECKING...' : claimStatus === 'claiming' ? 'CLAIMING...' : 'CLAIM URL'}
                   </button>
                 </>
               )}
