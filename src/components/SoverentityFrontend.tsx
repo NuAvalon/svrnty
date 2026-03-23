@@ -215,6 +215,11 @@ export function SoverentityFrontend({
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showKeyExportDialog, setShowKeyExportDialog] = useState(false);
+  const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
+  const [newPassphrase, setNewPassphrase] = useState('');
+  const [confirmPassphrase, setConfirmPassphrase] = useState('');
+  const [passphraseError, setPassphraseError] = useState('');
+  const [passphraseSuccess, setPassphraseSuccess] = useState(false);
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -229,6 +234,31 @@ export function SoverentityFrontend({
       }));
     }
   }, [existingIdentity]);
+
+  const handleSetPassphrase = async () => {
+    if (newPassphrase !== confirmPassphrase) {
+      setPassphraseError('Passphrases do not match');
+      return;
+    }
+    if (newPassphrase.length < 4) {
+      setPassphraseError('Passphrase must be at least 4 characters');
+      return;
+    }
+    try {
+      const res = await fetch('/api/identity/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: identity?.identity?.fingerprint, passphrase: newPassphrase }),
+      });
+      if (res.ok) {
+        setPassphraseSuccess(true);
+        setPassphraseError('');
+        setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
+      } else {
+        setPassphraseError('Failed to set passphrase');
+      }
+    } catch { setPassphraseError('Failed to set passphrase'); }
+  };
 
   const handleCreateIdentity = async () => {
     try {
@@ -904,6 +934,137 @@ export function SoverentityFrontend({
               </svg>
               Export Contacts
             </button>
+          </div>
+        )}
+
+        {/* Set Passphrase button */}
+        {identity && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
+            <button
+              onClick={() => setShowPassphraseDialog(true)}
+              style={{
+                background: 'none',
+                border: '1px solid rgba(52, 211, 153, 0.15)',
+                borderRadius: '8px',
+                padding: '10px 20px',
+                color: 'rgba(52, 211, 153, 0.6)',
+                fontSize: '11px',
+                fontFamily: "'Space Grotesk', sans-serif",
+                letterSpacing: '1px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              Set Passphrase
+            </button>
+          </div>
+        )}
+
+        {/* Passphrase Dialog */}
+        {showPassphraseDialog && (
+          <div style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.8)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 50,
+          }} onClick={() => setShowPassphraseDialog(false)}>
+            <div style={{
+              background: 'rgba(10, 14, 12, 0.98)',
+              border: '1px solid rgba(52, 211, 153, 0.15)',
+              borderRadius: '16px',
+              padding: '32px',
+              maxWidth: '380px',
+              width: '100%',
+              margin: '20px',
+            }} onClick={e => e.stopPropagation()}>
+              <h3 style={{
+                fontFamily: "'Cormorant Garamond', serif",
+                fontSize: '20px',
+                color: '#e8e4d9',
+                marginBottom: '20px',
+                textAlign: 'center' as const,
+              }}>
+                {passphraseSuccess ? 'Passphrase Set' : 'Set Passphrase'}
+              </h3>
+              {passphraseSuccess ? (
+                <p style={{ textAlign: 'center' as const, color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px' }}>
+                  Your identity is now protected.
+                </p>
+              ) : (
+                <>
+                  <input
+                    type="password"
+                    placeholder="New passphrase"
+                    value={newPassphrase}
+                    onChange={e => { setNewPassphrase(e.target.value); setPassphraseError(''); }}
+                    autoFocus
+                    style={{
+                      width: '100%',
+                      background: 'rgba(6, 10, 8, 0.8)',
+                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      borderRadius: '8px',
+                      padding: '12px 14px',
+                      color: '#e8e4d9',
+                      fontSize: '14px',
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      outline: 'none',
+                      marginBottom: '12px',
+                      boxSizing: 'border-box' as const,
+                    }}
+                  />
+                  <input
+                    type="password"
+                    placeholder="Confirm passphrase"
+                    value={confirmPassphrase}
+                    onChange={e => { setConfirmPassphrase(e.target.value); setPassphraseError(''); }}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(6, 10, 8, 0.8)',
+                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      borderRadius: '8px',
+                      padding: '12px 14px',
+                      color: '#e8e4d9',
+                      fontSize: '14px',
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      outline: 'none',
+                      marginBottom: '8px',
+                      boxSizing: 'border-box' as const,
+                    }}
+                  />
+                  {passphraseError && (
+                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>{passphraseError}</p>
+                  )}
+                  <button
+                    onClick={handleSetPassphrase}
+                    disabled={!newPassphrase || !confirmPassphrase}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(52, 211, 153, 0.12)',
+                      border: '1px solid rgba(52, 211, 153, 0.3)',
+                      borderRadius: '8px',
+                      padding: '12px',
+                      color: '#34d399',
+                      fontSize: '12px',
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      letterSpacing: '1px',
+                      cursor: 'pointer',
+                      marginTop: '8px',
+                    }}
+                  >
+                    SET PASSPHRASE
+                  </button>
+                </>
+              )}
+            </div>
           </div>
         )}
 
