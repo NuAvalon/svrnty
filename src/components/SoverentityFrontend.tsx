@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { PrivateKeyExportDialog } from './SecureImportExportDialogs';
+import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -41,10 +41,10 @@ function generateNodes(count: number): ConstellationNode[] {
   return nodes;
 }
 
-function ConstellationBg() {
-  const nodes = useMemo(() => generateNodes(24), []);
+function SacredGeometryBg() {
+  // Flower of Life + constellation hybrid — sacred geometry that breathes
+  const nodes = useMemo(() => generateNodes(18), []);
 
-  // Find connections — nodes within 30% distance
   const lines = useMemo(() => {
     const result: { x1: number; y1: number; x2: number; y2: number; delay: number }[] = [];
     for (let i = 0; i < nodes.length; i++) {
@@ -52,12 +52,10 @@ function ConstellationBg() {
         const dx = nodes[i].x - nodes[j].x;
         const dy = nodes[i].y - nodes[j].y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 28) {
+        if (dist < 30) {
           result.push({
-            x1: nodes[i].x,
-            y1: nodes[i].y,
-            x2: nodes[j].x,
-            y2: nodes[j].y,
+            x1: nodes[i].x, y1: nodes[i].y,
+            x2: nodes[j].x, y2: nodes[j].y,
             delay: Math.random() * 6,
           });
         }
@@ -65,6 +63,21 @@ function ConstellationBg() {
     }
     return result;
   }, [nodes]);
+
+  // Flower of Life circle positions (7 circles)
+  const flowerCircles = useMemo(() => {
+    const r = 60; // radius of each circle
+    const cx = 270, cy = 240; // center
+    const circles = [{ cx, cy }]; // center circle
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * Math.PI) / 3;
+      circles.push({
+        cx: cx + r * Math.cos(angle),
+        cy: cy + r * Math.sin(angle),
+      });
+    }
+    return circles;
+  }, []);
 
   return (
     <div style={{
@@ -75,6 +88,7 @@ function ConstellationBg() {
       zIndex: 0,
     }}>
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,500;1,300&family=Space+Grotesk:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400&display=swap');
         @keyframes drift {
           0%, 100% { transform: translate(0, 0); }
           25% { transform: translate(var(--dx), var(--dy)); }
@@ -82,32 +96,70 @@ function ConstellationBg() {
           75% { transform: translate(calc(var(--dx) * 0.3), calc(var(--dy) * -0.6)); }
         }
         @keyframes pulse-node {
-          0%, 100% { opacity: 0.15; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(1.4); }
+          0%, 100% { opacity: 0.2; transform: scale(1); }
+          50% { opacity: 0.6; transform: scale(1.3); }
         }
         @keyframes pulse-line {
-          0%, 100% { opacity: 0.03; }
-          50% { opacity: 0.1; }
+          0%, 100% { opacity: 0.04; }
+          50% { opacity: 0.12; }
+        }
+        @keyframes sacred-breathe {
+          0%, 100% { opacity: 0.04; transform: scale(1) rotate(0deg); }
+          50% { opacity: 0.08; transform: scale(1.02) rotate(0.5deg); }
         }
         @keyframes amber-pulse {
           0%, 100% { box-shadow: 0 0 30px rgba(200, 168, 78, 0.08); }
           50% { box-shadow: 0 0 50px rgba(200, 168, 78, 0.2), 0 0 80px rgba(200, 168, 78, 0.06); }
         }
+        @keyframes emerald-pulse {
+          0%, 100% { box-shadow: 0 0 20px rgba(52, 211, 153, 0.06); }
+          50% { box-shadow: 0 0 40px rgba(52, 211, 153, 0.15), 0 0 60px rgba(52, 211, 153, 0.04); }
+        }
       `}</style>
-      <svg width="100%" height="100%" style={{ position: 'absolute', inset: 0 }}>
+
+      {/* Sacred geometry — Flower of Life */}
+      <svg width="100%" height="100%" style={{
+        position: 'absolute', inset: 0,
+        animation: 'sacred-breathe 12s ease-in-out infinite',
+      }}>
+        <defs>
+          <radialGradient id="sacredGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#34d399" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        {/* Flower of Life circles */}
+        {flowerCircles.map((c, i) => (
+          <circle
+            key={`flower-${i}`}
+            cx={c.cx} cy={c.cy} r={60}
+            fill="none"
+            stroke="#34d399"
+            strokeWidth="0.5"
+            opacity={0.06}
+          />
+        ))}
+        {/* Outer ring */}
+        <circle cx={270} cy={240} r={120} fill="none" stroke="#c8a84e" strokeWidth="0.3" opacity={0.05} />
+        <circle cx={270} cy={240} r={180} fill="none" stroke="#c8a84e" strokeWidth="0.3" opacity={0.03} />
+        {/* Center glow */}
+        <circle cx={270} cy={240} r={90} fill="url(#sacredGlow)" />
+        {/* Constellation lines */}
         {lines.map((line, i) => (
           <line
             key={`l${i}`}
             x1={`${line.x1}%`} y1={`${line.y1}%`}
             x2={`${line.x2}%`} y2={`${line.y2}%`}
             stroke="#c8a84e"
-            strokeWidth="0.5"
+            strokeWidth="0.4"
             style={{
               animation: `pulse-line ${10 + line.delay * 2}s ease-in-out ${line.delay}s infinite`,
             }}
           />
         ))}
       </svg>
+
+      {/* Constellation nodes */}
       {nodes.map(node => (
         <div
           key={node.id}
@@ -118,9 +170,8 @@ function ConstellationBg() {
             width: `${node.size}px`,
             height: `${node.size}px`,
             borderRadius: '50%',
-            background: '#c8a84e',
-            boxShadow: '0 0 6px rgba(200, 168, 78, 0.3)',
-            // @ts-ignore — CSS custom properties for drift direction
+            background: node.id % 3 === 0 ? '#34d399' : '#c8a84e',
+            boxShadow: `0 0 6px ${node.id % 3 === 0 ? 'rgba(52,211,153,0.3)' : 'rgba(200,168,78,0.3)'}`,
             '--dx': `${node.drift}px`,
             '--dy': `${node.drift * 0.7}px`,
             animation: `drift ${node.duration}s ease-in-out ${node.delay}s infinite, pulse-node ${6 + node.delay}s ease-in-out ${node.delay}s infinite`,
@@ -147,12 +198,15 @@ export function SoverentityFrontend({
     status: existingIdentity?.verification?.status || 'unverified',
   });
   const [verificationCode, setVerificationCode] = useState('');
-  const [showKeyExport, setShowKeyExport] = useState(false);
 
   // Vault restore state
   const [vaultFile, setVaultFile] = useState<File | null>(null);
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
+
+  // Export dialog state
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [showKeyExportDialog, setShowKeyExportDialog] = useState(false);
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [restoreLoading, setRestoreLoading] = useState(false);
   const [restoreError, setRestoreError] = useState<string | null>(null);
@@ -297,7 +351,7 @@ export function SoverentityFrontend({
     return (
       <div style={s.outerWrap}>
         <div style={s.gateOuter}>
-          <ConstellationBg />
+          <SacredGeometryBg />
           <div style={s.gatePanel}>
             {/* Hero */}
             <div style={s.hero}>
@@ -761,61 +815,65 @@ export function SoverentityFrontend({
         )}
 
         {isVerified && (
-          <>
-            <div style={s.verifiedBanner}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-              </svg>
-              <span>Identity verified. You are sovereign.</span>
-            </div>
-
-            <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-              <button
-                onClick={() => {
-                  const fp = identity?.identity?.fingerprint;
-                  if (fp) {
-                    navigator.clipboard.writeText(fp);
-                  }
-                }}
-                style={{
-                  ...s.outlineBtn,
-                  flex: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                </svg>
-                Copy Fingerprint
-              </button>
-              <button
-                onClick={() => setShowKeyExport(true)}
-                style={{
-                  ...s.outlineBtn,
-                  flex: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                Export Keys
-              </button>
-            </div>
-
-            <PrivateKeyExportDialog
-              open={showKeyExport}
-              onClose={() => setShowKeyExport(false)}
-              identityFingerprint={identity?.identity?.fingerprint || ''}
-            />
-          </>
+          <div style={s.verifiedBanner}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+            </svg>
+            <span>Identity verified. You are sovereign.</span>
+          </div>
         )}
+
+        {/* Export / Backup Section */}
+        {identity && (
+          <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
+            <button
+              onClick={() => setShowKeyExportDialog(true)}
+              style={{
+                ...s.outlineBtn,
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+              </svg>
+              Download Keys
+            </button>
+            <button
+              onClick={() => setShowExportDialog(true)}
+              style={{
+                ...s.outlineBtn,
+                flex: 1,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              Export Contacts
+            </button>
+          </div>
+        )}
+
+        {/* Export Dialogs */}
+        <SecureExportDialog
+          open={showExportDialog}
+          onClose={() => setShowExportDialog(false)}
+          identityFingerprint={identity?.identity?.fingerprint || ''}
+        />
+        <PrivateKeyExportDialog
+          open={showKeyExportDialog}
+          onClose={() => setShowKeyExportDialog(false)}
+          identityFingerprint={identity?.identity?.fingerprint || ''}
+        />
       </div>
     </div>
   );
@@ -848,26 +906,31 @@ const s: Record<string, React.CSSProperties> = {
   gatePanel: {
     position: 'relative' as const,
     zIndex: 1,
-    background: 'rgba(15, 15, 25, 0.85)',
-    backdropFilter: 'blur(16px)',
-    border: '1px solid rgba(180, 160, 100, 0.12)',
+    background: 'rgba(10, 14, 12, 0.9)',
+    backdropFilter: 'blur(20px)',
+    border: '1px solid rgba(52, 211, 153, 0.08)',
     borderRadius: '16px',
-    padding: '40px',
+    padding: '48px 40px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.4), 0 0 40px rgba(200, 168, 78, 0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
   },
   gateTitle: {
-    fontSize: '28px',
-    fontWeight: 700,
-    color: '#e0dcd0',
-    letterSpacing: '4px',
+    fontSize: '32px',
+    fontWeight: 300,
+    fontFamily: "'Cormorant Garamond', serif",
+    color: '#e8e4d9',
+    letterSpacing: '6px',
     textTransform: 'lowercase' as const,
     marginBottom: '8px',
+    textShadow: '0 0 40px rgba(200, 168, 78, 0.2)',
   },
   gateSub: {
-    fontSize: '13px',
-    color: '#8a8070',
-    lineHeight: '1.6',
+    fontSize: '14px',
+    fontFamily: "'Cormorant Garamond', serif",
+    fontWeight: 300,
+    fontStyle: 'italic' as const,
+    color: 'rgba(255,255,255,0.4)',
+    lineHeight: '1.7',
   },
   doorContainer: {
     display: 'flex',
@@ -880,36 +943,39 @@ const s: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '28px 24px',
-    background: 'rgba(15, 15, 25, 0.6)',
-    border: '1px solid rgba(180, 160, 100, 0.15)',
+    background: 'rgba(6, 10, 8, 0.5)',
+    border: '1px solid rgba(52, 211, 153, 0.08)',
     borderRadius: '12px',
     cursor: 'pointer',
-    transition: 'all 0.25s ease',
+    transition: 'all 0.3s ease',
     textAlign: 'center' as const,
   },
   doorTitle: {
-    fontSize: '15px',
-    fontWeight: 600,
+    fontSize: '16px',
+    fontWeight: 300,
+    fontFamily: "'Cormorant Garamond', serif",
     color: '#c8a84e',
-    letterSpacing: '0.5px',
+    letterSpacing: '1px',
     marginBottom: '8px',
   },
   doorDesc: {
     fontSize: '12px',
-    color: '#6a6558',
-    lineHeight: '1.5',
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    fontWeight: 300,
+    color: 'rgba(255,255,255,0.25)',
+    lineHeight: '1.6',
     maxWidth: '280px',
   },
   // --- Shared ---
   createPanel: {
-    background: 'rgba(15, 15, 25, 0.85)',
-    backdropFilter: 'blur(16px)',
-    border: '1px solid rgba(180, 160, 100, 0.12)',
+    background: 'rgba(10, 14, 12, 0.9)',
+    backdropFilter: 'blur(20px)',
+    border: '1px solid rgba(52, 211, 153, 0.08)',
     borderRadius: '16px',
     padding: '40px',
     maxWidth: '460px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.4), 0 0 40px rgba(200, 168, 78, 0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
   },
   backBtn: {
     display: 'flex',
@@ -955,16 +1021,20 @@ const s: Record<string, React.CSSProperties> = {
     boxShadow: '0 0 30px rgba(200, 168, 78, 0.06)',
   },
   heroTitle: {
-    fontSize: '22px',
-    fontWeight: 600,
-    color: '#e0dcd0',
-    letterSpacing: '1px',
+    fontSize: '26px',
+    fontWeight: 300,
+    fontFamily: "'Cormorant Garamond', serif",
+    color: '#e8e4d9',
+    letterSpacing: '2px',
     marginBottom: '10px',
+    textShadow: '0 0 30px rgba(200, 168, 78, 0.15)',
   },
   heroSub: {
     fontSize: '13px',
-    color: '#8a8070',
-    lineHeight: '1.6',
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    fontWeight: 300,
+    color: 'rgba(255,255,255,0.35)',
+    lineHeight: '1.7',
     maxWidth: '340px',
     margin: '0 auto',
   },
@@ -974,23 +1044,24 @@ const s: Record<string, React.CSSProperties> = {
   label: {
     display: 'block',
     fontSize: '10px',
-    color: '#8a8070',
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    color: 'rgba(255,255,255,0.3)',
     letterSpacing: '2px',
     textTransform: 'uppercase' as const,
     marginBottom: '8px',
-    fontWeight: 500,
+    fontWeight: 400,
   },
   input: {
     width: '100%',
-    background: 'rgba(10, 10, 15, 0.7)',
-    border: '1px solid rgba(180, 160, 100, 0.15)',
+    background: 'rgba(6, 10, 8, 0.8)',
+    border: '1px solid rgba(52, 211, 153, 0.1)',
     borderRadius: '8px',
     padding: '12px 16px',
-    color: '#e0dcd0',
+    color: '#e8e4d9',
     fontSize: '14px',
     fontFamily: "'JetBrains Mono', monospace",
     outline: 'none',
-    transition: 'border-color 0.2s',
+    transition: 'border-color 0.3s',
     boxSizing: 'border-box' as const,
   },
   hint: {
@@ -1000,18 +1071,20 @@ const s: Record<string, React.CSSProperties> = {
   },
   primaryBtn: {
     width: '100%',
-    background: 'rgba(200, 168, 78, 0.15)',
-    border: '1px solid rgba(200, 168, 78, 0.35)',
+    background: 'rgba(52, 211, 153, 0.1)',
+    border: '1px solid rgba(52, 211, 153, 0.3)',
     borderRadius: '8px',
     padding: '14px 20px',
-    color: '#c8a84e',
-    fontSize: '13px',
-    fontWeight: 600,
-    fontFamily: "'JetBrains Mono', monospace",
-    letterSpacing: '1px',
+    color: '#34d399',
+    fontSize: '12px',
+    fontWeight: 500,
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    letterSpacing: '2px',
+    textTransform: 'uppercase' as const,
     cursor: 'pointer',
-    transition: 'all 0.2s',
+    transition: 'all 0.3s',
     marginTop: '8px',
+    boxShadow: '0 0 20px rgba(52, 211, 153, 0.06)',
   },
   restoreBtn: {
     width: '100%',
@@ -1031,16 +1104,16 @@ const s: Record<string, React.CSSProperties> = {
   outlineBtn: {
     width: '100%',
     background: 'transparent',
-    border: '1px solid rgba(180, 160, 100, 0.25)',
+    border: '1px solid rgba(200, 168, 78, 0.2)',
     borderRadius: '8px',
     padding: '14px 20px',
-    color: '#8a8070',
-    fontSize: '13px',
-    fontWeight: 500,
-    fontFamily: "'JetBrains Mono', monospace",
-    letterSpacing: '0.5px',
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: '12px',
+    fontWeight: 400,
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    letterSpacing: '1px',
     cursor: 'pointer',
-    transition: 'all 0.2s',
+    transition: 'all 0.3s',
     marginTop: '8px',
   },
   uploadBtn: {
@@ -1153,12 +1226,14 @@ const s: Record<string, React.CSSProperties> = {
     gap: '8px',
   },
   footer: {
-    fontSize: '10px',
-    color: '#3a3530',
+    fontSize: '9px',
+    fontFamily: "'JetBrains Mono', monospace",
+    fontWeight: 300,
+    color: 'rgba(255,255,255,0.15)',
     textAlign: 'center' as const,
-    marginTop: '24px',
-    lineHeight: '1.6',
-    letterSpacing: '0.3px',
+    marginTop: '28px',
+    lineHeight: '1.7',
+    letterSpacing: '0.5px',
   },
   error: {
     background: 'rgba(154, 90, 90, 0.1)',
@@ -1176,12 +1251,12 @@ const s: Record<string, React.CSSProperties> = {
     margin: '0 auto',
   },
   idCard: {
-    background: 'rgba(15, 15, 25, 0.85)',
-    backdropFilter: 'blur(16px)',
-    border: '1px solid rgba(180, 160, 100, 0.15)',
+    background: 'rgba(10, 14, 12, 0.92)',
+    backdropFilter: 'blur(20px)',
+    border: '1px solid rgba(52, 211, 153, 0.1)',
     borderRadius: '16px',
-    padding: '28px',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.4)',
+    padding: '32px',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(52, 211, 153, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
   },
   idHeader: {
     display: 'flex',
@@ -1196,9 +1271,11 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   idName: {
-    fontSize: '18px',
-    fontWeight: 600,
-    color: '#e0dcd0',
+    fontSize: '20px',
+    fontWeight: 300,
+    fontFamily: "'Cormorant Garamond', serif",
+    color: '#e8e4d9',
+    letterSpacing: '1px',
     margin: 0,
   },
   idEmail: {
@@ -1252,10 +1329,11 @@ const s: Record<string, React.CSSProperties> = {
     marginTop: '16px',
   },
   sectionTitle: {
-    fontSize: '11px',
-    color: '#c8a84e',
-    letterSpacing: '2px',
-    fontWeight: 600,
+    fontSize: '10px',
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    color: '#34d399',
+    letterSpacing: '3px',
+    fontWeight: 500,
     marginBottom: '16px',
   },
   verifyText: {
@@ -1268,12 +1346,14 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    background: 'rgba(106, 154, 106, 0.08)',
-    border: '1px solid rgba(106, 154, 106, 0.2)',
+    background: 'rgba(52, 211, 153, 0.06)',
+    border: '1px solid rgba(52, 211, 153, 0.15)',
     borderRadius: '10px',
     padding: '14px 20px',
     marginTop: '16px',
     fontSize: '13px',
-    color: '#6a9a6a',
+    fontFamily: "'Space Grotesk', system-ui, sans-serif",
+    color: '#34d399',
+    boxShadow: '0 0 30px rgba(52, 211, 153, 0.04)',
   },
 };
