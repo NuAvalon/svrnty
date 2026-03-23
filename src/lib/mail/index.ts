@@ -1,39 +1,33 @@
 // src/lib/mail/index.ts
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
-console.log('Email configuration:', {
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
-    auth: {
-      user: process.env.EMAIL_USER // don't log the password
-    }
-  });
+const resend = new Resend(process.env.RESEND_API_KEY || process.env.RESEND);
 
-// In production, you'd want to use a real email service
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',  // Or your preferred SMTP server
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASSWORD
-  }
-});
+const FROM_ADDRESS = process.env.EMAIL_FROM || 'verify@svrnty.is';
 
 export async function sendVerificationEmail(to: string, code: string) {
   try {
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
+    const { error } = await resend.emails.send({
+      from: FROM_ADDRESS,
       to,
       subject: 'Verify your Soverentity Identity',
-      text: `Your verification code is: ${code}`,
+      text: `Your verification code is: ${code}\n\nThis code will expire in 15 minutes.`,
       html: `
-        <h1>Verify your Soverentity Identity</h1>
-        <p>Your verification code is: <strong>${code}</strong></p>
-        <p>This code will expire in 15 minutes.</p>
+        <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 2rem;">
+          <h1 style="color: #1a1a2e; font-size: 1.5rem;">Verify your Soverentity Identity</h1>
+          <div style="background: #f0f0f5; border-radius: 8px; padding: 1.5rem; text-align: center; margin: 1.5rem 0;">
+            <code style="font-size: 2rem; letter-spacing: 0.3em; color: #1a1a2e; font-weight: bold;">${code}</code>
+          </div>
+          <p style="color: #666; font-size: 0.9rem;">This code expires in 15 minutes.</p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 1.5rem 0;" />
+          <p style="color: #999; font-size: 0.8rem;">svrnty.is — sovereign identity</p>
+        </div>
       `
     });
+    if (error) {
+      console.error('Resend error:', error);
+      return false;
+    }
     return true;
   } catch (error) {
     console.error('Failed to send verification email:', error);

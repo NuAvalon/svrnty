@@ -13,7 +13,7 @@ import {
   Checkbox
 } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { RefreshCw, Lock, Download, Upload, Copy, Eye, EyeOff } from 'lucide-react';
+import { RefreshCw, Lock, Download, Upload, Copy, Eye, EyeOff, Key, ShieldCheck } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
 
 interface SecureExportDialogProps {
@@ -255,6 +255,190 @@ export function SecureExportDialog({
     </Dialog>
   );
 }
+
+// ── Private Key Export Dialog ────────────────────────────
+
+interface PrivateKeyExportDialogProps {
+  open: boolean;
+  onClose: () => void;
+  identityFingerprint: string;
+}
+
+export function PrivateKeyExportDialog({
+  open,
+  onClose,
+  identityFingerprint,
+}: PrivateKeyExportDialogProps) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [exportComplete, setExportComplete] = useState(false);
+
+  const passwordsMatch = password === confirmPassword;
+  const passwordValid = password.length >= 8;
+
+  const handleExport = async () => {
+    if (!identityFingerprint || !passwordValid || !passwordsMatch) return;
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const response = await fetch('/api/keys/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: identityFingerprint, password }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to export keys');
+      }
+
+      // Download as .svrnty-keys file
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `soverentity-keys-${new Date().toISOString().split('T')[0]}.svrnty-keys`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setExportComplete(true);
+    } catch (err) {
+      console.error('Key export error:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClose = () => {
+    setPassword('');
+    setConfirmPassword('');
+    setExportComplete(false);
+    setError(null);
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Key className="h-5 w-5" />
+            Download Private Key
+          </DialogTitle>
+          <DialogDescription>
+            Export your private key as a password-protected file. Store it securely — this file can access your identity.
+          </DialogDescription>
+        </DialogHeader>
+
+        {error && (
+          <Alert variant="destructive" className="mb-4">
+            <AlertTitle>Error</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {!exportComplete ? (
+          <div className="space-y-4 py-4">
+            <Alert className="bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800">
+              <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              <AlertDescription className="text-amber-800 dark:text-amber-300 text-sm">
+                Your private key will be encrypted with AES-256-GCM using your password. Without this password, the file cannot be decrypted.
+              </AlertDescription>
+            </Alert>
+
+            <div className="space-y-2">
+              <Label htmlFor="keyPassword">Password (minimum 8 characters)</Label>
+              <div className="flex">
+                <Input
+                  id="keyPassword"
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter a strong password"
+                  className="flex-1"
+                />
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="ml-2"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="confirmKeyPassword">Confirm Password</Label>
+              <Input
+                id="confirmKeyPassword"
+                type={showPassword ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm your password"
+              />
+              {confirmPassword && !passwordsMatch && (
+                <p className="text-xs text-red-500">Passwords do not match</p>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4 py-4">
+            <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900">
+              <Lock className="h-4 w-4 text-green-600 dark:text-green-500" />
+              <AlertDescription className="text-green-800 dark:text-green-300">
+                Your private key has been downloaded as a password-protected file. Store it in a secure location and remember your password.
+              </AlertDescription>
+            </Alert>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={handleClose}>
+            {exportComplete ? 'Close' : 'Cancel'}
+          </Button>
+
+          {!exportComplete && (
+            <Button
+              onClick={handleExport}
+              disabled={loading || !passwordValid || !passwordsMatch}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              {loading ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  Encrypting...
+                </>
+              ) : (
+                <>
+                  <Download className="h-4 w-4 mr-2" />
+                  Download Encrypted Key
+                </>
+              )}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Secure Import Dialog ────────────────────────────────
 
 interface SecureImportDialogProps {
   open: boolean;

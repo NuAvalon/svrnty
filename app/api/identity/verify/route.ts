@@ -1,60 +1,59 @@
-// Add at the top of your verify/route.ts
-console.log('Environment variables:', {
-    EMAIL_USER: process.env.EMAIL_USER,
-    // Don't log the actual password, just check if it exists
-    HAS_PASSWORD: !!process.env.EMAIL_PASSWORD
-  });
-
 // app/api/identity/verify/route.ts
 import { NextResponse } from 'next/server';
 import { SoverentityIdentity } from '@/lib/identity/core';
 import { sendVerificationEmail } from '@/lib/mail';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 
 const identityManager = new SoverentityIdentity();
 
 // Store verification codes temporarily (in production, use Redis or similar)
-const verificationCodes = new Map<string, { code: string, expires: Date }>();
+const verificationCodes = new Map<string, { code: string, expires: Date, attempts: number }>();
+
+// Rate limiting: track last request per fingerprint
+const rateLimits = new Map<string, number>();
+const RATE_LIMIT_MS = 60_000; // 1 minute between requests
+const MAX_ATTEMPTS = 5;
 
 export async function POST(request: Request) {
-    console.log('Verification API hit');
     try {
       const body = await request.json();
-      console.log('Received verification request:', body);
-  
       const { fingerprint, type, value } = body;
-      
-      console.log('Extracted values:', { fingerprint, type, value });
-      
+
       if (!fingerprint || !type || !value) {
-        console.log('Missing fields:', { fingerprint, type, value });
         return NextResponse.json(
           { error: 'Missing required fields' },
           { status: 400 }
         );
       }
-  
+
+      // Rate limiting
+      const lastRequest = rateLimits.get(fingerprint);
+      if (lastRequest && Date.now() - lastRequest < RATE_LIMIT_MS) {
+        return NextResponse.json(
+          { error: 'Please wait before requesting another code' },
+          { status: 429 }
+        );
+      }
+
       // Generate verification code
       const code = randomBytes(3).toString('hex').toUpperCase();
-      console.log('Generated verification code:', code);
-  
-      // Attempt to send email
-      console.log('Attempting to send verification email...');
+
       const emailSent = await sendVerificationEmail(value, code);
-      console.log('Email send result:', emailSent);
-  
+
       if (!emailSent) {
         return NextResponse.json(
           { error: 'Failed to send verification email' },
           { status: 500 }
         );
       }
-  
+
       verificationCodes.set(fingerprint, {
         code,
-        expires: new Date(Date.now() + 15 * 60 * 1000)
+        expires: new Date(Date.now() + 15 * 60 * 1000),
+        attempts: 0
       });
-  
+      rateLimits.set(fingerprint, Date.now());
+
       return NextResponse.json({
         success: true,
         message: 'Verification code sent'
@@ -68,19 +67,18 @@ export async function POST(request: Request) {
     }
   }
 
-// Add route for verifying the code
+// Verify the code
 export async function PUT(request: Request) {
     try {
       const { fingerprint, code } = await request.json();
-      console.log('Verifying code for fingerprint:', fingerprint);
-      
+
       if (!fingerprint || !code) {
         return NextResponse.json(
           { error: 'Missing required fields' },
           { status: 400 }
         );
       }
-  
+
       const storedVerification = verificationCodes.get(fingerprint);
       if (!storedVerification) {
         return NextResponse.json(
@@ -88,17 +86,27 @@ export async function PUT(request: Request) {
           { status: 400 }
         );
       }
-  
+
+      // Attempt limiting
+      if (storedVerification.attempts >= MAX_ATTEMPTS) {
+        verificationCodes.delete(fingerprint);
+        return NextResponse.json(
+          { error: 'Too many attempts. Request a new code.' },
+          { status: 429 }
+        );
+      }
+      storedVerification.attempts++;
+
       // Load the identity to get the email
       const identity = await identityManager.loadIdentityData(fingerprint);
-      
+
       if (!identity) {
         return NextResponse.json(
           { error: 'Identity not found' },
           { status: 404 }
         );
       }
-  
+
       if (new Date() > storedVerification.expires) {
         verificationCodes.delete(fingerprint);
         return NextResponse.json(
@@ -106,23 +114,26 @@ export async function PUT(request: Request) {
           { status: 400 }
         );
       }
-  
-      if (storedVerification.code !== code) {
+
+      // Constant-time comparison to prevent timing attacks
+      const codeBuffer = Buffer.from(code.toUpperCase().padEnd(6, '\0'));
+      const storedBuffer = Buffer.from(storedVerification.code.padEnd(6, '\0'));
+      if (!timingSafeEqual(codeBuffer, storedBuffer)) {
         return NextResponse.json(
           { error: 'Invalid verification code' },
           { status: 400 }
         );
       }
-  
+
       // Code is valid, verify the identity using the stored email
       const result = await identityManager.verifyIdentifier({
         fingerprint,
         type: 'email',
         value: identity.identity.email
       });
-  
+
       verificationCodes.delete(fingerprint);
-  
+
       return NextResponse.json({
         success: true,
         identity: result
