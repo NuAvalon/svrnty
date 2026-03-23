@@ -275,6 +275,29 @@ export function ContactManagement({ identity }: ContactsProps) {
           },
         }),
       });
+      // Satellite trust commitment (blind — satellite never sees who you're trusting)
+      if (contact.fingerprint) {
+        const fps = [fingerprint, contact.fingerprint].sort();
+        const hashInput = fps.join('') + 'trust-v1';
+        const encoder = new TextEncoder();
+        const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(hashInput));
+        const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+        try {
+          if (newLevel === 'trusted') {
+            await fetch('/api/trust/commit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fingerprint, commitment_hash: hashHex }),
+            });
+          } else {
+            await fetch('/api/trust/revoke', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fingerprint, commitment_hash: hashHex }),
+            });
+          }
+        } catch { /* satellite offline — local trust still works */ }
+      }
       if (selectedContact && selectedContact.id === contact.id) {
         setSelectedContact({ ...selectedContact, trust_level: newLevel });
       }
