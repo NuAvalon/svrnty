@@ -161,7 +161,7 @@ Every time the app opens and closes, your encrypted trust graph syncs. If your p
 
 ## Status
 
-svrnty is pre-release. Here's what works today:
+svrnty is **live** at [svrnty.is](https://svrnty.is). Here's what works today:
 
 - **Shipped**: Identity creation (hybrid PQ + classical), passphrase protection, encrypted vault export, contact management, trust toggling (Known/Trusted), URL claiming, profile pages, satellite relay (encrypted store-and-forward messaging), email verification
 - **In progress**: Mutual trust discovery (ZKP-based), group messaging, cloud backup sync, Murmurations protocol integration
