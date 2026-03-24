@@ -315,17 +315,15 @@ export function SoverentityFrontend({
   const handleVerification = async () => {
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-      const response = await fetch('/verify', {
+      const response = await fetch('/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fingerprint: identity.identity.fingerprint,
-          type: 'email',
-          value: identity.identity.email,
+          email: identity.identity.email,
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Verification failed');
+      if (!response.ok) throw new Error(data.detail || data.error || 'Failed to send verification email');
       setVerificationState(prev => ({ ...prev, status: 'verification_sent', loading: false }));
     } catch (err) {
       setVerificationState(prev => ({
@@ -340,18 +338,32 @@ export function SoverentityFrontend({
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
       const response = await fetch('/verify', {
-        method: 'PUT',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          email: identity.identity.email,
+          otp: verificationCode,
           fingerprint: identity.identity.fingerprint,
-          code: verificationCode,
+          public_key: identity.identity.public_key,
         }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Code verification failed');
+      if (!response.ok) throw new Error(data.detail || data.error || 'Code verification failed');
+      // Update local identity verification status
+      const updatedIdentity = { ...identity };
+      updatedIdentity.verification = {
+        status: 'verified',
+        method: 'email',
+        verified_at: new Date().toISOString(),
+      };
+      setIdentity(updatedIdentity);
+      onIdentityUpdate?.(updatedIdentity);
+      // Store updated identity in IndexedDB
+      try {
+        const { storeIdentity } = await import('@/lib/identity/client-store');
+        await storeIdentity(identity.identity.fingerprint, updatedIdentity);
+      } catch (e) { console.warn('Failed to update IndexedDB:', e); }
       setVerificationState(prev => ({ ...prev, status: 'verified', loading: false }));
-      setIdentity(data.identity);
-      onIdentityUpdate?.(data.identity);
     } catch (err) {
       setVerificationState(prev => ({
         ...prev,
@@ -360,6 +372,7 @@ export function SoverentityFrontend({
       }));
     }
   };
+
 
   // --- Vault Restore ---
 
