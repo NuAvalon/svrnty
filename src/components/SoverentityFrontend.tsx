@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
+import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -300,15 +301,10 @@ export function SoverentityFrontend({
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch('/api/identity', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to create identity');
-      setIdentity(data.identity);
-      onIdentityUpdate?.(data.identity);
+      const bi = getBrowserIdentity();
+      const result = await bi.generateIdentity(formData);
+      setIdentity(result.identity);
+      onIdentityUpdate?.(result.identity);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

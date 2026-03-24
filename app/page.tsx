@@ -8,6 +8,7 @@ import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
+import { hasIdentity, getActiveFingerprint, loadIdentity, getAllContacts } from '@/lib/identity/client-store';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -24,35 +25,19 @@ export default function Home() {
   useEffect(() => {
     async function checkIdentity() {
       try {
-        const res = await fetch('/api/identity/check');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.exists && data.identities.length > 0) {
-            const id = data.identities[0];
-            if (id.hasPassphrase) {
-              setLockedIdentity(id);
-              setAppState('locked');
-            } else {
-              // No passphrase — auto-unlock
-              const unlockRes = await fetch('/api/identity/unlock', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fingerprint: id.fingerprint, passphrase: '' }),
-              });
-              if (unlockRes.ok) {
-                const unlockData = await unlockRes.json();
-                setIdentity(unlockData.identity);
-                setAppState('unlocked');
-              } else {
-                setAppState('gate');
-              }
+        const exists = await hasIdentity();
+        if (exists) {
+          const fp = await getActiveFingerprint();
+          if (fp) {
+            const id = await loadIdentity(fp);
+            if (id) {
+              setIdentity(id);
+              setAppState('unlocked');
+              return;
             }
-          } else {
-            setAppState('gate');
           }
-        } else {
-          setAppState('gate');
         }
+        setAppState('gate');
       } catch {
         setAppState('gate');
       }
@@ -100,10 +85,8 @@ export default function Home() {
 
     const loadContacts = async () => {
       try {
-        const res = await fetch(`/api/contacts?fingerprint=${identity.identity.fingerprint}`);
-        if (res.ok) {
-          const data = await res.json();
-          const rawContacts = data.contacts || [];
+        const rawContacts = await getAllContacts(identity.identity.fingerprint);
+        {
           const edges: TrustEdge[] = rawContacts.map((c: any) => ({
             id: c.id,
             peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
@@ -124,7 +107,7 @@ export default function Home() {
           }));
           setContacts(edges);
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to load contacts:', err);
       }
     };
