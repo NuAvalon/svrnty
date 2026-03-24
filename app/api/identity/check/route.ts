@@ -1,13 +1,29 @@
-// app/api/identity/check/route.ts
-// Identity check is now client-side (IndexedDB).
-// This route exists only for backwards compatibility — returns
-// a hint to use client-side storage.
 import { NextResponse } from 'next/server';
 
 export async function GET() {
-  return NextResponse.json({
-    exists: false,
-    identities: [],
-    _note: 'Identity storage is client-side (IndexedDB). Check svrntyDB in the browser.',
-  });
+  return NextResponse.json(
+    { error: 'This endpoint has been removed. Identity and contacts are now stored client-side in IndexedDB.' },
+    { status: 410 }
+  );
+}
+
+export async function POST() {
+  return NextResponse.json(
+    { error: 'This endpoint has been removed. Identity and contacts are now stored client-side in IndexedDB.' },
+    { status: 410 }
+  );
+}
+
+export async function PUT() {
+  return NextResponse.json(
+    { error: 'This endpoint has been removed. Identity and contacts are now stored client-side in IndexedDB.' },
+    { status: 410 }
+  );
+}
+
+export async function DELETE() {
+  return NextResponse.json(
+    { error: 'This endpoint has been removed. Identity and contacts are now stored client-side in IndexedDB.' },
+    { status: 410 }
+  );
 }
