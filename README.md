@@ -102,17 +102,21 @@ Everything below the UI layer is framework-agnostic TypeScript. The crypto layer
 
 The satellite is a blind relay — it stores encrypted blobs and delivers them. It cannot read your messages, see your trust graph, or identify who you are beyond your public key fingerprint.
 
+**What the relay operator CAN see:** Fingerprints (who talks to whom), timing (when), and message sizes (how much). This is metadata, and metadata matters. It's the same threat model as any store-and-forward system — including email and Signal's sealed sender. We're honest about this because the first step to minimizing metadata exposure is acknowledging it exists.
+
+**What the relay operator CANNOT see:** Message content, trust graph state, contact details, anything inside the encrypted blobs.
+
 ```
 docker compose up -d    # That's it. You're sovereign.
 ```
 
-You can use ours at `svrnty.is` to get started. But the whole point is that you shouldn't have to trust us. Run your own satellite. The Docker image is ~50MB. It runs on a Raspberry Pi.
+You can use ours at `svrnty.is` to get started. But the whole point is that you shouldn't have to trust us — even with metadata. Run your own satellite. The Docker image is ~50MB. It runs on a Raspberry Pi.
 
 The relay enforces encryption at the protocol level — plaintext messages are rejected. This isn't a setting. It's a constraint.
 
 ## The Candle
 
-svrnty includes a concept called the **candle** — a signed snapshot of your trust graph at a point in time. Edges, breaks, audit hashes. If everything burns, the candle is proof the network existed.
+svrnty includes a concept called the **candle** — a signed snapshot of your trust graph at a point in time. Edges, breaks, audit hashes. A candle is lit automatically when trust changes (a break, a vouch, a key rotation) and can be lit manually anytime. Candles are stored locally in your vault and optionally shared with trusted contacts. If everything burns, the candle is proof the network existed.
 
 The name comes from T.H. White's *The Once and Future King*. At the end of the book, everything Arthur built has failed. The battles are lost. The Round Table is broken. But before the final fight, Arthur finds a young page named Tom and tells him to ride away — to write it all down. To carry the idea forward.
 
@@ -164,7 +168,7 @@ Every time the app opens and closes, your encrypted trust graph syncs. If your p
 svrnty is **live** at [svrnty.is](https://svrnty.is). Here's what works today:
 
 - **Shipped**: Identity creation (hybrid PQ + classical), passphrase protection, encrypted vault export, contact management, trust toggling (Known/Trusted), URL claiming, profile pages, satellite relay (encrypted store-and-forward messaging), email verification
-- **In progress**: Mutual trust discovery (ZKP-based), group messaging, cloud backup sync, Murmurations protocol integration
+- **In progress**: Mutual trust discovery (ZKP-based — spec complete, hardest item on the roadmap), group messaging, cloud backup sync, Murmurations protocol integration
 - **Planned**: Shamir secret sharing recovery, mobile PWA with passkey auth, full signal transport (vouch/concern/break/introduce)
 
 This is being built in the open by a small team — humans and AI agents working together. If the ideas resonate, we'd rather have contributors than customers.
