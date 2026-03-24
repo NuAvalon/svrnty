@@ -2,8 +2,6 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
-import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { setActiveFingerprint, hasIdentity, getActiveFingerprint, loadIdentity } from '@/lib/identity/client-store';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -238,28 +236,6 @@ export function SoverentityFrontend({
         ...prev,
         status: existingIdentity.verification?.status || 'unverified',
       }));
-    } else {
-      // Check IndexedDB for existing identity
-      (async () => {
-        try {
-          const exists = await hasIdentity();
-          if (exists) {
-            const fp = await getActiveFingerprint();
-            if (fp) {
-              const data = await loadIdentity(fp);
-              if (data) {
-                setIdentity(data);
-                setVerificationState(prev => ({
-                  ...prev,
-                  status: data.verification?.status || 'unverified',
-                }));
-              }
-            }
-          }
-        } catch (e) {
-          console.error('Failed to load identity from IndexedDB:', e);
-        }
-      })();
     }
   }, [existingIdentity]);
 
@@ -273,21 +249,17 @@ export function SoverentityFrontend({
       return;
     }
     try {
-      // Passphrase is stored client-side only — used for vault export encryption
-      const fp = identity?.identity?.fingerprint;
-      if (fp) {
-        // Store passphrase in IndexedDB settings for vault export
-        const db = indexedDB.open('svrnty', 2);
-        db.onsuccess = () => {
-          const tx = db.result.transaction('settings', 'readwrite');
-          tx.objectStore('settings').put({ key: `passphrase_${fp}`, value: newPassphrase });
-          tx.oncomplete = () => db.result.close();
-        };
+      const res = await fetch('/api/identity/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fingerprint: identity?.identity?.fingerprint, passphrase: newPassphrase }),
+      });
+      if (res.ok) {
         setPassphraseSuccess(true);
         setPassphraseError('');
         setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
       } else {
-        setPassphraseError('No identity found');
+        setPassphraseError('Failed to set passphrase');
       }
     } catch { setPassphraseError('Failed to set passphrase'); }
   };
@@ -328,13 +300,15 @@ export function SoverentityFrontend({
     try {
       setLoading(true);
       setError(null);
-      const bi = getBrowserIdentity();
-      const result = await bi.generateIdentity({
-        name: formData.name,
-        email: formData.email,
+      const response = await fetch('/api/identity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
       });
-      setIdentity(result.identity);
-      onIdentityUpdate?.(result.identity);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to create identity');
+      setIdentity(data.identity);
+      onIdentityUpdate?.(data.identity);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {

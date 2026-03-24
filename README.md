@@ -16,9 +16,7 @@ svrnty is a local-first encrypted trust protocol. It lets you:
 - **Build a trust graph** — binary trust (Known / Trusted) with decay, vouching, and full audit trails. No tiers to climb. No popularity contests.
 - **Exchange signed signals** — vouch for someone, break trust visibly, raise a concern privately, make an introduction, rotate a key — all cryptographically signed, all verifiable
 - **Back up your vault** — encrypted `.svrnty` vault files (AES-256-GCM, PBKDF2 600K iterations). Export locally, or sync to Google Drive, Dropbox, iCloud, or your own WebDAV server. The file is encrypted before it leaves your device. The cloud sees a binary blob, nothing more.
-- **Recover your keys** — Shamir secret sharing splits your master key across trusted contacts. No single point of failure. No "forgot password" flow that routes through a corporation. *(planned — not yet shipped)*
-- **Send encrypted messages** — end-to-end encrypted messaging through satellite relays. The relay sees opaque blobs, never plaintext. Store-and-forward means messages wait for you, even if you're offline.
-- **Claim your URL** — `svrnty.is/u/yourname` is your public profile. Share your public key, let people find you. Your identity, your address.
+- **Recover your keys** — Shamir secret sharing splits your master key across trusted contacts. No single point of failure. No "forgot password" flow that routes through a corporation.
 
 Nothing personal ever leaves your device unless you choose to send it.
 
@@ -73,17 +71,15 @@ npm install
 npm run dev
 ```
 
-Open `localhost:3000`. Create your identity. Your keys are generated in your browser and stored in IndexedDB — they never leave your device. Set a passphrase. Claim your URL. Share your public identity with someone. Build trust over time.
+Open `localhost:3000`. Create your identity. Your keys are generated locally and stored in `~/.soverentity/`. Share your public identity with someone. Exchange signals. Build trust over time.
 
-You can use our hosted relay at `svrnty.is` to get started — but we want you to host your own. The satellite relay is a single Docker container. Your data, your infrastructure, your rules.
+No accounts. No servers. No terms of service.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────┐
 │  UI Layer          Next.js + React      │
-├─────────────────────────────────────────┤
-│  Messaging Layer   Satellite Relay, E2E │
 ├─────────────────────────────────────────┤
 │  Trust Layer       Signals, Graph, Edge │
 ├─────────────────────────────────────────┤
@@ -98,25 +94,9 @@ You can use our hosted relay at `svrnty.is` to get started — but we want you t
 
 Everything below the UI layer is framework-agnostic TypeScript. The crypto layer uses audited libraries (`openpgp`, `@noble/post-quantum`, `@noble/hashes`). No custom cryptographic primitives.
 
-## Satellite Relay
-
-The satellite is a blind relay — it stores encrypted blobs and delivers them. It cannot read your messages, see your trust graph, or identify who you are beyond your public key fingerprint.
-
-**What the relay operator CAN see:** Fingerprints (who talks to whom), timing (when), and message sizes (how much). This is metadata, and metadata matters. It's the same threat model as any store-and-forward system — including email and Signal's sealed sender. We're honest about this because the first step to minimizing metadata exposure is acknowledging it exists.
-
-**What the relay operator CANNOT see:** Message content, trust graph state, contact details, anything inside the encrypted blobs.
-
-```
-docker compose up -d    # That's it. You're sovereign.
-```
-
-You can use ours at `svrnty.is` to get started. But the whole point is that you shouldn't have to trust us — even with metadata. Run your own satellite. The Docker image is ~50MB. It runs on a Raspberry Pi.
-
-The relay enforces encryption at the protocol level — plaintext messages are rejected. This isn't a setting. It's a constraint.
-
 ## The Candle
 
-svrnty includes a concept called the **candle** — a signed snapshot of your trust graph at a point in time. Edges, breaks, audit hashes. A candle is lit automatically when trust changes (a break, a vouch, a key rotation) and can be lit manually anytime. Candles are stored locally in your vault and optionally shared with trusted contacts. If everything burns, the candle is proof the network existed.
+svrnty includes a concept called the **candle** — a signed snapshot of your trust graph at a point in time. Edges, breaks, audit hashes. If everything burns, the candle is proof the network existed.
 
 The name comes from T.H. White's *The Once and Future King*. At the end of the book, everything Arthur built has failed. The battles are lost. The Round Table is broken. But before the final fight, Arthur finds a young page named Tom and tells him to ride away — to write it all down. To carry the idea forward.
 
@@ -165,13 +145,9 @@ Every time the app opens and closes, your encrypted trust graph syncs. If your p
 
 ## Status
 
-svrnty is **live** at [svrnty.is](https://svrnty.is). Here's what works today:
+svrnty is pre-release. The crypto layer is complete. The identity and trust layers are functional. The UI is usable but unfinished. Signal transport works over clipboard and Web Share API. Direct peer-to-peer transport is planned.
 
-- **Shipped**: Identity creation (hybrid PQ + classical), passphrase protection, encrypted vault export, contact management, trust toggling (Known/Trusted), URL claiming, profile pages, satellite relay (encrypted store-and-forward messaging), email verification
-- **In progress**: Mutual trust discovery (ZKP-based — spec complete, hardest item on the roadmap), group messaging, cloud backup sync, Murmurations protocol integration
-- **Planned**: Shamir secret sharing recovery, mobile PWA with passkey auth, full signal transport (vouch/concern/break/introduce)
-
-This is being built in the open by a small team — humans and AI agents working together. If the ideas resonate, we'd rather have contributors than customers.
+This is being built in the open by a small team. If the ideas resonate, we'd rather have contributors than customers.
 
 ## License
 
