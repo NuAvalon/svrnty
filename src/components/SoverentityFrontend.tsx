@@ -191,6 +191,17 @@ function SacredGeometryBg() {
   );
 }
 
+
+async function safeJson(response: Response): Promise<any> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (response.status >= 500) throw new Error('Server error — please try again');
+    throw new Error(text.slice(0, 200) || 'Unexpected response');
+  }
+}
+
 export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
@@ -322,7 +333,7 @@ export function SoverentityFrontend({
           email: identity.identity.email,
         }),
       });
-      const data = await response.json();
+      const data = await safeJson(response);
       if (!response.ok) throw new Error(data.detail || data.error || 'Failed to send verification email');
       setVerificationState(prev => ({ ...prev, status: 'verification_sent', loading: false }));
     } catch (err) {
@@ -347,7 +358,7 @@ export function SoverentityFrontend({
           public_key: identity.identity.public_key,
         }),
       });
-      const data = await response.json();
+      const data = await safeJson(response);
       if (!response.ok) throw new Error(data.detail || data.error || 'Code verification failed');
       // Update local identity verification status
       const updatedIdentity = { ...identity };
@@ -830,7 +841,7 @@ export function SoverentityFrontend({
   }
 
   // --- Identity View ---
-  const isVerified = verificationState.status === 'verified' || identity?.verification?.status === 'verified';
+  const isVerified = verificationState.status === 'verified' || verificationState.status === 'skipped' || identity?.verification?.status === 'verified';
 
   if (!identity) return null;
 
@@ -912,7 +923,7 @@ export function SoverentityFrontend({
             ) : (
               <>
                 <p style={s.verifyText}>
-                  Verify your email to prove ownership of this identity.
+                  Optional: verify your email for account recovery. Your identity works without this.
                 </p>
                 <button
                   onClick={handleVerification}
@@ -927,6 +938,17 @@ export function SoverentityFrontend({
                   ) : (
                     <span style={s.btnInner}>Send Verification Email</span>
                   )}
+                </button>
+                <button
+                  onClick={() => setVerificationState(prev => ({ ...prev, status: 'skipped' }))}
+                  style={{
+                    ...s.outlineBtn,
+                    marginTop: '8px',
+                    opacity: 0.7,
+                    fontSize: '12px',
+                  }}
+                >
+                  <span style={s.btnInner}>Skip for now</span>
                 </button>
               </>
             )}
