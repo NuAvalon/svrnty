@@ -315,7 +315,7 @@ export function SoverentityFrontend({
   const handleVerification = async () => {
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-      const response = await fetch('/api/identity/verify', {
+      const response = await fetch('/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -339,7 +339,7 @@ export function SoverentityFrontend({
   const handleVerifyCode = async () => {
     try {
       setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-      const response = await fetch('/api/identity/verify', {
+      const response = await fetch('/verify', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
