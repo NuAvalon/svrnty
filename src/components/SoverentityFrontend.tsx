@@ -271,20 +271,20 @@ export function SoverentityFrontend({
     setClaimStatus('checking');
     try {
       // Check availability
-      const checkRes = await fetch(`/api/auth/slug/${slug}`);
+      const checkRes = await fetch(`/slug/${slug}`);
       if (checkRes.ok) { setClaimStatus('taken'); return; }
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
       const pk = identity?.identity?.publicKey;
       const email = identity?.identity?.email || '';
-      const regRes = await fetch('/api/satellite/register', {
+      const regRes = await fetch('/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, display_name: slug, public_key: pk || '', slug }),
       });
       if (regRes.ok || regRes.status === 409) {
         // Claim the slug
-        const claimRes = await fetch(`/api/satellite/slug/${slug}/claim`, {
+        const claimRes = await fetch(`/slug/${slug}/claim`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ fingerprint: fp }),

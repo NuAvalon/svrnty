@@ -2,19 +2,54 @@
 "use client";
 
 import React, { useState } from 'react';
-import { 
+import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
   DialogTitle, DialogFooter
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { 
+import {
   Checkbox
 } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { RefreshCw, Lock, Download, Upload, Copy, Eye, EyeOff, Key, ShieldCheck } from 'lucide-react';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  getAllContacts,
+  addContact,
+  loadKey,
+  loadPQKeys,
+} from '@/lib/identity/client-store';
+
+// ── Helpers ────────────────────────────────────────────
+
+async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+function toBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+// ── Secure Export Dialog ────────────────────────────────
 
 interface SecureExportDialogProps {
   open: boolean;
@@ -37,44 +72,74 @@ export function SecureExportDialog({
   const [showPassword, setShowPassword] = useState(false);
   const [exportedData, setExportedData] = useState<string | null>(null);
   const [exportComplete, setExportComplete] = useState(false);
-  
+
   const handleExport = async () => {
     if (!identityFingerprint) return;
-    
+
     try {
       setLoading(true);
       setError(null);
-      
-      // Build the query parameters
-      const params = new URLSearchParams();
-      params.append('fingerprint', identityFingerprint);
-      params.append('includePublicKeys', includePublicKeys.toString());
-      params.append('usePassword', usePassword.toString());
-      
-      if (usePassword && password) {
-        params.append('password', password);
-      }
-      
-      // Call the secure export API
-      const response = await fetch(`/api/contacts/secure-export?${params.toString()}`, {
-        method: 'GET'
+
+      // Read contacts from IndexedDB
+      const contacts = await getAllContacts(identityFingerprint);
+
+      const exportPayload = contacts.map((c: any) => {
+        const base: any = {
+          id: c.id,
+          fingerprint: c.fingerprint,
+          name: c.name,
+          email: c.email,
+          trust_level: c.trust_level,
+          added_at: c.added_at,
+        };
+        if (includePublicKeys && c.public_key) {
+          base.public_key = c.public_key;
+        }
+        return base;
       });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to export contacts');
+
+      const jsonStr = JSON.stringify({
+        version: '1.0',
+        exported_at: new Date().toISOString(),
+        owner_fingerprint: identityFingerprint,
+        contacts: exportPayload,
+      }, null, 2);
+
+      let result: string;
+      let method: string;
+
+      if (usePassword && password) {
+        // Encrypt with AES-256-GCM via password
+        const salt = new Uint8Array(16);
+        crypto.getRandomValues(salt);
+        const iv = new Uint8Array(12);
+        crypto.getRandomValues(iv);
+        const key = await deriveKey(password, salt);
+        const enc = new TextEncoder();
+        const encrypted = new Uint8Array(
+          await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr))
+        );
+        result = JSON.stringify({
+          encrypted: true,
+          algorithm: 'AES-256-GCM',
+          kdf: 'PBKDF2-SHA256-100k',
+          salt: toBase64(salt),
+          iv: toBase64(iv),
+          data: toBase64(encrypted),
+        });
+        method = 'AES-256-GCM';
+      } else {
+        result = jsonStr;
+        method = 'none';
       }
-      
-      // Store the exported data
-      setExportedData(data.encryptedContacts);
+
+      setExportedData(result);
       setExportComplete(true);
-      
-      // Call the completion callback if provided
+
       if (onExportComplete) {
-        onExportComplete(data.encryptedContacts, data.encryptionMethod);
+        onExportComplete(result, method);
       }
-      
+
     } catch (err) {
       console.error('Error exporting contacts:', err);
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -82,40 +147,37 @@ export function SecureExportDialog({
       setLoading(false);
     }
   };
-  
+
   const handleCopyToClipboard = () => {
     if (exportedData) {
       navigator.clipboard.writeText(exportedData);
     }
   };
-  
+
   const handleDownload = () => {
     if (exportedData) {
-      // Create a blob and download link
-      const blob = new Blob([exportedData], { type: 'application/pgp-encrypted' });
+      const blob = new Blob([exportedData], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `soverentity-contacts-${new Date().toISOString().split('T')[0]}.pgp`;
+      a.download = `svrnty-contacts-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       a.remove();
+      URL.revokeObjectURL(url);
     }
   };
-  
+
   const handleClose = () => {
-    // Reset the state
     setExportedData(null);
     setExportComplete(false);
     setUsePassword(false);
     setPassword('');
     setIncludePublicKeys(true);
     setError(null);
-    
-    // Call the close callback
     onClose();
   };
-  
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
@@ -125,34 +187,34 @@ export function SecureExportDialog({
             Export your contacts with encryption for secure backup or transfer.
           </DialogDescription>
         </DialogHeader>
-        
+
         {error && (
           <Alert variant="destructive" className="mb-4">
             <AlertTitle>Error</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        
+
         {!exportComplete ? (
           <div className="space-y-4 py-4">
             <div className="flex items-center space-x-2">
-              <Checkbox 
+              <Checkbox
                 id="includePublicKeys"
                 checked={includePublicKeys}
                 onCheckedChange={(checked) => setIncludePublicKeys(checked === true)}
               />
               <Label htmlFor="includePublicKeys">Include public keys</Label>
             </div>
-            
+
             <div className="flex items-center space-x-2">
-              <Checkbox 
+              <Checkbox
                 id="usePassword"
                 checked={usePassword}
                 onCheckedChange={(checked) => setUsePassword(checked === true)}
               />
               <Label htmlFor="usePassword">Password-protect export</Label>
             </div>
-            
+
             {usePassword && (
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
@@ -188,7 +250,7 @@ export function SecureExportDialog({
                 Your contacts have been successfully exported with encryption.
               </AlertDescription>
             </Alert>
-            
+
             <div className="space-y-2">
               <Label>Encrypted Data</Label>
               <Textarea
@@ -217,7 +279,7 @@ export function SecureExportDialog({
                 </Button>
               </div>
             </div>
-            
+
             {usePassword && (
               <Alert>
                 <AlertTitle>Password Protection</AlertTitle>
@@ -229,23 +291,23 @@ export function SecureExportDialog({
             )}
           </div>
         )}
-        
+
         <DialogFooter>
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             onClick={handleClose}
           >
             {exportComplete ? 'Close' : 'Cancel'}
           </Button>
-          
+
           {!exportComplete && (
-            <Button 
-              onClick={handleExport} 
+            <Button
+              onClick={handleExport}
               disabled={loading || (usePassword && !password)}
               className="bg-blue-600 hover:bg-blue-700"
             >
-              {loading ? 
-                <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Exporting...</> : 
+              {loading ?
+                <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Exporting...</> :
                 <><Lock className="h-4 w-4 mr-2" />Secure Export</>
               }
             </Button>
@@ -286,26 +348,49 @@ export function PrivateKeyExportDialog({
       setLoading(true);
       setError(null);
 
-      const response = await fetch('/api/keys/export', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: identityFingerprint, password }),
+      // Read key from IndexedDB
+      const keyData = await loadKey(identityFingerprint);
+      if (!keyData) throw new Error('Private key not found in local storage');
+
+      const pqKeys = await loadPQKeys(identityFingerprint);
+
+      // Encrypt with password using AES-256-GCM
+      const salt = new Uint8Array(16);
+      crypto.getRandomValues(salt);
+      const iv = new Uint8Array(12);
+      crypto.getRandomValues(iv);
+      const derivedKey = await deriveKey(password, salt);
+
+      const payload = JSON.stringify({
+        fingerprint: identityFingerprint,
+        privateKey: keyData.privateKey,
+        passphrase: keyData.passphrase,
+        pq_keys: pqKeys || undefined,
+        exported_at: new Date().toISOString(),
       });
 
-      const data = await response.json();
+      const enc = new TextEncoder();
+      const encrypted = new Uint8Array(
+        await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, enc.encode(payload))
+      );
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to export keys');
-      }
+      const exportFile = JSON.stringify({
+        version: '1.0',
+        type: 'svrnty-keys',
+        algorithm: 'AES-256-GCM',
+        kdf: 'PBKDF2-SHA256-100k',
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        data: toBase64(encrypted),
+        fingerprint: identityFingerprint,
+      }, null, 2);
 
       // Download as .svrnty-keys file
-      const blob = new Blob([JSON.stringify(data, null, 2)], {
-        type: 'application/json',
-      });
+      const blob = new Blob([exportFile], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `soverentity-keys-${new Date().toISOString().split('T')[0]}.svrnty-keys`;
+      a.download = `svrnty-keys-${new Date().toISOString().split('T')[0]}.svrnty-keys`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -462,74 +547,81 @@ export function SecureImportDialog({
   const [needsPassword, setNeedsPassword] = useState(false);
   const [importComplete, setImportComplete] = useState(false);
   const [importCount, setImportCount] = useState(0);
-  
+
   const checkIfNeedsPassword = (data: string) => {
-    // This is a best-effort detection of password-encrypted data
-    const isPgpMessage = data.includes('-----BEGIN PGP MESSAGE-----');
-    if (isPgpMessage) {
-      // These are not foolproof, but can help detect password-encrypted content
-      const hints = ['PASSPHRASE', 'SYMMETRIC', 'PASSWORD'];
-      const mightNeedPassword = hints.some(hint => data.includes(hint));
-      setNeedsPassword(mightNeedPassword);
-    } else {
+    try {
+      const parsed = JSON.parse(data);
+      setNeedsPassword(!!parsed.encrypted);
+    } catch {
       setNeedsPassword(false);
     }
   };
-  
+
   const handleImport = async () => {
     if (!identityFingerprint || !importData) return;
-    
+
     try {
       setLoading(true);
       setError(null);
-      
-      // Call the secure import API
-      const response = await fetch('/api/contacts/secure-import', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          fingerprint: identityFingerprint,
-          encryptedContacts: importData,
-          overwrite,
-          password: needsPassword ? password : null
-        }),
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to import contacts');
+
+      let contactsJson: string;
+
+      // Check if data is encrypted
+      const parsed = JSON.parse(importData);
+      if (parsed.encrypted) {
+        if (!password) {
+          setNeedsPassword(true);
+          throw new Error('This export is password-protected. Enter the password.');
+        }
+        // Decrypt
+        const salt = fromBase64(parsed.salt);
+        const iv = fromBase64(parsed.iv);
+        const encrypted = fromBase64(parsed.data);
+        const key = await deriveKey(password, salt);
+        const decrypted = new Uint8Array(
+          await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted)
+        );
+        contactsJson = new TextDecoder().decode(decrypted);
+      } else {
+        contactsJson = importData;
       }
-      
-      // Store the import count
-      setImportCount(data.importCount);
+
+      const exportData = JSON.parse(contactsJson);
+      const contacts = exportData.contacts || [];
+
+      // Import contacts into IndexedDB
+      let count = 0;
+      for (const contact of contacts) {
+        await addContact(identityFingerprint, {
+          fingerprint: contact.fingerprint || contact.peer_fingerprint || '',
+          name: contact.name || contact.peer_name || '',
+          email: contact.email || contact.peer_email || '',
+          public_key: contact.public_key || contact.peer_public_key || '',
+          trust_level: contact.trust_level || 'unknown',
+        });
+        count++;
+      }
+
+      setImportCount(count);
       setImportComplete(true);
-      
-      // Call the completion callback if provided
+
       if (onImportComplete) {
-        onImportComplete(data.importCount);
+        onImportComplete(count);
       }
-      
+
     } catch (err) {
       console.error('Error importing contacts:', err);
-      
-      // If it's a decryption error, we might need a password
       const errorMessage = err instanceof Error ? err.message : 'An error occurred';
-      
       if (errorMessage.includes('decrypt') || errorMessage.includes('password')) {
         setNeedsPassword(true);
       }
-      
       setError(errorMessage);
     } finally {
       setLoading(false);
     }
   };
-  
+
   const handleClose = () => {
-    // Reset the state
     setImportData('');
     setPassword('');
     setOverwrite(false);
@@ -537,11 +629,9 @@ export function SecureImportDialog({
     setImportComplete(false);
     setImportCount(0);
     setError(null);
-    
-    // Call the close callback
     onClose();
   };
-  
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
@@ -551,14 +641,14 @@ export function SecureImportDialog({
             Import contacts from an encrypted export.
           </DialogDescription>
         </DialogHeader>
-        
+
         {error && (
           <Alert variant="destructive" className="mb-4">
             <AlertTitle>Error</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        
+
         {!importComplete ? (
           <div className="space-y-4 py-4">
             <div className="space-y-2">
@@ -575,7 +665,7 @@ export function SecureImportDialog({
                 rows={8}
               />
             </div>
-            
+
             {needsPassword && (
               <div className="space-y-2">
                 <Label htmlFor="importPassword">Decryption Password</Label>
@@ -602,9 +692,9 @@ export function SecureImportDialog({
                 </p>
               </div>
             )}
-            
+
             <div className="flex items-center space-x-2">
-              <Checkbox 
+              <Checkbox
                 id="overwrite"
                 checked={overwrite}
                 onCheckedChange={(checked) => setOverwrite(checked === true)}
@@ -622,23 +712,23 @@ export function SecureImportDialog({
             </Alert>
           </div>
         )}
-        
+
         <DialogFooter>
-          <Button 
-            variant="outline" 
+          <Button
+            variant="outline"
             onClick={handleClose}
           >
             {importComplete ? 'Close' : 'Cancel'}
           </Button>
-          
+
           {!importComplete && (
-            <Button 
-              onClick={handleImport} 
+            <Button
+              onClick={handleImport}
               disabled={loading || !importData || (needsPassword && !password)}
               className="bg-blue-600 hover:bg-blue-700"
             >
-              {loading ? 
-                <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> : 
+              {loading ?
+                <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> :
                 <><Upload className="h-4 w-4 mr-2" />Secure Import</>
               }
             </Button>
