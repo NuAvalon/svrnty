@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { resolveRelay } from '@/lib/sync/relay';
+import { getActiveFingerprint, addContact, getContactByFingerprint } from '@/lib/identity/client-store';
 
 type Status = 'loading' | 'decrypted' | 'importing' | 'imported' | 'error' | 'already_exists';
 
@@ -60,30 +61,40 @@ export default function RelayPage({ params }: { params: Promise<{ code: string }
 
     setStatus('importing');
     try {
-      // The user needs an active identity to import. Try to get fingerprint from localStorage.
-      const fingerprint = localStorage.getItem('svrnty_active_fingerprint');
+      // Get active identity from IndexedDB
+      const fingerprint = await getActiveFingerprint();
       if (!fingerprint) {
         setError('No active identity found. Please set up your identity on the main page first, then revisit this link.');
         setStatus('error');
         return;
       }
 
-      const res = await fetch('/api/contacts/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint, exchangeData }),
-      });
+      // Parse the exchange data
+      const peerData = JSON.parse(exchangeData);
+      const peerFingerprint = peerData.fingerprint || peerData.peer_fingerprint;
 
-      const data = await res.json();
-
-      if (!res.ok || !data.success) {
-        setError(data.error || 'Import failed.');
-        setStatus('error');
-        return;
+      // Check if contact already exists
+      if (peerFingerprint) {
+        const existing = await getContactByFingerprint(fingerprint, peerFingerprint);
+        if (existing) {
+          setImportResult({ contact: existing, message: 'This contact already exists in your network.' });
+          setStatus('already_exists');
+          return;
+        }
       }
 
-      setImportResult(data);
-      setStatus(data.alreadyExists ? 'already_exists' : 'imported');
+      // Import contact into IndexedDB
+      const contact = await addContact(fingerprint, {
+        peer_name: peerData.name || peerData.peer_name || 'Unknown',
+        fingerprint: peerFingerprint || '',
+        public_key: peerData.public_key || peerData.publicKey || '',
+        pq_public_key: peerData.pq_public_key || peerData.pqPublicKey || '',
+        trust_level: 'pending',
+        verified: false,
+      });
+
+      setImportResult({ contact, message: 'Contact added to your network.' });
+      setStatus('imported');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed.');
       setStatus('error');

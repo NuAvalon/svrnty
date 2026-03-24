@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { hasIdentity, loadIdentity } from '@/lib/identity/client-store';
 
 interface ProfileData {
   display_name?: string;
@@ -37,18 +38,17 @@ export default function ProfilePage() {
         }
       } catch {}
 
-      // Try local identity (if viewer is the owner)
+      // Try local identity from IndexedDB (if viewer is the owner)
       try {
-        const res = await fetch('/api/identity');
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.identity?.name?.toLowerCase() === name.toLowerCase()) {
+        if (await hasIdentity()) {
+          const identity = await loadIdentity();
+          if (identity?.name?.toLowerCase() === name.toLowerCase()) {
             setProfile({
-              display_name: data.identity.name,
-              public_key: data.identity.publicKey || data.identity.signingPublicKey,
-              fingerprint: data.identity.fingerprint,
-              verified: data.identity.verification?.status === 'verified',
-              created_at: data.identity.createdAt,
+              display_name: identity.name,
+              public_key: identity.publicKey || identity.signingPublicKey,
+              fingerprint: identity.fingerprint,
+              verified: identity.verification?.status === 'verified',
+              created_at: identity.createdAt,
             });
             setLoading(false);
             return;
