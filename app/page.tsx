@@ -53,17 +53,16 @@ export default function Home() {
     setUnlockError('');
 
     try {
-      const res = await fetch('/api/identity/unlock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: lockedIdentity.fingerprint, passphrase }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        setIdentity(data.identity);
-        setAppState('unlocked');
-        setPassphrase('');
+      const key = await loadKey(lockedIdentity.fingerprint);
+      if (key && key.passphrase === passphrase) {
+        const id = await loadIdentity(lockedIdentity.fingerprint);
+        if (id) {
+          setIdentity(id);
+          setAppState('unlocked');
+          setPassphrase('');
+        } else {
+          setUnlockError('Identity data not found');
+        }
       } else {
         setUnlockError('Incorrect passphrase');
       }

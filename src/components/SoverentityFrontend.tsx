@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
+import { loadKey, storeKey } from '@/lib/identity/client-store';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -261,18 +262,15 @@ export function SoverentityFrontend({
       return;
     }
     try {
-      const res = await fetch('/api/identity/lock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint: identity?.identity?.fingerprint, passphrase: newPassphrase }),
-      });
-      if (res.ok) {
-        setPassphraseSuccess(true);
-        setPassphraseError('');
-        setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
-      } else {
-        setPassphraseError('Failed to set passphrase');
+      const fp = identity?.identity?.fingerprint;
+      if (!fp) { setPassphraseError('No identity found'); return; }
+      const existing = await loadKey(fp);
+      if (existing) {
+        await storeKey(fp, existing.privateKey, newPassphrase);
       }
+      setPassphraseSuccess(true);
+      setPassphraseError('');
+      setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
     } catch { setPassphraseError('Failed to set passphrase'); }
   };
 
