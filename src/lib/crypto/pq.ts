@@ -5,6 +5,20 @@
 import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
 import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
 
+// Browser-compatible base64 helpers (no Buffer dependency)
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 // --- Types ---
 
 export interface PQSigningKeypair {
@@ -83,11 +97,11 @@ export function decapsulate(
 // --- Serialization ---
 
 export function publicKeyToBase64(key: Uint8Array): string {
-  return Buffer.from(key).toString('base64');
+  return uint8ToBase64(key);
 }
 
 export function base64ToPublicKey(b64: string): Uint8Array {
-  return new Uint8Array(Buffer.from(b64, 'base64'));
+  return base64ToUint8(b64);
 }
 
 export function serializeKeypairBundle(bundle: PQKeypairBundle): {
@@ -98,12 +112,12 @@ export function serializeKeypairBundle(bundle: PQKeypairBundle): {
     signing: {
       algorithm: bundle.signing.algorithm,
       publicKey: publicKeyToBase64(bundle.signing.publicKey),
-      secretKey: Buffer.from(bundle.signing.secretKey).toString('base64'),
+      secretKey: uint8ToBase64(new Uint8Array(bundle.signing.secretKey)),
     },
     kem: {
       algorithm: bundle.kem.algorithm,
       publicKey: publicKeyToBase64(bundle.kem.publicKey),
-      secretKey: Buffer.from(bundle.kem.secretKey).toString('base64'),
+      secretKey: uint8ToBase64(new Uint8Array(bundle.kem.secretKey)),
     },
   };
 }
@@ -116,12 +130,12 @@ export function deserializeKeypairBundle(data: {
     signing: {
       algorithm: 'ML-DSA-65',
       publicKey: base64ToPublicKey(data.signing.publicKey),
-      secretKey: new Uint8Array(Buffer.from(data.signing.secretKey, 'base64')),
+      secretKey: base64ToUint8(data.signing.secretKey),
     },
     kem: {
       algorithm: 'ML-KEM-768',
       publicKey: base64ToPublicKey(data.kem.publicKey),
-      secretKey: new Uint8Array(Buffer.from(data.kem.secretKey, 'base64')),
+      secretKey: base64ToUint8(data.kem.secretKey),
     },
   };
 }

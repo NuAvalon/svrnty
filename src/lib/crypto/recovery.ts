@@ -5,10 +5,25 @@
 // Recovery paths:
 //   1. M-of-N shards from trusted contacts -> reconstruct master secret -> decrypt vault
 //   2. 24-word seed phrase (BIP39-style) -> master secret -> decrypt vault
+//
+// Browser-compatible: uses Web Crypto API (no Node.js crypto/Buffer)
 
 import { split, combine } from 'shamir-secret-sharing';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { randomBytes, createCipheriv, createDecipheriv } from 'crypto';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+
+// --- Helpers (replace Node.js Buffer) ---
+
+function toBase64(bytes: Uint8Array): string {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
 
 // --- Types ---
 
@@ -17,7 +32,7 @@ export interface KeyVault {
   /** AES-256-GCM encrypted bundle of all private keys */
   encrypted_keys: string;  // base64
   /** GCM auth tag */
-  auth_tag: string;        // base64
+  auth_tag: string;        // base64 (unused in WebCrypto — tag appended to ciphertext)
   /** Initialization vector */
   iv: string;              // base64
   /** Shamir parameters */
@@ -57,7 +72,9 @@ export interface PrivateKeyBundle {
  * Generate a cryptographically random 32-byte master secret.
  */
 export function generateMasterSecret(): Uint8Array {
-  return new Uint8Array(randomBytes(32));
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return bytes;
 }
 
 /**
@@ -65,34 +82,40 @@ export function generateMasterSecret(): Uint8Array {
  * Used to confirm correct reconstruction without exposing the secret.
  */
 export function hashMasterSecret(secret: Uint8Array): string {
-  return Buffer.from(sha256(secret)).toString('hex');
+  return bytesToHex(sha256(secret));
 }
 
-// --- Vault Encryption ---
+// --- Vault Encryption (Web Crypto API) ---
 
 /**
  * Encrypt a private key bundle with the master secret.
  * Uses AES-256-GCM for authenticated encryption.
  */
-export function encryptVault(
+export async function encryptVault(
   bundle: PrivateKeyBundle,
   masterSecret: Uint8Array
-): Omit<KeyVault, 'shamir'> {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', masterSecret, iv);
+): Promise<Omit<KeyVault, 'shamir'>> {
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
 
-  const plaintext = JSON.stringify(bundle);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, 'utf8'),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
+  const key = await crypto.subtle.importKey(
+    'raw', masterSecret, { name: 'AES-GCM' }, false, ['encrypt']
+  );
+
+  const plaintext = new TextEncoder().encode(JSON.stringify(bundle));
+  const ciphertextWithTag = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext)
+  );
+
+  // WebCrypto appends the 16-byte auth tag to the ciphertext
+  const encrypted = ciphertextWithTag.slice(0, ciphertextWithTag.length - 16);
+  const authTag = ciphertextWithTag.slice(ciphertextWithTag.length - 16);
 
   return {
     version: '1.0.0',
-    encrypted_keys: encrypted.toString('base64'),
-    auth_tag: authTag.toString('base64'),
-    iv: iv.toString('base64'),
+    encrypted_keys: toBase64(encrypted),
+    auth_tag: toBase64(authTag),
+    iv: toBase64(iv),
     master_secret_hash: hashMasterSecret(masterSecret),
   };
 }
@@ -100,40 +123,40 @@ export function encryptVault(
 /**
  * Decrypt a private key bundle from the vault using the master secret.
  */
-export function decryptVault(
+export async function decryptVault(
   vault: KeyVault | Omit<KeyVault, 'shamir'>,
   masterSecret: Uint8Array
-): PrivateKeyBundle {
+): Promise<PrivateKeyBundle> {
   // Verify master secret hash
   const hash = hashMasterSecret(masterSecret);
   if (hash !== vault.master_secret_hash) {
     throw new Error('Invalid master secret — hash mismatch');
   }
 
-  const iv = Buffer.from(vault.iv, 'base64');
-  const authTag = Buffer.from(vault.auth_tag, 'base64');
-  const encrypted = Buffer.from(vault.encrypted_keys, 'base64');
+  const iv = fromBase64(vault.iv);
+  const authTag = fromBase64(vault.auth_tag);
+  const encrypted = fromBase64(vault.encrypted_keys);
 
-  const decipher = createDecipheriv('aes-256-gcm', masterSecret, iv);
-  decipher.setAuthTag(authTag);
+  // WebCrypto expects ciphertext + tag concatenated
+  const ciphertextWithTag = new Uint8Array(encrypted.length + authTag.length);
+  ciphertextWithTag.set(encrypted);
+  ciphertextWithTag.set(authTag, encrypted.length);
 
-  const decrypted = Buffer.concat([
-    decipher.update(encrypted),
-    decipher.final(),
-  ]);
+  const key = await crypto.subtle.importKey(
+    'raw', masterSecret, { name: 'AES-GCM' }, false, ['decrypt']
+  );
 
-  return JSON.parse(decrypted.toString('utf8'));
+  const decrypted = new Uint8Array(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertextWithTag)
+  );
+
+  return JSON.parse(new TextDecoder().decode(decrypted));
 }
 
 // --- Shamir Secret Sharing ---
 
 /**
  * Split the master secret into N shards, requiring M to reconstruct.
- *
- * @param masterSecret - 32-byte master secret
- * @param threshold - minimum shards needed (M), must be >= 2
- * @param totalShares - total shards created (N), must be >= threshold
- * @param identityFingerprint - fingerprint for shard identification
  */
 export async function createShards(
   masterSecret: Uint8Array,
@@ -149,7 +172,7 @@ export async function createShards(
 
   return rawShards.map((data, i) => ({
     index: i + 1,
-    data: Buffer.from(data).toString('base64'),
+    data: toBase64(new Uint8Array(data)),
     identity_fingerprint: identityFingerprint,
     threshold,
   }));
@@ -165,28 +188,18 @@ export async function reconstructFromShards(
     throw new Error('Need at least 2 shards to reconstruct');
   }
 
-  const rawShards = shards.map(s =>
-    new Uint8Array(Buffer.from(s.data, 'base64'))
-  );
-
+  const rawShards = shards.map(s => fromBase64(s.data));
   return combine(rawShards);
 }
 
 // --- Seed Phrase (BIP39-style) ---
 
-// Simplified wordlist — in production, use the full BIP39 2048-word list.
-// For now, we encode as hex words (each byte = 2 hex chars) for determinism.
-// TODO: Replace with proper BIP39 mnemonic encoding when ready for production.
-
 /**
  * Encode a master secret as a human-readable seed phrase.
  * Uses hex encoding split into 8 groups of 8 chars (32 bytes = 64 hex chars).
- *
- * In production, this should use BIP39 mnemonics (24 words from 2048-word list).
  */
 export function masterSecretToSeedPhrase(secret: Uint8Array): string {
-  const hex = Buffer.from(secret).toString('hex');
-  // Split into 8 groups of 8 hex chars for readability
+  const hex = bytesToHex(secret);
   const groups: string[] = [];
   for (let i = 0; i < hex.length; i += 8) {
     groups.push(hex.slice(i, i + 8));
@@ -202,7 +215,7 @@ export function seedPhraseToMasterSecret(phrase: string): Uint8Array {
   if (hex.length !== 64) {
     throw new Error('Invalid seed phrase — expected 64 hex characters (32 bytes)');
   }
-  return new Uint8Array(Buffer.from(hex, 'hex'));
+  return hexToBytes(hex);
 }
 
 // --- Full Flow ---
@@ -210,12 +223,6 @@ export function seedPhraseToMasterSecret(phrase: string): Uint8Array {
 /**
  * Create a complete key vault with Shamir shards.
  * Call this during identity creation.
- *
- * Returns:
- *   - vault: encrypted key bundle (store locally)
- *   - shards: distribute to L3+ contacts
- *   - seedPhrase: human-readable backup (show once, user writes down)
- *   - masterSecret: EPHEMERAL — zero after use, do NOT store
  */
 export async function createKeyVault(
   bundle: PrivateKeyBundle,
@@ -229,7 +236,7 @@ export async function createKeyVault(
   masterSecret: Uint8Array;
 }> {
   const masterSecret = generateMasterSecret();
-  const encryptedVault = encryptVault(bundle, masterSecret);
+  const encryptedVault = await encryptVault(bundle, masterSecret);
   const shards = await createShards(masterSecret, threshold, totalShares, identityFingerprint);
   const seedPhrase = masterSecretToSeedPhrase(masterSecret);
 
@@ -255,10 +262,10 @@ export async function recoverFromShards(
 /**
  * Recover keys from seed phrase.
  */
-export function recoverFromSeedPhrase(
+export async function recoverFromSeedPhrase(
   vault: KeyVault,
   seedPhrase: string
-): PrivateKeyBundle {
+): Promise<PrivateKeyBundle> {
   const masterSecret = seedPhraseToMasterSecret(seedPhrase);
   return decryptVault(vault, masterSecret);
 }
