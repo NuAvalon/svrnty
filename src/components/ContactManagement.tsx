@@ -24,6 +24,10 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
+import {
+  getAllContacts, addContact, updateContact, removeContact,
+  type ContactRecord,
+} from '@/lib/identity/client-store';
 
 // --- Types ---
 // Binary trust: known or trusted. No tiers.
@@ -81,6 +85,21 @@ function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; class
   return <Eye className={`${className} text-gray-400`} />;
 }
 
+// Convert IndexedDB ContactRecord to component Contact type
+function recordToContact(r: ContactRecord): Contact {
+  return {
+    id: r.id,
+    name: r.name || '',
+    email: r.email || '',
+    fingerprint: r.fingerprint || '',
+    public_key: r.public_key || '',
+    trust_level: (r.trust_level as Contact['trust_level']) || 'unverified',
+    added_at: r.added_at || new Date().toISOString(),
+    verified_at: r.verified_at,
+    metadata: r.metadata,
+  };
+}
+
 // --- Main Component ---
 
 export function ContactManagement({ identity }: ContactsProps) {
@@ -104,6 +123,9 @@ export function ContactManagement({ identity }: ContactsProps) {
   const [newContactForm, setNewContactForm] = useState({
     name: '', email: '', fingerprint: '', public_key: '',
   });
+  const [lookupInput, setLookupInput] = useState('');
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupMessage, setLookupMessage] = useState<string | null>(null);
   const [editContactForm, setEditContactForm] = useState({
     id: '', name: '', email: '', fingerprint: '', public_key: '',
     notes: '',
@@ -118,38 +140,22 @@ export function ContactManagement({ identity }: ContactsProps) {
 
   const fingerprint = identity?.identity?.fingerprint;
 
-  // --- API calls ---
-
-  const apiCall = useCallback(async (
-    url: string,
-    options?: RequestInit,
-  ): Promise<any> => {
-    const response = await fetch(url, options);
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      throw new Error('Invalid response from server');
-    }
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || `Request failed (${response.status})`);
-    }
-    return data;
-  }, []);
+  // --- IndexedDB operations ---
 
   const loadContacts = useCallback(async () => {
     if (!fingerprint) return;
     try {
       setLoading(true);
       setError(null);
-      const data = await apiCall(`/api/contacts?fingerprint=${fingerprint}`);
-      setContacts(data.contacts || []);
+      const records = await getAllContacts(fingerprint);
+      setContacts(records.map(recordToContact));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load contacts');
       setContacts([]);
     } finally {
       setLoading(false);
     }
-  }, [fingerprint, apiCall]);
+  }, [fingerprint]);
 
   useEffect(() => {
     if (fingerprint) loadContacts();
@@ -173,30 +179,66 @@ export function ContactManagement({ identity }: ContactsProps) {
 
   // --- Handlers ---
 
-  const handleAddContact = async () => {
+  const handleLookup = async () => {
+    if (!lookupInput.trim()) return;
+    setLookupLoading(true);
+    setLookupMessage(null);
+    setError(null);
+    try {
+      // Strip URL prefix if given
+      let slug = lookupInput.trim();
+      slug = slug.replace(/^https?:\/\//, '').replace(/^(www\.)?svrnty\.is\/?/, '').replace(/^\/?(u\/)?/, '');
+      if (!slug) throw new Error('Enter a slug or fingerprint');
+
+      // Try slug lookup first
+      const res = await fetch(`/slug/${slug}`);
+      if (!res.ok) throw new Error(`Not found: ${slug}`);
+      const slugData = await res.json();
+
+      if (slugData.available) throw new Error(`No identity found for "${slug}"`);
+
+      // Fetch full identity from /u/ endpoint
+      const idRes = await fetch(`/u/${slug}`);
+      if (!idRes.ok) throw new Error(`Could not load identity for "${slug}"`);
+
+      // The /u/ page returns HTML, so use the registration API
+      const regRes = await fetch(`/api/auth/slug/${slug}`);
+      if (!regRes.ok) throw new Error(`Could not load identity for "${slug}"`);
+      const data = await regRes.json();
+
+      setNewContactForm({
+        name: data.display_name || slug,
+        email: data.email || '',
+        fingerprint: data.fingerprint || '',
+        public_key: data.public_key || '',
+      });
+      setLookupMessage(`Found: ${data.display_name || slug}`);
+    } catch (err) {
+      setLookupMessage(null);
+      setError(err instanceof Error ? err.message : 'Lookup failed');
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+    const handleAddContact = async () => {
     if (!fingerprint) return;
     try {
       setLoading(true);
       setError(null);
-      if (!newContactForm.name || !newContactForm.email || !newContactForm.fingerprint || !newContactForm.public_key) {
-        throw new Error('All fields are required');
-      }
-      if (!newContactForm.public_key.trim().startsWith('-----BEGIN PGP PUBLIC KEY BLOCK-----')) {
-        throw new Error('Invalid PGP public key format');
+      if (!newContactForm.name || !newContactForm.fingerprint) {
+        throw new Error('Name and fingerprint are required');
       }
       if (newContactForm.fingerprint === fingerprint) {
         throw new Error('You cannot add yourself as a contact');
       }
-      // New contacts start as known (unverified in legacy API)
-      const data = await apiCall('/api/contacts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fingerprint,
-          contact: { ...newContactForm, trust_level: 'unverified' },
-        }),
+      await addContact(fingerprint, {
+        name: newContactForm.name,
+        email: newContactForm.email,
+        fingerprint: newContactForm.fingerprint,
+        public_key: newContactForm.public_key,
+        trust_level: 'unverified',
       });
-      setContacts(prev => [...prev, data.contact]);
       setNewContactForm({ name: '', email: '', fingerprint: '', public_key: '' });
       setShowAddDialog(false);
       await loadContacts();
@@ -215,7 +257,7 @@ export function ContactManagement({ identity }: ContactsProps) {
       if (!editContactForm.name || !editContactForm.email) {
         throw new Error('Name and email are required');
       }
-      const updates = {
+      await updateContact(editContactForm.id, {
         name: editContactForm.name,
         email: editContactForm.email,
         metadata: {
@@ -226,11 +268,6 @@ export function ContactManagement({ identity }: ContactsProps) {
             mutual_contacts: selectedContact.metadata.mutual_contacts,
           } : {}),
         },
-      };
-      await apiCall('/api/contacts', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint, contactId: editContactForm.id, updates }),
       });
       setShowEditDialog(false);
       await loadContacts();
@@ -246,7 +283,7 @@ export function ContactManagement({ identity }: ContactsProps) {
     try {
       setLoading(true);
       setError(null);
-      await apiCall(`/api/contacts?fingerprint=${fingerprint}&contactId=${contactId}`, { method: 'DELETE' });
+      await removeContact(contactId);
       setShowDetailDialog(false);
       setShowEditDialog(false);
       await loadContacts();
@@ -263,17 +300,9 @@ export function ContactManagement({ identity }: ContactsProps) {
     try {
       setLoading(true);
       setError(null);
-      await apiCall('/api/contacts', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fingerprint,
-          contactId: contact.id,
-          updates: {
-            trust_level: newLevel,
-            ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
-          },
-        }),
+      await updateContact(contact.id, {
+        trust_level: newLevel,
+        ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
       });
       // Satellite trust commitment (blind — satellite never sees who you're trusting)
       if (contact.fingerprint) {
@@ -310,16 +339,23 @@ export function ContactManagement({ identity }: ContactsProps) {
   };
 
   const handleShareIdentity = async () => {
-    if (!fingerprint) return;
+    if (!fingerprint || !identity) return;
     try {
       setLoading(true);
       setError(null);
-      const data = await apiCall('/api/contacts/share', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint }),
-      });
-      setExchangePackage(data.exchangePackage);
+      // Build exchange package client-side from identity data
+      const pkg = {
+        version: '1.0',
+        type: 'identity-exchange',
+        created_at: new Date().toISOString(),
+        identity: {
+          fingerprint: identity.identity.fingerprint,
+          display_name: identity.identity.display_name || identity.identity.slug,
+          public_key: identity.identity.public_key,
+          email: identity.identity.email,
+        },
+      };
+      setExchangePackage(JSON.stringify(pkg, null, 2));
       setShowShareIdentityDialog(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create exchange package');
@@ -333,15 +369,31 @@ export function ContactManagement({ identity }: ContactsProps) {
     try {
       setLoading(true);
       setExchangeResult(null);
-      const data = await apiCall('/api/contacts/process', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint, exchangeData: exchangeImportData.trim() }),
+      const pkg = JSON.parse(exchangeImportData.trim());
+      // Validate exchange package
+      const contactIdentity = pkg.identity || pkg;
+      if (!contactIdentity.fingerprint || !contactIdentity.public_key) {
+        throw new Error('Invalid exchange package: missing fingerprint or public key');
+      }
+      if (contactIdentity.fingerprint === fingerprint) {
+        throw new Error('You cannot import yourself as a contact');
+      }
+      await addContact(fingerprint, {
+        name: contactIdentity.display_name || contactIdentity.name || 'Unknown',
+        email: contactIdentity.email || '',
+        fingerprint: contactIdentity.fingerprint,
+        public_key: contactIdentity.public_key,
+        trust_level: 'unverified',
+        metadata: { connection_method: 'manual' as const },
       });
-      setExchangeResult({ success: true, message: data.message || 'Contact added successfully' });
+      setExchangeResult({ success: true, message: `Contact "${contactIdentity.display_name || contactIdentity.fingerprint.slice(0, 8)}" added successfully` });
       await loadContacts();
     } catch (err) {
-      setExchangeResult({ success: false, message: err instanceof Error ? err.message : 'Failed to import' });
+      if (err instanceof SyntaxError) {
+        setExchangeResult({ success: false, message: 'Invalid JSON — paste a valid identity exchange package' });
+      } else {
+        setExchangeResult({ success: false, message: err instanceof Error ? err.message : 'Failed to import' });
+      }
     } finally {
       setLoading(false);
     }
@@ -352,10 +404,42 @@ export function ContactManagement({ identity }: ContactsProps) {
     try {
       setVaultExporting(true);
       setError(null);
-      const data = await apiCall(`/api/vault?fingerprint=${fingerprint}&safeWord=`);
-      // Import vault packing client-side
+      // Load all data from IndexedDB
+      const { exportAll, loadPQKeys, loadVault: loadVaultData } = await import('@/lib/identity/client-store');
+      const backup = await exportAll(fingerprint, true);
+      const pqKeys = await loadPQKeys(fingerprint);
+      const vaultData = await loadVaultData(fingerprint);
+
+      // Format identity for vault module (VaultIdentity shape)
+      const vaultIdentity = backup.identity; // already in full identity format from storeIdentity
+
+      // Format keys for vault module (VaultKeys shape)
+      const vaultKeys = {
+        classical: backup.keys || { privateKey: '', passphrase: '' },
+        pq: pqKeys || null,
+      };
+
+      // Build trust graph from contacts
+      const trustGraph = {
+        edges: backup.contacts.map((c: any) => ({
+          source: fingerprint,
+          target: c.fingerprint,
+          trust_level: c.trust_level || 'unverified',
+          added_at: c.added_at,
+          metadata: { name: c.name, email: c.email, public_key: c.public_key, ...c.metadata },
+        })),
+        contacts: backup.contacts,
+      };
+
+      // Pack into vault format
       const { createVaultContents, packVault, downloadVault } = await import('@/lib/sync/vault');
-      const contents = createVaultContents(data.identity, data.keys, data.trustGraph, data.settings, data.recovery);
+      const contents = createVaultContents(
+        vaultIdentity,
+        vaultKeys,
+        trustGraph,
+        { safeWord: '' },
+        vaultData || null,
+      );
       const passphrase = prompt('Enter a passphrase to encrypt your vault.\nThis protects your private keys, contacts, and trust network.\n\nChoose something strong — you will need it to restore.');
       if (!passphrase) { setVaultExporting(false); return; }
       const packed = await packVault(contents, passphrase);
@@ -372,16 +456,29 @@ export function ContactManagement({ identity }: ContactsProps) {
     try {
       setLoading(true);
       setImportError(null);
-      await apiCall('/api/contacts/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fingerprint, contactsData: importData, overwrite: false }),
-      });
+      const parsed = JSON.parse(importData);
+      const contactList = Array.isArray(parsed) ? parsed : (parsed.contacts || []);
+      for (const c of contactList) {
+        if (c.fingerprint && c.public_key) {
+          await addContact(fingerprint, {
+            name: c.name || c.display_name || 'Unknown',
+            email: c.email || '',
+            fingerprint: c.fingerprint,
+            public_key: c.public_key,
+            trust_level: c.trust_level || 'unverified',
+            metadata: c.metadata,
+          });
+        }
+      }
       setImportData('');
       setShowImportDialog(false);
       await loadContacts();
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Failed to import');
+      if (err instanceof SyntaxError) {
+        setImportError('Invalid JSON format');
+      } else {
+        setImportError(err instanceof Error ? err.message : 'Failed to import');
+      }
     } finally {
       setLoading(false);
     }
@@ -392,8 +489,9 @@ export function ContactManagement({ identity }: ContactsProps) {
     try {
       setLoading(true);
       setError(null);
-      const data = await apiCall(`/api/contacts/export?fingerprint=${fingerprint}`);
-      const blob = new Blob([data.contacts], { type: 'application/json' });
+      const records = await getAllContacts(fingerprint);
+      const exportData = JSON.stringify({ contacts: records, exported_at: new Date().toISOString() }, null, 2);
+      const blob = new Blob([exportData], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -401,6 +499,7 @@ export function ContactManagement({ identity }: ContactsProps) {
       document.body.appendChild(a);
       a.click();
       a.remove();
+      URL.revokeObjectURL(url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to export');
     } finally {
@@ -598,6 +697,22 @@ export function ContactManagement({ identity }: ContactsProps) {
             {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
             <div className="space-y-4 py-4">
               <div className="space-y-1.5">
+                <label className="text-sm font-medium">Look up by URL</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={lookupInput}
+                    onChange={e => setLookupInput(e.target.value)}
+                    placeholder="svrnty.is/name or slug"
+                    onKeyDown={e => e.key === 'Enter' && handleLookup()}
+                  />
+                  <Button variant="outline" onClick={handleLookup} disabled={lookupLoading || !lookupInput.trim()}>
+                    {lookupLoading ? 'Looking up...' : 'Lookup'}
+                  </Button>
+                </div>
+                {lookupMessage && <p className="text-xs text-green-500">{lookupMessage}</p>}
+                <p className="text-xs text-muted-foreground">Or fill in manually below</p>
+              </div>
+              <div className="space-y-1.5">
                 <label htmlFor="name" className="text-sm font-medium">Name</label>
                 <Input id="name" value={newContactForm.name} onChange={e => setNewContactForm(p => ({ ...p, name: e.target.value }))} placeholder="Contact name" />
               </div>
@@ -616,7 +731,7 @@ export function ContactManagement({ identity }: ContactsProps) {
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowAddDialog(false)}>Cancel</Button>
-              <Button onClick={handleAddContact} disabled={loading || !newContactForm.name || !newContactForm.email || !newContactForm.fingerprint || !newContactForm.public_key}>
+              <Button onClick={handleAddContact} disabled={loading || !newContactForm.name || !newContactForm.fingerprint}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Adding...</> : <><UserPlus className="h-4 w-4 mr-2" />Add as Known</>}
               </Button>
             </DialogFooter>

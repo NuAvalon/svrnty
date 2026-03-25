@@ -67,7 +67,7 @@ export function SecureExportDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [includePublicKeys, setIncludePublicKeys] = useState(true);
-  const [usePassword, setUsePassword] = useState(false);
+  const [usePassword, setUsePassword] = useState(true);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [exportedData, setExportedData] = useState<string | null>(null);
@@ -160,7 +160,7 @@ export function SecureExportDialog({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `svrnty-contacts-${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `svrnty-contacts-${new Date().toISOString().split('T')[0]}.svrnty`;
       document.body.appendChild(a);
       a.click();
       a.remove();

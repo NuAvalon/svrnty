@@ -228,6 +228,11 @@ export function SoverentityFrontend({
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showKeyExportDialog, setShowKeyExportDialog] = useState(false);
+  const [showFullBackupDialog, setShowFullBackupDialog] = useState(false);
+  const [fullBackupPassword, setFullBackupPassword] = useState('');
+  const [fullBackupConfirm, setFullBackupConfirm] = useState('');
+  const [fullBackupLoading, setFullBackupLoading] = useState(false);
+  const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
   const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
   const [claimSlug, setClaimSlug] = useState('');
@@ -280,8 +285,8 @@ export function SoverentityFrontend({
     setClaimStatus('checking');
     try {
       // Check availability
-      const checkRes = await fetch(`/slug/${slug}`);
-      if (checkRes.ok) { setClaimStatus('taken'); return; }
+      const checkRes = await fetch(`/slug/${slug}`); const checkData = await checkRes.json();
+      if (checkRes.ok && !checkData.available) { setClaimStatus('taken'); return; }
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
       const pk = identity?.identity?.publicKey;
@@ -393,43 +398,199 @@ export function SoverentityFrontend({
     setRestoreError(null);
 
     try {
-      // Read the unencrypted header to show safe word
-      const arrayBuffer = await file.arrayBuffer();
+      // JSON-based backups (.json or .svrnty that are JSON inside)
+      if (file.name.endsWith('.json') || file.name.endsWith('.svrnty')) {
+        const text = await file.text();
+        let data: any;
+        try { data = JSON.parse(text); } catch { data = null; }
 
-      // Dynamically import vault module (client-side only)
+        if (data) {
+          const isFullBackupEncrypted = data.type === 'svrnty-full-backup';
+          const isKeysOnly = data.type === 'svrnty-keys';
+          const isContactsOnly = !!(data.owner_fingerprint && data.contacts && !data.identity);
+          const fp = data.identity?.identity?.fingerprint || data.owner_fingerprint || data.fingerprint || data.fingerprint_hint || '';
+
+          let format = 'json-backup';
+          if (isFullBackupEncrypted) format = 'json-full-encrypted';
+          else if (isKeysOnly) format = 'json-keys-encrypted';
+
+          const displayName = isFullBackupEncrypted
+            ? 'Full backup (encrypted — password required)'
+            : data.identity?.identity?.name
+              || data.identity?.identity?.display_name
+              || (isContactsOnly ? `Contacts backup (${data.contacts?.length || 0} contacts)` : '')
+              || (isKeysOnly ? 'Key backup (encrypted — password required)' : '')
+              || 'Backup';
+
+          setVaultHeader({
+            format,
+            displayName,
+            fingerprintHint: (typeof fp === 'string' ? fp.slice(-8) : '') || '??',
+            _jsonData: data,
+          });
+          setGateMode('restore-verify');
+          return;
+        }
+        // If not valid JSON but .svrnty, fall through to vault binary reader
+        if (file.name.endsWith('.json')) {
+          setRestoreError('Could not parse JSON file.');
+          return;
+        }
+      }
+
+      // .svrnty vault — read unencrypted header
+      const arrayBuffer = await file.arrayBuffer();
       const { readVaultHeader } = await import('@/lib/sync/vault');
       const header = readVaultHeader(arrayBuffer);
       setVaultHeader(header);
       setGateMode('restore-verify');
     } catch (err) {
       setRestoreError(
-        err instanceof Error ? err.message : 'Could not read vault file. Is this a valid .svrnty file?'
+        err instanceof Error ? err.message : 'Could not read file. Accepts .svrnty or .json backups.'
       );
     }
   };
 
   const handleVaultRestore = async () => {
-    if (!vaultFile || !vaultPassphrase) return;
+    if (!vaultFile) return;
 
     try {
       setRestoreLoading(true);
       setRestoreError(null);
 
-      const arrayBuffer = await vaultFile.arrayBuffer();
-      const { unpackVault } = await import('@/lib/sync/vault');
-      const { contents } = await unpackVault(arrayBuffer, vaultPassphrase);
+      // JSON backup path (plain, encrypted keys, or encrypted full backup)
+      if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
+        const data = vaultHeader._jsonData;
+        const { importAll, storeIdentity, storeKey, addContact, setActiveFingerprint, loadIdentity } = await import('@/lib/identity/client-store');
 
-      // Set identity from vault
-      setIdentity(contents.identity);
-      onIdentityUpdate?.(contents.identity);
-      onVaultRestore?.(contents);
+        // Detect format and normalize
+        if (data.type === 'svrnty-full-backup') {
+          // Encrypted full backup — decrypt first, then import
+          if (!vaultPassphrase) {
+            setRestoreError('Enter your backup password to decrypt.');
+            return;
+          }
+          const fromBase64 = (b64: string) => {
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return bytes;
+          };
+          const enc = new TextEncoder();
+          const salt = fromBase64(data.salt);
+          const iv = fromBase64(data.iv);
+          const encrypted = fromBase64(data.data);
+          const keyMaterial = await crypto.subtle.importKey(
+            'raw', enc.encode(vaultPassphrase), 'PBKDF2', false, ['deriveKey']
+          );
+          const derivedKey = await crypto.subtle.deriveKey(
+            { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
+            keyMaterial,
+            { name: 'AES-GCM', length: 256 },
+            false,
+            ['decrypt']
+          );
+          const decrypted = new Uint8Array(
+            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
+          );
+          const backup = JSON.parse(new TextDecoder().decode(decrypted));
+          await importAll(backup);
+          setIdentity(backup.identity);
+          onIdentityUpdate?.(backup.identity);
+        } else if (data.identity?.identity?.fingerprint) {
+          // SovereignBackup format (from exportAll) — pass directly
+          await importAll(data);
+          setIdentity(data.identity);
+          onIdentityUpdate?.(data.identity);
+        } else if (data.owner_fingerprint && data.contacts) {
+          // SecureExportDialog format — contacts only, no identity
+          // Import contacts into existing identity or create stub
+          const fp = data.owner_fingerprint;
+          for (const contact of data.contacts) {
+            await addContact(fp, {
+              fingerprint: contact.fingerprint || '',
+              name: contact.name || '',
+              email: contact.email || '',
+              public_key: contact.public_key || '',
+              trust_level: contact.trust_level || 'unknown',
+            });
+          }
+          await setActiveFingerprint(fp);
+          const existingIdentity = await loadIdentity(fp);
+          if (existingIdentity) {
+            setIdentity(existingIdentity);
+            onIdentityUpdate?.(existingIdentity);
+          }
+        } else if (data.type === 'svrnty-keys' && data.fingerprint) {
+          // PrivateKeyExportDialog format — encrypted keys, need passphrase to decrypt
+          if (!vaultPassphrase) {
+            setRestoreError('This is an encrypted key backup. Enter your password above to decrypt it.');
+            return;
+          }
+          // Decrypt the key data
+          const fromBase64 = (b64: string) => {
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return bytes;
+          };
+          const enc = new TextEncoder();
+          const salt = fromBase64(data.salt);
+          const iv = fromBase64(data.iv);
+          const encrypted = fromBase64(data.data);
+          const keyMaterial = await crypto.subtle.importKey(
+            'raw', enc.encode(vaultPassphrase), 'PBKDF2', false, ['deriveKey']
+          );
+          const derivedKey = await crypto.subtle.deriveKey(
+            { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
+            keyMaterial,
+            { name: 'AES-GCM', length: 256 },
+            false,
+            ['decrypt']
+          );
+          const decrypted = new Uint8Array(
+            await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
+          );
+          const keyData = JSON.parse(new TextDecoder().decode(decrypted));
+          // Store key in IndexedDB
+          const fp = keyData.fingerprint || data.fingerprint;
+          if (keyData.privateKey) {
+            await storeKey(fp, keyData.privateKey, keyData.passphrase || '');
+          }
+          await setActiveFingerprint(fp);
+          const existingIdentity = await loadIdentity(fp);
+          if (existingIdentity) {
+            setIdentity(existingIdentity);
+            onIdentityUpdate?.(existingIdentity);
+          }
+        } else if (data.fingerprint && (data.public_key || data.identity)) {
+          // Raw identity object — wrap and import
+          const fp = data.fingerprint;
+          const wrappedIdentity = data.identity ? { identity: data } : { identity: { fingerprint: fp, ...data } };
+          await storeIdentity(fp, wrappedIdentity);
+          await setActiveFingerprint(fp);
+          setIdentity(wrappedIdentity);
+          onIdentityUpdate?.(wrappedIdentity);
+        } else {
+          throw new Error('Unrecognized backup format. Expected a sovereign backup, contacts export, or identity file.');
+        }
+      } else {
+        // .svrnty vault path — needs passphrase
+        if (!vaultPassphrase) return;
+        const arrayBuffer = await vaultFile.arrayBuffer();
+        const { unpackVault } = await import('@/lib/sync/vault');
+        const { contents } = await unpackVault(arrayBuffer, vaultPassphrase);
+        setIdentity(contents.identity);
+        onIdentityUpdate?.(contents.identity);
+        onVaultRestore?.(contents);
+      }
     } catch (err) {
       setRestoreError(
         err instanceof Error
           ? err.message.includes('decrypt')
             ? 'Wrong passphrase. Check your spelling and try again.'
             : err.message
-          : 'Failed to restore vault'
+          : 'Failed to restore'
       );
     } finally {
       setRestoreLoading(false);
@@ -658,7 +819,7 @@ export function SoverentityFrontend({
             </div>
             <h2 style={s.heroTitle}>Open Your Vault</h2>
             <p style={s.heroSub}>
-              Upload your .svrnty vault file to restore your identity,
+              Upload your .svrnty vault or .json backup to restore your identity,
               contacts, and trust network on this device.
             </p>
           </div>
@@ -669,7 +830,7 @@ export function SoverentityFrontend({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".svrnty"
+            accept=".svrnty,.json"
             onChange={handleFileSelect}
             style={{ display: 'none' }}
           />
@@ -683,7 +844,7 @@ export function SoverentityFrontend({
               <polyline points="17 8 12 3 7 8" />
               <line x1="12" y1="3" x2="12" y2="15" />
             </svg>
-            <span>Choose vault file (.svrnty)</span>
+            <span>Choose file (.svrnty or .json)</span>
           </button>
 
           {vaultFile && (
@@ -763,6 +924,59 @@ export function SoverentityFrontend({
 
           {restoreError && <div style={s.error}>{restoreError}</div>}
 
+          {/* JSON backup — show passphrase for encrypted keys, skip for plaintext */}
+          {vaultHeader?.format === 'json-backup' ? (
+            <div style={s.trustWarning}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <div>
+                <strong style={{ color: '#c8a84e', fontSize: '12px' }}>JSON backup detected — not encrypted.</strong>
+                <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                  This file contains your identity data in plaintext. It will be imported directly into your browser's local storage.
+                </p>
+              </div>
+            </div>
+          ) : (vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') ? (
+            <>
+            <div style={s.trustWarning}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              <div>
+                <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Encrypted key backup detected.</strong>
+                <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                  Enter the password you used when exporting to decrypt your private keys.
+                </p>
+              </div>
+            </div>
+            <div style={s.field}>
+              <label style={s.label}>DECRYPTION PASSWORD</label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showPassphrase ? 'text' : 'password'}
+                  placeholder="Enter your export password"
+                  value={vaultPassphrase}
+                  onChange={e => setVaultPassphrase(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
+                  style={s.input}
+                  autoFocus
+                />
+                <button
+                  onClick={() => setShowPassphrase(!showPassphrase)}
+                  style={s.eyeBtn}
+                >
+                  {showPassphrase ? '🙈' : '👁'}
+                </button>
+              </div>
+            </div>
+            </>
+          ) : (
+          <>
           {/* Trust Warning */}
           <div style={s.trustWarning}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
@@ -833,6 +1047,34 @@ export function SoverentityFrontend({
             Decryption happens locally in your browser.
             <br />Your passphrase never leaves this device.
           </p>
+          </>
+          )}
+
+          {/* JSON restore button (no passphrase needed) */}
+          {vaultHeader?.format === 'json-backup' && (
+            <>
+            <button
+              onClick={handleVaultRestore}
+              disabled={restoreLoading}
+              style={{
+                ...s.restoreBtn,
+                opacity: restoreLoading ? 0.5 : 1,
+              }}
+            >
+              {restoreLoading ? (
+                <span style={s.btnInner}>
+                  <Spinner /> Restoring...
+                </span>
+              ) : (
+                <span style={s.btnInner}>Restore from Backup</span>
+              )}
+            </button>
+
+            <p style={s.footer}>
+              Your backup will be imported into this browser's local storage.
+            </p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -964,41 +1206,166 @@ export function SoverentityFrontend({
 
         {/* Export / Backup Section */}
         {identity && (
-          <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px' }}>
             <button
-              onClick={() => setShowKeyExportDialog(true)}
+              onClick={() => { setShowFullBackupDialog(true); setFullBackupPassword(''); setFullBackupConfirm(''); setFullBackupError(null); }}
               style={{
                 ...s.outlineBtn,
-                flex: 1,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
+                background: 'rgba(106, 154, 106, 0.1)',
+                borderColor: '#6a9a6a',
               }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
-              Download Keys
+              Full Backup (Encrypted)
             </button>
-            <button
-              onClick={() => setShowExportDialog(true)}
-              style={{
-                ...s.outlineBtn,
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              Export Contacts
-            </button>
+            {showFullBackupDialog && (
+              <div style={{ background: 'rgba(15,15,25,0.95)', border: '1px solid rgba(180,160,100,0.2)', borderRadius: '8px', padding: '16px', marginTop: '8px' }}>
+                <p style={{ color: '#c8a84e', fontSize: '12px', fontWeight: 600, marginBottom: '8px' }}>
+                  🔒 Encrypt your backup with a password
+                </p>
+                <p style={{ color: '#8a8070', fontSize: '11px', marginBottom: '12px', lineHeight: '1.5' }}>
+                  Your private keys will be encrypted with AES-256-GCM. Without this password, the backup cannot be restored.
+                </p>
+                <input
+                  type="password"
+                  placeholder="Password (min 8 characters)"
+                  value={fullBackupPassword}
+                  onChange={e => setFullBackupPassword(e.target.value)}
+                  style={{ ...s.input, marginBottom: '8px' }}
+                  autoFocus
+                />
+                <input
+                  type="password"
+                  placeholder="Confirm password"
+                  value={fullBackupConfirm}
+                  onChange={e => setFullBackupConfirm(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && fullBackupPassword.length >= 8 && fullBackupPassword === fullBackupConfirm) document.getElementById('fullBackupBtn')?.click(); }}
+                  style={s.input}
+                />
+                {fullBackupConfirm && fullBackupPassword !== fullBackupConfirm && (
+                  <p style={{ color: '#c85a4e', fontSize: '11px', marginTop: '4px' }}>Passwords do not match</p>
+                )}
+                {fullBackupError && (
+                  <p style={{ color: '#c85a4e', fontSize: '11px', marginTop: '4px' }}>{fullBackupError}</p>
+                )}
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <button
+                    onClick={() => setShowFullBackupDialog(false)}
+                    style={{ ...s.outlineBtn, flex: 1, fontSize: '12px' }}
+                  >Cancel</button>
+                  <button
+                    id="fullBackupBtn"
+                    disabled={fullBackupLoading || fullBackupPassword.length < 8 || fullBackupPassword !== fullBackupConfirm}
+                    onClick={async () => {
+                      try {
+                        setFullBackupLoading(true);
+                        setFullBackupError(null);
+                        const { exportAll } = await import('@/lib/identity/client-store');
+                        const fp = identity.identity?.fingerprint;
+                        if (!fp) return;
+                        const backup = await exportAll(fp, true);
+                        const json = JSON.stringify(backup);
+
+                        // Encrypt with AES-256-GCM
+                        const enc = new TextEncoder();
+                        const salt = crypto.getRandomValues(new Uint8Array(16));
+                        const iv = crypto.getRandomValues(new Uint8Array(12));
+                        const keyMaterial = await crypto.subtle.importKey(
+                          'raw', enc.encode(fullBackupPassword), 'PBKDF2', false, ['deriveKey']
+                        );
+                        const derivedKey = await crypto.subtle.deriveKey(
+                          { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
+                          keyMaterial,
+                          { name: 'AES-GCM', length: 256 },
+                          false,
+                          ['encrypt']
+                        );
+                        const encrypted = new Uint8Array(
+                          await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, enc.encode(json))
+                        );
+                        const toB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+                        const result = JSON.stringify({
+                          type: 'svrnty-full-backup',
+                          version: '1.0',
+                          algorithm: 'AES-256-GCM',
+                          kdf: 'PBKDF2-SHA256-100k',
+                          salt: toB64(salt),
+                          iv: toB64(iv),
+                          data: toB64(encrypted),
+                          fingerprint_hint: fp.slice(-8),
+                          exported_at: new Date().toISOString(),
+                        }, null, 2);
+
+                        const blob = new Blob([result], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `svrnty-backup-${new Date().toISOString().split('T')[0]}.svrnty`;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                        setShowFullBackupDialog(false);
+                      } catch (err) {
+                        setFullBackupError(err instanceof Error ? err.message : 'Backup failed');
+                      } finally {
+                        setFullBackupLoading(false);
+                      }
+                    }}
+                    style={{
+                      ...s.primaryBtn,
+                      flex: 1,
+                      fontSize: '12px',
+                      opacity: (fullBackupLoading || fullBackupPassword.length < 8 || fullBackupPassword !== fullBackupConfirm) ? 0.5 : 1,
+                    }}
+                  >
+                    {fullBackupLoading ? 'Encrypting...' : '🔒 Download Encrypted Backup'}
+                  </button>
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button
+                onClick={() => setShowKeyExportDialog(true)}
+                style={{
+                  ...s.outlineBtn,
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                </svg>
+                Download Keys
+              </button>
+              <button
+                onClick={() => setShowExportDialog(true)}
+                style={{
+                  ...s.outlineBtn,
+                  flex: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Export Contacts
+              </button>
+            </div>
           </div>
         )}
 

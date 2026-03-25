@@ -7,12 +7,22 @@ export async function GET(
 ) {
   const { name } = await params;
   try {
-    const res = await fetch(
-      `http://registration:8000/slug/${encodeURIComponent(name)}`,
+    // First check if slug is claimed
+    const slugRes = await fetch(
+      `http://registration:8101/slug/${encodeURIComponent(name)}`,
       { cache: 'no-store' }
     );
-    if (res.ok) {
-      return NextResponse.json(await res.json());
+    if (!slugRes.ok) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    const slugData = await slugRes.json();
+    if (slugData.available) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+    // Slug is claimed — get full identity
+    const idRes = await fetch(
+      `http://registration:8101/u/${encodeURIComponent(name)}`,
+      { cache: 'no-store' }
+    );
+    if (idRes.ok) {
+      return NextResponse.json(await idRes.json());
     }
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   } catch {
