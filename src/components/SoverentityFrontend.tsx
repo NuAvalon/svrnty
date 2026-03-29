@@ -495,11 +495,39 @@ export function SoverentityFrontend({
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
           await importAll(backup);
+
+          // PQ migration: if v1 backup lacks PQ keys, generate them now
+          if (!backup.pq_keys && !backup.identity?.post_quantum) {
+            const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
+            const { storePQKeys } = await import('@/lib/identity/client-store');
+            const pqBundle = generatePQKeypairBundle();
+            const serialized = serializeKeypairBundle(pqBundle);
+            const fp = backup.identity?.identity?.fingerprint;
+            if (fp) {
+              await storePQKeys(fp, serialized);
+              console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', fp.slice(-8));
+            }
+          }
+
           setIdentity(backup.identity);
           onIdentityUpdate?.(backup.identity);
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
           await importAll(data);
+
+          // PQ migration for unencrypted v1 backups too
+          if (!data.pq_keys && !data.identity?.post_quantum) {
+            const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
+            const { storePQKeys } = await import('@/lib/identity/client-store');
+            const pqBundle = generatePQKeypairBundle();
+            const serialized = serializeKeypairBundle(pqBundle);
+            const fp = data.identity?.identity?.fingerprint;
+            if (fp) {
+              await storePQKeys(fp, serialized);
+              console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', fp.slice(-8));
+            }
+          }
+
           setIdentity(data.identity);
           onIdentityUpdate?.(data.identity);
         } else if (data.owner_fingerprint && data.contacts) {
