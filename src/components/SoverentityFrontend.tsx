@@ -499,10 +499,8 @@ export function SoverentityFrontend({
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
           await importAll(backup);
-          setIdentity(backup.identity);
-          onIdentityUpdate?.(backup.identity);
 
-          // PQ migration: if v1 backup lacks PQ keys, prompt user
+          // PQ migration: check BEFORE setting identity (setIdentity triggers parent re-render)
           if (!backup.pq_keys && !backup.identity?.post_quantum) {
             const fp = backup.identity?.identity?.fingerprint;
             if (fp) {
@@ -511,13 +509,14 @@ export function SoverentityFrontend({
               return;
             }
           }
+
+          setIdentity(backup.identity);
+          onIdentityUpdate?.(backup.identity);
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
           await importAll(data);
-          setIdentity(data.identity);
-          onIdentityUpdate?.(data.identity);
 
-          // PQ migration prompt for unencrypted v1 backups too
+          // PQ migration: check BEFORE setting identity
           if (!data.pq_keys && !data.identity?.post_quantum) {
             const fp = data.identity?.identity?.fingerprint;
             if (fp) {
@@ -526,6 +525,9 @@ export function SoverentityFrontend({
               return;
             }
           }
+
+          setIdentity(data.identity);
+          onIdentityUpdate?.(data.identity);
         } else if (data.owner_fingerprint && data.contacts) {
           // SecureExportDialog format — contacts only, no identity
           // Import contacts into existing identity or create stub
@@ -1115,11 +1117,15 @@ export function SoverentityFrontend({
         const serialized = serializeKeypairBundle(pqBundle);
         await storePQKeys(pendingPqMigration.fingerprint, serialized);
         console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', pendingPqMigration.fingerprint.slice(-8));
+        setIdentity(pendingPqMigration.identity);
+        onIdentityUpdate?.(pendingPqMigration.identity);
         setPendingPqMigration(null);
         setGateMode('choose');
       } catch (err) {
         console.error('[svrnty] PQ migration failed:', err);
         setError('PQ key generation failed. You can try again later from settings.');
+        setIdentity(pendingPqMigration.identity);
+        onIdentityUpdate?.(pendingPqMigration.identity);
         setPendingPqMigration(null);
         setGateMode('choose');
       } finally {
@@ -1128,6 +1134,8 @@ export function SoverentityFrontend({
     };
 
     const handlePqSkip = () => {
+      setIdentity(pendingPqMigration.identity);
+      onIdentityUpdate?.(pendingPqMigration.identity);
       setPendingPqMigration(null);
       setGateMode('choose');
     };
