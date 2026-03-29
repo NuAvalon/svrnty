@@ -511,12 +511,12 @@ export function SoverentityFrontend({
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
           await importAll(backup);
 
-          // PQ migration: check BEFORE setting identity (setIdentity triggers parent re-render)
-          console.log('[svrnty] PQ check:', { hasPqKeys: !!backup.pq_keys, hasPostQuantum: !!backup.identity?.post_quantum, fp: backup.identity?.identity?.fingerprint });
-          if (!backup.pq_keys && !backup.identity?.post_quantum) {
+          // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
+          console.log('[svrnty] PQ check:', { hasPqKeysInBackup: !!backup.pq_keys, hasPostQuantumPubkeys: !!backup.identity?.post_quantum, fp: backup.identity?.identity?.fingerprint });
+          if (!backup.pq_keys) {
             const fp = backup.identity?.identity?.fingerprint;
             if (fp) {
-              console.log('[svrnty] PQ migration needed — showing prompt for', fp.slice(-8));
+              console.log('[svrnty] PQ private keys missing from backup — showing migration prompt for', fp.slice(-8));
               setPendingPqMigration({ fingerprint: fp, identity: backup.identity });
               setGateMode('pq-migrate');
               return;
@@ -529,8 +529,8 @@ export function SoverentityFrontend({
           // SovereignBackup format (from exportAll) — pass directly
           await importAll(data);
 
-          // PQ migration: check BEFORE setting identity
-          if (!data.pq_keys && !data.identity?.post_quantum) {
+          // PQ migration: check for missing PRIVATE PQ keys
+          if (!data.pq_keys) {
             const fp = data.identity?.identity?.fingerprint;
             if (fp) {
               setPendingPqMigration({ fingerprint: fp, identity: data.identity });
@@ -1161,7 +1161,7 @@ export function SoverentityFrontend({
         <div style={s.createPanel}>
           <h2 style={s.title}>Identity Restored</h2>
           <p style={{ ...s.subtitle, marginBottom: 16 }}>
-            Your identity was created before post-quantum cryptography was available.
+            Your backup does not include post-quantum private keys.
           </p>
 
           <div style={{
@@ -1174,14 +1174,17 @@ export function SoverentityFrontend({
             lineHeight: 1.6,
             color: 'rgba(255,255,255,0.85)',
           }}>
-            <strong style={{ color: 'rgba(255, 200, 50, 0.9)' }}>Why upgrade?</strong><br />
-            Current quantum computers can't break your Ed25519 keys yet, but that may change.
-            Adding ML-DSA-65 and ML-KEM-768 keys now means your identity is protected
-            against future quantum attacks — without replacing your existing keys.
+            <strong style={{ color: 'rgba(255, 200, 50, 0.9)' }}>What happened?</strong><br />
+            Your identity has post-quantum public keys (ML-DSA-65, ML-KEM-768), but the
+            private keys weren't included in this backup. Without them, post-quantum
+            signing and encryption won't work.
             <br /><br />
-            <strong>What happens:</strong> Two new keypairs are generated locally in your browser.
-            Your existing Ed25519 identity and fingerprint stay the same.
-            Nothing leaves this device.
+            <strong>Regenerate:</strong> New PQ keypairs are generated locally in your browser.
+            Your Ed25519 identity and fingerprint stay the same. The old PQ public keys
+            will be replaced — anyone who cached them will need your updated keys.
+            <br /><br />
+            <strong>Skip:</strong> Your identity works fine with Ed25519 only.
+            You can regenerate PQ keys later from settings.
           </div>
 
           <button
