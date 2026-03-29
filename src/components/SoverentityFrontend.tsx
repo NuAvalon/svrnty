@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys } from '@/lib/identity/client-store';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -228,6 +228,7 @@ export function SoverentityFrontend({
   // PQ migration state (shown after v1 import)
   const [pendingPqMigration, setPendingPqMigration] = useState<{ fingerprint: string; identity: any } | null>(null);
   const [pqMigrating, setPqMigrating] = useState(false);
+  const [hasPqKeys, setHasPqKeys] = useState(false);
 
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -260,6 +261,16 @@ export function SoverentityFrontend({
       }));
     }
   }, [existingIdentity]);
+
+  // Check for PQ keys when identity loads
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint;
+    if (fp) {
+      loadPQKeys(fp).then(pq => setHasPqKeys(!!pq));
+    } else {
+      setHasPqKeys(false);
+    }
+  }, [identity]);
 
   const handleSetPassphrase = async () => {
     if (newPassphrase !== confirmPassphrase) {
@@ -1117,6 +1128,7 @@ export function SoverentityFrontend({
         const serialized = serializeKeypairBundle(pqBundle);
         await storePQKeys(pendingPqMigration.fingerprint, serialized);
         console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', pendingPqMigration.fingerprint.slice(-8));
+        setHasPqKeys(true);
         setIdentity(pendingPqMigration.identity);
         onIdentityUpdate?.(pendingPqMigration.identity);
         setPendingPqMigration(null);
@@ -1242,9 +1254,9 @@ export function SoverentityFrontend({
 
           <div style={s.cryptoTags}>
             <span style={s.tag}>ED25519</span>
-            <span style={s.tag}>ML-DSA-65</span>
+            {hasPqKeys && <span style={s.tag}>ML-DSA-65</span>}
             <span style={s.tag}>Curve25519</span>
-            <span style={s.tag}>ML-KEM-768</span>
+            {hasPqKeys && <span style={s.tag}>ML-KEM-768</span>}
           </div>
         </div>
 
