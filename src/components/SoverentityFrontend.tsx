@@ -512,9 +512,11 @@ export function SoverentityFrontend({
           await importAll(backup);
 
           // PQ migration: check BEFORE setting identity (setIdentity triggers parent re-render)
+          console.log('[svrnty] PQ check:', { hasPqKeys: !!backup.pq_keys, hasPostQuantum: !!backup.identity?.post_quantum, fp: backup.identity?.identity?.fingerprint });
           if (!backup.pq_keys && !backup.identity?.post_quantum) {
             const fp = backup.identity?.identity?.fingerprint;
             if (fp) {
+              console.log('[svrnty] PQ migration needed — showing prompt for', fp.slice(-8));
               setPendingPqMigration({ fingerprint: fp, identity: backup.identity });
               setGateMode('pq-migrate');
               return;
@@ -1118,7 +1120,9 @@ export function SoverentityFrontend({
   }
 
   // --- Gate: PQ Migration (shown after v1 import) ---
+  console.log('[svrnty] Gate check:', { gateMode, hasPendingPq: !!pendingPqMigration, hasIdentity: !!identity });
   if (gateMode === 'pq-migrate' && pendingPqMigration) {
+    console.log('[svrnty] RENDERING PQ MIGRATION GATE');
     const handlePqUpgrade = async () => {
       setPqMigrating(true);
       try {
