@@ -5,7 +5,7 @@ import type { NextRequest } from 'next/server';
 // Routes that should NOT be rewritten to profile pages
 const RESERVED = new Set([
   '_next', 'api', 'c', 'u', 'favicon.ico', 'icon-192.svg',
-  'manifest.json', 'sw.js', 'health',
+  'manifest.json', 'sw.js', 'health', 'register', 'slug',
 ]);
 
 export function middleware(request: NextRequest) {

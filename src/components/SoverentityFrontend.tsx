@@ -272,6 +272,16 @@ export function SoverentityFrontend({
     }
   }, [identity]);
 
+  // Restore claimed URL from registration service on identity load
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint;
+    if (fp && !claimedUrl) {
+      fetch(`/identity/${fp}`).then(r => r.ok ? r.json() : null).then(data => {
+        if (data?.slug) setClaimedUrl(`svrnty.is/${data.slug}`);
+      }).catch(() => {});
+    }
+  }, [identity]);
+
   const handleSetPassphrase = async () => {
     if (newPassphrase !== confirmPassphrase) {
       setPassphraseError('Passphrases do not match');
@@ -512,11 +522,9 @@ export function SoverentityFrontend({
           await importAll(backup);
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
-          console.log('[svrnty] PQ check:', { hasPqKeysInBackup: !!backup.pq_keys, hasPostQuantumPubkeys: !!backup.identity?.post_quantum, fp: backup.identity?.identity?.fingerprint });
           if (!backup.pq_keys) {
             const fp = backup.identity?.identity?.fingerprint;
             if (fp) {
-              console.log('[svrnty] PQ private keys missing from backup — showing migration prompt for', fp.slice(-8));
               setPendingPqMigration({ fingerprint: fp, identity: backup.identity });
               setGateMode('pq-migrate');
               return;
@@ -1120,9 +1128,7 @@ export function SoverentityFrontend({
   }
 
   // --- Gate: PQ Migration (shown after v1 import) ---
-  console.log('[svrnty] Gate check:', { gateMode, hasPendingPq: !!pendingPqMigration, hasIdentity: !!identity });
   if (gateMode === 'pq-migrate' && pendingPqMigration) {
-    console.log('[svrnty] RENDERING PQ MIGRATION GATE');
     const handlePqUpgrade = async () => {
       setPqMigrating(true);
       try {
