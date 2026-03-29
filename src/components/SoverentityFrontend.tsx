@@ -11,7 +11,7 @@ interface SoverentityFrontendProps {
   onVaultRestore?: (contents: any) => void;
 }
 
-type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify';
+type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate';
 
 // --- Constellation Background ---
 // Generates fixed node positions once (via useMemo) and animates with CSS.
@@ -224,6 +224,10 @@ export function SoverentityFrontend({
   const [vaultFile, setVaultFile] = useState<File | null>(null);
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
+
+  // PQ migration state (shown after v1 import)
+  const [pendingPqMigration, setPendingPqMigration] = useState<{ fingerprint: string; identity: any } | null>(null);
+  const [pqMigrating, setPqMigrating] = useState(false);
 
   // Export dialog state
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -495,41 +499,33 @@ export function SoverentityFrontend({
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
           await importAll(backup);
-
-          // PQ migration: if v1 backup lacks PQ keys, generate them now
-          if (!backup.pq_keys && !backup.identity?.post_quantum) {
-            const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
-            const { storePQKeys } = await import('@/lib/identity/client-store');
-            const pqBundle = generatePQKeypairBundle();
-            const serialized = serializeKeypairBundle(pqBundle);
-            const fp = backup.identity?.identity?.fingerprint;
-            if (fp) {
-              await storePQKeys(fp, serialized);
-              console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', fp.slice(-8));
-            }
-          }
-
           setIdentity(backup.identity);
           onIdentityUpdate?.(backup.identity);
+
+          // PQ migration: if v1 backup lacks PQ keys, prompt user
+          if (!backup.pq_keys && !backup.identity?.post_quantum) {
+            const fp = backup.identity?.identity?.fingerprint;
+            if (fp) {
+              setPendingPqMigration({ fingerprint: fp, identity: backup.identity });
+              setGateMode('pq-migrate');
+              return;
+            }
+          }
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
           await importAll(data);
-
-          // PQ migration for unencrypted v1 backups too
-          if (!data.pq_keys && !data.identity?.post_quantum) {
-            const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
-            const { storePQKeys } = await import('@/lib/identity/client-store');
-            const pqBundle = generatePQKeypairBundle();
-            const serialized = serializeKeypairBundle(pqBundle);
-            const fp = data.identity?.identity?.fingerprint;
-            if (fp) {
-              await storePQKeys(fp, serialized);
-              console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', fp.slice(-8));
-            }
-          }
-
           setIdentity(data.identity);
           onIdentityUpdate?.(data.identity);
+
+          // PQ migration prompt for unencrypted v1 backups too
+          if (!data.pq_keys && !data.identity?.post_quantum) {
+            const fp = data.identity?.identity?.fingerprint;
+            if (fp) {
+              setPendingPqMigration({ fingerprint: fp, identity: data.identity });
+              setGateMode('pq-migrate');
+              return;
+            }
+          }
         } else if (data.owner_fingerprint && data.contacts) {
           // SecureExportDialog format — contacts only, no identity
           // Import contacts into existing identity or create stub
@@ -1103,6 +1099,99 @@ export function SoverentityFrontend({
             </p>
             </>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // --- Gate: PQ Migration (shown after v1 import) ---
+  if (gateMode === 'pq-migrate' && pendingPqMigration) {
+    const handlePqUpgrade = async () => {
+      setPqMigrating(true);
+      try {
+        const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
+        const { storePQKeys } = await import('@/lib/identity/client-store');
+        const pqBundle = generatePQKeypairBundle();
+        const serialized = serializeKeypairBundle(pqBundle);
+        await storePQKeys(pendingPqMigration.fingerprint, serialized);
+        console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', pendingPqMigration.fingerprint.slice(-8));
+        setPendingPqMigration(null);
+        setGateMode('choose');
+      } catch (err) {
+        console.error('[svrnty] PQ migration failed:', err);
+        setError('PQ key generation failed. You can try again later from settings.');
+        setPendingPqMigration(null);
+        setGateMode('choose');
+      } finally {
+        setPqMigrating(false);
+      }
+    };
+
+    const handlePqSkip = () => {
+      setPendingPqMigration(null);
+      setGateMode('choose');
+    };
+
+    return (
+      <div style={s.outerWrap}>
+        <div style={s.createPanel}>
+          <h2 style={s.title}>Identity Restored</h2>
+          <p style={{ ...s.subtitle, marginBottom: 16 }}>
+            Your identity was created before post-quantum cryptography was available.
+          </p>
+
+          <div style={{
+            background: 'rgba(255, 200, 50, 0.08)',
+            border: '1px solid rgba(255, 200, 50, 0.25)',
+            borderRadius: 8,
+            padding: 16,
+            marginBottom: 20,
+            fontSize: 14,
+            lineHeight: 1.6,
+            color: 'rgba(255,255,255,0.85)',
+          }}>
+            <strong style={{ color: 'rgba(255, 200, 50, 0.9)' }}>Why upgrade?</strong><br />
+            Current quantum computers can't break your Ed25519 keys yet, but that may change.
+            Adding ML-DSA-65 and ML-KEM-768 keys now means your identity is protected
+            against future quantum attacks — without replacing your existing keys.
+            <br /><br />
+            <strong>What happens:</strong> Two new keypairs are generated locally in your browser.
+            Your existing Ed25519 identity and fingerprint stay the same.
+            Nothing leaves this device.
+          </div>
+
+          <button
+            onClick={handlePqUpgrade}
+            disabled={pqMigrating}
+            style={{
+              ...s.restoreBtn,
+              opacity: pqMigrating ? 0.5 : 1,
+              marginBottom: 10,
+            }}
+          >
+            {pqMigrating ? (
+              <span style={s.btnInner}><Spinner /> Generating keys...</span>
+            ) : (
+              <span style={s.btnInner}>Upgrade to Post-Quantum</span>
+            )}
+          </button>
+
+          <button
+            onClick={handlePqSkip}
+            disabled={pqMigrating}
+            style={{
+              ...s.restoreBtn,
+              background: 'transparent',
+              border: '1px solid rgba(255,255,255,0.15)',
+              opacity: pqMigrating ? 0.5 : 1,
+            }}
+          >
+            <span style={s.btnInner}>Skip for now</span>
+          </button>
+
+          <p style={s.footer}>
+            You can upgrade later from your identity settings.
+          </p>
         </div>
       </div>
     );
