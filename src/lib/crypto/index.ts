@@ -35,6 +35,14 @@ export {
 } from './pq';
 
 export {
+  // Encrypted .svrnty file (Argon2id + AES-256-GCM)
+  encryptBackup,
+  decryptBackup,
+  isEncryptedSvrntyFile,
+  type EncryptedSvrntyFile,
+} from './encrypted-backup';
+
+export {
   // Key recovery (Shamir + seed phrase)
   createKeyVault,
   recoverFromShards,

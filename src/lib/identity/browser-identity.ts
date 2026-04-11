@@ -32,6 +32,12 @@ import {
   importAll,
   type SovereignBackup,
 } from './client-store';
+import {
+  encryptBackup,
+  decryptBackup,
+  isEncryptedSvrntyFile,
+  type EncryptedSvrntyFile,
+} from '@/lib/crypto/encrypted-backup';
 
 interface UserID {
   name: string;
@@ -254,6 +260,48 @@ export class BrowserIdentity {
 
   async importSovereignBackup(backup: SovereignBackup): Promise<string> {
     return importAll(backup);
+  }
+
+  // ── Encrypted .svrnty file operations ────────────────────────────
+
+  /**
+   * Export identity as an Argon2id-encrypted .svrnty file.
+   * This is the RECOMMENDED export path — private keys are never in plaintext.
+   */
+  async exportEncryptedBackup(
+    fingerprint: string,
+    passphrase: string,
+  ): Promise<EncryptedSvrntyFile> {
+    const backup = await exportAll(fingerprint, true);
+    return encryptBackup(backup, passphrase);
+  }
+
+  /**
+   * Import from an encrypted .svrnty file.
+   */
+  async importEncryptedBackup(
+    file: EncryptedSvrntyFile,
+    passphrase: string,
+  ): Promise<string> {
+    const backup = await decryptBackup(file, passphrase);
+    return importAll(backup);
+  }
+
+  /**
+   * Import from either encrypted or plaintext backup (auto-detect).
+   */
+  async importFromFile(fileContents: string, passphrase?: string): Promise<string> {
+    const parsed = JSON.parse(fileContents);
+
+    if (isEncryptedSvrntyFile(parsed)) {
+      if (!passphrase) {
+        throw new Error('This .svrnty file is encrypted — passphrase required');
+      }
+      return this.importEncryptedBackup(parsed, passphrase);
+    }
+
+    // Legacy plaintext backup
+    return importAll(parsed as SovereignBackup);
   }
 }
 
