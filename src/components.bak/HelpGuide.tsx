@@ -12,7 +12,7 @@ const steps = [
     title: 'Create Your Identity',
     content: [
       'Enter your name, email, and a strong passphrase.',
-      'This generates your cryptographic keys — ED25519 (classical) and ML-DSA-65 (post-quantum).',
+      'This generates your cryptographic keys — ED25519 (classical) and ML-DSA-87 (post-quantum).',
       'Your passphrase protects your private key. If you lose it, you lose your identity. There is no recovery email. There is no "forgot password."',
       'Write it down. Store it somewhere safe — not on your phone, not in a note app.',
     ],

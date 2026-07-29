@@ -60,9 +60,9 @@ export interface PrivateKeyBundle {
   classical_private_key: string;
   /** Passphrase for PGP key */
   classical_passphrase: string;
-  /** ML-DSA-65 secret key, base64 */
+  /** ML-DSA-87 secret key, base64 */
   pq_signing_secret_key: string;
-  /** ML-KEM-768 secret key, base64 */
+  /** ML-KEM-1024 secret key, base64 */
   pq_kem_secret_key: string;
 }
 

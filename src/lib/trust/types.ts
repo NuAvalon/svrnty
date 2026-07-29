@@ -47,8 +47,8 @@ export interface TrustEdge {
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys
-  peer_pq_sig_public_key?: string;      // ML-DSA-65, base64
-  peer_pq_kem_public_key?: string;      // ML-KEM-768, base64
+  peer_pq_sig_public_key?: string;      // ML-DSA-87, base64
+  peer_pq_kem_public_key?: string;      // ML-KEM-1024, base64
 }
 
 export interface VerifiedClaim {
@@ -127,7 +127,7 @@ export interface SignedSignal {
   to: string;                // recipient fingerprint
   timestamp: string;
   signature: string;         // ED25519 signature of payload+to+timestamp
-  pq_signature?: string;     // ML-DSA-65 signature (v0.2.0+)
+  pq_signature?: string;     // ML-DSA-87 signature (v0.2.0+)
 }
 
 // --- Groups / Tribes ---

@@ -368,7 +368,7 @@ export function SoverentityFrontend({
             </div>
 
             <p style={s.footer}>
-              ED25519 + ML-DSA-65 signing. Curve25519 + ML-KEM-768 encryption.
+              ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
               <br />Post-quantum. Zero-knowledge. Sovereign.
             </p>
           </div>
@@ -448,7 +448,7 @@ export function SoverentityFrontend({
           </button>
 
           <p style={s.footer}>
-            ED25519 + ML-DSA-65 signing. Curve25519 + ML-KEM-768 encryption.
+            ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
             <br />Your keys. Your data. Your sovereignty.
           </p>
         </div>
@@ -696,9 +696,9 @@ export function SoverentityFrontend({
 
           <div style={s.cryptoTags}>
             <span style={s.tag}>ED25519</span>
-            <span style={s.tag}>ML-DSA-65</span>
+            <span style={s.tag}>ML-DSA-87</span>
             <span style={s.tag}>Curve25519</span>
-            <span style={s.tag}>ML-KEM-768</span>
+            <span style={s.tag}>ML-KEM-1024</span>
           </div>
         </div>
 

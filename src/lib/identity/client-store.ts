@@ -5,6 +5,116 @@
 const DB_NAME = 'svrnty';
 const DB_VERSION = 2;
 
+// ── Session key management (F1 fix: encrypt keys at rest in IndexedDB) ──
+// The session key is a non-extractable CryptoKey held in memory.
+// It's derived from the user's passphrase via PBKDF2 (600K iterations SHA-256).
+// Lost on tab close/refresh — user must re-enter passphrase to unlock.
+
+let _sessionKey: CryptoKey | null = null;
+let _sessionSalt: Uint8Array | null = null;
+
+const PBKDF2_ITERATIONS = 600_000;
+const ENC_VERSION = 1; // Encrypted record format version
+
+interface EncryptedKeyRecord {
+  fingerprint: string;
+  enc_version: number;
+  salt: string;    // base64, PBKDF2 salt
+  iv: string;      // base64, AES-GCM nonce
+  ciphertext: string; // base64, AES-GCM encrypted {privateKey, passphrase}
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function deriveSessionKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false, // non-extractable
+    ['encrypt', 'decrypt']
+  );
+}
+
+/**
+ * Initialize the session key from a user passphrase.
+ * Call once per session (on identity creation or unlock).
+ * The derived CryptoKey is held in memory — lost on tab close.
+ */
+export async function initSessionKey(passphrase: string): Promise<void> {
+  // Check if we have an existing salt stored for this browser
+  const setting = await txGet<{ key: string; value: string }>('settings', 'key_encryption_salt');
+  let salt: Uint8Array;
+  if (setting?.value) {
+    salt = fromBase64(setting.value);
+  } else {
+    salt = new Uint8Array(32);
+    crypto.getRandomValues(salt);
+    await txPut('settings', { key: 'key_encryption_salt', value: toBase64(salt) });
+  }
+  _sessionKey = await deriveSessionKey(passphrase, salt);
+  _sessionSalt = salt;
+}
+
+/** Check if the session is unlocked (key available in memory). */
+export function isSessionUnlocked(): boolean {
+  return _sessionKey !== null;
+}
+
+/** Lock the session — clear the key from memory. */
+export function lockSession(): void {
+  _sessionKey = null;
+  _sessionSalt = null;
+}
+
+async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
+  if (!_sessionKey) throw new Error('Session locked — call initSessionKey() first');
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+  const plaintext = new TextEncoder().encode(JSON.stringify(data));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, _sessionKey, plaintext)
+  );
+  return {
+    enc_version: ENC_VERSION,
+    salt: toBase64(_sessionSalt!),
+    iv: toBase64(iv),
+    ciphertext: toBase64(ciphertext),
+  };
+}
+
+async function decryptKeyData(record: EncryptedKeyRecord): Promise<{ privateKey: string; passphrase: string }> {
+  if (!_sessionKey) throw new Error('Session locked — call initSessionKey() first');
+  const iv = fromBase64(record.iv);
+  const ciphertext = fromBase64(record.ciphertext);
+  try {
+    const decrypted = new Uint8Array(
+      await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, _sessionKey, ciphertext)
+    );
+    return JSON.parse(new TextDecoder().decode(decrypted));
+  } catch {
+    throw new Error('Decryption failed — wrong passphrase');
+  }
+}
+
 interface IdentityRecord {
   fingerprint: string;
   data: any; // IdentityData
@@ -144,7 +254,10 @@ export async function storeIdentity(fingerprint: string, data: any): Promise<voi
 
 export async function loadIdentity(fingerprint: string): Promise<any | null> {
   const record = await txGet<IdentityRecord>('identities', fingerprint);
-  return record?.data ?? null;
+  const data = record?.data ?? null;
+  // Guard against corrupt records missing required fields
+  if (data && !data.identity?.fingerprint) return null;
+  return data;
 }
 
 export async function getActiveFingerprint(): Promise<string | null> {
@@ -163,33 +276,92 @@ export async function listIdentities(): Promise<IdentityRecord[]> {
 // ── Key operations ──────────────────────────────────────────────
 
 export async function storeKey(fingerprint: string, privateKey: string, passphrase: string): Promise<void> {
-  await txPut('keys', { fingerprint, privateKey, passphrase });
+  if (_sessionKey) {
+    // Encrypt before storing
+    const encrypted = await encryptKeyData({ privateKey, passphrase });
+    await txPut('keys', { fingerprint, ...encrypted });
+  } else {
+    // Fallback: store unencrypted (legacy / during initial setup before session key exists)
+    await txPut('keys', { fingerprint, privateKey, passphrase });
+  }
 }
 
 export async function loadKey(fingerprint: string): Promise<{ privateKey: string; passphrase: string } | null> {
-  return txGet('keys', fingerprint);
+  const record = await txGet<any>('keys', fingerprint);
+  if (!record) return null;
+
+  // Detect encrypted vs legacy unencrypted records
+  if (record.enc_version === ENC_VERSION) {
+    // Encrypted record — decrypt
+    return decryptKeyData(record as EncryptedKeyRecord);
+  }
+
+  // Legacy unencrypted record — return as-is
+  // Auto-migrate: re-encrypt if session key is available
+  if (_sessionKey && record.privateKey) {
+    const encrypted = await encryptKeyData({ privateKey: record.privateKey, passphrase: record.passphrase });
+    await txPut('keys', { fingerprint, ...encrypted });
+  }
+
+  return { privateKey: record.privateKey, passphrase: record.passphrase };
 }
 
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
-  await txPut('pq_keys', { fingerprint, bundle });
+  if (_sessionKey) {
+    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
+    await txPut('pq_keys', { fingerprint, ...encrypted });
+  } else {
+    await txPut('pq_keys', { fingerprint, bundle });
+  }
 }
 
 export async function loadPQKeys(fingerprint: string): Promise<any | null> {
-  const record = await txGet<PQKeyRecord>('pq_keys', fingerprint);
-  return record?.bundle ?? null;
+  const record = await txGet<any>('pq_keys', fingerprint);
+  if (!record) return null;
+
+  if (record.enc_version === ENC_VERSION) {
+    const decrypted = await decryptKeyData(record as EncryptedKeyRecord);
+    return JSON.parse(decrypted.privateKey);
+  }
+
+  // Legacy unencrypted — auto-migrate if session key available
+  if (_sessionKey && record.bundle) {
+    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.bundle), passphrase: '' });
+    await txPut('pq_keys', { fingerprint, ...encrypted });
+  }
+
+  return record.bundle ?? null;
 }
 
 // ── Vault operations ─────────────────────────────────────────────
 
 export async function storeVault(fingerprint: string, vault: any): Promise<void> {
-  await txPut('vaults', { fingerprint, vault });
+  if (_sessionKey) {
+    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
+    await txPut('vaults', { fingerprint, ...encrypted });
+  } else {
+    await txPut('vaults', { fingerprint, vault });
+  }
 }
 
 export async function loadVault(fingerprint: string): Promise<any | null> {
-  const record = await txGet<VaultRecord>('vaults', fingerprint);
-  return record?.vault ?? null;
+  const record = await txGet<any>('vaults', fingerprint);
+  if (!record) return null;
+
+  if (record.enc_version === ENC_VERSION) {
+    const decrypted = await decryptKeyData(record as EncryptedKeyRecord);
+    return JSON.parse(decrypted.privateKey);
+  }
+
+  // Legacy unencrypted — auto-migrate if session key available
+  if (_sessionKey && record.vault) {
+    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.vault), passphrase: '' });
+    await txPut('vaults', { fingerprint, ...encrypted });
+  }
+
+  return record.vault ?? null;
 }
 
 // ── Contact operations ───────────────────────────────────────────
@@ -301,12 +473,18 @@ export async function hasIdentity(): Promise<boolean> {
   const fp = await getActiveFingerprint();
   if (!fp) return false;
   const identity = await loadIdentity(fp);
-  return identity !== null;
+  if (!identity) return false;
+  // Verify key record exists (don't decrypt — session key may not be set yet)
+  const keyRecord = await txGet<any>('keys', fp);
+  return keyRecord !== null && keyRecord !== undefined;
 }
 
 // ── Clear all data (nuclear option) ─────────────────────────────
 
-export async function clearAll(): Promise<void> {
+export async function clearAll(confirm: 'I understand this deletes all keys'): Promise<void> {
+  if (confirm !== 'I understand this deletes all keys') {
+    throw new Error('clearAll requires explicit confirmation string');
+  }
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const storeNames = Array.from(db.objectStoreNames);

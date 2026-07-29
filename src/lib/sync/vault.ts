@@ -63,9 +63,9 @@ export interface VaultIdentity {
     key_usage: string[];
   };
   post_quantum?: {
-    sig_algorithm: 'ML-DSA-65';
+    sig_algorithm: 'ML-DSA-87';
     sig_public_key: string;
-    kem_algorithm: 'ML-KEM-768';
+    kem_algorithm: 'ML-KEM-1024';
     kem_public_key: string;
   };
 }

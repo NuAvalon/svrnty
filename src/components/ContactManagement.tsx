@@ -60,6 +60,7 @@ function trustLabel(contact: Contact): string {
 
 interface ContactsProps {
   identity: any;
+  onContactsChange?: () => void;
 }
 
 // --- Helpers ---
@@ -102,7 +103,7 @@ function recordToContact(r: ContactRecord): Contact {
 
 // --- Main Component ---
 
-export function ContactManagement({ identity }: ContactsProps) {
+export function ContactManagement({ identity, onContactsChange }: ContactsProps) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -242,6 +243,7 @@ export function ContactManagement({ identity }: ContactsProps) {
       setNewContactForm({ name: '', email: '', fingerprint: '', public_key: '' });
       setShowAddDialog(false);
       await loadContacts();
+      onContactsChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to add contact');
     } finally {
@@ -271,6 +273,7 @@ export function ContactManagement({ identity }: ContactsProps) {
       });
       setShowEditDialog(false);
       await loadContacts();
+      onContactsChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update contact');
     } finally {
@@ -287,6 +290,7 @@ export function ContactManagement({ identity }: ContactsProps) {
       setShowDetailDialog(false);
       setShowEditDialog(false);
       await loadContacts();
+      onContactsChange?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete contact');
     } finally {

@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+/* Fonts self-hosted via next/font in layout.tsx — no external requests */
 
 @layer base {
   :root {
@@ -42,7 +42,7 @@
 
   body {
     @apply bg-background text-foreground;
-    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-family: var(--font-mono), 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
     background: #0a0a0f;
     min-height: 100vh;
   }

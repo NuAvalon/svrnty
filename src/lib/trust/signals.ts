@@ -76,7 +76,7 @@ export async function verifySignal(
     ? {
         classical: signal.signature,
         post_quantum: signal.pq_signature,
-        algorithm: 'ED25519+ML-DSA-65' as const,
+        algorithm: 'ED25519+ML-DSA-87' as const,
       }
     : { classical: signal.signature };
 

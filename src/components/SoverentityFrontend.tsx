@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from '@/lib/identity/client-store';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -90,7 +90,7 @@ function SacredGeometryBg() {
       zIndex: 0,
     }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,500;1,300&family=Space+Grotesk:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400&display=swap');
+        /* Fonts self-hosted via next/font in layout.tsx */
         @keyframes drift {
           0%, 100% { transform: translate(0, 0); }
           25% { transform: translate(var(--dx), var(--dy)); }
@@ -212,6 +212,9 @@ export function SoverentityFrontend({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({ name: '', email: '' });
+  const [unlockPassphrase, setUnlockPassphrase] = useState('');
+  const [unlockConfirm, setUnlockConfirm] = useState('');
+  const [unlockError, setUnlockError] = useState('');
   const [gateMode, setGateMode] = useState<GateMode>('choose');
   const [verificationState, setVerificationState] = useState({
     loading: false,
@@ -287,8 +290,8 @@ export function SoverentityFrontend({
       setPassphraseError('Passphrases do not match');
       return;
     }
-    if (newPassphrase.length < 4) {
-      setPassphraseError('Passphrase must be at least 4 characters');
+    if (newPassphrase.length < 12) {
+      setPassphraseError('Passphrase must be at least 12 characters');
       return;
     }
     try {
@@ -311,7 +314,17 @@ export function SoverentityFrontend({
     try {
       // Check availability
       const checkRes = await fetch(`/slug/${slug}`); const checkData = await checkRes.json();
-      if (checkRes.ok && !checkData.available) { setClaimStatus('taken'); return; }
+      if (checkRes.ok && !checkData.available) {
+        // Check if this slug is already ours
+        const fp = identity?.identity?.fingerprint;
+        if (checkData.fingerprint && checkData.fingerprint === fp) {
+          setClaimStatus('success');
+          setClaimedUrl(`svrnty.is/${slug}`);
+          return;
+        }
+        setClaimStatus('taken');
+        return;
+      }
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
       const pk = identity?.identity?.publicKey;
@@ -337,11 +350,23 @@ export function SoverentityFrontend({
   };
 
   const handleCreateIdentity = async () => {
+    // Validate unlock passphrase if provided
+    if (unlockPassphrase) {
+      if (unlockPassphrase.length < 12) {
+        setUnlockError('Passphrase must be at least 12 characters');
+        return;
+      }
+      if (unlockPassphrase !== unlockConfirm) {
+        setUnlockError('Passphrases do not match');
+        return;
+      }
+    }
+    setUnlockError('');
     try {
       setLoading(true);
       setError(null);
       const bi = getBrowserIdentity();
-      const result = await bi.generateIdentity(formData);
+      const result = await bi.generateIdentity(formData, unlockPassphrase ? { unlockPassphrase } : undefined);
       setIdentity(result.identity);
       onIdentityUpdate?.(result.identity);
     } catch (err) {
@@ -755,7 +780,7 @@ export function SoverentityFrontend({
             </div>
 
             <p style={s.footer}>
-              ED25519 + ML-DSA-65 signing. Curve25519 + ML-KEM-768 encryption.
+              ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
               <br />Post-quantum. Zero-knowledge. Sovereign.
             </p>
           </div>
@@ -817,6 +842,28 @@ export function SoverentityFrontend({
             <p style={s.hint}>Used for verification. Never shared.</p>
           </div>
 
+          <div style={s.field}>
+            <label style={s.label}>UNLOCK PASSPHRASE (recommended)</label>
+            <input
+              type="password"
+              placeholder="Encrypts your keys at rest"
+              value={unlockPassphrase}
+              onChange={e => { setUnlockPassphrase(e.target.value); setUnlockError(''); }}
+              style={s.input}
+            />
+            {unlockPassphrase && (
+              <input
+                type="password"
+                placeholder="Confirm passphrase"
+                value={unlockConfirm}
+                onChange={e => { setUnlockConfirm(e.target.value); setUnlockError(''); }}
+                style={{ ...s.input, marginTop: '8px' }}
+              />
+            )}
+            {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
+            <p style={s.hint}>Protects your private keys if your browser is compromised. Min 12 chars.</p>
+          </div>
+
           <button
             onClick={handleCreateIdentity}
             disabled={loading || !formData.name || !formData.email}
@@ -835,7 +882,7 @@ export function SoverentityFrontend({
           </button>
 
           <p style={s.footer}>
-            ED25519 + ML-DSA-65 signing. Curve25519 + ML-KEM-768 encryption.
+            ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
             <br />Your keys. Your data. Your sovereignty.
           </p>
         </div>
@@ -1137,7 +1184,7 @@ export function SoverentityFrontend({
         const pqBundle = generatePQKeypairBundle();
         const serialized = serializeKeypairBundle(pqBundle);
         await storePQKeys(pendingPqMigration.fingerprint, serialized);
-        console.log('[svrnty] PQ migration: generated ML-DSA-65 + ML-KEM-768 for', pendingPqMigration.fingerprint.slice(-8));
+        console.log('[svrnty] PQ migration: generated ML-DSA-87 + ML-KEM-1024 for', pendingPqMigration.fingerprint.slice(-8));
         setHasPqKeys(true);
         setIdentity(pendingPqMigration.identity);
         onIdentityUpdate?.(pendingPqMigration.identity);
@@ -1181,7 +1228,7 @@ export function SoverentityFrontend({
             color: 'rgba(255,255,255,0.85)',
           }}>
             <strong style={{ color: 'rgba(255, 200, 50, 0.9)' }}>What happened?</strong><br />
-            Your identity has post-quantum public keys (ML-DSA-65, ML-KEM-768), but the
+            Your identity has post-quantum public keys (ML-DSA-87, ML-KEM-1024), but the
             private keys weren't included in this backup. Without them, post-quantum
             signing and encryption won't work.
             <br /><br />
@@ -1267,9 +1314,9 @@ export function SoverentityFrontend({
 
           <div style={s.cryptoTags}>
             <span style={s.tag}>ED25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-DSA-65</span>}
+            {hasPqKeys && <span style={s.tag}>ML-DSA-87</span>}
             <span style={s.tag}>Curve25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-KEM-768</span>}
+            {hasPqKeys && <span style={s.tag}>ML-KEM-1024</span>}
           </div>
         </div>
 
@@ -1545,28 +1592,39 @@ export function SoverentityFrontend({
               </svg>
               Set Passphrase
             </button>
-            <button
-              onClick={() => { setShowClaimUrlDialog(true); setClaimStatus('idle'); setClaimSlug(''); }}
-              style={{
-                background: 'rgba(200, 168, 78, 0.08)',
-                border: '1px solid rgba(200, 168, 78, 0.25)',
-                borderRadius: '10px',
-                padding: '10px 16px',
-                color: '#c8a84e',
-                fontSize: '13px',
+            {claimedUrl ? (
+              <span style={{
+                color: 'rgba(200, 168, 78, 0.7)',
+                fontSize: '12px',
                 fontFamily: "'Space Grotesk', sans-serif",
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-              </svg>
-              Claim URL
-            </button>
+                padding: '10px 16px',
+              }}>
+                {claimedUrl}
+              </span>
+            ) : (
+              <button
+                onClick={() => { setShowClaimUrlDialog(true); setClaimStatus('idle'); setClaimSlug(''); }}
+                style={{
+                  background: 'rgba(200, 168, 78, 0.08)',
+                  border: '1px solid rgba(200, 168, 78, 0.25)',
+                  borderRadius: '10px',
+                  padding: '10px 16px',
+                  color: '#c8a84e',
+                  fontSize: '13px',
+                  fontFamily: "'Space Grotesk', sans-serif",
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                </svg>
+                Claim URL
+              </button>
+            )}
           </div>
         )}
 

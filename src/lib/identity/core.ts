@@ -48,9 +48,9 @@ interface IdentityData {
   };
   /** Post-quantum public keys (v0.2.0+) */
   post_quantum?: {
-    sig_algorithm: 'ML-DSA-65';
+    sig_algorithm: 'ML-DSA-87';
     sig_public_key: string;      // base64
-    kem_algorithm: 'ML-KEM-768';
+    kem_algorithm: 'ML-KEM-1024';
     kem_public_key: string;      // base64
   };
 }
@@ -133,13 +133,13 @@ export class SoverentityIdentity {
         },
         metadata: {
           client_version: '0.2.0',
-          key_type: 'ED25519+ML-DSA-65+ML-KEM-768',
+          key_type: 'ED25519+ML-DSA-87+ML-KEM-1024',
           key_usage: ['identity', 'signing', 'key-encapsulation']
         },
         post_quantum: {
-          sig_algorithm: 'ML-DSA-65',
+          sig_algorithm: 'ML-DSA-87',
           sig_public_key: publicKeyToBase64(pqBundle.signing.publicKey),
-          kem_algorithm: 'ML-KEM-768',
+          kem_algorithm: 'ML-KEM-1024',
           kem_public_key: publicKeyToBase64(pqBundle.kem.publicKey),
         },
       };

@@ -76,7 +76,7 @@ export default function ProfilePage() {
         fontSize: '14px',
         letterSpacing: '4px',
       }}>
-        <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet" />
+        {/* Fonts self-hosted via next/font in layout.tsx */}
         RESOLVING...
       </div>
     );
@@ -93,7 +93,7 @@ export default function ProfilePage() {
         alignItems: 'center',
         padding: '20px',
       }}>
-        <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet" />
+        {/* Fonts self-hosted via next/font in layout.tsx */}
         <h1 style={{
           fontFamily: "'Cormorant Garamond', serif",
           fontSize: '28px',
@@ -143,7 +143,7 @@ export default function ProfilePage() {
       alignItems: 'center',
       padding: '20px',
     }}>
-      <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet" />
+      {/* Fonts self-hosted via next/font in layout.tsx */}
       <div style={{
         maxWidth: '440px',
         width: '100%',

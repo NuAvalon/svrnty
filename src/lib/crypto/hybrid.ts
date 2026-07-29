@@ -1,7 +1,7 @@
 // src/lib/crypto/hybrid.ts
 // Hybrid classical + post-quantum cryptography
-// ED25519 + ML-DSA-65 for signatures
-// Curve25519 + ML-KEM-768 for key encapsulation
+// ED25519 + ML-DSA-87 for signatures
+// Curve25519 + ML-KEM-1024 for key encapsulation
 //
 // Security model: BOTH classical AND post-quantum must be broken to compromise.
 
@@ -17,6 +17,8 @@ import {
   base64ToPublicKey,
   serializeKeypairBundle,
   deserializeKeypairBundle,
+  uint8ToBase64,
+  base64ToUint8,
   type PQKeypairBundle,
 } from './pq';
 import {
@@ -36,29 +38,29 @@ import {
 export interface HybridSignature {
   /** PGP cleartext signature (ED25519) */
   classical: string;
-  /** ML-DSA-65 signature, base64-encoded */
+  /** ML-DSA-87 signature, base64-encoded */
   post_quantum: string;
   /** Algorithm identifier */
-  algorithm: 'ED25519+ML-DSA-65';
+  algorithm: 'ED25519+ML-DSA-87';
 }
 
 export interface HybridEncryptionResult {
   /** PGP-encrypted payload (Curve25519) */
   classical_ciphertext: string;
-  /** ML-KEM-768 ciphertext for hybrid secret, base64 */
+  /** ML-KEM-1024 ciphertext for hybrid secret, base64 */
   pq_kem_ciphertext: string;
   /** AES-256-GCM encrypted payload using hybrid-derived key, base64 */
   hybrid_ciphertext: string;
   /** Algorithm identifier */
-  algorithm: 'Curve25519+ML-KEM-768';
+  algorithm: 'Curve25519+ML-KEM-1024';
 }
 
 export interface HybridPublicKeys {
   /** PGP armored public key (ED25519/Curve25519) */
   classical_public_key: string;
-  /** ML-DSA-65 signing public key, base64 */
+  /** ML-DSA-87 signing public key, base64 */
   pq_sig_public_key: string;
-  /** ML-KEM-768 encapsulation public key, base64 */
+  /** ML-KEM-1024 encapsulation public key, base64 */
   pq_kem_public_key: string;
 }
 
@@ -111,7 +113,7 @@ export function generateHybridKeys(
 
 /**
  * Create a hybrid dual signature over a payload.
- * Signs with ED25519 (PGP) AND ML-DSA-65.
+ * Signs with ED25519 (PGP) AND ML-DSA-87.
  * Both must be broken to forge.
  */
 export async function hybridSign(
@@ -133,14 +135,14 @@ export async function hybridSign(
     signingKeys: decryptedKey,
   });
 
-  // 2. Post-quantum ML-DSA-65 signature
+  // 2. Post-quantum ML-DSA-87 signature
   const payloadBytes = new TextEncoder().encode(payload);
   const pqSig = pqSign(payloadBytes, pqSigningSecretKey);
 
   return {
     classical: classicalSig.toString(),
-    post_quantum: Buffer.from(pqSig).toString('base64'),
-    algorithm: 'ED25519+ML-DSA-65',
+    post_quantum: uint8ToBase64(pqSig),
+    algorithm: 'ED25519+ML-DSA-87',
   };
 }
 
@@ -184,7 +186,7 @@ export async function hybridVerify(
     return acceptClassicalOnly;
   }
 
-  // 3. Verify post-quantum ML-DSA-65 signature
+  // 3. Verify post-quantum ML-DSA-87 signature
   if (!pqSigningPublicKey) {
     // We have a hybrid sig but no PQ public key — reject
     return false;
@@ -192,9 +194,7 @@ export async function hybridVerify(
 
   const hybridSig = signature as HybridSignature;
   const payloadBytes = new TextEncoder().encode(payload);
-  const pqSigBytes = new Uint8Array(
-    Buffer.from(hybridSig.post_quantum, 'base64')
-  );
+  const pqSigBytes = base64ToUint8(hybridSig.post_quantum);
 
   return pqVerify(payloadBytes, pqSigBytes, pqSigningPublicKey);
 }
@@ -221,7 +221,7 @@ export function deriveHybridSecret(
 }
 
 /**
- * Hybrid encapsulation: generates a PQ shared secret using ML-KEM-768.
+ * Hybrid encapsulation: generates a PQ shared secret using ML-KEM-1024.
  * The caller combines this with the classical shared secret (from openpgp encrypt).
  *
  * Returns the KEM ciphertext and shared secret.
@@ -232,20 +232,20 @@ export function hybridEncapsulate(pqKemPublicKey: Uint8Array): {
 } {
   const { ciphertext, sharedSecret } = pqEncapsulate(pqKemPublicKey);
   return {
-    ciphertext: Buffer.from(ciphertext).toString('base64'),
+    ciphertext: uint8ToBase64(ciphertext),
     sharedSecret,
   };
 }
 
 /**
- * Hybrid decapsulation: recovers the PQ shared secret from ML-KEM-768 ciphertext.
+ * Hybrid decapsulation: recovers the PQ shared secret from ML-KEM-1024 ciphertext.
  * The caller combines this with the classical shared secret.
  */
 export function hybridDecapsulate(
   ciphertextB64: string,
   pqKemSecretKey: Uint8Array
 ): Uint8Array {
-  const ciphertext = new Uint8Array(Buffer.from(ciphertextB64, 'base64'));
+  const ciphertext = base64ToUint8(ciphertextB64);
   return pqDecapsulate(ciphertext, pqKemSecretKey);
 }
 

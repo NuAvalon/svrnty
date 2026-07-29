@@ -78,41 +78,39 @@ export default function Home() {
     setAppState('unlocked');
   };
 
+  // Load contacts — extracted as callback so ContactManagement can trigger refresh
+  const refreshContacts = useCallback(async () => {
+    if (!identity?.identity?.fingerprint) return;
+    try {
+      const rawContacts = await getAllContacts(identity.identity.fingerprint);
+      const edges: TrustEdge[] = rawContacts.map((c: any) => ({
+        id: c.id,
+        peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
+        peer_name: c.peer_name || c.name,
+        peer_email: c.peer_email || c.email || '',
+        peer_public_key: c.peer_public_key || c.public_key || '',
+        trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
+        trusted_since: c.trusted_since || c.verified_at || null,
+        last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
+        decay_days: c.decay_days || 730,
+        trust_history: c.trust_history || [],
+        verification: c.verification || { method: 'none', verified_at: null },
+        mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
+        tags: c.tags || c.metadata?.tags || [],
+        notes: c.notes || c.metadata?.notes || '',
+        connection_channels: c.connection_channels || [],
+        added_at: c.added_at || new Date().toISOString(),
+      }));
+      setContacts(edges);
+    } catch (err: any) {
+      console.error('Failed to load contacts:', err);
+    }
+  }, [identity]);
+
   // Load contacts when identity is available
   useEffect(() => {
-    if (!identity?.identity?.fingerprint) return;
-
-    const loadContacts = async () => {
-      try {
-        const rawContacts = await getAllContacts(identity.identity.fingerprint);
-        {
-          const edges: TrustEdge[] = rawContacts.map((c: any) => ({
-            id: c.id,
-            peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
-            peer_name: c.peer_name || c.name,
-            peer_email: c.peer_email || c.email || '',
-            peer_public_key: c.peer_public_key || c.public_key || '',
-            trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
-            trusted_since: c.trusted_since || c.verified_at || null,
-            last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
-            decay_days: c.decay_days || 730,
-            trust_history: c.trust_history || [],
-            verification: c.verification || { method: 'none', verified_at: null },
-            mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
-            tags: c.tags || c.metadata?.tags || [],
-            notes: c.notes || c.metadata?.notes || '',
-            connection_channels: c.connection_channels || [],
-            added_at: c.added_at || new Date().toISOString(),
-          }));
-          setContacts(edges);
-        }
-      } catch (err: any) {
-        console.error('Failed to load contacts:', err);
-      }
-    };
-
-    loadContacts();
-  }, [identity]);
+    refreshContacts();
+  }, [refreshContacts]);
 
   // Loading state
   if (appState === 'checking') {
@@ -128,7 +126,7 @@ export default function Home() {
         fontSize: '14px',
         letterSpacing: '4px',
       }}>
-        <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet" />
+        {/* Fonts self-hosted via next/font in layout.tsx */}
         RESOLVING...
       </div>
     );
@@ -145,7 +143,7 @@ export default function Home() {
         alignItems: 'center',
         padding: '20px',
       }}>
-        <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500&family=Space+Grotesk:wght@300;400;500&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet" />
+        {/* Fonts self-hosted via next/font in layout.tsx */}
         <div style={{
           maxWidth: '400px',
           width: '100%',
@@ -300,7 +298,7 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="contacts">
-              <ContactManagement identity={identity} />
+              <ContactManagement identity={identity} onContactsChange={refreshContacts} />
             </TabsContent>
 
             <TabsContent value="identity">

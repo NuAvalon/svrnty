@@ -37,11 +37,17 @@ const TTL_MS = 15 * 60 * 1000; // 15 minutes
 const MAX_PAYLOAD_BYTES = 64 * 1024; // 64KB
 
 function generateCode(): string {
-  const bytes = new Uint8Array(CODE_LENGTH);
-  crypto.getRandomValues(bytes);
+  // Rejection sampling to avoid modulo bias (ALPHABET.length=55, 256%55≠0)
+  const limit = 256 - (256 % ALPHABET.length); // 256 - (256%55) = 256-36 = 220
   let code = '';
-  for (let i = 0; i < CODE_LENGTH; i++) {
-    code += ALPHABET[bytes[i] % ALPHABET.length];
+  while (code.length < CODE_LENGTH) {
+    const bytes = new Uint8Array(CODE_LENGTH); // overallocate is fine
+    crypto.getRandomValues(bytes);
+    for (let i = 0; i < bytes.length && code.length < CODE_LENGTH; i++) {
+      if (bytes[i] < limit) {
+        code += ALPHABET[bytes[i] % ALPHABET.length];
+      }
+    }
   }
   // Collision check — regenerate if taken (extremely unlikely)
   if (store.has(code)) return generateCode();

@@ -2,6 +2,13 @@
 // Browser-compatible identity manager — uses IndexedDB via client-store
 // Drop-in replacement for SoverentityIdentity (core.ts) without fs/homedir
 
+// Chunked btoa — avoids stack overflow for large Uint8Arrays (>~8KB spread limit)
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 import { generateKey, readKey } from 'openpgp';
 import {
   generatePQKeypairBundle,
@@ -30,6 +37,9 @@ import {
   hasIdentity,
   exportAll,
   importAll,
+  initSessionKey,
+  isSessionUnlocked,
+  lockSession,
   type SovereignBackup,
 } from './client-store';
 import {
@@ -65,9 +75,9 @@ interface IdentityData {
     key_usage: string[];
   };
   post_quantum?: {
-    sig_algorithm: 'ML-DSA-65';
+    sig_algorithm: 'ML-DSA-87';
     sig_public_key: string;
-    kem_algorithm: 'ML-KEM-768';
+    kem_algorithm: 'ML-KEM-1024';
     kem_public_key: string;
   };
 }
@@ -80,9 +90,15 @@ interface ExportData {
 }
 
 export class BrowserIdentity {
+  /**
+   * Generate a new sovereign identity.
+   * If unlockPassphrase is provided, private keys are encrypted at rest in IndexedDB.
+   * Without it, keys are stored unencrypted (legacy behavior).
+   */
   async generateIdentity({ name, email }: UserID, options?: {
     shamirThreshold?: number;
     shamirShares?: number;
+    unlockPassphrase?: string;
   }): Promise<{
     identity: IdentityData;
     fingerprint: string;
@@ -90,7 +106,12 @@ export class BrowserIdentity {
     shards: Shard[];
     vault: KeyVault;
   }> {
-    // Generate random passphrase
+    // Initialize session encryption if passphrase provided
+    if (options?.unlockPassphrase) {
+      await initSessionKey(options.unlockPassphrase);
+    }
+
+    // Generate random passphrase for PGP key (internal, not user-facing)
     const passphraseBytes = new Uint8Array(32);
     crypto.getRandomValues(passphraseBytes);
     const passphrase = btoa(String.fromCharCode(...passphraseBytes));
@@ -126,13 +147,13 @@ export class BrowserIdentity {
       },
       metadata: {
         client_version: '0.2.0',
-        key_type: 'ED25519+ML-DSA-65+ML-KEM-768',
+        key_type: 'ED25519+ML-DSA-87+ML-KEM-1024',
         key_usage: ['identity', 'signing', 'key-encapsulation']
       },
       post_quantum: {
-        sig_algorithm: 'ML-DSA-65',
+        sig_algorithm: 'ML-DSA-87',
         sig_public_key: publicKeyToBase64(pqBundle.signing.publicKey),
-        kem_algorithm: 'ML-KEM-768',
+        kem_algorithm: 'ML-KEM-1024',
         kem_public_key: publicKeyToBase64(pqBundle.kem.publicKey),
       },
     };
@@ -148,8 +169,8 @@ export class BrowserIdentity {
     const keyBundle: PrivateKeyBundle = {
       classical_private_key: privateKey,
       classical_passphrase: passphrase,
-      pq_signing_secret_key: btoa(String.fromCharCode(...pqBundle.signing.secretKey)),
-      pq_kem_secret_key: btoa(String.fromCharCode(...pqBundle.kem.secretKey)),
+      pq_signing_secret_key: uint8ToBase64(pqBundle.signing.secretKey),
+      pq_kem_secret_key: uint8ToBase64(pqBundle.kem.secretKey),
     };
 
     const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(
@@ -237,6 +258,23 @@ export class BrowserIdentity {
 
     await setActiveFingerprint(fingerprint);
     return identity;
+  }
+
+  // ── Session key management (F1: encrypt keys at rest) ──────────
+
+  /** Unlock the session — derive encryption key from passphrase. */
+  async unlockSession(passphrase: string): Promise<void> {
+    return initSessionKey(passphrase);
+  }
+
+  /** Lock the session — clear encryption key from memory. */
+  lockSession(): void {
+    lockSession();
+  }
+
+  /** Check if the session is unlocked. */
+  isUnlocked(): boolean {
+    return isSessionUnlocked();
   }
 
   async loadKeyData(fingerprint: string): Promise<{ privateKey: string; passphrase: string } | null> {

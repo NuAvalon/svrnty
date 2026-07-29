@@ -69,9 +69,10 @@ export default function RelayPage({ params }: { params: Promise<{ code: string }
         return;
       }
 
-      // Parse the exchange data
-      const peerData = JSON.parse(exchangeData);
-      const peerFingerprint = peerData.fingerprint || peerData.peer_fingerprint;
+      // Parse the exchange data (may be flat or nested under .identity)
+      const raw = JSON.parse(exchangeData);
+      const peerData = raw.identity || raw;
+      const peerFingerprint = peerData.fingerprint || peerData.peer_fingerprint || '';
 
       // Check if contact already exists
       if (peerFingerprint) {
@@ -85,12 +86,12 @@ export default function RelayPage({ params }: { params: Promise<{ code: string }
 
       // Import contact into IndexedDB
       const contact = await addContact(fingerprint, {
-        peer_name: peerData.name || peerData.peer_name || 'Unknown',
+        name: peerData.display_name || peerData.name || peerData.peer_name || 'Unknown',
         fingerprint: peerFingerprint || '',
         public_key: peerData.public_key || peerData.publicKey || '',
         pq_public_key: peerData.pq_public_key || peerData.pqPublicKey || '',
         trust_level: 'pending',
-        verified: false,
+        email: peerData.email || '',
       });
 
       setImportResult({ contact, message: 'Contact added to your network.' });

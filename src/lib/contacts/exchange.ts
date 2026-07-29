@@ -28,7 +28,7 @@ interface ExchangePackage {
   mutual_contacts?: string[];
   /** Classical PGP signature (ED25519) */
   signature: string;
-  /** Post-quantum ML-DSA-65 signature, base64 (v0.2.0+) */
+  /** Post-quantum ML-DSA-87 signature, base64 (v0.2.0+) */
   pq_signature?: string;
   /** Sender's PQ signing public key for verification (v0.2.0+) */
   pq_sig_public_key?: string;
@@ -97,7 +97,7 @@ export class ContactExchange {
         exchangePackage.mutual_contacts = mutualContactFingerprints;
       }
 
-      // Sign the package (classical ED25519 + post-quantum ML-DSA-65)
+      // Sign the package (classical ED25519 + post-quantum ML-DSA-87)
       // 1. Read and decrypt the classical private key
       const privateKeyObj = await readPrivateKey({ armoredKey: keyData.privateKey });
       const decryptedKey = await decryptKey({
@@ -122,7 +122,7 @@ export class ContactExchange {
       const signaturePart = '-----BEGIN PGP SIGNATURE-----' + parts[1];
       const classicalSignature = signaturePart.replace('-----END PGP SIGNATURE-----', '').trim();
 
-      // 4. Post-quantum ML-DSA-65 signature (if PQ keys exist)
+      // 4. Post-quantum ML-DSA-87 signature (if PQ keys exist)
       const pqKeys = await this.identityManager.loadPQKeys(senderFingerprint);
       let pqSignature: string | undefined;
       let pqSigPublicKey: string | undefined;
@@ -303,7 +303,7 @@ export class ContactExchange {
 
       if (!classicalValid) return false;
 
-      // 2. Verify post-quantum ML-DSA-65 signature (if present)
+      // 2. Verify post-quantum ML-DSA-87 signature (if present)
       if (pq_signature && pq_sig_public_key) {
         const payloadBytes = new TextEncoder().encode(packageText);
         const sigBytes = new Uint8Array(Buffer.from(pq_signature, 'base64'));
