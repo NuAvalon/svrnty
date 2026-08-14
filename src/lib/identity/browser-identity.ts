@@ -32,6 +32,7 @@ import {
   loadPQKeys,
   storeVault,
   loadVault,
+  storeShards,
   setActiveFingerprint,
   getActiveFingerprint,
   hasIdentity,
@@ -179,6 +180,11 @@ export class BrowserIdentity {
 
     // Store vault in IndexedDB
     await storeVault(fingerprint, vault);
+
+    // Persist the shards so they can be torn off and given to contacts later.
+    // Previously these were returned and then discarded at the create call-site
+    // (SoverentityFrontend.tsx), so social recovery was minted-but-unusable.
+    await storeShards(fingerprint, { threshold, total: totalShares, shards });
 
     // Zero master secret
     masterSecret.fill(0);

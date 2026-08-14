@@ -2,8 +2,12 @@
 // Client-side IndexedDB storage for sovereign identity
 // Replaces server-side fs operations — all data stays in the user's browser
 
+// C2 / Invariant-1 (Flint KB#85781): the ONE crypto import this storage layer takes —
+// a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
+import { fingerprintMatchesKey } from './fingerprint';
+
 const DB_NAME = 'svrnty';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 // ── Session key management (F1 fix: encrypt keys at rest in IndexedDB) ──
 // The session key is a non-extractable CryptoKey held in memory.
@@ -149,6 +153,52 @@ interface ContactRecord {
   [key: string]: any;
 }
 
+// ── Social-recovery shard types (the "tear") ─────────────────────
+
+/** Relay payload discriminator for a shard entrusted to a contact. Single
+ *  source of truth shared by the give side (ShardGiveDialog) and the receive
+ *  side (app/c/[code]) — a mismatch would misroute a shard into contact-import. */
+export const SHARD_CUSTODY_TYPE = 'svrnty-shard-custody';
+// A shard is one piece of an M-of-N Shamir split of the master secret
+// (see lib/crypto/recovery.ts). Structurally mirrored here to keep
+// client-store dependency-light (no crypto import).
+
+/** One recipient a shard was given to. */
+interface ShardCustody {
+  contact_id: string;
+  name: string;
+  fingerprint: string;
+}
+
+/** A shard I hold for MY OWN identity, plus who (if anyone) I gave it to. */
+interface StoredShard {
+  index: number;
+  data: string;                 // base64 shard bytes
+  identity_fingerprint: string; // whose vault this reconstructs (mine)
+  threshold: number;
+  given_to?: ShardCustody;
+  given_at?: string;
+}
+
+/** All shards for one of my identities. */
+interface ShardsData {
+  threshold: number;
+  total: number;
+  shards: StoredShard[];
+}
+
+/** A shard someone else entrusted to me (I am the custodian). */
+interface HeldShardRecord {
+  id: string;
+  holder_fingerprint: string;   // me (the custodian)
+  owner_fingerprint: string;    // whose recovery this shard belongs to
+  owner_name: string;
+  shard: any;                   // the raw Shard object from the giver
+  threshold: number;
+  total: number;
+  received_at: string;
+}
+
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -176,10 +226,30 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
       }
+      // v3: social-recovery shards. `shards` = MY vault's shards (one record per
+      // identity, keyed by fingerprint) with per-shard give-custody. `held_shards`
+      // = shards OTHERS entrusted to me (the receiving side of "the tear").
+      if (!db.objectStoreNames.contains('shards')) {
+        db.createObjectStore('shards', { keyPath: 'fingerprint' });
+      }
+      if (!db.objectStoreNames.contains('held_shards')) {
+        const heldStore = db.createObjectStore('held_shards', { keyPath: 'id' });
+        heldStore.createIndex('holder', 'holder_fingerprint', { unique: false });
+      }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // If another tab opens a newer DB version, yield this connection so its
+      // upgrade isn't blocked (paired with onblocked below).
+      db.onversionchange = () => { db.close(); };
+      resolve(db);
+    };
     request.onerror = () => reject(request.error);
+    // Without this, a version upgrade blocked by another open connection hangs
+    // open() forever — freezing the app at its "RESOLVING…" loading state.
+    // Settling the promise lets the caller degrade gracefully instead.
+    request.onblocked = () => reject(new Error('svrnty database is upgrading — close other svrnty tabs and reload'));
   });
 }
 
@@ -364,9 +434,91 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
   return record.vault ?? null;
 }
 
+// ── Shard operations (social recovery — "the tear") ──────────────
+// My own shards are key material → encrypted at rest like the vault
+// when a session key is present (falls back to plaintext pre-unlock,
+// same as keys/vaults).
+
+/** Persist all shards for one of my identities (stops the create-time discard). */
+export async function storeShards(fingerprint: string, shardsData: ShardsData): Promise<void> {
+  if (_sessionKey) {
+    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
+    await txPut('shards', { fingerprint, ...encrypted });
+  } else {
+    await txPut('shards', { fingerprint, shards_data: shardsData });
+  }
+}
+
+export async function loadShards(fingerprint: string): Promise<ShardsData | null> {
+  const record = await txGet<any>('shards', fingerprint);
+  if (!record) return null;
+
+  if (record.enc_version === ENC_VERSION) {
+    const decrypted = await decryptKeyData(record as EncryptedKeyRecord);
+    return JSON.parse(decrypted.privateKey);
+  }
+
+  // Legacy unencrypted — auto-migrate if session key available
+  if (_sessionKey && record.shards_data) {
+    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(record.shards_data), passphrase: '' });
+    await txPut('shards', { fingerprint, ...encrypted });
+  }
+
+  return record.shards_data ?? null;
+}
+
+/**
+ * Record that a shard was torn off and given to a contact.
+ * Returns the updated ShardsData. Throws if the identity has no shards
+ * or the index is unknown.
+ */
+export async function markShardGiven(
+  fingerprint: string,
+  shardIndex: number,
+  contact: ShardCustody,
+): Promise<ShardsData> {
+  const data = await loadShards(fingerprint);
+  if (!data) throw new Error('No shards found for this identity');
+  const shard = data.shards.find(s => s.index === shardIndex);
+  if (!shard) throw new Error(`Shard #${shardIndex} not found`);
+  shard.given_to = contact;
+  shard.given_at = new Date().toISOString();
+  await storeShards(fingerprint, data);
+  return data;
+}
+
+/** Store a shard someone entrusted to me (the receiving side of the tear). */
+export async function storeHeldShard(
+  holderFingerprint: string,
+  held: Omit<HeldShardRecord, 'id' | 'holder_fingerprint' | 'received_at'>,
+): Promise<HeldShardRecord> {
+  const record: HeldShardRecord = {
+    ...held,
+    id: crypto.randomUUID(),
+    holder_fingerprint: holderFingerprint,
+    received_at: new Date().toISOString(),
+  };
+  await txPut('held_shards', record);
+  return record;
+}
+
+/** List shards I am holding on behalf of others. */
+export async function getHeldShards(holderFingerprint: string): Promise<HeldShardRecord[]> {
+  return txGetByIndex('held_shards', 'holder', holderFingerprint);
+}
+
 // ── Contact operations ───────────────────────────────────────────
 
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
+  // C2 / Invariant-1 (Flint KB#85781): fail-closed binding check at the store, so NO caller
+  // can persist a contact whose fingerprint doesn't match its key. Calibrated — enforced only
+  // when a key is present: a MISSING key is not a MITM vector (nothing to encrypt toward an
+  // attacker; the private key stays the victim's), and several callers legitimately add keyless
+  // contacts. A MISMATCHED key is the attack (attacker's key + victim's real fingerprint), and
+  // it is refused here for every caller (relay, manual form-add, bulk/exchange import).
+  if (contact.public_key && !(await fingerprintMatchesKey(contact.fingerprint, contact.public_key))) {
+    throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
+  }
   const id = crypto.randomUUID();
   const record: ContactRecord = {
     ...contact,
@@ -420,6 +572,7 @@ export interface SovereignBackup {
   keys?: { privateKey: string; passphrase: string };
   pq_keys?: any;
   vault?: any;
+  shards?: ShardsData;
   contacts: ContactRecord[];
 }
 
@@ -438,6 +591,7 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
     backup.keys = await loadKey(fingerprint) ?? undefined;
     backup.pq_keys = await loadPQKeys(fingerprint) ?? undefined;
     backup.vault = await loadVault(fingerprint) ?? undefined;
+    backup.shards = await loadShards(fingerprint) ?? undefined;
   }
 
   return backup;
@@ -457,6 +611,9 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
   }
   if (backup.vault) {
     await storeVault(fingerprint, backup.vault);
+  }
+  if (backup.shards) {
+    await storeShards(fingerprint, backup.shards);
   }
 
   for (const contact of (backup.contacts || [])) {

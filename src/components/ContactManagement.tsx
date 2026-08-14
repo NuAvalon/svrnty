@@ -10,7 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
   Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, Eye, ChevronRight, ShieldOff, ShieldCheck, Copy
+  FileJson, Eye, ChevronRight, ShieldOff, ShieldCheck, Copy, HeartCrack
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -24,6 +24,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
+import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import {
   getAllContacts, addContact, updateContact, removeContact,
   type ContactRecord,
@@ -118,6 +119,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showShareIdentityDialog, setShowShareIdentityDialog] = useState(false);
   const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
+  const [showShardGiveDialog, setShowShardGiveDialog] = useState(false);
   const [vaultExporting, setVaultExporting] = useState(false);
 
   // Form state
@@ -856,6 +858,14 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
                         <Edit className="h-4 w-4 mr-1" /> Edit
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => { setShowShardGiveDialog(true); setShowDetailDialog(false); }}
+                        className="text-amber-400 border-amber-500/30"
+                      >
+                        <HeartCrack className="h-4 w-4 mr-1" /> Give a piece
+                      </Button>
                     </div>
                     <Button variant="destructive" size="sm" onClick={() => { handleDeleteContact(selectedContact.id); setShowDetailDialog(false); }}>
                       <Trash2 className="h-4 w-4 mr-1" /> Remove
@@ -893,6 +903,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           onClose={() => setShowShareIdentityDialog(false)}
           exchangePackage={exchangePackage}
           fingerprint={fingerprint || ''}
+        />
+
+        {/* Give a piece of your recovery — "the tear" */}
+        <ShardGiveDialog
+          open={showShardGiveDialog}
+          onClose={() => setShowShardGiveDialog(false)}
+          ownerFingerprint={fingerprint || ''}
+          ownerName={identity?.identity?.name || identity?.identity?.display_name || 'a keeper'}
+          contact={selectedContact}
+          onGiven={() => { /* custody recorded in IndexedDB; lattice/custody badges are #484 */ }}
         />
 
         {/* Import Contact from Exchange Package */}

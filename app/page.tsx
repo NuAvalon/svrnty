@@ -6,6 +6,7 @@ import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
+import { Ceremony } from '@/components/Ceremony';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { hasIdentity, getActiveFingerprint, loadIdentity, getAllContacts } from '@/lib/identity/client-store';
@@ -285,6 +286,7 @@ export default function Home() {
           <Tabs defaultValue="trust-map" className="w-full">
             <TabsList className="w-full max-w-2xl mx-auto mb-8">
               <TabsTrigger value="trust-map" className="flex-1">Trust Map</TabsTrigger>
+              <TabsTrigger value="ceremony" className="flex-1">Ceremony</TabsTrigger>
               <TabsTrigger value="contacts" className="flex-1">Contacts</TabsTrigger>
               <TabsTrigger value="identity" className="flex-1">Identity</TabsTrigger>
             </TabsList>
@@ -295,6 +297,10 @@ export default function Home() {
                 ownerName={identity.identity.name}
                 contacts={contacts}
               />
+            </TabsContent>
+
+            <TabsContent value="ceremony">
+              <Ceremony identity={identity} contacts={contacts} />
             </TabsContent>
 
             <TabsContent value="contacts">
