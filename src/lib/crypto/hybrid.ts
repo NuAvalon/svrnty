@@ -160,12 +160,20 @@ export async function hybridVerify(
   pqSigningPublicKey?: Uint8Array,
   acceptClassicalOnly: boolean = false
 ): Promise<boolean> {
-  // 1. Verify classical ED25519 signature
+  // 1. Verify the classical ED25519 signature AND that it signs EXACTLY `payload`.
+  //    openpgp.sign() returns an INLINE signed message (the data is embedded in the armored blob).
+  //    Verifying it alone proves "some validly-signed message" — NOT "signs the caller's payload".
+  //    Without the literal check below, `payload` is UNBOUND on the classical path: an attacker
+  //    re-wraps a validly-signed inner message under different outer fields and this still passes.
+  //    The PQ branch already binds `payload`; binding it here too means every path discharges the
+  //    obligation rather than relocating it to "future callers beware".
   let classicalValid = false;
   try {
     const signedMessage = await readMessage({
       armoredMessage: signature.classical,
     });
+    const literal = signedMessage.getLiteralData();
+    if (literal == null || new TextDecoder().decode(literal) !== payload) return false;
     const publicKey = await readKey({ armoredKey: classicalPublicKeyArmored });
     const verification = await pgpVerify({
       message: signedMessage,

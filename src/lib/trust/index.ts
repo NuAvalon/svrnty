@@ -17,6 +17,9 @@ export {
   introductionCreatesTrust,
 } from './signals';
 
+export { signSlugClaim, verifySignedSlugClaim } from './slug-claim';
+export type { SignedSlugClaim } from './slug-claim';
+
 export { migrateContact, migrateContacts } from './migration';
 
 export {
