@@ -13,6 +13,11 @@ import { canonicalize } from './canonical';
 export const DOMAIN_TRUST_SIGNAL = 'svrnty:trust-signal:v1';
 export const DOMAIN_CONTACT_UPDATE = 'svrnty:contact-update:v1';
 export const DOMAIN_SLUG_CLAIM = 'svrnty:slug-claim:v1';
+// Key-lineage sub-domains for Flint's rotation/recovery signing (#115350). Crypto is his; the tag
+// STRINGS live here so the domain-separation vocabulary stays single-source (a signer/verifier tag
+// drift is a domain-confusion bug — centralizing eliminates that class).
+export const DOMAIN_KEY_ROTATION = 'svrnty:key-rotation:v1';
+export const DOMAIN_KEY_RECOVERY = 'svrnty:key-recovery:v1';
 
 // --- A2: Durable identity + epoch/lineage (formats-cheap: fields only, no rotation UX) ---
 
