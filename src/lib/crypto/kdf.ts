@@ -40,8 +40,10 @@ export const ARGON2_MAX_PARALLELISM = 4;
 // ── F3: passphrase-strength floor for WRITE paths ─────────────────────
 // Combined with Argon2id memory-hardness, a length floor materially raises the
 // offline brute-force cost. Enforced on encrypt only; decrypt never rejects a
-// passphrase for being short (old files must still open).
-export const MIN_PASSPHRASE_LENGTH = 8;
+// passphrase for being short (old files must still open). 12 aligns with the
+// audit floor for the identity-unlock passphrase — the vault protects the same
+// private keys, so it uses the same bar (Flint rec #3, PR #2).
+export const MIN_PASSPHRASE_LENGTH = 12;
 
 // ── Types ─────────────────────────────────────────────────────────────
 /** KDF descriptor stored in cleartext so any version can be decoded later. */
@@ -139,6 +141,13 @@ export function deriveKeyArgon2id(
   salt: Uint8Array,
   params: { time_cost: number; memory_cost: number; parallelism: number },
 ): Uint8Array {
+  // Enforce F1 AT the derivation point — so no decode path can ever run
+  // argon2id with unclamped, attacker-supplied params (the param-bomb is exactly
+  // the class a future caller could reintroduce). Decode paths SHOULD still call
+  // assertParamsWithinLimits early for a clear error, but this is the guarantee
+  // it can never be skipped (Flint rec #1, PR #2). No-op on the write paths,
+  // whose params are the fixed in-range constants.
+  assertParamsWithinLimits(params);
   const passphraseBytes = new TextEncoder().encode(passphrase);
   return argon2id(passphraseBytes, salt, {
     t: params.time_cost,

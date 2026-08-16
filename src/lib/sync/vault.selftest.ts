@@ -157,7 +157,8 @@ async function main(): Promise<void> {
 
   // 5. F3 — weak passphrase rejected on write.
   await assertThrows(() => packVault(makeContents(), 'short'), 'weak passphrase rejected on write');
-  assert(MIN_PASSPHRASE_LENGTH >= 8, 'passphrase floor is at least 8');
+  await assertThrows(() => packVault(makeContents(), 'elevenchars'), '11-char passphrase rejected (floor is 12)');
+  assert(MIN_PASSPHRASE_LENGTH >= 12, 'passphrase floor is at least 12');
 
   // 6. Wrong passphrase → generic failure, no safe word in the error.
   try {
