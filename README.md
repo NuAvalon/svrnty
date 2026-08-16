@@ -73,7 +73,7 @@ npm run dev
 
 Open `localhost:3000`. Create your identity. Your keys are generated locally and stored encrypted in your browser (IndexedDB) — no server, no filesystem key store. Share your public identity with someone. Exchange signals. Build trust over time.
 
-No accounts. No servers. No terms of service.
+No accounts. No server can read your data. No terms of service.
 
 ## Architecture
 
@@ -133,7 +133,7 @@ Your encrypted trust graph lives in your browser and exports to a local `.svrnty
 
 ## Design Principles
 
-**Sign what moves trust.** Trust signals are dual-signed (classical + post-quantum) and independently verifiable; vault exports are authenticated-encrypted. Signed identity-join (slug claims) lands in 0.1.
+**Sign what moves trust.** Trust signals are dual-signed (classical + post-quantum) and independently verifiable; vault exports are authenticated-encrypted.
 
 **Trust is mutual or it doesn't exist.** You can see someone's trust level for you. They can see yours. Asymmetry is visible, not hidden.
 
