@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# internal — kept local, never pushed to the public repo (red-team audit / open-finding disclosure)
+SECURITY_AUDIT.md
