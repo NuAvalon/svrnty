@@ -1,11 +1,11 @@
 // Foundation tests — canonical (0.1/0.2) + dedup (0.13). Run:
-//   node --experimental-strip-types --test src/lib/format/foundation.test.ts
+//   npx tsx --test  (extensionless — matches repo convention; or tsc→CJS in CI)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalize } from './canonical.ts';
+import { canonicalize } from './canonical';
 import {
   normalizeChannel, dedupKey, edgeChannels, sharesChannel, livingWinsSurvivor,
-} from '../contacts/dedup.ts';
+} from '../contacts/dedup';
 
 test('canonicalize: stable key order + NFC + float/null/exclude guards', () => {
   assert.equal(canonicalize({ b: 1, a: 2 }), '{"a":2,"b":1}');
