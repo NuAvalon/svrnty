@@ -9,7 +9,17 @@ import { HelpGuide } from '@/components/HelpGuide';
 import { Ceremony } from '@/components/Ceremony';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
-import { hasIdentity, getActiveFingerprint, loadIdentity, getAllContacts } from '@/lib/identity/client-store';
+import {
+  hasIdentity,
+  getActiveFingerprint,
+  loadIdentity,
+  getAllContacts,
+  hasEncryptedKeys,
+  initSessionKey,
+  isSessionUnlocked,
+  loadKey,
+  lockSession,
+} from '@/lib/identity/client-store';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -22,7 +32,8 @@ export default function Home() {
   const [unlockError, setUnlockError] = useState('');
   const [unlocking, setUnlocking] = useState(false);
 
-  // Check for existing identity on page load
+  // Check for existing identity on page load.
+  // Encrypted-at-rest keys require initSessionKey before unlocking.
   useEffect(() => {
     async function checkIdentity() {
       try {
@@ -32,6 +43,16 @@ export default function Home() {
           if (fp) {
             const id = await loadIdentity(fp);
             if (id) {
+              const encrypted = await hasEncryptedKeys(fp);
+              if (encrypted && !isSessionUnlocked()) {
+                setLockedIdentity({
+                  name: id.identity?.name || 'Identity',
+                  fingerprint: fp,
+                });
+                setIdentity(null);
+                setAppState('locked');
+                return;
+              }
               setIdentity(id);
               setAppState('unlocked');
               return;
@@ -54,21 +75,27 @@ export default function Home() {
     setUnlockError('');
 
     try {
+      // User unlock passphrase derives the session key — it is NOT the PGP key passphrase.
+      await initSessionKey(passphrase);
       const key = await loadKey(lockedIdentity.fingerprint);
-      if (key && key.passphrase === passphrase) {
-        const id = await loadIdentity(lockedIdentity.fingerprint);
-        if (id) {
-          setIdentity(id);
-          setAppState('unlocked');
-          setPassphrase('');
-        } else {
-          setUnlockError('Identity data not found');
-        }
+      if (!key) {
+        lockSession();
+        setUnlockError('Could not decrypt keys — wrong passphrase?');
+        return;
+      }
+      const id = await loadIdentity(lockedIdentity.fingerprint);
+      if (id) {
+        setIdentity(id);
+        setAppState('unlocked');
+        setPassphrase('');
+        setLockedIdentity(null);
       } else {
-        setUnlockError('Incorrect passphrase');
+        lockSession();
+        setUnlockError('Identity data not found');
       }
     } catch {
-      setUnlockError('Failed to unlock');
+      lockSession();
+      setUnlockError('Incorrect passphrase');
     } finally {
       setUnlocking(false);
     }
@@ -77,6 +104,7 @@ export default function Home() {
   const handleIdentityUpdate = (newIdentity: any) => {
     setIdentity(newIdentity);
     setAppState('unlocked');
+    setLockedIdentity(null);
   };
 
   // Load contacts — extracted as callback so ContactManagement can trigger refresh

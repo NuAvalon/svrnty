@@ -11,7 +11,7 @@ interface SoverentityFrontendProps {
   onVaultRestore?: (contents: any) => void;
 }
 
-type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate';
+type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
 
 // --- Constellation Background ---
 // Generates fixed node positions once (via useMemo) and animates with CSS.
@@ -216,6 +216,13 @@ export function SoverentityFrontend({
   const [unlockConfirm, setUnlockConfirm] = useState('');
   const [unlockError, setUnlockError] = useState('');
   const [gateMode, setGateMode] = useState<GateMode>('choose');
+  const [pendingRecovery, setPendingRecovery] = useState<{
+    seedPhrase: string;
+    identity: any;
+    shardCount: number;
+    threshold: number;
+  } | null>(null);
+  const [recoveryAcked, setRecoveryAcked] = useState(false);
   const [verificationState, setVerificationState] = useState({
     loading: false,
     error: null as string | null,
@@ -297,14 +304,21 @@ export function SoverentityFrontend({
     try {
       const fp = identity?.identity?.fingerprint;
       if (!fp) { setPassphraseError('No identity found'); return; }
+      // Unlock passphrase wraps IndexedDB at rest — NEVER overwrite the PGP key passphrase.
+      // Load material first (works for legacy plaintext records), then init session + re-store encrypted.
       const existing = await loadKey(fp);
-      if (existing) {
-        await storeKey(fp, existing.privateKey, newPassphrase);
+      if (!existing) { setPassphraseError('No keys found for this identity'); return; }
+      const pq = await loadPQKeys(fp);
+      await initSessionKey(newPassphrase);
+      await storeKey(fp, existing.privateKey, existing.passphrase);
+      if (pq) {
+        const { storePQKeys } = await import('@/lib/identity/client-store');
+        await storePQKeys(fp, pq);
       }
       setPassphraseSuccess(true);
       setPassphraseError('');
       setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
-    } catch { setPassphraseError('Failed to set passphrase'); }
+    } catch { setPassphraseError('Failed to set unlock passphrase'); }
   };
 
   const handleClaimUrl = async () => {
@@ -327,12 +341,12 @@ export function SoverentityFrontend({
       }
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
-      const pk = identity?.identity?.publicKey;
+      const pk = identity?.identity?.public_key || identity?.identity?.publicKey || '';
       const email = identity?.identity?.email || '';
       const regRes = await fetch('/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, display_name: slug, public_key: pk || '', slug }),
+        body: JSON.stringify({ email, display_name: slug, public_key: pk, fingerprint: fp || '', slug }),
       });
       if (regRes.ok || regRes.status === 409) {
         // Claim the slug
@@ -350,30 +364,42 @@ export function SoverentityFrontend({
   };
 
   const handleCreateIdentity = async () => {
-    // Validate unlock passphrase if provided
-    if (unlockPassphrase) {
-      if (unlockPassphrase.length < 12) {
-        setUnlockError('Passphrase must be at least 12 characters');
-        return;
-      }
-      if (unlockPassphrase !== unlockConfirm) {
-        setUnlockError('Passphrases do not match');
-        return;
-      }
+    // Unlock passphrase is required — keys must be encrypted at rest.
+    if (!unlockPassphrase || unlockPassphrase.length < 12) {
+      setUnlockError('Unlock passphrase required (min 12 characters)');
+      return;
+    }
+    if (unlockPassphrase !== unlockConfirm) {
+      setUnlockError('Passphrases do not match');
+      return;
     }
     setUnlockError('');
     try {
       setLoading(true);
       setError(null);
       const bi = getBrowserIdentity();
-      const result = await bi.generateIdentity(formData, unlockPassphrase ? { unlockPassphrase } : undefined);
-      setIdentity(result.identity);
-      onIdentityUpdate?.(result.identity);
+      const result = await bi.generateIdentity(formData, { unlockPassphrase });
+      // One-time recovery material — must be shown before entering the app.
+      setPendingRecovery({
+        seedPhrase: result.seedPhrase,
+        identity: result.identity,
+        shardCount: result.shards?.length ?? 0,
+        threshold: result.shards?.[0]?.threshold ?? 3,
+      });
+      setGateMode('recovery-reveal');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
+  };
+
+  const confirmRecoveryReveal = () => {
+    if (!pendingRecovery || !recoveryAcked) return;
+    setIdentity(pendingRecovery.identity);
+    onIdentityUpdate?.(pendingRecovery.identity);
+    setPendingRecovery(null);
+    setRecoveryAcked(false);
   };
 
   const handleVerification = async () => {
@@ -843,7 +869,7 @@ export function SoverentityFrontend({
           </div>
 
           <div style={s.field}>
-            <label style={s.label}>UNLOCK PASSPHRASE (recommended)</label>
+            <label style={s.label}>UNLOCK PASSPHRASE (required)</label>
             <input
               type="password"
               placeholder="Encrypts your keys at rest"
@@ -851,25 +877,23 @@ export function SoverentityFrontend({
               onChange={e => { setUnlockPassphrase(e.target.value); setUnlockError(''); }}
               style={s.input}
             />
-            {unlockPassphrase && (
-              <input
-                type="password"
-                placeholder="Confirm passphrase"
-                value={unlockConfirm}
-                onChange={e => { setUnlockConfirm(e.target.value); setUnlockError(''); }}
-                style={{ ...s.input, marginTop: '8px' }}
-              />
-            )}
+            <input
+              type="password"
+              placeholder="Confirm passphrase"
+              value={unlockConfirm}
+              onChange={e => { setUnlockConfirm(e.target.value); setUnlockError(''); }}
+              style={{ ...s.input, marginTop: '8px' }}
+            />
             {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
-            <p style={s.hint}>Protects your private keys if your browser is compromised. Min 12 chars.</p>
+            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down.</p>
           </div>
 
           <button
             onClick={handleCreateIdentity}
-            disabled={loading || !formData.name || !formData.email}
+            disabled={loading || !formData.name || !formData.email || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm}
             style={{
               ...s.primaryBtn,
-              opacity: loading || !formData.name || !formData.email ? 0.5 : 1,
+              opacity: loading || !formData.name || !formData.email || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm ? 0.5 : 1,
             }}
           >
             {loading ? (
@@ -885,6 +909,69 @@ export function SoverentityFrontend({
             ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
             <br />Your keys. Your data. Your sovereignty.
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Gate: one-time recovery reveal (seed phrase) ---
+  if (!identity && gateMode === 'recovery-reveal' && pendingRecovery) {
+    return (
+      <div style={s.outerWrap}>
+        <div style={s.createCard}>
+          <div style={s.keyIcon}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            </svg>
+          </div>
+          <h1 style={s.createTitle}>Write this down.</h1>
+          <p style={s.createSub}>
+            This recovery phrase reconstructs your master secret. It is shown once.
+            Social-recovery shards ({pendingRecovery.threshold}-of-{pendingRecovery.shardCount}) are stored locally for the tear ceremony.
+          </p>
+          <div style={{
+            background: 'rgba(6, 10, 8, 0.9)',
+            border: '1px solid rgba(200, 168, 78, 0.25)',
+            borderRadius: '10px',
+            padding: '16px',
+            fontFamily: "'JetBrains Mono', monospace",
+            fontSize: '13px',
+            color: '#e8e4d9',
+            wordBreak: 'break-all' as const,
+            lineHeight: 1.7,
+            marginBottom: '16px',
+            userSelect: 'all' as const,
+          }}>
+            {pendingRecovery.seedPhrase}
+          </div>
+          <label style={{
+            display: 'flex',
+            gap: '10px',
+            alignItems: 'flex-start',
+            fontFamily: "'Space Grotesk', sans-serif",
+            fontSize: '12px',
+            color: 'rgba(255,255,255,0.55)',
+            marginBottom: '16px',
+            cursor: 'pointer',
+          }}>
+            <input
+              type="checkbox"
+              checked={recoveryAcked}
+              onChange={e => setRecoveryAcked(e.target.checked)}
+              style={{ marginTop: '2px' }}
+            />
+            <span>I have written this down offline. I understand there is no email recovery.</span>
+          </label>
+          <button
+            onClick={confirmRecoveryReveal}
+            disabled={!recoveryAcked}
+            style={{
+              ...s.primaryBtn,
+              opacity: recoveryAcked ? 1 : 0.45,
+            }}
+          >
+            <span style={s.btnInner}>I have it. Continue.</span>
+          </button>
         </div>
       </div>
     );

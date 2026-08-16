@@ -31,6 +31,25 @@ else
     echo "✅ PASS: No server-side fs in API routes"
 fi
 
+# 1b. API routes must NOT import server-side identity (transitive fs)
+echo ""
+echo "--- Check 1b: No SoverentityIdentity / identity/core in API routes ---"
+ID_VIOLATIONS=$(grep -rn "import.*SoverentityIdentity\|from '@/lib/identity/core'\|from \"@/lib/identity/core\"\|from '@/lib/identity/core.ts'\|require(.*identity/core" \
+    "$SVRNTY_DIR/app/api/" 2>/dev/null || true)
+
+if [ -n "$ID_VIOLATIONS" ]; then
+    echo "❌ FAIL: API routes import server-side identity manager"
+    echo "   That class writes to ~/.soverentity — use IndexedDB BrowserIdentity only."
+    echo ""
+    echo "$ID_VIOLATIONS" | while read -r line; do
+        echo "   $line"
+    done
+    echo ""
+    ERRORS=$((ERRORS + 1))
+else
+    echo "✅ PASS: No server-side identity imports in API routes"
+fi
+
 # 2. No hardcoded secrets
 echo ""
 echo "--- Check 2: No hardcoded secrets ---"
