@@ -10,12 +10,11 @@
 // Spec: outpost/flint/zkp_mutual_trust_spec.md
 // Author: Flint (session 112)
 
-import { sha256 } from '@noble/hashes/sha256';
-import { hmac } from '@noble/hashes/hmac';
-import { hkdf } from '@noble/hashes/hkdf';
-import { x25519 } from '@noble/curves/ed25519';
-import { edwardsToMontgomeryPriv, edwardsToMontgomeryPub } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { hmac } from '@noble/hashes/hmac.js';
+import { hkdf } from '@noble/hashes/hkdf.js';
+import { ed25519, x25519 } from '@noble/curves/ed25519.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 
 // --- Constants ---
 
@@ -66,11 +65,10 @@ export function deriveSharedSecret(
   myPrivateKey: Uint8Array,
   theirPublicKey: Uint8Array
 ): Uint8Array {
-  // Convert Ed25519 keys to X25519 (Montgomery form)
-  const myX25519Private = edwardsToMontgomeryPriv(myPrivateKey);
-  const theirX25519Public = edwardsToMontgomeryPub(theirPublicKey);
+  // @noble/curves v2: edwardsToMontgomery* → ed25519.utils.toMontgomery*
+  const myX25519Private = ed25519.utils.toMontgomerySecret(myPrivateKey);
+  const theirX25519Public = ed25519.utils.toMontgomery(theirPublicKey);
 
-  // X25519 key agreement
   const rawShared = x25519.getSharedSecret(myX25519Private, theirX25519Public);
 
   // HKDF to derive a uniform key

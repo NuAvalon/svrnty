@@ -533,7 +533,23 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
 export async function updateContact(id: string, updates: Partial<ContactRecord>): Promise<void> {
   const existing = await txGet<ContactRecord>('contacts', id);
   if (!existing) throw new Error('Contact not found');
-  await txPut('contacts', { ...existing, ...updates, id: existing.id });
+  const next = { ...existing, ...updates, id: existing.id };
+  // Same fail-closed binding as addContact — refuse fingerprint↔key swaps via update.
+  const fp = next.fingerprint;
+  const pk = next.public_key;
+  if (pk && !(await fingerprintMatchesKey(fp, pk))) {
+    throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
+  }
+  await txPut('contacts', next);
+}
+
+/**
+ * True if this identity's private key record is AES-GCM encrypted at rest
+ * (requires initSessionKey before loadKey will succeed).
+ */
+export async function hasEncryptedKeys(fingerprint: string): Promise<boolean> {
+  const record = await txGet<any>('keys', fingerprint);
+  return !!(record && record.enc_version === ENC_VERSION);
 }
 
 export async function removeContact(id: string): Promise<void> {

@@ -1,14 +1,31 @@
 // src/lib/trust/signals.ts
 // Trust signal creation, signing, and verification.
 // Signals are signed JSON blobs — channel-agnostic (email, Signal, QR, direct).
+//
+// Binding (security punchlist 2026-08-16): `from` is inside the signed payload.
+// Replay: reject timestamps older than SIGNAL_MAX_AGE_MS (default 7 days).
 
 import type { TrustSignal, SignedSignal } from './types';
 import { hybridSign, hybridVerify } from '@/lib/crypto/hybrid';
 import { createMessage, readPrivateKey, decryptKey, sign as pgpSign } from 'openpgp';
 
+/** Default freshness window for received signals (7 days). */
+export const SIGNAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Canonical bytes that are dual-signed. Order is load-bearing — do not reorder keys. */
+function canonicalSignPayload(
+  payload: TrustSignal,
+  from: string,
+  to: string,
+  timestamp: string
+): string {
+  return JSON.stringify({ payload, from, to, timestamp });
+}
+
 /**
  * Create and sign a trust signal.
  * Supports both hybrid (v2) and classical-only (v1) signing.
+ * `from` is always included in the signed material (attribution binding).
  */
 export async function createSignal(
   payload: TrustSignal,
@@ -19,10 +36,9 @@ export async function createSignal(
   pqSigningSecretKey?: Uint8Array
 ): Promise<SignedSignal> {
   const timestamp = new Date().toISOString();
-  const dataToSign = JSON.stringify({ payload, to, timestamp });
+  const dataToSign = canonicalSignPayload(payload, from, to, timestamp);
 
   if (pqSigningSecretKey) {
-    // v2: hybrid dual signature (classical + PQ)
     const signature = await hybridSign(
       dataToSign,
       classicalPrivateKey,
@@ -40,7 +56,6 @@ export async function createSignal(
     };
   }
 
-  // v1: classical-only signature
   const privateKeyObj = await readPrivateKey({ armoredKey: classicalPrivateKey });
   const decryptedKey = await decryptKey({
     privateKey: privateKeyObj,
@@ -60,17 +75,33 @@ export async function createSignal(
 
 /**
  * Verify a received trust signal.
+ * Checks signature binding (including `from`) and timestamp freshness.
  */
 export async function verifySignal(
   signal: SignedSignal,
   senderPublicKey: string,
-  senderPqSigPublicKey?: Uint8Array
+  senderPqSigPublicKey?: Uint8Array,
+  options?: { maxAgeMs?: number; nowMs?: number }
 ): Promise<boolean> {
-  const dataToVerify = JSON.stringify({
-    payload: signal.payload,
-    to: signal.to,
-    timestamp: signal.timestamp,
-  });
+  const maxAgeMs = options?.maxAgeMs ?? SIGNAL_MAX_AGE_MS;
+  const nowMs = options?.nowMs ?? Date.now();
+  const ts = Date.parse(signal.timestamp);
+  if (!Number.isFinite(ts) || Math.abs(nowMs - ts) > maxAgeMs) {
+    return false;
+  }
+
+  // Prefer new binding (includes from). Accept legacy payloads that omitted from
+  // only when classical-only and within the freshness window — still reject if
+  // the claimed `from` cannot be verified under either encoding.
+  const candidates = [
+    canonicalSignPayload(signal.payload, signal.from, signal.to, signal.timestamp),
+    // Legacy (pre-punchlist): from was unsigned
+    JSON.stringify({
+      payload: signal.payload,
+      to: signal.to,
+      timestamp: signal.timestamp,
+    }),
+  ];
 
   const hybridSig = signal.pq_signature
     ? {
@@ -80,13 +111,22 @@ export async function verifySignal(
       }
     : { classical: signal.signature };
 
-  return hybridVerify(
-    dataToVerify,
-    hybridSig,
-    senderPublicKey,
-    senderPqSigPublicKey,
-    !signal.pq_signature // accept classical-only for v1 peers
-  );
+  for (let i = 0; i < candidates.length; i++) {
+    const acceptClassicalOnly = !signal.pq_signature;
+    // Do not accept legacy encoding for hybrid (v2) signals — those must bind from.
+    if (i === 1 && signal.pq_signature) continue;
+
+    const ok = await hybridVerify(
+      candidates[i],
+      hybridSig,
+      senderPublicKey,
+      senderPqSigPublicKey,
+      acceptClassicalOnly
+    );
+    if (ok) return true;
+  }
+
+  return false;
 }
 
 // --- Signal factories ---
@@ -127,12 +167,9 @@ export function shouldPropagate(
   isSenderTrusted: boolean,
   isRecipientTrusted: boolean
 ): boolean {
-  // Break signals always reach trusted contacts
   if (signal.type === 'break' && isRecipientTrusted) {
     return true;
   }
-
-  // Other signals require trusted sender → trusted recipient
   return isSenderTrusted && isRecipientTrusted;
 }
 
@@ -141,5 +178,5 @@ export function shouldPropagate(
  * Trust must be explicitly granted by the person.
  */
 export function introductionCreatesTrust(): boolean {
-  return false; // introductions make you known, never trusted
+  return false;
 }

@@ -21,10 +21,10 @@
 //
 // Author: Athena (session 2819), design review: Flint
 
-import { sha256 } from '@noble/hashes/sha256';
-import { hkdf } from '@noble/hashes/hkdf';
-import { x25519 } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { hkdf } from '@noble/hashes/hkdf.js';
+import { x25519 } from '@noble/curves/ed25519.js';
+import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
 import type { TrustGraphManager } from './trust-graph';
 import type { TrustGraph } from './types';
 
@@ -70,7 +70,6 @@ export interface PSISyncOptions {
  */
 export function generatePSIKeypair(): PSIKeypair {
   const privateKey = randomBytes(32);
-  // Clamp per RFC 7748 (x25519.getPublicKey does this internally)
   const publicKey = x25519.getPublicKey(privateKey);
   return {
     privateKey: toBase64(privateKey),
