@@ -7,12 +7,7 @@
 
 import type { TrustSignal, SignedSignal } from './types';
 import { hybridVerify } from '../crypto/hybrid';
-import {
-  signWithEnvelope,
-  verifyWithEnvelope,
-  classicalSignatureBinds,
-  type EnvelopeSignature,
-} from '../crypto/sign-envelope';
+import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
 import { canonicalize } from '../format/canonical';
 import { DOMAIN_TRUST_SIGNAL } from '../format/envelope';
 
@@ -135,10 +130,8 @@ export async function verifySignal(
   for (let i = 0; i < legacyCandidates.length; i++) {
     // L2 (from unsigned) is never accepted for hybrid (v2) signals — those must bind from.
     if (i === 1 && signal.pq_signature) continue;
-    // Bind the embedded message to this candidate: hybridVerify alone confirms only that the inline
-    // classical signature is internally valid, not that it signs THIS candidate (see
-    // classicalSignatureBinds). Also hardens the legacy window against field substitution.
-    if (!(await classicalSignatureBinds(signal.signature, legacyCandidates[i]))) continue;
+    // hybridVerify now binds the signed literal to the candidate (both branches), so a substitution
+    // that reuses a validly-signed inner message under different fields no longer passes here.
     const ok = await hybridVerify(
       legacyCandidates[i],
       hybridSig,

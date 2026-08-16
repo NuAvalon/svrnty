@@ -43,7 +43,6 @@
 
 import {
   createMessage,
-  readMessage,
   readPrivateKey,
   decryptKey,
   sign as pgpSign,
@@ -109,34 +108,13 @@ export async function signWithEnvelope(
 }
 
 /**
- * True iff the inline (openpgp) classical signature was made over EXACTLY `expected`.
- *
- * This is load-bearing. `hybridVerify` validates the classical signature against the literal message
- * embedded INSIDE the armored blob — NOT against any caller-provided bytes (see hybrid.ts: the
- * `payload` argument is only used for the PQ half). So for a classical-only signature, hybridVerify
- * answers "is this a validly-signed message?" but not "does it sign OUR bytes?". Without this check
- * the JSON fields wrapping the signature are malleable: an attacker keeps a validly-signed inner
- * message and swaps payload/from/to, and verification still passes. Binding the embedded literal to
- * our reconstructed `signedBytes` closes that, and — because the suite is part of `signedBytes` —
- * also defeats stripping the PQ half of a hybrid signature (the embedded HYBRID-suite bytes no
- * longer equal the reconstructed CLASSICAL-suite bytes).
- */
-export async function classicalSignatureBinds(armoredClassical: string, expected: string): Promise<boolean> {
-  try {
-    const msg = await readMessage({ armoredMessage: armoredClassical });
-    const data = msg.getLiteralData();
-    return data != null && new TextDecoder().decode(data) === expected;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Verify a signature produced by {@link signWithEnvelope}. The suite is derived from the presence of
- * a PQ signature, so a hybrid signature stripped to classical-only reconstructs DIFFERENT signed
- * bytes and fails (downgrade resistance). `acceptClassicalOnly` is derived the same way: a classical
- * signal legitimately has no PQ half; a caller that must REQUIRE PQ enforces it upstream (by
- * refusing signals whose pq_signature is absent) rather than here.
+ * Verify a signature produced by {@link signWithEnvelope}. Binding is total: hybridVerify binds BOTH
+ * halves to the exact bytes we pass (the classical branch checks the signed literal equals
+ * `signedBytes`; the PQ branch signs/verifies over them) — so tampering any field, or stripping the
+ * PQ half of a hybrid signature (which flips the derived suite → different `signedBytes`), fails.
+ * `acceptClassicalOnly` is derived from the signature shape: a classical signal legitimately has no
+ * PQ half; a caller that must REQUIRE PQ enforces it upstream (by refusing signals whose
+ * pq_signature is absent) rather than here.
  */
 export async function verifyWithEnvelope(
   domainTag: string,
@@ -147,9 +125,6 @@ export async function verifyWithEnvelope(
 ): Promise<boolean> {
   const suiteId = signature.pq_signature ? SUITE_HYBRID : SUITE_CLASSICAL;
   const signedBytes = buildSignedBytes(domainTag, suiteId, canonicalInput);
-
-  // Bind OUR bytes: hybridVerify only checks the signature against its own embedded message.
-  if (!(await classicalSignatureBinds(signature.classical, signedBytes))) return false;
 
   const hybridSig = signature.pq_signature
     ? {
