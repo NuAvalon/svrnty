@@ -289,7 +289,7 @@ export default function ProfilePage() {
           color: 'rgba(255,255,255,0.12)',
           marginTop: '20px',
         }}>
-          ED25519 + ML-DSA-65 · Post-quantum · Zero-knowledge
+          ED25519 + ML-DSA-87 · Post-quantum · Local-first
         </p>
       </div>
     </div>
