@@ -43,6 +43,17 @@ export {
 } from './encrypted-backup';
 
 export {
+  // 0.1 canonical sign-envelope (domain separation + suite binding)
+  lengthPrefix,
+  buildSignedBytes,
+  signWithEnvelope,
+  verifyWithEnvelope,
+  SUITE_CLASSICAL,
+  SUITE_HYBRID,
+  type EnvelopeSignature,
+} from './sign-envelope';
+
+export {
   // Key recovery (Shamir + seed phrase)
   createKeyVault,
   recoverFromShards,
