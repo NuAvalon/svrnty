@@ -1,30 +1,42 @@
 // src/lib/crypto/encrypted-backup.ts
-// Argon2id-encrypted .svrnty file format
+// Argon2id-encrypted .svrnty identity file format.
 //
-// The .svrnty file is the user's sovereign backup — it contains identity,
-// keys, vault, and contacts. It MUST be encrypted with a user-chosen
-// passphrase before saving to disk.
+// The .svrnty identity file is the user's sovereign backup — it contains
+// identity, keys, vault, and contacts. It MUST be encrypted with a user-chosen
+// passphrase before saving to disk. The private key never exists in plaintext
+// outside the browser.
 //
 // Format: JSON envelope with Argon2id KDF parameters + AES-256-GCM ciphertext.
-// The private key never exists in plaintext outside the browser.
+//
+// lane 0.10 (2026-08-16): the key derivation + AES-GCM now delegate to the
+// SINGLE shared path in `crypto/kdf.ts` (kills the dual-KDF hazard — there is
+// exactly one argon2id implementation in the tree now). The on-disk format and
+// public API are UNCHANGED, so existing identity files still decrypt. Added F1
+// hardening: the import path clamps KDF params (assertParamsWithinLimits)
+// before deriveKey, so a crafted file can't OOM/hang the browser.
 //
 // Spec reference: svrnty_unified_spec.md §Phase 1 — Flint finding #2.
-// Parameters: Argon2id t=3, m=64MB (65536 KiB), p=1.
+// Parameters: Argon2id t=3, m=64MB (65536 KiB), p=1  (Flint spec v0.1.3).
 
-import { argon2id } from '@noble/hashes/argon2.js';
 import type { SovereignBackup } from '@/lib/identity/client-store';
+import {
+  ARGON2_TIME_COST,
+  ARGON2_MEMORY_COST,
+  ARGON2_PARALLELISM,
+  SALT_LENGTH,
+  IV_LENGTH,
+  toBase64,
+  fromBase64,
+  randomBytes,
+  deriveKeyArgon2id,
+  aesGcmEncrypt,
+  aesGcmDecrypt,
+  assertParamsWithinLimits,
+} from './kdf';
 
-// ── Constants (Flint spec v0.1.3) ────────────────────────────────
-
-const ARGON2_TIME_COST = 3;        // iterations
-const ARGON2_MEMORY_COST = 65536;  // 64 MB in KiB
-const ARGON2_PARALLELISM = 1;
-const ARGON2_KEY_LENGTH = 32;      // 256-bit key for AES-256-GCM
-const SALT_LENGTH = 16;            // 128-bit salt
-const IV_LENGTH = 12;              // 96-bit IV for AES-GCM
 const FORMAT_VERSION = '1.0';
 
-// ── Types ────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────
 
 /** The encrypted .svrnty file format */
 export interface EncryptedSvrntyFile {
@@ -35,51 +47,25 @@ export interface EncryptedSvrntyFile {
   /** KDF parameters (stored so future versions can upgrade) */
   kdf: {
     algorithm: 'argon2id';
-    salt: string;      // base64
+    salt: string; // base64
     time_cost: number;
     memory_cost: number; // KiB
     parallelism: number;
   };
   /** AES-256-GCM encrypted payload */
   encrypted: {
-    iv: string;         // base64
+    iv: string; // base64
     ciphertext: string; // base64 (includes GCM auth tag)
   };
 }
 
-// ── Helpers ──────────────────────────────────────────────────────
-
-function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
-}
-
-function fromBase64(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-// ── Core ─────────────────────────────────────────────────────────
-
-/**
- * Derive an AES-256 key from a user passphrase using Argon2id.
- */
-function deriveKey(passphrase: string, salt: Uint8Array): Uint8Array {
-  const passphraseBytes = new TextEncoder().encode(passphrase);
-  return argon2id(passphraseBytes, salt, {
-    t: ARGON2_TIME_COST,
-    m: ARGON2_MEMORY_COST,
-    p: ARGON2_PARALLELISM,
-    dkLen: ARGON2_KEY_LENGTH,
-  });
-}
+// ── Core ─────────────────────────────────────────────────────────────
 
 /**
  * Encrypt a SovereignBackup into a .svrnty file.
  *
  * @param backup - The full sovereign backup (identity + keys + contacts)
- * @param passphrase - User-chosen passphrase (minimum 8 characters recommended)
+ * @param passphrase - User-chosen passphrase
  * @returns EncryptedSvrntyFile ready to be JSON.stringify'd and saved
  */
 export async function encryptBackup(
@@ -90,26 +76,21 @@ export async function encryptBackup(
     throw new Error('Passphrase is required to encrypt backup');
   }
 
-  // Generate random salt and IV
-  const salt = new Uint8Array(SALT_LENGTH);
-  crypto.getRandomValues(salt);
-  const iv = new Uint8Array(IV_LENGTH);
-  crypto.getRandomValues(iv);
+  const salt = randomBytes(SALT_LENGTH);
+  const iv = randomBytes(IV_LENGTH);
 
-  // Derive AES key from passphrase via Argon2id
-  const keyBytes = deriveKey(passphrase, salt);
-  const aesKey = await crypto.subtle.importKey(
-    'raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt']
-  );
+  // Derive AES key via the single shared Argon2id path.
+  const keyBytes = deriveKeyArgon2id(passphrase, salt, {
+    time_cost: ARGON2_TIME_COST,
+    memory_cost: ARGON2_MEMORY_COST,
+    parallelism: ARGON2_PARALLELISM,
+  });
+
+  const plaintext = new TextEncoder().encode(JSON.stringify(backup));
+  const ciphertextWithTag = await aesGcmEncrypt(keyBytes, iv, plaintext);
 
   // Zero the raw key bytes
   keyBytes.fill(0);
-
-  // Encrypt the backup JSON
-  const plaintext = new TextEncoder().encode(JSON.stringify(backup));
-  const ciphertextWithTag = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, plaintext)
-  );
 
   return {
     format: 'svrnty-encrypted',
@@ -144,33 +125,28 @@ export async function decryptBackup(
     throw new Error(`Unknown file format: ${file.format}`);
   }
 
+  // F1: the file is untrusted — reject hostile KDF params BEFORE deriveKey,
+  // so a param-bomb can't OOM/hang the browser on import.
+  assertParamsWithinLimits(file.kdf);
+
   const salt = fromBase64(file.kdf.salt);
   const iv = fromBase64(file.encrypted.iv);
   const ciphertext = fromBase64(file.encrypted.ciphertext);
 
-  // Derive key using stored parameters (forward-compatible with upgrades)
-  const passphraseBytes = new TextEncoder().encode(passphrase);
-  const keyBytes = argon2id(passphraseBytes, salt, {
-    t: file.kdf.time_cost,
-    m: file.kdf.memory_cost,
-    p: file.kdf.parallelism,
-    dkLen: ARGON2_KEY_LENGTH,
+  const keyBytes = deriveKeyArgon2id(passphrase, salt, {
+    time_cost: file.kdf.time_cost,
+    memory_cost: file.kdf.memory_cost,
+    parallelism: file.kdf.parallelism,
   });
 
-  const aesKey = await crypto.subtle.importKey(
-    'raw', keyBytes, { name: 'AES-GCM' }, false, ['decrypt']
-  );
-
-  // Zero the raw key bytes
-  keyBytes.fill(0);
-
   try {
-    const decrypted = new Uint8Array(
-      await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext)
-    );
+    const decrypted = await aesGcmDecrypt(keyBytes, iv, ciphertext);
     return JSON.parse(new TextDecoder().decode(decrypted));
   } catch {
     throw new Error('Decryption failed — wrong passphrase or corrupted file');
+  } finally {
+    // Zero the raw key bytes whether or not decryption succeeded.
+    keyBytes.fill(0);
   }
 }
 
@@ -180,8 +156,10 @@ export async function decryptBackup(
 export function isEncryptedSvrntyFile(obj: unknown): obj is EncryptedSvrntyFile {
   if (!obj || typeof obj !== 'object') return false;
   const file = obj as Record<string, unknown>;
-  return file.format === 'svrnty-encrypted'
-    && typeof file.version === 'string'
-    && typeof file.kdf === 'object'
-    && typeof file.encrypted === 'object';
+  return (
+    file.format === 'svrnty-encrypted' &&
+    typeof file.version === 'string' &&
+    typeof file.kdf === 'object' &&
+    typeof file.encrypted === 'object'
+  );
 }

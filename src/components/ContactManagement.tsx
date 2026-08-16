@@ -446,7 +446,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         { safeWord: '' },
         vaultData || null,
       );
-      const passphrase = prompt('Enter a passphrase to encrypt your vault.\nThis protects your private keys, contacts, and trust network.\n\nChoose something strong — you will need it to restore.');
+      const passphrase = prompt('Enter a passphrase to encrypt your vault.\nThis protects your private keys, contacts, and trust network.\n\nAt least 12 characters. This is your vault passphrase, not your recovery phrase — you will need it to restore.');
       if (!passphrase) { setVaultExporting(false); return; }
       const packed = await packVault(contents, passphrase);
       downloadVault(packed);

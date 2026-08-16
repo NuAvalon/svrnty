@@ -678,6 +678,11 @@ export function SoverentityFrontend({
         const arrayBuffer = await vaultFile.arrayBuffer();
         const { unpackVault } = await import('@/lib/sync/vault');
         const { contents } = await unpackVault(arrayBuffer, vaultPassphrase);
+        // Decryption succeeded → everything in `contents` is now AUTHENTICATED
+        // by the passphrase (AES-GCM). The safe word (contents.settings.safeWord)
+        // may be shown here as a post-decrypt confirmation — the honest place for
+        // the recognition ritual, unforgeable because it required the key. (Pre-
+        // passphrase display was removed in v3; a cleartext safe word is fakeable.)
         setIdentity(contents.identity);
         onIdentityUpdate?.(contents.identity);
         onVaultRestore?.(contents);
@@ -927,6 +932,8 @@ export function SoverentityFrontend({
           <h1 style={s.createTitle}>Write this down.</h1>
           <p style={s.createSub}>
             This recovery phrase reconstructs your master secret. It is shown once.
+            It is NOT your vault passphrase — the passphrase unlocks this device,
+            the recovery phrase rebuilds your identity if you lose the device.
             Social-recovery shards ({pendingRecovery.threshold}-of-{pendingRecovery.shardCount}) are stored locally for the tear ceremony.
           </p>
           <div style={{
@@ -1064,44 +1071,29 @@ export function SoverentityFrontend({
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Verify Your Vault</h2>
+            <h2 style={s.heroTitle}>Open Your Vault</h2>
           </div>
 
           {/* Vault Info Card */}
-          <div style={s.vaultInfoCard}>
-            <div style={s.vaultInfoRow}>
-              <span style={s.vaultInfoLabel}>NAME</span>
-              <span style={s.vaultInfoValue}>{vaultHeader.displayName}</span>
-            </div>
-            <div style={s.vaultInfoRow}>
-              <span style={s.vaultInfoLabel}>FINGERPRINT</span>
-              <span style={{ ...s.vaultInfoValue, fontFamily: "'JetBrains Mono', monospace", fontSize: '11px' }}>
-                ...{vaultHeader.fingerprintHint}
-              </span>
-            </div>
-            <div style={s.vaultInfoRow}>
-              <span style={s.vaultInfoLabel}>CONTACTS</span>
-              <span style={s.vaultInfoValue}>{vaultHeader.entryCount} entries</span>
-            </div>
-            <div style={s.vaultInfoRow}>
-              <span style={s.vaultInfoLabel}>LAST MODIFIED</span>
-              <span style={s.vaultInfoValue}>
-                {new Date(vaultHeader.lastModified).toLocaleDateString()}
-              </span>
-            </div>
-
-            {/* Safe Word */}
-            {vaultHeader.safeWord && (
-              <div style={s.safeWordSection}>
-                <span style={s.vaultInfoLabel}>YOUR SAFE WORD</span>
-                <div style={s.safeWordValue}>{vaultHeader.safeWord}</div>
-                <p style={s.safeWordHint}>
-                  If this is not the safe word you set, do not proceed.
-                  This file may have been tampered with.
-                </p>
+          {/* A v3 vault reveals nothing before decryption. Its owner, contacts,
+              and safe word live in the ENCRYPTED body and are authenticated by
+              the passphrase (GCM). A cleartext pre-passphrase preview would be
+              forgeable — an attacker could show a plausible name/safe word to
+              phish "yes, that's mine" — so we show none. Recognition of TYPE,
+              not IDENTITY. (Legacy v2 vaults are refused at file-select.) */}
+          {vaultHeader?.format === 'svrnty-vault' && (
+            <div style={s.vaultInfoCard}>
+              <div style={s.vaultInfoRow}>
+                <span style={s.vaultInfoLabel}>FILE</span>
+                <span style={s.vaultInfoValue}>Encrypted svrnty vault · v{vaultHeader.version}</span>
               </div>
-            )}
-          </div>
+              <p style={s.safeWordHint}>
+                This vault is sealed. Your name, contacts, and safe word appear
+                only after you enter the correct passphrase — so nothing shown
+                here can be forged. Enter your passphrase to open it.
+              </p>
+            </div>
+          )}
 
           {restoreError && <div style={s.error}>{restoreError}</div>}
 
