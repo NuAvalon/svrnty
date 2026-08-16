@@ -15,7 +15,7 @@ svrnty is a local-first encrypted trust protocol. It lets you:
 - **Own your identity** — cryptographic keypairs generated on your device, stored on your device, controlled by you alone
 - **Build a trust graph** — binary trust (Known / Trusted) with decay, vouching, and full audit trails. No tiers to climb. No popularity contests.
 - **Exchange signed signals** — vouch for someone, break trust visibly, raise a concern privately, make an introduction, rotate a key — all cryptographically signed, all verifiable
-- **Back up your vault** — encrypted `.svrnty` vault files (AES-256-GCM, PBKDF2 600K iterations). Export locally, or sync to Google Drive, Dropbox, iCloud, or your own WebDAV server. The file is encrypted before it leaves your device. The cloud sees a binary blob, nothing more.
+- **Back up your vault** — encrypted `.svrnty` vault files (AES-256-GCM, PBKDF2 600K iterations). Export to a local file you control. Cloud sync (Google Drive, Dropbox, iCloud, WebDAV) is on the roadmap; when it lands, the file is encrypted before it leaves your device and the cloud sees a binary blob, nothing more.
 - **Recover your keys** — Shamir secret sharing splits your master key across trusted contacts. No single point of failure. No "forgot password" flow that routes through a corporation.
 
 Nothing personal ever leaves your device unless you choose to send it.
@@ -24,8 +24,8 @@ Nothing personal ever leaves your device unless you choose to send it.
 
 svrnty uses hybrid cryptography from day one:
 
-- **ED25519 + ML-DSA-65** for signatures (classical + FIPS 204 post-quantum)
-- **Curve25519 + ML-KEM-768** for encryption (classical + FIPS 203 post-quantum)
+- **ED25519 + ML-DSA-87** for signatures (classical + FIPS 204 post-quantum, Cat 5)
+- **Curve25519 + ML-KEM-1024** for encryption (classical + FIPS 203 post-quantum, Cat 5)
 
 This isn't paranoia. A trust protocol is infrastructure that should measure in decades. Harvest-now-decrypt-later is a known attack vector. The NIST post-quantum standards were finalized in 2024. If you're building a new cryptographic system in 2026 without them, you're choosing to be obsolete.
 
@@ -71,9 +71,9 @@ npm install
 npm run dev
 ```
 
-Open `localhost:3000`. Create your identity. Your keys are generated locally and stored in `~/.soverentity/`. Share your public identity with someone. Exchange signals. Build trust over time.
+Open `localhost:3000`. Create your identity. Your keys are generated locally and stored encrypted in your browser (IndexedDB) — no server, no filesystem key store. Share your public identity with someone. Exchange signals. Build trust over time.
 
-No accounts. No servers. No terms of service.
+No accounts. No server can read your data. No terms of service.
 
 ## Architecture
 
@@ -86,8 +86,8 @@ No accounts. No servers. No terms of service.
 │  Identity Layer    Keys, Claims, Vault  │
 ├─────────────────────────────────────────┤
 │  Crypto Layer      Hybrid PQ + Classic  │
-│                    ED25519 + ML-DSA-65  │
-│                    X25519 + ML-KEM-768  │
+│                    ED25519 + ML-DSA-87  │
+│                    X25519 + ML-KEM-1024 │
 │                    Shamir + AES-256-GCM │
 └─────────────────────────────────────────┘
 ```
@@ -126,14 +126,14 @@ At its core, svrnty is a contact manager that respects you. Phone numbers, email
 - **Add contacts** with whatever details you have — phone, email, handle, public key
 - **Verify them** through email, QR code, mutual vouch, or in-person exchange
 - **Export vCards** to import into your phone's native contacts
-- **Sync encrypted backups** to local storage, Google Drive, iCloud, or Dropbox — your data leaves encrypted, arrives encrypted, stays encrypted
+- **Export encrypted backups** to a local file today — your data leaves encrypted, arrives encrypted, stays encrypted (cloud sync to Google Drive, iCloud, Dropbox is on the roadmap)
 - **Stay connected** without a social network. See who your mutuals are, who introduced whom, and how trust flows through your circle
 
-Every time the app opens and closes, your encrypted trust graph syncs. If your phone dies, your trust network survives.
+Your encrypted trust graph lives in your browser and exports to a local `.svrnty` file you control. (Automatic cloud sync — so a lost or dead phone can't cost you your network — is on the roadmap.)
 
 ## Design Principles
 
-**Always sign.** There is no unsigned path. Every signal, every export, every candle carries a cryptographic signature. If it can't be verified, it didn't happen.
+**Sign what moves trust.** Trust signals are dual-signed (classical + post-quantum) and independently verifiable; vault exports are authenticated-encrypted.
 
 **Trust is mutual or it doesn't exist.** You can see someone's trust level for you. They can see yours. Asymmetry is visible, not hidden.
 
