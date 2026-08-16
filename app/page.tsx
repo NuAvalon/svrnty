@@ -347,7 +347,7 @@ export default function Home() {
 
       <footer className="mt-16 text-center text-sm" style={{ color: '#5a5548' }}>
         <p>SVRNTY — Self-Sovereign Trust Network</p>
-        <p className="mt-1">All data is encrypted and stored locally. No servers. No tracking.</p>
+        <p className="mt-1">All data is encrypted and stored locally. No server can read it. No tracking.</p>
       </footer>
     </div>
   );

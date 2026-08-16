@@ -812,7 +812,7 @@ export function SoverentityFrontend({
 
             <p style={s.footer}>
               ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
-              <br />Post-quantum. Zero-knowledge. Sovereign.
+              <br />Post-quantum. Local-first. Sovereign.
             </p>
           </div>
         </div>
@@ -843,7 +843,7 @@ export function SoverentityFrontend({
             <h2 style={s.heroTitle}>Begin anew.</h2>
             <p style={s.heroSub}>
               Generate a sovereign keypair. Your keys never leave your device.
-              Post-quantum encryption. No servers. No tracking.
+              Post-quantum encryption. No server can read your data. No tracking.
             </p>
           </div>
 
