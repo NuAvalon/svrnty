@@ -29,6 +29,7 @@ import { generateSigningKeypair, type PQSigningKeypair } from '../crypto/pq';
 import {
   verifyIncomingContactUpdate,
   ContactUpdateRejected,
+  CONTACT_UPDATE_ALLOWED_FIELDS,
   type ContactUpdateRejectReason,
   type KnownContactIdentity,
   type SignedContactUpdate,
@@ -181,6 +182,45 @@ test('I-4: a device-location field is refused (field-not-allowed), pre-crypto', 
   const env = baseEnv({ changed_fields: ['location'], delta: { location: { lat: 51.5, lng: -0.12 } } });
   const s = { envelope: env, signature: { classical: 'unused' } };
   await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
+});
+
+// ── Spartan allowlist (Archie #115574 D1=SHRINK; joint verify↔apply pass with Athena's 0.14 apply) ──
+// The allowlist is the SHARED verify↔apply contract. It must equal EXACTLY {display_name, note,
+// emails}; the same set is re-asserted on the apply side (apply-contact-update.ts:105) and the
+// merge-guard cross-checks them post-merge. This test is the verify-side half of that divergence guard.
+// Fields that used to be allowlisted (rich vCard set) or that moved to their own signed object type
+// (public_key→key.rotate, routing→routing.update) are now refused by the firewall pre-crypto — a
+// contact.update can no longer carry them.
+test('shrink: the allowlist is EXACTLY the spartan set {display_name, note, emails}', () => {
+  assert.deepEqual([...CONTACT_UPDATE_ALLOWED_FIELDS].sort(), ['display_name', 'emails', 'note']);
+});
+
+test('shrink: public_key is refused field-not-allowed (moved to key.rotate — not a card field)', async () => {
+  const env = baseEnv({ changed_fields: ['public_key'], delta: { public_key: 'AAAA' } });
+  const s = { envelope: env, signature: { classical: 'unused' } };
+  await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
+});
+
+test('shrink: routing is refused field-not-allowed (moved to routing.update — not a card field)', async () => {
+  const env = baseEnv({ changed_fields: ['routing'], delta: { routing: ['relay://x'] } });
+  const s = { envelope: env, signature: { classical: 'unused' } };
+  await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
+});
+
+test('shrink: a rich vCard field (org) is refused field-not-allowed (grow-later, no producer yet)', async () => {
+  const env = baseEnv({ changed_fields: ['org'], delta: { org: 'Acme' } });
+  const s = { envelope: env, signature: { classical: 'unused' } };
+  await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
+});
+
+test('retained: note + emails still verify end-to-end (the spartan set is functional)', async () => {
+  const env = baseEnv({
+    changed_fields: ['note', 'emails'],
+    delta: { note: 'met at the equinox', emails: ['alice@example.test', 'a@alt.test'] },
+  });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.changed_fields, ['note', 'emails']);
+  assert.deepEqual(v.delta, { note: 'met at the equinox', emails: ['alice@example.test', 'a@alt.test'] });
 });
 
 // ── Honest manifest: changed_fields must equal delta's keys ─────────────────────

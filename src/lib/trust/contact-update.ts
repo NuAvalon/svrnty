@@ -48,31 +48,40 @@ import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envel
  * naming ANY field outside this set is rejected WHOLE (never partially applied), so the update
  * channel cannot be used to smuggle a field the address-book model never intended to accept.
  *
+ * SPARTAN SET (Archie ruled #115574 D1=SHRINK; joint verify↔apply pass with Athena's 0.14 apply
+ * mirror, apply-contact-update.ts:105). The canonical invariant is `ALLOWED_FIELDS ≡ {fields the 0.14
+ * ContactRecord homes + contactToEdge surfaces}`, enforced IDENTICALLY in verify (here) and apply — a
+ * divergence is a bug the merge-guard test catches. We restore that subset-equality by shrinking to the
+ * three fields the dim→living demo actually needs: minimum attack surface under sprint pressure.
+ *
+ * GROW-LATER IS FREE: the field vocabulary lives inside the signed `payload` (opaque to the relay,
+ * hashed inside the signature — envelope §6), so adding a field later breaks NO signature, touches NO
+ * relay, needs NO re-ratify; older receivers fail-closed on the unknown field (this firewall). Grow one
+ * field at a time once it earns (a) a verified producer, (b) a contactToEdge home, (c) a real claim.
+ * `phones`/`urls` are the concrete grow-NEXT candidates (the 0.12 vCard import already produces them).
+ *
+ * OUT OF contact.update ENTIRELY — these are their own signed object types, NOT card fields:
+ *   - `public_key`  → `key.rotate`: a key rotation, not a field-set. Riding the plain field path would
+ *     swap the active key while keeping the genesis fingerprint (bypassing the fingerprint↔key binding)
+ *     and skip epoch-lineage verification (`epoch-ahead-needs-lineage` below). Rotation gets its own
+ *     lineage-gated path. (Athena #115570 catch; Archie #115574.)
+ *   - `routing`     → `routing.update`: relay hints resolve to relays only (I-4), its own format freeze.
+ *
  * Deliberately absent — and this absence is load-bearing, not an oversight:
  *   - device geolocation / coordinates / `location` / `lat` / `lng` / `ip`  → I-4 (reachability-not-
  *     location): routing resolves to relays only; nothing exposes where a person physically is.
  *   - `last_seen` / `presence` / `online` / `liveness`                      → I-6 (render provenance):
- *     nothing renders presence; a contact cannot push a "last seen" attribute into your view.
+ *     nothing renders presence; a contact cannot push a "last seen" attribute into your view. The
+ *     living/dim ignition is driven by the receiver's LOCAL witnessed-receipt clock (apply's
+ *     last_interaction refresh), never a pushed field — confirmed I-6-safe (KB #86068).
  *
- * The field NAMES here are the security surface (Flint's lane) and must stay a subset of whatever the
- * 0.14 three-state Contact type (Athena) exposes as user-editable; reconcile names on merge. The
- * PROPERTY — allowlist-firewall, no presence/no geolocation — is invariant regardless of the names.
+ * The PROPERTY — allowlist-firewall, no presence / no geolocation, verify≡apply — is invariant
+ * regardless of the exact names; the names are the reconciliation seam.
  */
 export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
-  'display_name',
-  'given_name',
-  'family_name',
-  'org',
-  'title',
-  'phones',
-  'emails',
-  'urls',
-  'photo',
-  'note',
-  'birthday',
-  'postal_addresses', // user-authored mailing address (an authored datum) — NOT device geolocation
-  'public_key', // rotation surface: a card may carry the successor key; lineage is verified separately
-  'routing', // relay hints (I-4: relays only — never coordinates); routing.update format freezes later
+  'display_name', // → typed ContactRecord.name (contactToEdge: peer_name)
+  'note', // → ContactRecord.notes (contactToEdge reads c.notes || c.metadata?.notes)
+  'emails', // → primary to ContactRecord.email; full list on the emails passthrough
 ]);
 
 /** A contact.update as it arrives off the wire: the envelope plus its detached envelope signature. */
