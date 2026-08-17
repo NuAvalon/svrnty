@@ -1,0 +1,47 @@
+# CODEOWNERS — svrnty merge-gate jurisdictions
+# Git-infra memo §1 (Peter/Fable, 2026-08-17). The canonical review-routing map for the
+# delegated merge gate. Full rules + merge-mechanic runbook: docs/MERGE_GATE.md
+#
+# ⚠️ ENFORCEMENT NOTE (read this): all agents currently push under ONE GitHub identity
+# (palberts22), so GitHub-native CODEOWNERS review-enforcement cannot tell agents apart.
+# Until per-agent GitHub accounts exist, THIS FILE IS THE JURISDICTION MAP (who reviews
+# what); the required non-author review is enforced by the MCP request_review() layer +
+# the merge-mechanic (Athena). The @palberts22 owner is a technical placeholder; the
+# [jurisdiction] tag in each comment is the OPERATIVE routing. When per-agent handles
+# land, swap @palberts22 → the jurisdiction's handle and GitHub enforcement turns on.
+
+# ── Default: merge-mechanic routes to the governing jurisdiction ──────────────
+*                                    @palberts22   # [merge-mechanic]
+
+# ── Crypto · envelope · key material → FLINT  (also PROTECTED PATH: Peter-ack) ─
+/src/lib/crypto/                     @palberts22   # [Flint · PROTECTED]
+/src/lib/identity/                   @palberts22   # [Flint · identity keys]
+/src/lib/trust/contact-update.ts     @palberts22   # [Flint · consume-verify firewall (sig-verify)]
+/src/lib/trust/slug-claim.ts         @palberts22   # [Flint · key-material / slug claim]
+/src/lib/trust/mutual-trust-sync.ts  @palberts22   # [Flint · trust crypto]
+**/sign-envelope.ts                  @palberts22   # [Flint · PROTECTED]
+**/*envelope*.ts                     @palberts22   # [Flint · PROTECTED]
+
+# ── Formats · protocol objects · frozen rows → ARCHIE  (frozen = PROTECTED) ────
+/src/lib/format/                     @palberts22   # [Archie · format-frozen · PROTECTED]
+/src/lib/trust/types.ts              @palberts22   # [Archie · TrustEdge schema · PROTECTED]
+
+# ── Relay custody logic → PROTECTED PATH (Peter-ack) ──────────────────────────
+/src/lib/sync/relay.ts               @palberts22   # [PROTECTED · relay custody]
+/src/lib/sync/vault.ts               @palberts22   # [Flint · at-rest vault crypto]
+
+# ── UX · ceremony · onboarding · contacts → ATHENA (if Athena authors → Flint/Archie reviews) ─
+/src/lib/ceremony/                   @palberts22   # [Athena · ceremony/UX]
+/src/lib/contacts/                   @palberts22   # [Athena · contacts/dedup/apply]
+/src/lib/trust/contact-state.ts      @palberts22   # [Athena · three-state view]
+/src/components/                     @palberts22   # [Athena · UI]
+
+# ── Docs · canon → HYPATIA ────────────────────────────────────────────────────
+*.md                                 @palberts22   # [Hypatia · docs/canon]
+/docs/                               @palberts22   # [Hypatia · docs/canon]
+/README.md                           @palberts22   # [Hypatia · canon]
+
+# ── The gate config itself → PROTECTED PATH (the gate cannot self-weaken) ──────
+/CODEOWNERS                          @palberts22   # [PROTECTED · gate config]
+/.github/                            @palberts22   # [PROTECTED · CI / branch-protection config]
+/docs/MERGE_GATE.md                  @palberts22   # [PROTECTED · gate rules]
