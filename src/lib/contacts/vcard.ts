@@ -32,9 +32,11 @@ export function toVCard(edge: TrustEdge): string {
     }
   }
 
-  // Phone
-  if (edge.contact_info?.phone) {
-    lines.push(`TEL;TYPE=CELL:${edge.contact_info.phone}`);
+  // Phones (multiple TEL lines — real vCards are phone-centric)
+  if (edge.contact_info?.phones) {
+    for (const phone of edge.contact_info.phones) {
+      lines.push(`TEL;TYPE=CELL:${phone}`);
+    }
   }
 
   // URLs
@@ -44,10 +46,10 @@ export function toVCard(edge: TrustEdge): string {
     }
   }
 
-  // Notes — include trust level and fingerprint
+  // Notes — include trust state and fingerprint
   const noteLines = [
     `svrnty fingerprint: ${edge.peer_fingerprint}`,
-    `Trust level: L${edge.trust_level}`,
+    `Trust: ${edge.trusted ? 'trusted' : 'known'}${edge.trusted_since ? ` since ${edge.trusted_since.slice(0, 10)}` : ''}`,
   ];
   if (edge.notes) noteLines.push(edge.notes);
   lines.push(`NOTE:${escapeVCard(noteLines.join('\\n'))}`);
@@ -88,7 +90,7 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
     const lines = block.split(/\r?\n/);
 
     const edge: Partial<TrustEdge> = {
-      contact_info: { emails: [], handles: {}, urls: [] },
+      contact_info: { phones: [], emails: [], handles: {}, urls: [] },
       tags: [],
       connection_channels: [],
     };
@@ -104,7 +106,7 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
           edge.contact_info!.emails!.push(email);
         }
       } else if (line.startsWith('TEL')) {
-        edge.contact_info!.phone = line.split(':').slice(1).join(':');
+        edge.contact_info!.phones!.push(line.split(':').slice(1).join(':'));
       } else if (line.startsWith('URL:')) {
         edge.contact_info!.urls!.push(line.slice(4));
       } else if (line.startsWith('X-') && line.includes(':')) {

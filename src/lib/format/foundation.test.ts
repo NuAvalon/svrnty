@@ -35,8 +35,8 @@ const edge = (over: Record<string, unknown> = {}) => ({
   tags: [], notes: '', connection_channels: [], added_at: '', ...over,
 }) as any;
 
-test('edgeChannels: pulls peer_email + contact_info.{phone,emails,handles}', () => {
-  const e = edge({ peer_email: 'A@B.com', contact_info: { phone: '+14155550123', emails: ['c@d.com'], handles: { telegram: '@h' } } });
+test('edgeChannels: pulls peer_email + contact_info.{phones,emails,handles}', () => {
+  const e = edge({ peer_email: 'A@B.com', contact_info: { phones: ['+14155550123'], emails: ['c@d.com'], handles: { telegram: '@h' } } });
   const keys = edgeChannels(e).map(dedupKey).filter(Boolean);
   assert.ok(keys.includes('email:a@b.com'));
   assert.ok(keys.includes('phone:+14155550123'));
