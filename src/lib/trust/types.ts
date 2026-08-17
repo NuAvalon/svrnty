@@ -15,7 +15,7 @@ export interface TrustEdge {
   peer_public_key: string;
   // Contact details (encrypted, never shared without consent)
   contact_info?: {
-    phone?: string;                     // phone number
+    phones?: string[];                  // phone numbers (E.164 where known); multiple per §9.2 now-set
     emails?: string[];                  // additional emails beyond peer_email
     handles?: Record<string, string>;   // 'signal' -> '@handle', 'telegram' -> '@handle', etc.
     urls?: string[];                    // personal sites, profiles

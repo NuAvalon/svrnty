@@ -47,13 +47,13 @@ function toE164(v: string): string | null {
   return '+' + digits;
 }
 
-/** Every normalized channel a TrustEdge carries: peer_email + contact_info.{phone,emails[],handles{}}. */
+/** Every normalized channel a TrustEdge carries: peer_email + contact_info.{phones[],emails[],handles{}}. */
 export function edgeChannels(edge: ChannelSource): NormalizedChannel[] {
   const out: NormalizedChannel[] = [];
   if (edge.peer_email) out.push(normalizeChannel('email', edge.peer_email));
   const ci = edge.contact_info;
   if (ci) {
-    if (ci.phone) out.push(normalizeChannel('phone', ci.phone));
+    for (const p of ci.phones ?? []) out.push(normalizeChannel('phone', p));
     for (const e of ci.emails ?? []) out.push(normalizeChannel('email', e));
     for (const [platform, handle] of Object.entries(ci.handles ?? {})) out.push(normalizeChannel(platform, handle));
   }
