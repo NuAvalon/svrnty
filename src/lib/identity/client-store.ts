@@ -150,6 +150,25 @@ interface ContactRecord {
   trust_level: string;
   added_at: string;
   metadata?: any;
+
+  // ── 0.14 verify bookkeeping (Archie D3 #115574 §6) ──────────────────────────
+  // epoch/version mirror the wire identity_epoch/revision a verified contact.update
+  // carried (written by applyVerifiedContactUpdate). Peer-authored wire data — the
+  // monotonic/replay floors read them; safe to carry.
+  epoch?: number;
+  version?: number;
+
+  // ── LOCAL-ONLY decay clock (guardrail A — Flint #115581) ────────────────────
+  // last_interaction is DERIVED LOCALLY (the receiver's own witnessed-receipt: apply
+  // sets it = now on a VerifiedContactUpdate). It is NEVER signed and MUST NEVER enter
+  // an outbound payload to a peer or the relay — leaking it would turn a private decay
+  // clock into a third-party activity oracle. Audited clean 2026-08-17: the only
+  // peer/relay outbound (Ceremony.buildCardPackage) sends a closed
+  // {fingerprint,display_name,public_key,email} from OWN identity; contact.update can't
+  // carry it (not allowlisted); owner's-own vault/file export is own-data, not a peer
+  // broadcast. Any NEW outbound path must exclude this field.
+  last_interaction?: string;
+
   [key: string]: any;
 }
 
