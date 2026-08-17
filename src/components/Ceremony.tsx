@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRelay } from '@/lib/sync/relay';
+import { shareUrlShort } from '@/lib/config/domain';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { TrustMap } from '@/components/TrustMap';
@@ -216,7 +217,7 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
                 <div style={linkBoxStyle}>
                   <div style={{ fontSize: 10, color: C.faint, letterSpacing: 1, marginBottom: 4 }}>SHORT LINK</div>
                   <code style={{ color: C.emerald, fontSize: 13, wordBreak: 'break-all' }}>
-                    svrnty.is/c/{relay.code}
+                    {shareUrlShort(relay.code)}
                   </code>
                 </div>
                 <button style={copyBtnStyle} onClick={() => navigator.clipboard?.writeText(relay.url)}>

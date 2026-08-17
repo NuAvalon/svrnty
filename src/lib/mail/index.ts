@@ -1,5 +1,6 @@
 // src/lib/mail/index.ts
 import { Resend } from 'resend';
+import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 
 const resend = new Resend(process.env.RESEND_API_KEY || process.env.RESEND);
 
@@ -20,7 +21,7 @@ export async function sendVerificationEmail(to: string, code: string) {
           </div>
           <p style="color: #666; font-size: 0.9rem;">This code expires in 15 minutes.</p>
           <hr style="border: none; border-top: 1px solid #eee; margin: 1.5rem 0;" />
-          <p style="color: #999; font-size: 0.8rem;">svrnty.is — sovereign identity</p>
+          <p style="color: #999; font-size: 0.8rem;">${SVRNTY_DOMAIN} — sovereign identity</p>
         </div>
       `
     });
