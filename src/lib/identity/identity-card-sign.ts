@@ -23,6 +23,45 @@ import { DOMAIN_IDENTITY_CARD, identityCardSigningInput } from '../format/envelo
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
 import { fingerprintMatchesKey } from './fingerprint';
 
+// ── §6 Suite-length validation: the ek length IS the suite discriminant ──────────
+// ML-KEM ek (public-key) sizes are bijective with the parameter set, so a valid card needs no
+// separate suite_id field — the length names the suite under the signature. This is the SINGLE
+// SOURCE of suite-truth (Flint spec §6). Two load-bearing conditions:
+//   1. DOWNGRADE-FLOOR: the map holds ONLY svrnty-sanctioned suites. ML-KEM-512 (800 B) is BELOW
+//      the security floor and is deliberately absent → a 512 key derives `undefined` → 4c (dropped).
+//   2. ENCAP MUST DERIVE IDENTICALLY: when `hybridEncapsulate` gets its first caller it MUST pick
+//      ML-KEM params from the STORED key's length via THIS SAME map — never hardcode 1024. Import-
+//      validate and encrypt-time must agree, or length-as-suite is unsound. (Zero callers today.)
+export const EK_LEN_TO_SUITE: Record<number, string> = {
+  1184: 'ML-KEM-768',   // Cat-3
+  1568: 'ML-KEM-1024',  // Cat-5
+};
+
+/**
+ * Decoded byte length of a base64 string, computed arithmetically (no atob/Buffer — identical in
+ * browser and the tsc→node test env). Throws on non-base64 / bad padding so a malformed key routes
+ * to 4c (undefined suite), never to a false accept.
+ */
+function base64ByteLength(b64: string): number {
+  const s = b64.trim();
+  if (s.length === 0 || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) {
+    throw new Error('not valid base64');
+  }
+  const pad = s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0;
+  return (s.length * 3) / 4 - pad;
+}
+
+/** The svrnty suite implied by a base64 ML-KEM public key's decoded length, or undefined if
+ *  unsupported/below-floor/malformed. undefined ⇒ import branch 4c (soft-info, pq dropped). */
+export function suiteFromKemLength(pqKemPublicKeyB64: string): string | undefined {
+  if (!pqKemPublicKeyB64) return undefined;
+  try {
+    return EK_LEN_TO_SUITE[base64ByteLength(pqKemPublicKeyB64)];
+  } catch {
+    return undefined;
+  }
+}
+
 /** A signed identity card: the card fields plus the envelope signature over them (TOP-LEVEL). */
 export interface SignedIdentityCard extends IdentityCard {
   signature: string;      // classical (ED25519 / PGP armored)
@@ -88,4 +127,115 @@ export async function verifySignedIdentityCard(
     id.public_key,
     pqSigningPublicKey,
   );
+}
+
+// ── SEND side: assemble + sign a card from a stored identity (both send-paths share this) ────
+// Ceremony (relay) and ContactManagement (QR/copy) both call this so the signed shape can NEVER
+// drift between carriers. pq_* come from the identity's post_quantum block (its PUBLIC keys); a
+// v1/no-PQ identity yields '' → the card is signed over the ABSENCE, which the receiver reads as
+// branch-4a (quiet, no pq). Signing needs the classical private key ⇒ the session must be unlocked;
+// the caller loads it via loadKey() and handles the locked case.
+export async function buildSignedIdentityCard(
+  identity: any,
+  classicalPrivateKeyArmored: string,
+  classicalPassphrase: string,
+): Promise<SignedIdentityCard> {
+  const idData = identity?.identity ?? identity;
+  if (!idData?.fingerprint || !idData?.public_key) {
+    throw new Error('cannot sign identity card — identity is missing fingerprint or public_key');
+  }
+  const pq = idData.post_quantum;
+  const card: IdentityCard = {
+    version: '1.0',
+    type: 'identity-exchange',
+    created_at: new Date().toISOString(),
+    identity: {
+      fingerprint: idData.fingerprint,
+      display_name: idData.display_name || idData.slug || '',
+      public_key: idData.public_key,
+      email: idData.email || '',
+      pq_sig_public_key: pq?.sig_public_key || '',
+      pq_kem_public_key: pq?.kem_public_key || '',
+    },
+  };
+  return signIdentityCard(card, classicalPrivateKeyArmored, classicalPassphrase);
+}
+
+// ── RECEIVE side: the fail-closed 4-branch import disposition (both receive-paths share this) ──
+// JoinerCeremony (relay/QR) and ContactManagement.handleImportExchange (copy/paste) BOTH call this
+// so the security decision can't drift between carriers (Flint spec §4/§5: every carrier ends at
+// verifySignedIdentityCard). Pure decision — it stores nothing; the caller applies `pq` + `alarm`.
+export interface ImportDisposition {
+  /** Import the classical contact at all? false ONLY for branch 1 (fp-fail / malformed card). */
+  importClassical: boolean;
+  /** Authenticated pq fields to STORE on the record, or null (drop pq). Non-null ONLY for 4b. */
+  pq: { pq_kem_public_key: string; pq_sig_public_key: string } | null;
+  /** UI disposition: reject (no import) · quiet (benign) · loud (possible tampering) · soft-info (unsupported suite). */
+  alarm: 'reject' | 'quiet' | 'loud' | 'soft-info';
+  /** Which branch fired — for tests, the UI message, and telemetry. */
+  branch: 1 | 2 | 3 | '4a' | '4b' | '4c';
+  /** Derived svrnty suite (4b only). */
+  suite?: string;
+}
+
+/**
+ * Classify a parsed identity-exchange card into its fail-closed import disposition (Flint spec §4).
+ *   1  fp↔key FAILS / malformed        → REJECT the whole card (classical identity unverifiable).
+ *   2  fp↔key OK, no `signature`        → classical-only, DROP pq, QUIET (benign pre-PQ peer).
+ *   3  signature PRESENT but INVALID    → classical-only, DROP pq, LOUD (possible tampering).
+ *   4  signature VALID → pq sub-disposition:
+ *      4a pq_kem absent/empty           → QUIET, no pq (legit v1 signer; sig covers the absence).
+ *      4b length ∈ EK_LEN_TO_SUITE      → STORE the authenticated pq (derived suite).
+ *      4c length ∉ EK_LEN_TO_SUITE      → SOFT-INFO, no pq (sender bug, NOT tamper — a valid sig
+ *                                         means a swapped kem is unreachable; §6/4c).
+ * The core `verifySignedIdentityCard` collapses 2 and 3 into `false`; we split them here on the
+ * PRESENCE of a non-empty `signature` field (branch 2 never calls verify).
+ */
+export async function classifyImportedCard(card: any): Promise<ImportDisposition> {
+  const id = card?.identity;
+  // Malformed classical identity → branch 1 (nothing to import, nothing to trust).
+  if (
+    !id ||
+    typeof id.public_key !== 'string' || id.public_key.length === 0 ||
+    typeof id.fingerprint !== 'string' || id.fingerprint.length === 0
+  ) {
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
+  }
+  // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
+  // never calls verify, and this decides classical-import for every branch.
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) {
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
+  }
+  // fp↔key OK → the classical contact imports for branches 2/3/4.
+  const hasSig = typeof card.signature === 'string' && card.signature.length > 0;
+  // BRANCH 2: no signature → classical-only, quiet. Must NOT alarm (benign transition-era peer).
+  if (!hasSig) {
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2 };
+  }
+  // Signature present → verify (re-checks fp↔key internally; keeps verify self-contained).
+  const valid = await verifySignedIdentityCard(card as SignedIdentityCard);
+  // BRANCH 3: present but invalid → classical-only, LOUD. Reserve the tamper alarm for THIS only.
+  if (!valid) {
+    return { importClassical: true, pq: null, alarm: 'loud', branch: 3 };
+  }
+  // BRANCH 4: valid signature → pq sub-disposition.
+  const kem = typeof id.pq_kem_public_key === 'string' ? id.pq_kem_public_key : '';
+  // 4a: absent/empty pq_kem under a valid sig → legit v1/no-PQ signer. Quiet, no pq.
+  if (kem === '') {
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a' };
+  }
+  const suite = suiteFromKemLength(kem);
+  // 4c: valid sig, unsupported/malformed suite length → sender bug, NOT tampering. Soft-info, no pq.
+  if (!suite) {
+    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c' };
+  }
+  // 4b: valid sig + supported suite → STORE the authenticated pq (both keys, as carried).
+  const sig = typeof id.pq_sig_public_key === 'string' ? id.pq_sig_public_key : '';
+  return {
+    importClassical: true,
+    pq: { pq_kem_public_key: kem, pq_sig_public_key: sig },
+    alarm: 'quiet',
+    branch: '4b',
+    suite,
+  };
 }
