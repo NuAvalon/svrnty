@@ -545,6 +545,11 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
     owner_fingerprint: ownerFingerprint,
     added_at: new Date().toISOString(),
   };
+  // Keyless/gray contacts (vCard import) have no fingerprint. The `contacts.fingerprint` index is
+  // UNIQUE: IndexedDB collides multiple ''-valued keys, but SKIPS records whose key is ABSENT. So a
+  // second gray with fingerprint='' throws a ConstraintError — store an empty fingerprint as absent
+  // instead. (Verified in-browser: two ''-fp puts → 2nd errors; two absent-fp puts → both OK.)
+  if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
   await txPut('contacts', record);
   return record;
 }

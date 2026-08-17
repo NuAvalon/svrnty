@@ -25,6 +25,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
+import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import {
   getAllContacts, addContact, updateContact, removeContact,
@@ -120,6 +121,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showShareIdentityDialog, setShowShareIdentityDialog] = useState(false);
   const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
+  const [showVcardImport, setShowVcardImport] = useState(false);
   const [showShardGiveDialog, setShowShardGiveDialog] = useState(false);
   const [vaultExporting, setVaultExporting] = useState(false);
 
@@ -546,6 +548,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               <Download className="h-4 w-4 mr-2" />
               Import Contact
             </Button>
+            <Button variant="outline" size="sm" onClick={() => setShowVcardImport(true)} data-testid="import-contacts-trigger">
+              <Upload className="h-4 w-4 mr-2" />
+              Import contacts
+            </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm">
@@ -956,6 +962,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {fingerprint && (
+          <ImportContactsDialog
+            ownerFingerprint={fingerprint}
+            open={showVcardImport}
+            onOpenChange={setShowVcardImport}
+            onImported={loadContacts}
+          />
+        )}
 
       </CardContent>
     </Card>
