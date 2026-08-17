@@ -53,8 +53,11 @@ function recordToEdge(c: any): TrustEdge {
 }
 
 // Edge → the ContactRecord fields to persist for a gray (keyless) contact.
-// NOTE(Athena review): mirrors your 0.14 FIELD_MAP — primary phone/email + phones/emails lists +
-// contact_info. A gray has no fingerprint/public_key, so it lands keyless (book derives "gray" from that).
+// NOTE: mirrors Athena's 0.14 FIELD_MAP — primary phone/email + phones/emails lists + contact_info
+// (verified no drift, #116019). A gray has no fingerprint/public_key → lands keyless (store keeps an
+// empty fingerprint ABSENT, not '', so multi-gray import doesn't collide the UNIQUE index — Athena 8bb8eef).
+// trust_level:'unverified' → projects trusted:false → the book renders it GRAY (getContactState,
+// contact-state.ts:27). The absent fingerprint is NOT the gray trigger; `trusted` is.
 function edgeToRecordFields(e: Partial<TrustEdge>) {
   const phones = e.contact_info?.phones ?? [];
   const emails = e.contact_info?.emails ?? [];
