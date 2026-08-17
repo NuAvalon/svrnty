@@ -34,3 +34,22 @@ jobs:
         run: npm run build
       - name: Typecheck — informational (16-error baseline being drained)
         run: npx --no-install tsc --noEmit || true
+
+  # Playwright e2e against `next dev` — the standing verification path for the demo-critical
+  # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
+  # (Peter's ask; T11 demo-arc). BLOCKING once specs mature — starts with the harness smoke test.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install (locked)
+        run: npm ci
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+      - name: e2e — demo-critical flows against next dev
+        run: npm run test:e2e
