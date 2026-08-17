@@ -141,7 +141,7 @@ interface VaultRecord {
   vault: any; // KeyVault
 }
 
-interface ContactRecord {
+export interface ContactRecord {
   id: string;
   fingerprint: string;
   name: string;

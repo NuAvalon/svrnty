@@ -28,8 +28,10 @@ import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import {
   getAllContacts, addContact, updateContact, removeContact,
+  getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 
 // --- Types ---
 // Binary trust: known or trusted. No tiers.
@@ -350,19 +352,13 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setError(null);
-      // Build exchange package client-side from identity data
-      const pkg = {
-        version: '1.0',
-        type: 'identity-exchange',
-        created_at: new Date().toISOString(),
-        identity: {
-          fingerprint: identity.identity.fingerprint,
-          display_name: identity.identity.display_name || identity.identity.slug,
-          public_key: identity.identity.public_key,
-          email: identity.identity.email,
-        },
-      };
-      setExchangePackage(JSON.stringify(pkg, null, 2));
+      // Build + SIGN the exchange package (carries pq_kem/pq_sig under the signature). Copy/paste is
+      // an untrusted carrier — the card MUST be signed so the receiver can re-verify pq wasn't swapped
+      // (an unsigned card is the HNDL hole). Signing needs the unlocked private key.
+      const key = await loadKey(fingerprint);
+      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      setExchangePackage(JSON.stringify(signed, null, 2));
       setShowShareIdentityDialog(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create exchange package');
@@ -376,24 +372,61 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setExchangeResult(null);
-      const pkg = JSON.parse(exchangeImportData.trim());
-      // Validate exchange package
-      const contactIdentity = pkg.identity || pkg;
+      const card = JSON.parse(exchangeImportData.trim());
+      const contactIdentity = card.identity || card;
       if (!contactIdentity.fingerprint || !contactIdentity.public_key) {
         throw new Error('Invalid exchange package: missing fingerprint or public key');
       }
       if (contactIdentity.fingerprint === fingerprint) {
         throw new Error('You cannot import yourself as a contact');
       }
-      await addContact(fingerprint, {
-        name: contactIdentity.display_name || contactIdentity.name || 'Unknown',
-        email: contactIdentity.email || '',
-        fingerprint: contactIdentity.fingerprint,
-        public_key: contactIdentity.public_key,
-        trust_level: 'unverified',
-        metadata: { connection_method: 'manual' as const },
-      });
-      setExchangeResult({ success: true, message: `Contact "${contactIdentity.display_name || contactIdentity.fingerprint.slice(0, 8)}" added successfully` });
+
+      // Fail-closed disposition — copy/paste is an untrusted carrier, so it re-verifies the card
+      // exactly like the relay/QR path (Flint spec §4/§5; the ONE shared decision, no drift).
+      const d = await classifyImportedCard(card);
+      if (!d.importClassical) {
+        // Branch 1 — fp↔key mismatch / malformed: refuse the card entirely.
+        setExchangeResult({ success: false, message: 'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send a fresh one.' });
+        return;
+      }
+
+      const displayName = contactIdentity.display_name || contactIdentity.name || 'Unknown';
+      const pqFields = d.pq
+        ? { pq_kem_public_key: d.pq.pq_kem_public_key, pq_sig_public_key: d.pq.pq_sig_public_key }
+        : {};
+
+      const existing = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
+      if (existing) {
+        // Upgrade-on-re-exchange (Flint §7#5): a known contact re-sharing a VALID pq card back-fills
+        // pq on the existing edge — no duplicate; NEVER silently replaces a different stored pq
+        // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
+        if (d.alarm === 'loud') {
+          setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
+        } else if (d.pq && !existing.pq_kem_public_key) {
+          await updateContact(existing.id, pqFields);
+          setExchangeResult({ success: true, message: `Updated "${displayName}" — their post-quantum key is now stored.` });
+        } else {
+          setExchangeResult({ success: true, message: `You already have "${displayName}".` });
+        }
+      } else {
+        await addContact(fingerprint, {
+          name: displayName,
+          email: contactIdentity.email || '',
+          fingerprint: contactIdentity.fingerprint,
+          public_key: contactIdentity.public_key,
+          trust_level: 'unverified',
+          metadata: { connection_method: 'manual' as const },
+          ...pqFields, // present ONLY on branch 4b (authenticated pq); dropped on 2/3/4a/4c
+        } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
+        // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
+        const message =
+          d.alarm === 'loud'
+            ? `Added "${displayName}" (classical only) — could not verify their key material; possible tampering. Ask them to re-share over a secure link.`
+            : d.alarm === 'soft-info'
+              ? `Added "${displayName}" — their post-quantum key uses an unsupported format, so classical only.`
+              : `Contact "${displayName}" added successfully.`;
+        setExchangeResult({ success: d.alarm !== 'loud', message });
+      }
       await loadContacts();
     } catch (err) {
       if (err instanceof SyntaxError) {

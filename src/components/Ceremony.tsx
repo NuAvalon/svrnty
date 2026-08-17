@@ -20,6 +20,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRelay } from '@/lib/sync/relay';
+import { loadKey } from '@/lib/identity/client-store';
+import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { shareUrlShort } from '@/lib/config/domain';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
@@ -71,19 +73,16 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
   const [creatingRelay, setCreatingRelay] = useState(false);
   const relayStartedRef = useRef(false);
 
-  const buildCardPackage = useCallback(() => {
-    // Same shape ContactManagement.handleShareIdentity produces (type: 'identity-exchange').
-    return JSON.stringify({
-      version: '1.0',
-      type: 'identity-exchange',
-      created_at: new Date().toISOString(),
-      identity: {
-        fingerprint: identity.identity.fingerprint,
-        display_name: identity.identity.display_name || identity.identity.slug,
-        public_key: identity.identity.public_key,
-        email: identity.identity.email,
-      },
-    });
+  // Build + SIGN the identity-exchange card (same shape ContactManagement produces). The signature
+  // binds pq_kem/pq_sig to the classical key so a receiver on an untrusted carrier (QR/relay) can
+  // re-verify they weren't swapped — an unsigned card is the HNDL hole. Signing needs the private
+  // key ⇒ the session must be unlocked; buildSignedIdentityCard carries pq from identity.post_quantum.
+  const buildCardPackage = useCallback(async () => {
+    const fp = identity.identity.fingerprint;
+    const key = await loadKey(fp);
+    if (!key) throw new Error('Unlock your identity first to share a signed card.');
+    const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+    return JSON.stringify(signed);
   }, [identity]);
 
   const startHandshake = useCallback(async () => {
@@ -92,7 +91,7 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
     setCreatingRelay(true);
     ceremony.clearError();
     try {
-      const result = await createRelay(buildCardPackage());
+      const result = await createRelay(await buildCardPackage());
       setRelay({ url: result.url, code: result.code, expiresAt: result.expiresAt });
       ceremony.handshakeEstablished(result.code); // machine advances handshake -> card
     } catch (err: any) {

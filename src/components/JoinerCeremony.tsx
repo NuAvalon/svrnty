@@ -25,12 +25,13 @@ import {
   getActiveFingerprint,
   loadIdentity,
   addContact,
+  updateContact,
   getContactByFingerprint,
   getAllContacts,
   storeHeldShard,
   SHARD_CUSTODY_TYPE,
 } from '@/lib/identity/client-store';
-import { fingerprintMatchesKey } from '@/lib/identity/fingerprint';
+import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { TrustMap } from '@/components/TrustMap';
 import { useCeremony } from '@/lib/ceremony/useCeremony';
 import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/ceremony/machine';
@@ -69,8 +70,10 @@ interface PeerCard {
   name: string;
   fingerprint: string;
   publicKey: string;
-  pqPublicKey: string;
   email: string;
+  // Authenticated pq (branch 4b) or null; alarm drives the import banner (branch-3 loud / 4c soft-info).
+  pq: { pq_kem_public_key: string; pq_sig_public_key: string } | null;
+  alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
 export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragment: string }) {
@@ -128,15 +131,14 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           (window as any).__svrnty_shard = parsed;
         } else {
           const p = parsed.identity || parsed;
-          const claimedFp = p.fingerprint || p.peer_fingerprint || '';
-          const publicKey = p.public_key || p.publicKey || '';
-          // C2 / Invariant-1: verify the fingerprint↔key binding BEFORE showing the reassuring
-          // fingerprint box or persisting anything. Refuse a card whose fingerprint does not match
-          // its key — otherwise the out-of-band "is this your fingerprint?" ritual would falsely
-          // pass while the stored key is an attacker's.
-          const bound = await fingerprintMatchesKey(claimedFp, publicKey);
+          // C2 / Invariant-1 + signature: classify the card BEFORE showing the reassuring fingerprint
+          // box or persisting anything. Branch 1 (fp↔key fail / malformed) refuses the card — otherwise
+          // the out-of-band "is this your fingerprint?" ritual would falsely pass while the stored key
+          // is an attacker's. Branches 2/3/4 import the classical contact; the pq sub-disposition
+          // decides whether the authenticated pq_kem/pq_sig is stored (Flint spec §4).
+          const d = await classifyImportedCard(parsed);
           if (cancelled) return;
-          if (!bound) {
+          if (!d.importClassical) {
             fail(
               'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send you a fresh link.',
             );
@@ -145,10 +147,11 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           setKind('card');
           setPeer({
             name: p.display_name || p.name || p.peer_name || 'Unknown',
-            fingerprint: claimedFp,
-            publicKey,
-            pqPublicKey: p.pq_public_key || p.pqPublicKey || '',
+            fingerprint: p.fingerprint || p.peer_fingerprint || '',
+            publicKey: p.public_key || p.publicKey || '',
             email: p.email || '',
+            pq: d.pq,
+            alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
           });
         }
         handshakeEstablished(code); // machine: handshake -> card
@@ -177,7 +180,16 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         ? await getContactByFingerprint(ownerFp, peer.fingerprint)
         : null;
       let edgeId: string;
+      const pqFields = peer.pq
+        ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
+        : {};
       if (existing) {
+        // Upgrade-on-re-exchange (Flint §7#5): back-fill authenticated pq onto a known edge that has
+        // none — no duplicate; never silently replace a different stored pq (rotation is a separate,
+        // deliberate, lineage-tracked path, not a re-import side effect).
+        if (peer.pq && !existing.pq_kem_public_key) {
+          await updateContact(existing.id, pqFields);
+        }
         setAlreadyKnown(true);
         edgeId = existing.id;
       } else {
@@ -185,9 +197,9 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           name: peer.name,
           fingerprint: peer.fingerprint,
           public_key: peer.publicKey,
-          pq_public_key: peer.pqPublicKey,
           trust_level: 'pending',
           email: peer.email,
+          ...pqFields, // authenticated pq (branch 4b) only; dropped on 2/3/4a/4c
         } as any);
         edgeId = contact.id;
       }
@@ -337,6 +349,23 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
                 {peer.fingerprint || '—'}
               </code>
             </div>
+            {/* PQ disposition (Flint spec §4 cry-wolf: loud only on an invalid signature) */}
+            {peer.alarm === 'loud' && (
+              <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>
+                ⚠ Could not verify this card&apos;s key material — possible tampering. It imports as a
+                classical contact only; ask them to re-share over a fresh link.
+              </p>
+            )}
+            {peer.alarm === 'soft-info' && (
+              <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
+                Their post-quantum key uses an unsupported format — importing classical only.
+              </p>
+            )}
+            {peer.alarm === 'quiet' && peer.pq && (
+              <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
+                ✓ Post-quantum protected — a signed card carrying a verified encryption key.
+              </p>
+            )}
             <button style={primaryBtnStyle} onClick={receiveCard}>Receive their card →</button>
           </div>
         )}
