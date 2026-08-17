@@ -6,6 +6,7 @@
 // Spec: shared/outbox/archie/svrnty_queueB_0.13_dedup_and_0.1_0.2_format_v1.md Part B
 
 import type { TrustEdge } from '@/lib/trust/types';
+import { livingWinsMerge } from './import-dedup';
 
 export interface NormalizedChannel {
   type: string;
@@ -179,4 +180,33 @@ export function clusterByExactChannel(edges: TrustEdge[]): DedupCluster[] {
   }
   clusters.sort((a, b) => (a.survivor.id < b.survivor.id ? -1 : a.survivor.id > b.survivor.id ? 1 : 0));
   return clusters;
+}
+
+// ─── Cluster field-union merge (9.1 — Archie #115913 placement + exact composition) ──────────
+// The field-union the cluster/import DEFER to. Kept here with the primitives so BOTH the import
+// path (Apollo, pairwise) and the cluster path (multi-member) fold IDENTICALLY (Hypatia build-once
+// #115891). NOTE: imports livingWinsMerge from ./import-dedup, which imports back from here — a
+// circular import, safe because every cross-reference is call-time (function body), not module-init.
+// (Cleaner long-term: livingWinsMerge is really a PRIMITIVE and could move here; deferred to the
+// Apollo-coordinated re-route PR so as not to touch his file solo.)
+
+/**
+ * Fold same-person edges into ONE merged edge. Composition ORDER matters (Archie #115913):
+ * rank-SELECT the base FIRST, THEN union the others into it — NOT a naive reduce(livingWinsMerge),
+ * which would let reduce-order pick the scalar base instead of the rank-winner (the subtle bug).
+ *   (1) livingWinsSurvivor selects the base by rank (trusted>known>gray, then channels/fp/id).
+ *   (2) livingWinsMerge unions every other member's multi-value fields into the base; the base's
+ *       non-empty SCALARS are never overwritten (attested/living data wins).
+ * → rank-winner's scalars win + ALL members' phones/emails/urls/tags/handles UNIONed (lossless, B3).
+ * Pure + order-independent (livingWinsSurvivor is a total order). One member → returned as-is.
+ */
+export function foldLivingWins(members: TrustEdge[]): TrustEdge {
+  if (members.length === 0) throw new Error('foldLivingWins: empty member set');
+  const base = members.reduce(livingWinsSurvivor);
+  return members.filter((m) => m !== base).reduce<TrustEdge>((acc, m) => livingWinsMerge(acc, m), base);
+}
+
+/** Merge a DedupCluster into its single surviving edge — the field-union its detection deferred (B3). */
+export function mergeCluster(cluster: DedupCluster): TrustEdge {
+  return foldLivingWins(cluster.members);
 }
