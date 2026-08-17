@@ -66,6 +66,16 @@ test('emails maps primary→email and preserves the full list', () => {
   assert.deepEqual(next.emails, ['a@new.example', 'a@alt.example']);
 });
 
+test('phones maps primary→phone and preserves the full list (Fable 9.2: dedup keys on phone)', () => {
+  const { next } = applyVerifiedContactUpdate(
+    contact(),
+    update({ changed_fields: ['phones'], delta: { phones: ['+15551234567', '+15559876543'] } }),
+    NOW,
+  );
+  assert.equal(next.phone, '+15551234567');
+  assert.deepEqual(next.phones, ['+15551234567', '+15559876543']);
+});
+
 test('multiple mapped fields apply together', () => {
   const { next } = applyVerifiedContactUpdate(
     contact(),
@@ -86,7 +96,7 @@ test('multiple mapped fields apply together', () => {
 // this test fails loud — exactly the mistake the 'field-not-mappable' branch guards.
 for (const field of CONTACT_UPDATE_ALLOWED_FIELDS) {
   test(`allowlisted field '${field}' has a mapping (no silent drop)`, () => {
-    const delta = field === 'emails' ? { emails: ['x@example.com'] } : { [field]: 'x' };
+    const delta = (field === 'emails' || field === 'phones') ? { [field]: ['x'] } : { [field]: 'x' };
     assert.doesNotThrow(() =>
       applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta }), NOW),
     );
@@ -94,7 +104,7 @@ for (const field of CONTACT_UPDATE_ALLOWED_FIELDS) {
 }
 
 // ── Fields OUTSIDE the spartan allowlist fail-close at the firewall ──────────
-for (const field of ['phones', 'urls', 'given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
+for (const field of ['urls', 'given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
   test(`non-allowlisted field '${field}' throws field-not-allowed (defence-in-depth firewall)`, () => {
     assert.throws(
       () => applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta: { [field]: 'x' } }), NOW),
@@ -122,13 +132,14 @@ test('a field outside the allowlist throws field-not-allowed even if it reached 
   );
 });
 
-test('apply allowlist is the spartan canonical set (0.4-verify aligns to this on merge)', () => {
-  // The canonical contact.update vocabulary (Archie D1 #115574 / Flint #115581).
-  // Flint's 0.4 verify allowlist aligns to THIS exact set at merge-reconcile; a
-  // divergence-guard test over both files asserts equality once they coexist.
+test('apply allowlist is the canonical set {display_name,phones,emails,note} (0.4-verify aligns on merge)', () => {
+  // The canonical contact.update vocabulary (Archie D1 #115574 / Flint #115581; phones
+  // folded in per Fable 9.2 / spec §2 #115738). Flint's 0.4 verify allowlist aligns to
+  // THIS exact set at merge-reconcile; a divergence-guard test over both files asserts
+  // equality once they coexist.
   assert.deepEqual(
     [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
-    ['display_name', 'emails', 'note'].sort(),
+    ['display_name', 'phones', 'emails', 'note'].sort(),
   );
 });
 

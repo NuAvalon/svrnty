@@ -36,9 +36,10 @@
 // whose typed fields are name/email/public_key/trust_level/metadata. The three-state
 // view (gray/living/dim) is DERIVED from it via contactToEdge()+getContactState(),
 // not stored. The field-vocabulary reconciliation has LANDED (Archie D1 #115574 /
-// Flint #115581): the allowlist is the spartan canonical set {display_name,note,emails},
-// and FIELD_MAP is the single reviewable place growth lands. Flint aligns his 0.4
-// allowlist to this set at merge-reconcile (divergence-guarded). See
+// Flint #115581; phones folded in per Fable 9.2 / spec §2 #115738): the allowlist is
+// the canonical set {display_name,phones,emails,note}, and FIELD_MAP is the single
+// reviewable place growth lands. Flint aligns his 0.4 allowlist to this set at
+// merge-reconcile (divergence-guarded). See
 // shared/outbox/athena/svrnty_0.14_apply_reconciliation.md.
 
 import type { ContactState } from '../trust/contact-state';
@@ -104,17 +105,21 @@ export class ContactUpdateApplyRejected extends Error {
  * a divergence is a bug the divergence-guard test catches on merge. The absence of
  * presence/geo fields is load-bearing (I-4 / I-6) on both sides of the seam.
  *
- * SPARTAN canonical set (Archie D1 ruling #115574, KB#86066; Flint security-GO
- * #115581). Deliberately the SMALLEST vocabulary a contact.update may carry —
- * everything else fail-closes at the firewall ('field-not-allowed'), which is the
- * E2E floor doing its job (an older receiver rejecting an unknown field). Growth is
- * FREE later (add to BOTH allowlists + FIELD_MAP together; breaks no signature/relay):
- *   grow-NEXT = phones, urls (have a producer via vCard import, pending a
- *     contactToEdge home);  routing → its own routing.update object type;
- *     public_key → its own key.rotate path (a rotation, not a field-set — §5/§11).
+ * Canonical set (Archie D1 #115574, KB#86066; Flint security-GO #115581; phones
+ * folded in per Fable 9.2 / spec §2 #115738). Deliberately the SMALLEST vocabulary a
+ * contact.update may carry — everything else fail-closes at the firewall
+ * ('field-not-allowed'), the E2E floor doing its job (an older receiver rejecting an
+ * unknown field). This is the shrink→grow architecture firing: the spartan floor was
+ * {display_name,note,emails}; PHONES are the first earned grow — vCards are
+ * phone-centric and the dedup key (9.1) normalizes on the phone, so importing a
+ * contact without their number is broken, not spartan. Further growth stays FREE
+ * (add to BOTH allowlists + FIELD_MAP together; breaks no signature/relay):
+ *   grow-NEXT = urls (has a producer via vCard import, pending a contactToEdge home);
+ *   routing → its own routing.update object type; public_key → its own key.rotate
+ *   path (a rotation, not a field-set — §5/§11).
  */
 export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
-  'display_name', 'note', 'emails',
+  'display_name', 'phones', 'emails', 'note',
 ]);
 
 /**
@@ -128,10 +133,13 @@ export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
  * a FIELD_MAP entry, failing loud rather than silently dropping it (the no-silent-drop
  * floor). Extending support = add to BOTH allowlists + one entry here, together.
  *
- * OUT of the spartan allowlist (fail-closed at the firewall as 'field-not-allowed'):
- *   given_name/family_name/org/title/photo/birthday/postal_addresses → no producer +
+ * OUT of the allowlist (fail-closed at the firewall as 'field-not-allowed'):
+ *   given_name/family_name/org/title/birthday/postal_addresses → no producer +
  *     no ContactRecord home; rich-vCard vocabulary, deferred (grow only with a home).
- *   phones/urls → have a producer (vCard import) but contactToEdge has no home yet →
+ *   photo → rides vCard IMPORT as storage-passthrough (import vocab ≠ this
+ *     contact.update allowlist, per spec §2); preserved-through-import, NOT a signed
+ *     contact.update field — so it stays OUT here.
+ *   urls → has a producer (vCard import) but contactToEdge has no home yet →
  *     grow-NEXT once that home lands (a passthrough today would store-but-never-show).
  *   routing → its own routing.update object type (a delivery redirect, not a card edit).
  *   public_key → its own key.rotate path: a rotation, not a plain field-set — a plain
@@ -153,6 +161,15 @@ const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
     const list = asStringArray(v);
     r.emails = list;
     if (list.length > 0) r.email = list[0];
+  },
+  // phones → primary to `phone`, full list preserved on `phones` (mirrors emails).
+  // LOAD-BEARING (Fable 9.2): the dedup engine (9.1) normalizes on the phone and vCard
+  // import produces it (contact_info.phone). Same view-gap caveat as emails —
+  // contactToEdge does not surface the list yet; the data is stored, never dropped.
+  phones: (r, v) => {
+    const list = asStringArray(v);
+    r.phones = list;
+    if (list.length > 0) r.phone = list[0];
   },
 };
 
