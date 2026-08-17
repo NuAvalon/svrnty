@@ -4,7 +4,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clusterByExactChannel, sharesChannel, type DedupCluster } from './dedup';
+import { clusterByExactChannel, foldLivingWins, mergeCluster, sharesChannel, type DedupCluster } from './dedup';
+import { livingWinsMerge } from './import-dedup';
 import type { TrustEdge } from '../trust/types';
 
 /** Minimal TrustEdge for dedup tests — only the fields clustering reads matter; rest cast away. */
@@ -99,4 +100,64 @@ test('sanity: sharesChannel agrees with cluster membership', () => {
   const b = mkEdge({ id: 'b', contact_info: { phones: ['+15550000005'] } });
   assert.ok(sharesChannel(a, b));
   assert.equal(clusterByExactChannel([a, b]).length, 1);
+});
+
+// ─── foldLivingWins / mergeCluster (the field-union the cluster defers to) ────────────────
+
+test('foldLivingWins: single member returned as-is', () => {
+  const a = mkEdge({ id: 'a', peer_name: 'Solo', contact_info: { phones: ['+15550001000'] } });
+  assert.equal(foldLivingWins([a]), a);
+});
+
+test('foldLivingWins: rank-winner scalars win + multi-value UNIONed (lossless)', () => {
+  const trusted = mkEdge({ id: 't', peer_fingerprint: 'FP', trusted: true, peer_name: 'Alice',
+    peer_email: 'alice@real.com', contact_info: { phones: ['+15550001111'], emails: ['alice@real.com'] } });
+  const gray = mkEdge({ id: 'g', peer_name: 'Al', peer_email: 'al@old.com',
+    contact_info: { phones: ['+15550002222'], emails: ['al@old.com'], urls: ['https://al.example'] } });
+  const s = foldLivingWins([gray, trusted]); // input order must not matter
+  assert.equal(s.peer_name, 'Alice');            // rank-winner (trusted) scalar wins
+  assert.equal(s.peer_email, 'alice@real.com');  // trusted's non-empty email wins
+  assert.deepEqual(s.contact_info?.phones, ['+15550001111', '+15550002222']); // union, living first
+  assert.deepEqual([...(s.contact_info?.emails ?? [])].sort(), ['al@old.com', 'alice@real.com']);
+  assert.deepEqual(s.contact_info?.urls, ['https://al.example']); // gray's url unioned in (base had none)
+});
+
+test('foldLivingWins: THE subtle bug — rank-winner is the base REGARDLESS of input order (not reduce-order)', () => {
+  // A naive members.reduce(livingWinsMerge) would take members[0] (gray) as base → 'Wrong' scalar sticks.
+  // The correct 2-step selects the rank-winner (trusted) as base → 'Right' wins even though gray is first.
+  const gray = mkEdge({ id: 'g', peer_name: 'Wrong', contact_info: { phones: ['+15550003333'] } });
+  const trusted = mkEdge({ id: 't', peer_fingerprint: 'FP', trusted: true, peer_name: 'Right',
+    contact_info: { phones: ['+15550003333'] } });
+  assert.equal(foldLivingWins([gray, trusted]).peer_name, 'Right');
+  assert.equal(foldLivingWins([trusted, gray]).peer_name, 'Right'); // symmetric
+});
+
+test('foldLivingWins: order-independent (survivor + unioned fields identical under reorder)', () => {
+  const a = mkEdge({ id: 'a', peer_fingerprint: 'FA', trusted: true, peer_name: 'A', contact_info: { phones: ['+15550004001'] } });
+  const b = mkEdge({ id: 'b', peer_name: 'B', contact_info: { phones: ['+15550004002'] } });
+  const c = mkEdge({ id: 'c', peer_name: 'C', contact_info: { phones: ['+15550004003'] } });
+  const r1 = foldLivingWins([a, b, c]);
+  const r2 = foldLivingWins([c, a, b]);
+  assert.equal(r1.peer_name, r2.peer_name);
+  assert.deepEqual([...(r1.contact_info?.phones ?? [])].sort(), [...(r2.contact_info?.phones ?? [])].sort());
+});
+
+test('mergeCluster: wraps foldLivingWins over cluster.members', () => {
+  const a = mkEdge({ id: 'a', peer_fingerprint: 'FA', trusted: true, peer_name: 'A', contact_info: { phones: ['+15550005000'] } });
+  const b = mkEdge({ id: 'b', contact_info: { phones: ['+15550005000'] } });
+  const [cluster] = clusterByExactChannel([a, b]);
+  assert.deepEqual(mergeCluster(cluster), foldLivingWins(cluster.members));
+});
+
+test('build-once: foldLivingWins([existing,incoming]) ≡ livingWinsMerge(existing,incoming) for the import case', () => {
+  // when existing outranks incoming (import path: existing=living, incoming=gray), the 2-step
+  // reduces to Apollo's pairwise merge exactly → import ≡ cluster (Hypatia build-once #115891).
+  const existing = mkEdge({ id: 'e', peer_fingerprint: 'FE', trusted: true, peer_name: 'Existing',
+    contact_info: { phones: ['+15550006000'], emails: ['e@x.com'] } });
+  const incoming = mkEdge({ id: 'i', peer_name: 'Imported', contact_info: { phones: ['+15550006001'] } });
+  assert.deepEqual(foldLivingWins([existing, incoming]), livingWinsMerge(existing, incoming));
+});
+
+test('foldLivingWins: empty member set throws (guard — clusters never produce this)', () => {
+  assert.throws(() => foldLivingWins([]), /empty member set/);
 });
