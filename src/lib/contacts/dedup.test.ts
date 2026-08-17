@@ -4,8 +4,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clusterByExactChannel, foldLivingWins, mergeCluster, sharesChannel, type DedupCluster } from './dedup';
-import { livingWinsMerge } from './import-dedup';
+import { clusterByExactChannel, foldLivingWins, livingWinsMerge, mergeCluster, sharesChannel, type DedupCluster } from './dedup';
 import type { TrustEdge } from '../trust/types';
 
 /** Minimal TrustEdge for dedup tests — only the fields clustering reads matter; rest cast away. */

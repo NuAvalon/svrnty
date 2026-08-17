@@ -9,7 +9,7 @@
 
 import type { TrustEdge } from '@/lib/trust/types';
 import type { DedupPlan } from './import-dedup';
-import { livingWinsMerge } from './import-dedup';
+import { livingWinsMerge } from './dedup';
 
 /** The user's decision for one ambiguous (review) row: merge into a chosen candidate, or keep as new. */
 export type ReviewChoice =
