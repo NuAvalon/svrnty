@@ -173,6 +173,11 @@ const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
   },
 };
 
+/** The wire fields the apply FIELD_MAP can write onto a ContactRecord. Every allowlisted field MUST
+ *  be a key here or apply throws 'field-not-mappable' at runtime. Exported for the CI lockstep guard
+ *  so that coverage check moves from runtime to CI (closes allowlist ≡ FIELD_MAP-domain). */
+export const CONTACT_UPDATE_FIELD_MAP_KEYS: ReadonlySet<string> = new Set(Object.keys(FIELD_MAP));
+
 function asString(v: unknown): string {
   if (typeof v !== 'string') throw new ContactUpdateApplyRejected('field-not-mappable', `expected string, got ${typeof v}`);
   return v;
