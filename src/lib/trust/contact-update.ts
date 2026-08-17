@@ -48,17 +48,18 @@ import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envel
  * naming ANY field outside this set is rejected WHOLE (never partially applied), so the update
  * channel cannot be used to smuggle a field the address-book model never intended to accept.
  *
- * SPARTAN SET (Archie ruled #115574 D1=SHRINK; joint verify↔apply pass with Athena's 0.14 apply
- * mirror, apply-contact-update.ts:105). The canonical invariant is `ALLOWED_FIELDS ≡ {fields the 0.14
- * ContactRecord homes + contactToEdge surfaces}`, enforced IDENTICALLY in verify (here) and apply — a
- * divergence is a bug the merge-guard test catches. We restore that subset-equality by shrinking to the
- * three fields the dim→living demo actually needs: minimum attack surface under sprint pressure.
+ * NOW-VOCAB {display_name, phones, emails, note} (Archie ruled the shrink #115574, then the phones GROW
+ * #115747 after Fable's 9.2 vocab correction). The canonical invariant is `ALLOWED_FIELDS ≡ {fields the
+ * 0.14 ContactRecord homes + contactToEdge surfaces}`, enforced IDENTICALLY in verify (here) and apply —
+ * a divergence is a bug the merge-guard test catches. The set started as the minimal spartan floor
+ * {display_name, note, emails}; `phones` is the FIRST EARNED GROW (producer = the vCard import; the dedup
+ * engine's strongest key is the normalized phone — importing a contact without their number is broken).
  *
  * GROW-LATER IS FREE: the field vocabulary lives inside the signed `payload` (opaque to the relay,
  * hashed inside the signature — envelope §6), so adding a field later breaks NO signature, touches NO
  * relay, needs NO re-ratify; older receivers fail-closed on the unknown field (this firewall). Grow one
  * field at a time once it earns (a) a verified producer, (b) a contactToEdge home, (c) a real claim.
- * `phones`/`urls` are the concrete grow-NEXT candidates (the 0.12 vCard import already produces them).
+ * `phones` is now grown; `urls` remains the next grow-NEXT candidate (the 0.12 vCard import produces it).
  *
  * OUT OF contact.update ENTIRELY — these are their own signed object types, NOT card fields:
  *   - `public_key`  → `key.rotate`: a key rotation, not a field-set. Riding the plain field path would
@@ -80,8 +81,9 @@ import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envel
  */
 export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
   'display_name', // → typed ContactRecord.name (contactToEdge: peer_name)
-  'note', // → ContactRecord.notes (contactToEdge reads c.notes || c.metadata?.notes)
+  'phones', // → ContactRecord phones passthrough (vCard TEL, E.164-normalized); first earned grow (#115747)
   'emails', // → primary to ContactRecord.email; full list on the emails passthrough
+  'note', // → ContactRecord.notes (contactToEdge reads c.notes || c.metadata?.notes)
 ]);
 
 /** A contact.update as it arrives off the wire: the envelope plus its detached envelope signature. */

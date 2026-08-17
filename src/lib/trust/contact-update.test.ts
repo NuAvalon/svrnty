@@ -184,15 +184,14 @@ test('I-4: a device-location field is refused (field-not-allowed), pre-crypto', 
   await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
 });
 
-// ── Spartan allowlist (Archie #115574 D1=SHRINK; joint verify↔apply pass with Athena's 0.14 apply) ──
-// The allowlist is the SHARED verify↔apply contract. It must equal EXACTLY {display_name, note,
-// emails}; the same set is re-asserted on the apply side (apply-contact-update.ts:105) and the
-// merge-guard cross-checks them post-merge. This test is the verify-side half of that divergence guard.
-// Fields that used to be allowlisted (rich vCard set) or that moved to their own signed object type
-// (public_key→key.rotate, routing→routing.update) are now refused by the firewall pre-crypto — a
-// contact.update can no longer carry them.
-test('shrink: the allowlist is EXACTLY the spartan set {display_name, note, emails}', () => {
-  assert.deepEqual([...CONTACT_UPDATE_ALLOWED_FIELDS].sort(), ['display_name', 'emails', 'note']);
+// ── Now-vocab allowlist (Archie #115574 shrink → phones GROW #115747; joint verify↔apply pass) ──────
+// The allowlist is the SHARED verify↔apply contract. It must equal EXACTLY {display_name, phones, note,
+// emails}; the same set is re-asserted on the apply side (apply-contact-update.ts) and the merge-guard
+// cross-checks them post-merge. This test is the verify-side half of that divergence guard. Fields that
+// moved to their own signed object type (public_key→key.rotate, routing→routing.update) or haven't
+// earned a grow yet (rich vCard set) are refused by the firewall pre-crypto.
+test('vocab: the allowlist is EXACTLY {display_name, phones, emails, note}', () => {
+  assert.deepEqual([...CONTACT_UPDATE_ALLOWED_FIELDS].sort(), ['display_name', 'emails', 'note', 'phones']);
 });
 
 test('shrink: public_key is refused field-not-allowed (moved to key.rotate — not a card field)', async () => {
@@ -211,6 +210,13 @@ test('shrink: a rich vCard field (org) is refused field-not-allowed (grow-later,
   const env = baseEnv({ changed_fields: ['org'], delta: { org: 'Acme' } });
   const s = { envelope: env, signature: { classical: 'unused' } };
   await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
+});
+
+test('grow: phones now verifies end-to-end (the first earned grow, Archie #115747)', async () => {
+  const env = baseEnv({ changed_fields: ['phones'], delta: { phones: ['+15551234567', '+442071234567'] } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.changed_fields, ['phones']);
+  assert.deepEqual(v.delta, { phones: ['+15551234567', '+442071234567'] });
 });
 
 test('retained: note + emails still verify end-to-end (the spartan set is functional)', async () => {
