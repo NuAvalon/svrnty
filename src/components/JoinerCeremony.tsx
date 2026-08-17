@@ -35,6 +35,7 @@ import { TrustMap } from '@/components/TrustMap';
 import { useCeremony } from '@/lib/ceremony/useCeremony';
 import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/ceremony/machine';
 import type { TrustEdge } from '@/lib/trust/types';
+import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -61,27 +62,8 @@ const STEP_LOCUS: Record<CeremonyStepId, 'you' | 'them' | 'done'> = {
   complete: 'done',
 };
 
-// Same ContactRecord -> TrustEdge shape app/page.tsx uses to feed the TrustMap.
-function contactToEdge(c: any): TrustEdge {
-  return {
-    id: c.id,
-    peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
-    peer_name: c.peer_name || c.name,
-    peer_email: c.peer_email || c.email || '',
-    peer_public_key: c.peer_public_key || c.public_key || '',
-    trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
-    trusted_since: c.trusted_since || c.verified_at || null,
-    last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
-    decay_days: c.decay_days || 730,
-    trust_history: c.trust_history || [],
-    verification: c.verification || { method: 'none', verified_at: null },
-    mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
-    tags: c.tags || c.metadata?.tags || [],
-    notes: c.notes || c.metadata?.notes || '',
-    connection_channels: c.connection_channels || [],
-    added_at: c.added_at || new Date().toISOString(),
-  } as TrustEdge;
-}
+// ContactRecord -> TrustEdge projection now lives in the shared helper (single source of truth;
+// carries pq — see contact-edge.ts). The main page (app/page.tsx) projects through the same one.
 
 interface PeerCard {
   name: string;
@@ -212,7 +194,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       // Load the constellation for the lattice step (includes the new facet).
       try {
         const raw = await getAllContacts(ownerFp);
-        setContacts(raw.map(contactToEdge));
+        setContacts(raw.map(contactRecordToEdge));
       } catch { /* non-fatal — lattice will just show the owner */ }
       ceremony.edgePersisted(edgeId); // edge -> lattice
     } catch (err: any) {

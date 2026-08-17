@@ -9,6 +9,7 @@ import { HelpGuide } from '@/components/HelpGuide';
 import { Ceremony } from '@/components/Ceremony';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
+import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import {
   hasIdentity,
   getActiveFingerprint,
@@ -112,24 +113,9 @@ export default function Home() {
     if (!identity?.identity?.fingerprint) return;
     try {
       const rawContacts = await getAllContacts(identity.identity.fingerprint);
-      const edges: TrustEdge[] = rawContacts.map((c: any) => ({
-        id: c.id,
-        peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
-        peer_name: c.peer_name || c.name,
-        peer_email: c.peer_email || c.email || '',
-        peer_public_key: c.peer_public_key || c.public_key || '',
-        trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
-        trusted_since: c.trusted_since || c.verified_at || null,
-        last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
-        decay_days: c.decay_days || 730,
-        trust_history: c.trust_history || [],
-        verification: c.verification || { method: 'none', verified_at: null },
-        mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
-        tags: c.tags || c.metadata?.tags || [],
-        notes: c.notes || c.metadata?.notes || '',
-        connection_channels: c.connection_channels || [],
-        added_at: c.added_at || new Date().toISOString(),
-      }));
+      // Single shared projection (carries pq — see contact-edge.ts). Same helper the joiner
+      // ceremony uses, so no field (incl. peer_pq_*) is dropped on one path but not the other.
+      const edges: TrustEdge[] = rawContacts.map(contactRecordToEdge);
       setContacts(edges);
     } catch (err: any) {
       console.error('Failed to load contacts:', err);
