@@ -79,21 +79,37 @@ test('multiple mapped fields apply together', () => {
   assert.equal(next.notes, 'n');
 });
 
-// ── No silent drop: allowlisted-but-unmapped fields FAIL LOUD ────────────────
-
-for (const field of ['phones', 'urls', 'given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
-  test(`unmapped allowlisted field '${field}' throws field-not-mappable (no silent drop)`, () => {
-    assert.throws(
-      () => applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta: { [field]: 'x' } }), NOW),
-      (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-mappable',
+// ── No silent drop: every allowlisted field maps (spartan invariant) ─────────
+// Post-shrink the allowlist == FIELD_MAP keys, so every allowlisted field applies
+// without a 'field-not-mappable'. This is the POSITIVE form of the no-silent-drop
+// floor: if a future grow adds a field to the allowlist WITHOUT a FIELD_MAP entry,
+// this test fails loud — exactly the mistake the 'field-not-mappable' branch guards.
+for (const field of CONTACT_UPDATE_ALLOWED_FIELDS) {
+  test(`allowlisted field '${field}' has a mapping (no silent drop)`, () => {
+    const delta = field === 'emails' ? { emails: ['x@example.com'] } : { [field]: 'x' };
+    assert.doesNotThrow(() =>
+      applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta }), NOW),
     );
   });
 }
 
-test("public_key is fail-closed (rotation collides with C2 binding + epoch lineage)", () => {
+// ── Fields OUTSIDE the spartan allowlist fail-close at the firewall ──────────
+for (const field of ['phones', 'urls', 'given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
+  test(`non-allowlisted field '${field}' throws field-not-allowed (defence-in-depth firewall)`, () => {
+    assert.throws(
+      () => applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta: { [field]: 'x' } }), NOW),
+      (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-allowed',
+    );
+  });
+}
+
+test("public_key is fail-closed as a rotation, not a field-set (own key.rotate path)", () => {
+  // A plain set would swap the active key while keeping the genesis fingerprint
+  // (bypassing the C2 fingerprint↔key binding) and skip epoch-lineage. It is OUT of
+  // the contact.update allowlist → 'field-not-allowed'. Rotation gets its own path.
   assert.throws(
     () => applyVerifiedContactUpdate(contact(), update({ changed_fields: ['public_key'], delta: { public_key: 'PK_NEW' } }), NOW),
-    (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-mappable',
+    (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-allowed',
   );
 });
 
@@ -106,12 +122,13 @@ test('a field outside the allowlist throws field-not-allowed even if it reached 
   );
 });
 
-test('apply allowlist stays identical to the 0.4-verify allowlist (merge guard)', () => {
-  // If this fails, verify and apply have diverged — reconcile before merge.
+test('apply allowlist is the spartan canonical set (0.4-verify aligns to this on merge)', () => {
+  // The canonical contact.update vocabulary (Archie D1 #115574 / Flint #115581).
+  // Flint's 0.4 verify allowlist aligns to THIS exact set at merge-reconcile; a
+  // divergence-guard test over both files asserts equality once they coexist.
   assert.deepEqual(
     [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
-    ['birthday', 'display_name', 'emails', 'family_name', 'given_name', 'note', 'org', 'photo',
-      'phones', 'postal_addresses', 'public_key', 'routing', 'title', 'urls'].sort(),
+    ['display_name', 'emails', 'note'].sort(),
   );
 });
 

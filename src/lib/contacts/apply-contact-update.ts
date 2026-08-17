@@ -31,13 +31,15 @@
 //      address-book model does not yet have a home for FAIL LOUD until the
 //      field-vocabulary reconciliation (see FIELD_MAP below) gives them one.
 //
-// SEAM NOTE (reconcile on merge, Flint PR #10 / Archie format-freeze). The stored
+// SEAM NOTE (reconcile at merge, Flint PR #10 / Archie format-freeze). The stored
 // model here is the live `ContactRecord` (IndexedDB, client-store.ts) — an open bag
 // whose typed fields are name/email/public_key/trust_level/metadata. The three-state
 // view (gray/living/dim) is DERIVED from it via contactToEdge()+getContactState(),
-// not stored. The field NAMES in 0.4's allowlist are a vCard-ish vocabulary that
-// does not yet line up 1:1 with ContactRecord; FIELD_MAP is the single, reviewable
-// place that reconciliation lands. See shared/outbox/athena/svrnty_0.14_apply_reconciliation.md.
+// not stored. The field-vocabulary reconciliation has LANDED (Archie D1 #115574 /
+// Flint #115581): the allowlist is the spartan canonical set {display_name,note,emails},
+// and FIELD_MAP is the single reviewable place growth lands. Flint aligns his 0.4
+// allowlist to this set at merge-reconcile (divergence-guarded). See
+// shared/outbox/athena/svrnty_0.14_apply_reconciliation.md.
 
 import type { ContactState } from '../trust/contact-state';
 import { getContactState } from '../trust/contact-state';
@@ -99,32 +101,42 @@ export class ContactUpdateApplyRejected extends Error {
 /**
  * The allowlist, re-asserted here (defence-in-depth). MUST stay identical to
  * CONTACT_UPDATE_ALLOWED_FIELDS in src/lib/trust/contact-update.ts (Flint 0.4);
- * a divergence is a bug the tests catch on merge. The absence of presence/geo
- * fields is load-bearing (I-4 / I-6) on both sides of the seam.
+ * a divergence is a bug the divergence-guard test catches on merge. The absence of
+ * presence/geo fields is load-bearing (I-4 / I-6) on both sides of the seam.
+ *
+ * SPARTAN canonical set (Archie D1 ruling #115574, KB#86066; Flint security-GO
+ * #115581). Deliberately the SMALLEST vocabulary a contact.update may carry —
+ * everything else fail-closes at the firewall ('field-not-allowed'), which is the
+ * E2E floor doing its job (an older receiver rejecting an unknown field). Growth is
+ * FREE later (add to BOTH allowlists + FIELD_MAP together; breaks no signature/relay):
+ *   grow-NEXT = phones, urls (have a producer via vCard import, pending a
+ *     contactToEdge home);  routing → its own routing.update object type;
+ *     public_key → its own key.rotate path (a rotation, not a field-set — §5/§11).
  */
 export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
-  'display_name', 'given_name', 'family_name', 'org', 'title', 'phones', 'emails',
-  'urls', 'photo', 'note', 'birthday', 'postal_addresses', 'public_key', 'routing',
+  'display_name', 'note', 'emails',
 ]);
 
 /**
  * How each allowlisted wire field is written onto the stored ContactRecord. This is
  * THE reconciliation surface (Flint allowlist ↔ ContactRecord ↔ TrustEdge view).
  *
- * Only fields with an UNAMBIGUOUS home + a path that surfaces in the derived view
- * (contactToEdge) are mapped today. Every other allowlisted field is deliberately
- * absent → apply FAILS LOUD ('field-not-mappable') rather than silently dropping it,
- * until the field-vocabulary reconciliation (Archie format-freeze + Flint allowlist)
- * assigns it a home. Extending support = adding an entry here, nothing else.
+ * Post-reconciliation (spartan allowlist), FIELD_MAP's keys == the allowlist: every
+ * field a contact.update may carry has an UNAMBIGUOUS home that surfaces in the
+ * derived view (contactToEdge). The 'field-not-mappable' throw below is therefore the
+ * GROW-NEXT guard — it fires only if a future field is added to the allowlist WITHOUT
+ * a FIELD_MAP entry, failing loud rather than silently dropping it (the no-silent-drop
+ * floor). Extending support = add to BOTH allowlists + one entry here, together.
  *
- * DELIBERATELY UNMAPPED (fail-closed) and WHY — see the reconciliation memo:
- *   given_name/family_name/org/title/photo/birthday/postal_addresses → no ContactRecord
- *     field and not surfaced by contactToEdge; needs a model/vocabulary decision.
- *   phones/urls → ContactRecord has no typed home and contactToEdge does not surface
- *     contact_info.* today; a passthrough would store-but-never-show (dishonest).
- *   public_key → a key ROTATION, not a plain field set: it collides with the C2
- *     fingerprint↔key binding check in client-store.updateContact() and must be
- *     reconciled with epoch-lineage (Flint verify). Rotation gets its own path.
+ * OUT of the spartan allowlist (fail-closed at the firewall as 'field-not-allowed'):
+ *   given_name/family_name/org/title/photo/birthday/postal_addresses → no producer +
+ *     no ContactRecord home; rich-vCard vocabulary, deferred (grow only with a home).
+ *   phones/urls → have a producer (vCard import) but contactToEdge has no home yet →
+ *     grow-NEXT once that home lands (a passthrough today would store-but-never-show).
+ *   routing → its own routing.update object type (a delivery redirect, not a card edit).
+ *   public_key → its own key.rotate path: a rotation, not a plain field-set — a plain
+ *     set would swap the active key while keeping the genesis fingerprint (bypassing the
+ *     C2 fingerprint↔key binding) and skip epoch-lineage. Flint affirmed (#115581).
  */
 type FieldSetter = (record: StoredContact, value: unknown) => void;
 
