@@ -3,7 +3,8 @@
 // Run: npx tsx --test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dedupeContacts, livingWinsMerge } from './import-dedup';
+import { dedupeContacts } from './import-dedup';
+import { livingWinsMerge } from './dedup';
 import type { TrustEdge } from '../trust/types';
 
 const edge = (over: Partial<TrustEdge> = {}): TrustEdge => ({

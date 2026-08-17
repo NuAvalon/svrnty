@@ -1,21 +1,18 @@
 // src/lib/contacts/import-dedup.ts
 // Top-level dedup ENGINE for the IMPORT flow (Queue B 0.12 / Fable §9.1).
-// Wraps Archie's primitives (dedup.ts). This is import-time dedup — NOT sync/merge
-// (that's cross-device vault sync).
+// Wraps the dedup primitives (dedup.ts). Import-time dedup — NOT sync/merge (cross-device vault sync).
 //
-// livingWinsMerge below is the SHARED "living-data-wins" mechanism (Hypatia #115891):
-// the same rule powers import dedup ("imports never overwrite attested data") AND the
-// live-update beat ("Bob's edit updates Alice's entry" — attested/living wins over stale).
-// Build it once, call it from both.
+// The living-wins field-union (livingWinsMerge, now a primitive in dedup.ts) is the SHARED
+// "living-data-wins" mechanism (Hypatia #115891): the same rule powers import dedup ("imports never
+// overwrite attested data") AND the live-update beat ("Bob's edit updates Alice's entry").
 //
 // v1 scope (demo-safe, conservative):
 //   - EXACT-KEY dedup only: match iff two contacts share ≥1 normalized channel (phone E.164 /
 //     folded email). Fuzzy name-matching → review is DEFERRED (over-merge is the cardinal sin).
-//   - Field-union with LIVING precedence. Per-field provenance is a follow-up.
 //   - Ambiguous (>1 existing match) → review card-stack, NEVER a silent merge.
 
 import type { TrustEdge } from '@/lib/trust/types';
-import { sharesChannel, type ChannelSource } from './dedup';
+import { sharesChannel, livingWinsMerge, type ChannelSource } from './dedup';
 
 export interface AutoMerge {
   /** The field-union result (living wins). Applied to storage on user confirm. */
@@ -59,43 +56,4 @@ export function dedupeContacts(incoming: Partial<TrustEdge>[], existing: TrustEd
     }
   }
   return plan;
-}
-
-/**
- * Field-union merge with LIVING precedence — the shared living-data-wins mechanism.
- * `living` (the existing, fingerprint-bound/attested edge) is the base: its non-empty SCALAR fields
- * are NEVER overwritten by the import. Multi-value fields (phones/emails/urls/tags/channels) are
- * UNIONed (living values kept + ordered first, incoming fills gaps). Handles: living wins per platform.
- *
- * Same fn serves the live-update beat: call livingWinsMerge(currentEdge, incomingUpdate) — attested
- * current data wins, the update fills/extends. (Rank-flip for a more-attested import of a gray edge is
- * a deferred follow-up; for a gray vCard import the existing edge is living by definition.)
- */
-export function livingWinsMerge(living: TrustEdge, incoming: Partial<TrustEdge>): TrustEdge {
-  const merged: TrustEdge = { ...living };
-  // Scalars: keep living's non-empty value; fill from incoming only if living's is empty.
-  if (!merged.peer_name && incoming.peer_name) merged.peer_name = incoming.peer_name;
-  if (!merged.peer_email && incoming.peer_email) merged.peer_email = incoming.peer_email;
-  if (!merged.notes && incoming.notes) merged.notes = incoming.notes;
-  // Multi-value: union (living first, order-preserving, de-duplicated).
-  merged.tags = unionArr(merged.tags, incoming.tags);
-  merged.connection_channels = unionArr(merged.connection_channels, incoming.connection_channels);
-  merged.contact_info = {
-    ...merged.contact_info,
-    phones: unionArr(merged.contact_info?.phones, incoming.contact_info?.phones),
-    emails: unionArr(merged.contact_info?.emails, incoming.contact_info?.emails),
-    urls: unionArr(merged.contact_info?.urls, incoming.contact_info?.urls),
-    handles: { ...(incoming.contact_info?.handles ?? {}), ...(merged.contact_info?.handles ?? {}) },
-  };
-  return merged;
-}
-
-/** Order-preserving de-duplicated union of two string lists (skips empties). Living (a) first. */
-function unionArr(a: string[] | undefined, b: string[] | undefined): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const v of [...(a ?? []), ...(b ?? [])]) {
-    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
-  }
-  return out;
 }

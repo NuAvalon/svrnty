@@ -6,7 +6,6 @@
 // Spec: shared/outbox/archie/svrnty_queueB_0.13_dedup_and_0.1_0.2_format_v1.md Part B
 
 import type { TrustEdge } from '@/lib/trust/types';
-import { livingWinsMerge } from './import-dedup';
 
 export interface NormalizedChannel {
   type: string;
@@ -182,13 +181,45 @@ export function clusterByExactChannel(edges: TrustEdge[]): DedupCluster[] {
   return clusters;
 }
 
-// ─── Cluster field-union merge (9.1 — Archie #115913 placement + exact composition) ──────────
-// The field-union the cluster/import DEFER to. Kept here with the primitives so BOTH the import
-// path (Apollo, pairwise) and the cluster path (multi-member) fold IDENTICALLY (Hypatia build-once
-// #115891). NOTE: imports livingWinsMerge from ./import-dedup, which imports back from here — a
-// circular import, safe because every cross-reference is call-time (function body), not module-init.
-// (Cleaner long-term: livingWinsMerge is really a PRIMITIVE and could move here; deferred to the
-// Apollo-coordinated re-route PR so as not to touch his file solo.)
+// ─── Field-union merge primitive (9.1 — moved here from import-dedup.ts in the re-route) ──────
+// livingWinsMerge is the shared field-union: BOTH the import path (Apollo, pairwise) and the cluster
+// path (multi-member, via foldLivingWins) fold IDENTICALLY (Hypatia build-once #115891). Living/attested
+// scalars are never overwritten; multi-value fields (phones/emails/urls/tags/channels) are UNIONed
+// (lossless, B3). Now a dedup PRIMITIVE living with livingWinsSurvivor/foldLivingWins — import-dedup
+// imports it one-directionally, resolving the former dedup↔import-dedup circular import.
+
+/**
+ * Field-union merge with LIVING precedence. `living` (the existing, attested/fingerprint-bound edge)
+ * is the base: its non-empty SCALAR fields are never overwritten by `incoming`. Multi-value fields are
+ * UNIONed (living first, order-preserving, de-duplicated); handles win per-platform for the living side.
+ * `incoming` may be a Partial<TrustEdge> (a gray import that isn't a full edge).
+ */
+export function livingWinsMerge(living: TrustEdge, incoming: Partial<TrustEdge>): TrustEdge {
+  const merged: TrustEdge = { ...living };
+  if (!merged.peer_name && incoming.peer_name) merged.peer_name = incoming.peer_name;
+  if (!merged.peer_email && incoming.peer_email) merged.peer_email = incoming.peer_email;
+  if (!merged.notes && incoming.notes) merged.notes = incoming.notes;
+  merged.tags = unionArr(merged.tags, incoming.tags);
+  merged.connection_channels = unionArr(merged.connection_channels, incoming.connection_channels);
+  merged.contact_info = {
+    ...merged.contact_info,
+    phones: unionArr(merged.contact_info?.phones, incoming.contact_info?.phones),
+    emails: unionArr(merged.contact_info?.emails, incoming.contact_info?.emails),
+    urls: unionArr(merged.contact_info?.urls, incoming.contact_info?.urls),
+    handles: { ...(incoming.contact_info?.handles ?? {}), ...(merged.contact_info?.handles ?? {}) },
+  };
+  return merged;
+}
+
+/** Order-preserving de-duplicated union of two string lists (skips empties). Living (a) first. */
+function unionArr(a: string[] | undefined, b: string[] | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of [...(a ?? []), ...(b ?? [])]) {
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  }
+  return out;
+}
 
 /**
  * Fold same-person edges into ONE merged edge. Composition ORDER matters (Archie #115913):
