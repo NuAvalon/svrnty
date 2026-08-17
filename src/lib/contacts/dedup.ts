@@ -100,3 +100,83 @@ function rank(e: TrustEdge): number {
 function countChannels(e: TrustEdge): number {
   return edgeChannels(e).filter((c) => !c.unnormalizable).length;
 }
+
+// ─── Cluster detection (9.1 engine — Archie #115797 rulings + Fable §9.1) ─────────────
+// The step between normalize (above) and the field-union merge (confirm-gated in sync/merge.ts):
+// group the address book into dup-clusters so the merge has something to operate on.
+
+/**
+ * A group of edges that resolve to the same person, with the survivor pre-selected.
+ *  - `exact`: members share ≥1 NORMALIZED channel (phone/email/handle). High-confidence dup →
+ *    auto-applied-but-SHOWN (Archie #115797: satisfies B2's "never HIDDEN loss" without a
+ *    per-merge confirm). `fuzzy` (name-similarity, no shared channel) is a later pass and is
+ *    proposed-awaiting-confirm — not produced here.
+ * Carries ALL `members` so the downstream field-union merge stays lossless (B3), and `sharedKeys`
+ * so the UI can show WHY the cluster formed (per-field provenance / the "shown" in auto-but-shown).
+ */
+export interface DedupCluster {
+  members: TrustEdge[];   // ≥2 edges, transitively channel-linked
+  survivor: TrustEdge;    // livingWinsSurvivor folded across all members (spec B3)
+  matchType: 'exact';
+  sharedKeys: string[];   // dedup keys present on ≥2 members = the reason they clustered (sorted)
+}
+
+/**
+ * Cluster edges into exact-match dup groups by TRANSITIVE shared channel (connected components:
+ * A~B and B~C ⇒ {A,B,C}, even when A and C share no channel directly). Pure, deterministic, and
+ * order-independent; returns ONLY multi-member clusters (singletons are not merges), ordered by
+ * survivor id. Unnormalizable channels never bind a cluster (dedupKey → null), so a shared "" /
+ * garbage value can't collapse two strangers.
+ *
+ * Complexity: O(total channels) via a key→edges bucket + union-find, not O(n²) pairwise
+ * `sharesChannel`. Does NOT mutate or merge fields — that is confirm-gated in sync/merge.ts (B2).
+ */
+export function clusterByExactChannel(edges: TrustEdge[]): DedupCluster[] {
+  const n = edges.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (x: number): number => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[x] !== r) { const nx = parent[x]; parent[x] = r; x = nx; } // path compression
+    return r;
+  };
+  // Root = smallest index in the component → deterministic, order-independent.
+  const union = (a: number, b: number): void => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+
+  // Bucket by dedup key; union every edge that shares a key with an earlier one.
+  const keysOf: string[][] = new Array(n);
+  const firstForKey = new Map<string, number>();
+  for (let i = 0; i < n; i++) {
+    const keys = edgeChannels(edges[i]).map(dedupKey).filter((k): k is string => k !== null);
+    keysOf[i] = keys;
+    for (const k of keys) {
+      const first = firstForKey.get(k);
+      if (first === undefined) firstForKey.set(k, i);
+      else union(first, i);
+    }
+  }
+
+  // Group indices by component root.
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    const g = groups.get(r);
+    if (g) g.push(i); else groups.set(r, [i]);
+  }
+
+  const clusters: DedupCluster[] = [];
+  for (const idxs of groups.values()) {
+    if (idxs.length < 2) continue; // singleton = no merge
+    const members = idxs.map((i) => edges[i]);
+    const survivor = members.reduce((acc, e) => livingWinsSurvivor(acc, e));
+    const keyMembers = new Map<string, number>();
+    for (const i of idxs) for (const k of new Set(keysOf[i])) keyMembers.set(k, (keyMembers.get(k) ?? 0) + 1);
+    const sharedKeys = [...keyMembers.entries()].filter(([, c]) => c >= 2).map(([k]) => k).sort();
+    clusters.push({ members, survivor, matchType: 'exact', sharedKeys });
+  }
+  clusters.sort((a, b) => (a.survivor.id < b.survivor.id ? -1 : a.survivor.id > b.survivor.id ? 1 : 0));
+  return clusters;
+}
