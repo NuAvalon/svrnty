@@ -12,6 +12,7 @@ import {
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
+import { shareUrlShort } from '@/lib/config/domain';
 
 interface ContactShareDialogProps {
   open: boolean;
@@ -124,7 +125,7 @@ export function ContactShareDialog({
       // createRelay encrypts client-side with AES-256-GCM, posts the blob,
       // and returns a URL with the key in the fragment (never reaches server)
       const result = await createRelay(exchangePackage);
-      // Extract code and key from the URL: https://svrnty.is/c/{code}#{key}
+      // Extract code and key from the URL: https://{domain}/c/{code}#{key} (split on /c/ — domain-agnostic)
       const urlParts = result.url.split('/c/')[1];
       const [code, key] = urlParts.split('#');
       setShortCode({
@@ -144,7 +145,7 @@ export function ContactShareDialog({
   }, [exchangePackage]);
 
   const shortCodeLink = shortCode.code && shortCode.key
-    ? `svrnty.is/c/${shortCode.code}#${shortCode.key}`
+    ? shareUrlShort(shortCode.code, shortCode.key)
     : null;
 
   const handleCopyLink = useCallback(async () => {

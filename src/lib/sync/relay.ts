@@ -1,6 +1,11 @@
 // src/lib/sync/relay.ts
 // Client-side shortcode relay: encrypt locally, dead-drop via server, decrypt locally.
 // The AES-256-GCM key travels only in the URL fragment — never reaches the server.
+//
+// Domain is parameterized via src/lib/config/domain (NEXT_PUBLIC_SVRNTY_DOMAIN, default
+// svrnty.is) so a self-hoster's share links point at THEIR domain — no code fork.
+
+import { shareUrl } from '@/lib/config/domain';
 
 /**
  * Base64url encode (URL-safe, no padding)
@@ -36,7 +41,7 @@ function fromBase64url(str: string): Uint8Array {
 }
 
 export interface RelayResult {
-  /** Full URL: https://svrnty.is/c/{code}#{base64url_key} */
+  /** Full URL: https://{domain}/c/{code}#{base64url_key} (domain per NEXT_PUBLIC_SVRNTY_DOMAIN, default svrnty.is) */
   url: string;
   /** The 6-char shortcode */
   code: string;
@@ -94,7 +99,7 @@ export async function createRelay(exchangePackage: string): Promise<RelayResult>
   const keyFragment = toBase64url(rawKey);
 
   return {
-    url: `https://svrnty.is/c/${code}#${keyFragment}`,
+    url: shareUrl(code, keyFragment),
     code,
     expiresAt,
   };

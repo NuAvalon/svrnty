@@ -6,6 +6,7 @@ import {
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
@@ -708,7 +709,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                   <Input
                     value={lookupInput}
                     onChange={e => setLookupInput(e.target.value)}
-                    placeholder="svrnty.is/name or slug"
+                    placeholder={`${SVRNTY_DOMAIN}/name or slug`}
                     onKeyDown={e => e.key === 'Enter' && handleLookup()}
                   />
                   <Button variant="outline" onClick={handleLookup} disabled={lookupLoading || !lookupInput.trim()}>

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from '@/lib/identity/client-store';
+import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -287,7 +288,7 @@ export function SoverentityFrontend({
     const fp = identity?.identity?.fingerprint;
     if (fp && !claimedUrl) {
       fetch(`/identity/${fp}`).then(r => r.ok ? r.json() : null).then(data => {
-        if (data?.slug) setClaimedUrl(`svrnty.is/${data.slug}`);
+        if (data?.slug) setClaimedUrl(slugUrlShort(data.slug));
       }).catch(() => {});
     }
   }, [identity]);
@@ -333,7 +334,7 @@ export function SoverentityFrontend({
         const fp = identity?.identity?.fingerprint;
         if (checkData.fingerprint && checkData.fingerprint === fp) {
           setClaimStatus('success');
-          setClaimedUrl(`svrnty.is/${slug}`);
+          setClaimedUrl(slugUrlShort(slug));
           return;
         }
         setClaimStatus('taken');
@@ -357,7 +358,7 @@ export function SoverentityFrontend({
         });
         if (claimRes.ok) {
           setClaimStatus('success');
-          setClaimedUrl(`svrnty.is/${slug}`);
+          setClaimedUrl(slugUrlShort(slug));
         } else { setClaimStatus('taken'); }
       } else { setClaimStatus('error'); }
     } catch { setClaimStatus('error'); }
@@ -1840,7 +1841,7 @@ export function SoverentityFrontend({
                     Choose a URL for your public profile
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
-                    <span style={{ color: 'rgba(232,228,217,0.4)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '14px', whiteSpace: 'nowrap' as const }}>svrnty.is/</span>
+                    <span style={{ color: 'rgba(232,228,217,0.4)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
                     <input
                       type="text"
                       placeholder="yourname"
