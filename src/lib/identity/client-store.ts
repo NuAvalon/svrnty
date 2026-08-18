@@ -141,12 +141,18 @@ interface VaultRecord {
   vault: any; // KeyVault
 }
 
-interface ContactRecord {
+export interface ContactRecord {
   id: string;
   fingerprint: string;
   name: string;
   email: string;
   public_key: string;
+  // ── Post-quantum keys (0.12 pq-carry) ───────────────────────────────────────
+  // Stored ONLY from a card whose signature verified against the fp-bound classical key
+  // (fail-closed §4 branch 4). A card with no/invalid signature drops these (branches 2/3) —
+  // an unauthenticated pq_kem is NEVER stored. Apollo projects both → TrustEdge.peer_pq_*.
+  pq_sig_public_key?: string;   // ML-DSA base64
+  pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
   trust_level: string;
   added_at: string;
   metadata?: any;

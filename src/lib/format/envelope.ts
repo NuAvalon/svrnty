@@ -13,6 +13,7 @@ import { canonicalize } from './canonical';
 export const DOMAIN_TRUST_SIGNAL = 'svrnty:trust-signal:v1';
 export const DOMAIN_CONTACT_UPDATE = 'svrnty:contact-update:v1';
 export const DOMAIN_SLUG_CLAIM = 'svrnty:slug-claim:v1';
+export const DOMAIN_IDENTITY_CARD = 'svrnty:identity-card:v1';
 // Key-lineage sub-domains for Flint's rotation/recovery signing (#115350). Crypto is his; the tag
 // STRINGS live here so the domain-separation vocabulary stays single-source (a signer/verifier tag
 // drift is a domain-confusion bug — centralizing eliminates that class).
@@ -69,6 +70,28 @@ export interface SlugClaim {
   timestamp: string;        // ISO-8601 UTC — replay-bounded by the freshness window
 }
 
+/**
+ * Identity-exchange card (the QR/relay/copy-link payload). SIGNED so a receiver can re-verify
+ * the pq keys were not swapped on an untrusted carrier — the signature binds `pq_kem_public_key`
+ * (+ `pq_sig_public_key`) to the classical key that hashes to `identity.fingerprint` (Invariant-1).
+ * Shape is byte-exact per the (A) crypto spec (svrnty_identity_card_signing_spec_flint.md §3);
+ * `signature`/`pq_signature` attach TOP-LEVEL (canonical exclude is top-level-only) and live on
+ * SignedIdentityCard in identity-card-sign.ts, NOT here.
+ */
+export interface IdentityCard {
+  version: string;                  // e.g. '1.0'
+  type: string;                     // 'identity-exchange'
+  created_at: string;               // ISO-8601 UTC
+  identity: {
+    fingerprint: string;            // = H(public_key), Invariant-1
+    display_name: string;
+    public_key: string;             // classical (PGP armored)
+    email: string;
+    pq_sig_public_key: string;      // base64(ML-DSA pubkey)
+    pq_kem_public_key: string;      // base64(ML-KEM pubkey) — the field the signature protects
+  };
+}
+
 // --- Canonical signing inputs (Flint prefixes LP(domain)‖LP(suite_id) then signs) ---
 
 /** Canonical bytes for a contact.update signature (excludes any attached `signature`). */
@@ -79,4 +102,14 @@ export function contactUpdateSigningInput(env: ContactUpdateEnvelope): string {
 /** Canonical bytes for an F6 slug-claim signature. */
 export function slugClaimSigningInput(claim: SlugClaim): string {
   return canonicalize(claim, { exclude: ['signature'] });
+}
+
+/**
+ * Canonical bytes for an identity-card signature. Excludes BOTH top-level signature fields
+ * (`signature` classical + `pq_signature` hybrid) — the signer signs the card without them, and
+ * canonical's exclude is top-level-only so `identity.*` (incl. both pq keys) stays covered.
+ * Sign and verify BOTH call this single-source helper → byte-exact by construction.
+ */
+export function identityCardSigningInput(card: IdentityCard): string {
+  return canonicalize(card, { exclude: ['signature', 'pq_signature'] });
 }
