@@ -1,0 +1,31 @@
+# svrnty self-host — automatic HTTPS via Caddy.
+#
+# Caddy obtains and auto-renews a Let's Encrypt certificate for your domain, with no
+# manual cert steps. Requirements:
+#   1. Your domain's DNS A record (and AAAA, if you have IPv6) points at THIS server.
+#   2. Ports 80 and 443 are reachable from the internet (Let's Encrypt validates over them).
+#
+# SVRNTY_DOMAIN is injected from your .env by docker-compose.yml.
+
+{$SVRNTY_DOMAIN} {
+	encode zstd gzip
+
+	# Security headers (Flint advisory, PR #26). svrnty is an identity app: the headline risk is
+	# clickjacking — a hostile page iframing svrnty to UI-redress a user into an identity action
+	# (claim slug / share identity / verify contact). Co-verified: no iframe/postMessage/embed use
+	# anywhere in src, so locking framing breaks nothing. A full CSP (script-src/style-src) is a
+	# larger, app-specific follow-up (belongs at the Next layer with nonces) — deliberately not here.
+	header {
+		Content-Security-Policy "frame-ancestors 'none'"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		# Don't leak /c/<code> + slug URLs in the Referer header to third parties.
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# HSTS — Caddy already forces HTTPS; this closes the first-visit downgrade gap.
+		# No 'preload' on purpose (hard to reverse once baked into a template others copy).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	reverse_proxy app:3000
+}
