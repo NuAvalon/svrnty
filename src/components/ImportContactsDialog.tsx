@@ -16,9 +16,11 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Upload, Users, GitMerge, UserPlus, AlertTriangle } from 'lucide-react';
 import type { TrustEdge } from '@/lib/trust/types';
+import { migrateTrustLevel } from '@/lib/trust/types';
 import { fromVCard } from '@/lib/contacts/vcard';
 import { dedupeContacts, type DedupPlan } from '@/lib/contacts/import-dedup';
 import { applyImportPlan } from '@/lib/contacts/import-apply';
+import { mergeProvenance, type ChannelChange } from '@/lib/contacts/import-diff';
 import { getAllContacts, addContact, updateContact } from '@/lib/identity/client-store';
 
 interface ImportContactsDialogProps {
@@ -44,7 +46,9 @@ function recordToEdge(c: any): TrustEdge {
     peer_email: c.peer_email || c.email || '',
     peer_public_key: c.public_key || '',
     contact_info,
-    trusted: false, trusted_since: null, last_interaction: c.added_at || '',
+    // chaos#32: project the REAL trust state (was hardcoded false, discarding trust_level) so a merge
+    // INTO a trusted contact can be flagged — the precondition for (A)'s review-routing + the diff warning.
+    trusted: migrateTrustLevel(c.trust_level), trusted_since: null, last_interaction: c.added_at || '',
     decay_days: 730, trust_history: [],
     verification: { method: 'none', verified_at: null },
     mutual: { they_trust_me: null, last_sync: null, reciprocal: false },
@@ -74,6 +78,9 @@ function edgeToRecordFields(e: Partial<TrustEdge>) {
     contact_info: e.contact_info ?? { phones, emails },
   };
 }
+
+/** Format channels for the preview: "phone +1..., signal @handle". */
+const fmtChannels = (cs: ChannelChange[]): string => cs.map((c) => `${c.type} ${c.value}`).join(', ');
 
 export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onImported }: ImportContactsDialogProps) {
   const [plan, setPlan] = useState<DedupPlan | null>(null);
@@ -148,19 +155,99 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
             <AlertDescription>Your address book has them now.</AlertDescription>
           </Alert>
         ) : plan ? (
-          <div className="space-y-2" data-testid="import-preview">
+          <div className="space-y-3" data-testid="import-preview">
             <div className="flex items-center gap-2 text-sm">
               <UserPlus className="h-4 w-4 text-emerald-400" />
               <span data-testid="fresh-count">{plan.fresh.length}</span>&nbsp;new contact{plan.fresh.length === 1 ? '' : 's'}
             </div>
-            <div className="flex items-center gap-2 text-sm">
-              <GitMerge className="h-4 w-4 text-amber-400" />
-              <span data-testid="merge-count">{plan.autoMerge.length}</span>&nbsp;merge into existing (living data wins)
-            </div>
-            {plan.review.length > 0 && (
+
+            <div className="space-y-1">
               <div className="flex items-center gap-2 text-sm">
-                <AlertTriangle className="h-4 w-4 text-amber-400" />
-                <span data-testid="review-count">{plan.review.length}</span>&nbsp;need a closer look
+                <GitMerge className="h-4 w-4 text-amber-400" />
+                <span data-testid="merge-count">{plan.autoMerge.length}</span>&nbsp;merge into existing (living data wins)
+              </div>
+              {/* chaos#32 (B): a per-field DIFF, not a bare count — show what each merge ADDS + why it
+                  matched. A channel injected onto a TRUSTED contact renders amber with a warning icon. */}
+              {plan.autoMerge.length > 0 && (
+                <ul className="pl-6 space-y-1" data-testid="merge-details">
+                  {plan.autoMerge.map((am, i) => {
+                    const prov = mergeProvenance(am.existing, am.incoming);
+                    const name = am.existing.peer_name || am.incoming.peer_name || 'this contact';
+                    const toTrusted = am.existing.trusted && prov.added.length > 0;
+                    return (
+                      <li key={am.existing.id || i} className="text-xs" data-testid="merge-row">
+                        <span className="text-slate-300">{name}</span>
+                        {prov.matchedOn.length > 0 && (
+                          <span className="text-slate-500"> · matched on {fmtChannels(prov.matchedOn)}</span>
+                        )}
+                        {prov.added.length > 0 ? (
+                          <span className={toTrusted ? 'text-amber-300' : 'text-slate-400'} data-testid="merge-added">
+                            {' · '}
+                            {toTrusted && <AlertTriangle className="inline h-3 w-3 mr-1" />}
+                            adds {fmtChannels(prov.added)}{toTrusted && ' to a trusted contact'}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600"> · nothing new</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+
+            {plan.review.length > 0 && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <AlertTriangle className="h-4 w-4 text-amber-400" />
+                  <span data-testid="review-count">{plan.review.length}</span>&nbsp;need a closer look
+                </div>
+                {/* chaos#32 (B): the review card is a DIFF, not a count. Apollo's (A) routes a
+                    trusted-target + net-new-channel merge here (candidates:[target]); the ambiguous
+                    (>1 match) case also lands here. Both show matched-on + what WOULD be added. */}
+                <div className="pl-6 space-y-2" data-testid="review-details">
+                  {plan.review.map((row, i) => {
+                    const reason = (row as { reason?: string }).reason;
+                    const injection =
+                      reason === 'trusted-net-new' ||
+                      (row.candidates.length === 1 && row.candidates.some((c) => c.trusted));
+                    const name = row.incoming.peer_name || row.incoming.peer_email || 'this contact';
+                    return (
+                      <div key={i} className="rounded border border-amber-500/30 p-2 text-xs" data-testid="review-row">
+                        <div className={injection ? 'text-amber-300 font-medium' : 'text-slate-300'}>
+                          {injection ? (
+                            <>
+                              <AlertTriangle className="inline h-3 w-3 mr-1" />
+                              <span className="font-medium">{name}</span> would add new channels to a trusted contact
+                            </>
+                          ) : (
+                            <>
+                              <span className="font-medium">{name}</span> could match {row.candidates.length} existing contacts
+                            </>
+                          )}
+                        </div>
+                        <ul className="mt-1 space-y-0.5">
+                          {row.candidates.map((cand, j) => {
+                            const prov = mergeProvenance(cand, row.incoming);
+                            return (
+                              <li key={cand.id || j} className="text-slate-400">
+                                <span className="text-slate-300">{cand.peer_name || cand.peer_email || cand.id}</span>
+                                {cand.trusted && <span className="text-amber-400"> (trusted)</span>}
+                                {prov.matchedOn.length > 0 && (
+                                  <span className="text-slate-500"> · matched on {fmtChannels(prov.matchedOn)}</span>
+                                )}
+                                {prov.added.length > 0 && (
+                                  <span className="text-amber-300" data-testid="review-added"> · would add {fmtChannels(prov.added)}</span>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        <div className="mt-1 text-slate-500 italic">Kept as a separate contact unless you confirm the merge.</div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
