@@ -221,6 +221,52 @@ function unionArr(a: string[] | undefined, b: string[] | undefined): string[] {
   return out;
 }
 
+// ─── chaos#32 channel-injection guard surface (Archie fix A + Flint co-verify #116149) ────────
+// The import guard must measure the SAME channel surface livingWinsMerge WRITES. livingWinsMerge
+// raw-UNIONs the import's channels onto the living edge (unionArr, by raw value), so it carries in
+// UNNORMALIZABLE channels too — a bare national phone ('555-1234') or a custom-platform handle that
+// normalizeChannel/dedupKey drop (unnormalizable → null key). A guard that counted only NORMALIZED
+// dedup keys would miss exactly those, so an injection into a trusted edge could slip past review.
+// These read RAW values, matching what the merge actually writes.
+
+/**
+ * Every RAW reachability-channel value an edge carries, type-tagged so a phone can't alias an email.
+ * Mirrors the fields livingWinsMerge unions (peer_email + contact_info.{phones,emails,urls,handles} +
+ * connection_channels), INCLUDING unnormalizable values. Trim-folded: whitespace variants of a channel
+ * the edge already has are the same reachability, not a new one.
+ */
+export function rawChannelValues(
+  e: Pick<TrustEdge, 'peer_email' | 'contact_info' | 'connection_channels'>,
+): Set<string> {
+  const out = new Set<string>();
+  const add = (kind: string, v: string | undefined): void => {
+    const t = String(v ?? '').trim();
+    if (t) out.add(JSON.stringify([kind, t])); // JSON-tagged: unambiguous, no separator-collision across kinds/values
+  };
+  add('email', e.peer_email);
+  const ci = e.contact_info;
+  if (ci) {
+    for (const p of ci.phones ?? []) add('phone', p);
+    for (const em of ci.emails ?? []) add('email', em);
+    for (const u of ci.urls ?? []) add('url', u);
+    for (const [platform, handle] of Object.entries(ci.handles ?? {})) add(`handle:${platform}`, handle);
+  }
+  for (const c of e.connection_channels ?? []) add('cc', c);
+  return out;
+}
+
+/**
+ * True iff `after` (a livingWinsMerge SURVIVOR) carries ≥1 raw reachability channel `before` lacks —
+ * i.e. the merge ADDED a channel. Deriving `after` from the actual merge output makes this exact: it
+ * respects living-wins (per-platform handles win, scalars fill only when empty) AND catches raw-unioned
+ * unnormalizables. The chaos#32 predicate: an ADD into a TRUSTED-living target → route to review.
+ */
+export function addsRawChannel(before: TrustEdge, after: TrustEdge): boolean {
+  const have = rawChannelValues(before);
+  for (const c of rawChannelValues(after)) if (!have.has(c)) return true;
+  return false;
+}
+
 /**
  * Fold same-person edges into ONE merged edge. Composition ORDER matters (Archie #115913):
  * rank-SELECT the base FIRST, THEN union the others into it — NOT a naive reduce(livingWinsMerge),

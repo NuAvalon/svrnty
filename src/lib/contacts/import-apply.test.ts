@@ -6,9 +6,11 @@ import { applyImportPlan } from './import-apply';
 import { dedupeContacts, type DedupPlan } from './import-dedup';
 import type { TrustEdge } from '../trust/types';
 
+// Default edge is KNOWN-living (trusted:false, has fingerprint = rank 1) so plain auto-merge tests
+// don't trip the chaos#32 trusted-target guard (the guard itself is exercised in import-dedup.test.ts).
 const edge = (over: Partial<TrustEdge> = {}): TrustEdge => ({
   id: 'e', peer_fingerprint: 'FP', peer_name: 'X', peer_email: '', peer_public_key: '',
-  contact_info: { phones: [], emails: [] }, trusted: true, trusted_since: null,
+  contact_info: { phones: [], emails: [] }, trusted: false, trusted_since: null,
   last_interaction: '', decay_days: 730, trust_history: [],
   verification: { method: 'none', verified_at: null },
   mutual: { they_trust_me: null, last_sync: null, reciprocal: false },
