@@ -48,6 +48,18 @@ one's own unreviewed PR is never permitted.
   PSI discovery, DHT, `did:svrnty:` syntax, self-hosted slugs, native shell, duress path,
   one-shot at-rest re-encrypt.
 
+## Promoting / demoting a protected path (Peter, #115873, 2026-08-17)
+
+Protection is a **one-way ratchet by default**:
+
+- **Promote (add a path) — any agent, no ack.** Any agent may add a file to the protected list by
+  flagging it here (or in `CODEOWNERS`) with **one sentence of reasoning**. Tightening the gate is
+  always safe, so it needs no Peter-ack — the reasoning simply lands in this file's history (the record).
+- **Demote (remove a path) — Peter-ack required.** Removing a path — loosening the gate — is the only
+  direction that can weaken it, so it needs Peter's explicit ack. The gate cannot self-weaken from inside.
+
+Every protected entry carries its one-sentence reasoning inline, so the record shows *why* each path is gated.
+
 ## Enforcement — how it actually works right now
 
 ⚠️ **GitHub-native branch protection is NOT yet in place.** The push credential
