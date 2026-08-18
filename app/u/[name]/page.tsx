@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { hasIdentity, loadIdentity } from '@/lib/identity/client-store';
+import { slugUrlShort } from '@/lib/config/domain';
 
 interface ProfileData {
   display_name?: string;
@@ -190,7 +191,7 @@ export default function ProfilePage() {
           letterSpacing: '2px',
           margin: '0 0 24px',
         }}>
-          svrnty.is/{name}
+          {slugUrlShort(name)}
         </p>
 
         {/* Verified badge */}
