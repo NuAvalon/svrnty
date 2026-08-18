@@ -1,0 +1,13 @@
+# svrnty self-host — automatic HTTPS via Caddy.
+#
+# Caddy obtains and auto-renews a Let's Encrypt certificate for your domain, with no
+# manual cert steps. Requirements:
+#   1. Your domain's DNS A record (and AAAA, if you have IPv6) points at THIS server.
+#   2. Ports 80 and 443 are reachable from the internet (Let's Encrypt validates over them).
+#
+# SVRNTY_DOMAIN is injected from your .env by docker-compose.yml.
+
+{$SVRNTY_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

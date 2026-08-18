@@ -1,0 +1,71 @@
+# svrnty — self-host compose.
+#
+#   Minimal (default): the app + Caddy (automatic HTTPS). Identity is self-certifying;
+#     relay, vault, and contact exchange all work with NO external backend.
+#   Full nursery (optional): add `--profile nursery` to also run the registration
+#     backend, which enables vanity slugs (id.example.com/alice) on YOUR domain.
+#
+# Quick start:
+#   cp .env.example .env      # then edit .env
+#   docker compose up -d --build
+#
+# ⚠  NEXT_PUBLIC_* are inlined into the browser bundle at BUILD time — they are passed as
+#    build args below, NOT runtime env. If you change your domain, you must REBUILD:
+#    `docker compose up -d --build`. (Runtime-only env changes won't reach the client.)
+
+services:
+  app:
+    build:
+      context: .
+      args:
+        # Client-side, build-time (baked into the browser bundle):
+        NEXT_PUBLIC_SVRNTY_DOMAIN: ${NEXT_PUBLIC_SVRNTY_DOMAIN:?set NEXT_PUBLIC_SVRNTY_DOMAIN in .env}
+        NEXT_PUBLIC_SVRNTY_BASE_URL: ${NEXT_PUBLIC_SVRNTY_BASE_URL:-}
+    image: svrnty:selfhost
+    environment:
+      # Server-side only (read at runtime — safe as env, never shipped to the browser):
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      # Registration/nursery backend. Only used by the slug routes; harmless if the
+      # nursery profile is off (those routes simply return "unavailable"). Keep the
+      # host as "registration" — one slug route hardcodes that name (see SELF_HOSTING.md).
+      SATELLITE_URL: http://registration:8101
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Caddy obtains + auto-renews a Let's Encrypt cert for this domain.
+      SVRNTY_DOMAIN: ${NEXT_PUBLIC_SVRNTY_DOMAIN:?set NEXT_PUBLIC_SVRNTY_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  # ── Optional nursery ────────────────────────────────────────────────────────
+  # Vanity slugs on your own domain (id.example.com/alice). Enable with:
+  #   docker compose --profile nursery up -d --build
+  # The image is NOT yet published — build it from infra/svrnty and set
+  # REGISTRATION_IMAGE in .env. See SELF_HOSTING.md → "Full nursery (vanity slugs)".
+  # MUST remain reachable as host "registration" on :8101 (one slug route hardcodes it).
+  registration:
+    profiles: ["nursery"]
+    image: ${REGISTRATION_IMAGE:-svrnty-registration:latest}
+    expose:
+      - "8101"
+    volumes:
+      - registration_data:/data
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+  registration_data:
