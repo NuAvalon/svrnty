@@ -16,20 +16,18 @@ svrnty is a local-first encrypted trust protocol. It lets you:
 - **Build a trust graph** — binary trust (Known / Trusted) with decay, vouching, and full audit trails. No tiers to climb. No popularity contests.
 - **Exchange signed signals** — vouch for someone, break trust visibly, raise a concern privately, make an introduction, rotate a key — all cryptographically signed, all verifiable
 - **Back up your vault** — encrypted `.svrnty` vault files (AES-256-GCM, PBKDF2 600K iterations). Export to a local file you control. Cloud sync (Google Drive, Dropbox, iCloud, WebDAV) is on the roadmap; when it lands, the file is encrypted before it leaves your device and the cloud sees a binary blob, nothing more.
-- **Recover your keys** — Shamir secret sharing splits your master key across trusted contacts. No single point of failure. No "forgot password" flow that routes through a corporation.
+- **Back up and recover** — restore from an encrypted backup file you saved (wired today). Social recovery — Shamir secret sharing splits your master key across trusted contacts, and any threshold rebuilds it byte-for-byte (cryptographically proven) — but rebuilding your identity from your circle's shares isn't yet a click in the app. No custodian, no "forgot password" routed through a corporation.
 
 Nothing personal ever leaves your device unless you choose to send it.
 
 ## Why Post-Quantum
 
-svrnty uses hybrid cryptography from day one:
+svrnty is post-quantum where it counts today — identity — and building toward post-quantum everywhere:
 
-- **ED25519 + ML-DSA-87** for signatures (classical + FIPS 204 post-quantum, Cat 5)
-- **Curve25519 + ML-KEM-1024** for encryption (classical + FIPS 203 post-quantum, Cat 5)
+- **Signatures: ED25519 + ML-DSA-87** (classical + FIPS 204 post-quantum, Cat 5) — **live on the wire.** Every identity card and trust signal is dual-signed; if one scheme breaks, the other holds.
+- **Encryption: Curve25519 today, with ML-KEM-1024** (FIPS 203, Cat 5) on the way. Each identity **advertises** a post-quantum encryption key, and the hybrid-KEM primitives are built and tested — but the message envelope is **currently classical**. Wiring the hybrid-KEM into the envelope is the next step, not yet on the wire.
 
-This isn't paranoia. A trust protocol is infrastructure that should measure in decades. Harvest-now-decrypt-later is a known attack vector. The NIST post-quantum standards were finalized in 2024. If you're building a new cryptographic system in 2026 without them, you're choosing to be obsolete.
-
-Both signatures travel together. If one breaks, the other holds.
+This isn't paranoia. A trust protocol is infrastructure that should measure in decades. Harvest-now-decrypt-later is a known attack vector, and the NIST post-quantum standards were finalized in 2024 — so we ship post-quantum *signatures* from the first keypair and are closing the gap on post-quantum *encryption* honestly, rather than claiming it before it's wired.
 
 ## The Trust Model
 
@@ -141,7 +139,7 @@ Your encrypted trust graph lives in your browser and exports to a local `.svrnty
 
 **No vendor lock-in, even if it hurts.** Your keys are standard formats. Your trust graph is an encrypted JSON file on your disk. Export everything, take it somewhere else. We'd rather you leave freely than stay because you can't.
 
-**Post-quantum from the start.** Not as a migration. Not as an upgrade path. From the first keypair you generate. Architecture should measure in decades, not quarterly roadmaps.
+**Post-quantum signatures from the start.** Not as a migration, not as an upgrade path — every identity is dual-signed (classical + ML-DSA-87) from the first keypair you generate, and each advertises a post-quantum encryption key. Wiring the post-quantum encryption *envelope* is the honest remaining step. Architecture should measure in decades, not quarterly roadmaps.
 
 ## Status
 
