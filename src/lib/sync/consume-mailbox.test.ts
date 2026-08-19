@@ -200,6 +200,30 @@ test('epoch-ahead-needs-lineage → RETRYABLE: dropped this poll but NOT acked (
   assert.deepEqual(ackLog, [], 'no ack call for a retryable-only batch');
 });
 
+test('a store I/O failure does not wedge the channel — left for retry (no throw escapes, not acked)', async () => {
+  const env: ContactUpdateEnvelope = {
+    fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',
+    changed_fields: ['display_name'], delta: { display_name: 'io-fail' },
+  };
+  const signed = await signUpdate(env, bob);
+  const ackLog: string[][] = [];
+  // A real, in-book, verified update whose persist throws (simulating an IndexedDB write failure).
+  const throwingStore = {
+    lookup: async (fp: string) => (fp === bob.fingerprint ? bobKnownToAlice(0) : null),
+    persist: async () => { throw new Error('simulated IndexedDB write failure'); },
+  };
+  // The whole poll must COMPLETE (return, not throw) — one poisoned envelope cannot wedge the channel.
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    decrypt: async () => signed,
+    store: throwingStore,
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(summary.applied, 0);
+  assert.equal(summary.dropped, 1);
+  assert.equal(summary.acked, 0, 'a store-failure envelope is left in the mailbox (retryable), not acked');
+  assert.deepEqual(ackLog, [], 'no ack — the verified update was not silently dropped');
+});
+
 test('empty mailbox → no-op summary', async () => {
   const ackLog: string[][] = [];
   const summary = await consumeInboundContactUpdates(baseDeps({

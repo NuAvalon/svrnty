@@ -119,7 +119,18 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // 2) Consume each envelope independently; collect the terminal ones to ack.
   const toAck: string[] = [];
   for (const env of envelopes) {
-    const outcome = await consumeOne(env.blob, deps, now);
+    let outcome: Outcome;
+    try {
+      outcome = await consumeOne(env.blob, deps, now);
+    } catch (err) {
+      // WEDGE-IMMUNITY (the line-above invariant): consumeOne is not expected to throw, but if an
+      // unexpected error escapes it (a store I/O failure, an unforeseen bug), ONE envelope must never
+      // wedge the whole channel. Log LOUDLY (local only — never echoed, I-1) and treat as RETRYABLE:
+      // leave it in the mailbox so a transient failure retries rather than silently dropping a
+      // verified update, and a persistent one is bounded by the envelope TTL.
+      console.error('[return-channel] unexpected error consuming an envelope (left for retry):', err);
+      outcome = { kind: 'retryable' };
+    }
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
@@ -189,9 +200,10 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     applied = applyVerifiedContactUpdate(contact.current, verified, now());
   } catch (e) {
     if (e instanceof ContactUpdateApplyRejected) return { kind: 'terminal' };
-    throw e; // an unexpected error is a real bug — surface it, don't swallow
+    throw e; // an unexpected (non-ApplyRejected) error → propagates to the guarded consume loop (wedge-immune)
   }
 
+  // persist may throw on a store I/O failure — that too propagates to the guarded loop (retryable).
   await deps.store.persist(contact.current.id, applied.next);
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
 }
