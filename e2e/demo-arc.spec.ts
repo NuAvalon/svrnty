@@ -18,8 +18,8 @@ import path from 'path';
 //   • Hypatia — this arc skeleton (owns the arc).
 //   • Athena  — ceremony/export testids (beats 3 & 5) + un-stubs beat 4 when her consume→apply
 //               caller lands (return_channel_caller_build_plan.md).
-//   • Archie  — return-channel relay-semantics + the BroadcastChannel repaint / last_interaction-reset
-//               that makes beat 4 LIVE.
+//   • Archie  — return-channel relay-semantics (the mailbox/poll/ack HOW).
+//   • Apollo  — the BroadcastChannel repaint / last_interaction-reset that makes beat 4 LIVE.
 //   • Coexists with e2e/return-channel.spec.ts (Flint's gate; self-skips until endpoints land).
 //
 // WIRE-STATE (verified on main, 2026-08-18 — see KB #86234):
@@ -29,7 +29,7 @@ import path from 'path';
 //               short link) is confirmed in CI, or Athena adds a testid exposing the full join URL.
 //   Beat 4    : NOT WIRED — verify+apply primitives (foldLivingWins) exist but have ZERO callers and
 //               the relay is a single-use dead-drop → Bob's edit reaches Alice neither live nor on
-//               reload. test.fixme until Athena's caller + Archie's repaint land.
+//               reload. test.fixme until Athena's caller + Apollo's repaint land.
 //   Beat 5    : PENDING TESTIDS — SecureExportDialog exists; test.fixme until export testids land.
 //
 // HARD EXCLUSIONS (never demoed — a falsely-promised safety feature is a HARM, not a UX gap):
@@ -114,7 +114,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // ── Beat 4: the living edge — Bob edits → Alice self-updates ──────────────────────────
   // NOT WIRED. The merge primitives (foldLivingWins / applyVerifiedContactUpdate) exist but have zero
   // callers, and the relay is a single-use dead-drop with no return channel — Bob's edit reaches Alice
-  // neither live nor on reload. Un-stub when Athena's consume→apply caller lands + Archie's BroadcastChannel
+  // neither live nor on reload. Un-stub when Athena's consume→apply caller lands + Apollo's BroadcastChannel
   // repaint / last_interaction-reset makes it live.
   test.fixme('beat 4 (pending caller): Bob edits his card → Alice\'s entry self-updates', async () => {
     // INTENDED (once wired):
