@@ -33,6 +33,7 @@ import {
   type ContactRecord,
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
+import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 
 // --- Types ---
@@ -184,6 +185,19 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       }
     });
   }, [loadContacts]);
+
+  // Live-beat poll (Athena): the runtime call-site that drives the return-channel consume on an interval,
+  // so a peer's verified contact.update self-applies IN this page → the caller emits reason:'live-apply' →
+  // the subscription above repaints the row data-live="push" (beat-4). startLiveBookPolling re-reads the
+  // unlocked key each tick and no-ops while the session is locked, so this effect keys only on the stable
+  // fingerprint; `identity` is closed over for the armored public key (stable per fingerprint).
+  useEffect(() => {
+    if (!fingerprint) return;
+    const handle = startLiveBookPolling(identity);
+    return () => handle.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable fingerprint; identity's
+    // object ref is intentionally not a dep (public key stable per fp; private key re-loaded each tick).
+  }, [fingerprint]);
 
   // Filter contacts — binary: all, trusted, known
   const filteredContacts = contacts.filter(contact => {
