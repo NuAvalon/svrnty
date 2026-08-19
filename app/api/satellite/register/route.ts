@@ -3,8 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
 
-// Allowlist of fields we forward to the registration backend
-const ALLOWED_FIELDS = ['fingerprint', 'public_key', 'name', 'email', 'slug'] as const;
+// Allowlist of fields we forward to the registration backend.
+// (§1, Peter #116236) 'email' is deliberately NOT forwarded — no email touches identity; a
+// server-side email↔identity mapping is exactly the subpoenable record the constitution refuses.
+const ALLOWED_FIELDS = ['fingerprint', 'public_key', 'name', 'slug'] as const;
 
 export async function POST(request: NextRequest) {
   try {

@@ -224,12 +224,6 @@ export function SoverentityFrontend({
     threshold: number;
   } | null>(null);
   const [recoveryAcked, setRecoveryAcked] = useState(false);
-  const [verificationState, setVerificationState] = useState({
-    loading: false,
-    error: null as string | null,
-    status: existingIdentity?.verification?.status || 'unverified',
-  });
-  const [verificationCode, setVerificationCode] = useState('');
 
   // Vault restore state
   const [vaultFile, setVaultFile] = useState<File | null>(null);
@@ -266,10 +260,6 @@ export function SoverentityFrontend({
   useEffect(() => {
     if (existingIdentity) {
       setIdentity(existingIdentity);
-      setVerificationState(prev => ({
-        ...prev,
-        status: existingIdentity.verification?.status || 'unverified',
-      }));
     }
   }, [existingIdentity]);
 
@@ -403,67 +393,10 @@ export function SoverentityFrontend({
     setRecoveryAcked(false);
   };
 
-  const handleVerification = async () => {
-    try {
-      setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-      const response = await fetch('/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: identity.identity.email,
-        }),
-      });
-      const data = await safeJson(response);
-      if (!response.ok) throw new Error(data.detail || data.error || 'Failed to send verification email');
-      setVerificationState(prev => ({ ...prev, status: 'verification_sent', loading: false }));
-    } catch (err) {
-      setVerificationState(prev => ({
-        ...prev,
-        error: err instanceof Error ? err.message : 'Verification failed',
-        loading: false,
-      }));
-    }
-  };
-
-  const handleVerifyCode = async () => {
-    try {
-      setVerificationState(prev => ({ ...prev, loading: true, error: null }));
-      const response = await fetch('/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: identity.identity.email,
-          otp: verificationCode,
-          fingerprint: identity.identity.fingerprint,
-          public_key: identity.identity.public_key,
-        }),
-      });
-      const data = await safeJson(response);
-      if (!response.ok) throw new Error(data.detail || data.error || 'Code verification failed');
-      // Update local identity verification status
-      const updatedIdentity = { ...identity };
-      updatedIdentity.verification = {
-        status: 'verified',
-        method: 'email',
-        verified_at: new Date().toISOString(),
-      };
-      setIdentity(updatedIdentity);
-      onIdentityUpdate?.(updatedIdentity);
-      // Store updated identity in IndexedDB
-      try {
-        const { storeIdentity } = await import('@/lib/identity/client-store');
-        await storeIdentity(identity.identity.fingerprint, updatedIdentity);
-      } catch (e) { console.warn('Failed to update IndexedDB:', e); }
-      setVerificationState(prev => ({ ...prev, status: 'verified', loading: false }));
-    } catch (err) {
-      setVerificationState(prev => ({
-        ...prev,
-        error: err instanceof Error ? err.message : 'Code verification failed',
-        loading: false,
-      }));
-    }
-  };
-
+  // (§1, Peter #116236) Email-verification + OTP handlers removed. There is no server account to
+  // verify against, and any email→identity path is a custodian backdoor (email-verify today implies
+  // email-recovery tomorrow → whoever controls the inbox controls the identity). Recovery is SOCIAL
+  // (Shamir guardians + veto window), never inbox-based; the identity is self-certifying (key possession).
 
   // --- Vault Restore ---
 
@@ -1358,7 +1291,11 @@ export function SoverentityFrontend({
   }
 
   // --- Identity View ---
-  const isVerified = verificationState.status === 'verified' || verificationState.status === 'skipped' || identity?.verification?.status === 'verified';
+  // (§1, Peter #116236; badge copy ruled by Hypatia #116414) A sovereign identity is SELF-CERTIFYING:
+  // the vault (device + Argon2id passphrase) and the local keys ARE the identity — the fingerprint
+  // binds the key, the key IS the proof, attested by no one. There is no verified/unverified model to
+  // be in: the identity is complete by construction. The label claims only what the architecture
+  // confers — self-certification (SOVEREIGN), never third-party verification.
 
   if (!identity) return null;
 
@@ -1370,8 +1307,8 @@ export function SoverentityFrontend({
           <div style={s.idHeader}>
             <div style={{
               ...s.statusDot,
-              background: isVerified ? '#6a9a6a' : '#c8a84e',
-              boxShadow: `0 0 8px ${isVerified ? 'rgba(106,154,106,0.4)' : 'rgba(200,168,78,0.4)'}`,
+              background: '#6a9a6a',
+              boxShadow: '0 0 8px rgba(106,154,106,0.4)',
             }} />
             <div>
               <h3 style={s.idName}>{identity.identity.name}</h3>
@@ -1379,11 +1316,11 @@ export function SoverentityFrontend({
             </div>
             <span style={{
               ...s.statusBadge,
-              color: isVerified ? '#6a9a6a' : '#c8a84e',
-              borderColor: isVerified ? 'rgba(106,154,106,0.3)' : 'rgba(200,168,78,0.3)',
-              background: isVerified ? 'rgba(106,154,106,0.1)' : 'rgba(200,168,78,0.1)',
+              color: '#6a9a6a',
+              borderColor: 'rgba(106,154,106,0.3)',
+              background: 'rgba(106,154,106,0.1)',
             }}>
-              {isVerified ? 'VERIFIED' : 'UNVERIFIED'}
+              SOVEREIGN
             </span>
           </div>
 
@@ -1400,86 +1337,15 @@ export function SoverentityFrontend({
           </div>
         </div>
 
-        {/* Verification Section */}
-        {!isVerified && (
-          <div style={s.verifySection}>
-            <h3 style={s.sectionTitle}>VERIFY IDENTITY</h3>
+        {/* (§1, Peter #116236) The email-verification section is removed: there is no server account
+            and nothing to verify. Onboarding flows straight through (genesis → import) with no email step. */}
 
-            {verificationState.error && (
-              <div style={s.error}>{verificationState.error}</div>
-            )}
-
-            {verificationState.status === 'verification_sent' ? (
-              <>
-                <p style={s.verifyText}>
-                  Verification code sent to your email. Enter it below.
-                </p>
-                <input
-                  type="text"
-                  placeholder="Enter code"
-                  value={verificationCode}
-                  onChange={e => setVerificationCode(e.target.value)}
-                  maxLength={6}
-                  style={{ ...s.input, textAlign: 'center' as const, letterSpacing: '6px', fontSize: '18px' }}
-                />
-                <button
-                  onClick={handleVerifyCode}
-                  disabled={verificationState.loading || !verificationCode}
-                  style={{
-                    ...s.primaryBtn,
-                    opacity: verificationState.loading || !verificationCode ? 0.5 : 1,
-                  }}
-                >
-                  {verificationState.loading ? (
-                    <span style={s.btnInner}><Spinner /> Verifying...</span>
-                  ) : (
-                    <span style={s.btnInner}>Verify</span>
-                  )}
-                </button>
-              </>
-            ) : (
-              <>
-                <p style={s.verifyText}>
-                  Optional: verify your email for account recovery. Your identity works without this.
-                </p>
-                <button
-                  onClick={handleVerification}
-                  disabled={verificationState.loading}
-                  style={{
-                    ...s.outlineBtn,
-                    opacity: verificationState.loading ? 0.5 : 1,
-                  }}
-                >
-                  {verificationState.loading ? (
-                    <span style={s.btnInner}><Spinner /> Sending...</span>
-                  ) : (
-                    <span style={s.btnInner}>Send Verification Email</span>
-                  )}
-                </button>
-                <button
-                  onClick={() => setVerificationState(prev => ({ ...prev, status: 'skipped' }))}
-                  style={{
-                    ...s.outlineBtn,
-                    marginTop: '8px',
-                    opacity: 0.7,
-                    fontSize: '12px',
-                  }}
-                >
-                  <span style={s.btnInner}>Skip for now</span>
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {isVerified && (
-          <div style={s.verifiedBanner}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-            <span>Identity verified. You are sovereign.</span>
-          </div>
-        )}
+        <div style={s.verifiedBanner}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+          </svg>
+          <span>Self-certifying identity. You are sovereign.</span>
+        </div>
 
         {/* Export / Backup Section */}
         {identity && (
