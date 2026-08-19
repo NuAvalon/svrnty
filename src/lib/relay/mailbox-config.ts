@@ -32,6 +32,8 @@ export interface MailboxConfig {
   /** Per-IP deposit rate ceiling within the window. */
   rateLimitMax: number;
   rateLimitWindowMs: number;
+  /** Owner-auth (signed poll/ack) freshness window in ms — bounds replay of a captured request. */
+  ownerAuthWindowMs: number;
   /**
    * §5.1 LAUNCH seam: when true (svrnty.is nursery profile), mailbox CREATION is gated behind an
    * explicit owner-claim carrying an invite_token+chain. That claim machinery lands WITH the invite
@@ -48,6 +50,7 @@ export function mailboxConfig(): MailboxConfig {
     maxPayloadBytes: intEnv('RELAY_MAX_PAYLOAD_BYTES', 64 * 1024),
     rateLimitMax: intEnv('RELAY_RATE_LIMIT_MAX', 10),
     rateLimitWindowMs: intEnv('RELAY_RATE_LIMIT_WINDOW_MS', 60_000),
+    ownerAuthWindowMs: intEnv('RELAY_OWNER_AUTH_WINDOW_MS', 60_000),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
   };
 }

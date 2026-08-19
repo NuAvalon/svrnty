@@ -8,7 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { pollMailbox } from '@/lib/relay/mailbox-store';
-import { verifyOwnerAuth } from '@/lib/relay/owner-auth';
+import { verifyMailboxPollAuth } from '@/lib/relay/mailbox-auth';
 
 // The single uniform non-owner response — computed WITHOUT touching the store, so its latency and
 // bytes are independent of any mailbox's state. It never contains a stored blob.
@@ -23,7 +23,7 @@ export async function GET(request: Request) {
 
     // Owner check precedes ALL store access. Non-owners (incl. no-auth / bad-auth) take the uniform
     // path below and never learn whether the mailbox exists.
-    const isOwner = await verifyOwnerAuth(request, mailboxId);
+    const isOwner = await verifyMailboxPollAuth(request, mailboxId, Date.now());
     if (!isOwner) return nonOwner();
 
     // Authenticated owner only: an absent mailbox reads as empty ([]), which the owner already knows.

@@ -7,7 +7,7 @@
 
 import { NextResponse } from 'next/server';
 import { ackDelete } from '@/lib/relay/mailbox-store';
-import { verifyOwnerAuth } from '@/lib/relay/owner-auth';
+import { verifyMailboxAckAuth } from '@/lib/relay/mailbox-auth';
 
 function nonOwner() {
   return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -16,16 +16,16 @@ function nonOwner() {
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => null);
-    const mailboxId = body?.mailbox_id;
-    const envelopeIds = body?.envelope_ids;
+    const mailboxId = typeof body?.mailbox_id === 'string' ? body.mailbox_id : '';
+    const envelopeIds: string[] = Array.isArray(body?.envelope_ids) ? body.envelope_ids : [];
 
-    const isOwner = await verifyOwnerAuth(request, mailboxId);
+    // Owner-auth binds the EXACT envelope_ids (the signed input includes them) — a tampered id-list
+    // or a replayed poll-auth (different domain) fails here, before any store mutation.
+    const now = Date.now();
+    const isOwner = await verifyMailboxAckAuth(request, mailboxId, envelopeIds, now);
     if (!isOwner) return nonOwner();
 
-    if (!Array.isArray(envelopeIds)) {
-      return NextResponse.json({ error: 'invalid envelope_ids' }, { status: 400 });
-    }
-    const deleted = ackDelete(mailboxId, envelopeIds, Date.now());
+    const deleted = ackDelete(mailboxId, envelopeIds, now);
     return NextResponse.json({ deleted });
   } catch {
     return nonOwner();
