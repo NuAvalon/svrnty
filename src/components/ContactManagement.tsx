@@ -32,6 +32,7 @@ import {
   getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 
 // --- Types ---
@@ -110,6 +111,8 @@ function recordToContact(r: ContactRecord): Contact {
 
 export function ContactManagement({ identity, onContactsChange }: ContactsProps) {
   const [contacts, setContacts] = useState<Contact[]>([]);
+  // Live-beat: contact ids whose latest repaint came from a peer's incoming apply (reason:'live-apply') → data-live="push".
+  const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('all');
@@ -168,6 +171,19 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   useEffect(() => {
     if (fingerprint) loadContacts();
   }, [fingerprint, loadContacts]);
+
+  // Live-beat (Apollo): a peer's edit → the return-channel caller applies it IN Alice's page → emits reason:'live-apply'.
+  // We re-project the book IN-PLACE (no reload / no navigation — the honest hinge) and mark the ignited rows
+  // data-live="push" so beat-4 can prove Alice self-updated LIVE, not via pull-to-refresh. `source:'broadcast'`
+  // (cross-tab) is a separate uninstantiable invariant; the single-Alice-page demo rides source:'local' + reason:'live-apply'.
+  useEffect(() => {
+    return subscribeContactChanges((evt) => {
+      loadContacts(); // reflect the applied update in place (any reason keeps the book fresh, incl. cross-tab)
+      if (evt.reason === 'live-apply' && evt.ids.length > 0) {
+        setLiveIds(new Set(evt.ids)); // only a real incoming apply earns the "push" marker
+      }
+    });
+  }, [loadContacts]);
 
   // Filter contacts — binary: all, trusted, known
   const filteredContacts = contacts.filter(contact => {
@@ -677,6 +693,8 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 {filteredContacts.map(contact => (
                   <div
                     key={contact.id}
+                    data-testid="contact-row"
+                    data-live={liveIds.has(contact.id) ? 'push' : undefined}
                     className="group border border-border/40 rounded-lg overflow-hidden bg-card hover:border-border transition-colors cursor-pointer"
                     onClick={() => { setSelectedContact(contact); setShowDetailDialog(true); }}
                   >
