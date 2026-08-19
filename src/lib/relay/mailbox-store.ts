@@ -53,8 +53,10 @@ export function depositEnvelope(mailboxId: string, blob: string, now: number): D
   if (blob.length > cfg.maxPayloadBytes) return { ok: false, status: 413 };
 
   // §5.1 LAUNCH seam (config-driven, NOT built for 9/10): under the svrnty.is nursery profile
-  // (cfg.inviteRequired), mailbox CREATION would be gated behind an explicit owner-claim carrying an
-  // invite_token+chain, and a deposit to an unclaimed mailbox rejected under the uniform-shape rule.
+  // (cfg.inviteRequired), mailbox CREATION is gated behind an explicit owner-claim carrying an
+  // invite_token+chain. A deposit to an as-yet-UNCLAIMED mailbox is still ACCEPTED UNIFORMLY —
+  // buffered + TTL'd + unreadable until claimed — and is NEVER rejected (Archie #116327): rejecting
+  // would reintroduce exactly the occupancy-oracle / silent-drop that the uniform-ack design closes.
   // That claim registry lands with the invite machinery (Archie #116271); the demo/family profile
   // (inviteRequired=false, default) lazy-creates on first deposit below. Referenced here so the
   // policy branch reads config, not a literal — the image never forks (Invariant 8).

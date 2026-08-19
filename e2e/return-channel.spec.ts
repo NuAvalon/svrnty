@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
+import { ownerMailboxId, pollHeaders, ackHeaders } from './fixtures/return-channel-owner';
 
 // Return-channel custody gate — I-1/I-4 timing + functional (Flint · s919 · Peter #116192 §1, joint §8).
 // Drop-in for `e2e/return-channel.spec.ts`. Gates Athena's mailbox/poll/ack build: the relay may gain a
@@ -22,12 +23,10 @@ function mailboxIdFor(seed: string): string {
   return `mbx_${seed}_${'x'.repeat(24)}`.slice(0, 40);
 }
 
-// Owner-ownership proof for a mailbox. TODO(seam §4.1): signed poll request vs short-lived bearer.
-// Until wired, returns null → the owner-dependent tests self-skip loudly (seam pending), the anti-oracle
-// tests (which assert the NON-owner path) still run.
-async function ownerAuthHeaders(_mailboxId: string): Promise<Record<string, string> | null> {
-  return null;
-}
+// Owner-ownership proof (§4.1) is now WIRED: the fixture (e2e/fixtures/return-channel-owner.ts) signs
+// poll/ack requests with a real identity whose derived mailbox_id it owns. Poll and ack are
+// domain-separated — pollHeaders() vs ackHeaders(ids) — so an ack carries a signature that binds its
+// exact envelope_ids. The non-owner anti-oracle tests below still send NO auth (the load-bearing path).
 
 async function deposit(request: APIRequestContext, mailboxId: string, blob = OPAQUE_BLOB) {
   return request.post(DEPOSIT, { data: { mailbox_id: mailboxId, blob } });
@@ -105,32 +104,28 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
 
   // ── A. Functional return-channel — owner-dependent; self-skips loudly until the owner-auth seam is wired. ──
   test('A1–A4: deposit→owner-poll→ack-delete, non-destructive, at-least-once redelivery', async ({ request }) => {
-    const mbx = mailboxIdFor('a');
-    const auth = await ownerAuthHeaders(mbx);
-    test.skip(
-      auth === null,
-      '⏸ owner-auth seam (§4.1) not wired — functional poll/ack half pending. Anti-oracle half (B/C/E) still gates.',
-    );
+    const mbx = await ownerMailboxId(); // the owner's REAL derived mailbox (not the arbitrary mailboxIdFor)
+
     // Deposit two envelopes.
     await deposit(request, mbx, 'AAAA');
     await deposit(request, mbx, 'BBBB');
 
     // A1 deposit→poll (owner sees them); A2 non-destructive (poll twice, same set, no ack between).
-    const poll1 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: auth! });
+    const poll1 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: await pollHeaders() });
     expect(poll1.ok()).toBeTruthy();
     const list1 = (await poll1.json()) as Array<{ envelope_id: string; blob: string }>;
     expect(list1.length).toBe(2);
-    const poll2 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: auth! });
+    const poll2 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: await pollHeaders() });
     const list2 = (await poll2.json()) as Array<{ envelope_id: string; blob: string }>;
     expect(list2.map((e) => e.envelope_id).sort(), 'poll is non-destructive').toEqual(
       list1.map((e) => e.envelope_id).sort(),
     );
 
-    // A3 ack-delete one → next poll omits exactly it.
+    // A3 ack-delete one → next poll omits exactly it. The ack carries an ack-domain signature over [drop].
     const drop = list1[0].envelope_id;
-    const ack = await request.post(ACK, { headers: auth!, data: { mailbox_id: mbx, envelope_ids: [drop], owner_ack: 'seam' } });
+    const ack = await request.post(ACK, { headers: await ackHeaders([drop]), data: { mailbox_id: mbx, envelope_ids: [drop] } });
     expect(ack.ok()).toBeTruthy();
-    const poll3 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: auth! });
+    const poll3 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: await pollHeaders() });
     const ids3 = ((await poll3.json()) as Array<{ envelope_id: string }>).map((e) => e.envelope_id);
     expect(ids3, 'acked id is gone').not.toContain(drop);
     expect(ids3, 'unacked ids remain (at-least-once)').toContain(list1[1].envelope_id);
