@@ -14,7 +14,7 @@
 // identity-blind BY DESIGN (custody is receiver-side, anti-sender-oracle I-1/I-4); the security that
 // matters is the inner signed update — which is why this helper builds a real one.
 
-import type { APIRequestContext } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 import { generateKey, readKey } from 'openpgp';
 import { signWithEnvelope } from '../../src/lib/crypto/sign-envelope';
 import {
@@ -121,4 +121,71 @@ export async function depositRawBlob(
     data: { mailbox_id: deriveMailboxId(args.recipientFingerprint), blob: args.blob },
   });
   return res.status();
+}
+
+/**
+ * Put a genesis'd Alice into a beat-4-ready state: extract her fingerprint + armored public key from the
+ * plaintext `identities` store, and seed a fresh Bob (makeE2EIdentity) into her `contacts` book at the
+ * default epoch so the consume-side I-2 whitelist passes with no epoch-ahead reject. Returns the recipient
+ * keys (for depositContactUpdate) + Bob (the sender).
+ *
+ * ⚠ PRECONDITION + NO RELOAD: call AFTER Alice's genesis, and do NOT reload the page afterwards. Genesis
+ * stores Alice's key ENCRYPTED at rest and unlocks the session only IN MEMORY (lost on refresh); a reload
+ * would relock her, loadKey would fail, and the poll would no-op. The genesis session stays unlocked and
+ * the poll is already running (ContactManagement mounted on the Contacts tab), so it picks up the deposit
+ * within its interval — assert data-live="push" with a generous timeout (~10s).
+ *
+ * Seeds via raw IndexedDB (self-contained — no app code / no client-store window access). Only the plaintext
+ * `identities` + `contacts` stores are touched; the encrypted `keys` store is left to genesis.
+ */
+export async function seedAliceWithBob(
+  page: Page,
+): Promise<{ aliceFp: string; aliceArmoredPub: string; bob: E2EIdentity }> {
+  const bob = await makeE2EIdentity('bob');
+  const alice = await page.evaluate(
+    async ({ bobFp, bobPub }: { bobFp: string; bobPub: string }) => {
+      const openDb = () =>
+        new Promise<IDBDatabase>((resolve, reject) => {
+          const r = indexedDB.open('svrnty'); // no version → open the app's existing DB as-is
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => reject(r.error);
+        });
+      const db = await openDb();
+      const identities = await new Promise<Array<{ data?: { identity?: { fingerprint?: string; public_key?: string } } }>>(
+        (resolve, reject) => {
+          const rq = db.transaction('identities', 'readonly').objectStore('identities').getAll();
+          rq.onsuccess = () => resolve(rq.result);
+          rq.onerror = () => reject(rq.error);
+        },
+      );
+      const rec = identities.find((r) => r?.data?.identity?.fingerprint && r?.data?.identity?.public_key);
+      if (!rec) {
+        db.close();
+        throw new Error('seedAliceWithBob: no genesis identity in IndexedDB — call AFTER Alice genesis');
+      }
+      const aliceFp = rec.data!.identity!.fingerprint!;
+      const aliceArmoredPub = rec.data!.identity!.public_key!;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction('contacts', 'readwrite');
+        tx.objectStore('contacts').put({
+          id: `e2e-bob-${bobFp.slice(0, 12)}`,
+          fingerprint: bobFp,
+          name: 'Bob',
+          email: 'bob@e2e.test',
+          public_key: bobPub,
+          trust_level: 'verified',
+          added_at: new Date().toISOString(),
+          owner_fingerprint: aliceFp,
+          epoch: 0,
+          version: 0,
+        });
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+      return { aliceFp, aliceArmoredPub };
+    },
+    { bobFp: bob.fingerprint, bobPub: bob.publicKey },
+  );
+  return { aliceFp: alice.aliceFp, aliceArmoredPub: alice.aliceArmoredPub, bob };
 }
