@@ -1,5 +1,6 @@
 import { test, expect, type Page, type BrowserContext } from '@playwright/test';
 import path from 'path';
+import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtures/deposit-contact-update';
 
 // ─────────────────────────────────────────────────────────────────────────────────────
 // svrnty 9/10 DEMO ARC (§9.7) — the whole story as one end-to-end journey.
@@ -27,9 +28,9 @@ import path from 'path';
 //   Beat 3    : SCAFFOLDED — a real two-context handshake through the client-side relay; test.fixme
 //               until the relay-URL extraction (the key rides the URL FRAGMENT, not the displayed
 //               short link) is confirmed in CI, or Athena adds a testid exposing the full join URL.
-//   Beat 4    : NOT WIRED — verify+apply primitives (foldLivingWins) exist but have ZERO callers and
-//               the relay is a single-use dead-drop → Bob's edit reaches Alice neither live nor on
-//               reload. test.fixme until Athena's caller + Apollo's repaint land.
+//   Beat 4    : LIVE (2026-08-19) — Athena's return-channel consume caller (PR#33) + Apollo's live-apply
+//               subscription. RECEIVE side on the wire (a real signed deposit → Alice consumes/verifies/
+//               applies → data-live="push"); SEND-from-UI still simulated (Bob's client caller unbuilt).
 //   Beat 5    : PENDING TESTIDS — SecureExportDialog exists; test.fixme until export testids land.
 //
 // HARD EXCLUSIONS (never demoed — a falsely-promised safety feature is a HARM, not a UX gap):
@@ -111,19 +112,51 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bobCtx.close();
   });
 
-  // ── Beat 4: the living edge — Bob edits → Alice self-updates ──────────────────────────
-  // NOT WIRED. The merge primitives (foldLivingWins / applyVerifiedContactUpdate) exist but have zero
-  // callers, and the relay is a single-use dead-drop with no return channel — Bob's edit reaches Alice
-  // neither live nor on reload. Un-stub when Athena's consume→apply caller lands + Apollo's BroadcastChannel
-  // repaint / last_interaction-reset makes it live.
-  test.fixme('beat 4 (pending caller): Bob edits his card → Alice\'s entry self-updates', async () => {
-    // INTENDED (once wired):
-    //   1. On the established edge, Bob edits his display name / adds a channel → contact.update to relay.
-    //   2. Alice's client polls her mailbox → verifyIncomingContactUpdate → applyVerifiedContactUpdate
-    //      (foldLivingWins: her attested fields win; his net-new fields merge in).
-    //   3. Alice's entry repaints WITHOUT a reload (BroadcastChannel) → assert Bob's new value in her book.
-    //   HONESTY: narrate "live" only if poll+repaint is wired; otherwise the honest beat is
-    //   "pull to refresh — there it is". Never script a self-update the build can't perform.
+  // ── Beat 4: the living edge — Bob edits → Alice's entry self-updates LIVE ─────────────
+  // WIRED (2026-08-19): Athena's return-channel consume caller (poll→decrypt→verify→apply→persist→ack, PR#33)
+  // + Apollo's ContactManagement live-apply subscription (data-live="push" on reason:'live-apply'). THREE
+  // honesty hinges are baked in: (1) LIVE-not-reload — data-live="push" fires ONLY on a real incoming apply,
+  // so asserting it IS the proof the update arrived live (a reload or local edit can never set it). (2)
+  // SEND-from-UI is NOT wired yet (Bob's client caller doesn't exist — only the endpoint); we SIMULATE his
+  // send with a REAL signed+encrypted deposit (fixture). (3) SECURITY is CONSUME-side: the /api/relay/envelope
+  // deposit is identity-blind by design (the anti-oracle); Alice verifies Bob's signature + only accepts
+  // updates from a contact already in her book — never "the relay authenticated the sender." A garbage
+  // deposit must be rejected on consume (negative test below).
+  test('beat 4: Bob edits his card → Alice\'s entry self-updates LIVE (no reload)', async ({ page, request }) => {
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');   // Alice's key is unlocked IN MEMORY, poll running
+    await page.getByRole('tab', { name: 'Contacts' }).click();    // ensure ContactManagement (live subscription) is mounted
+    // Extract Alice's real pubkey from her genesis identity + seed Bob into her book @ epoch 0 (I-2 whitelist).
+    // ⚠ NO RELOAD after this — a refresh would relock her key → the poll no-ops → silent red.
+    const { aliceFp, aliceArmoredPub, bob } = await seedAliceWithBob(page);
+
+    // Simulate Bob's send (his client caller isn't wired — only the endpoint): a REAL signed + encrypted
+    // contact.update to Alice's mailbox. The blind relay just queues it; the security gate is Alice's consume.
+    const status = await depositContactUpdate(request, {
+      sender: bob,
+      recipientFingerprint: aliceFp,
+      recipientPublicKeyArmored: aliceArmoredPub,
+      fields: { changedFields: ['display_name'], delta: { display_name: 'Bob (NEW name)' } },
+    });
+    expect(status).toBe(200);
+
+    // Alice's caller polls (≤5s) → consumes → verifies Bob's sig + in-book whitelist → applies → her row
+    // repaints LIVE. data-live="push" fires only on reason:'live-apply', so this assertion IS the honesty
+    // hinge — a dim relationship coming back to life, live, on the same screen.
+    await expect(
+      page.getByTestId('contact-row').filter({ hasText: 'Bob (NEW name)' }),
+    ).toHaveAttribute('data-live', 'push', { timeout: 10_000 });
+  });
+
+  // Beat 4 negative — the honest guard: an unauthorized / garbage deposit must NEVER repaint. The blind
+  // relay 200s the deposit (identity-blind by design); Alice's CONSUME decrypt/verify rejects it → no push.
+  test('beat 4 (negative): a garbage deposit does not surface as a live update', async ({ page, request }) => {
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
+    await page.getByRole('tab', { name: 'Contacts' }).click();
+    const { aliceFp } = await seedAliceWithBob(page);
+    const status = await depositRawBlob(request, { recipientFingerprint: aliceFp, blob: 'garbage-not-a-signed-update' });
+    expect(status).toBe(200);            // the blind relay queues it; the only gate is Alice's consume-verify
+    await page.waitForTimeout(6_000);    // give the poll a couple of intervals to (correctly) do nothing
+    await expect(page.locator('[data-testid="contact-row"][data-live="push"]')).toHaveCount(0);
   });
 
   // ── Beat 5: the candle — export the whole self ───────────────────────────────────────
