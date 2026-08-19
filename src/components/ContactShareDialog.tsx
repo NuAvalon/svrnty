@@ -36,7 +36,11 @@ export function ContactShareDialog({
   exchangePackage,
   fingerprint,
 }: ContactShareDialogProps) {
-  const [activeTab, setActiveTab] = useState('qr');
+  // Default to the Short Code (relay-link) tab, NOT 'qr': the QR tab renders the full signed
+  // identity card (~25KB with PQ material — ML-KEM-1024 + ML-DSA-87 + classical sig), which
+  // overflows react-qr-code ("code length overflow") and CRASHES the dialog on open. The relay
+  // link works regardless of card size. Proper fix (later): QR the short link, not the card. (Athena, QA 2026-08-19)
+  const [activeTab, setActiveTab] = useState('link');
   const [copied, setCopied] = useState(false);
   const [nfcStatus, setNfcStatus] = useState<NfcStatus>('idle');
   const [nfcError, setNfcError] = useState<string | null>(null);
