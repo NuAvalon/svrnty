@@ -10,9 +10,15 @@
 //   - EXACT-KEY dedup only: match iff two contacts share ≥1 normalized channel (phone E.164 /
 //     folded email). Fuzzy name-matching → review is DEFERRED (over-merge is the cardinal sin).
 //   - Ambiguous (>1 existing match) → review card-stack, NEVER a silent merge.
+//   - SECURITY (chaos#32, Archie fix A + Flint co-verify #116149): a single-match auto-merge that
+//     would ADD ≥1 net-new reachability channel to a TRUSTED-living target → route to review
+//     (channel-INJECTION guard). Net-new is read from the ACTUAL livingWinsMerge survivor via
+//     addsRawChannel (RAW values), so a raw-unioned UNNORMALIZABLE channel (bare national phone /
+//     custom handle) can't slip past a normalized-key check. livingWinsMerge already protects
+//     trust-flags + attested scalars; this closes the reachability-channel-injection vector.
 
 import type { TrustEdge } from '@/lib/trust/types';
-import { sharesChannel, livingWinsMerge, type ChannelSource } from './dedup';
+import { sharesChannel, livingWinsMerge, addsRawChannel, type ChannelSource } from './dedup';
 
 export interface AutoMerge {
   /** The field-union result (living wins). Applied to storage on user confirm. */
@@ -26,8 +32,12 @@ export interface AutoMerge {
 export interface DedupPlan {
   /** Single exact-key match → auto-merged (field-union, living wins). */
   autoMerge: AutoMerge[];
-  /** Ambiguous: incoming matched >1 existing edge → user disambiguates in a review card-stack. */
-  review: { incoming: Partial<TrustEdge>; candidates: TrustEdge[] }[];
+  /**
+   * Needs the user before applying: an ambiguous match (>1 existing) OR a chaos#32 guarded merge into
+   * a trusted edge. `reason` tells the UI which copy to show — disambiguation ("which contact?") vs a
+   * channel-injection security warning ("adds new reachability to a TRUSTED contact — confirm").
+   */
+  review: { incoming: Partial<TrustEdge>; candidates: TrustEdge[]; reason?: 'ambiguous' | 'trusted-net-new' }[];
   /** No channel match → a new (gray) contact. */
   fresh: Partial<TrustEdge>[];
 }
@@ -37,6 +47,9 @@ const asSource = (e: Partial<TrustEdge>): ChannelSource => ({
   peer_email: e.peer_email ?? '',
   contact_info: e.contact_info,
 });
+
+/** Trusted-living = rank 2 (dedup.ts rank()): a linked svrnty identity (fingerprint) AND trusted. */
+const isTrustedLiving = (e: TrustEdge): boolean => !!e.peer_fingerprint && e.trusted;
 
 /**
  * Classify each imported contact against the existing living book.
@@ -48,9 +61,19 @@ export function dedupeContacts(incoming: Partial<TrustEdge>[], existing: TrustEd
     const src = asSource(inc);
     const matches = existing.filter((e) => sharesChannel(src, e));
     if (matches.length === 1) {
-      plan.autoMerge.push({ survivor: livingWinsMerge(matches[0], inc), existing: matches[0], incoming: inc });
+      const target = matches[0];
+      const survivor = livingWinsMerge(target, inc);
+      // chaos#32 (Archie fix A): auto-merging an import into a TRUSTED-living edge UNIONs the import's
+      // channels onto it (livingWinsMerge) — a channel-INJECTION vector. If the merge ADDS a reachability
+      // channel to a trusted target, route to review; idempotent/no-net-new or non-trusted → auto-merge.
+      // addsRawChannel reads the actual survivor's RAW channels, so unnormalizable injections can't slip past.
+      if (isTrustedLiving(target) && addsRawChannel(target, survivor)) {
+        plan.review.push({ incoming: inc, candidates: [target], reason: 'trusted-net-new' });
+      } else {
+        plan.autoMerge.push({ survivor, existing: target, incoming: inc });
+      }
     } else if (matches.length > 1) {
-      plan.review.push({ incoming: inc, candidates: matches });
+      plan.review.push({ incoming: inc, candidates: matches, reason: 'ambiguous' });
     } else {
       plan.fresh.push(inc);
     }
