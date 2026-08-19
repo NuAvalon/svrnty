@@ -1291,13 +1291,11 @@ export function SoverentityFrontend({
   }
 
   // --- Identity View ---
-  // (§1, Peter #116236) A sovereign identity is SELF-CERTIFYING: the vault (device possession +
-  // Argon2id passphrase) and the local keys ARE the identity — there is no server account and nothing
-  // to verify. A created or restored identity is therefore always in its final, valid state.
-  // NOTE (UI-copy, coordinating with Hypatia's "nothing to verify" claim graduation): the VERIFIED
-  // badge/banner wording below is kept as the valid-identity affordance; refine the exact label with
-  // the claim pass if "verified" reads as third-party attestation rather than self-certification.
-  const isVerified = true;
+  // (§1, Peter #116236; badge copy ruled by Hypatia #116414) A sovereign identity is SELF-CERTIFYING:
+  // the vault (device + Argon2id passphrase) and the local keys ARE the identity — the fingerprint
+  // binds the key, the key IS the proof, attested by no one. There is no verified/unverified model to
+  // be in: the identity is complete by construction. The label claims only what the architecture
+  // confers — self-certification (SOVEREIGN), never third-party verification.
 
   if (!identity) return null;
 
@@ -1309,8 +1307,8 @@ export function SoverentityFrontend({
           <div style={s.idHeader}>
             <div style={{
               ...s.statusDot,
-              background: isVerified ? '#6a9a6a' : '#c8a84e',
-              boxShadow: `0 0 8px ${isVerified ? 'rgba(106,154,106,0.4)' : 'rgba(200,168,78,0.4)'}`,
+              background: '#6a9a6a',
+              boxShadow: '0 0 8px rgba(106,154,106,0.4)',
             }} />
             <div>
               <h3 style={s.idName}>{identity.identity.name}</h3>
@@ -1318,11 +1316,11 @@ export function SoverentityFrontend({
             </div>
             <span style={{
               ...s.statusBadge,
-              color: isVerified ? '#6a9a6a' : '#c8a84e',
-              borderColor: isVerified ? 'rgba(106,154,106,0.3)' : 'rgba(200,168,78,0.3)',
-              background: isVerified ? 'rgba(106,154,106,0.1)' : 'rgba(200,168,78,0.1)',
+              color: '#6a9a6a',
+              borderColor: 'rgba(106,154,106,0.3)',
+              background: 'rgba(106,154,106,0.1)',
             }}>
-              {isVerified ? 'VERIFIED' : 'UNVERIFIED'}
+              SOVEREIGN
             </span>
           </div>
 
@@ -1342,14 +1340,12 @@ export function SoverentityFrontend({
         {/* (§1, Peter #116236) The email-verification section is removed: there is no server account
             and nothing to verify. Onboarding flows straight through (genesis → import) with no email step. */}
 
-        {isVerified && (
-          <div style={s.verifiedBanner}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-            </svg>
-            <span>Identity verified. You are sovereign.</span>
-          </div>
-        )}
+        <div style={s.verifiedBanner}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+          </svg>
+          <span>Self-certifying identity. You are sovereign.</span>
+        </div>
 
         {/* Export / Backup Section */}
         {identity && (
