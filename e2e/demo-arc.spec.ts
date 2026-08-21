@@ -85,7 +85,8 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // ACTIVATION (Athena beat-3 lane): confirm extractJoinPath in CI — the decryption key rides the URL
   // FRAGMENT (#…), which the DISPLAYED short link omits; we read the full relay.url off the clipboard via
   // the "Copy link" button. If clipboard is flaky in CI, add a data-testid exposing the full join URL.
-  test.fixme('beat 3 (scaffolded): a card given by hand blooms an edge across two devices', async ({ browser }) => {
+  test('beat 3: a card given by hand blooms an edge across two devices', async ({ browser }) => {
+    test.skip(!process.env.E2E_PROD, 'beat-3 needs a prod build — StrictMode breaks the joiner under next dev (gap#1)');
     const aliceCtx = await browser.newContext();
     const bobCtx = await browser.newContext();
     const alice = await aliceCtx.newPage();
@@ -104,7 +105,11 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.getByRole('button', { name: /add to my network/i }).click();
     await bob.getByRole('button', { name: /the facet is lit/i }).click();
 
-    // The bloom: Alice now appears in Bob's constellation (a persisted edge).
+    // The bloom: Alice now appears in Bob's constellation. The joiner is a standalone /c/<code> page with no
+    // app tab-nav, and a fresh load re-locks Bob's identity → go home, unlock, then open Contacts.
+    await bob.goto('/');
+    await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
+    await bob.getByRole('button', { name: /unlock/i }).click();
     await bob.getByRole('tab', { name: 'Contacts' }).click();
     await expect(bob.getByText('Alice E2E')).toBeVisible();
 
