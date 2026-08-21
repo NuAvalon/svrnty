@@ -160,11 +160,30 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 5: the candle — export the whole self ───────────────────────────────────────
-  // The exit right made visible: vCard-all export + full encrypted-vault export/restore (Fable §9.3).
-  // Un-stub when Athena adds export testids to SecureExportDialog (SecureImportExportDialogs.tsx).
-  test.fixme('beat 5 (pending export testids): the candle — export the whole (vCard + encrypted vault)', async () => {
-    // INTENDED: open export → trigger vCard-all + encrypted-vault export → assert a download for each
-    //   (await page.waitForEvent('download')). What survives the fire — no second Alexandria.
+  // The exit right made visible (Fable §9.3). "What survives the fire" has two halves:
+  //   • encrypted-vault export — WIRED + tested here (Full Backup, SoverentityFrontend export section).
+  //   • vCard-all export — the lib exists (toVCardFile) but has NO UI caller yet → tracked, kept .fixme below.
+  // Honesty gate: we test only what SHIPS. A green here means an encrypted .svrnty vault really leaves the
+  // device (real download event) — no server, no second Alexandria. Selectors verified vs live source @main.
+  test('beat 5 (vault export): the candle — the whole encrypted vault survives the fire', async ({ page }) => {
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');   // an identity worth carrying out of the fire
+    await page.getByRole('tab', { name: 'Identity' }).click();    // the export/backup section lives on the Identity tab
+    await page.getByRole('button', { name: /full backup/i }).click();
+    // Encrypt-at-rest: the vault is AES-256-GCM under a password; the button stays disabled until it's ≥8 + matches.
+    await page.getByPlaceholder('Password (min 8 characters)').fill('vault-pass-e2e-1234');
+    await page.getByPlaceholder('Confirm password').fill('vault-pass-e2e-1234');
+    // The download IS the candle. Arm the listener BEFORE the click (the anchor fires synchronously).
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#fullBackupBtn').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^svrnty-backup-.*\.svrnty$/);
+  });
+
+  // Beat 5 (vCard-all) — the OTHER half of the candle: a portable, plain-text vCard of every relationship.
+  // toVCardFile() exists (src/lib/contacts/vcard.ts) but has ZERO UI callers → un-fixme when an
+  // "Export all as vCard" button lands. Kept here so the canon (vCard + vault) isn't silently dropped.
+  test.fixme('beat 5 (vCard-all, pending UI): export every relationship as a portable vCard', async () => {
+    // INTENDED: Contacts → "Export all as vCard" → assert a .vcf download of all edges.
   });
 });
 
