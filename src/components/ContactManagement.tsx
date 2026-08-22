@@ -11,7 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
   Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, Eye, Phone, ShieldOff, ShieldCheck, Copy, HeartCrack
+  FileJson, Eye, Phone, Link2, AtSign, ShieldOff, ShieldCheck, Copy, HeartCrack
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -859,6 +859,36 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                           <div key={i} className="flex items-center gap-1">
                             <Phone className="h-4 w-4 text-muted-foreground" />
                             <span>{phone}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedContact.contact_info?.urls?.some(Boolean) && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Link{selectedContact.contact_info.urls.filter(Boolean).length > 1 ? 's' : ''}
+                      </h4>
+                      <div className="mt-1 space-y-1">
+                        {selectedContact.contact_info.urls.filter(Boolean).map((url, i) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <Link2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            <span className="truncate">{url}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedContact.contact_info?.handles && Object.keys(selectedContact.contact_info.handles).length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Handles</h4>
+                      <div className="mt-1 space-y-1">
+                        {Object.entries(selectedContact.contact_info.handles).map(([platform, handle]) => (
+                          <div key={platform} className="flex items-center gap-1">
+                            <AtSign className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            <span className="truncate"><span className="text-muted-foreground">{platform}:</span> {handle}</span>
                           </div>
                         ))}
                       </div>
