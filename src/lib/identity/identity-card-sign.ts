@@ -151,7 +151,7 @@ export async function buildSignedIdentityCard(
     created_at: new Date().toISOString(),
     identity: {
       fingerprint: idData.fingerprint,
-      display_name: idData.display_name || idData.slug || '',
+      display_name: idData.display_name || idData.name || idData.slug || '',
       public_key: idData.public_key,
       email: idData.email || '',
       pq_sig_public_key: pq?.sig_public_key || '',

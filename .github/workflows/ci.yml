@@ -55,3 +55,29 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: e2e — demo-critical flows against next dev
         run: npm run test:e2e
+
+  # Playwright e2e against a PRODUCTION build (`next build` + `next start`) — the ONLY path that can
+  # verify beat-3 (guided-Ceremony): React StrictMode double-invoke breaks the joiner mount under
+  # `next dev`, so beat-3 is skip-guarded out of the dev `e2e` job above (test.skip(!E2E_PROD)) and
+  # exercised HERE instead. ⚠ Because beat-3 runs ONLY here, this job MUST become a REQUIRED check
+  # when branch protection lands — a skip in the dev job is not a pass, so without this gating, a
+  # beat-3 regression would sail through green (coverage != correctness). (Athena; walkthrough QA.)
+  e2e-prod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install (locked)
+        run: npm ci
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+      - name: Build (Next.js production) — beat-3 needs a real build
+        run: npm run build
+      - name: e2e (prod) — demo-arc against next start (beat-3; StrictMode-free)
+        env:
+          E2E_PROD: '1'
+        run: npx playwright test --config=playwright.beat3.config.ts

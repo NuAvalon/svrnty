@@ -25,9 +25,9 @@ import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtur
 //
 // WIRE-STATE (verified on main, 2026-08-18 — see KB #86234):
 //   Beats 1–2 : LIVE — wired here (mirror import.spec.ts / identity.spec.ts). This test PASSES.
-//   Beat 3    : SCAFFOLDED — a real two-context handshake through the client-side relay; test.fixme
-//               until the relay-URL extraction (the key rides the URL FRAGMENT, not the displayed
-//               short link) is confirmed in CI, or Athena adds a testid exposing the full join URL.
+//   Beat 3    : LIVE (2026-08-21, PR#40) — a real two-context handshake through the client-side relay:
+//               Alice's Ceremony join-link (key on the URL fragment) → Bob joins → the edge blooms.
+//               Runs+passes in e2e-prod (2.9s), skips clean in dev.
 //   Beat 4    : LIVE (2026-08-19) — Athena's return-channel consume caller (PR#33) + Apollo's live-apply
 //               subscription. RECEIVE side on the wire (a real signed deposit → Alice consumes/verifies/
 //               applies → data-live="push"); SEND-from-UI still simulated (Bob's client caller unbuilt).
@@ -79,13 +79,13 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 3: the handshake bloom (two devices, one relay) ─────────────────────────────
-  // SCAFFOLDED + honestly skipped. Real shape: Alice opens the Ceremony tab → the app auto-creates a
+  // LIVE (PR#40). Real shape: Alice opens the Ceremony tab → the app auto-creates a
   // one-time relay handshake (QR + short link off one code); Bob, on his own device/context, opens the
   // /c/<code>#<key> link, receives her signed card, and the trust edge goes live in his book.
-  // ACTIVATION (Athena beat-3 lane): confirm extractJoinPath in CI — the decryption key rides the URL
-  // FRAGMENT (#…), which the DISPLAYED short link omits; we read the full relay.url off the clipboard via
-  // the "Copy link" button. If clipboard is flaky in CI, add a data-testid exposing the full join URL.
-  test.fixme('beat 3 (scaffolded): a card given by hand blooms an edge across two devices', async ({ browser }) => {
+  // ACTIVATION SATISFIED: extractJoinPath confirmed in CI (the key rides the URL fragment; read off the
+  // Copy-link clipboard).
+  test('beat 3: a card given by hand blooms an edge across two devices', async ({ browser }) => {
+    test.skip(!process.env.E2E_PROD, 'beat-3 needs a prod build — StrictMode breaks the joiner under next dev (gap#1)');
     const aliceCtx = await browser.newContext();
     const bobCtx = await browser.newContext();
     const alice = await aliceCtx.newPage();
@@ -104,7 +104,11 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.getByRole('button', { name: /add to my network/i }).click();
     await bob.getByRole('button', { name: /the facet is lit/i }).click();
 
-    // The bloom: Alice now appears in Bob's constellation (a persisted edge).
+    // The bloom: Alice now appears in Bob's constellation. The joiner is a standalone /c/<code> page with no
+    // app tab-nav, and a fresh load re-locks Bob's identity → go home, unlock, then open Contacts.
+    await bob.goto('/');
+    await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
+    await bob.getByRole('button', { name: /unlock/i }).click();
     await bob.getByRole('tab', { name: 'Contacts' }).click();
     await expect(bob.getByText('Alice E2E')).toBeVisible();
 

@@ -93,7 +93,8 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
     try {
       const result = await createRelay(await buildCardPackage());
       setRelay({ url: result.url, code: result.code, expiresAt: result.expiresAt });
-      ceremony.handshakeEstablished(result.code); // machine advances handshake -> card
+      // Stay on 'handshake' so the QR + short link + Copy link stay visible for the hand-off.
+      // Advance is manual now (button below), once the other person has scanned/opened it.
     } catch (err: any) {
       relayStartedRef.current = false; // allow retry
       ceremony.fail(err?.message || 'Could not create the handshake link.');
@@ -222,6 +223,11 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
                 <button style={copyBtnStyle} onClick={() => navigator.clipboard?.writeText(relay.url)}>
                   Copy link
                 </button>
+                <div style={{ marginTop: 20 }}>
+                  <button style={primaryBtnStyle} onClick={() => ceremony.handshakeEstablished(relay.code)}>
+                    They&apos;ve scanned it →
+                  </button>
+                </div>
               </>
             )}
           </div>
