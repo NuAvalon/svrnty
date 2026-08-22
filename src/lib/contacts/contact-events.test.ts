@@ -55,13 +55,15 @@ test('a throwing subscriber does not break fan-out to the others', () => {
 test('HONESTY: a cross-context push arrives as source=broadcast (the true live-push signal)', async () => {
   __resetContactEventsForTest();
   const got: ContactChangeEvent[] = [];
-  const off = subscribeContactChanges((e) => got.push(e));
-  // Simulate ANOTHER tab/context: a second BroadcastChannel on the same name posts an event.
-  const peer = new BroadcastChannel('svrnty:contacts');
+  // Resolve as soon as the cross-context push ARRIVES — robust vs event-loop load when the full suite
+  // shares one process (a fixed 30ms timeout flaked there, passing alone); cap at 1s so a miss can't hang.
+  const arrived = new Promise<void>((resolve) => {
+    subscribeContactChanges((e) => { got.push(e); if (e.source === 'broadcast') resolve(); });
+  });
+  const peer = new BroadcastChannel('svrnty:contacts'); // simulate ANOTHER tab/context
   peer.postMessage({ ids: ['c9'], reason: 'live-apply' });
-  await new Promise((r) => setTimeout(r, 30)); // BroadcastChannel delivery is async
+  await Promise.race([arrived, new Promise<void>((r) => setTimeout(r, 1000))]);
   peer.close();
-  off();
   const broadcasts = got.filter((e) => e.source === 'broadcast');
   assert.equal(broadcasts.length, 1, 'cross-context push should arrive exactly once as broadcast');
   assert.equal(broadcasts[0].source, 'broadcast'); // NOT 'local' — this is the honest live signal
