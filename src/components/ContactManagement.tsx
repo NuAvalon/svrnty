@@ -11,7 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
   Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, Eye, ChevronRight, ShieldOff, ShieldCheck, Copy, HeartCrack
+  FileJson, Eye, ShieldOff, ShieldCheck, Copy, HeartCrack
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -27,11 +27,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
+import { TwoSidedBook } from '@/components/TwoSidedBook';
 import {
   getAllContacts, addContact, updateContact, removeContact,
   getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -213,7 +215,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   });
 
   const trustedCount = contacts.filter(c => isTrusted(c)).length;
-  const knownCount = contacts.filter(c => !isTrusted(c)).length;
+  const bookEdges = filteredContacts.map(contactRecordToEdge);
 
   // --- Handlers ---
 
@@ -703,62 +705,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </p>
               </div>
             ) : (
-              <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-                {filteredContacts.map(contact => (
-                  <div
-                    key={contact.id}
-                    data-testid="contact-row"
-                    data-live={liveIds.has(contact.id) ? 'push' : undefined}
-                    className="group border border-border/40 rounded-lg overflow-hidden bg-card hover:border-border transition-colors cursor-pointer"
-                    onClick={() => { setSelectedContact(contact); setShowDetailDialog(true); }}
-                  >
-                    <div className="p-4">
-                      <div className="flex justify-between items-start">
-                        <div className="space-y-1 min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <TrustIcon contact={contact} className="h-4 w-4 flex-shrink-0" />
-                            <h3 className="font-medium text-lg truncate">{contact.name}</h3>
-                          </div>
-                          <div className="text-sm text-muted-foreground flex items-center gap-1">
-                            <Mail className="h-3 w-3 flex-shrink-0" />
-                            <span className="truncate">{contact.email}</span>
-                          </div>
-                          <div className="font-mono text-xs text-muted-foreground/60 truncate">
-                            {contact.fingerprint.match(/.{1,4}/g)?.join(' ')}
-                          </div>
-                        </div>
-                        <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors flex-shrink-0 mt-1" />
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <TrustBadge contact={contact} />
-                        {contact.metadata?.connection_method && (
-                          <Badge variant="outline" className="text-xs">
-                            {contact.metadata.connection_method === 'mutual' ? 'Mutual' :
-                              contact.metadata.connection_method === 'qr' ? 'QR Code' :
-                                contact.metadata.connection_method === 'burner_link' ? 'Burner Link' : 'Manual'}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex divide-x divide-border/40 border-t border-border/40 bg-muted/30" onClick={e => e.stopPropagation()}>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`flex-1 rounded-none ${isTrusted(contact) ? 'text-amber-400' : 'text-muted-foreground'}`}
-                        onClick={() => handleToggleTrust(contact)}
-                      >
-                        {isTrusted(contact) ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</> : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>}
-                      </Button>
-                      <Button variant="ghost" size="sm" className="flex-1 rounded-none text-muted-foreground" onClick={() => openEditDialog(contact)}>
-                        <Edit className="h-4 w-4 mr-1" /> Edit
-                      </Button>
-                      <Button variant="ghost" size="sm" className="flex-1 rounded-none text-destructive hover:text-destructive" onClick={() => handleDeleteContact(contact.id)}>
-                        <Trash2 className="h-4 w-4 mr-1" /> Remove
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <TwoSidedBook
+                edges={bookEdges}
+                liveIds={liveIds}
+                onSelect={(edge) => {
+                  const contact = contacts.find(c => c.id === edge.id);
+                  if (!contact) return;
+                  setSelectedContact(contact);
+                  setShowDetailDialog(true);
+                }}
+              />
             )}
           </TabsContent>
         </Tabs>
