@@ -87,7 +87,9 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
 
   for (const block of blocks) {
     if (!block.includes('END:VCARD')) continue;
-    const lines = block.split(/\r?\n/);
+    // RFC 6350 line-unfolding: a line beginning with a space or tab is a continuation
+    // of the previous one (real exports fold long TEL/EMAIL/NOTE lines).
+    const lines = block.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
 
     const edge: Partial<TrustEdge> = {
       contact_info: { phones: [], emails: [], handles: {}, urls: [] },
@@ -96,27 +98,38 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
     };
 
     for (const line of lines) {
-      if (line.startsWith('FN:')) {
-        edge.peer_name = unescapeVCard(line.slice(3));
-      } else if (line.startsWith('EMAIL')) {
-        const email = line.split(':').slice(1).join(':');
+      const colon = line.indexOf(':');
+      if (colon === -1) continue;
+      const value = line.slice(colon + 1);
+      // Resolve the property NAME robustly for real-world exports:
+      //  - drop a grouping prefix: Apple/iCloud/Google write labeled fields as "item1.TEL",
+      //    "item2.EMAIL" — the old startsWith('TEL') missed these, so imports showed no detail.
+      //  - drop params: "TEL;TYPE=CELL" -> "TEL".  - match case-insensitively.
+      let name = line.slice(0, colon).split(';')[0];
+      const dot = name.indexOf('.');
+      if (dot !== -1) name = name.slice(dot + 1);
+      const PROP = name.toUpperCase();
+
+      if (PROP === 'FN') {
+        edge.peer_name = unescapeVCard(value);
+      } else if (PROP === 'EMAIL') {
         if (!edge.peer_email) {
-          edge.peer_email = email;
+          edge.peer_email = value;
         } else {
-          edge.contact_info!.emails!.push(email);
+          edge.contact_info!.emails!.push(value);
         }
-      } else if (line.startsWith('TEL')) {
-        edge.contact_info!.phones!.push(line.split(':').slice(1).join(':'));
-      } else if (line.startsWith('URL:')) {
-        edge.contact_info!.urls!.push(line.slice(4));
-      } else if (line.startsWith('X-') && line.includes(':')) {
-        const colonIdx = line.indexOf(':');
-        const platform = line.slice(2, colonIdx).toLowerCase();
-        const handle = line.slice(colonIdx + 1);
-        edge.contact_info!.handles![platform] = handle;
+      } else if (PROP === 'TEL') {
+        edge.contact_info!.phones!.push(value);
+      } else if (PROP === 'URL') {
+        edge.contact_info!.urls!.push(value);
+      } else if (PROP.startsWith('X-') && !PROP.startsWith('X-AB')) {
+        // X-<platform> handles (twitter, signal, …). Skip Apple's internal X-AB* label
+        // metadata (X-ABLabel/X-ABADR), which aren't reachable contact channels.
+        const platform = PROP.slice(2).toLowerCase();
+        edge.contact_info!.handles![platform] = value;
         edge.connection_channels!.push(platform);
-      } else if (line.startsWith('CATEGORIES:')) {
-        edge.tags = line.slice(11).split(',').map(unescapeVCard);
+      } else if (PROP === 'CATEGORIES') {
+        edge.tags = value.split(',').map(unescapeVCard);
       }
     }
 
