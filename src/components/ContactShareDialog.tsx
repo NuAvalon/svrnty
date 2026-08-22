@@ -12,7 +12,7 @@ import {
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
-import { shareUrl, shareUrlShort } from '@/lib/config/domain';
+import { shareUrl } from '@/lib/config/domain';
 
 interface ContactShareDialogProps {
   open: boolean;
@@ -148,8 +148,13 @@ export function ContactShareDialog({
     }
   }, [exchangePackage]);
 
+  // Display + copy the FULL scheme'd URL (https://…/c/<code>#<key>) — same string the QR encodes.
+  // Scheme-less (shareUrlShort) drops the #<key> fragment through chat-app auto-linkers
+  // (e.g. Telegram parses #<key> as a hashtag and splits it off the bare-domain link) → the
+  // recipient opens /c/<code> with no key → "missing decryption key". Key still rides only the
+  // fragment (never reaches the server), so the content-blind/zero-knowledge property is unchanged.
   const shortCodeLink = shortCode.code && shortCode.key
-    ? shareUrlShort(shortCode.code, shortCode.key)
+    ? shareUrl(shortCode.code, shortCode.key)
     : null;
 
   // The QR encodes the FULL scheme'd short-link (https://…/c/<code>#<key>) so a phone camera
