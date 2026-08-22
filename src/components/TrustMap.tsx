@@ -4,8 +4,8 @@
 // radii pushed every node off-screen on a phone ("only the center shows"). This
 // renders inside a fixed viewBox scaled to 100% width, so it fits any device.
 //
-// Design reference: docs/design/svrnty-crystalline-lattice-template.svg (Peter,
-// 8/9 session). Tokens + the two constitutional rules (vivre spec §3):
+// Design reference: docs/design/svrnty-crystalline-lattice-template.svg
+// Tokens + the two constitutional rules (vivre spec §3):
 //   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize in ~1s on entry.
 //   (b) I-6 RENDER PROVENANCE — every visual property decodes to something the
 //       viewer AUTHORED or WITNESSED; nothing inferred; unlit = privacy, not absence.
