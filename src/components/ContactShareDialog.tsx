@@ -12,7 +12,7 @@ import {
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
-import { shareUrlShort } from '@/lib/config/domain';
+import { shareUrl, shareUrlShort } from '@/lib/config/domain';
 
 interface ContactShareDialogProps {
   open: boolean;
@@ -152,6 +152,14 @@ export function ContactShareDialog({
     ? shareUrlShort(shortCode.code, shortCode.key)
     : null;
 
+  // The QR encodes the FULL scheme'd short-link (https://…/c/<code>#<key>) so a phone camera
+  // recognizes it as a URL and opens it — NOT the 25KB signed card (which overflows react-qr-code
+  // and crashed the dialog). Same relay give-path as Copy Link: the AES key stays in the URL
+  // fragment (never reaches the server), and the receive/verify flow at /c/<code> is unchanged.
+  const qrValue = shortCode.code && shortCode.key
+    ? shareUrl(shortCode.code, shortCode.key)
+    : null;
+
   const handleCopyLink = useCallback(async () => {
     if (!shortCodeLink) return;
     try {
@@ -210,13 +218,52 @@ export function ContactShareDialog({
             </TabsTrigger>
           </TabsList>
 
-          {/* QR Code Tab */}
+          {/* QR Code Tab — encodes the relay short-LINK, never the 25KB card (overflow crash) */}
           <TabsContent value="qr" className="mt-4">
             <div className="flex flex-col items-center py-4 space-y-4">
-              <SimpleQRCode value={exchangePackage} size={220} />
-              <p className="text-xs text-gray-500 text-center max-w-xs">
-                Scan this QR code with any SVRNTY-compatible app or camera to import this identity.
-              </p>
+              {!shortCode.code ? (
+                <>
+                  <div className="w-16 h-16 rounded-full bg-gray-800 flex items-center justify-center">
+                    <QrCode className="h-8 w-8 text-gray-400" />
+                  </div>
+                  <Button
+                    onClick={handleGenerateShortCode}
+                    disabled={shortCode.loading}
+                    className="bg-amber-600 hover:bg-amber-700 text-white"
+                  >
+                    {shortCode.loading ? (
+                      <>
+                        <Clock className="h-4 w-4 mr-2 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <QrCode className="h-4 w-4 mr-2" />
+                        Generate QR Code
+                      </>
+                    )}
+                  </Button>
+                  {shortCode.error && (
+                    <p className="text-sm text-red-400">{shortCode.error}</p>
+                  )}
+                  <p className="text-xs text-gray-500 text-center max-w-xs">
+                    Creates a private, single-use link and shows it as a QR to scan. The server cannot read your data.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <SimpleQRCode value={qrValue!} size={220} />
+                  <div className="flex items-center gap-1 text-xs text-amber-400">
+                    <Clock className="h-3 w-3" />
+                    <span className="font-mono">{timeLeft}</span>
+                  </div>
+                  <p className="text-xs text-gray-500 text-center max-w-xs">
+                    Scan with a phone camera to open the link and import this identity.
+                    Anyone who can see this code can scan it, so don&apos;t leave it on display —
+                    it&apos;s single-use and expires in 15 minutes.
+                  </p>
+                </>
+              )}
             </div>
           </TabsContent>
 
