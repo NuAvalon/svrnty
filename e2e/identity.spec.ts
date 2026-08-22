@@ -13,7 +13,6 @@ test('create an identity → land in the unlocked app', async ({ page }) => {
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
 
   await page.getByPlaceholder('Your name').fill('Alice E2E');
-  await page.getByPlaceholder('your@email.com').fill('alice-e2e@example.test');
   // Passphrase must be ≥12 chars and match its confirmation (the button stays disabled otherwise).
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
