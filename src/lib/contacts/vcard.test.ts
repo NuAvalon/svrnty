@@ -37,6 +37,31 @@ test('fromVCard: parses ALL TEL lines into phones[] (no last-wins number loss)',
   assert.equal(c.peer_email, 'grace@navy.mil');
 });
 
+test('fromVCard: real-world Apple/iCloud export — item1.-grouped fields, params, folding, X-AB skipped', () => {
+  const vcf = [
+    'BEGIN:VCARD',
+    'VERSION:3.0',
+    'PRODID:-//Apple Inc.//macOS 14.5//EN',
+    'FN;CHARSET=UTF-8:Grace Hopper',
+    'N:Hopper;Grace;;;',
+    'item1.TEL;type=CELL;type=VOICE;type=pref:+1 (301) 555-01', // folded across two lines ↓
+    ' 00',                                                       // continuation → +1 (301) 555-0100
+    'item1.X-ABLabel:_$!<Mobile>!$_',                            // Apple internal label — must be skipped
+    'item2.EMAIL;type=INTERNET;type=HOME:grace@navy.mil',
+    'item2.X-ABLabel:_$!<Home>!$_',
+    'item3.URL;type=pref:https://example.mil/grace',
+    'X-SIGNAL:+13015550100',
+    'END:VCARD',
+  ].join('\r\n');
+  const [c] = fromVCard(vcf);
+  assert.equal(c.peer_name, 'Grace Hopper');                        // FN with CHARSET param
+  assert.deepEqual(c.contact_info?.phones, ['+1 (301) 555-0100']);  // grouped item1.TEL + line-UNFOLDED
+  assert.equal(c.peer_email, 'grace@navy.mil');                     // grouped item2.EMAIL
+  assert.deepEqual(c.contact_info?.urls, ['https://example.mil/grace']); // grouped item3.URL (value keeps its ':')
+  assert.equal(c.contact_info?.handles?.signal, '+13015550100');    // X-SIGNAL handle
+  assert.ok(!('ablabel' in (c.contact_info?.handles ?? {})));       // Apple X-AB* is NOT a reachable channel
+});
+
 test('round-trip: multi-phone survives toVCard -> fromVCard', () => {
   const [back] = fromVCard(toVCard(edge()));
   assert.deepEqual(back.contact_info?.phones, ['+14155550001', '+442071838750']);
