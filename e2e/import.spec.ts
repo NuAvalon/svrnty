@@ -15,7 +15,6 @@ async function createIdentity(page) {
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
   await page.getByPlaceholder('Your name').fill('Alice E2E');
-  await page.getByPlaceholder('your@email.com').fill('alice-e2e@example.test');
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
   await page.getByRole('button', { name: /begin anew/i }).click();

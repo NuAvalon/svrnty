@@ -11,11 +11,11 @@ export async function POST(request: Request) {
     console.log('Received request body:', body);
 
     const { name, email } = body;
-    
-    if (!name || !email) {
-      console.log('Missing required fields');
+
+    if (!name) {
+      console.log('Missing required field: name');
       return NextResponse.json(
-        { error: 'Name and email are required' },
+        { error: 'Name is required' },
         { status: 400 }
       );
     }

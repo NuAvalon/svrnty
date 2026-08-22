@@ -45,8 +45,9 @@ const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 grays: Grace 
 async function genesis(page: Page, name: string, email: string) {
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
+  // §1 / Peter #117506: genesis is name + passphrase ONLY — no email field, no verification.
+  await expect(page.getByPlaceholder('your@email.com')).toHaveCount(0);
   await page.getByPlaceholder('Your name').fill(name);
-  await page.getByPlaceholder('your@email.com').fill(email);
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
   await page.getByRole('button', { name: /begin anew/i }).click();

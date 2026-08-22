@@ -796,18 +796,6 @@ export function SoverentityFrontend({
           </div>
 
           <div style={s.field}>
-            <label style={s.label}>EMAIL</label>
-            <input
-              type="email"
-              placeholder="your@email.com"
-              value={formData.email}
-              onChange={e => setFormData(prev => ({ ...prev, email: e.target.value }))}
-              style={s.input}
-            />
-            <p style={s.hint}>Used for verification. Never shared.</p>
-          </div>
-
-          <div style={s.field}>
             <label style={s.label}>UNLOCK PASSPHRASE (required)</label>
             <input
               type="password"
@@ -829,10 +817,10 @@ export function SoverentityFrontend({
 
           <button
             onClick={handleCreateIdentity}
-            disabled={loading || !formData.name || !formData.email || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm}
+            disabled={loading || !formData.name || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm}
             style={{
               ...s.primaryBtn,
-              opacity: loading || !formData.name || !formData.email || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm ? 0.5 : 1,
+              opacity: loading || !formData.name || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm ? 0.5 : 1,
             }}
           >
             {loading ? (
