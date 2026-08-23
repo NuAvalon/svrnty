@@ -31,6 +31,7 @@ import type { TrustGraph } from './types';
 // --- Constants ---
 
 const PSI_SALT = 'svrnty-psi-v1';
+const PSI_POINT_INFO = 'svrnty-psi-point-derivation';
 const PSI_SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour — matches satellite expiry
 
 // --- Types ---
@@ -78,21 +79,19 @@ export function generatePSIKeypair(): PSIKeypair {
 }
 
 /**
- * Hash a fingerprint to a valid X25519 point.
- * Uses HKDF-SHA256 with domain separator, then clamps to curve.
- * Mirrors crypto_utils.py _hash_fingerprint_to_point().
+ * Hash a fingerprint to an X25519 u-coordinate (canonical H(fp)).
+ * H(fp) = HKDF-SHA256(ikm=utf8(fp), salt=PSI_SALT, info=PSI_POINT_INFO, 32) → raw 32B u-coord, NO clamp.
+ * MUST match client-kit/crypto_utils.py _hash_fingerprint_to_point() byte-for-byte, or cross-impl
+ * PSI intersections are silently empty (the B3 bug). Locked vector:
+ * shared/outbox/apollo/svrnty_psi_hfp_testvector.py (FP_PINNED d7f54122… → 593f2af2…).
+ * Clamp removed: it was a SCALAR op misapplied to a point; the ephemeral PSI scalar is clamped by
+ * X25519 (RFC 7748), which annihilates the cofactor. getSharedSecret rejects all-zero (low-order u).
  */
 function hashFingerprintToPoint(fingerprint: string): Uint8Array {
   const ikm = new TextEncoder().encode(fingerprint);
   const salt = new TextEncoder().encode(PSI_SALT);
-  // HKDF: extract + expand to 32 bytes
-  const point = hkdf(sha256, ikm, salt, fingerprint, 32);
-  // Clamp for X25519 (RFC 7748 §5)
-  const clamped = new Uint8Array(point);
-  clamped[0] &= 248;
-  clamped[31] &= 127;
-  clamped[31] |= 64;
-  return clamped;
+  const info = new TextEncoder().encode(PSI_POINT_INFO);
+  return hkdf(sha256, ikm, salt, info, 32);
 }
 
 /**
@@ -105,11 +104,16 @@ export function blindFingerprints(
   psiPrivateKeyB64: string
 ): string[] {
   const sk = fromBase64(psiPrivateKeyB64);
-  const blinded = fingerprints.map(fp => {
-    const point = hashFingerprintToPoint(fp);
-    const blindedPoint = x25519.getSharedSecret(sk, point);
-    return toBase64(blindedPoint);
-  });
+  const blinded: string[] = [];
+  for (const fp of fingerprints) {
+    try {
+      const point = hashFingerprintToPoint(fp);
+      blinded.push(toBase64(x25519.getSharedSecret(sk, point)));
+    } catch {
+      // B6 / low-order guard: getSharedSecret rejects a low-order/degenerate H(fp)
+      // (negligible, ~2^-250). Skip it → this fp simply won't match. Never crash the sync.
+    }
+  }
   // Shuffle to prevent position correlation
   return shuffle(blinded);
 }
@@ -124,11 +128,18 @@ export function reblindSet(
   psiPrivateKeyB64: string
 ): string[] {
   const sk = fromBase64(psiPrivateKeyB64);
-  return theirBlindedValues.map(b64 => {
-    const point = fromBase64(b64);
-    const reblinded = x25519.getSharedSecret(sk, point);
-    return toBase64(reblinded);
-  });
+  const reblinded: string[] = [];
+  for (const b64 of theirBlindedValues) {
+    try {
+      const point = fromBase64(b64);
+      reblinded.push(toBase64(x25519.getSharedSecret(sk, point)));
+    } catch {
+      // B6 / low-order guard: a peer may send a low-order/degenerate point (crafted or
+      // corrupt) — getSharedSecret rejects it. Skip → no-match, never crash the sync.
+      // Set-based intersection is index-free, so dropping a degenerate value is safe.
+    }
+  }
+  return reblinded;
 }
 
 /**
@@ -152,6 +163,19 @@ function computeIntersection(
 // --- Satellite API Client ---
 
 /**
+ * Auth signature in the satellite's scheme (satellite.py verify_request_signature):
+ * Ed25519(signFn, "{fingerprint}:{unixSeconds}"), sent as "{unixSeconds}:{b64sig}" (±30s window).
+ * The caller's OWN fingerprint is always the one bound. Replaces the old per-action JSON
+ * payloads, which the satellite never verified. (Follow-up: bind sig to request body/action —
+ * server+client hardening; TLS covers transit for now.)
+ */
+function buildAuthSignature(myFingerprint: string, signFn: (data: Uint8Array) => Uint8Array): string {
+  const ts = Math.floor(Date.now() / 1000);
+  const sig = signFn(new TextEncoder().encode(`${myFingerprint}:${ts}`));
+  return `${ts}:${toBase64(sig)}`;
+}
+
+/**
  * Initiate a PSI session with a specific peer.
  * Sends our blinded trust set to the satellite.
  */
@@ -166,9 +190,7 @@ async function psiInitiate(
     initiator_fingerprint: myFingerprint,
     responder_fingerprint: peerFingerprint,
     blinded_set: blindedSet,
-    signature: toBase64(signFn(
-      new TextEncoder().encode(JSON.stringify({ action: 'psi_initiate', peer: peerFingerprint }))
-    )),
+    signature: buildAuthSignature(myFingerprint, signFn),
   };
 
   const res = await fetch(`${satelliteUrl}/trust/psi/initiate`, {
@@ -191,9 +213,12 @@ async function psiInitiate(
  */
 async function psiPending(
   satelliteUrl: string,
-  myFingerprint: string
+  myFingerprint: string,
+  signFn: (data: Uint8Array) => Uint8Array
 ): Promise<Array<{ session_id: string; initiator: string; created_at: number }>> {
-  const res = await fetch(`${satelliteUrl}/trust/psi/pending/${myFingerprint}`);
+  const res = await fetch(`${satelliteUrl}/trust/psi/pending/${myFingerprint}`, {
+    headers: { 'X-Signature': buildAuthSignature(myFingerprint, signFn) },
+  });
   if (!res.ok) return [];
   const data = await res.json();
   return data.pending_sessions ?? [];
@@ -208,9 +233,7 @@ async function psiGetBlinded(
   myFingerprint: string,
   signFn: (data: Uint8Array) => Uint8Array
 ): Promise<string[] | null> {
-  const signature = toBase64(signFn(
-    new TextEncoder().encode(JSON.stringify({ action: 'psi_get_blinded', session: sessionId }))
-  ));
+  const signature = buildAuthSignature(myFingerprint, signFn);
 
   const res = await fetch(
     `${satelliteUrl}/trust/psi/session/${sessionId}/blinded?fingerprint=${myFingerprint}`,
@@ -236,9 +259,7 @@ async function psiRespond(
     responder_fingerprint: myFingerprint,
     blinded_set: blindedSet,
     reblinded_initiator_set: reblindedInitiatorSet,
-    signature: toBase64(signFn(
-      new TextEncoder().encode(JSON.stringify({ action: 'psi_respond', session: sessionId }))
-    )),
+    signature: buildAuthSignature(myFingerprint, signFn),
   };
 
   const res = await fetch(`${satelliteUrl}/trust/psi/session/${sessionId}/respond`, {
@@ -261,9 +282,7 @@ async function psiGetResult(
   responder_blinded_set: string[];
   reblinded_initiator_set: string[];
 } | null> {
-  const signature = toBase64(signFn(
-    new TextEncoder().encode(JSON.stringify({ action: 'psi_get_result', session: sessionId }))
-  ));
+  const signature = buildAuthSignature(myFingerprint, signFn);
 
   const res = await fetch(
     `${satelliteUrl}/trust/psi/session/${sessionId}/result?fingerprint=${myFingerprint}`,
@@ -406,7 +425,7 @@ export async function respondToTrustSync(
   const results: PSISyncResult[] = [];
 
   // Check for pending sessions
-  const pending = await psiPending(options.satelliteUrl, options.myFingerprint);
+  const pending = await psiPending(options.satelliteUrl, options.myFingerprint, options.signFn);
   if (pending.length === 0) return results;
 
   // Load our trusted fingerprints once
@@ -572,11 +591,23 @@ function fromBase64(b64: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, 'base64'));
 }
 
-/** Fisher-Yates shuffle — prevents position correlation in blinded sets. */
+/** Unbiased random integer in [0, n) via rejection sampling on a CSPRNG (randomBytes). */
+function randBelow(n: number): number {
+  if (n <= 1) return 0;
+  const limit = Math.floor(0x100000000 / n) * n;
+  let x: number;
+  do {
+    const b = randomBytes(4);
+    x = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
+  } while (x >= limit);
+  return x % n;
+}
+
+/** Fisher-Yates shuffle (CSPRNG) — prevents position correlation in blinded sets. */
 function shuffle<T>(array: T[]): T[] {
   const result = [...array];
   for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randBelow(i + 1);
     [result[i], result[j]] = [result[j], result[i]];
   }
   return result;
