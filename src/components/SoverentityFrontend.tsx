@@ -1420,7 +1420,10 @@ export function SoverentityFrontend({
                         const encrypted = new Uint8Array(
                           await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, enc.encode(json))
                         );
-                        const toB64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
+                        // Loop, NOT String.fromCharCode(...b): the full backup's encrypted `data` is
+                        // large enough to exceed mobile Safari's argument-count limit on the spread
+                        // ("too many function arguments" — this is the failing Full-backup button).
+                        const toB64 = (b: Uint8Array) => { let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); };
                         const result = JSON.stringify({
                           type: 'svrnty-full-backup',
                           version: '1.0',
