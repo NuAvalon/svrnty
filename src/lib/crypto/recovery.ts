@@ -15,7 +15,11 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 // --- Helpers (replace Node.js Buffer) ---
 
 function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
+  // Loop, NOT String.fromCharCode(...bytes): spreading a large byte array exceeds the argument-count
+  // limit on mobile browsers ("too many function arguments"). Same safe pattern kdf.ts / pq.ts use.
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
 
 function fromBase64(b64: string): Uint8Array {
