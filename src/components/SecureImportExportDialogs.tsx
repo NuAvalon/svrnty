@@ -39,7 +39,13 @@ async function deriveKey(password: string, salt: Uint8Array): Promise<CryptoKey>
 }
 
 function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
+  // Loop, NOT String.fromCharCode(...bytes): spreading a large byte array exceeds the argument-count
+  // limit on mobile browsers ("too many function arguments") — a FULL backup's encrypted payload is
+  // large enough to trip it on mobile while small exports (a key alone) stay under the limit. Same
+  // safe pattern kdf.ts / pq.ts already use. Identical base64 output.
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
 }
 
 function fromBase64(b64: string): Uint8Array {
