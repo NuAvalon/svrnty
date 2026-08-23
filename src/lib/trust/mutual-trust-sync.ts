@@ -3,7 +3,7 @@
 //
 // Implements the DH-PSI protocol against satellite endpoints.
 // Satellite never learns who trusts whom — it only relays blinded sets.
-// Client computes intersection locally, feeds into trustGraph.updateMutualState().
+// Client computes intersection locally, persists via deps.applyMutualResult() (storage-agnostic).
 //
 // Protocol (5-step DH-PSI):
 //   1. Alice blinds her trusted fingerprints, sends to satellite → session_id
@@ -19,14 +19,12 @@
 // Satellite endpoints: /trust/psi/* (infra/satellite/satellite.py)
 // Crypto primitives: infra/satellite/crypto_utils.py (reference impl)
 //
-// Author: Athena (session 2819), design review: Flint
+// Author: Athena (session 2819), design review: Flint; ZK browser-wire refactor: Flint (deps injection)
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
-import type { TrustGraphManager } from './trust-graph';
-import type { TrustGraph } from './types';
 
 // --- Constants ---
 
@@ -44,7 +42,8 @@ export interface PSIKeypair {
 }
 
 export interface PSISyncResult {
-  /** Fingerprints where trust is mutual (both parties trust each other) */
+  /** Peer fingerprint(s) flagged as sharing >=1 trusted contact — tier-1 mutual-CONTACT
+   *  discovery, NOT reciprocal "peer trusts us" (own fp is never in the blinded set). */
   mutualFingerprints: string[];
   /** Total contacts checked */
   totalChecked: number;
@@ -61,6 +60,30 @@ export interface PSISyncOptions {
   myFingerprint: string;
   /** Ed25519 signing function: (data, privateKey) => signature */
   signFn: (data: Uint8Array) => Uint8Array;
+}
+
+/**
+ * Storage-agnostic dependencies for the orchestrator — the zero-knowledge seam.
+ *
+ * The orchestrator NEVER touches the filesystem or the owner's private key/passphrase.
+ * The caller (browser client-store, or a local CLI) decrypts its OWN trust graph where
+ * the key lives and provides:
+ *  - getTrustedPeers: the peers this owner trusts (already decrypted + trust-filtered),
+ *    each with an optional lastSync for the staleness scheduler. Fingerprints are blinded
+ *    before anything leaves the device; the satellite only ever sees blinded points.
+ *  - applyMutualResult: sink to persist the discovered mutual-CONTACT state to the
+ *    caller's store. `sharesTrustedContact` = we share >=1 trusted contact with the peer
+ *    (tier-1 discovery) — it is NOT "the peer trusts us" (our own fingerprint is never in
+ *    our blinded set, so the intersection cannot reveal reciprocal trust). `matched`
+ *    carries named shared contacts for P2 named-mode (empty in tier-1).
+ */
+export interface OrchestratorDeps {
+  getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
+  applyMutualResult: (
+    peerFingerprint: string,
+    sharesTrustedContact: boolean,
+    matched?: string[]
+  ) => Promise<void>;
 }
 
 // --- Crypto Primitives (mirrors crypto_utils.py) ---
@@ -305,12 +328,12 @@ async function psiGetResult(
  * 4. Return session ID — poll psiGetResult() later for completion
  */
 export async function initiateTrustSync(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   peerFingerprint: string,
   options: PSISyncOptions
 ): Promise<{ sessionId: string; keypair: PSIKeypair } | { error: string }> {
   // Load trusted fingerprints from local graph
-  const trustedFps = await getTrustedFingerprints(trustGraph);
+  const trustedFps = await getTrustedFingerprints(deps);
   if (trustedFps.length === 0) {
     return { error: 'No trusted contacts to sync' };
   }
@@ -346,7 +369,7 @@ export async function initiateTrustSync(
  * 5. Update trust graph
  */
 export async function completeTrustSync(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   sessionId: string,
   peerFingerprint: string,
   keypair: PSIKeypair,
@@ -373,33 +396,26 @@ export async function completeTrustSync(
   // Find intersection
   const matches = computeIntersection(myReblinded, theirReblinded);
 
-  // To map matches back to fingerprints, we need the original order.
-  // But we shuffled during blinding — so we track the mapping.
-  // The intersection count tells us mutual trust exists, but we can't
-  // map back to specific fingerprints from the blinded values alone.
-  //
-  // For mutual trust discovery between TWO specific parties:
-  // If the responder's fingerprint is in our trusted set AND our
-  // fingerprint is in theirs, the intersection will be non-empty
-  // (at minimum containing both parties' fingerprints).
-  //
-  // The key insight: we already KNOW who the peer is (peerFingerprint).
-  // The question is: does our fingerprint appear in THEIR trusted set?
-  // If intersection > 0, at least some of our trusted contacts overlap
-  // with theirs — and since we only initiated with a trusted peer,
-  // mutual trust is confirmed.
+  // What the intersection means (and does NOT mean):
+  // `matches` = contacts present in BOTH our trusted set and the peer's — i.e. shared
+  // trusted CONTACTS. It is NOT "the peer trusts us": our own fingerprint is never in our
+  // blinded set (getTrustedPeers returns PEERS), so the intersection can never contain us
+  // and can never reveal reciprocal trust. matches.size > 0 therefore means only "we share
+  // >=1 trusted contact with this peer" — tier-1 mutual-CONTACT discovery, nothing more.
+  // (P2 named-mode maps matches back to names via a caller-side {blinded->fp} map;
+  // reciprocal-trust attestation is tier-2, a separate construction.)
 
-  // Update trust graph — the peer trusts us if intersection is non-empty
-  const peerTrustsUs = matches.size > 0;
+  const sharesTrustedContact = matches.size > 0;
 
+  // Persist the discovered mutual-CONTACT state via the caller's sink (client-store).
   try {
-    await trustGraph.updateMutualState(peerFingerprint, peerTrustsUs);
+    await deps.applyMutualResult(peerFingerprint, sharesTrustedContact, []);
   } catch {
-    // Edge might not exist yet — that's OK for discovery
+    // Sink may reject an unknown peer — that's OK for discovery
   }
 
   return {
-    mutualFingerprints: peerTrustsUs ? [peerFingerprint] : [],
+    mutualFingerprints: sharesTrustedContact ? [peerFingerprint] : [],
     totalChecked: myReblinded.length,
     sessionId,
     role: 'initiator',
@@ -419,7 +435,7 @@ export async function completeTrustSync(
  * 7. Update trust graph
  */
 export async function respondToTrustSync(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   options: PSISyncOptions
 ): Promise<PSISyncResult[]> {
   const results: PSISyncResult[] = [];
@@ -429,7 +445,7 @@ export async function respondToTrustSync(
   if (pending.length === 0) return results;
 
   // Load our trusted fingerprints once
-  const trustedFps = await getTrustedFingerprints(trustGraph);
+  const trustedFps = await getTrustedFingerprints(deps);
   if (trustedFps.length === 0) return results;
 
   for (const session of pending) {
@@ -474,9 +490,8 @@ export async function respondToTrustSync(
     //
     // As responder, we DON'T get the initiator's re-blinding of our set.
     // The initiator computes the final intersection.
-    // But we CAN infer: if the initiator's trusted set contains our fingerprint,
-    // we'll find out when they call updateMutualState on their end,
-    // and our next sync will reflect it.
+    // The initiator persists the shared-contact result on their end (applyMutualResult);
+    // our own next sync as initiator computes our side independently.
     //
     // For now: mark that we participated. The initiator drives the update.
 
@@ -496,7 +511,7 @@ export async function respondToTrustSync(
  * Designed to run on app open or periodic timer.
  */
 export async function syncMutualTrust(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   options: PSISyncOptions
 ): Promise<{
   responded: PSISyncResult[];
@@ -509,7 +524,7 @@ export async function syncMutualTrust(
 
   // Step 1: Respond to any pending sessions
   try {
-    const responses = await respondToTrustSync(trustGraph, options);
+    const responses = await respondToTrustSync(deps, options);
     responded.push(...responses);
   } catch (e) {
     errors.push(`Respond phase: ${e instanceof Error ? e.message : String(e)}`);
@@ -517,9 +532,9 @@ export async function syncMutualTrust(
 
   // Step 2: Initiate sessions with trusted contacts that haven't synced recently
   try {
-    const stalePeers = await getStaleMutualPeers(trustGraph);
+    const stalePeers = await getStaleMutualPeers(deps);
     for (const peerFp of stalePeers) {
-      const result = await initiateTrustSync(trustGraph, peerFp, options);
+      const result = await initiateTrustSync(deps, peerFp, options);
       if ('error' in result) {
         errors.push(`Initiate ${peerFp.slice(0, 8)}...: ${result.error}`);
       } else {
@@ -540,13 +555,11 @@ export async function syncMutualTrust(
 // --- Trust Graph Helpers ---
 
 /**
- * Get fingerprints of all contacts we trust.
+ * Get fingerprints of all peers we trust (from the caller's decrypted store).
  */
-async function getTrustedFingerprints(trustGraph: TrustGraphManager): Promise<string[]> {
-  const graph = await (trustGraph as unknown as { loadGraph(): Promise<TrustGraph> }).loadGraph();
-  return graph.edges
-    .filter(e => e.trusted)
-    .map(e => e.peer_fingerprint);
+async function getTrustedFingerprints(deps: OrchestratorDeps): Promise<string[]> {
+  const peers = await deps.getTrustedPeers();
+  return peers.map(p => p.fingerprint);
 }
 
 /**
@@ -554,20 +567,19 @@ async function getTrustedFingerprints(trustGraph: TrustGraphManager): Promise<st
  * These are candidates for a new PSI session.
  */
 async function getStaleMutualPeers(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   maxAgeMs: number = 24 * 60 * 60 * 1000
 ): Promise<string[]> {
-  const graph = await (trustGraph as unknown as { loadGraph(): Promise<TrustGraph> }).loadGraph();
+  const peers = await deps.getTrustedPeers();
   const now = Date.now();
 
-  return graph.edges
-    .filter(e => {
-      if (!e.trusted) return false;
-      if (!e.mutual.last_sync) return true; // Never synced
-      const syncAge = now - new Date(e.mutual.last_sync).getTime();
+  return peers
+    .filter(p => {
+      if (!p.lastSync) return true; // Never synced
+      const syncAge = now - new Date(p.lastSync).getTime();
       return syncAge > maxAgeMs;
     })
-    .map(e => e.peer_fingerprint);
+    .map(p => p.fingerprint);
 }
 
 // --- Utilities ---
