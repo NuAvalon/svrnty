@@ -20,6 +20,8 @@ import {
   isSessionUnlocked,
   loadKey,
   lockSession,
+  listIdentities,
+  setActiveFingerprint,
 } from '@/lib/identity/client-store';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
@@ -32,6 +34,10 @@ export default function Home() {
   const [passphrase, setPassphrase] = useState('');
   const [unlockError, setUnlockError] = useState('');
   const [unlocking, setUnlocking] = useState(false);
+  // Phase-1 identity switcher (UI-only): other on-device vaults, loaded EPHEMERALLY into component
+  // state — never persisted as a new cross-identity link (Flint's correlation-surface line). Empty in
+  // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
+  const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -100,6 +106,37 @@ export default function Home() {
     } finally {
       setUnlocking(false);
     }
+  };
+
+  // Phase-1: when locked, load the OTHER on-device vaults so the switcher can offer them. Ephemeral —
+  // reads the existing identities store into component state only; adds NO new persisted cross-identity
+  // link. Cleared whenever we leave the locked screen.
+  useEffect(() => {
+    if (appState !== 'locked') { setOtherIdentities([]); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await listIdentities();
+        const active = lockedIdentity?.fingerprint;
+        const others = all
+          .filter((r) => r.fingerprint && r.fingerprint !== active)
+          .map((r) => ({ name: r.data?.identity?.name || 'Identity', fingerprint: r.fingerprint }));
+        if (!cancelled) setOtherIdentities(others);
+      } catch { if (!cancelled) setOtherIdentities([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [appState, lockedIdentity?.fingerprint]);
+
+  // Phase-1 swap: choose another EXISTING vault to unlock instead of the current one. We are already
+  // locked (no keys in memory); lockSession() first is defensive so no key material bleeds across the
+  // swap (Flint #4). Then repoint the active pointer + unlock form at the chosen vault. Existing
+  // primitives only — no new vault schema, no derivation (that is Phase 2).
+  const handleSwitchIdentity = async (fingerprint: string, name: string) => {
+    lockSession();
+    await setActiveFingerprint(fingerprint);
+    setLockedIdentity({ name, fingerprint });
+    setPassphrase('');
+    setUnlockError('');
   };
 
   const handleIdentityUpdate = (newIdentity: any) => {
@@ -263,21 +300,64 @@ export default function Home() {
             </button>
           </form>
 
-          <button
-            onClick={() => setAppState('gate')}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'rgba(255,255,255,0.15)',
-              fontSize: '11px',
-              fontFamily: "'JetBrains Mono', monospace",
-              cursor: 'pointer',
-              marginTop: '20px',
-              padding: '4px',
-            }}
-          >
-            Use a different identity
-          </button>
+          {/* Phase-1 identity switcher (home screen) — UI only, no vault changes. Single-identity case
+              shows only "New Identity"; the switch list appears solely when 2+ vaults exist on-device. */}
+          <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {otherIdentities.length > 0 && (
+              <div data-testid="switch-identity" style={{ marginBottom: '4px' }}>
+                <p style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: '10px',
+                  letterSpacing: '1px',
+                  textTransform: 'uppercase' as const,
+                  color: 'rgba(255,255,255,0.25)',
+                  marginBottom: '6px',
+                }}>
+                  Switch identity
+                </p>
+                {otherIdentities.map(o => (
+                  <button
+                    key={o.fingerprint}
+                    data-testid="switch-identity-option"
+                    onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(255,255,255,0.03)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: '8px',
+                      padding: '10px 14px',
+                      color: 'rgba(232,228,217,0.8)',
+                      fontSize: '13px',
+                      fontFamily: "'Space Grotesk', sans-serif",
+                      textAlign: 'left' as const,
+                      cursor: 'pointer',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    {o.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              data-testid="new-identity-btn"
+              onClick={() => setAppState('gate')}
+              style={{
+                width: '100%',
+                background: 'none',
+                border: '1px dashed rgba(52, 211, 153, 0.25)',
+                borderRadius: '8px',
+                padding: '12px 16px',
+                color: 'rgba(52, 211, 153, 0.7)',
+                fontSize: '12px',
+                fontFamily: "'Space Grotesk', sans-serif",
+                letterSpacing: '1px',
+                cursor: 'pointer',
+              }}
+            >
+              + New Identity
+            </button>
+          </div>
         </div>
       </div>
     );
