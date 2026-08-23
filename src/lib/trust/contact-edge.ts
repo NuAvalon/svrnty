@@ -38,6 +38,10 @@ export function contactRecordToEdge(c: any): TrustEdge {
     tags: c.tags || c.metadata?.tags || [],
     notes: c.notes || c.metadata?.notes || '',
     connection_channels: c.connection_channels || [],
+    // Contact channels (phones/emails/urls/handles) — carry them so vCard-imported phones survive the
+    // record→edge projection. Chaos#40: phones parse (vcard.ts) + persist (ContactRecord) but were
+    // dropped HERE, the same "field vanishes at the record→edge boundary" class this file kills for pq.
+    contact_info: c.contact_info,
     added_at: c.added_at || new Date().toISOString(),
     // Post-quantum keys — the fix for "PQ-keys-dropped-on-every-edge". ContactRecord stores
     // `pq_*_public_key`; a peer-shaped source may already carry `peer_pq_*`. Carry either.

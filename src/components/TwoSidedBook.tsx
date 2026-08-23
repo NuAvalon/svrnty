@@ -47,9 +47,10 @@ function hintFor(row: BookRow): string {
   }
 }
 
-function Row({ row, glowing, onSelect }: {
+function Row({ row, glowing, live, onSelect }: {
   row: BookRow;
   glowing: boolean;
+  live?: boolean;
   onSelect?: (edge: TrustEdge) => void;
 }) {
   const Icon = STATE_ICON[row.state];
@@ -57,6 +58,8 @@ function Row({ row, glowing, onSelect }: {
   return (
     <button
       type="button"
+      data-testid="contact-row"
+      data-live={live ? 'push' : undefined}
       onClick={() => onSelect?.(row.edge)}
       title={meta.hint}
       className={[
@@ -82,11 +85,12 @@ function Row({ row, glowing, onSelect }: {
   );
 }
 
-function Side({ title, subtitle, rows, glow, onSelect, empty }: {
+function Side({ title, subtitle, rows, glow, liveIds, onSelect, empty }: {
   title: string;
   subtitle: string;
   rows: BookRow[];
   glow: Set<string>;
+  liveIds?: Set<string>;
   onSelect?: (edge: TrustEdge) => void;
   empty: string;
 }) {
@@ -103,17 +107,25 @@ function Side({ title, subtitle, rows, glow, onSelect, empty }: {
         {rows.length === 0
           ? <p className="py-6 text-center text-xs text-muted-foreground">{empty}</p>
           : rows.map(row => (
-              <Row key={row.edge.id} row={row} glowing={glow.has(row.edge.id)} onSelect={onSelect} />
+              <Row
+                key={row.edge.id}
+                row={row}
+                glowing={glow.has(row.edge.id)}
+                live={liveIds?.has(row.edge.id)}
+                onSelect={onSelect}
+              />
             ))}
       </CardContent>
     </Card>
   );
 }
 
-export function TwoSidedBook({ edges, onSelect, className = '' }: {
+export function TwoSidedBook({ edges, onSelect, className = '', liveIds }: {
   edges: TrustEdge[];
   onSelect?: (edge: TrustEdge) => void;
   className?: string;
+  /** Contact ids whose latest repaint came from a live peer apply → data-live="push" (beat-4). */
+  liveIds?: Set<string>;
 }) {
   const prevStates = useRef<Record<string, ContactState>>({});
   const view = buildBookView(edges, prevStates.current);
@@ -145,6 +157,7 @@ export function TwoSidedBook({ edges, onSelect, className = '' }: {
         subtitle="Vouched and fresh — the people your trust is currently reaching."
         rows={view.living}
         glow={glow}
+        liveIds={liveIds}
         onSelect={onSelect}
         empty="No living contacts yet. Vouch for someone to bring them to life."
       />
@@ -154,6 +167,7 @@ export function TwoSidedBook({ edges, onSelect, className = '' }: {
         subtitle="Cards you hold, and contacts that have quietly faded. Nothing is broken — a single interaction re-ignites them."
         rows={view.resting}
         glow={glow}
+        liveIds={liveIds}
         onSelect={onSelect}
         empty="Nothing resting. Every card you hold is alive."
       />

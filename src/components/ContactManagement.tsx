@@ -11,7 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
   Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, Eye, ChevronRight, ShieldOff, ShieldCheck, Copy, HeartCrack
+  FileJson, Eye, Phone, Link2, AtSign, ShieldOff, ShieldCheck, Copy, HeartCrack
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -27,11 +27,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
+import { TwoSidedBook } from '@/components/TwoSidedBook';
 import {
   getAllContacts, addContact, updateContact, removeContact,
   getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -53,6 +55,14 @@ interface Contact {
     tags?: string[];
     connection_method?: 'manual' | 'qr' | 'burner_link' | 'mutual';
     mutual_contacts?: string[];
+  };
+  // Imported contact channels (vCard). Phones parse + persist on the ContactRecord but were never
+  // surfaced to the UI (Chaos#40) — carry them so the detail view can render them.
+  contact_info?: {
+    phones?: string[];
+    emails?: string[];
+    urls?: string[];
+    handles?: Record<string, string>;
   };
 }
 
@@ -105,6 +115,7 @@ function recordToContact(r: ContactRecord): Contact {
     added_at: r.added_at || new Date().toISOString(),
     verified_at: r.verified_at,
     metadata: r.metadata,
+    contact_info: r.contact_info, // vCard-imported phones/emails/urls (Chaos#40 display fix)
   };
 }
 
@@ -213,7 +224,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   });
 
   const trustedCount = contacts.filter(c => isTrusted(c)).length;
-  const knownCount = contacts.filter(c => !isTrusted(c)).length;
+  const bookEdges = filteredContacts.map(contactRecordToEdge);
 
   // --- Handlers ---
 
@@ -703,62 +714,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </p>
               </div>
             ) : (
-              <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-                {filteredContacts.map(contact => (
-                  <div
-                    key={contact.id}
-                    data-testid="contact-row"
-                    data-live={liveIds.has(contact.id) ? 'push' : undefined}
-                    className="group border border-border/40 rounded-lg overflow-hidden bg-card hover:border-border transition-colors cursor-pointer"
-                    onClick={() => { setSelectedContact(contact); setShowDetailDialog(true); }}
-                  >
-                    <div className="p-4">
-                      <div className="flex justify-between items-start">
-                        <div className="space-y-1 min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <TrustIcon contact={contact} className="h-4 w-4 flex-shrink-0" />
-                            <h3 className="font-medium text-lg truncate">{contact.name}</h3>
-                          </div>
-                          <div className="text-sm text-muted-foreground flex items-center gap-1">
-                            <Mail className="h-3 w-3 flex-shrink-0" />
-                            <span className="truncate">{contact.email}</span>
-                          </div>
-                          <div className="font-mono text-xs text-muted-foreground/60 truncate">
-                            {contact.fingerprint.match(/.{1,4}/g)?.join(' ')}
-                          </div>
-                        </div>
-                        <ChevronRight className="h-4 w-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors flex-shrink-0 mt-1" />
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <TrustBadge contact={contact} />
-                        {contact.metadata?.connection_method && (
-                          <Badge variant="outline" className="text-xs">
-                            {contact.metadata.connection_method === 'mutual' ? 'Mutual' :
-                              contact.metadata.connection_method === 'qr' ? 'QR Code' :
-                                contact.metadata.connection_method === 'burner_link' ? 'Burner Link' : 'Manual'}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex divide-x divide-border/40 border-t border-border/40 bg-muted/30" onClick={e => e.stopPropagation()}>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`flex-1 rounded-none ${isTrusted(contact) ? 'text-amber-400' : 'text-muted-foreground'}`}
-                        onClick={() => handleToggleTrust(contact)}
-                      >
-                        {isTrusted(contact) ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</> : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>}
-                      </Button>
-                      <Button variant="ghost" size="sm" className="flex-1 rounded-none text-muted-foreground" onClick={() => openEditDialog(contact)}>
-                        <Edit className="h-4 w-4 mr-1" /> Edit
-                      </Button>
-                      <Button variant="ghost" size="sm" className="flex-1 rounded-none text-destructive hover:text-destructive" onClick={() => handleDeleteContact(contact.id)}>
-                        <Trash2 className="h-4 w-4 mr-1" /> Remove
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <TwoSidedBook
+                edges={bookEdges}
+                liveIds={liveIds}
+                onSelect={(edge) => {
+                  const contact = contacts.find(c => c.id === edge.id);
+                  if (!contact) return;
+                  setSelectedContact(contact);
+                  setShowDetailDialog(true);
+                }}
+              />
             )}
           </TabsContent>
         </Tabs>
@@ -883,6 +848,52 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       <div className="mt-1"><TrustBadge contact={selectedContact} /></div>
                     </div>
                   </div>
+
+                  {selectedContact.contact_info?.phones?.some(Boolean) && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Phone{selectedContact.contact_info.phones.filter(Boolean).length > 1 ? 's' : ''}
+                      </h4>
+                      <div className="mt-1 space-y-1">
+                        {selectedContact.contact_info.phones.filter(Boolean).map((phone, i) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <Phone className="h-4 w-4 text-muted-foreground" />
+                            <span>{phone}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedContact.contact_info?.urls?.some(Boolean) && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Link{selectedContact.contact_info.urls.filter(Boolean).length > 1 ? 's' : ''}
+                      </h4>
+                      <div className="mt-1 space-y-1">
+                        {selectedContact.contact_info.urls.filter(Boolean).map((url, i) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <Link2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            <span className="truncate">{url}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedContact.contact_info?.handles && Object.keys(selectedContact.contact_info.handles).length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Handles</h4>
+                      <div className="mt-1 space-y-1">
+                        {Object.entries(selectedContact.contact_info.handles).map(([platform, handle]) => (
+                          <div key={platform} className="flex items-center gap-1">
+                            <AtSign className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            <span className="truncate"><span className="text-muted-foreground">{platform}:</span> {handle}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Fingerprint</h4>
