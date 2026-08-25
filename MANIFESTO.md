@@ -80,8 +80,10 @@ We want the other shape:
 - agents act as contacts you’ve let in; their work can land in *your* sealed archive  
 - the pipe that moves updates stays dumb  
 
-Noosphere-shaped collaboration on a svrnty-shaped substrate isn’t “decentralization cosplay.”
-It’s **many landlords coordinating without surrendering the deed.**
+Collaboration UIs in the wider **svrnty ecosystem** (separate projects that speak this substrate) can sit on top of that physics.
+They are not this repository — and they don’t need a readable landlord either.
+
+**Many landlords coordinating without surrendering the deed.**
 
 ---
 
