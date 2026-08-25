@@ -370,6 +370,23 @@ export default function Home() {
         <h1 className="text-3xl font-bold mb-2" style={{ color: '#c8a84e', letterSpacing: '3px' }}>SVRNTY</h1>
         <p style={{ color: '#8a8070', fontSize: '14px' }}>Self-Sovereign Trust Network</p>
         <p style={{ color: '#5a5548', fontSize: '11px', marginTop: '4px' }}>from NuAvalon</p>
+        {identity && (
+          <p style={{ marginTop: '12px' }}>
+            <a
+              href="/msg"
+              style={{
+                color: 'rgba(200, 168, 78, 0.85)',
+                fontSize: '12px',
+                fontFamily: "'Space Grotesk', sans-serif",
+                letterSpacing: '1px',
+                textDecoration: 'none',
+                borderBottom: '1px solid rgba(200, 168, 78, 0.3)',
+              }}
+            >
+              Notes between contacts
+            </a>
+          </p>
+        )}
         <HelpGuide />
       </header>
 
