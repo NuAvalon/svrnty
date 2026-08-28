@@ -110,7 +110,7 @@ export function generatePSIKeypair(): PSIKeypair {
  * Clamp removed: it was a SCALAR op misapplied to a point; the ephemeral PSI scalar is clamped by
  * X25519 (RFC 7748), which annihilates the cofactor. getSharedSecret rejects all-zero (low-order u).
  */
-function hashFingerprintToPoint(fingerprint: string): Uint8Array {
+export function hashFingerprintToPoint(fingerprint: string): Uint8Array {
   const ikm = new TextEncoder().encode(fingerprint);
   const salt = new TextEncoder().encode(PSI_SALT);
   const info = new TextEncoder().encode(PSI_POINT_INFO);
