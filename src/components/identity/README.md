@@ -19,3 +19,6 @@ symmetry twins). Catalog “rotated …” figures are intentional π-flips of t
 spins of the whole seal.
 
 φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
+
+**Export:** Identity card can save the seal as SVG/PNG (`seal-export.ts`) — lossy visual only,
+not reversible to a key.

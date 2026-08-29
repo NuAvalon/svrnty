@@ -759,6 +759,9 @@ export function SoverentityFrontend({
               <p style={s.gateSub}>
                 Your identity. Your trust. Your sovereignty.
               </p>
+              <p style={s.gateHint}>
+                A vessel for your key. After you begin, your seal is a unique crystal of that key — shareable, not reversible.
+              </p>
             </div>
 
             {/* Two Doors */}
@@ -1584,9 +1587,11 @@ export function SoverentityFrontend({
               margin: '20px',
             }} onClick={e => e.stopPropagation()}>
               <h3 style={{
-                fontFamily: "'Cormorant Garamond', serif",
-                fontSize: '20px',
-                color: '#e8e4d9',
+                fontFamily: SE.fontSans,
+                fontSize: '1.15rem',
+                fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: SE.text,
                 marginBottom: '20px',
                 textAlign: 'center' as const,
               }}>
@@ -1676,8 +1681,9 @@ export function SoverentityFrontend({
               borderRadius: '16px', padding: '32px', maxWidth: '380px', width: '100%', margin: '20px',
             }} onClick={e => e.stopPropagation()}>
               <h3 style={{
-                fontFamily: "'Cormorant Garamond', serif", fontSize: '20px',
-                color: '#e8e4d9', marginBottom: '8px', textAlign: 'center' as const,
+                fontFamily: SE.fontSans, fontSize: '1.15rem', fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: SE.text, marginBottom: '8px', textAlign: 'center' as const,
               }}>
                 {claimStatus === 'success' ? 'URL Claimed' : 'Claim Your URL'}
               </h3>
@@ -1784,22 +1790,32 @@ const s: Record<string, React.CSSProperties> = {
     boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(249, 168, 37, 0.06), inset 0 1px 0 rgba(255,190,120,0.05)',
   },
   gateTitle: {
-    fontSize: '32px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#fbead2',
-    letterSpacing: '6px',
+    fontSize: '1.75rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.04em',
     textTransform: 'lowercase' as const,
-    marginBottom: '8px',
-    textShadow: '0 0 40px rgba(249, 168, 37, 0.2)',
+    marginBottom: '10px',
+    textShadow: '0 0 40px rgba(249, 168, 37, 0.18)',
   },
   gateSub: {
-    fontSize: '14px',
-    fontFamily: "'Cormorant Garamond', serif",
-    fontWeight: 300,
-    fontStyle: 'italic' as const,
-    color: 'rgba(201, 162, 113, 0.85)',
-    lineHeight: '1.7',
+    fontSize: '0.95rem',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    fontStyle: 'normal' as const,
+    color: SE.muted,
+    lineHeight: '1.5',
+    marginBottom: '10px',
+  },
+  gateHint: {
+    fontSize: '0.8rem',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    color: SE.dim,
+    lineHeight: '1.55',
+    maxWidth: '320px',
+    margin: '0 auto',
   },
   doorContainer: {
     display: 'flex',
@@ -1820,17 +1836,17 @@ const s: Record<string, React.CSSProperties> = {
     textAlign: 'center' as const,
   },
   doorTitle: {
-    fontSize: '16px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#f9a825',
-    letterSpacing: '1px',
+    fontSize: '15px',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.accent,
+    letterSpacing: '-0.02em',
     marginBottom: '8px',
   },
   doorDesc: {
     fontSize: '12px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    fontWeight: 300,
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
     color: 'rgba(201, 162, 113, 0.7)',
     lineHeight: '1.6',
     maxWidth: '280px',
@@ -1885,19 +1901,19 @@ const s: Record<string, React.CSSProperties> = {
     boxShadow: '0 0 30px rgba(200, 168, 78, 0.06)',
   },
   heroTitle: {
-    fontSize: '26px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '2px',
+    fontSize: '1.35rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.03em',
     marginBottom: '10px',
-    textShadow: '0 0 30px rgba(200, 168, 78, 0.15)',
+    textShadow: '0 0 30px rgba(249, 168, 37, 0.12)',
   },
   heroSub: {
     fontSize: '13px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    fontWeight: 300,
-    color: 'rgba(255,255,255,0.35)',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    color: 'rgba(201, 162, 113, 0.75)',
     lineHeight: '1.7',
     maxWidth: '340px',
     margin: '0 auto',
@@ -1908,8 +1924,8 @@ const s: Record<string, React.CSSProperties> = {
   label: {
     display: 'block',
     fontSize: '10px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: 'rgba(255,255,255,0.3)',
+    fontFamily: SE.fontSans,
+    color: 'rgba(201, 162, 113, 0.55)',
     letterSpacing: '2px',
     textTransform: 'uppercase' as const,
     marginBottom: '8px',
@@ -2135,11 +2151,11 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   idName: {
-    fontSize: '20px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '1px',
+    fontSize: '1.15rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.02em',
     margin: 0,
   },
   idEmail: {
