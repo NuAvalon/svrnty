@@ -12,7 +12,6 @@ import {
   randomFingerprint,
   shiftFingerprintDigit,
   foldFromFingerprint,
-  HABIT_LABEL,
   composePhiSeal,
 } from '@/components/identity/IdentitySeal';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
