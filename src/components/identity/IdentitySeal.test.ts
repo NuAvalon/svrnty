@@ -1,8 +1,14 @@
-// IdentitySeal φ geometry — determinism + golden-ratio cascade.
+// IdentitySeal φ geometry — determinism + golden-ratio cascade + digit shift.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { PHI, PHI_INV, composePhiSeal } from '../../components/identity/IdentitySeal';
+import {
+  PHI,
+  PHI_INV,
+  composePhiSeal,
+  shiftFingerprintDigit,
+  fingerprintHex,
+} from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
 const FP_B = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -30,4 +36,11 @@ test('rings follow φ cascade R · φ⁻ⁿ', () => {
 
 test('five angular blades (pentagonal / φ symmetry)', () => {
   assert.equal(composePhiSeal(FP_A).blades.length, 5);
+});
+
+test('±1 digit changes the seal', () => {
+  const base = fingerprintHex(FP_A);
+  const shifted = shiftFingerprintDigit(base, 0, 1);
+  assert.notEqual(base, shifted);
+  assert.notDeepEqual(composePhiSeal(base).blades, composePhiSeal(shifted).blades);
 });

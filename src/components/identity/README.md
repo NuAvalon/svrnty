@@ -3,7 +3,9 @@
 ## IdentitySeal
 **I-6:** seal geometry is derived only from the fingerprint string (hex nibbles + FNV). Same fingerprint ⇒ same seal. No `Math.random`.
 
-**φ grammar:** rings at `R · φ⁻ⁿ`, 5-fold pentagon/pentagram chords, angular blades (straight segments — sigil, not soft Bezier), Fibonacci(13) ticks stepped by the golden angle `2π/φ²`. Fingerprint only chooses rotation and which chords/blade widths light up — proportions stay golden.
+**φ grammar (default `variant="phi"`):** rings at `R · φ⁻ⁿ`, 5-fold pentagon/pentagram chords, angular blades, Fibonacci(13) ticks on the golden angle `2π/φ²`. Fingerprint only chooses rotation and which chords/blade widths light up.
+
+**Lab variants** (`phi` | `rosette` | `lattice` | `ring` | `none`): compare at **`/dev/seals`** — fingerprint randomizer, ±1 hex-digit shift, with/without seal on a mini card.
 
 ## SovereignIdentityCard (Archie mockup → home)
 Solar Ember **sovereign identity card** matching Archie's first theme redesign mockup:
