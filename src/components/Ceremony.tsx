@@ -414,7 +414,7 @@ const subStyle: CSSProperties = {
   margin: '0 auto',
 };
 const linkBoxStyle: CSSProperties = {
-  background: 'rgba(12, 8, 5, 0.85)',
+  background: E.inputBg,
   border: `1px solid ${E.border}`,
   borderRadius: 8,
   padding: '12px 16px',
@@ -422,7 +422,7 @@ const linkBoxStyle: CSSProperties = {
   maxWidth: 360,
 };
 const primaryBtnStyle: CSSProperties = {
-  background: 'rgba(249, 168, 37, 0.12)',
+  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
   border: `1px solid ${E.borderLit}`,
   borderRadius: 8,
   padding: '12px 22px',

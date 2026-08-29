@@ -621,7 +621,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         background: E.surface,
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
-        boxShadow: '0 0 40px rgba(249,168,37,.05)',
+        boxShadow: 'var(--se-glass-shadow)',
         overflow: 'hidden',
       }}
     >

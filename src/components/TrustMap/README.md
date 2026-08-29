@@ -5,6 +5,7 @@
 
 ## What we changed
 - Retinted SVG tokens to Solar Ember (warm ember field, gold edges, sacral orange lit nodes).
+- Tokens use CSS vars (`solarEmber`) so light/dark appearance follows the header toggle.
 - Left layout/provenance logic untouched (egocentric, no peer↔peer inference, I-6).
 
 ## Still open (UI)
