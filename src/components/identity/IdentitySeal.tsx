@@ -14,15 +14,12 @@ import {
 } from './sacred-geometry';
 
 export {
-  unicursalHexagramPath,
-  unicursalHexagramPaths,
-  unicursalClassicPaths,
-  unicursalPentagramPaths,
   SACRED_CATALOG,
   SACRED_FLAT,
   pickSacredOption,
   pickSacredEntry,
   composeSacredFigure,
+  starPolygonPath,
 } from './sacred-geometry';
 export type { SacredOption, SacredFigureId, SacredEntry } from './sacred-geometry';
 
@@ -34,7 +31,7 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'Crystal', blurb: 'Flat sacred pool · unicursal pent/hex · flower · Metatron · φ measure' },
+  { id: 'phi', title: 'Crystal', blurb: 'Sacred tech · {n/k} stars · flower · Metatron · φ measure' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -44,7 +41,7 @@ export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] 
 
 /**
  * Crystal habits — trigonal through decagon (cyber-sigil 10-point).
- * Sacred figure (hexagram, unicursal, star, inversion…) is picked separately from the catalog.
+ * Sacred figure (hexagram, {n/k} star, flower, Metatron…) from the flat pool.
  */
 export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
@@ -229,7 +226,7 @@ export function composePhiSeal(fingerprint: string) {
   const hexInner = hexAt(r2);
   const hexCore = hexAt(r3);
 
-  // Compatibility: first sacred path as `unicursal` when present (lab/tests)
+  // Compatibility: first sacred path alias (lab/tests)
   const unicursal = sacred.paths[0]?.d ?? null;
 
   // Edge ticks at vertices + mid-edges
@@ -456,7 +453,7 @@ function CrystalLayers({
       <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.32" strokeWidth="0.8" />
       <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
 
-      {/* Sacred geometry figure (hexagram / unicursal / star / inversion / …) */}
+      {/* Sacred geometry figure */}
       {g.sacredPaths?.map((p, i) => (
         <path
           key={`sg${i}`}

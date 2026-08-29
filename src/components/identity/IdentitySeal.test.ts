@@ -15,9 +15,7 @@ import {
   randomFingerprint,
   SACRED_CATALOG,
   SACRED_FLAT,
-  unicursalHexagramPaths,
-  unicursalClassicPaths,
-  unicursalPentagramPaths,
+  starPolygonPath,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -50,24 +48,22 @@ test('fold ∈ 3–10 and matches spine count + flat entry', () => {
   assert.equal(g.figureId, entry.option.id);
 });
 
-test('flat pool covers every fold; no dead gon; equal entry odds basis', () => {
-  assert.ok(SACRED_FLAT.length >= 40);
+test('flat pool covers every fold; no Crowley unicursal ids', () => {
+  assert.ok(SACRED_FLAT.length >= 30);
   for (const h of CRYSTAL_HABITS) {
     assert.ok(SACRED_CATALOG[h].length >= 2, `fold ${h} needs options`);
-    assert.ok(!SACRED_CATALOG[h].some((o) => (o.id as string) === 'gon'));
+    assert.ok(!SACRED_CATALOG[h].some((o) => String(o.id).includes('unicursal')));
   }
   const folds = new Set(SACRED_FLAT.map((e) => e.fold));
   for (const h of CRYSTAL_HABITS) assert.ok(folds.has(h));
 });
 
-test('unicursal pentagram + hexagram both in catalog', () => {
-  assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'unicursal-pent'));
-  assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'unicursal-pent-inv'));
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal'));
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal-inv'));
-  const pent = unicursalPentagramPaths(50, 50, 40, 0);
-  assert.equal(pent.length, 1);
-  assert.equal(pent[0].split(' L ').length, 6);
+test('pentagram {5/2} is a continuous stroke; hexagram is compound', () => {
+  assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'star' && o.k === 2));
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'hexagram'));
+  assert.ok(!SACRED_CATALOG[6].some((o) => String(o.id).includes('unicursal')));
+  const pent = starPolygonPath(50, 50, 40, 5, 2, 0);
+  assert.equal(pent.split(' L ').length, 6);
 });
 
 test('flower + metatron on fold 6; circles on selected folds', () => {
@@ -80,23 +76,13 @@ test('flower + metatron on fold 6; circles on selected folds', () => {
   }
 });
 
-test('Crowley unicursal is a single √3 wireframe path', () => {
-  const paths = unicursalHexagramPaths(50, 50, 40, 0);
-  assert.equal(paths.length, 1);
-  assert.equal(unicursalClassicPaths(50, 50, 40, 0)[0], paths[0]);
-  assert.equal(paths[0].split(' L ').length, 6);
-});
-
 test('flat pool produces varied figures in the wild', () => {
   const seen = new Set<string>();
   for (let i = 0; i < 600; i++) {
     seen.add(composePhiSeal(randomFingerprint()).figureId);
   }
-  assert.ok(seen.size >= 12, `expected broad figure variety, got ${seen.size}`);
-  assert.ok(
-    [...seen].some((id) => id.includes('unicursal')),
-    'expected unicursal family'
-  );
+  assert.ok(seen.size >= 10, `expected broad figure variety, got ${seen.size}`);
+  assert.ok(seen.has('star') || seen.has('hexagram') || seen.has('flower'));
 });
 
 test('inversions appear in the wild', () => {

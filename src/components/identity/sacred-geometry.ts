@@ -12,10 +12,6 @@ export type SacredFigureId =
   | 'star-alt-inv'
   | 'hexagram'
   | 'hexagram-inv'
-  | 'unicursal'
-  | 'unicursal-inv'
-  | 'unicursal-pent'
-  | 'unicursal-pent-inv'
   | 'triquetra'
   | 'vesica'
   | 'diamond'
@@ -54,8 +50,8 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star', label: 'compound {4/2}', k: 2 },
   ],
   5: [
-    { id: 'unicursal-pent', label: 'unicursal pentagram', k: 2 },
-    { id: 'unicursal-pent-inv', label: 'inverted unicursal pentagram', k: 2 },
+    { id: 'star', label: 'pentagram {5/2}', k: 2 },
+    { id: 'star-inv', label: 'inverted pentagram', k: 2 },
     { id: 'circle', label: 'circle' },
     { id: 'circles', label: 'φ circles' },
     { id: 'vesica', label: 'vesica' },
@@ -63,8 +59,6 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
   6: [
     { id: 'hexagram', label: 'hexagram' },
     { id: 'hexagram-inv', label: 'inverted hexagram' },
-    { id: 'unicursal', label: 'unicursal hexagram' },
-    { id: 'unicursal-inv', label: 'inverted unicursal hexagram' },
     { id: 'seed', label: 'seed of life' },
     { id: 'flower', label: 'flower of life' },
     { id: 'metatron', label: "Metatron's cube" },
@@ -140,7 +134,7 @@ function gcd(a: number, b: number): number {
 }
 
 /**
- * Star polygon {n/k}. When gcd(n,k)=1 → one unicursal stroke.
+ * Star polygon {n/k}. When gcd(n,k)=1 → one continuous stroke (universal unicursal).
  * When gcd>1 → compound of gcd components (e.g. {10/4} = two pentagrams).
  */
 export function starPolygonPath(
@@ -183,57 +177,6 @@ export function hexagramCompoundPath(
   const up = [0, 2, 4].map((i) => fmt(pt(cx, cy, R, base + (i * Math.PI) / 3)));
   const down = [1, 3, 5].map((i) => fmt(pt(cx, cy, R, base + (i * Math.PI) / 3)));
   return `M ${up.join(' L ')} Z M ${down.join(' L ')} Z`;
-}
-
-/**
- * Classic Crowley unicursal hexagram — regular hexagon + R/√3 waist points.
- * Order: N → SE → NW-waist → NE-waist → SW → S.
- */
-export function unicursalClassicPaths(
-  cx: number,
-  cy: number,
-  R: number,
-  rot: number
-): string[] {
-  const SQRT3 = Math.sqrt(3);
-  const base = rot - Math.PI / 2;
-  const hex = (i: number) => pt(cx, cy, R, base + (i * Math.PI) / 3);
-  const waistY = -R / (2 * SQRT3);
-  const waistX = R / 2;
-  const c = Math.cos(rot);
-  const s = Math.sin(rot);
-  const waist = (lx: number, ly: number) => {
-    const xr = lx * c - ly * s;
-    const yr = lx * s + ly * c;
-    return { x: cx + xr, y: cy + yr };
-  };
-  const verts = [hex(0), hex(2), waist(-waistX, waistY), waist(waistX, waistY), hex(4), hex(3)];
-  return [`M ${verts.map(fmt).join(' L ')} Z`];
-}
-
-/** Unicursal pentagram — star polygon {5/2} (gcd=1 ⇒ one continuous stroke). */
-export function unicursalPentagramPaths(
-  cx: number,
-  cy: number,
-  R: number,
-  rot: number,
-  inverted = false
-): string[] {
-  return [starPolygonPath(cx, cy, R, 5, 2, rot, inverted)];
-}
-
-/** @deprecated alias — classic Crowley unicursal hexagram. */
-export function unicursalHexagramPaths(
-  cx: number,
-  cy: number,
-  R: number,
-  rot: number
-): string[] {
-  return unicursalClassicPaths(cx, cy, R, rot);
-}
-
-export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
-  return unicursalClassicPaths(cx, cy, R, rot)[0];
 }
 
 /** Exact circle as SVG path (two semicircle arcs). */
@@ -404,18 +347,6 @@ export function composeSacredFigure(
       break;
     case 'hexagram-inv':
       push(hexagramCompoundPath(cx, cy, r, rot, true), 0.65, 1.05);
-      break;
-    case 'unicursal':
-      push(unicursalClassicPaths(cx, cy, r, rot)[0], 0.72, 1.15);
-      break;
-    case 'unicursal-inv':
-      push(unicursalClassicPaths(cx, cy, r, rot + Math.PI)[0], 0.72, 1.15);
-      break;
-    case 'unicursal-pent':
-      push(unicursalPentagramPaths(cx, cy, r, rot, false)[0], 0.72, 1.15);
-      break;
-    case 'unicursal-pent-inv':
-      push(unicursalPentagramPaths(cx, cy, r, rot, true)[0], 0.72, 1.15);
       break;
     case 'triquetra':
       push(triquetraPath(cx, cy, r, rot), 0.65, 1.05);

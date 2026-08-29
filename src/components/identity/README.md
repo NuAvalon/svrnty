@@ -3,15 +3,15 @@
 
 **Flat sacred pool** (equal odds — no preference weights)
 - Every `(fold, figure)` catalog entry is equally likely via `pickSacredEntry`.
-- Fold ∈ {3…10} comes with the figure (not a separate weighted habit map).
-- Crystal spines / φ cascade / dendrites still follow the chosen fold.
+- Fold ∈ {3…10} comes with the figure.
+- Crystal spines / φ cascade / dendrites follow the chosen fold.
 
-**Catalog (formula-generated, no uploaded SVG)**
-- Unicursal pentagram `{5/2}` + unicursal hexagram (Crowley √3)
-- Compound hexagram ★, flower of life, Metatron’s cube, seed of life
-- `{n/k}` stars (incl. decagram, `{8/2}`, `{9/3}`, `{9/4}`…) + inversions
+**Catalog — cybermagic / sacred technology** (formula-generated, no uploaded SVG)
+- `{n/k}` star polygons (pentagram, heptagram, nonagram, decagram…) — continuous stroke when `gcd(n,k)=1`
+- Compound figures when `gcd>1` (hexagram ★, `{8/2}`, `{9/3}`, `{10/4}`…)
+- Flower of life, Metatron’s cube, seed of life
 - Circle / φ-nested circles, vesica, triquetra, diamond
 
-Removed: dead `gon` overlay, φ-unicursal alternate (classic Crowley kept).
+**Not in catalog:** Crowley unicursal hexagram (too tradition-specific). Universal one-stroke stars stay via `{n/k}`.
 
 φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
