@@ -412,7 +412,7 @@ export default function Home() {
               textOverflow: 'ellipsis',
             }}
           >
-            local-first
+            reclaim what&apos;s yours
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
