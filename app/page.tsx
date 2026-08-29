@@ -372,17 +372,44 @@ export default function Home() {
 
   // Gate (no identity) or main app
   return (
-    <div className="min-h-screen p-6 sm:p-8" style={shellBg}>
-      <header className="mb-10 text-center relative">
-        <h1
-          className="text-3xl font-semibold mb-2"
-          style={{ color: E.accent, letterSpacing: '0.28em', fontFamily: E.fontSans }}
-        >
-          SVRNTY
-        </h1>
-        <p style={{ color: E.muted, fontSize: '14px', fontFamily: E.fontSerif, fontStyle: 'italic' }}>
-          Your card. Your circle. Local-first.
-        </p>
+    <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
+      <header
+        style={{
+          maxWidth: 1100,
+          margin: '0 auto 1.75rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, minWidth: 0 }}>
+          <span
+            style={{
+              fontFamily: E.fontSans,
+              fontSize: 12,
+              fontWeight: 600,
+              letterSpacing: '0.2em',
+              textTransform: 'uppercase',
+              color: E.accent,
+            }}
+          >
+            svrnty
+          </span>
+          <span
+            style={{
+              fontFamily: E.fontSans,
+              fontSize: 13,
+              color: E.dim,
+              letterSpacing: '0.01em',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            local-first
+          </span>
+        </div>
         <HelpGuide />
       </header>
 
@@ -392,39 +419,40 @@ export default function Home() {
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
-              className="w-full max-w-2xl mx-auto mb-8"
+              className="w-full max-w-xl mx-auto mb-8"
               style={{
                 background: 'rgba(30,20,10,.55)',
                 border: `1px solid ${E.border}`,
                 height: 'auto',
                 padding: 4,
+                fontFamily: E.fontSans,
               }}
             >
               <TabsTrigger
                 value="identity"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
-                style={{ color: E.muted }}
+                style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Identity
               </TabsTrigger>
               <TabsTrigger
                 value="trust-map"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
-                style={{ color: E.muted }}
+                style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Trust Map
               </TabsTrigger>
               <TabsTrigger
                 value="ceremony"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
-                style={{ color: E.muted }}
+                style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Ceremony
               </TabsTrigger>
               <TabsTrigger
                 value="contacts"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
-                style={{ color: E.muted }}
+                style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Contacts
               </TabsTrigger>
@@ -443,6 +471,11 @@ export default function Home() {
                 ownerFingerprint={identity.identity.fingerprint}
                 ownerName={identity.identity.name}
                 contacts={contacts}
+                onLoadSample={async () => {
+                  const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
+                  await seedSampleCircle(identity.identity.fingerprint);
+                  await refreshContacts();
+                }}
               />
             </TabsContent>
 
@@ -457,7 +490,10 @@ export default function Home() {
         )}
       </main>
 
-      <footer className="mt-16 text-center text-sm" style={{ color: E.dim }}>
+      <footer
+        className="mt-16 text-center text-sm"
+        style={{ color: E.dim, fontFamily: E.fontSans, letterSpacing: '0.02em' }}
+      >
         <p>The card is yours. No account. No server that can read you.</p>
       </footer>
     </div>

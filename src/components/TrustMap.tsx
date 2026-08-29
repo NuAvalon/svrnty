@@ -30,6 +30,8 @@ interface TrustMapProps {
   ownerFingerprint: string;
   ownerName: string;
   contacts: TrustEdge[];
+  /** Optional demo seed when the lattice is empty */
+  onLoadSample?: () => void | Promise<void>;
 }
 
 const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container width.
@@ -56,7 +58,7 @@ function nodeFill(state: TrustState): string {
   return state === 'known' ? T.dimFill : T.field;
 }
 
-export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProps) {
+export function TrustMap({ ownerFingerprint, ownerName, contacts, onLoadSample }: TrustMapProps) {
   const layout = useMemo(
     () => computeTrustLayout(ownerFingerprint, ownerName, contacts, { width: VIEW, height: VIEW }),
     [ownerFingerprint, ownerName, contacts],
@@ -183,18 +185,61 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
         {/* ── empty-state (unlit = privacy, not absence) ── */}
         {isEmpty && (
           <g data-testid="trust-map-empty">
-            <text x={VIEW / 2} y={VIEW / 2 + 58} textAnchor="middle" fontSize={13} fill={T.label}>
+            <text
+              x={VIEW / 2}
+              y={VIEW / 2 + 58}
+              textAnchor="middle"
+              fontSize={14}
+              fill={T.label}
+              style={{ fontFamily: 'var(--font-sans), Space Grotesk, sans-serif' }}
+            >
               Your lattice is dark
             </text>
-            <text x={VIEW / 2} y={VIEW / 2 + 78} textAnchor="middle" fontSize={9} fill={T.caption}>
+            <text
+              x={VIEW / 2}
+              y={VIEW / 2 + 78}
+              textAnchor="middle"
+              fontSize={10}
+              fill={T.caption}
+              style={{ fontFamily: 'var(--font-sans), Space Grotesk, sans-serif' }}
+            >
               Trusted connections crystallize here as you form them.
             </text>
-            <text x={VIEW / 2} y={VIEW / 2 + 92} textAnchor="middle" fontSize={9} fill={T.caption}>
+            <text
+              x={VIEW / 2}
+              y={VIEW / 2 + 94}
+              textAnchor="middle"
+              fontSize={10}
+              fill={T.caption}
+              style={{ fontFamily: 'var(--font-sans), Space Grotesk, sans-serif' }}
+            >
               Every line consented — none inferred.
             </text>
           </g>
         )}
       </svg>
+
+      {isEmpty && onLoadSample && (
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
+          <button
+            type="button"
+            onClick={() => void onLoadSample()}
+            style={{
+              fontFamily: 'var(--font-sans), Space Grotesk, sans-serif',
+              fontSize: 12,
+              letterSpacing: '0.08em',
+              color: T.myEdge,
+              background: 'rgba(249,168,37,0.1)',
+              border: `1px solid ${T.dimStroke}`,
+              borderRadius: 8,
+              padding: '8px 14px',
+              cursor: 'pointer',
+            }}
+          >
+            Load sample circle
+          </button>
+        </div>
+      )}
 
       {/* ── selection detail (tap a node) ── */}
       {selected && (
@@ -204,8 +249,9 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
           style={{
             position: 'absolute', left: 12, right: 12, bottom: 12,
             padding: '10px 12px', borderRadius: 10,
-            background: 'rgba(10,14,26,0.92)', border: `1px solid ${T.dimStroke}`,
-            color: T.label, fontSize: 12, fontFamily: 'system-ui, sans-serif',
+            background: 'rgba(15,10,6,0.92)', border: `1px solid ${T.dimStroke}`,
+            color: T.label, fontSize: 12,
+            fontFamily: 'var(--font-sans), Space Grotesk, sans-serif',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
           }}
         >
