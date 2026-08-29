@@ -56,6 +56,10 @@ background: radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparen
 
 **⚠️ HARD REQ — the identity rosette/seal must be DETERMINISTIC from the fingerprint** (an identicon, not decoration). Derive the seal's geometry from the person's fingerprint hash so the *same fingerprint always renders the same seal* — a verification aid AND beauty at once. A random/decorative rosette is "a lie in the house style." (I-6 render-provenance, Peter-endorsed.) The generative key-derived seal = a rune-sigil. The social-graph view = an **egocentric** particle-lattice (points-of-light contacts + connection lines) — NOT a card-list, NOT a global/PageRank graph.
 
+**🔒 seal-v1 — the fingerprint→seal generator is VERSION-FROZEN (a recognition aid, NOT proof):** now that people recognize each other by seal, the generator is trust-UX-load-bearing:
+- **Pin + version + freeze it as `seal-v1`.** The algorithm, the parameter-derivation from the fingerprint bytes, and the rendering rules are a **wire-freeze-class** artifact — the same fingerprint MUST render the same seal forever. A silent generator change would make everyone's identity *appear* to change (a trust-UX earthquake). Any future evolution is an EXPLICIT versioned event (`seal-v2`), never a drift; old seals keep rendering under seal-v1. (Same law as the PSI fingerprint-serialization freeze.)
+- **It's a recognition AID, never a verification primitive.** The visual space is far smaller than the key space → near-collisions exist and an attacker can grind keys toward a lookalike seal. NEVER build UI that treats "the seals look the same" as proof of identity — the fingerprint check-ritual is the verification; the seal only helps someone NOTICE something's off.
+
 ---
 
 ## 🛡️ I-10a · Render untrusted data SAFELY (XSS guardrail — DEMO-CRITICAL)
