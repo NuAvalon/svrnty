@@ -3,9 +3,11 @@
 ## IdentitySeal
 **I-6:** seal geometry is derived only from the fingerprint string (hex nibbles + FNV). Same fingerprint ⇒ same seal. No `Math.random`.
 
-**φ grammar (default `variant="phi"`):** rings at `R · φ⁻ⁿ`, 5-fold pentagon/pentagram chords, angular blades, Fibonacci(13) ticks on the golden angle `2π/φ²`. Fingerprint only chooses rotation and which chords/blade widths light up.
+**Default (`variant="phi"`) — crystalline snowflake:** **6-fold** hex habit (honeycomb / ice), not stacked pentagrams. φ still sets the radial cascade `R · φ⁻ⁿ` and dendrite lengths; fingerprint gates which branches and facets light. Matches Trust Map “crystal lattice” language.
 
-**Lab variants** (`phi` | `rosette` | `lattice` | `ring` | `none`): compare at **`/dev/seals`** — fingerprint randomizer, ±1 hex-digit shift, with/without seal on a mini card.
+**Why not pentagrams?** φ’s native polygon is the pentagon, so the first φ pass stacked pentagon + pentagram + dual + inner star — occult overload. Crystal habit keeps φ in *measure*, hex in *structure*.
+
+**Lab variants** at **`/dev/seals`:** `phi` (crystal) · `sigil` (old 5-fold) · `rosette` · `lattice` · `ring` · `none` — plus fingerprint randomizer and ±1 hex-digit shift.
 
 ## SovereignIdentityCard (Archie mockup → home)
 Solar Ember **sovereign identity card** matching Archie's first theme redesign mockup:

@@ -2,7 +2,8 @@
 
 // Deterministic identity seals from fingerprint (I-6).
 // Variants share the same fingerprint → different geometry grammars.
-// Default production variant: `phi` (angular golden-ratio sigil).
+// Default production variant: `phi` — 6-fold crystalline snowflake (φ branch lengths).
+// Lab-only `sigil` keeps the earlier 5-fold pentagram stack for comparison.
 
 import { useMemo } from 'react';
 import { solarEmber as E } from '../recovery/solar-ember';
@@ -12,13 +13,14 @@ export const PHI = (1 + Math.sqrt(5)) / 2;
 export const PHI_INV = PHI - 1;
 export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 
-export type SealVariant = 'phi' | 'rosette' | 'lattice' | 'ring' | 'none';
+export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'φ sigil', blurb: 'Golden cascade · pentagram · angular blades' },
+  { id: 'phi', title: 'Crystal', blurb: '6-fold snowflake · φ branch lengths · facets' },
+  { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
-  { id: 'lattice', title: 'Lattice', blurb: 'φ rings + chords, no blades' },
-  { id: 'ring', title: 'Ring', blurb: 'φ rings + ticks + core only' },
+  { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
+  { id: 'ring', title: 'Ring', blurb: 'Hex cascade + core only' },
   { id: 'none', title: 'None', blurb: 'Empty mark — card without a seal' },
 ];
 
@@ -71,7 +73,149 @@ function fmt(p: { x: number; y: number }) {
   return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
 }
 
+type Line = { x1: number; y1: number; x2: number; y2: number; op: number; w: number };
+
+/**
+ * Default seal: hexagonal crystal / snowflake.
+ * φ sets radial cascade + dendrite lengths; 6-fold is the crystal habit (honeycomb),
+ * not a stacked pentagram. Fingerprint gates which branches/facets light.
+ */
 export function composePhiSeal(fingerprint: string) {
+  const n = hexNibbles(fingerprint);
+  const seed = fnv(fingerprint);
+  const cx = 50;
+  const cy = 50;
+
+  const R = 41 + (n[0] % 3); // 41–43
+  const r1 = R * PHI_INV;
+  const r2 = R * PHI_INV * PHI_INV;
+  const r3 = R * PHI_INV ** 3;
+  const rCore = R * PHI_INV ** 4;
+
+  const fold = 6; // snowflake / honeycomb
+  const rot = ((seed % 360) + (n[1] / 15) * 30) * (Math.PI / 180);
+
+  const spines: Line[] = [];
+  const branches: Line[] = [];
+  const facets: string[] = []; // filled diamond facets along arms
+  const blades: string[] = []; // alias for tests / filled arm wedges (kept empty — facets instead)
+
+  for (let i = 0; i < fold; i++) {
+    const a = rot + (i * 2 * Math.PI) / fold;
+    const tip = pt(cx, cy, R, a);
+    const mid = pt(cx, cy, r1, a);
+    const near = pt(cx, cy, r2, a);
+
+    // Primary spine
+    spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.55, w: 1.05 });
+
+    // Dendrites at R/φ — ±60° (crystal angle), length ≈ (R−r1)·φ⁻¹
+    const branchLen = (R - r1) * PHI_INV * (0.75 + (n[i % n.length] / 15) * 0.45);
+    const branchAng = Math.PI / 3; // 60°
+    if (n[i] >= 2) {
+      branches.push({
+        x1: mid.x, y1: mid.y,
+        x2: mid.x + Math.cos(a - branchAng) * branchLen,
+        y2: mid.y + Math.sin(a - branchAng) * branchLen,
+        op: 0.42, w: 0.75,
+      });
+      branches.push({
+        x1: mid.x, y1: mid.y,
+        x2: mid.x + Math.cos(a + branchAng) * branchLen,
+        y2: mid.y + Math.sin(a + branchAng) * branchLen,
+        op: 0.42, w: 0.75,
+      });
+    }
+
+    // Secondary dendrites at R/φ² — shorter, gated harder
+    if (n[(i + 6) % n.length] >= 8) {
+      const len2 = (r1 - r2) * PHI_INV * (0.7 + (n[(i + 3) % n.length] / 20));
+      branches.push({
+        x1: near.x, y1: near.y,
+        x2: near.x + Math.cos(a - branchAng) * len2,
+        y2: near.y + Math.sin(a - branchAng) * len2,
+        op: 0.32, w: 0.6,
+      });
+      branches.push({
+        x1: near.x, y1: near.y,
+        x2: near.x + Math.cos(a + branchAng) * len2,
+        y2: near.y + Math.sin(a + branchAng) * len2,
+        op: 0.32, w: 0.6,
+      });
+    }
+
+    // Crystal facet (rhombus) between r2 and r1 along the arm
+    if (n[(i + 2) % n.length] >= 3) {
+      const half = (Math.PI / fold) * PHI_INV * (0.55 + (n[i] / 20));
+      const p0 = pt(cx, cy, r2, a);
+      const p1 = pt(cx, cy, (r1 + r2) / 2, a - half);
+      const p2 = pt(cx, cy, r1, a);
+      const p3 = pt(cx, cy, (r1 + r2) / 2, a + half);
+      facets.push(`M ${fmt(p0)} L ${fmt(p1)} L ${fmt(p2)} L ${fmt(p3)} Z`);
+    }
+
+    // Outer tip facet (smaller diamond near tip)
+    if (n[(i + 4) % n.length] >= 5) {
+      const half = (Math.PI / fold) * 0.35;
+      const p0 = pt(cx, cy, r1 + (R - r1) * PHI_INV, a);
+      const p1 = pt(cx, cy, (r1 + R) / 2, a - half);
+      const p2 = tip;
+      const p3 = pt(cx, cy, (r1 + R) / 2, a + half);
+      facets.push(`M ${fmt(p0)} L ${fmt(p1)} L ${fmt(p2)} L ${fmt(p3)} Z`);
+    }
+  }
+
+  // Hex frames at R, R/φ, R/φ² (crystal habit — not stars)
+  const hexAt = (radius: number, phase = 0) =>
+    Array.from({ length: fold }, (_, i) => {
+      const a = rot + phase + (i * 2 * Math.PI) / fold;
+      return fmt(pt(cx, cy, radius, a));
+    }).join(' ');
+
+  const hexOuter = hexAt(R);
+  const hexMid = hexAt(r1);
+  const hexInner = hexAt(r2);
+  const hexCore = hexAt(r3);
+
+  // Edge ticks at hex vertices + mid-edges (12)
+  const ticks: { x1: number; y1: number; x2: number; y2: number; major: boolean }[] = [];
+  for (let i = 0; i < fold * 2; i++) {
+    const a = rot + (i * Math.PI) / fold;
+    const major = i % 2 === 0;
+    const p0 = pt(cx, cy, major ? R - 3 : R - 1.8, a);
+    const p1 = pt(cx, cy, R + 2.2, a);
+    ticks.push({ x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, major });
+  }
+
+  // Construction circles (ring variant / faint underlay)
+  const rings = [R, r1, r2] as const;
+
+  // Compatibility aliases used by older render paths / tests
+  const chords = [...spines, ...branches];
+  const dualPts = hexMid;
+  const corePent = hexCore; // name kept for RingOnly — now a hex
+
+  return {
+    R, r1, r2, r3, rCore,
+    fold,
+    blades, // unused filled wedges
+    facets,
+    spines,
+    branches,
+    chords,
+    ticks,
+    dualPts,
+    corePent,
+    hexOuter,
+    hexMid,
+    hexInner,
+    hexCore,
+    rings,
+  };
+}
+
+/** Lab-only: earlier 5-fold pentagram stack (kept for A/B). */
+export function composeSigilSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
   const seed = fnv(fingerprint);
   const cx = 50;
@@ -106,7 +250,7 @@ export function composePhiSeal(fingerprint: string) {
     blades.push(`M ${cx} ${cy} L ${left.x.toFixed(2)} ${left.y.toFixed(2)} L ${tip.x.toFixed(2)} ${tip.y.toFixed(2)} L ${right.x.toFixed(2)} ${right.y.toFixed(2)} Z`);
   }
 
-  const chords: { x1: number; y1: number; x2: number; y2: number; op: number; w: number }[] = [];
+  const chords: Line[] = [];
   for (let i = 0; i < fold; i++) {
     if (n[i] >= 4) {
       const a = outer[i];
@@ -118,10 +262,7 @@ export function composePhiSeal(fingerprint: string) {
       const b = outer[(i + 2) % fold];
       chords.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, op: 0.45 + (n[i] % 5) * 0.06, w: 1.05 });
     }
-    chords.push({
-      x1: mid[i].x, y1: mid[i].y, x2: outer[i].x, y2: outer[i].y,
-      op: 0.28, w: 0.7,
-    });
+    chords.push({ x1: mid[i].x, y1: mid[i].y, x2: outer[i].x, y2: outer[i].y, op: 0.28, w: 0.7 });
     if (n[(i + 8) % n.length] >= 6) {
       const a = inner[i];
       const b = inner[(i + 2) % fold];
@@ -151,7 +292,15 @@ export function composePhiSeal(fingerprint: string) {
 
   return {
     R, r1, r2, r3, rCore, blades, chords, ticks, dualPts, corePent,
+    facets: [] as string[],
+    spines: [] as Line[],
+    branches: [] as Line[],
+    hexOuter: '',
+    hexMid: dualPts,
+    hexInner: '',
+    hexCore: corePent,
     rings: [R, r1, r2] as const,
+    fold,
   };
 }
 
@@ -215,13 +364,76 @@ export function composeRosetteSeal(fingerprint: string) {
   };
 }
 
-function PhiLayers({
+function CrystalLayers({
   g,
-  blades,
+  facets,
 }: {
   g: ReturnType<typeof composePhiSeal>;
-  blades: boolean;
+  facets: boolean;
 }) {
+  return (
+    <>
+      {/* Faint construction rings */}
+      {g.rings.map((r, i) => (
+        <circle
+          key={`ring-${i}`}
+          cx="50"
+          cy="50"
+          r={r}
+          fill="none"
+          stroke={E.accent2}
+          strokeOpacity={0.12 - i * 0.02}
+          strokeWidth={0.6}
+        />
+      ))}
+
+      {/* Hex crystal habit frames */}
+      <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.45" strokeWidth="1.05" />
+      <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.32" strokeWidth="0.8" />
+      <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
+
+      {g.ticks.map((t, i) => (
+        <line
+          key={`t${i}`}
+          x1={t.x1}
+          y1={t.y1}
+          x2={t.x2}
+          y2={t.y2}
+          stroke={E.accent}
+          strokeOpacity={t.major ? 0.4 : 0.22}
+          strokeWidth={t.major ? 1 : 0.5}
+        />
+      ))}
+
+      {/* Spines + dendrites */}
+      {g.spines.map((c, i) => (
+        <line key={`s${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
+      ))}
+      {g.branches.map((c, i) => (
+        <line key={`br${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
+      ))}
+
+      {facets &&
+        g.facets.map((d, i) => (
+          <path
+            key={`f${i}`}
+            d={d}
+            fill={E.accent}
+            fillOpacity={0.1 + (i % 3) * 0.04}
+            stroke={E.accent}
+            strokeOpacity={0.55}
+            strokeWidth="0.65"
+          />
+        ))}
+
+      <polygon points={g.hexCore} fill={E.bg} stroke={E.accent} strokeOpacity="0.8" strokeWidth="1.1" />
+      <circle cx="50" cy="50" r={g.rCore} fill={E.bg} stroke={E.accent} strokeWidth="1.05" />
+      <circle cx="50" cy="50" r="1.8" fill={E.accent} />
+    </>
+  );
+}
+
+function SigilLayers({ g }: { g: ReturnType<typeof composeSigilSeal> }) {
   return (
     <>
       {g.rings.map((r, i) => (
@@ -248,29 +460,19 @@ function PhiLayers({
           strokeWidth={t.major ? 1.1 : 0.55}
         />
       ))}
-      {blades &&
-        g.blades.map((d, i) => (
-          <path
-            key={`b${i}`}
-            d={d}
-            fill={E.accent}
-            fillOpacity={0.07 + (i % 3) * 0.03}
-            stroke={E.accent}
-            strokeOpacity={0.55}
-            strokeWidth="0.7"
-          />
-        ))}
-      {g.chords.map((c, i) => (
-        <line
-          key={`c${i}`}
-          x1={c.x1}
-          y1={c.y1}
-          x2={c.x2}
-          y2={c.y2}
+      {g.blades.map((d, i) => (
+        <path
+          key={`b${i}`}
+          d={d}
+          fill={E.accent}
+          fillOpacity={0.07 + (i % 3) * 0.03}
           stroke={E.accent}
-          strokeOpacity={c.op}
-          strokeWidth={c.w}
+          strokeOpacity={0.55}
+          strokeWidth="0.7"
         />
+      ))}
+      {g.chords.map((c, i) => (
+        <line key={`c${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
       ))}
       <polygon points={g.dualPts} fill="none" stroke={E.accent} strokeOpacity="0.4" strokeWidth="0.85" />
       <polygon points={g.corePent} fill={E.bg} stroke={E.accent} strokeOpacity="0.75" strokeWidth="1.05" />
@@ -283,18 +485,9 @@ function PhiLayers({
 function RingOnly({ g }: { g: ReturnType<typeof composePhiSeal> }) {
   return (
     <>
-      {g.rings.map((r, i) => (
-        <circle
-          key={`ring-${i}`}
-          cx="50"
-          cy="50"
-          r={r}
-          fill="none"
-          stroke={i === 0 ? E.accent : E.accent2}
-          strokeOpacity={0.42 - i * 0.1}
-          strokeWidth={i === 0 ? 1.15 : 0.75}
-        />
-      ))}
+      <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.4" strokeWidth="1" />
+      <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.3" strokeWidth="0.8" />
+      <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
       {g.ticks.map((t, i) => (
         <line
           key={`t${i}`}
@@ -303,12 +496,12 @@ function RingOnly({ g }: { g: ReturnType<typeof composePhiSeal> }) {
           x2={t.x2}
           y2={t.y2}
           stroke={E.accent}
-          strokeOpacity={t.major ? 0.45 : 0.28}
-          strokeWidth={t.major ? 1.1 : 0.55}
+          strokeOpacity={t.major ? 0.4 : 0.22}
+          strokeWidth={t.major ? 1 : 0.5}
         />
       ))}
-      <polygon points={g.corePent} fill={E.bg} stroke={E.accent} strokeOpacity="0.75" strokeWidth="1.05" />
-      <circle cx="50" cy="50" r={g.rCore} fill={E.bg} stroke={E.accent} strokeWidth="1.1" />
+      <polygon points={g.hexCore} fill={E.bg} stroke={E.accent} strokeOpacity="0.8" strokeWidth="1.1" />
+      <circle cx="50" cy="50" r={g.rCore} fill={E.bg} stroke={E.accent} strokeWidth="1.05" />
       <circle cx="50" cy="50" r="1.8" fill={E.accent} />
     </>
   );
@@ -373,8 +566,15 @@ export function IdentitySeal({
   label?: string;
   variant?: SealVariant;
 }) {
-  const phi = useMemo(
-    () => (variant === 'rosette' || variant === 'none' ? null : composePhiSeal(fingerprint)),
+  const crystal = useMemo(
+    () =>
+      variant === 'phi' || variant === 'lattice' || variant === 'ring'
+        ? composePhiSeal(fingerprint)
+        : null,
+    [fingerprint, variant]
+  );
+  const sigil = useMemo(
+    () => (variant === 'sigil' ? composeSigilSeal(fingerprint) : null),
     [fingerprint, variant]
   );
   const rosette = useMemo(
@@ -404,9 +604,10 @@ export function IdentitySeal({
             strokeDasharray="3 4"
           />
         )}
-        {variant === 'phi' && phi && <PhiLayers g={phi} blades />}
-        {variant === 'lattice' && phi && <PhiLayers g={phi} blades={false} />}
-        {variant === 'ring' && phi && <RingOnly g={phi} />}
+        {variant === 'phi' && crystal && <CrystalLayers g={crystal} facets />}
+        {variant === 'lattice' && crystal && <CrystalLayers g={crystal} facets={false} />}
+        {variant === 'ring' && crystal && <RingOnly g={crystal} />}
+        {variant === 'sigil' && sigil && <SigilLayers g={sigil} />}
         {variant === 'rosette' && rosette && <RosetteLayers g={rosette} />}
       </svg>
       {label && (
