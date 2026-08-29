@@ -6,12 +6,12 @@
 - Fold ∈ {3…10} comes with the figure.
 - Crystal spines / φ cascade / dendrites follow the chosen fold.
 
-**Catalog — cybermagic / sacred technology** (formula-generated, no uploaded SVG)
+**Catalog — formula figures, not hand-drawn glyphs**
 - `{n/k}` star polygons (pentagram, heptagram, nonagram, decagram…) — continuous stroke when `gcd(n,k)=1`
-- Compound figures when `gcd>1` (hexagram ★, `{8/2}`, `{9/3}`, `{10/4}`…)
-- Flower of life, Metatron’s cube, seed of life — kept light/scaled so they accent the crystal, not bury it
+- Compound figures when `gcd>1` (hexagram ★ = `{6/2}`, `{8/2}`, `{9/3}`, `{10/4}`…)
+- Flower of life, Metatron’s cube, seed of life — light accents
 - Circle / φ-nested circles, vesica, triquetra, diamond
-- Unicursal hexagram (Crowley √3 proportions) as one peer among many
+- **No Crowley unicursal** — dropped; fold-6 still has a star via compound hexagram ★. Spines/branches already vary line count and angles from the fingerprint.
 
 **Orientation:** spine / vertex 0 is always at the top (canonical). There is no free whole-seal
 rotation axis — two fingerprints cannot be the same crystal merely spun (including `360°/fold`

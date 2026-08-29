@@ -16,7 +16,7 @@ import {
   SACRED_CATALOG,
   SACRED_FLAT,
   starPolygonPath,
-  unicursalHexagramPaths,
+  hexagramCompoundPath,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -59,16 +59,14 @@ test('flat pool covers every fold; no dead gon', () => {
   for (const h of CRYSTAL_HABITS) assert.ok(folds.has(h));
 });
 
-test('pentagram {5/2} continuous; unicursal hexagram present among peers', () => {
+test('pentagram {5/2} continuous; hexagram ★ remains the fold-6 star (no Crowley unicursal)', () => {
   assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'star' && o.k === 2));
   assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'hexagram'));
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal'));
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal-inv'));
+  assert.ok(!SACRED_CATALOG[6].some((o) => (o.id as string).startsWith('unicursal')));
   const pent = starPolygonPath(50, 50, 40, 5, 2, 0);
   assert.equal(pent.split(' L ').length, 6);
-  const uni = unicursalHexagramPaths(50, 50, 40, 0);
-  assert.equal(uni.length, 1);
-  assert.equal(uni[0].split(' L ').length, 6);
+  const hex = hexagramCompoundPath(50, 50, 40, 0);
+  assert.ok(hex.includes('Z M'), 'compound ★ is two triangles');
 });
 
 test('flower + metatron on fold 6; circles on selected folds', () => {

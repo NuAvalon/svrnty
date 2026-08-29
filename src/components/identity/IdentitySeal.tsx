@@ -20,8 +20,7 @@ export {
   pickSacredEntry,
   composeSacredFigure,
   starPolygonPath,
-  unicursalHexagramPath,
-  unicursalHexagramPaths,
+  hexagramCompoundPath,
 } from './sacred-geometry';
 export type { SacredOption, SacredFigureId, SacredEntry } from './sacred-geometry';
 
@@ -234,7 +233,7 @@ export function composePhiSeal(fingerprint: string) {
   const hexCore = hexAt(r3);
 
   // Compatibility: first sacred path alias (lab/tests)
-  const unicursal = sacred.paths[0]?.d ?? null;
+  const sacredPath = sacred.paths[0]?.d ?? null;
 
   // Edge ticks at vertices + mid-edges
   const ticks: { x1: number; y1: number; x2: number; y2: number; major: boolean }[] = [];
@@ -273,7 +272,7 @@ export function composePhiSeal(fingerprint: string) {
     hexMid,
     hexInner,
     hexCore,
-    unicursal,
+    sacredPath,
     rings,
   };
 }
@@ -363,7 +362,7 @@ export function composeSigilSeal(fingerprint: string) {
     hexMid: dualPts,
     hexInner: '',
     hexCore: corePent,
-    unicursal: null as string | null,
+    sacredPath: null as string | null,
     sacredPaths: [] as { d: string; op: number; w: number }[],
     figure: 'sigil',
     figureId: 'gon' as const,
