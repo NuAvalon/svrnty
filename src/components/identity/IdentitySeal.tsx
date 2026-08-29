@@ -16,7 +16,7 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'Crystal', blurb: '4/5/6/8-fold habit from fingerprint · φ measure' },
+  { id: 'phi', title: 'Crystal', blurb: '3–9 fold habit · unicursal hexagram when 6 · φ measure' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -25,30 +25,60 @@ export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] 
 ];
 
 /**
- * Elegant crystal habits only — square, pentagon, hex snowflake, octagon.
- * Avoids 7/9/10/11-gons (busy, inelegant). Base-10 digit picks among these.
+ * Crystal habits — trigonal through nonagon, including 7 & 9.
+ * 6-fold draws a unicursal hexagram (one continuous stroke), not two triangles.
  */
-export const CRYSTAL_HABITS = [4, 5, 6, 8] as const;
+export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
 
 /**
- * Base-10 digit of FNV(fingerprint) → habit.
- * Weighted toward hex (snowflake), still varies: 0–1→4, 2–3→5, 4–6→6, 7–9→8.
+ * Base-10 digit of FNV(fingerprint) → habit (one digit each; 6 gets a little extra weight via digit 3).
+ * 0→3, 1→4, 2→5, 3→6, 4→6, 5→7, 6→8, 7→9, 8→7, 9→9
  */
 export function foldFromFingerprint(fingerprint: string): CrystalHabit {
   const digit = fnv(fingerprint) % 10;
-  if (digit <= 1) return 4;
-  if (digit <= 3) return 5;
-  if (digit <= 6) return 6;
-  return 8;
+  const map: CrystalHabit[] = [3, 4, 5, 6, 6, 7, 8, 9, 7, 9];
+  return map[digit];
 }
 
 export const HABIT_LABEL: Record<CrystalHabit, string> = {
+  3: 'trigonal',
   4: 'square',
   5: 'pentagon',
-  6: 'hex snowflake',
+  6: 'unicursal hexagram',
+  7: 'heptagon',
   8: 'octagon',
+  9: 'nonagon',
 };
+
+/**
+ * Crowley-style unicursal hexagram — one continuous stroke (not ★ = two triangles).
+ * Unit verts in draw order; scale by R, rotate by `rot` (radians, 0 = tip up after -π/2).
+ */
+export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
+  // Normalized extents ≈ 1; stroke order visits six tips + waist crossings for the classic ribbon.
+  // Proportions adapted from the traditional unicursal hexagram (continuous path).
+  const unit: [number, number][] = [
+    [0.0, -1.0],
+    [0.42, 0.12],
+    [0.92, -0.18],
+    [0.5, 0.38],
+    [0.72, 1.0],
+    [0.0, 0.42],
+    [-0.72, 1.0],
+    [-0.5, 0.38],
+    [-0.92, -0.18],
+    [-0.42, 0.12],
+  ];
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const pts = unit.map(([x, y]) => {
+    const xr = x * c - y * s;
+    const yr = x * s + y * c;
+    return `${(cx + xr * R).toFixed(2)},${(cy + yr * R).toFixed(2)}`;
+  });
+  return `M ${pts[0]} L ${pts.slice(1).join(' L ')} Z`;
+}
 
 export function hexNibbles(fingerprint: string): number[] {
   const hex = fingerprint.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
@@ -102,9 +132,9 @@ function fmt(p: { x: number; y: number }) {
 type Line = { x1: number; y1: number; x2: number; y2: number; op: number; w: number };
 
 /**
- * Default seal: crystalline habit (4 / 5 / 6 / 8-fold from fingerprint).
+ * Default seal: crystalline habit (3–9 fold from fingerprint).
  * φ sets radial cascade + dendrite lengths; fold is the crystal habit.
- * Fingerprint also gates which branches/facets light.
+ * Habit 6 draws a unicursal hexagram (one stroke). Fingerprint also gates branches/facets.
  */
 export function composePhiSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -192,7 +222,7 @@ export function composePhiSeal(fingerprint: string) {
     }
   }
 
-  // Hex frames at R, R/φ, R/φ² (crystal habit — not stars)
+  // N-gon frames at R, R/φ, R/φ² (crystal habit)
   const hexAt = (radius: number, phase = 0) =>
     Array.from({ length: fold }, (_, i) => {
       const a = rot + phase + (i * 2 * Math.PI) / fold;
@@ -204,7 +234,11 @@ export function composePhiSeal(fingerprint: string) {
   const hexInner = hexAt(r2);
   const hexCore = hexAt(r3);
 
-  // Edge ticks at hex vertices + mid-edges (12)
+  // 6-fold → unicursal hexagram (one stroke), not a Star-of-David double triangle
+  const unicursal =
+    fold === 6 ? unicursalHexagramPath(cx, cy, R * 0.92, rot + Math.PI / 2) : null;
+
+  // Edge ticks at vertices + mid-edges
   const ticks: { x1: number; y1: number; x2: number; y2: number; major: boolean }[] = [];
   for (let i = 0; i < fold * 2; i++) {
     const a = rot + (i * Math.PI) / fold;
@@ -220,13 +254,13 @@ export function composePhiSeal(fingerprint: string) {
   // Compatibility aliases used by older render paths / tests
   const chords = [...spines, ...branches];
   const dualPts = hexMid;
-  const corePent = hexCore; // name kept for RingOnly — now a hex
+  const corePent = hexCore;
 
   return {
     R, r1, r2, r3, rCore,
     fold,
     habit: HABIT_LABEL[fold],
-    blades, // unused filled wedges
+    blades,
     facets,
     spines,
     branches,
@@ -238,6 +272,7 @@ export function composePhiSeal(fingerprint: string) {
     hexMid,
     hexInner,
     hexCore,
+    unicursal,
     rings,
   };
 }
@@ -327,6 +362,7 @@ export function composeSigilSeal(fingerprint: string) {
     hexMid: dualPts,
     hexInner: '',
     hexCore: corePent,
+    unicursal: null as string | null,
     rings: [R, r1, r2] as const,
     fold,
   };
@@ -415,10 +451,22 @@ function CrystalLayers({
         />
       ))}
 
-      {/* Hex crystal habit frames */}
+      {/* N-gon crystal habit frames */}
       <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.45" strokeWidth="1.05" />
       <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.32" strokeWidth="0.8" />
       <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
+
+      {/* 6-fold: unicursal hexagram (one continuous stroke) */}
+      {g.unicursal && (
+        <path
+          d={g.unicursal}
+          fill="none"
+          stroke={E.accent}
+          strokeOpacity="0.7"
+          strokeWidth="1.15"
+          strokeLinejoin="miter"
+        />
+      )}
 
       {g.ticks.map((t, i) => (
         <line

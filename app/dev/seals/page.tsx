@@ -96,9 +96,9 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Same fingerprint drives every variant (I-6). Crystal habit is 4 / 5 / 6 / 8-fold from a
-          base-10 digit of the fingerprint seed (never literal 10-gons). Randomize, nudge a hex digit
-          ±1, compare shapes.
+          Same fingerprint drives every variant (I-6). Crystal habit is 3–9 fold from a base-10
+          digit of the fingerprint seed; 6-fold draws a unicursal hexagram (one stroke). Randomize
+          and nudge a hex digit ±1 to compare shapes.
         </p>
 
         {/* Controls */}

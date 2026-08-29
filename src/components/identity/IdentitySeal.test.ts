@@ -12,6 +12,7 @@ import {
   shiftFingerprintDigit,
   fingerprintHex,
   randomFingerprint,
+  unicursalHexagramPath,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -38,20 +39,44 @@ test('rings follow φ cascade R · φ⁻ⁿ', () => {
   assert.ok(Math.abs(PHI * PHI_INV - 1) < 1e-12);
 });
 
-test('fold is an elegant habit (4|5|6|8) and matches spine count', () => {
+test('fold is a habit in 3–9 and matches spine count', () => {
   const g = composePhiSeal(FP_A);
   assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
   assert.equal(g.spines.length, g.fold);
   assert.equal(g.fold, foldFromFingerprint(FP_A));
 });
 
-test('base-10 habit picker can yield every elegant fold', () => {
+test('base-10 habit picker can yield every habit including 3,7,9', () => {
   const seen = new Set<number>();
-  for (let i = 0; i < 200 && seen.size < CRYSTAL_HABITS.length; i++) {
+  for (let i = 0; i < 400 && seen.size < CRYSTAL_HABITS.length; i++) {
     seen.add(foldFromFingerprint(randomFingerprint()));
   }
   for (const h of CRYSTAL_HABITS) {
     assert.ok(seen.has(h), `missing habit ${h}`);
+  }
+});
+
+test('6-fold seals carry a unicursal hexagram path', () => {
+  let found = false;
+  for (let i = 0; i < 80; i++) {
+    const g = composePhiSeal(randomFingerprint());
+    if (g.fold === 6) {
+      assert.ok(g.unicursal && g.unicursal.startsWith('M '));
+      found = true;
+      break;
+    }
+  }
+  assert.ok(found, 'expected to sample a 6-fold habit');
+  assert.ok(unicursalHexagramPath(50, 50, 40, 0).includes('L'));
+});
+
+test('non-6 habits omit unicursal', () => {
+  for (let i = 0; i < 60; i++) {
+    const g = composePhiSeal(randomFingerprint());
+    if (g.fold !== 6) {
+      assert.equal(g.unicursal, null);
+      return;
+    }
   }
 });
 
