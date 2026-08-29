@@ -3,27 +3,21 @@
 **Brief:** `CURSOR.md` I-6 · Aesthetic: Solar Ember  
 **Invariant:** fingerprint → deterministic geometry. No decorative randomness.
 
-## Production default: `growth`
-- Fold (3–10) + φ radial skeleton
-- Recursive **spine-guided branches** (gen-1 / gen-2) from fingerprint bits
-- **Ogham-ish notches** on spines (1–3 bars, occasional double)
-- **Gated arcs** — rare brighter segments on the same φ radii as the ripples (no free vesica / tip bridges)
-- **Orbs** — stroke-only tip / fork / core punctuation (not orb fields)
-- **Broken ripple-arcs** — pond weather as gated sectors on r1/r2/r3 + soft tip petals (not solid circle cages)
-- Whisper-faint full rings only under the arcs
-- Longer branches that can overshoot the rim
-- Opacities still formulaic: `veil · φ⁻ᵈ`
+## Production default: `phi` (Crystal)
+- Fold (3–10) + formula sacred figure from the flat pool
+- Soft **φ pond droplets** — concentric rings with micro aberrations (not a circle cage)
+- **Ogham notches** — 1–3 perpendicular ticks on each spine (occasional double bar)
+- Spines, dendrites, facets, N-gon habit frames as in early #57
 
 ## Demoted (lab-only)
 `seed` / `flower` / `metatron` live in `SACRED_DEMOTED` — path generators remain, but they are **not** in the production flat pool (`SACRED_FLAT`). Named glyphs were overpowering identity.
 
 ## Other variants
-- `phi` — crystal + formula figures (stars, hexagram, vesica, …) without demoted set
 - `lattice` / `ring` / `sigil` / `rosette` — lab A/B
 
 ## Lab
-`/dev/seals` — compare all variants, ±1 digit sensitivity, growth gallery.
+`/dev/seals` — compare all variants, ±1 digit sensitivity, crystal gallery.
 
 ## Files
-- `IdentitySeal.tsx` — `composeGrowthSeal`, default `variant='growth'`
+- `IdentitySeal.tsx` — `composePhiSeal`, default `variant='phi'`
 - `sacred-geometry.ts` — catalog + `SACRED_DEMOTED`

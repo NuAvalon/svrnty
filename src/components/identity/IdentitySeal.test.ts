@@ -7,7 +7,6 @@ import {
   PHI_INV,
   CRYSTAL_HABITS,
   composePhiSeal,
-  composeGrowthSeal,
   composeSigilSeal,
   foldFromFingerprint,
   sacredEntryFromFingerprint,
@@ -39,6 +38,21 @@ test('rings follow φ cascade R · φ⁻ⁿ', () => {
   assert.ok(Math.abs(g.r1 / g.R - PHI_INV) < 1e-9);
   assert.ok(Math.abs(g.r2 / g.r1 - PHI_INV) < 1e-9);
   assert.ok(Math.abs(PHI * PHI_INV - 1) < 1e-12);
+});
+
+test('φ droplets: five soft rings with micro aberrations', () => {
+  const g = composePhiSeal(FP_A);
+  assert.equal(g.rings.length, 5);
+  // Each ring near its φ station (aberration ≤ ~1.2% outer … ~2.4% core)
+  const stations = [g.R, g.r1, g.r2, g.r3, g.rCore];
+  for (let i = 0; i < 5; i++) {
+    assert.ok(Math.abs(g.rings[i] / stations[i] - 1) < 0.03, `ring ${i} aberration`);
+  }
+});
+
+test('ogham notches: at least one per spine', () => {
+  const g = composePhiSeal(FP_A);
+  assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
 });
 
 test('fold ∈ 3–10 and matches spine count + flat entry', () => {
@@ -137,33 +151,5 @@ test('±1 digit does not yield a pure rotation twin of the same crystal', () => 
   // If fold+figure match, dendrite/facet structure must still differ (not spin-only)
   if (a.fold === b.fold && a.figureId === b.figureId && a.R === b.R) {
     assert.notDeepEqual(a.branches, b.branches);
-  }
-});
-
-test('growth seal is deterministic and spine-0 up', () => {
-  assert.deepEqual(composeGrowthSeal(FP_A), composeGrowthSeal(FP_A));
-  const g = composeGrowthSeal(FP_A);
-  assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
-  assert.equal(g.spines.length, g.fold);
-  assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
-  assert.ok(g.orbs.length >= g.fold + 1, 'tip orbs + core orb');
-  assert.ok(g.arcs.length >= g.fold, 'broken ripple-arcs present (not caged in full circles)');
-  assert.ok(g.ripples.length >= 3, 'whisper full rings under arcs');
-  assert.ok(g.veil > 0.4 && g.veil < 0.95, `veil in formula range, got ${g.veil}`);
-  // Whisper rings stay quieter than spines
-  assert.ok(g.ripples[0]!.op < g.spines[0]!.op);
-  assert.ok(Math.abs(g.spines[0]!.op - g.veil) < 1e-9);
-  assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
-  assert.ok(Math.abs(g.spines[0].x2 - g.spines[0].x1) < 1.5);
-});
-
-test('growth differs across fingerprints; no named glyph ids', () => {
-  const a = composeGrowthSeal(FP_A);
-  const b = composeGrowthSeal(FP_B);
-  assert.notDeepEqual(a.branches, b.branches);
-  assert.equal(a.figureId, 'growth');
-  for (let i = 0; i < 80; i++) {
-    const id = composeGrowthSeal(randomFingerprint()).figureId;
-    assert.equal(id, 'growth');
   }
 });

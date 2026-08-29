@@ -94,8 +94,8 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
 };
 
 /**
- * Demoted from the production flat pool — still formula-drawn for lab A/B,
- * but not selected by fingerprints in live seals (named glyphs overpower identity).
+ * Demoted from the production flat pool — still formula-drawn for lab A/B.
+ * Named glyphs overpower identity; crystal + φ droplets + ogham carry the mark.
  */
 export const SACRED_DEMOTED: SacredEntry[] = [
   { fold: 6, option: { id: 'seed', label: 'seed of life (lab)' } },

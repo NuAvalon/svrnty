@@ -11,8 +11,8 @@ import {
   fingerprintHex,
   randomFingerprint,
   shiftFingerprintDigit,
+  foldFromFingerprint,
   composePhiSeal,
-  composeGrowthSeal,
 } from '@/components/identity/IdentitySeal';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -30,11 +30,6 @@ function fmtGroups(fp: string): string {
 }
 
 function habitBlurb(fp: string): string {
-  const g = composeGrowthSeal(fp);
-  return `${g.fold}-fold · ${g.figure}`;
-}
-
-function crystalBlurb(fp: string): string {
   const g = composePhiSeal(fp);
   return `${g.fold}-fold · ${g.figure}`;
 }
@@ -101,10 +96,9 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Production default is <strong style={{ color: E.accent, fontWeight: 500 }}>Growth</strong>: fold + φ
-          skeleton, recursive spine-guided branches, ogham-ish notches, gated arcs, tip/fork orbs. Flower /
-          Metatron / seed are demoted (lab-only). Crystal variant still uses {'{n/k}'} stars + hexagrams —
-          no named overpowering glyphs.
+          Production Crystal: fingerprint picks a (fold, figure) pair from a flat equal-odds pool
+          ({'{n/k}'} stars, hexagrams ★, circles, vesica, triquetra) plus soft φ pond droplets and
+          ogham spine notches. Seed / flower / Metatron stay lab-only (demoted).
         </p>
 
         {/* Controls */}
@@ -192,10 +186,10 @@ export default function SealLabPage() {
           ))}
         </div>
 
-        {/* ±1 digit sensitivity for growth */}
-        <h2 style={sectionTitle}>Growth sensitivity · ±1 hex digit</h2>
+        {/* ±1 digit sensitivity for φ */}
+        <h2 style={sectionTitle}>φ sensitivity · ±1 hex digit</h2>
         <p style={{ margin: '0 0 14px', color: E.dim, fontSize: 13 }}>
-          Tiny input change → different branch / notch pattern. Same grammar, spine 0 still up.
+          Tiny input change → visibly different sigil (rotation / chord gating). Same grammar.
         </p>
         <div
           style={{
@@ -205,28 +199,11 @@ export default function SealLabPage() {
             marginBottom: 36,
           }}
         >
-          <VariantCard variant="growth" title="Current" blurb={habitBlurb(neighbors.base)} fingerprint={neighbors.base} />
-          <VariantCard variant="growth" title="First −1" blurb={habitBlurb(neighbors.firstMinus)} fingerprint={neighbors.firstMinus} />
-          <VariantCard variant="growth" title="First +1" blurb={habitBlurb(neighbors.firstPlus)} fingerprint={neighbors.firstPlus} />
-          <VariantCard variant="growth" title="Last −1" blurb={habitBlurb(neighbors.lastMinus)} fingerprint={neighbors.lastMinus} />
-          <VariantCard variant="growth" title="Last +1" blurb={habitBlurb(neighbors.lastPlus)} fingerprint={neighbors.lastPlus} />
-        </div>
-
-        <h2 style={sectionTitle}>Crystal (φ) · same fingerprints</h2>
-        <p style={{ margin: '0 0 14px', color: E.dim, fontSize: 13 }}>
-          Older sacred overlay grammar — flower/Metatron/seed removed from its pool.
-        </p>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-            gap: 14,
-            marginBottom: 36,
-          }}
-        >
-          <VariantCard variant="phi" title="Current" blurb={crystalBlurb(neighbors.base)} fingerprint={neighbors.base} />
-          <VariantCard variant="phi" title="First +1" blurb={crystalBlurb(neighbors.firstPlus)} fingerprint={neighbors.firstPlus} />
-          <VariantCard variant="phi" title="Last +1" blurb={crystalBlurb(neighbors.lastPlus)} fingerprint={neighbors.lastPlus} />
+          <VariantCard variant="phi" title="Current" blurb={habitBlurb(neighbors.base)} fingerprint={neighbors.base} />
+          <VariantCard variant="phi" title="First −1" blurb={habitBlurb(neighbors.firstMinus)} fingerprint={neighbors.firstMinus} />
+          <VariantCard variant="phi" title="First +1" blurb={habitBlurb(neighbors.firstPlus)} fingerprint={neighbors.firstPlus} />
+          <VariantCard variant="phi" title="Last −1" blurb={habitBlurb(neighbors.lastMinus)} fingerprint={neighbors.lastMinus} />
+          <VariantCard variant="phi" title="Last +1" blurb={habitBlurb(neighbors.lastPlus)} fingerprint={neighbors.lastPlus} />
         </div>
 
         {/* Card with / without seal */}
@@ -241,7 +218,7 @@ export default function SealLabPage() {
           }}
         >
           <div>
-            <p style={miniLabel}>With growth seal (production)</p>
+            <p style={miniLabel}>With φ seal (production)</p>
             <MiniCard fingerprint={hex} showSeal />
           </div>
           <div>
@@ -252,7 +229,7 @@ export default function SealLabPage() {
 
         {/* Sample gallery */}
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
-          <h2 style={{ ...sectionTitle, margin: 0 }}>Sample gallery · growth</h2>
+          <h2 style={{ ...sectionTitle, margin: 0 }}>Sample gallery · φ</h2>
           <button type="button" style={ghost} onClick={reshuffleGallery}>
             Reshuffle
           </button>
@@ -282,9 +259,9 @@ export default function SealLabPage() {
                 gap: 8,
               }}
             >
-              <IdentitySeal fingerprint={s} variant="growth" size={72} />
+              <IdentitySeal fingerprint={s} variant="phi" size={72} />
               <span style={{ fontFamily: E.fontMono, fontSize: 9, color: E.dim, wordBreak: 'break-all' }}>
-                {composeGrowthSeal(s).fold}·{fingerprintHex(s).slice(0, 6)}…
+                {foldFromFingerprint(s)}·{fingerprintHex(s).slice(0, 6)}…
               </span>
             </button>
           ))}
@@ -361,7 +338,7 @@ function MiniCard({ fingerprint, showSeal }: { fingerprint: string; showSeal: bo
     >
       {showSeal ? (
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-          <IdentitySeal fingerprint={fingerprint} variant="growth" size={88} />
+          <IdentitySeal fingerprint={fingerprint} variant="phi" size={88} />
         </div>
       ) : (
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>

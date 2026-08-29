@@ -2,7 +2,7 @@
 
 // Deterministic identity seals from fingerprint (I-6).
 // Variants share the same fingerprint → different geometry grammars.
-// Default production variant: `phi` — sacred-geometry crystal (φ measure + catalog figure).
+// Default production variant: `phi` — crystal + φ droplets + ogham notches.
 // Lab-only `sigil` keeps the earlier 5-fold pentagram stack for comparison.
 
 import { useMemo } from 'react';
@@ -10,7 +10,6 @@ import { solarEmber as E } from '../recovery/solar-ember';
 import {
   pickSacredEntry,
   composeSacredFigure,
-  starPolygonPath,
   type CrystalHabit as SacredHabit,
 } from './sacred-geometry';
 
@@ -31,11 +30,10 @@ export const PHI = (1 + Math.sqrt(5)) / 2;
 export const PHI_INV = PHI - 1;
 export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 
-export type SealVariant = 'growth' | 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
+export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'growth', title: 'Growth', blurb: 'Branches past the rim · broken ripple-arcs · notches · orbs' },
-  { id: 'phi', title: 'Crystal', blurb: 'Sacred tech · {n/k} stars · φ measure (flower/Metatron demoted)' },
+  { id: 'phi', title: 'Crystal', blurb: 'Sacred figures · φ droplets · ogham notches' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -45,7 +43,8 @@ export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] 
 
 /**
  * Crystal habits — trigonal through decagon (cyber-sigil 10-point).
- * Sacred figure (hexagram, {n/k} star, flower, Metatron…) from the flat pool.
+ * Sacred figure ({n/k} star, hexagram, vesica, …) from the flat pool.
+ * Seed / flower / Metatron stay demoted (lab-only).
  */
 export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
@@ -128,6 +127,7 @@ type Line = { x1: number; y1: number; x2: number; y2: number; op: number; w: num
 /**
  * Default seal: crystalline habit + sacred-geometry figure from fingerprint.
  * φ sets radial cascade + dendrite lengths; fold + catalog figure are seeded separately.
+ * Adds soft φ pond-droplet rings and ogham-ish spine notches — nothing else from Growth.
  */
 export function composePhiSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -159,6 +159,7 @@ export function composePhiSeal(fingerprint: string) {
 
   const spines: Line[] = [];
   const branches: Line[] = [];
+  const notches: Line[] = [];
   const facets: string[] = [];
   const blades: string[] = [];
 
@@ -167,13 +168,16 @@ export function composePhiSeal(fingerprint: string) {
     const tip = pt(cx, cy, R, a);
     const mid = pt(cx, cy, r1, a);
     const near = pt(cx, cy, r2, a);
+    const bit = n[i % n.length];
+    const bit2 = n[(i + 5) % n.length];
+    const bit3 = n[(i + 9) % n.length];
 
     spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.55, w: 1.05 });
 
     // ~50/50 dendrite gates; lengths use structMix so orientation bits still alter shape
     const branchLen =
-      (R - r1) * PHI_INV * (0.7 + (n[i % n.length] / 15) * 0.4 + structMix * 0.2 + radiusJitter * 0.1);
-    if (n[i % n.length] & 1) {
+      (R - r1) * PHI_INV * (0.7 + (bit / 15) * 0.4 + structMix * 0.2 + radiusJitter * 0.1);
+    if (bit & 1) {
       branches.push({
         x1: mid.x, y1: mid.y,
         x2: mid.x + Math.cos(a - branchAng) * branchLen,
@@ -205,7 +209,7 @@ export function composePhiSeal(fingerprint: string) {
     }
 
     if (n[(i + 2) % n.length] & 1) {
-      const half = (Math.PI / fold) * PHI_INV * (0.5 + (n[i % n.length] / 20) + structMix * 0.1);
+      const half = (Math.PI / fold) * PHI_INV * (0.5 + (bit / 20) + structMix * 0.1);
       const p0 = pt(cx, cy, r2, a);
       const p1 = pt(cx, cy, (r1 + r2) / 2, a - half);
       const p2 = pt(cx, cy, r1, a);
@@ -220,6 +224,36 @@ export function composePhiSeal(fingerprint: string) {
       const p2 = tip;
       const p3 = pt(cx, cy, (r1 + R) / 2, a + half);
       facets.push(`M ${fmt(p0)} L ${fmt(p1)} L ${fmt(p2)} L ${fmt(p3)} Z`);
+    }
+
+    // Ogham-ish notches — short perpendicular ticks on the spine at φ stations
+    const notchCount = 1 + (bit % 3); // 1–3
+    for (let t = 0; t < notchCount; t++) {
+      const frac = PHI_INV * (0.45 + t * 0.22 + ((bit3 + t) % 5) * 0.02);
+      const along = rCore + (R - rCore) * Math.min(0.92, frac);
+      const p = pt(cx, cy, along, a);
+      const perp = a + Math.PI / 2;
+      const half = 1.6 + (bit % 3) * 0.55 + (t === 0 ? 0.4 : 0);
+      notches.push({
+        x1: p.x - Math.cos(perp) * half,
+        y1: p.y - Math.sin(perp) * half,
+        x2: p.x + Math.cos(perp) * half,
+        y2: p.y + Math.sin(perp) * half,
+        op: 0.5,
+        w: 0.7,
+      });
+      // Occasional double bar (ogham-like)
+      if (bit2 & 4 && t === 0) {
+        const p2 = pt(cx, cy, along + 1.4, a);
+        notches.push({
+          x1: p2.x - Math.cos(perp) * (half * 0.85),
+          y1: p2.y - Math.sin(perp) * (half * 0.85),
+          x2: p2.x + Math.cos(perp) * (half * 0.85),
+          y2: p2.y + Math.sin(perp) * (half * 0.85),
+          op: 0.4,
+          w: 0.55,
+        });
+      }
     }
   }
 
@@ -248,8 +282,14 @@ export function composePhiSeal(fingerprint: string) {
     ticks.push({ x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, major });
   }
 
-  // Construction circles (ring variant / faint underlay)
-  const rings = [R, r1, r2] as const;
+  // φ pond droplets — cascade with micro aberrations (soft weather, not a cage)
+  const rings = [
+    R * (1 + ((n[0] % 5) - 2) * 0.004),
+    r1 * (1 + ((n[3] % 5) - 2) * 0.006),
+    r2 * (1 + ((n[6] % 5) - 2) * 0.008),
+    r3 * (1 + ((n[9] % 5) - 2) * 0.01),
+    rCore * (1 + ((n[11] % 5) - 2) * 0.012),
+  ] as const;
 
   // Compatibility aliases used by older render paths / tests
   const chords = [...spines, ...branches];
@@ -267,6 +307,7 @@ export function composePhiSeal(fingerprint: string) {
     facets,
     spines,
     branches,
+    notches,
     chords,
     ticks,
     dualPts,
@@ -277,269 +318,6 @@ export function composePhiSeal(fingerprint: string) {
     hexCore,
     sacredPath,
     rings,
-  };
-}
-
-/**
- * Growth seal — fold + φ skeleton; branches, notches, orbs, and broken ripple-arcs.
- * Opacities/weights: veil × φ⁻ᵈ (fingerprint sets veil). No named sacred fills.
- * Ripples are gated arc segments (not solid circles) so the seal isn't caged.
- */
-export function composeGrowthSeal(fingerprint: string) {
-  const n = hexNibbles(fingerprint);
-  const seed = fnv(fingerprint);
-  const cx = 50;
-  const cy = 50;
-
-  const R = 40 + (n[0] % 5);
-  const r1 = R * PHI_INV;
-  const r2 = R * PHI_INV * PHI_INV;
-  const r3 = R * PHI_INV ** 3;
-  const rCore = R * PHI_INV ** 4;
-
-  const fold = CRYSTAL_HABITS[((seed >>> 5) + n[2] + n[7]) % CRYSTAL_HABITS.length];
-  const rot = -Math.PI / 2;
-  const structMix = ((seed >>> 3) % 1000) / 1000;
-  const radiusJitter = ((n[1] + n[4]) % 7) / 7;
-
-  const veil = PHI_INV * (0.85 + structMix * PHI_INV);
-  const opAt = (d: number) => Math.max(0.1, veil * PHI_INV ** d);
-  const wAt = (d: number) => Math.max(0.4, PHI * PHI_INV ** d);
-
-  const starKs: Partial<Record<CrystalHabit, number>> = {
-    5: 2, 6: 2, 7: 2 + (n[8] % 2), 8: 2 + (n[8] % 2), 9: 2 + (n[8] % 3), 10: 3 + (n[8] % 2),
-  };
-  const k = starKs[fold];
-  const sacredPaths =
-    k != null
-      ? [{ d: starPolygonPath(cx, cy, R * 0.88, fold, k, rot, false), op: opAt(3), w: wAt(3) }]
-      : [];
-
-  type Orb = { cx: number; cy: number; r: number; op: number; w: number };
-  type Arc = { d: string; op: number; w: number };
-  type Ripple = { r: number; op: number; w: number };
-
-  const spines: Line[] = [];
-  const branches: Line[] = [];
-  const notches: Line[] = [];
-  const orbs: Orb[] = [];
-  const arcs: Arc[] = [];
-
-  const spineOp = opAt(0);
-  const spineW = wAt(1);
-  const br1Op = opAt(1);
-  const br1W = wAt(2);
-  const br2Op = opAt(2);
-  const br2W = wAt(3);
-  const notchOp = opAt(2);
-  const notchW = wAt(2);
-  const tipOrbOp = opAt(1);
-  const forkOrbOp = opAt(2);
-  const coreOrbOp = opAt(0);
-
-  const pushSectorArc = (
-    radius: number,
-    a0: number,
-    a1: number,
-    depth: number,
-    bright = false,
-  ) => {
-    if (a1 <= a0) return;
-    const p0 = pt(cx, cy, radius, a0);
-    const p1 = pt(cx, cy, radius, a1);
-    arcs.push({
-      d: `M ${fmt(p0)} A ${radius.toFixed(2)},${radius.toFixed(2)} 0 0 1 ${fmt(p1)}`,
-      op: bright ? Math.min(veil, opAt(depth) * PHI) : opAt(depth),
-      w: bright ? wAt(depth) : wAt(depth + 1),
-    });
-  };
-
-  for (let i = 0; i < fold; i++) {
-    const a = rot + (i * 2 * Math.PI) / fold;
-    const tip = pt(cx, cy, R, a);
-    spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: spineOp, w: spineW });
-
-    const bit = n[i % n.length];
-    const bit2 = n[(i + 5) % n.length];
-    const bit3 = n[(i + 9) % n.length];
-    const nextBit = n[(i + 1) % n.length];
-    const aNext = a + (2 * Math.PI) / fold;
-
-    const tipR = PHI_INV * (1.1 + (bit % 3) * 0.35 + radiusJitter * 0.2);
-    orbs.push({ cx: tip.x, cy: tip.y, r: tipR, op: tipOrbOp, w: wAt(2) });
-
-    const forkAt = (baseR: number, ang: number, len: number, depth: number, side: number) => {
-      const origin = pt(cx, cy, baseR, a);
-      const ba = ang + side * ((Math.PI / fold) * (PHI_INV + structMix * PHI_INV * PHI_INV + bit / 40));
-      const end = {
-        x: origin.x + Math.cos(ba) * len,
-        y: origin.y + Math.sin(ba) * len,
-      };
-      branches.push({
-        x1: origin.x, y1: origin.y, x2: end.x, y2: end.y,
-        op: depth === 1 ? br1Op : br2Op,
-        w: depth === 1 ? br1W : br2W,
-      });
-      return { ...end, ang: ba };
-    };
-
-    let left: { x: number; y: number; ang: number } | null = null;
-    let right: { x: number; y: number; ang: number } | null = null;
-
-    // Branches grow more often and can overshoot the rim slightly
-    if (bit & 1 || bit2 & 1) {
-      const len1 = (R - r1) * (0.85 + (bit / 18) + structMix * 0.25 + radiusJitter * 0.15);
-      left = forkAt(r1, a, len1, 1, -1);
-      right = forkAt(r1, a, len1 * (0.9 + structMix * PHI_INV), 1, 1);
-
-      if (bit2 & 1) {
-        orbs.push({
-          cx: left.x, cy: left.y,
-          r: PHI_INV * (0.9 + (bit2 % 3) * 0.2),
-          op: forkOrbOp, w: wAt(3),
-        });
-      }
-      if (bit2 & 2) {
-        orbs.push({
-          cx: right.x, cy: right.y,
-          r: PHI_INV * (0.9 + ((bit2 >> 2) % 3) * 0.2),
-          op: forkOrbOp, w: wAt(3),
-        });
-      }
-
-      if (bit2 & 1 || bit3 & 1) {
-        const len2 = len1 * PHI_INV * (0.85 + (bit2 / 20));
-        for (const tipB of [left, right]) {
-          const side = tipB === left ? -1 : 1;
-          const end = {
-            x: tipB.x + Math.cos(tipB.ang + side * PHI_INV) * len2,
-            y: tipB.y + Math.sin(tipB.ang + side * PHI_INV) * len2,
-          };
-          branches.push({ x1: tipB.x, y1: tipB.y, x2: end.x, y2: end.y, op: br2Op, w: br2W });
-          if (bit3 & 4) {
-            orbs.push({ cx: end.x, cy: end.y, r: PHI_INV * 0.7, op: opAt(3), w: wAt(3) });
-          }
-        }
-      }
-      if (bit2 & 2) {
-        const len2b = len1 * PHI_INV * (0.7 + structMix * 0.25);
-        forkAt((r1 + r2) / 2, a, len2b, 2, (bit3 & 1) ? 1 : -1);
-      }
-    }
-
-    if (bit3 & 2) {
-      const lenIn = (r1 - r2) * (0.8 + (bit3 / 20) + radiusJitter * 0.1);
-      forkAt(r2, a, lenIn, 1, -1);
-      forkAt(r2, a, lenIn * PHI_INV, 1, 1);
-    }
-
-    const notchCount = 1 + (bit % 3);
-    for (let t = 0; t < notchCount; t++) {
-      const frac = PHI_INV * (0.45 + t * 0.22 + ((bit3 + t) % 5) * 0.02);
-      const along = rCore + (R - rCore) * Math.min(0.92, frac);
-      const p = pt(cx, cy, along, a);
-      const perp = a + Math.PI / 2;
-      const half = PHI_INV * (2.4 + (bit % 3) * 0.8 + (t === 0 ? 0.5 : 0));
-      notches.push({
-        x1: p.x - Math.cos(perp) * half,
-        y1: p.y - Math.sin(perp) * half,
-        x2: p.x + Math.cos(perp) * half,
-        y2: p.y + Math.sin(perp) * half,
-        op: notchOp, w: notchW,
-      });
-      if (bit2 & 4 && t === 0) {
-        const p2 = pt(cx, cy, along + PHI_INV * 2, a);
-        notches.push({
-          x1: p2.x - Math.cos(perp) * (half * PHI_INV),
-          y1: p2.y - Math.sin(perp) * (half * PHI_INV),
-          x2: p2.x + Math.cos(perp) * (half * PHI_INV),
-          y2: p2.y + Math.sin(perp) * (half * PHI_INV),
-          op: opAt(3), w: wAt(3),
-        });
-      }
-    }
-
-    // ── Broken ripple-arcs (the pond) — frequent sectors, not full circles ──
-    const inset = 0.06 + (bit % 3) * 0.02;
-    const a0 = a + inset;
-    const a1 = aNext - inset;
-
-    // Soft weather on r1 / r2 / r3 — most sectors get at least one
-    if (bit & 1 || nextBit & 1) {
-      pushSectorArc(r1 * (1 + ((bit % 3) - 1) * 0.008), a0, a1, 1, false);
-    }
-    if (bit & 2 || nextBit & 2) {
-      pushSectorArc(r2 * (1 + ((bit2 % 3) - 1) * 0.01), a0, a1, 2, false);
-    }
-    if (bit3 & 1 || (bit ^ nextBit) & 1) {
-      pushSectorArc(r3 * (1 + ((bit3 % 3) - 1) * 0.012), a0, a1, 3, false);
-    }
-
-    // Brighter accent breaths (rarer) — still on φ radii
-    if ((bit & 4) && (nextBit & 1)) {
-      pushSectorArc(bit & 2 ? r1 : r2, a0 + 0.02, a1 - 0.02, bit & 2 ? 1 : 2, true);
-    }
-
-    // Soft tip curl — small arc past the rim between neighboring tips (organic, not a cage)
-    if (bit3 & 1 || bit & 1) {
-      const tip0 = pt(cx, cy, R * 0.96, a);
-      const tip1 = pt(cx, cy, R * 0.96, aNext);
-      const midA = (a + aNext) / 2;
-      // Arc radius slightly larger than chord → gentle outward petal
-      const chord = Math.hypot(tip1.x - tip0.x, tip1.y - tip0.y);
-      const petalR = Math.max(chord * PHI_INV * 1.15, R * PHI_INV * PHI_INV);
-      arcs.push({
-        d: `M ${fmt(tip0)} A ${petalR.toFixed(2)},${petalR.toFixed(2)} 0 0 1 ${fmt(tip1)}`,
-        op: opAt(1),
-        w: wAt(2),
-      });
-      void midA;
-    }
-  }
-
-  orbs.push({
-    cx, cy,
-    r: PHI_INV * (1.8 + ((seed >>> 7) % 5) * 0.15),
-    op: coreOrbOp, w: wAt(1),
-  });
-
-  const hexAt = (radius: number) =>
-    Array.from({ length: fold }, (_, i) => {
-      const a = rot + (i * 2 * Math.PI) / fold;
-      return fmt(pt(cx, cy, radius, a));
-    }).join(' ');
-
-  // Only whisper-faint full rings (inner) — the visible pond is the arcs above
-  const rippleRadii = [r1, r2, r3];
-  const ripples: Ripple[] = rippleRadii.map((r, i) => ({
-    r,
-    op: opAt(i + 2), // quieter: start at depth 2
-    w: wAt(i + 3),
-  }));
-
-  return {
-    R, r1, r2, r3, rCore,
-    fold,
-    habit: HABIT_LABEL[fold],
-    figure: k != null ? `{${fold}/${k}} growth` : 'growth',
-    figureId: 'growth' as const,
-    veil,
-    sacredPaths,
-    spines,
-    branches,
-    notches,
-    arcs,
-    orbs,
-    hexOuter: hexAt(R),
-    hexMid: hexAt(r1),
-    hexInner: hexAt(r2),
-    hexCore: hexAt(r3),
-    hexOp: opAt(3),
-    hexW: wAt(3),
-    coreOp: opAt(0),
-    coreW: wAt(1),
-    ripples,
-    rings: [...rippleRadii, rCore, R * PHI_INV ** 4] as unknown as readonly [number, number, number, number, number],
   };
 }
 
@@ -697,95 +475,6 @@ export function composeRosetteSeal(fingerprint: string) {
   };
 }
 
-function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
-  return (
-    <>
-      {/* φ pond ripples — opacity/weight from veil × φ⁻ᵈᵉᵖᵗʰ */}
-      {g.ripples.map((ring, i) => (
-        <circle
-          key={`ring-${i}`}
-          cx="50"
-          cy="50"
-          r={ring.r}
-          fill="none"
-          stroke={E.accent}
-          strokeOpacity={ring.op}
-          strokeWidth={ring.w}
-        />
-      ))}
-      <polygon
-        points={g.hexOuter}
-        fill="none"
-        stroke={E.accent}
-        strokeOpacity={g.hexOp}
-        strokeWidth={g.hexW}
-      />
-      <polygon
-        points={g.hexMid}
-        fill="none"
-        stroke={E.accent}
-        strokeOpacity={g.hexOp * PHI_INV}
-        strokeWidth={g.hexW * PHI_INV}
-      />
-
-      {g.sacredPaths.map((p, i) => (
-        <path
-          key={`sg${i}`}
-          d={p.d}
-          fill="none"
-          stroke={E.accent}
-          strokeOpacity={p.op}
-          strokeWidth={p.w}
-          strokeLinejoin="miter"
-        />
-      ))}
-
-      {g.arcs.map((a, i) => (
-        <path
-          key={`arc${i}`}
-          d={a.d}
-          fill="none"
-          stroke={E.accent2}
-          strokeOpacity={a.op}
-          strokeWidth={a.w}
-          strokeLinecap="round"
-        />
-      ))}
-
-      {g.spines.map((c, i) => (
-        <line key={`s${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
-      ))}
-      {g.branches.map((c, i) => (
-        <line key={`br${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
-      ))}
-      {g.notches.map((c, i) => (
-        <line key={`n${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent2} strokeOpacity={c.op} strokeWidth={c.w} />
-      ))}
-
-      {g.orbs.map((o, i) => (
-        <circle
-          key={`orb${i}`}
-          cx={o.cx}
-          cy={o.cy}
-          r={o.r}
-          fill="none"
-          stroke={i === g.orbs.length - 1 ? E.accent : E.accent2}
-          strokeOpacity={o.op}
-          strokeWidth={o.w}
-        />
-      ))}
-
-      <polygon
-        points={g.hexCore}
-        fill="none"
-        stroke={E.accent}
-        strokeOpacity={g.coreOp}
-        strokeWidth={g.coreW}
-      />
-    </>
-  );
-}
-
 function CrystalLayers({
   g,
   facets,
@@ -795,7 +484,7 @@ function CrystalLayers({
 }) {
   return (
     <>
-      {/* Faint construction rings */}
+      {/* φ pond droplets — soft cascade with micro aberrations */}
       {g.rings.map((r, i) => (
         <circle
           key={`ring-${i}`}
@@ -803,9 +492,9 @@ function CrystalLayers({
           cy="50"
           r={r}
           fill="none"
-          stroke={E.accent2}
-          strokeOpacity={0.12 - i * 0.02}
-          strokeWidth={0.6}
+          stroke={i % 2 === 0 ? E.accent : E.accent2}
+          strokeOpacity={0.18 - i * 0.025}
+          strokeWidth={0.8 - i * 0.08}
         />
       ))}
 
@@ -840,12 +529,15 @@ function CrystalLayers({
         />
       ))}
 
-      {/* Spines + dendrites */}
+      {/* Spines + dendrites + ogham notches */}
       {g.spines.map((c, i) => (
         <line key={`s${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
       ))}
       {g.branches.map((c, i) => (
         <line key={`br${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
+      ))}
+      {g.notches.map((c, i) => (
+        <line key={`n${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent2} strokeOpacity={c.op} strokeWidth={c.w} />
       ))}
 
       {facets &&
@@ -991,7 +683,7 @@ export function IdentitySeal({
   fingerprint,
   size = 72,
   label,
-  variant = 'growth',
+  variant = 'phi',
 }: {
   fingerprint: string;
   size?: number;
@@ -1003,10 +695,6 @@ export function IdentitySeal({
       variant === 'phi' || variant === 'lattice' || variant === 'ring'
         ? composePhiSeal(fingerprint)
         : null,
-    [fingerprint, variant]
-  );
-  const growth = useMemo(
-    () => (variant === 'growth' ? composeGrowthSeal(fingerprint) : null),
     [fingerprint, variant]
   );
   const sigil = useMemo(
@@ -1040,7 +728,6 @@ export function IdentitySeal({
             strokeDasharray="3 4"
           />
         )}
-        {variant === 'growth' && growth && <GrowthLayers g={growth} />}
         {variant === 'phi' && crystal && <CrystalLayers g={crystal} facets />}
         {variant === 'lattice' && crystal && <CrystalLayers g={crystal} facets={false} />}
         {variant === 'ring' && crystal && <RingOnly g={crystal} />}
