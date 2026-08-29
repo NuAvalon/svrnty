@@ -88,7 +88,9 @@ function TrustBadge({ contact }: { contact: Contact }) {
       style={{
         fontFamily: E.fontMono,
         letterSpacing: '0.06em',
-        background: trusted ? 'rgba(249,168,37,0.1)' : 'rgba(143,117,80,0.1)',
+        background: trusted
+          ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
+          : 'color-mix(in srgb, var(--se-dim) 12%, transparent)',
         color: trusted ? E.accent : E.dim,
         borderColor: trusted ? E.borderLit : E.border,
       }}
@@ -732,7 +734,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               onChange={(e) => setSearchQuery(e.target.value)}
               style={{
                 fontFamily: E.fontSans,
-                background: 'rgba(12,8,5,0.7)',
+                background: E.inputBg,
                 borderColor: E.border,
                 color: E.text,
               }}
@@ -749,7 +751,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           <TabsList
             className="mb-4 w-full sm:w-auto"
             style={{
-              background: 'rgba(12,8,5,0.55)',
+              background: E.surface,
               border: `1px solid ${E.border}`,
               fontFamily: E.fontSans,
             }}
@@ -774,7 +776,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               >
                 <div
                   className="inline-flex justify-center items-center w-16 h-16 rounded-full mb-4"
-                  style={{ background: 'rgba(249,168,37,0.08)', border: `1px solid ${E.border}` }}
+                  style={{
+                    background: 'color-mix(in srgb, var(--se-accent) 10%, transparent)',
+                    border: `1px solid ${E.border}`,
+                  }}
                 >
                   {searchQuery ? <Search className="h-8 w-8" style={{ color: E.dim }} /> : <UserPlus className="h-8 w-8" style={{ color: E.dim }} />}
                 </div>
@@ -1126,7 +1131,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 }
 
 const emberPrimaryBtn: React.CSSProperties = {
-  background: 'rgba(249,168,37,0.14)',
+  background: 'color-mix(in srgb, var(--se-accent) 14%, transparent)',
   border: `1px solid ${E.borderLit}`,
   color: E.accent,
   fontFamily: E.fontSans,

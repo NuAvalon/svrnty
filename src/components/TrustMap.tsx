@@ -26,6 +26,8 @@ import {
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
 
+import { solarEmber as E } from '@/components/recovery/solar-ember';
+
 interface TrustMapProps {
   ownerFingerprint: string;
   ownerName: string;
@@ -36,17 +38,17 @@ interface TrustMapProps {
 
 const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container width.
 
-// Tokens lifted from the crystalline-lattice reference.
+// Solar Ember via CSS vars — follows light/dark appearance.
 const T = {
-  field: '#0f0a06',
-  myEdge: '#f9a825',      // solar gold — my direct edges
-  dimFill: 'rgba(28,19,10,.92)',
-  dimStroke: 'rgba(255,190,120,.22)',
-  lit: '#ff7a1a',         // sacral orange — trusted / lit
-  selfRing: '#f9a825',
-  selfDot: '#fbead2',
-  label: '#c9a271',
-  caption: '#8f7550',
+  field: E.bg,
+  myEdge: E.accent,
+  dimFill: E.surfaceSolid,
+  dimStroke: E.border,
+  lit: E.accent2,
+  selfRing: E.accent,
+  selfDot: E.text,
+  label: E.muted,
+  caption: E.dim,
 } as const;
 
 function nodeStroke(state: TrustState): string {
@@ -80,8 +82,8 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts, onLoadSample }
         aspectRatio: '1 / 1', // square container ⇄ square viewBox → nothing clipped
         borderRadius: 16,
         overflow: 'hidden',
-        border: `1px solid rgba(255, 170, 70, 0.22)`,
-        background: 'radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparent 60%), #0f0a06',
+        border: `1px solid ${E.borderLit}`,
+        background: E.bgCss,
       }}
     >
       {/* Crystallization + provenance styles. Facets grow; reduced-motion shows the
@@ -225,11 +227,11 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts, onLoadSample }
             type="button"
             onClick={() => void onLoadSample()}
             style={{
-              fontFamily: 'var(--font-sans), Space Grotesk, sans-serif',
+              fontFamily: E.fontSans,
               fontSize: 12,
               letterSpacing: '0.08em',
               color: T.myEdge,
-              background: 'rgba(249,168,37,0.1)',
+              background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
               border: `1px solid ${T.dimStroke}`,
               borderRadius: 8,
               padding: '8px 14px',
@@ -249,10 +251,11 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts, onLoadSample }
           style={{
             position: 'absolute', left: 12, right: 12, bottom: 12,
             padding: '10px 12px', borderRadius: 10,
-            background: 'rgba(15,10,6,0.92)', border: `1px solid ${T.dimStroke}`,
+            background: E.surfaceSolid, border: `1px solid ${E.borderLit}`,
             color: T.label, fontSize: 12,
-            fontFamily: 'var(--font-sans), Space Grotesk, sans-serif',
+            fontFamily: E.fontSans,
             display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            boxShadow: 'var(--se-glass-shadow)',
           }}
         >
           <span style={{ fontWeight: 600, color: nodeStroke(selected.state) }}>{selected.name}</span>

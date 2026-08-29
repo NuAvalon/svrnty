@@ -22,9 +22,9 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 const BLOOM_MS = 1200;
 
 const STATE_TONE: Record<ContactState, { fg: string; bg: string; border: string }> = {
-  gray: { fg: E.dim, bg: 'rgba(143,117,80,0.08)', border: E.border },
-  living: { fg: E.accent, bg: 'rgba(249,168,37,0.1)', border: E.borderLit },
-  dim: { fg: E.muted, bg: 'rgba(201,162,113,0.08)', border: 'rgba(255,190,120,0.16)' },
+  gray: { fg: E.dim, bg: 'color-mix(in srgb, var(--se-dim) 12%, transparent)', border: E.border },
+  living: { fg: E.accent, bg: 'color-mix(in srgb, var(--se-accent) 12%, transparent)', border: E.borderLit },
+  dim: { fg: E.muted, bg: 'color-mix(in srgb, var(--se-muted) 10%, transparent)', border: E.border },
 };
 
 const STATE_ICON: Record<ContactState, typeof Circle> = {
@@ -71,8 +71,10 @@ function Row({ row, glowing, live, onSelect }: {
         borderRadius: 12,
         border: `1px solid ${glowing ? E.borderLit : tone.border}`,
         padding: '12px 14px',
-        background: glowing ? 'rgba(249,168,37,0.12)' : 'rgba(12,8,5,0.45)',
-        boxShadow: glowing ? '0 0 18px rgba(249,168,37,0.28)' : 'none',
+        background: glowing
+          ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+          : E.surfaceSolid,
+        boxShadow: glowing ? '0 0 18px color-mix(in srgb, var(--se-accent) 28%, transparent)' : 'var(--se-glass-shadow)',
         cursor: 'pointer',
         fontFamily: E.fontSans,
         color: E.text,
