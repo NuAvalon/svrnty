@@ -647,12 +647,18 @@ export default function Home() {
             kind={mapRevise?.kind ?? 'email'}
             initialValue={identity.identity?.email || ''}
             preselectedFingerprints={mapRevise?.preselected}
-            contacts={contacts.map((c) => ({
-              fingerprint: c.peer_fingerprint,
-              name: c.peer_name || 'Unnamed',
-              public_key: c.peer_public_key || undefined,
-              trusted: !!c.trusted,
-            }))}
+            contacts={contacts
+              .map((c) => {
+                const peerFp = String(c.peer_fingerprint || '').trim();
+                if (!peerFp) return null;
+                return {
+                  fingerprint: peerFp,
+                  name: c.peer_name || 'Unnamed',
+                  public_key: c.peer_public_key || undefined,
+                  trusted: !!c.trusted,
+                };
+              })
+              .filter((c): c is NonNullable<typeof c> => c != null)}
             onClose={() => setMapRevise(null)}
             onLocalSave={async (kind, value) => {
               const fp = identity.identity.fingerprint as string;

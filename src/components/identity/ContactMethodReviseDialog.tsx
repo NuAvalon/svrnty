@@ -61,12 +61,19 @@ export function ContactMethodReviseDialog({
   const [localNote, setLocalNote] = useState<string | null>(null);
 
   const sorted = useMemo(() => {
-    return [...contacts].sort((a, b) => {
-      const ta = a.trusted ? 0 : 1;
-      const tb = b.trusted ? 0 : 1;
-      if (ta !== tb) return ta - tb;
-      return (a.name || a.fingerprint).localeCompare(b.name || b.fingerprint);
-    });
+    return [...contacts]
+      .map((c) => ({
+        ...c,
+        fingerprint: (c.fingerprint || '').trim(),
+        name: c.name || 'Unnamed',
+      }))
+      .filter((c) => c.fingerprint.length > 0)
+      .sort((a, b) => {
+        const ta = a.trusted ? 0 : 1;
+        const tb = b.trusted ? 0 : 1;
+        if (ta !== tb) return ta - tb;
+        return a.name.localeCompare(b.name);
+      });
   }, [contacts]);
 
   useEffect(() => {

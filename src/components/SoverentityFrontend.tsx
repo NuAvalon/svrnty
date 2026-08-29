@@ -301,12 +301,21 @@ export function SoverentityFrontend({
     setLocalMethods(loadLocalMethods(fp));
     void getAllContacts(fp).then((rows) => {
       setAudience(
-        rows.map((c) => ({
-          fingerprint: c.fingerprint,
-          name: c.name || 'Unnamed',
-          public_key: c.public_key || undefined,
-          trusted: String(c.trust_level || '').toLowerCase() === 'trusted' || c.trusted === true,
-        }))
+        rows
+          .map((c) => {
+            const peerFp = String(c.fingerprint || c.id || '').trim();
+            if (!peerFp) return null;
+            return {
+              fingerprint: peerFp,
+              name: c.name || 'Unnamed',
+              public_key: c.public_key || undefined,
+              trusted:
+                String(c.trust_level || '').toLowerCase() === 'trusted' ||
+                String(c.trust_level || '').toLowerCase() === 'verified' ||
+                c.trusted === true,
+            };
+          })
+          .filter((c): c is NonNullable<typeof c> => c != null)
       );
     });
   }, [identity]);
