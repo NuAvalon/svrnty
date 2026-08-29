@@ -1054,12 +1054,11 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>JSON backup detected — not encrypted.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  This file contains your identity data in plaintext. It will be imported directly into your browser's local storage.
+                  This file contains your identity data in plaintext. It will be imported directly into your browser&apos;s local storage.
                 </p>
               </div>
             </div>
           ) : (vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') ? (
-            <>
             <div style={s.trustWarning}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
                 <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -1069,45 +1068,11 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Encrypted key backup detected.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  Enter the password you used when exporting to decrypt your private keys.
+                  Enter the password you used when exporting, then your soul-seed if the backup includes a KeyVault.
                 </p>
               </div>
             </div>
-            <div style={s.field}>
-              <label style={s.label}>DECRYPTION PASSWORD</label>
-              <div style={{ position: 'relative' }}>
-                <input
-                  type={showPassphrase ? 'text' : 'password'}
-                  placeholder="Enter your export password"
-                  value={vaultPassphrase}
-                  onChange={e => setVaultPassphrase(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
-                  style={s.input}
-                  autoFocus
-                />
-                <button
-                  onClick={() => setShowPassphrase(!showPassphrase)}
-                  style={s.eyeBtn}
-                >
-                  {showPassphrase ? '🙈' : '👁'}
-                </button>
-              </div>
-            </div>
-            <div style={s.field}>
-              <label style={{ ...s.label, color: SE.accent }}>SOUL-SEED RECOVERY PHRASE</label>
-              <textarea
-                placeholder="Paste the recovery phrase shown at forge (hex groups)"
-                value={soulSeedPhrase}
-                onChange={e => setSoulSeedPhrase(e.target.value)}
-                rows={3}
-                style={{ ...s.input, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, resize: 'vertical' as const }}
-              />
-              <p style={s.hint}>Second factor when the backup includes a KeyVault. Required to open sealed recovery material.</p>
-            </div>
-            </>
           ) : (
-          <>
-          {/* Trust Warning */}
           <div style={s.trustWarning}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -1122,87 +1087,126 @@ export function SoverentityFrontend({
               </p>
             </div>
           </div>
-
-          {/* Passphrase Input */}
-          <div style={s.field}>
-            <label style={s.label}>VAULT PASSPHRASE</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type={showPassphrase ? 'text' : 'password'}
-                placeholder="Enter your vault passphrase"
-                value={vaultPassphrase}
-                onChange={e => setVaultPassphrase(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
-                style={s.input}
-                autoFocus
-              />
-              <button
-                onClick={() => setShowPassphrase(!showPassphrase)}
-                style={s.eyeBtn}
-                tabIndex={-1}
-              >
-                {showPassphrase ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                    <line x1="1" y1="1" x2="23" y2="23" />
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          <button
-            onClick={handleVaultRestore}
-            disabled={restoreLoading || !vaultPassphrase}
-            style={{
-              ...s.restoreBtn,
-              opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
-            }}
-          >
-            {restoreLoading ? (
-              <span style={s.btnInner}>
-                <Spinner /> Decrypting vault...
-              </span>
-            ) : (
-              <span style={s.btnInner}>Unlock Vault</span>
-            )}
-          </button>
-
-          <p style={s.footer}>
-            Decryption happens locally in your browser.
-            <br />Your passphrase never leaves this device.
-          </p>
-          </>
           )}
 
-          {/* JSON restore button (no passphrase needed) */}
-          {vaultHeader?.format === 'json-backup' && (
-            <>
-            <button
-              onClick={handleVaultRestore}
-              disabled={restoreLoading}
-              style={{
-                ...s.restoreBtn,
-                opacity: restoreLoading ? 0.5 : 1,
-              }}
-            >
-              {restoreLoading ? (
-                <span style={s.btnInner}>
-                  <Spinner /> Restoring...
-                </span>
-              ) : (
-                <span style={s.btnInner}>Restore from Backup</span>
-              )}
-            </button>
+          {/* Passphrase — encrypted JSON or .svrnty vault */}
+          {(vaultHeader?.format === 'json-keys-encrypted' ||
+            vaultHeader?.format === 'json-full-encrypted' ||
+            vaultHeader?.format === 'svrnty-vault') && (
+            <div style={s.field}>
+              <label style={s.label}>
+                {vaultHeader?.format === 'svrnty-vault' ? 'VAULT PASSPHRASE' : 'DECRYPTION PASSWORD'}
+              </label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showPassphrase ? 'text' : 'password'}
+                  placeholder={
+                    vaultHeader?.format === 'svrnty-vault'
+                      ? 'Enter your vault passphrase'
+                      : 'Enter your export password'
+                  }
+                  value={vaultPassphrase}
+                  onChange={e => setVaultPassphrase(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore();
+                  }}
+                  style={s.input}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassphrase(!showPassphrase)}
+                  style={s.eyeBtn}
+                  tabIndex={-1}
+                  aria-label={showPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+                >
+                  {showPassphrase ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
 
-            <p style={s.footer}>
-              Your backup will be imported into this browser's local storage.
-            </p>
+          {/* Soul-seed — encrypted backups, or any JSON that already embeds a KeyVault */}
+          {(vaultHeader?.format === 'json-keys-encrypted' ||
+            vaultHeader?.format === 'json-full-encrypted' ||
+            (vaultHeader?.format === 'json-backup' && vaultHeader?._jsonData?.vault)) && (
+            <div style={s.field}>
+              <label style={{ ...s.label, color: SE.accent }}>SOUL-SEED RECOVERY PHRASE</label>
+              <textarea
+                placeholder="Paste the recovery phrase shown at forge (hex groups)"
+                value={soulSeedPhrase}
+                onChange={e => setSoulSeedPhrase(e.target.value)}
+                rows={3}
+                style={{ ...s.input, fontFamily: SE.fontMono, fontSize: 12, resize: 'vertical' as const }}
+              />
+              <p style={s.hint}>Second factor when the backup includes a KeyVault. Required to open sealed recovery material.</p>
+            </div>
+          )}
+
+          {/* Primary CTA — was missing for encrypted JSON (pw + phrase with no button) */}
+          {vaultHeader?.format === 'json-backup' ? (
+            <>
+              <button
+                type="button"
+                onClick={handleVaultRestore}
+                disabled={
+                  restoreLoading ||
+                  (!!vaultHeader?._jsonData?.vault && !soulSeedPhrase.trim())
+                }
+                style={{
+                  ...s.restoreBtn,
+                  opacity:
+                    restoreLoading ||
+                    (!!vaultHeader?._jsonData?.vault && !soulSeedPhrase.trim())
+                      ? 0.5
+                      : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Restoring...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>Open Vault</span>
+                )}
+              </button>
+              <p style={s.footer}>
+                Your backup will be imported into this browser&apos;s local storage.
+              </p>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleVaultRestore}
+                disabled={restoreLoading || !vaultPassphrase}
+                style={{
+                  ...s.restoreBtn,
+                  opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Decrypting vault...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>Open Vault</span>
+                )}
+              </button>
+              <p style={s.footer}>
+                Decryption happens locally in your browser.
+                <br />Your passphrase never leaves this device.
+              </p>
             </>
           )}
         </div>
