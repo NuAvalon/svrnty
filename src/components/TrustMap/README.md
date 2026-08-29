@@ -1,19 +1,21 @@
 # TrustMap (L2) — Cursor UI notes
 
 **Brief:** `CURSOR.md` L2 · Aesthetic: Solar Ember  
-**Layout/crypto:** `src/lib/trust/trust-map-layout.ts` — **do not modify** (team-owned invariants + tests).
+**Layout/crypto:** `src/lib/trust/trust-map-layout.ts` — **do not modify** (team-owned invariants + tests). Clustering / group chords are render-only in this component.
 
 ## What we changed
-- Retinted SVG tokens to Solar Ember (warm ember field, gold edges, sacral orange lit nodes).
-- Tokens use CSS vars (`solarEmber`) so light/dark appearance follows the header toggle.
-- Click a node → seal + contact sheet; shift-click / Select to multi-pick; **Add to group** writes a local tag label.
-- Left layout/provenance logic untouched (egocentric, no peer↔peer inference, I-6).
+- Retinted SVG tokens to Solar Ember (CSS vars → light/dark).
+- Click node → seal + **alive contact sheet** (edit, TRUST/remove, accept pending intro, introduce stub, send-update stub, version-history WIP note, multi-select → group).
+- Sample circle (`sample-circle.ts`): mutual trust self↔Ada/Grace/Margaret; owner-authored tags (`core`, `builders`, `radio`, …) → **cluster chords + centroid pull**; Frank = pending intro from Grace (pending ≠ trust).
+- Known vs trusted visuals sharpened (hollow dashed known · lit fill + halo trusted · double-glow mutual · pulsing dashed pending).
+- Intro UI creates a local pending contact for demo; dual-accept protocol is team-owned.
 
 ## Still open (UI)
-- Particle-lattice canvas (drifting nodes, accent lines when dist &lt; ~130) — next pass; current SVG layout already egocentric and mobile-safe.
-- Click-node → richer glyph via `IdentitySeal` + contact sheet.
-- Reach-settings / “awaken the circle” toggles — need team visibility contracts before UI.
+- Particle-lattice canvas (dist &lt; ~130 accent lines) — next pass.
+- Reach-settings / “awaken the circle” — need team visibility contracts.
+- Version history surface (L1) — placeholder only.
+- Real introduce wire (pending both sides until accept) — stubbed locally.
 
 ## Questions
-1. OK to evolve toward canvas particle-lattice *using the same* `computeTrustLayout` positions (render-only), or keep SVG?
-2. Where should per-edge reach settings live in the data model before we draw toggles?
+1. OK to keep group chords as owner-authored tag edges (current), or should tribes live in a separate store before we draw them?
+2. Should pending intros sit outside the known ring until accepted, or stay on the rim (current)?

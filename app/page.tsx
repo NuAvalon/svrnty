@@ -178,6 +178,28 @@ export default function Home() {
     refreshContacts();
   }, [refreshContacts]);
 
+  // Demo circle can refresh when the book is empty or sample-only
+  const [sampleRefreshable, setSampleRefreshable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!identity?.identity?.fingerprint) {
+        if (!cancelled) setSampleRefreshable(false);
+        return;
+      }
+      try {
+        const { canRefreshSampleCircle } = await import('@/lib/trust/sample-circle');
+        const ok = await canRefreshSampleCircle(identity.identity.fingerprint);
+        if (!cancelled) setSampleRefreshable(ok);
+      } catch {
+        if (!cancelled) setSampleRefreshable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, contacts]);
+
   // Loading state
   if (appState === 'checking') {
     return (
@@ -480,6 +502,7 @@ export default function Home() {
                 ownerFingerprint={identity.identity.fingerprint}
                 ownerName={identity.identity.name}
                 contacts={contacts}
+                sampleRefreshable={sampleRefreshable}
                 onLoadSample={async () => {
                   const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
                   await seedSampleCircle(identity.identity.fingerprint);
@@ -488,7 +511,6 @@ export default function Home() {
                 onAssignGroup={async (fingerprints, groupName) => {
                   const label = groupName.trim();
                   if (!label) return;
-                  const { getAllContacts } = await import('@/lib/identity/client-store');
                   const records = await getAllContacts(identity.identity.fingerprint);
                   for (const fp of fingerprints) {
                     const rec = records.find(
@@ -504,6 +526,91 @@ export default function Home() {
                       metadata: { ...((rec as any)?.metadata || {}), tags },
                     } as any);
                   }
+                  await refreshContacts();
+                }}
+                onTrustToggle={async (edge) => {
+                  const nextTrusted = !edge.trusted;
+                  await updateContact(edge.id, {
+                    trust_level: nextTrusted ? 'trusted' : 'unverified',
+                    trusted: nextTrusted,
+                    trusted_since: nextTrusted ? new Date().toISOString() : null,
+                    verified_at: nextTrusted ? new Date().toISOString() : undefined,
+                  } as any);
+                  await refreshContacts();
+                }}
+                onRemoveContact={async (edge) => {
+                  const { removeContact } = await import('@/lib/identity/client-store');
+                  await removeContact(edge.id);
+                  await refreshContacts();
+                }}
+                onAcceptIntro={async (edge) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  await updateContact(edge.id, {
+                    connection_status: 'accepted',
+                    metadata: {
+                      ...((rec as any)?.metadata || {}),
+                      connection_status: 'accepted',
+                      pending_intro: undefined,
+                    },
+                    pending_intro: undefined,
+                  } as any);
+                  await refreshContacts();
+                }}
+                onUpdateContact={async (edge, patch) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const phones = patch.phones ?? edge.contact_info?.phones;
+                  await updateContact(edge.id, {
+                    name: patch.name ?? edge.peer_name,
+                    email: patch.email ?? edge.peer_email,
+                    notes: patch.notes ?? edge.notes,
+                    contact_info: {
+                      ...(edge.contact_info || {}),
+                      ...(rec as any)?.contact_info,
+                      phones,
+                      emails: patch.email
+                        ? [patch.email]
+                        : edge.contact_info?.emails,
+                    },
+                    metadata: {
+                      ...((rec as any)?.metadata || {}),
+                      notes: patch.notes ?? edge.notes,
+                    },
+                  } as any);
+                  await refreshContacts();
+                }}
+                onIntroduce={async (fromEdge, introduceeName) => {
+                  // UI demo: create a pending contact introduced by the focused peer.
+                  // Real dual-pending protocol is team-owned — this is local visualization only.
+                  const { addContact } = await import('@/lib/identity/client-store');
+                  const fp =
+                    Array.from({ length: 40 }, (_, i) =>
+                      ((introduceeName.charCodeAt(i % introduceeName.length) + i * 7) % 16).toString(16)
+                    ).join('');
+                  await addContact(identity.identity.fingerprint, {
+                    name: introduceeName,
+                    email: '',
+                    fingerprint: fp,
+                    public_key: '',
+                    trust_level: 'unverified',
+                    trusted: false,
+                    connection_status: 'pending',
+                    pending_intro: {
+                      introduced_by: fromEdge.peer_name,
+                      introduced_by_fp: fromEdge.peer_fingerprint,
+                      context: `${fromEdge.peer_name} introduced you to ${introduceeName}`,
+                    },
+                    metadata: {
+                      sample: true,
+                      connection_status: 'pending',
+                      pending_intro: {
+                        introduced_by: fromEdge.peer_name,
+                        introduced_by_fp: fromEdge.peer_fingerprint,
+                        context: `${fromEdge.peer_name} introduced you to ${introduceeName}`,
+                      },
+                    },
+                  } as any);
                   await refreshContacts();
                 }}
               />

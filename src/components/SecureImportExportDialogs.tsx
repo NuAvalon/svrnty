@@ -186,10 +186,10 @@ export function SecureExportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle>Secure Contact Export</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-[var(--se-text)]">Secure Contact Export</DialogTitle>
+          <DialogDescription className="text-[var(--se-muted)]">
             Export your contacts with encryption for secure backup or transfer.
           </DialogDescription>
         </DialogHeader>
@@ -310,7 +310,7 @@ export function SecureExportDialog({
             <Button
               onClick={handleExport}
               disabled={loading || (usePassword && !password)}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
                 <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Exporting...</> :
@@ -421,13 +421,13 @@ export function PrivateKeyExportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Key className="h-5 w-5" />
+          <DialogTitle className="flex items-center gap-2 text-[var(--se-text)]">
+            <Key className="h-5 w-5 text-[var(--se-accent)]" />
             Download Private Key
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-[var(--se-muted)]">
             Export your private key as a password-protected file. Store it securely — this file can access your identity.
           </DialogDescription>
         </DialogHeader>
@@ -441,15 +441,15 @@ export function PrivateKeyExportDialog({
 
         {!exportComplete ? (
           <div className="space-y-4 py-4">
-            <Alert className="bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800">
-              <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-              <AlertDescription className="text-amber-800 dark:text-amber-300 text-sm">
+            <Alert className="bg-[color-mix(in_srgb,var(--se-accent)_10%,var(--se-surface-solid))] border-[var(--se-border-lit)]">
+              <ShieldCheck className="h-4 w-4 text-[var(--se-accent)]" />
+              <AlertDescription className="text-[var(--se-text)] text-sm">
                 Your private key will be encrypted with AES-256-GCM using your password. Without this password, the file cannot be decrypted.
               </AlertDescription>
             </Alert>
 
             <div className="space-y-2">
-              <Label htmlFor="keyPassword">Password (minimum 8 characters)</Label>
+              <Label htmlFor="keyPassword" className="text-[var(--se-muted)]">Password (minimum 8 characters)</Label>
               <div className="flex">
                 <Input
                   id="keyPassword"
@@ -475,7 +475,7 @@ export function PrivateKeyExportDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="confirmKeyPassword">Confirm Password</Label>
+              <Label htmlFor="confirmKeyPassword" className="text-[var(--se-muted)]">Confirm Password</Label>
               <Input
                 id="confirmKeyPassword"
                 type={showPassword ? 'text' : 'password'}
@@ -484,15 +484,15 @@ export function PrivateKeyExportDialog({
                 placeholder="Confirm your password"
               />
               {confirmPassword && !passwordsMatch && (
-                <p className="text-xs text-red-500">Passwords do not match</p>
+                <p className="text-xs text-[var(--se-danger)]">Passwords do not match</p>
               )}
             </div>
           </div>
         ) : (
           <div className="space-y-4 py-4">
-            <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900">
-              <Lock className="h-4 w-4 text-green-600 dark:text-green-500" />
-              <AlertDescription className="text-green-800 dark:text-green-300">
+            <Alert className="bg-[color-mix(in_srgb,var(--se-ok)_12%,var(--se-surface-solid))] border-[var(--se-border)]">
+              <Lock className="h-4 w-4 text-[var(--se-ok)]" />
+              <AlertDescription className="text-[var(--se-text)]">
                 Your private key has been downloaded as a password-protected file. Store it in a secure location and remember your password.
               </AlertDescription>
             </Alert>
@@ -508,7 +508,7 @@ export function PrivateKeyExportDialog({
             <Button
               onClick={handleExport}
               disabled={loading || !passwordValid || !passwordsMatch}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ? (
                 <>
@@ -640,10 +640,10 @@ export function SecureImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle>Secure Contact Import</DialogTitle>
-          <DialogDescription>
+          <DialogTitle className="text-[var(--se-text)]">Secure Contact Import</DialogTitle>
+          <DialogDescription className="text-[var(--se-muted)]">
             Import contacts from an encrypted export.
           </DialogDescription>
         </DialogHeader>
@@ -731,7 +731,7 @@ export function SecureImportDialog({
             <Button
               onClick={handleImport}
               disabled={loading || !importData || (needsPassword && !password)}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
                 <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> :

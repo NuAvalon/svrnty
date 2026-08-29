@@ -180,30 +180,6 @@ button[data-slot="button"] {
   transition: all 0.2s ease;
 }
 
-/* Primary buttons */
-button[data-variant="default"] {
-  background: rgba(200, 168, 78, 0.15) !important;
-  border: 1px solid rgba(200, 168, 78, 0.3) !important;
-  color: #c8a84e !important;
-}
-
-button[data-variant="default"]:hover {
-  background: rgba(200, 168, 78, 0.25) !important;
-  box-shadow: 0 0 16px rgba(200, 168, 78, 0.12);
-}
-
-/* Outline buttons */
-button[data-variant="outline"] {
-  background: transparent !important;
-  border-color: rgba(180, 160, 100, 0.2) !important;
-  color: #8a8070 !important;
-}
-
-button[data-variant="outline"]:hover {
-  background: rgba(180, 160, 100, 0.08) !important;
-  color: #e0dcd0 !important;
-}
-
 /* --- Tab overrides --- */
 [role="tablist"] {
   background: var(--se-surface) !important;
@@ -243,15 +219,51 @@ button[data-variant="outline"]:hover {
 
 /* --- Alert overrides --- */
 [role="alert"] {
-  background: rgba(15, 15, 25, 0.7) !important;
-  border-color: rgba(180, 160, 100, 0.15) !important;
+  background: color-mix(in srgb, var(--se-accent) 8%, var(--se-surface-solid)) !important;
+  border-color: var(--se-border) !important;
+  color: var(--se-text) !important;
 }
 
 /* --- Dialog overrides --- */
 [role="dialog"] {
   background: var(--se-surface-solid) !important;
   border: 1px solid var(--se-border) !important;
+  color: var(--se-text) !important;
   backdrop-filter: blur(16px);
+  box-shadow: var(--se-glass-shadow);
+}
+
+[role="dialog"] h2,
+[role="dialog"] [data-slot="dialog-title"] {
+  color: var(--se-text) !important;
+}
+
+[role="dialog"] p,
+[role="dialog"] [data-slot="dialog-description"] {
+  color: var(--se-muted) !important;
+}
+
+/* Outline / default buttons follow appearance (fix light-mode dark leftovers) */
+button[data-variant="default"] {
+  background: color-mix(in srgb, var(--se-accent) 14%, transparent) !important;
+  border: 1px solid var(--se-border-lit) !important;
+  color: var(--se-accent) !important;
+}
+
+button[data-variant="default"]:hover {
+  background: color-mix(in srgb, var(--se-accent) 24%, transparent) !important;
+  box-shadow: 0 0 16px color-mix(in srgb, var(--se-accent) 12%, transparent);
+}
+
+button[data-variant="outline"] {
+  background: transparent !important;
+  border-color: var(--se-border) !important;
+  color: var(--se-muted) !important;
+}
+
+button[data-variant="outline"]:hover {
+  background: color-mix(in srgb, var(--se-accent) 8%, transparent) !important;
+  color: var(--se-text) !important;
 }
 
 /* --- Selection --- */

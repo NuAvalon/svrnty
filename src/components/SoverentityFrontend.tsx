@@ -1572,20 +1572,25 @@ export function SoverentityFrontend({
           <div style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.8)',
+            background: 'rgba(0,0,0,0.55)',
             display: 'flex',
             justifyContent: 'center',
             alignItems: 'center',
             zIndex: 50,
           }} onClick={() => setShowPassphraseDialog(false)}>
-            <div style={{
-              background: 'rgba(10, 14, 12, 0.98)',
-              border: '1px solid rgba(249, 168, 37, 0.15)',
+            <div
+              role="dialog"
+              aria-label="Set passphrase"
+              style={{
+              background: SE.surfaceSolid,
+              border: `1px solid ${SE.border}`,
               borderRadius: '16px',
               padding: '32px',
               maxWidth: '380px',
               width: '100%',
               margin: '20px',
+              boxShadow: 'var(--se-glass-shadow)',
+              color: SE.text,
             }} onClick={e => e.stopPropagation()}>
               <h3 style={{
                 fontFamily: SE.fontSans,
@@ -1599,7 +1604,7 @@ export function SoverentityFrontend({
                 {passphraseSuccess ? 'Passphrase Set' : 'Set Passphrase'}
               </h3>
               {passphraseSuccess ? (
-                <p style={{ textAlign: 'center' as const, color: '#f9a825', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px' }}>
+                <p style={{ textAlign: 'center' as const, color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px' }}>
                   Your identity is now protected.
                 </p>
               ) : (
@@ -1612,13 +1617,13 @@ export function SoverentityFrontend({
                     autoFocus
                     style={{
                       width: '100%',
-                      background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(249, 168, 37, 0.15)',
+                      background: SE.inputBg,
+                      border: `1px solid ${SE.border}`,
                       borderRadius: '8px',
                       padding: '12px 14px',
-                      color: '#e8e4d9',
+                      color: SE.text,
                       fontSize: '14px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       outline: 'none',
                       marginBottom: '12px',
                       boxSizing: 'border-box' as const,
@@ -1631,33 +1636,33 @@ export function SoverentityFrontend({
                     onChange={e => { setConfirmPassphrase(e.target.value); setPassphraseError(''); }}
                     style={{
                       width: '100%',
-                      background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(249, 168, 37, 0.15)',
+                      background: SE.inputBg,
+                      border: `1px solid ${SE.border}`,
                       borderRadius: '8px',
                       padding: '12px 14px',
-                      color: '#e8e4d9',
+                      color: SE.text,
                       fontSize: '14px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       outline: 'none',
                       marginBottom: '8px',
                       boxSizing: 'border-box' as const,
                     }}
                   />
                   {passphraseError && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>{passphraseError}</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>{passphraseError}</p>
                   )}
                   <button
                     onClick={handleSetPassphrase}
                     disabled={!newPassphrase || !confirmPassphrase}
                     style={{
                       width: '100%',
-                      background: 'rgba(249, 168, 37, 0.12)',
-                      border: '1px solid rgba(249, 168, 37, 0.3)',
+                      background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                      border: `1px solid ${SE.borderLit}`,
                       borderRadius: '8px',
                       padding: '12px',
-                      color: '#f9a825',
+                      color: SE.accent,
                       fontSize: '12px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       letterSpacing: '1px',
                       cursor: 'pointer',
                       marginTop: '8px',
@@ -1674,13 +1679,25 @@ export function SoverentityFrontend({
         {/* Claim URL Dialog */}
         {showClaimUrlDialog && (
           <div style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 50,
           }} onClick={() => setShowClaimUrlDialog(false)}>
-            <div style={{
-              background: 'rgba(10, 14, 12, 0.98)', border: '1px solid rgba(200, 168, 78, 0.15)',
-              borderRadius: '16px', padding: '32px', maxWidth: '380px', width: '100%', margin: '20px',
-            }} onClick={e => e.stopPropagation()}>
+            <div
+              role="dialog"
+              aria-label="Claim URL"
+              style={{
+                background: SE.surfaceSolid,
+                border: `1px solid ${SE.border}`,
+                borderRadius: '16px',
+                padding: '32px',
+                maxWidth: '380px',
+                width: '100%',
+                margin: '20px',
+                boxShadow: 'var(--se-glass-shadow)',
+                color: SE.text,
+              }}
+              onClick={e => e.stopPropagation()}
+            >
               <h3 style={{
                 fontFamily: SE.fontSans, fontSize: '1.15rem', fontWeight: 500,
                 letterSpacing: '-0.02em',
@@ -1690,45 +1707,46 @@ export function SoverentityFrontend({
               </h3>
               {claimStatus === 'success' ? (
                 <div style={{ textAlign: 'center' as const }}>
-                  <p style={{ color: '#f9a825', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', marginBottom: '12px' }}>
+                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px', marginBottom: '12px' }}>
                     Your identity is now at:
                   </p>
-                  <p style={{ color: '#c8a84e', fontFamily: "'Space Grotesk', sans-serif", fontSize: '16px', fontWeight: 600 }}>
+                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '16px', fontWeight: 600 }}>
                     {claimedUrl}
                   </p>
                 </div>
               ) : (
                 <>
-                  <p style={{ color: 'rgba(232,228,217,0.5)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
+                  <p style={{ color: SE.muted, fontFamily: SE.fontSans, fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
                     Choose a URL for your public profile
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
-                    <span style={{ color: 'rgba(232,228,217,0.4)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
+                    <span style={{ color: SE.dim, fontFamily: SE.fontSans, fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
                     <input
                       type="text"
                       placeholder="yourname"
                       value={claimSlug}
                       onChange={e => { setClaimSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setClaimStatus('idle'); }}
                       style={{
-                        flex: 1, background: 'rgba(6, 10, 8, 0.8)', border: '1px solid rgba(200, 168, 78, 0.15)',
-                        borderRadius: '8px', padding: '12px 14px', color: '#e8e4d9', fontSize: '14px',
-                        fontFamily: "'Space Grotesk', sans-serif", outline: 'none', boxSizing: 'border-box' as const,
+                        flex: 1, background: SE.inputBg, border: `1px solid ${SE.border}`,
+                        borderRadius: '8px', padding: '12px 14px', color: SE.text, fontSize: '14px',
+                        fontFamily: SE.fontSans, outline: 'none', boxSizing: 'border-box' as const,
                       }}
                     />
                   </div>
                   {claimStatus === 'taken' && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>This URL is already claimed</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>This URL is already claimed</p>
                   )}
                   {claimStatus === 'error' && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
                   )}
                   <button
                     onClick={handleClaimUrl}
                     disabled={claimSlug.length < 3 || claimStatus === 'checking' || claimStatus === 'claiming'}
                     style={{
-                      width: '100%', background: 'rgba(200, 168, 78, 0.12)', border: '1px solid rgba(200, 168, 78, 0.3)',
-                      borderRadius: '8px', padding: '12px', color: '#c8a84e', fontSize: '12px',
-                      fontFamily: "'Space Grotesk', sans-serif", letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
+                      width: '100%', background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                      border: `1px solid ${SE.borderLit}`,
+                      borderRadius: '8px', padding: '12px', color: SE.accent, fontSize: '12px',
+                      fontFamily: SE.fontSans, letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
                     }}
                   >
                     {claimStatus === 'checking' ? 'CHECKING...' : claimStatus === 'claiming' ? 'CLAIMING...' : 'CLAIM URL'}

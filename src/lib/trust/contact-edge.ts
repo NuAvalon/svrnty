@@ -47,5 +47,8 @@ export function contactRecordToEdge(c: any): TrustEdge {
     // `pq_*_public_key`; a peer-shaped source may already carry `peer_pq_*`. Carry either.
     peer_pq_sig_public_key: c.peer_pq_sig_public_key || c.pq_sig_public_key,
     peer_pq_kem_public_key: c.peer_pq_kem_public_key || c.pq_kem_public_key,
+    // Demo / UI connection lifecycle (pending intro ≠ trust). Open-bag passthrough.
+    connection_status: c.connection_status || c.metadata?.connection_status,
+    pending_intro: c.pending_intro || c.metadata?.pending_intro,
   } as TrustEdge;
 }
