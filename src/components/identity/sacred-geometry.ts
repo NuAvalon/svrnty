@@ -44,13 +44,11 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star-inv', label: 'inverted pentagram', k: 2 },
   ],
   6: [
-    // Hexagrams weighted — compound ★ is the favorite; unicursal kept for variety
-    { id: 'hexagram', label: 'hexagram' },
+    { id: 'gon', label: 'hexagon' },
     { id: 'hexagram', label: 'hexagram' },
     { id: 'hexagram-inv', label: 'inverted hexagram' },
     { id: 'unicursal', label: 'unicursal hexagram' },
     { id: 'unicursal-inv', label: 'inverted unicursal' },
-    { id: 'gon', label: 'hexagon' },
   ],
   7: [
     { id: 'gon', label: 'heptagon' },
@@ -123,36 +121,60 @@ export function hexagramCompoundPath(
 }
 
 /**
- * Classic Crowley / Thelemic unicursal hexagram — one continuous outline.
- * Proportions match the familiar banner shape (not a regular-hexagon stitch).
- * Unit coords derived from the standard 0–100 glyph: top tip, upper points,
- * waist crossings, lower tips, back to top.
+ * Crowley unicursal hexagram — Wikimedia Commons geometry
+ * (File:Crowley_unicursal_hexagram.svg). Two interlaced triangle-paths
+ * (one + rotate 180°), not a banner outline or regular-hexagon stitch.
+ * Returns one or more SVG path `d` strings in viewBox-local form already
+ * mapped into (cx,cy,R) with optional rotation about center.
  */
-export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
-  // Normalized from classic viewBox path
-  // M50,0 L61,33 L100,33 L70,55 L82,100 L50,72 L18,100 L30,55 L0,33 L39,33 Z
-  const unit: [number, number][] = [
-    [0.0, -1.0],
-    [0.22, -0.34],
-    [1.0, -0.34],
-    [0.4, 0.1],
-    [0.64, 1.0],
-    [0.0, 0.44],
-    [-0.64, 1.0],
-    [-0.4, 0.1],
-    [-1.0, -0.34],
-    [-0.22, -0.34],
+export function unicursalHexagramPaths(
+  cx: number,
+  cy: number,
+  R: number,
+  rot: number
+): string[] {
+  // Absolute vertices of the Wikimedia "triangle" path (viewBox 0 0 200 220).
+  // Origin path: m100,10 l86.60,150 l-86.60,-50 l62.46,25.86 l-62.46,-105.86
+  //              l-62.46,105.86 l62.46,-25.86 l-86.60,50 l86.60,-150 z
+  const ox = 100;
+  const oy = 110; // rotate origin in the SVG
+  const raw: [number, number][] = [
+    [100, 10],
+    [186.602539, 160],
+    [100, 110],
+    [162.460411, 135.85787],
+    [100, 30],
+    [37.539589, 135.85787],
+    [100, 110],
+    [13.397461, 160],
+    [100, 10],
   ];
-  // Fit width-1.0 glyph into radius R (glyph half-width ≈ 1)
-  const scale = R * 0.92;
+  // Fit height 200 → diameter 2R
+  const scale = (2 * R) / 200;
   const c = Math.cos(rot);
   const s = Math.sin(rot);
-  const pts = unit.map(([x, y]) => {
-    const xr = x * c - y * s;
-    const yr = x * s + y * c;
-    return `${(cx + xr * scale).toFixed(2)},${(cy + yr * scale).toFixed(2)}`;
-  });
-  return `M ${pts[0]} L ${pts.slice(1).join(' L ')} Z`;
+
+  const mapPts = (pts: [number, number][], mirror: boolean) => {
+    const out = pts.map(([x, y]) => {
+      let lx = (x - ox) * scale;
+      let ly = (y - oy) * scale;
+      if (mirror) {
+        lx = -lx;
+        ly = -ly;
+      }
+      const xr = lx * c - ly * s;
+      const yr = lx * s + ly * c;
+      return `${(cx + xr).toFixed(2)},${(cy + yr).toFixed(2)}`;
+    });
+    return `M ${out.join(' L ')} Z`;
+  };
+
+  return [mapPts(raw, false), mapPts(raw, true)];
+}
+
+/** Single-string helper (joins both interlaced paths). */
+export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
+  return unicursalHexagramPaths(cx, cy, R, rot).join(' ');
 }
 
 /** Triquetra — three vesica lobes (approximate circular arcs as polylines). */
@@ -243,10 +265,14 @@ export function composeSacredFigure(
       push(hexagramCompoundPath(cx, cy, r, rot, true), 0.65, 1.05);
       break;
     case 'unicursal':
-      push(unicursalHexagramPath(cx, cy, r, rot + Math.PI / 2));
+      for (const d of unicursalHexagramPaths(cx, cy, r, rot)) {
+        push(d, 0.72, 1.1);
+      }
       break;
     case 'unicursal-inv':
-      push(unicursalHexagramPath(cx, cy, r, rot + Math.PI / 2 + Math.PI));
+      for (const d of unicursalHexagramPaths(cx, cy, r, rot + Math.PI)) {
+        push(d, 0.72, 1.1);
+      }
       break;
     case 'triquetra':
       push(triquetraPath(cx, cy, r, rot), 0.6, 1.0);

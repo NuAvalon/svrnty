@@ -13,6 +13,7 @@ import {
   fingerprintHex,
   randomFingerprint,
   SACRED_CATALOG,
+  unicursalHexagramPaths,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -48,7 +49,15 @@ test('sacred catalog covers every fold', () => {
   }
 });
 
-test('hexagonal seals can be compound hexagram or unicursal', () => {
+test('Crowley unicursal is two interlaced Wikimedia paths', () => {
+  const paths = unicursalHexagramPaths(50, 50, 40, 0);
+  assert.equal(paths.length, 2);
+  assert.ok(paths[0].startsWith('M '));
+  assert.ok(paths[1].startsWith('M '));
+  assert.notEqual(paths[0], paths[1]);
+});
+
+test('hexagonal seals include compound hexagram and unicursal options', () => {
   const seen = new Set<string>();
   for (let i = 0; i < 120; i++) {
     const g = composePhiSeal(randomFingerprint());
