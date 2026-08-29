@@ -766,6 +766,7 @@ export function SoverentityFrontend({
               <button
                 onClick={() => setGateMode('forge')}
                 style={s.doorBtn}
+                aria-label="Begin anew. Generate a new cryptographic identity."
                 onMouseEnter={e => {
                   const el = e.currentTarget;
                   el.style.borderColor = 'var(--se-border-lit)';
