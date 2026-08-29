@@ -3,7 +3,7 @@
 
 const PHI_INV = (Math.sqrt(5) - 1) / 2;
 
-export type CrystalHabit = 3 | 4 | 5 | 6 | 7 | 8 | 9;
+export type CrystalHabit = 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 
 export type SacredFigureId =
   | 'gon'
@@ -67,6 +67,13 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star-alt', label: 'nonagram {9/4}', k: 4 },
     { id: 'star-inv', label: 'inverted {9/2}', k: 2 },
   ],
+  10: [
+    { id: 'gon', label: 'decagon' },
+    { id: 'star', label: 'decagram {10/3}', k: 3 },
+    { id: 'star-inv', label: 'inverted {10/3}', k: 3 },
+    { id: 'star-alt', label: 'compound {10/4}', k: 4 },
+    { id: 'star-alt-inv', label: 'inverted {10/4}', k: 4 },
+  ],
 };
 
 export function pickSacredOption(fold: CrystalHabit, seed: number): SacredOption {
@@ -82,7 +89,21 @@ function fmt(p: { x: number; y: number }) {
   return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
 }
 
-/** Unicursal star polygon {n/k} — one continuous stroke when gcd(n,k)=1. */
+function gcd(a: number, b: number): number {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y) {
+    const t = y;
+    y = x % y;
+    x = t;
+  }
+  return x || 1;
+}
+
+/**
+ * Star polygon {n/k}. When gcd(n,k)=1 → one unicursal stroke.
+ * When gcd>1 → compound of gcd components (e.g. {10/4} = two pentagrams).
+ */
 export function starPolygonPath(
   cx: number,
   cy: number,
@@ -95,14 +116,19 @@ export function starPolygonPath(
   const flip = inverted ? Math.PI : 0;
   const base = rot + flip - Math.PI / 2;
   const verts = Array.from({ length: n }, (_, i) => pt(cx, cy, R, base + (i * 2 * Math.PI) / n));
-  const order: number[] = [];
-  let idx = 0;
-  for (let i = 0; i < n; i++) {
-    order.push(idx);
-    idx = (idx + k) % n;
+  const d = gcd(n, k);
+  const parts: string[] = [];
+  for (let start = 0; start < d; start++) {
+    const order: number[] = [];
+    let idx = start;
+    for (let i = 0; i < n / d; i++) {
+      order.push(idx);
+      idx = (idx + k) % n;
+    }
+    order.push(order[0]);
+    parts.push(`M ${order.map((i) => fmt(verts[i])).join(' L ')}`);
   }
-  order.push(order[0]);
-  return `M ${order.map((i) => fmt(verts[i])).join(' L ')}`;
+  return parts.join(' ');
 }
 
 /** Compound hexagram — two overlapping triangles (★), not unicursal. */

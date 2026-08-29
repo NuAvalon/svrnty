@@ -96,7 +96,7 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Fingerprint seeds fold (3–9) and a sacred-geometry figure: hexagrams (compound ★),
+          Fingerprint seeds fold (3–10) and a sacred-geometry figure: hexagrams (compound ★),
           unicursal hexagrams, pentagrams, heptagrams, inversions, triquetra, vesica. φ measures
           the crystal cascade. Randomize to walk the catalog.
         </p>

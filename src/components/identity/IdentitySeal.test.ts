@@ -36,7 +36,7 @@ test('rings follow φ cascade R · φ⁻ⁿ', () => {
   assert.ok(Math.abs(PHI * PHI_INV - 1) < 1e-12);
 });
 
-test('fold ∈ 3–9 and matches spine count', () => {
+test('fold ∈ 3–10 and matches spine count', () => {
   const g = composePhiSeal(FP_A);
   assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
   assert.equal(g.spines.length, g.fold);
@@ -47,6 +47,12 @@ test('sacred catalog covers every fold', () => {
   for (const h of CRYSTAL_HABITS) {
     assert.ok(SACRED_CATALOG[h].length >= 2, `fold ${h} needs options`);
   }
+});
+
+test('decagram fold 10 is in the habit set', () => {
+  assert.ok((CRYSTAL_HABITS as readonly number[]).includes(10));
+  assert.ok(SACRED_CATALOG[10].some((o) => o.k === 3), 'expects {10/3}');
+  assert.ok(SACRED_CATALOG[10].some((o) => o.k === 4), 'expects compound {10/4}');
 });
 
 test('Crowley unicursal is two interlaced Wikimedia paths', () => {

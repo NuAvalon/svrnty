@@ -33,15 +33,15 @@ export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] 
 ];
 
 /**
- * Crystal habits — trigonal through nonagon.
+ * Crystal habits — trigonal through decagon (cyber-sigil 10-point).
  * Sacred figure (hexagram, unicursal, star, inversion…) is picked separately from the catalog.
  */
-export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9] as const;
+export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
 
 /**
  * Uniform habit pick — one fold per seed bucket, no preference weighting.
- * fold ∈ {3,4,5,6,7,8,9} equally likely from FNV(fingerprint).
+ * fold ∈ {3…10} equally likely from FNV(fingerprint).
  */
 export function foldFromFingerprint(fingerprint: string): CrystalHabit {
   return CRYSTAL_HABITS[fnv(fingerprint) % CRYSTAL_HABITS.length];
@@ -55,6 +55,7 @@ export const HABIT_LABEL: Record<CrystalHabit, string> = {
   7: 'heptagon',
   8: 'octagon',
   9: 'nonagon',
+  10: 'decagon',
 };
 export function hexNibbles(fingerprint: string): number[] {
   const hex = fingerprint.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
