@@ -757,10 +757,7 @@ export function SoverentityFrontend({
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
               <p style={s.gateSub}>
-                Your identity. Your trust. Your sovereignty.
-              </p>
-              <p style={s.gateHint}>
-                A vessel for your key. Your seal crystallizes from your fingerprint — peers only see it once you&apos;re in their circle.
+                Your identity. Your key. Your network.
               </p>
             </div>
 
@@ -785,8 +782,7 @@ export function SoverentityFrontend({
                 </svg>
                 <span style={s.doorTitle}>Begin anew.</span>
                 <span style={s.doorDesc}>
-                  Generate a new cryptographic identity.
-                  Your keys never leave your device.
+                  A living address book and social web. You own it. We don&apos;t want your data.
                 </span>
               </button>
 
@@ -1810,16 +1806,7 @@ const s: Record<string, React.CSSProperties> = {
     fontStyle: 'normal' as const,
     color: SE.muted,
     lineHeight: '1.5',
-    marginBottom: '10px',
-  },
-  gateHint: {
-    fontSize: '0.8rem',
-    fontFamily: SE.fontSans,
-    fontWeight: 400,
-    color: SE.dim,
-    lineHeight: '1.55',
-    maxWidth: '320px',
-    margin: '0 auto',
+    marginBottom: '0',
   },
   doorContainer: {
     display: 'flex',
