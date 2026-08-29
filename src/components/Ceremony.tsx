@@ -18,7 +18,7 @@
 // full live 2-device auto-advance (needs a live relay channel back — the current relay is a
 // single-use dead-drop), and real-device e2e (#486). Nothing here touches prod.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createRelay } from '@/lib/sync/relay';
 import { loadKey } from '@/lib/identity/client-store';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
@@ -29,6 +29,7 @@ import { TrustMap } from '@/components/TrustMap';
 import { useCeremony } from '@/lib/ceremony/useCeremony';
 import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/ceremony/machine';
 import type { TrustEdge } from '@/lib/trust/types';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
 
 interface CeremonyProps {
   identity: any;
@@ -37,18 +38,6 @@ interface CeremonyProps {
   /** Exit the ceremony (back to the main tabs). */
   onClose?: () => void;
 }
-
-// Emerald/gold palette matching the app shell (app/page.tsx).
-const C = {
-  bg: '#0a0a0f',
-  panel: 'rgba(10, 14, 12, 0.92)',
-  emerald: '#34d399',
-  emeraldDim: 'rgba(52, 211, 153, 0.15)',
-  gold: '#c8a84e',
-  ink: '#e8e4d9',
-  faint: 'rgba(255,255,255,0.35)',
-  err: '#ef4444',
-};
 
 // Which device each step happens on — drives the "on their device" framing.
 const STEP_LOCUS: Record<CeremonyStepId, 'you' | 'them' | 'done'> = {
@@ -140,7 +129,35 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
   }, [ceremony]);
 
   return (
-    <div style={{ maxWidth: 640, margin: '0 auto', padding: '8px 4px' }}>
+    <div style={{ maxWidth: 640, margin: '0 auto', padding: '8px 4px', fontFamily: E.fontSans }}>
+      <div style={{ textAlign: 'center', marginBottom: 22 }}>
+        <p
+          style={{
+            margin: 0,
+            fontSize: 11,
+            letterSpacing: '0.22em',
+            textTransform: 'uppercase',
+            color: E.accent,
+            fontFamily: E.fontSans,
+            fontWeight: 500,
+          }}
+        >
+          Connection ceremony
+        </p>
+        <h1
+          style={{
+            margin: '8px 0 0',
+            fontFamily: E.fontSerif,
+            fontWeight: 300,
+            fontSize: 28,
+            letterSpacing: '0.04em',
+            color: E.text,
+          }}
+        >
+          Meet in the lattice
+        </h1>
+      </div>
+
       {/* Progress rail */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 28 }}>
         {CEREMONY_STEP_ORDER.filter((s) => s !== 'complete').map((s, i) => {
@@ -153,18 +170,18 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
                 style={{
                   height: 3,
                   borderRadius: 2,
-                  background: done || active ? C.emerald : C.emeraldDim,
-                  opacity: done ? 0.6 : active ? 1 : 0.4,
+                  background: done || active ? E.accent : 'rgba(249,168,37,0.12)',
+                  opacity: done ? 0.55 : active ? 1 : 0.35,
                 }}
               />
               <div
                 style={{
                   marginTop: 6,
                   fontSize: 10,
-                  letterSpacing: 1,
+                  letterSpacing: '0.12em',
                   textTransform: 'uppercase',
-                  color: active ? C.emerald : C.faint,
-                  fontFamily: "'JetBrains Mono', monospace",
+                  color: active ? E.accent : E.dim,
+                  fontFamily: E.fontMono,
                 }}
               >
                 {stepLabel(s)}
@@ -177,11 +194,13 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
       {/* Panel */}
       <div
         style={{
-          background: C.panel,
-          border: `1px solid ${C.emeraldDim}`,
+          background: E.surfaceSolid,
+          border: `1px solid ${E.borderLit}`,
           borderRadius: 16,
           padding: 32,
           textAlign: 'center',
+          boxShadow: '0 0 48px rgba(249,168,37,.06)',
+          backdropFilter: 'blur(20px)',
         }}
       >
         {STEP_LOCUS[state.step] === 'them' && (
@@ -189,14 +208,14 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
             style={{
               display: 'inline-block',
               fontSize: 10,
-              letterSpacing: 2,
+              letterSpacing: '0.16em',
               textTransform: 'uppercase',
-              color: C.gold,
-              border: `1px solid rgba(200,168,78,0.3)`,
+              color: E.accent,
+              border: `1px solid ${E.borderLit}`,
               borderRadius: 999,
-              padding: '3px 10px',
+              padding: '4px 12px',
               marginBottom: 16,
-              fontFamily: "'JetBrains Mono', monospace",
+              fontFamily: E.fontMono,
             }}
           >
             On their device
@@ -208,15 +227,17 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
           <div>
             <h2 style={headingStyle}>Show them your card</h2>
             <p style={subStyle}>They scan the code, or open the short link. Same handshake, either way.</p>
-            {creatingRelay && <p style={{ color: C.faint, marginTop: 20 }}>Preparing the handshake…</p>}
+            {creatingRelay && <p style={{ color: E.dim, marginTop: 20, fontFamily: E.fontSans }}>Preparing the handshake…</p>}
             {relay && (
               <>
                 <div style={{ margin: '20px auto', width: 'fit-content' }}>
                   <SimpleQRCode value={relay.url} size={220} />
                 </div>
                 <div style={linkBoxStyle}>
-                  <div style={{ fontSize: 10, color: C.faint, letterSpacing: 1, marginBottom: 4 }}>SHORT LINK</div>
-                  <code style={{ color: C.emerald, fontSize: 13, wordBreak: 'break-all' }}>
+                  <div style={{ fontSize: 10, color: E.dim, letterSpacing: '0.14em', marginBottom: 4, fontFamily: E.fontSans }}>
+                    SHORT LINK
+                  </div>
+                  <code style={{ color: E.accent, fontSize: 13, wordBreak: 'break-all', fontFamily: E.fontMono }}>
                     {shareUrlShort(relay.code)}
                   </code>
                 </div>
@@ -275,7 +296,7 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
                 Give a piece to {tearTarget.name}
               </button>
             ) : (
-              <p style={{ color: C.faint, marginTop: 16, fontSize: 13 }}>
+              <p style={{ color: E.dim, marginTop: 16, fontSize: 13, fontFamily: E.fontSans }}>
                 Add them as a contact first, then return here to give a piece.
               </p>
             )}
@@ -296,7 +317,18 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
         {/* COMPLETE */}
         {state.step === 'complete' && (
           <div>
-            <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
+            <div
+              style={{
+                width: 48,
+                height: 48,
+                margin: '0 auto 12px',
+                borderRadius: '50%',
+                border: `1px solid ${E.borderLit}`,
+                boxShadow: `0 0 24px rgba(249,168,37,.2)`,
+                background: 'rgba(249,168,37,.08)',
+              }}
+              aria-hidden
+            />
             <h2 style={headingStyle}>The ceremony is complete</h2>
             <p style={subStyle}>A card given, an edge live, a facet lit, a piece torn and entrusted.</p>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 20 }}>
@@ -313,14 +345,14 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
         )}
 
         {state.error && (
-          <p style={{ color: C.err, marginTop: 18, fontSize: 13 }}>
+          <p style={{ color: E.danger, marginTop: 18, fontSize: 13, fontFamily: E.fontSans }}>
             {state.error}{' '}
             <button
               onClick={() => {
                 ceremony.clearError();
                 if (state.step === 'handshake') void startHandshake();
               }}
-              style={{ background: 'none', border: 'none', color: C.emerald, cursor: 'pointer', textDecoration: 'underline' }}
+              style={{ background: 'none', border: 'none', color: E.accent, cursor: 'pointer', textDecoration: 'underline', fontFamily: E.fontSans }}
             >
               retry
             </button>
@@ -332,7 +364,7 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
         <div style={{ textAlign: 'center', marginTop: 16 }}>
           <button
             onClick={onClose}
-            style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.2)', fontSize: 12, cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', color: E.dim, fontSize: 12, cursor: 'pointer', fontFamily: E.fontMono, letterSpacing: '0.06em' }}
           >
             Leave ceremony
           </button>
@@ -364,53 +396,54 @@ function StepNarration({
   );
 }
 
-const headingStyle: React.CSSProperties = {
-  fontFamily: "'Cormorant Garamond', serif",
+const headingStyle: CSSProperties = {
+  fontFamily: E.fontSerif,
   fontSize: 26,
   fontWeight: 300,
-  color: C.ink,
-  letterSpacing: 1,
+  color: E.text,
+  letterSpacing: '0.03em',
   margin: '0 0 8px',
 };
-const subStyle: React.CSSProperties = {
-  fontFamily: "'Space Grotesk', sans-serif",
+const subStyle: CSSProperties = {
+  fontFamily: E.fontSans,
   fontSize: 14,
-  color: C.faint,
-  lineHeight: 1.6,
+  fontWeight: 300,
+  color: E.muted,
+  lineHeight: 1.65,
   maxWidth: 420,
   margin: '0 auto',
 };
-const linkBoxStyle: React.CSSProperties = {
-  background: 'rgba(6, 10, 8, 0.8)',
-  border: `1px solid ${C.emeraldDim}`,
+const linkBoxStyle: CSSProperties = {
+  background: E.inputBg,
+  border: `1px solid ${E.border}`,
   borderRadius: 8,
   padding: '12px 16px',
   margin: '16px auto 12px',
   maxWidth: 360,
 };
-const primaryBtnStyle: React.CSSProperties = {
-  background: 'rgba(52, 211, 153, 0.12)',
-  border: `1px solid rgba(52, 211, 153, 0.3)`,
+const primaryBtnStyle: CSSProperties = {
+  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+  border: `1px solid ${E.borderLit}`,
   borderRadius: 8,
   padding: '12px 22px',
-  color: C.emerald,
+  color: E.accent,
   fontSize: 12,
   fontWeight: 500,
-  letterSpacing: 2,
+  letterSpacing: '0.14em',
   textTransform: 'uppercase',
-  fontFamily: "'Space Grotesk', sans-serif",
+  fontFamily: E.fontSans,
   cursor: 'pointer',
   marginTop: 20,
 };
-const copyBtnStyle: React.CSSProperties = {
+const copyBtnStyle: CSSProperties = {
   background: 'none',
-  border: `1px solid ${C.emeraldDim}`,
+  border: `1px solid ${E.border}`,
   borderRadius: 8,
   padding: '10px 18px',
-  color: C.faint,
+  color: E.muted,
   fontSize: 11,
-  letterSpacing: 1,
+  letterSpacing: '0.1em',
   textTransform: 'uppercase',
-  fontFamily: "'JetBrains Mono', monospace",
+  fontFamily: E.fontMono,
   cursor: 'pointer',
 };

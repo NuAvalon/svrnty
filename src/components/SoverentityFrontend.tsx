@@ -5,11 +5,17 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from '@/lib/identity/client-store';
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
+import { EntropyMeter } from '@/components/recovery/EntropyMeter';
+import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
+import { SovereignIdentityCard } from '@/components/identity/SovereignIdentityCard';
+import { solarEmber as SE } from '@/components/recovery/solar-ember';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
   onVaultRestore?: (contents: any) => void;
+  /** Jump to Trust Map from the card's "Your circle" affordance */
+  onOpenCircle?: () => void;
 }
 
 type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
@@ -123,8 +129,8 @@ function SacredGeometryBg() {
           50% { box-shadow: 0 0 50px rgba(200, 168, 78, 0.2), 0 0 80px rgba(200, 168, 78, 0.06); }
         }
         @keyframes emerald-pulse {
-          0%, 100% { box-shadow: 0 0 20px rgba(52, 211, 153, 0.06); }
-          50% { box-shadow: 0 0 40px rgba(52, 211, 153, 0.15), 0 0 60px rgba(52, 211, 153, 0.04); }
+          0%, 100% { box-shadow: 0 0 20px rgba(249, 168, 37, 0.06); }
+          50% { box-shadow: 0 0 40px rgba(249, 168, 37, 0.15), 0 0 60px rgba(249, 168, 37, 0.04); }
         }
       `}</style>
 
@@ -135,8 +141,8 @@ function SacredGeometryBg() {
       }}>
         <defs>
           <radialGradient id="sacredGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="0.06" />
-            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+            <stop offset="0%" stopColor="#f9a825" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#f9a825" stopOpacity="0" />
           </radialGradient>
         </defs>
         {/* Flower of Life circles */}
@@ -145,7 +151,7 @@ function SacredGeometryBg() {
             key={`flower-${i}`}
             cx={c.cx} cy={c.cy} r={60}
             fill="none"
-            stroke="#34d399"
+            stroke="#f9a825"
             strokeWidth="0.5"
             opacity={0.06}
           />
@@ -181,7 +187,7 @@ function SacredGeometryBg() {
             width: `${node.size}px`,
             height: `${node.size}px`,
             borderRadius: '50%',
-            background: node.id % 3 === 0 ? '#34d399' : '#c8a84e',
+            background: node.id % 3 === 0 ? '#f9a825' : '#c8a84e',
             boxShadow: `0 0 6px ${node.id % 3 === 0 ? 'rgba(52,211,153,0.3)' : 'rgba(200,168,78,0.3)'}`,
             '--dx': `${node.drift}px`,
             '--dy': `${node.drift * 0.7}px`,
@@ -208,6 +214,7 @@ export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
   onVaultRestore,
+  onOpenCircle,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
@@ -229,6 +236,7 @@ export function SoverentityFrontend({
   const [vaultFile, setVaultFile] = useState<File | null>(null);
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
+  const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
 
   // PQ migration state (shown after v1 import)
   const [pendingPqMigration, setPendingPqMigration] = useState<{ fingerprint: string; identity: any } | null>(null);
@@ -471,7 +479,7 @@ export function SoverentityFrontend({
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
-        const { importAll, storeIdentity, storeKey, addContact, setActiveFingerprint, loadIdentity } = await import('@/lib/identity/client-store');
+        const { importAll, storeKey, addContact, loadIdentity } = await import('@/lib/identity/client-store');
 
         // Detect format and normalize
         if (data.type === 'svrnty-full-backup') {
@@ -504,6 +512,33 @@ export function SoverentityFrontend({
             await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
+
+          // L8: when a KeyVault is present, soul-seed is the second factor (CURSOR.md).
+          if (backup.vault) {
+            if (!soulSeedPhrase.trim()) {
+              setRestoreError('Enter your soul-seed recovery phrase (second factor).');
+              return;
+            }
+            try {
+              const { recoverFromSeedPhrase } = await import('@/lib/crypto/recovery');
+              const bundle = await recoverFromSeedPhrase(backup.vault, soulSeedPhrase.trim());
+              // Prefer recovering keys from the vault when plaintext keys were omitted (true 2nd factor).
+              if (!backup.keys) {
+                backup.keys = {
+                  privateKey: bundle.classical_private_key,
+                  passphrase: bundle.classical_passphrase,
+                };
+              }
+              // PQ private material shape is team-owned (serializeKeypairBundle). If the backup
+              // omitted pq_keys, flag in recovery README — do not invent a bundle layout here.
+              void bundle.pq_signing_secret_key;
+              void bundle.pq_kem_secret_key;
+            } catch {
+              setRestoreError('Soul-seed does not open the recovery vault. Check the phrase and try again.');
+              return;
+            }
+          }
+
           await importAll(backup);
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
@@ -520,6 +555,25 @@ export function SoverentityFrontend({
           onIdentityUpdate?.(backup.identity);
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
+          if (data.vault) {
+            if (!soulSeedPhrase.trim()) {
+              setRestoreError('Enter your soul-seed recovery phrase (second factor).');
+              return;
+            }
+            try {
+              const { recoverFromSeedPhrase } = await import('@/lib/crypto/recovery');
+              const bundle = await recoverFromSeedPhrase(data.vault, soulSeedPhrase.trim());
+              if (!data.keys) {
+                data.keys = {
+                  privateKey: bundle.classical_private_key,
+                  passphrase: bundle.classical_passphrase,
+                };
+              }
+            } catch {
+              setRestoreError('Soul-seed does not open the recovery vault. Check the phrase and try again.');
+              return;
+            }
+          }
           await importAll(data);
 
           // PQ migration: check for missing PRIVATE PQ keys
@@ -634,8 +688,6 @@ export function SoverentityFrontend({
     }
   };
 
-  const formatFingerprint = (fp: string) => fp?.match(/.{1,4}/g)?.join(' ') || fp;
-
   // --- Gate: Choose Mode ---
   if (!identity && gateMode === 'choose') {
     return (
@@ -646,49 +698,66 @@ export function SoverentityFrontend({
             {/* Hero */}
             <div style={s.hero}>
               <div style={s.shieldIcon}>
-                {/* Geodesic dome wireframe with key inside */}
-                <svg width="100" height="100" viewBox="-55 -55 110 110" style={{ overflow: 'visible' }}>
+                {/* Pointy-top hexagon + key — quiet pre-identity mark */}
+                <svg
+                  width="120"
+                  height="120"
+                  viewBox="0 0 100 100"
+                  aria-hidden
+                  style={{ overflow: 'visible', animation: 'gate-breathe 6s ease-in-out infinite' }}
+                >
                   <defs>
-                    <linearGradient id="domeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#34d399" stopOpacity="0.6" />
-                      <stop offset="100%" stopColor="#c8a84e" stopOpacity="0.4" />
+                    <linearGradient id="hexGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor={SE.accent} stopOpacity="0.7" />
+                      <stop offset="100%" stopColor={SE.accent2} stopOpacity="0.35" />
                     </linearGradient>
                   </defs>
-                  {/* Outer geodesic wireframe — icosahedron projection */}
-                  <g style={{ animation: 'spin-dome 20s linear infinite' }}>
-                    {/* Pentagon ring top */}
-                    <polygon points="0,-48 45.6,-14.8 28.2,38.8 -28.2,38.8 -45.6,-14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.5" />
-                    {/* Pentagon ring bottom (rotated) */}
-                    <polygon points="0,48 -45.6,14.8 -28.2,-38.8 28.2,-38.8 45.6,14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.3" />
-                    {/* Connecting triangles */}
-                    <line x1="0" y1="-48" x2="45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
-                    <line x1="0" y1="-48" x2="-45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
-                    <line x1="45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
-                    <line x1="-45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
-                    <line x1="28.2" y1="38.8" x2="-28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
-                    <line x1="-28.2" y1="38.8" x2="28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
-                    {/* Inner triangulation */}
-                    <line x1="45.6" y1="-14.8" x2="-28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="-45.6" y1="-14.8" x2="28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="28.2" y1="38.8" x2="45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="-28.2" y1="38.8" x2="-45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
+                  <style>{`
+                    @keyframes gate-breathe {
+                      0%, 100% { filter: drop-shadow(0 0 10px rgba(249,168,37,.2)); }
+                      50% { filter: drop-shadow(0 0 18px rgba(249,168,37,.4)); }
+                    }
+                    @keyframes gate-key-pulse {
+                      0%, 100% { opacity: 0.88; }
+                      50% { opacity: 1; }
+                    }
+                  `}</style>
+                  {/* Pointy-top regular hexagon */}
+                  <polygon
+                    points="50,8 86,29 86,71 50,92 14,71 14,29"
+                    fill="none"
+                    stroke="url(#hexGrad)"
+                    strokeWidth="1.4"
+                    strokeLinejoin="miter"
+                  />
+                  <polygon
+                    points="50,20 76,35 76,65 50,80 24,65 24,35"
+                    fill="none"
+                    stroke={SE.accent}
+                    strokeOpacity="0.28"
+                    strokeWidth="0.9"
+                  />
+                  {/* Key */}
+                  <g
+                    transform="translate(50,50)"
+                    style={{ animation: 'gate-key-pulse 4s ease-in-out infinite' }}
+                    stroke={SE.accent}
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                  >
+                    <circle cx="0" cy="-8" r="7" />
+                    <circle cx="0" cy="-8" r="2.5" fill={SE.bg} stroke={SE.accent} />
+                    <line x1="0" y1="-1" x2="0" y2="16" />
+                    <line x1="0" y1="8" x2="6" y2="8" />
+                    <line x1="0" y1="13" x2="4.5" y2="13" />
                   </g>
-                  {/* Key at center — doesn't rotate */}
-                  <g opacity="0.9" style={{ animation: 'pulse-key 4s ease-in-out infinite' }}>
-                    <svg x="-12" y="-16" width="24" height="32" viewBox="0 0 24 32" fill="none" stroke="#c8a84e" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="9" r="6" />
-                      <line x1="12" y1="15" x2="12" y2="28" />
-                      <line x1="12" y1="22" x2="16" y2="22" />
-                      <line x1="12" y1="26" x2="15" y2="26" />
-                    </svg>
-                  </g>
-                  {/* Glow */}
-                  <circle cx="0" cy="0" r="50" fill="none" stroke="#34d399" strokeWidth="0.3" opacity="0.08" style={{ animation: 'pulse-node 6s ease-in-out infinite' }} />
                 </svg>
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
               <p style={s.gateSub}>
-                Your identity. Your trust. Your sovereignty.
+                Your identity. Your key. Your network.
               </p>
             </div>
 
@@ -697,24 +766,24 @@ export function SoverentityFrontend({
               <button
                 onClick={() => setGateMode('forge')}
                 style={s.doorBtn}
+                aria-label="Begin anew. Generate a new cryptographic identity."
                 onMouseEnter={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(200, 168, 78, 0.4)';
-                  el.style.background = 'rgba(200, 168, 78, 0.08)';
+                  el.style.borderColor = 'var(--se-border-lit)';
+                  el.style.background = 'color-mix(in srgb, var(--se-accent) 12%, transparent)';
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(180, 160, 100, 0.15)';
-                  el.style.background = 'rgba(15, 15, 25, 0.6)';
+                  el.style.borderColor = 'var(--se-border)';
+                  el.style.background = 'var(--se-surface)';
                 }}
               >
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--se-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                 </svg>
                 <span style={s.doorTitle}>Begin anew.</span>
                 <span style={s.doorDesc}>
-                  Generate a new cryptographic identity.
-                  Your keys never leave your device.
+                  A living address book and social web. You own it. We don&apos;t want your data.
                 </span>
               </button>
 
@@ -723,13 +792,13 @@ export function SoverentityFrontend({
                 style={s.doorBtn}
                 onMouseEnter={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(78, 205, 196, 0.4)';
-                  el.style.background = 'rgba(78, 205, 196, 0.06)';
+                  el.style.borderColor = 'rgba(78, 205, 196, 0.45)';
+                  el.style.background = 'rgba(78, 205, 196, 0.08)';
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(180, 160, 100, 0.15)';
-                  el.style.background = 'rgba(15, 15, 25, 0.6)';
+                  el.style.borderColor = 'var(--se-border)';
+                  el.style.background = 'var(--se-surface)';
                 }}
               >
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4ecdc4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
@@ -811,8 +880,9 @@ export function SoverentityFrontend({
               onChange={e => { setUnlockConfirm(e.target.value); setUnlockError(''); }}
               style={{ ...s.input, marginTop: '8px' }}
             />
+            <EntropyMeter value={unlockPassphrase} label="Unlock strength" />
             {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
-            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down.</p>
+            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Soul-seed recovery phrase is shown next — a separate second factor.)</p>
           </div>
 
           <button
@@ -843,66 +913,17 @@ export function SoverentityFrontend({
 
   // --- Gate: one-time recovery reveal (seed phrase) ---
   if (!identity && gateMode === 'recovery-reveal' && pendingRecovery) {
+    const fp = pendingRecovery.identity?.identity?.fingerprint || '';
     return (
-      <div style={s.outerWrap}>
-        <div style={s.createCard}>
-          <div style={s.keyIcon}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-            </svg>
-          </div>
-          <h1 style={s.createTitle}>Write this down.</h1>
-          <p style={s.createSub}>
-            This recovery phrase reconstructs your master secret. It is shown once.
-            It is NOT your vault passphrase — the passphrase unlocks this device,
-            the recovery phrase rebuilds your identity if you lose the device.
-            Social-recovery shards ({pendingRecovery.threshold}-of-{pendingRecovery.shardCount}) are stored locally for the tear ceremony.
-          </p>
-          <div style={{
-            background: 'rgba(6, 10, 8, 0.9)',
-            border: '1px solid rgba(200, 168, 78, 0.25)',
-            borderRadius: '10px',
-            padding: '16px',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '13px',
-            color: '#e8e4d9',
-            wordBreak: 'break-all' as const,
-            lineHeight: 1.7,
-            marginBottom: '16px',
-            userSelect: 'all' as const,
-          }}>
-            {pendingRecovery.seedPhrase}
-          </div>
-          <label style={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
-            fontFamily: "'Space Grotesk', sans-serif",
-            fontSize: '12px',
-            color: 'rgba(255,255,255,0.55)',
-            marginBottom: '16px',
-            cursor: 'pointer',
-          }}>
-            <input
-              type="checkbox"
-              checked={recoveryAcked}
-              onChange={e => setRecoveryAcked(e.target.checked)}
-              style={{ marginTop: '2px' }}
-            />
-            <span>I have written this down offline. I understand there is no email recovery.</span>
-          </label>
-          <button
-            onClick={confirmRecoveryReveal}
-            disabled={!recoveryAcked}
-            style={{
-              ...s.primaryBtn,
-              opacity: recoveryAcked ? 1 : 0.45,
-            }}
-          >
-            <span style={s.btnInner}>I have it. Continue.</span>
-          </button>
-        </div>
-      </div>
+      <SoulSeedReveal
+        seedPhrase={pendingRecovery.seedPhrase}
+        fingerprint={fp}
+        threshold={pendingRecovery.threshold}
+        shardCount={pendingRecovery.shardCount}
+        acked={recoveryAcked}
+        onAckChange={setRecoveryAcked}
+        onContinue={confirmRecoveryReveal}
+      />
     );
   }
 
@@ -1030,12 +1051,11 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>JSON backup detected — not encrypted.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  This file contains your identity data in plaintext. It will be imported directly into your browser's local storage.
+                  This file contains your identity data in plaintext. It will be imported directly into your browser&apos;s local storage.
                 </p>
               </div>
             </div>
           ) : (vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') ? (
-            <>
             <div style={s.trustWarning}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
                 <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -1045,34 +1065,11 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Encrypted key backup detected.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  Enter the password you used when exporting to decrypt your private keys.
+                  Enter the password you used when exporting, then your soul-seed if the backup includes a KeyVault.
                 </p>
               </div>
             </div>
-            <div style={s.field}>
-              <label style={s.label}>DECRYPTION PASSWORD</label>
-              <div style={{ position: 'relative' }}>
-                <input
-                  type={showPassphrase ? 'text' : 'password'}
-                  placeholder="Enter your export password"
-                  value={vaultPassphrase}
-                  onChange={e => setVaultPassphrase(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
-                  style={s.input}
-                  autoFocus
-                />
-                <button
-                  onClick={() => setShowPassphrase(!showPassphrase)}
-                  style={s.eyeBtn}
-                >
-                  {showPassphrase ? '🙈' : '👁'}
-                </button>
-              </div>
-            </div>
-            </>
           ) : (
-          <>
-          {/* Trust Warning */}
           <div style={s.trustWarning}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -1087,87 +1084,126 @@ export function SoverentityFrontend({
               </p>
             </div>
           </div>
-
-          {/* Passphrase Input */}
-          <div style={s.field}>
-            <label style={s.label}>VAULT PASSPHRASE</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type={showPassphrase ? 'text' : 'password'}
-                placeholder="Enter your vault passphrase"
-                value={vaultPassphrase}
-                onChange={e => setVaultPassphrase(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
-                style={s.input}
-                autoFocus
-              />
-              <button
-                onClick={() => setShowPassphrase(!showPassphrase)}
-                style={s.eyeBtn}
-                tabIndex={-1}
-              >
-                {showPassphrase ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                    <line x1="1" y1="1" x2="23" y2="23" />
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          <button
-            onClick={handleVaultRestore}
-            disabled={restoreLoading || !vaultPassphrase}
-            style={{
-              ...s.restoreBtn,
-              opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
-            }}
-          >
-            {restoreLoading ? (
-              <span style={s.btnInner}>
-                <Spinner /> Decrypting vault...
-              </span>
-            ) : (
-              <span style={s.btnInner}>Unlock Vault</span>
-            )}
-          </button>
-
-          <p style={s.footer}>
-            Decryption happens locally in your browser.
-            <br />Your passphrase never leaves this device.
-          </p>
-          </>
           )}
 
-          {/* JSON restore button (no passphrase needed) */}
-          {vaultHeader?.format === 'json-backup' && (
-            <>
-            <button
-              onClick={handleVaultRestore}
-              disabled={restoreLoading}
-              style={{
-                ...s.restoreBtn,
-                opacity: restoreLoading ? 0.5 : 1,
-              }}
-            >
-              {restoreLoading ? (
-                <span style={s.btnInner}>
-                  <Spinner /> Restoring...
-                </span>
-              ) : (
-                <span style={s.btnInner}>Restore from Backup</span>
-              )}
-            </button>
+          {/* Passphrase — encrypted JSON or .svrnty vault */}
+          {(vaultHeader?.format === 'json-keys-encrypted' ||
+            vaultHeader?.format === 'json-full-encrypted' ||
+            vaultHeader?.format === 'svrnty-vault') && (
+            <div style={s.field}>
+              <label style={s.label}>
+                {vaultHeader?.format === 'svrnty-vault' ? 'VAULT PASSPHRASE' : 'DECRYPTION PASSWORD'}
+              </label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showPassphrase ? 'text' : 'password'}
+                  placeholder={
+                    vaultHeader?.format === 'svrnty-vault'
+                      ? 'Enter your vault passphrase'
+                      : 'Enter your export password'
+                  }
+                  value={vaultPassphrase}
+                  onChange={e => setVaultPassphrase(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore();
+                  }}
+                  style={s.input}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassphrase(!showPassphrase)}
+                  style={s.eyeBtn}
+                  tabIndex={-1}
+                  aria-label={showPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+                >
+                  {showPassphrase ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
 
-            <p style={s.footer}>
-              Your backup will be imported into this browser's local storage.
-            </p>
+          {/* Soul-seed — encrypted backups, or any JSON that already embeds a KeyVault */}
+          {(vaultHeader?.format === 'json-keys-encrypted' ||
+            vaultHeader?.format === 'json-full-encrypted' ||
+            (vaultHeader?.format === 'json-backup' && vaultHeader?._jsonData?.vault)) && (
+            <div style={s.field}>
+              <label style={{ ...s.label, color: SE.accent }}>SOUL-SEED RECOVERY PHRASE</label>
+              <textarea
+                placeholder="Paste the recovery phrase shown at forge (hex groups)"
+                value={soulSeedPhrase}
+                onChange={e => setSoulSeedPhrase(e.target.value)}
+                rows={3}
+                style={{ ...s.input, fontFamily: SE.fontMono, fontSize: 12, resize: 'vertical' as const }}
+              />
+              <p style={s.hint}>Second factor when the backup includes a KeyVault. Required to open sealed recovery material.</p>
+            </div>
+          )}
+
+          {/* Primary CTA — was missing for encrypted JSON (pw + phrase with no button) */}
+          {vaultHeader?.format === 'json-backup' ? (
+            <>
+              <button
+                type="button"
+                onClick={handleVaultRestore}
+                disabled={
+                  restoreLoading ||
+                  (!!vaultHeader?._jsonData?.vault && !soulSeedPhrase.trim())
+                }
+                style={{
+                  ...s.restoreBtn,
+                  opacity:
+                    restoreLoading ||
+                    (!!vaultHeader?._jsonData?.vault && !soulSeedPhrase.trim())
+                      ? 0.5
+                      : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Restoring...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>Open Vault</span>
+                )}
+              </button>
+              <p style={s.footer}>
+                Your backup will be imported into this browser&apos;s local storage.
+              </p>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleVaultRestore}
+                disabled={restoreLoading || !vaultPassphrase}
+                style={{
+                  ...s.restoreBtn,
+                  opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Decrypting vault...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>Open Vault</span>
+                )}
+              </button>
+              <p style={s.footer}>
+                Decryption happens locally in your browser.
+                <br />Your passphrase never leaves this device.
+              </p>
             </>
           )}
         </div>
@@ -1290,54 +1326,19 @@ export function SoverentityFrontend({
   return (
     <div style={s.outerWrap}>
       <div style={s.identityPanel}>
-        {/* Identity Card */}
-        <div style={s.idCard}>
-          <div style={s.idHeader}>
-            <div style={{
-              ...s.statusDot,
-              background: '#6a9a6a',
-              boxShadow: '0 0 8px rgba(106,154,106,0.4)',
-            }} />
-            <div>
-              <h3 style={s.idName}>{identity.identity.name}</h3>
-              <p style={s.idEmail}>{identity.identity.email}</p>
-            </div>
-            <span style={{
-              ...s.statusBadge,
-              color: '#6a9a6a',
-              borderColor: 'rgba(106,154,106,0.3)',
-              background: 'rgba(106,154,106,0.1)',
-            }}>
-              SOVEREIGN
-            </span>
-          </div>
-
-          <div style={s.fpSection}>
-            <label style={s.label}>FINGERPRINT</label>
-            <div style={s.fpValue}>{formatFingerprint(identity.identity.fingerprint)}</div>
-          </div>
-
-          <div style={s.cryptoTags}>
-            <span style={s.tag}>ED25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-DSA-87</span>}
-            <span style={s.tag}>Curve25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-KEM-1024</span>}
-          </div>
-        </div>
-
-        {/* (§1, Peter #116236) The email-verification section is removed: there is no server account
-            and nothing to verify. Onboarding flows straight through (genesis → import) with no email step. */}
-
-        <div style={s.verifiedBanner}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
-          <span>Self-certifying identity. You are sovereign.</span>
-        </div>
+        <SovereignIdentityCard
+          name={identity.identity.name}
+          fingerprint={identity.identity.fingerprint}
+          handle={claimedUrl || undefined}
+          email={identity.identity.email}
+          site={claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined}
+          hasPqKeys={!!hasPqKeys}
+          onOpenCircle={onOpenCircle}
+        />
 
         {/* Export / Backup Section */}
         {identity && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '28px', maxWidth: 440, width: '100%' }}>
             <button
               onClick={() => { setShowFullBackupDialog(true); setFullBackupPassword(''); setFullBackupConfirm(''); setFullBackupError(null); }}
               style={{
@@ -1346,11 +1347,12 @@ export function SoverentityFrontend({
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
-                background: 'rgba(106, 154, 106, 0.1)',
-                borderColor: '#6a9a6a',
+                background: 'rgba(249, 168, 37, 0.08)',
+                borderColor: 'rgba(249, 168, 37, 0.35)',
+                color: SE.accent,
               }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SE.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
               Full Backup (Encrypted)
@@ -1510,10 +1512,10 @@ export function SoverentityFrontend({
               onClick={() => setShowPassphraseDialog(true)}
               style={{
                 background: 'none',
-                border: '1px solid rgba(52, 211, 153, 0.15)',
+                border: '1px solid rgba(249, 168, 37, 0.15)',
                 borderRadius: '8px',
                 padding: '10px 20px',
-                color: 'rgba(52, 211, 153, 0.6)',
+                color: 'rgba(249, 168, 37, 0.6)',
                 fontSize: '11px',
                 fontFamily: "'Space Grotesk', sans-serif",
                 letterSpacing: '1px',
@@ -1570,32 +1572,39 @@ export function SoverentityFrontend({
           <div style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.8)',
+            background: 'rgba(0,0,0,0.55)',
             display: 'flex',
             justifyContent: 'center',
             alignItems: 'center',
             zIndex: 50,
           }} onClick={() => setShowPassphraseDialog(false)}>
-            <div style={{
-              background: 'rgba(10, 14, 12, 0.98)',
-              border: '1px solid rgba(52, 211, 153, 0.15)',
+            <div
+              role="dialog"
+              aria-label="Set passphrase"
+              style={{
+              background: SE.surfaceSolid,
+              border: `1px solid ${SE.border}`,
               borderRadius: '16px',
               padding: '32px',
               maxWidth: '380px',
               width: '100%',
               margin: '20px',
+              boxShadow: 'var(--se-glass-shadow)',
+              color: SE.text,
             }} onClick={e => e.stopPropagation()}>
               <h3 style={{
-                fontFamily: "'Cormorant Garamond', serif",
-                fontSize: '20px',
-                color: '#e8e4d9',
+                fontFamily: SE.fontSans,
+                fontSize: '1.15rem',
+                fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: SE.text,
                 marginBottom: '20px',
                 textAlign: 'center' as const,
               }}>
                 {passphraseSuccess ? 'Passphrase Set' : 'Set Passphrase'}
               </h3>
               {passphraseSuccess ? (
-                <p style={{ textAlign: 'center' as const, color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px' }}>
+                <p style={{ textAlign: 'center' as const, color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px' }}>
                   Your identity is now protected.
                 </p>
               ) : (
@@ -1608,13 +1617,13 @@ export function SoverentityFrontend({
                     autoFocus
                     style={{
                       width: '100%',
-                      background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      background: SE.inputBg,
+                      border: `1px solid ${SE.border}`,
                       borderRadius: '8px',
                       padding: '12px 14px',
-                      color: '#e8e4d9',
+                      color: SE.text,
                       fontSize: '14px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       outline: 'none',
                       marginBottom: '12px',
                       boxSizing: 'border-box' as const,
@@ -1627,33 +1636,33 @@ export function SoverentityFrontend({
                     onChange={e => { setConfirmPassphrase(e.target.value); setPassphraseError(''); }}
                     style={{
                       width: '100%',
-                      background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      background: SE.inputBg,
+                      border: `1px solid ${SE.border}`,
                       borderRadius: '8px',
                       padding: '12px 14px',
-                      color: '#e8e4d9',
+                      color: SE.text,
                       fontSize: '14px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       outline: 'none',
                       marginBottom: '8px',
                       boxSizing: 'border-box' as const,
                     }}
                   />
                   {passphraseError && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>{passphraseError}</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>{passphraseError}</p>
                   )}
                   <button
                     onClick={handleSetPassphrase}
                     disabled={!newPassphrase || !confirmPassphrase}
                     style={{
                       width: '100%',
-                      background: 'rgba(52, 211, 153, 0.12)',
-                      border: '1px solid rgba(52, 211, 153, 0.3)',
+                      background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                      border: `1px solid ${SE.borderLit}`,
                       borderRadius: '8px',
                       padding: '12px',
-                      color: '#34d399',
+                      color: SE.accent,
                       fontSize: '12px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       letterSpacing: '1px',
                       cursor: 'pointer',
                       marginTop: '8px',
@@ -1670,60 +1679,74 @@ export function SoverentityFrontend({
         {/* Claim URL Dialog */}
         {showClaimUrlDialog && (
           <div style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 50,
           }} onClick={() => setShowClaimUrlDialog(false)}>
-            <div style={{
-              background: 'rgba(10, 14, 12, 0.98)', border: '1px solid rgba(200, 168, 78, 0.15)',
-              borderRadius: '16px', padding: '32px', maxWidth: '380px', width: '100%', margin: '20px',
-            }} onClick={e => e.stopPropagation()}>
+            <div
+              role="dialog"
+              aria-label="Claim URL"
+              style={{
+                background: SE.surfaceSolid,
+                border: `1px solid ${SE.border}`,
+                borderRadius: '16px',
+                padding: '32px',
+                maxWidth: '380px',
+                width: '100%',
+                margin: '20px',
+                boxShadow: 'var(--se-glass-shadow)',
+                color: SE.text,
+              }}
+              onClick={e => e.stopPropagation()}
+            >
               <h3 style={{
-                fontFamily: "'Cormorant Garamond', serif", fontSize: '20px',
-                color: '#e8e4d9', marginBottom: '8px', textAlign: 'center' as const,
+                fontFamily: SE.fontSans, fontSize: '1.15rem', fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: SE.text, marginBottom: '8px', textAlign: 'center' as const,
               }}>
                 {claimStatus === 'success' ? 'URL Claimed' : 'Claim Your URL'}
               </h3>
               {claimStatus === 'success' ? (
                 <div style={{ textAlign: 'center' as const }}>
-                  <p style={{ color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', marginBottom: '12px' }}>
+                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px', marginBottom: '12px' }}>
                     Your identity is now at:
                   </p>
-                  <p style={{ color: '#c8a84e', fontFamily: "'Space Grotesk', sans-serif", fontSize: '16px', fontWeight: 600 }}>
+                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '16px', fontWeight: 600 }}>
                     {claimedUrl}
                   </p>
                 </div>
               ) : (
                 <>
-                  <p style={{ color: 'rgba(232,228,217,0.5)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
+                  <p style={{ color: SE.muted, fontFamily: SE.fontSans, fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
                     Choose a URL for your public profile
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
-                    <span style={{ color: 'rgba(232,228,217,0.4)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
+                    <span style={{ color: SE.dim, fontFamily: SE.fontSans, fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
                     <input
                       type="text"
                       placeholder="yourname"
                       value={claimSlug}
                       onChange={e => { setClaimSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setClaimStatus('idle'); }}
                       style={{
-                        flex: 1, background: 'rgba(6, 10, 8, 0.8)', border: '1px solid rgba(200, 168, 78, 0.15)',
-                        borderRadius: '8px', padding: '12px 14px', color: '#e8e4d9', fontSize: '14px',
-                        fontFamily: "'Space Grotesk', sans-serif", outline: 'none', boxSizing: 'border-box' as const,
+                        flex: 1, background: SE.inputBg, border: `1px solid ${SE.border}`,
+                        borderRadius: '8px', padding: '12px 14px', color: SE.text, fontSize: '14px',
+                        fontFamily: SE.fontSans, outline: 'none', boxSizing: 'border-box' as const,
                       }}
                     />
                   </div>
                   {claimStatus === 'taken' && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>This URL is already claimed</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>This URL is already claimed</p>
                   )}
                   {claimStatus === 'error' && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
                   )}
                   <button
                     onClick={handleClaimUrl}
                     disabled={claimSlug.length < 3 || claimStatus === 'checking' || claimStatus === 'claiming'}
                     style={{
-                      width: '100%', background: 'rgba(200, 168, 78, 0.12)', border: '1px solid rgba(200, 168, 78, 0.3)',
-                      borderRadius: '8px', padding: '12px', color: '#c8a84e', fontSize: '12px',
-                      fontFamily: "'Space Grotesk', sans-serif", letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
+                      width: '100%', background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                      border: `1px solid ${SE.borderLit}`,
+                      borderRadius: '8px', padding: '12px', color: SE.accent, fontSize: '12px',
+                      fontFamily: SE.fontSans, letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
                     }}
                   >
                     {claimStatus === 'checking' ? 'CHECKING...' : claimStatus === 'claiming' ? 'CLAIMING...' : 'CLAIM URL'}
@@ -1777,31 +1800,32 @@ const s: Record<string, React.CSSProperties> = {
   gatePanel: {
     position: 'relative' as const,
     zIndex: 1,
-    background: 'rgba(10, 14, 12, 0.9)',
+    background: SE.surfaceSolid,
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    border: `1px solid ${SE.borderLit}`,
     borderRadius: '16px',
     padding: '48px 40px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: 'var(--se-glass-shadow)',
   },
   gateTitle: {
-    fontSize: '32px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '6px',
+    fontSize: '1.75rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.04em',
     textTransform: 'lowercase' as const,
-    marginBottom: '8px',
-    textShadow: '0 0 40px rgba(200, 168, 78, 0.2)',
+    marginBottom: '10px',
+    textShadow: '0 0 40px rgba(249, 168, 37, 0.18)',
   },
   gateSub: {
-    fontSize: '14px',
-    fontFamily: "'Cormorant Garamond', serif",
-    fontWeight: 300,
-    fontStyle: 'italic' as const,
-    color: 'rgba(255,255,255,0.4)',
-    lineHeight: '1.7',
+    fontSize: '0.95rem',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    fontStyle: 'normal' as const,
+    color: SE.muted,
+    lineHeight: '1.5',
+    marginBottom: '0',
   },
   doorContainer: {
     display: 'flex',
@@ -1814,39 +1838,39 @@ const s: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '28px 24px',
-    background: 'rgba(6, 10, 8, 0.5)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    background: SE.surface,
+    border: `1px solid ${SE.border}`,
     borderRadius: '12px',
     cursor: 'pointer',
     transition: 'all 0.3s ease',
     textAlign: 'center' as const,
   },
   doorTitle: {
-    fontSize: '16px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#c8a84e',
-    letterSpacing: '1px',
+    fontSize: '15px',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.accent,
+    letterSpacing: '-0.02em',
     marginBottom: '8px',
   },
   doorDesc: {
     fontSize: '12px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    fontWeight: 300,
-    color: 'rgba(255,255,255,0.25)',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    color: 'rgba(201, 162, 113, 0.7)',
     lineHeight: '1.6',
     maxWidth: '280px',
   },
   // --- Shared ---
   createPanel: {
-    background: 'rgba(10, 14, 12, 0.9)',
+    background: SE.surfaceSolid,
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    border: `1px solid ${SE.borderLit}`,
     borderRadius: '16px',
     padding: '40px',
     maxWidth: '460px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: 'var(--se-glass-shadow)',
   },
   backBtn: {
     display: 'flex',
@@ -1854,12 +1878,12 @@ const s: Record<string, React.CSSProperties> = {
     gap: '6px',
     background: 'none',
     border: 'none',
-    color: '#8a8070',
+    color: SE.dim,
     fontSize: '12px',
     cursor: 'pointer',
     padding: '0',
     marginBottom: '20px',
-    fontFamily: "'JetBrains Mono', monospace",
+    fontFamily: SE.fontMono,
     letterSpacing: '0.5px',
   },
   hero: {
@@ -1872,7 +1896,7 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    margin: '0 auto 16px',
+    margin: '0 auto 18px',
   },
   keyIcon: {
     width: '72px',
@@ -1887,19 +1911,19 @@ const s: Record<string, React.CSSProperties> = {
     boxShadow: '0 0 30px rgba(200, 168, 78, 0.06)',
   },
   heroTitle: {
-    fontSize: '26px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '2px',
+    fontSize: '1.35rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.03em',
     marginBottom: '10px',
-    textShadow: '0 0 30px rgba(200, 168, 78, 0.15)',
+    textShadow: '0 0 30px rgba(249, 168, 37, 0.12)',
   },
   heroSub: {
     fontSize: '13px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    fontWeight: 300,
-    color: 'rgba(255,255,255,0.35)',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    color: 'rgba(201, 162, 113, 0.75)',
     lineHeight: '1.7',
     maxWidth: '340px',
     margin: '0 auto',
@@ -1910,8 +1934,8 @@ const s: Record<string, React.CSSProperties> = {
   label: {
     display: 'block',
     fontSize: '10px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: 'rgba(255,255,255,0.3)',
+    fontFamily: SE.fontSans,
+    color: 'rgba(201, 162, 113, 0.55)',
     letterSpacing: '2px',
     textTransform: 'uppercase' as const,
     marginBottom: '8px',
@@ -1919,29 +1943,29 @@ const s: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
-    background: 'rgba(6, 10, 8, 0.8)',
-    border: '1px solid rgba(52, 211, 153, 0.1)',
+    background: SE.inputBg,
+    border: `1px solid ${SE.border}`,
     borderRadius: '8px',
     padding: '12px 16px',
-    color: '#e8e4d9',
+    color: SE.text,
     fontSize: '14px',
-    fontFamily: "'JetBrains Mono', monospace",
+    fontFamily: SE.fontMono,
     outline: 'none',
     transition: 'border-color 0.3s',
     boxSizing: 'border-box' as const,
   },
   hint: {
     fontSize: '11px',
-    color: '#5a5548',
+    color: SE.dim,
     marginTop: '6px',
   },
   primaryBtn: {
     width: '100%',
-    background: 'rgba(52, 211, 153, 0.1)',
-    border: '1px solid rgba(52, 211, 153, 0.3)',
+    background: 'rgba(249, 168, 37, 0.12)',
+    border: '1px solid rgba(249, 168, 37, 0.35)',
     borderRadius: '8px',
     padding: '14px 20px',
-    color: '#34d399',
+    color: '#f9a825',
     fontSize: '12px',
     fontWeight: 500,
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
@@ -1950,7 +1974,7 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'all 0.3s',
     marginTop: '8px',
-    boxShadow: '0 0 20px rgba(52, 211, 153, 0.06)',
+    boxShadow: '0 0 20px rgba(249, 168, 37, 0.06)',
   },
   restoreBtn: {
     width: '100%',
@@ -2119,10 +2143,10 @@ const s: Record<string, React.CSSProperties> = {
   idCard: {
     background: 'rgba(10, 14, 12, 0.92)',
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.1)',
+    border: '1px solid rgba(249, 168, 37, 0.1)',
     borderRadius: '16px',
     padding: '32px',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(52, 211, 153, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(249, 168, 37, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
   },
   idHeader: {
     display: 'flex',
@@ -2137,11 +2161,11 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   idName: {
-    fontSize: '20px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '1px',
+    fontSize: '1.15rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.02em',
     margin: 0,
   },
   idEmail: {
@@ -2197,7 +2221,7 @@ const s: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: '10px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: '#34d399',
+    color: '#f9a825',
     letterSpacing: '3px',
     fontWeight: 500,
     marginBottom: '16px',
@@ -2212,14 +2236,14 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    background: 'rgba(52, 211, 153, 0.06)',
-    border: '1px solid rgba(52, 211, 153, 0.15)',
+    background: 'rgba(249, 168, 37, 0.06)',
+    border: '1px solid rgba(249, 168, 37, 0.15)',
     borderRadius: '10px',
     padding: '14px 20px',
     marginTop: '16px',
     fontSize: '13px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: '#34d399',
-    boxShadow: '0 0 30px rgba(52, 211, 153, 0.04)',
+    color: '#f9a825',
+    boxShadow: '0 0 30px rgba(249, 168, 37, 0.04)',
   },
 };

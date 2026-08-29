@@ -6,6 +6,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { HelpCircle, ChevronRight } from 'lucide-react';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
 
 const steps = [
   {
@@ -76,17 +77,16 @@ export function HelpGuide() {
         variant="ghost"
         size="sm"
         onClick={() => { setOpen(true); setActiveStep(0); }}
-        className="absolute right-0 top-0"
-        style={{ color: '#8a8070' }}
+        style={{ color: E.dim, fontFamily: E.fontSans }}
       >
         <HelpCircle className="h-5 w-5 mr-1" />
         Help
       </Button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto" style={{ fontFamily: E.fontSans }}>
           <DialogHeader>
-            <DialogTitle className="text-lg" style={{ color: '#c8a84e' }}>
+            <DialogTitle className="text-lg" style={{ color: E.accent, fontFamily: E.fontSans }}>
               Getting Started
             </DialogTitle>
           </DialogHeader>
@@ -99,9 +99,10 @@ export function HelpGuide() {
                 onClick={() => setActiveStep(i)}
                 className="text-xs px-2.5 py-1 rounded-full border transition-colors"
                 style={{
-                  borderColor: activeStep === i ? '#c8a84e' : 'rgba(180,160,100,0.2)',
-                  color: activeStep === i ? '#c8a84e' : '#8a8070',
-                  background: activeStep === i ? 'rgba(200,168,78,0.1)' : 'transparent',
+                  fontFamily: E.fontSans,
+                  borderColor: activeStep === i ? E.accent : E.border,
+                  color: activeStep === i ? E.accent : E.dim,
+                  background: activeStep === i ? 'rgba(249,168,37,0.1)' : 'transparent',
                 }}
               >
                 {i + 1}. {step.title}
@@ -111,13 +112,13 @@ export function HelpGuide() {
 
           {/* Active step content */}
           <div className="space-y-4">
-            <h3 className="text-base font-medium" style={{ color: '#e0dcd0' }}>
+            <h3 className="text-base font-medium" style={{ color: E.text, fontFamily: E.fontSans }}>
               {steps[activeStep].title}
             </h3>
             <ul className="space-y-3">
               {steps[activeStep].content.map((line, i) => (
-                <li key={i} className="flex gap-2 text-sm" style={{ color: '#a09880' }}>
-                  <ChevronRight className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#c8a84e' }} />
+                <li key={i} className="flex gap-2 text-sm" style={{ color: E.muted, fontFamily: E.fontSans }}>
+                  <ChevronRight className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: E.accent }} />
                   <span>{line}</span>
                 </li>
               ))}
@@ -125,17 +126,17 @@ export function HelpGuide() {
           </div>
 
           {/* Navigation */}
-          <div className="flex justify-between mt-6 pt-4 border-t" style={{ borderColor: 'rgba(180,160,100,0.15)' }}>
+          <div className="flex justify-between mt-6 pt-4 border-t" style={{ borderColor: E.border }}>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setActiveStep(Math.max(0, activeStep - 1))}
               disabled={activeStep === 0}
-              style={{ color: '#8a8070' }}
+              style={{ color: E.dim, fontFamily: E.fontSans }}
             >
               Previous
             </Button>
-            <span className="text-xs self-center" style={{ color: '#5a5548' }}>
+            <span className="text-xs self-center" style={{ color: E.dim }}>
               {activeStep + 1} of {steps.length}
             </span>
             {activeStep < steps.length - 1 ? (
@@ -143,7 +144,7 @@ export function HelpGuide() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveStep(activeStep + 1)}
-                style={{ color: '#c8a84e' }}
+                style={{ color: E.accent, fontFamily: E.fontSans }}
               >
                 Next
               </Button>
@@ -152,7 +153,7 @@ export function HelpGuide() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setOpen(false)}
-                style={{ color: '#c8a84e' }}
+                style={{ color: E.accent, fontFamily: E.fontSans }}
               >
                 Got it
               </Button>
