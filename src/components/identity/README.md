@@ -5,4 +5,6 @@
 1. **Fold** ∈ {3…10} via `FNV(fp) % 8` over `{3,4,5,6,7,8,9,10}` equally
 2. **Sacred figure** via `seed % catalog.length` — one of each option per fold (hexagram ★, unicursal, `{n/k}` stars incl. decagram `{10/3}`, **circle / φ circles**, seed of life on 6, triquetra, vesica…)
 
+All sacred wireframes are **generated from geometry** (`{n/k}` stars, √3 hexagon Crowley unicursal, φ-scaled unicursal alternate, arcs/circles). No uploaded SVG assets. Classic Crowley look is kept (`unicursal`); `unicursal-phi` is the φ alternate.
+
 φ still measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.

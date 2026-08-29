@@ -14,6 +14,8 @@ import {
   randomFingerprint,
   SACRED_CATALOG,
   unicursalHexagramPaths,
+  unicursalClassicPaths,
+  unicursalPhiPaths,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -66,14 +68,30 @@ test('Crowley unicursal is a single wireframe path', () => {
   assert.equal(paths[0].split(' L ').length, 6);
 });
 
+test('classic unicursal matches √3 construction; φ variant differs', () => {
+  const classic = unicursalClassicPaths(50, 50, 40, 0)[0];
+  const alias = unicursalHexagramPaths(50, 50, 40, 0)[0];
+  const phi = unicursalPhiPaths(50, 50, 40, 0)[0];
+  assert.equal(classic, alias);
+  assert.notEqual(classic, phi);
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal-phi'));
+});
+
 test('hexagonal seals include compound hexagram and unicursal options', () => {
+  const ids = SACRED_CATALOG[6].map((o) => o.id);
+  assert.ok(ids.includes('hexagram') && ids.includes('hexagram-inv'));
+  assert.ok(ids.includes('unicursal') && ids.includes('unicursal-inv'));
+  assert.ok(ids.includes('unicursal-phi') && ids.includes('unicursal-phi-inv'));
   const seen = new Set<string>();
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 800; i++) {
     const g = composePhiSeal(randomFingerprint());
     if (g.fold === 6) seen.add(g.figureId);
   }
-  assert.ok(seen.has('hexagram') || seen.has('hexagram-inv'), 'expected compound hexagram');
-  assert.ok(seen.has('unicursal') || seen.has('unicursal-inv'), 'expected unicursal');
+  assert.ok(seen.has('hexagram') || seen.has('hexagram-inv'), 'expected compound hexagram in the wild');
+  assert.ok(
+    seen.has('unicursal') || seen.has('unicursal-inv') || seen.has('unicursal-phi') || seen.has('unicursal-phi-inv'),
+    'expected unicursal family in the wild'
+  );
 });
 
 test('inversions appear in the wild', () => {

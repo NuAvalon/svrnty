@@ -13,6 +13,8 @@ export type SacredFigureId =
   | 'hexagram-inv'
   | 'unicursal'
   | 'unicursal-inv'
+  | 'unicursal-phi' // φ-scaled mathematical unicursal
+  | 'unicursal-phi-inv'
   | 'star-alt' // second denser star {n/k'} when available
   | 'star-alt-inv'
   | 'triquetra'
@@ -58,6 +60,8 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'hexagram-inv', label: 'inverted hexagram' },
     { id: 'unicursal', label: 'unicursal hexagram' },
     { id: 'unicursal-inv', label: 'inverted unicursal' },
+    { id: 'unicursal-phi', label: 'φ unicursal' },
+    { id: 'unicursal-phi-inv', label: 'inverted φ unicursal' },
     { id: 'circle', label: 'circle' },
     { id: 'circles', label: 'φ circles' },
     { id: 'seed', label: 'seed of life' },
@@ -167,38 +171,75 @@ export function hexagramCompoundPath(
 }
 
 /**
- * Crowley unicursal hexagram — single continuous wireframe (one stroke).
- * Six vertices in unicursal order: top → SE → NW → NE → SW → bottom → top.
- * Not the double/interlaced filled ribbon from Wikimedia.
+ * Classic Crowley unicursal — mathematical construction (kept as production look).
+ * Regular hexagon vertices N, SE, SW, S plus two waist points at radius R/√3
+ * on the chord y = −R/(2√3). Unicursal order: N → SE → NW-waist → NE-waist → SW → S.
  */
+export function unicursalClassicPaths(
+  cx: number,
+  cy: number,
+  R: number,
+  rot: number
+): string[] {
+  const SQRT3 = Math.sqrt(3);
+  const base = rot - Math.PI / 2;
+  // Hexagon vertices: i=0 N, 2 SE, 3 S, 4 SW
+  const hex = (i: number) => pt(cx, cy, R, base + (i * Math.PI) / 3);
+  const waistY = -R / (2 * SQRT3);
+  const waistX = R / 2;
+  // Waist points in local (y-down) frame, then rotate by `rot`
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const waist = (lx: number, ly: number) => {
+    const xr = lx * c - ly * s;
+    const yr = lx * s + ly * c;
+    return { x: cx + xr, y: cy + yr };
+  };
+  const verts = [
+    hex(0),
+    hex(2),
+    waist(-waistX, waistY),
+    waist(waistX, waistY),
+    hex(4),
+    hex(3),
+  ];
+  return [`M ${verts.map(fmt).join(' L ')} Z`];
+}
+
+/**
+ * φ unicursal — alternate mathematical construction.
+ * Six rays at hexagon angles; radii alternate R and R·φ⁻¹ in unicursal visit order.
+ */
+export function unicursalPhiPaths(
+  cx: number,
+  cy: number,
+  R: number,
+  rot: number
+): string[] {
+  const base = rot - Math.PI / 2;
+  // Visit order around the hexagon that yields one continuous hexagram stroke
+  // with alternating outer / φ-inner radii: 0,2,4,1,3,5
+  const order = [0, 2, 4, 1, 3, 5];
+  const verts = order.map((i, step) => {
+    const rad = step % 2 === 0 ? R : R * PHI_INV;
+    return pt(cx, cy, rad, base + (i * Math.PI) / 3);
+  });
+  return [`M ${verts.map(fmt).join(' L ')} Z`];
+}
+
+/** @deprecated alias — classic Crowley look (mathematical √3 construction). */
 export function unicursalHexagramPaths(
   cx: number,
   cy: number,
   R: number,
   rot: number
 ): string[] {
-  // Unit coords (y-down), classic Crowley proportions
-  const raw: [number, number][] = [
-    [0, -1],
-    [0.8660254, 0.5],
-    [-0.5, -0.2886751],
-    [0.5, -0.2886751],
-    [-0.8660254, 0.5],
-    [0, 1],
-  ];
-  const c = Math.cos(rot);
-  const s = Math.sin(rot);
-  const pts = raw.map(([x, y]) => {
-    const xr = (x * c - y * s) * R;
-    const yr = (x * s + y * c) * R;
-    return `${(cx + xr).toFixed(2)},${(cy + yr).toFixed(2)}`;
-  });
-  return [`M ${pts.join(' L ')} Z`];
+  return unicursalClassicPaths(cx, cy, R, rot);
 }
 
-/** Single-string helper (one wireframe path). */
+/** Single-string helper (classic wireframe). */
 export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
-  return unicursalHexagramPaths(cx, cy, R, rot)[0];
+  return unicursalClassicPaths(cx, cy, R, rot)[0];
 }
 
 /** Triquetra — three vesica lobes (approximate circular arcs as polylines). */
@@ -318,10 +359,16 @@ export function composeSacredFigure(
       push(hexagramCompoundPath(cx, cy, r, rot, true), 0.65, 1.05);
       break;
     case 'unicursal':
-      push(unicursalHexagramPaths(cx, cy, r, rot)[0], 0.72, 1.15);
+      push(unicursalClassicPaths(cx, cy, r, rot)[0], 0.72, 1.15);
       break;
     case 'unicursal-inv':
-      push(unicursalHexagramPaths(cx, cy, r, rot + Math.PI)[0], 0.72, 1.15);
+      push(unicursalClassicPaths(cx, cy, r, rot + Math.PI)[0], 0.72, 1.15);
+      break;
+    case 'unicursal-phi':
+      push(unicursalPhiPaths(cx, cy, r, rot)[0], 0.72, 1.15);
+      break;
+    case 'unicursal-phi-inv':
+      push(unicursalPhiPaths(cx, cy, r, rot + Math.PI)[0], 0.72, 1.15);
       break;
     case 'triquetra':
       push(triquetraPath(cx, cy, r, rot), 0.6, 1.0);

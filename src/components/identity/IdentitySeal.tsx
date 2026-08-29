@@ -13,7 +13,7 @@ import {
   type CrystalHabit as SacredHabit,
 } from './sacred-geometry';
 
-export { unicursalHexagramPath, unicursalHexagramPaths, SACRED_CATALOG, pickSacredOption, composeSacredFigure } from './sacred-geometry';
+export { unicursalHexagramPath, unicursalHexagramPaths, unicursalClassicPaths, unicursalPhiPaths, SACRED_CATALOG, pickSacredOption, composeSacredFigure } from './sacred-geometry';
 export type { SacredOption, SacredFigureId } from './sacred-geometry';
 
 /** φ = (1 + √5) / 2 */
