@@ -7,9 +7,9 @@
 - Fold (3–10) + φ radial skeleton
 - Recursive **spine-guided branches** (gen-1 / gen-2) from fingerprint bits
 - **Ogham-ish notches** on spines (1–3 bars, occasional double)
-- **Gated arcs** — broken φ-ring segments, outer vesica bulges, gen-1 tip bridges
+- **Gated arcs** — rare brighter segments on the same φ radii as the ripples (no free vesica / tip bridges)
 - **Orbs** — stroke-only tip / fork / core punctuation (not orb fields)
-- **φ pond ripples** — 5-ring cascade (`R`→`rCore`) with micro radius aberrations
+- **φ pond ripples** — 5-ring cascade (`R`→`rCore`), clearly visible under the lattice
 - Optional faint `{n/k}` star accent only — **no named sacred fills**
 
 ## Demoted (lab-only)

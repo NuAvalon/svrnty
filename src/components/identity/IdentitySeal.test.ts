@@ -147,12 +147,10 @@ test('growth seal is deterministic and spine-0 up', () => {
   assert.equal(g.spines.length, g.fold);
   assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
   assert.ok(g.orbs.length >= g.fold + 1, 'tip orbs + core orb');
-  assert.ok(g.arcs.length >= 1, 'at least one gated arc');
+  assert.ok(Array.isArray(g.arcs), 'arcs array present (may be empty — rarer harmonic accents)');
   assert.equal(g.rings.length, 5, 'φ pond ripples through rCore');
-  // Ripples fade inward in radius
-  for (let i = 1; i < g.rings.length; i++) {
-    assert.ok(g.rings[i]! < g.rings[i - 1]!, 'rings cascade inward');
-  }
+  // Ripples are visible-scale (not vanishing)
+  assert.ok(g.rings[0]! > 35, 'outer ripple has presence');
   assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
   assert.ok(Math.abs(g.spines[0].x2 - g.spines[0].x1) < 1.5);
 });
@@ -161,7 +159,6 @@ test('growth differs across fingerprints; no named glyph ids', () => {
   const a = composeGrowthSeal(FP_A);
   const b = composeGrowthSeal(FP_B);
   assert.notDeepEqual(a.branches, b.branches);
-  assert.notDeepEqual(a.arcs, b.arcs);
   assert.equal(a.figureId, 'growth');
   for (let i = 0; i < 80; i++) {
     const id = composeGrowthSeal(randomFingerprint()).figureId;

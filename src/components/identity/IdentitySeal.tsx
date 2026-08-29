@@ -34,7 +34,7 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'growth' | 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'growth', title: 'Growth', blurb: 'Branches · notches · gated arcs · tip orbs' },
+  { id: 'growth', title: 'Growth', blurb: 'Branches · notches · arcs · orbs · φ ripples' },
   { id: 'phi', title: 'Crystal', blurb: 'Sacred tech · {n/k} stars · φ measure (flower/Metatron demoted)' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
@@ -442,57 +442,22 @@ export function composeGrowthSeal(fingerprint: string) {
       }
     }
 
-    // Broken φ-ring arc between this spine and the next (gated — not a full circle)
+    // Soft φ-ring accents only — sectors that sit ON the ripple radii (harmonic).
+    // No free vesica bulges / tip bridges (those read as dissonant).
     const nextBit = n[(i + 1) % n.length];
-    if ((bit ^ nextBit) & 1 || (bit & 4)) {
-      const a0 = a;
-      const a1 = a + (2 * Math.PI) / fold;
-      const arcR = bit & 2 ? r1 : r2 * (1.05 + structMix * 0.08);
-      // Sweep only the sector between spines (small arc, not large)
-      const p0 = pt(cx, cy, arcR, a0);
-      const p1 = pt(cx, cy, arcR, a1);
-      arcs.push({
-        d: `M ${fmt(p0)} A ${arcR.toFixed(2)},${arcR.toFixed(2)} 0 0 1 ${fmt(p1)}`,
-        op: 0.28 + structMix * 0.08,
-        w: 0.65,
-      });
-    }
-
-    // Short vesica-ish chord arc: bulge outward between adjacent tips when gated
-    if (bit3 & 1) {
-      const a0 = a;
-      const a1 = a + (2 * Math.PI) / fold;
-      const midA = (a0 + a1) / 2;
-      const bulgeR = R * (0.72 + (bit % 5) * 0.025 + radiusJitter * 0.04);
-      const p0 = pt(cx, cy, R * 0.92, a0);
-      const p1 = pt(cx, cy, R * 0.92, a1);
-      // Arc through a control radius (convex outward)
-      arcs.push({
-        d: `M ${fmt(p0)} A ${bulgeR.toFixed(2)},${bulgeR.toFixed(2)} 0 0 1 ${fmt(p1)}`,
-        op: 0.32,
-        w: 0.7,
-      });
-      void midA;
-    }
-  }
-
-  // Arc bridges between neighboring gen-1 tips (weather between grown forks)
-  for (let i = 0; i < fold; i++) {
-    const cur = gen1Tips[i];
-    const nxt = gen1Tips[(i + 1) % fold];
-    const bit = n[(i + 3) % n.length];
-    if (cur.right && nxt.left && (bit & 1)) {
-      const p0 = cur.right;
-      const p1 = nxt.left;
-      const dx = p1.x - p0.x;
-      const dy = p1.y - p0.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const bridgeR = dist * (0.85 + structMix * 0.2);
-      arcs.push({
-        d: `M ${fmt(p0)} A ${bridgeR.toFixed(2)},${bridgeR.toFixed(2)} 0 0 1 ${fmt(p1)}`,
-        op: 0.26,
-        w: 0.5,
-      });
+    if ((bit & 4) && (nextBit & 1)) {
+      const a0 = a + 0.08; // inset from spine so the arc feels like a ring breath, not a chord
+      const a1 = a + (2 * Math.PI) / fold - 0.08;
+      if (a1 > a0) {
+        const arcR = bit & 2 ? r1 : r2;
+        const p0 = pt(cx, cy, arcR, a0);
+        const p1 = pt(cx, cy, arcR, a1);
+        arcs.push({
+          d: `M ${fmt(p0)} A ${arcR.toFixed(2)},${arcR.toFixed(2)} 0 0 1 ${fmt(p1)}`,
+          op: 0.42,
+          w: 1.05,
+        });
+      }
     }
   }
 
@@ -527,13 +492,13 @@ export function composeGrowthSeal(fingerprint: string) {
     hexMid: hexAt(r1),
     hexInner: hexAt(r2),
     hexCore: hexAt(r3),
-    // Pond ripples — φ cascade with micro aberrations (not perfect clones)
+    // Pond ripples — φ cascade; micro aberrations stay subtle so rings still read
     rings: [
-      R * (1 + ((n[0] % 5) - 2) * 0.004),
-      r1 * (1 + ((n[3] % 5) - 2) * 0.006),
-      r2 * (1 + ((n[6] % 5) - 2) * 0.008),
-      r3 * (1 + ((n[9] % 5) - 2) * 0.01),
-      rCore * (1 + ((n[11] % 5) - 2) * 0.012),
+      R * (1 + ((n[0] % 5) - 2) * 0.003),
+      r1 * (1 + ((n[3] % 5) - 2) * 0.004),
+      r2 * (1 + ((n[6] % 5) - 2) * 0.005),
+      r3 * (1 + ((n[9] % 5) - 2) * 0.006),
+      rCore * (1 + ((n[11] % 5) - 2) * 0.008),
     ] as const,
   };
 }
@@ -695,7 +660,7 @@ export function composeRosetteSeal(fingerprint: string) {
 function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
   return (
     <>
-      {/* φ pond ripples — soft cascade with micro aberrations */}
+      {/* φ pond ripples — readable cascade under the lattice */}
       {g.rings.map((r, i) => (
         <circle
           key={`ring-${i}`}
@@ -703,13 +668,14 @@ function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
           cy="50"
           r={r}
           fill="none"
-          stroke={i % 2 === 0 ? E.accent : E.accent2}
-          strokeOpacity={0.2 - i * 0.028}
-          strokeWidth={0.85 - i * 0.08}
+          stroke={E.accent}
+          strokeOpacity={Math.max(0.14, 0.42 - i * 0.055)}
+          strokeWidth={Math.max(0.55, 1.25 - i * 0.12)}
         />
       ))}
-      <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.22" strokeWidth="0.8" />
-      <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.14" strokeWidth="0.6" />
+      {/* Soft habit frames — quieter so ripples read */}
+      <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.14" strokeWidth="0.7" />
+      <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.1" strokeWidth="0.55" />
 
       {g.sacredPaths.map((p, i) => (
         <path
@@ -717,19 +683,19 @@ function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
           d={p.d}
           fill="none"
           stroke={E.accent}
-          strokeOpacity={p.op}
+          strokeOpacity={Math.min(p.op, 0.16)}
           strokeWidth={p.w}
           strokeLinejoin="miter"
         />
       ))}
 
-      {/* Gated arcs — broken φ rings / vesica bulges / tip bridges */}
+      {/* Harmonic arcs only — brighter segments on the same φ radii as ripples */}
       {g.arcs.map((a, i) => (
         <path
           key={`arc${i}`}
           d={a.d}
           fill="none"
-          stroke={E.accent}
+          stroke={E.accent2}
           strokeOpacity={a.op}
           strokeWidth={a.w}
           strokeLinecap="round"
@@ -746,7 +712,6 @@ function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
         <line key={`n${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent2} strokeOpacity={c.op} strokeWidth={c.w} />
       ))}
 
-      {/* Orbs — tip / fork / core punctuation (stroke-only) */}
       {g.orbs.map((o, i) => (
         <circle
           key={`orb${i}`}
