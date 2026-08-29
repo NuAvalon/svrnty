@@ -11,7 +11,6 @@ import {
   fingerprintHex,
   randomFingerprint,
   shiftFingerprintDigit,
-  foldFromFingerprint,
   composePhiSeal,
   composeGrowthSeal,
 } from '@/components/identity/IdentitySeal';
