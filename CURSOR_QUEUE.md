@@ -92,7 +92,7 @@ await recoverFromSeedPhrase(kv, phrase); // 12-word phrase → identity
 ### HONEST ERRORS
 - Invalid phrase: **"That recovery phrase doesn't match an identity."** (no false success)
 
-**PR:** ☐ · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection) · Hypatia (copy/claim-honesty) · Athena (frontend/merge)
+**PR:** ☑ [#62](https://github.com/NuAvalon/svrnty/pull/62) · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection) · Hypatia (copy/claim-honesty) · Athena (frontend/merge)
 
 ---
 

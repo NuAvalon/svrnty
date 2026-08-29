@@ -1,35 +1,58 @@
 # Recovery UI (L8) — Cursor build notes
 
-**Component owner (UI):** Cursor · **Crypto owner:** team (do not modify `src/lib/crypto/recovery.ts`)  
-**Brief:** `CURSOR.md` L8 · Aesthetic: Solar Ember
+**Component owner (UI):** Cursor · **Crypto owner:** team (do not modify `src/lib/crypto/recovery.ts` or `src/lib/sync/vault.ts`)  
+**Brief:** `CURSOR.md` L8 · Aesthetic: Solar Ember · **Trigger:** PR #61 v4 dual-envelope landed → wire UI
 
 ## What we built
 | File | Role |
 |------|------|
 | `EntropyMeter.tsx` | Live strength meter for unlock passphrase / future soul-seed word entry |
 | `SoulSeedReveal.tsx` | One-time reveal of the recovery phrase after forge (2nd-factor copy) |
+| `seedVaultRestore.ts` | Thin UI adapter: `extractRecoveryVault` → `recoverFromSeedPhrase` → IndexedDB |
 | `IdentitySeal.tsx` | Deterministic fingerprint → SVG seal (I-6; no decorative randomness) |
 | `solar-ember.ts` | Shared palette tokens from CURSOR.md |
 
-Wired into `SoverentityFrontend.tsx`: forge passphrase meter, recovery-reveal screen, restore-verify soul-seed field when a KeyVault is present.
+Wired into `SoverentityFrontend.tsx`: forge passphrase meter, recovery-reveal screen, restore-verify with **v4 seed-only path**.
 
-## Files touched
-- `src/components/recovery/*` (new)
-- `src/components/SoverentityFrontend.tsx` (wire-up only)
-- `src/components/TrustMap.tsx` + `src/components/TrustMap/README.md` (Solar Ember + note)
-- `src/components/identity/IdentitySeal.tsx` (new)
+## v4 passphrase-free restore (this PR — after Flint #61)
+
+Fleet seam (call only, never reimplement):
+
+```ts
+const kv = extractRecoveryVault(data);           // no passphrase
+const bundle = await recoverFromSeedPhrase(kv, phrase);
+```
+
+| Backup | UI |
+|--------|-----|
+| **v4** `.svrnty` | Daily passphrase unlock **plus** "Lost your passphrase? Recover with your recovery phrase" → seed path |
+| **v3** `.svrnty` | Passphrase only; honest migration nudge (re-export to enable seed recovery) — **no false promise** |
+| v4 with no recovery configured | `extractRecoveryVault` fails honestly ("no recovery vault") |
+
+**Claim-honesty:**
+- Seed path restores **identity keys** (classical PGP + KeyVault). Name/email/fingerprint come from the recovered PGP key userIDs.
+- Contacts / trust graph / settings live in the **passphrase-encrypted BODY** and are **not** restored on the seed path. Copy says so.
+- Wrong phrase → `"That recovery phrase doesn't match this backup."` (no lockout).
+
+## Files touched (this task)
+- `src/components/recovery/seedVaultRestore.ts` (new adapter)
+- `src/components/SoverentityFrontend.tsx` (restore UI + handler)
+- `src/components/recovery/README.md` (this note)
+- `CURSOR_QUEUE.md` (v4 seed path unblocked)
 
 ## Assumptions
-1. Today’s “seed phrase” from `createKeyVault` is **hex groups** (64 hex chars), not BIP39 words — UI shows that honestly.
-2. `recoverFromSeedPhrase(vault, phrase)` is the only allowed recovery crypto call from UI.
-3. True “file + phrase both required as 2nd factor” needs exports that **omit plaintext keys** and keep `KeyVault`. Current full-backup often includes keys — passphrase alone unlocks those. UI requires the phrase when `vault` is present and uses it to recover/verify.
+1. Today's forge phrase from `createKeyVault` is still **hex groups** (8×8), not BIP39-12 — label says "recovery phrase"; placeholder mentions hex groups.
+2. Identity reconstruction from classical private key via openpgp (`readPrivateKey` → userIDs + fingerprint) is UI-layer, not crypto invention.
+3. `recoverFromShards` is **not** wired yet (CUR-9 collect-back / survivor-safety).
 
-## Questions for the team (STOP line — need crypto / product)
-1. **User-set 12+ word soul-seed:** CURSOR asks for set-your-own phrase + entropy meter. Crypto today *generates* a random master secret then encodes hex. Deriving master secret from user BIP39 (or similar) is **team-owned**. Please expose an API (e.g. `createKeyVaultFromSoulSeed(phrase, …)`) before we enable a writable set-UI beyond the meter on the unlock passphrase.
-2. **2nd-factor export format:** Confirm preferred backup shape = `KeyVault` + contacts + identity **without** `keys`/`pq_keys`, so restore always needs the soul-seed.
-3. **Social collect-back UI** — deferred per CURSOR (survivor-safety review).
+## Questions for the team (in PR description — need your call)
+
+1. **Flint — PQ after seed restore:** `PrivateKeyBundle` returns PQ *secrets* only; `storePQKeys` needs a serialized bundle with *public* halves. Do not invent derivation in UI. Prefer: (a) fleet helper `bundleToStoredPQ(bundle)`, (b) include public keys in `PrivateKeyBundle`, or (c) leave PQ regeneratable via existing pq-migrate screen?
+2. **Hypatia — contacts honesty:** Seed path copy says contacts stay locked under the passphrase. OK as shipped, or do you want a stronger post-success interstitial?
+3. **Flint / Archie — guardian shards on this screen:** `recoverFromShards(kv, shards)` is the same extract seam. Wire a "I have guardian shards" tertiary path now, or wait for CUR-9?
+4. **Athena — overlap with #60:** PR #60 (Case A/B 2FA copy on JSON restore) is still open. This PR targets binary `.svrnty` v4. Merge order preference?
 
 ## Invariants honored
-- No crypto reimplementation
-- I-6: IdentitySeal is fingerprint-deterministic
-- No presence/location UI
+- No crypto / vault format reimplementation
+- I-6: seal still recomputed from fingerprint at render
+- Claim-honesty: seed path only offered when `version === 4`; v3 gets re-export nudge only
