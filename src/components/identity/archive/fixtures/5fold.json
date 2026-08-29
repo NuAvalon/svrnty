@@ -1,0 +1,59 @@
+{
+  "id": "5fold",
+  "fingerprint": "5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa",
+  "crystal": {
+    "variant": "crystal",
+    "fold": 5,
+    "figure": "φ circles",
+    "figureId": "circles",
+    "spineCount": 5,
+    "branchCount": 8,
+    "notchCount": 14,
+    "rings": [
+      39.68,
+      24.86968770729577,
+      15.034182202804141,
+      9.44271909999159,
+      5.695859237612318
+    ],
+    "R": 40,
+    "r1": 24.721359549995796,
+    "r2": 15.27864045000421
+  },
+  "growth": {
+    "variant": "growth",
+    "fold": 4,
+    "figure": "growth",
+    "figureId": "growth",
+    "spineCount": 4,
+    "branchCount": 6,
+    "notchCount": 11,
+    "rings": [
+      40,
+      24.721359549995796,
+      15.27864045000421
+    ],
+    "R": 40,
+    "r1": 24.721359549995796,
+    "r2": 15.27864045000421
+  },
+  "organic": {
+    "variant": "organic",
+    "fold": 5,
+    "figure": "φ circles · organic",
+    "figureId": "circles",
+    "spineCount": 5,
+    "branchCount": 26,
+    "notchCount": 14,
+    "rings": [
+      39.68,
+      24.86968770729577,
+      15.034182202804141,
+      9.44271909999159,
+      5.695859237612318
+    ],
+    "R": 40,
+    "r1": 24.721359549995796,
+    "r2": 15.27864045000421
+  }
+}

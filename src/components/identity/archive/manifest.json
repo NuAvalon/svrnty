@@ -1,0 +1,183 @@
+{
+  "frozenAt": "2026-08-29T21:40:23.269Z",
+  "note": "Crystal / Growth / Organic freeze. Do not overwrite — add new variants instead. Source commits: Growth≈21d858c, Crystal+droplets+ogham≈300d9a5, Organic≈4103523.",
+  "samples": [
+    {
+      "id": "5fold",
+      "fingerprint": "5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa",
+      "crystal": {
+        "variant": "crystal",
+        "fold": 5,
+        "figure": "φ circles",
+        "figureId": "circles",
+        "spineCount": 5,
+        "branchCount": 8,
+        "notchCount": 14,
+        "rings": [
+          39.68,
+          24.86968770729577,
+          15.034182202804141,
+          9.44271909999159,
+          5.695859237612318
+        ],
+        "R": 40,
+        "r1": 24.721359549995796,
+        "r2": 15.27864045000421
+      },
+      "growth": {
+        "variant": "growth",
+        "fold": 4,
+        "figure": "growth",
+        "figureId": "growth",
+        "spineCount": 4,
+        "branchCount": 6,
+        "notchCount": 11,
+        "rings": [
+          40,
+          24.721359549995796,
+          15.27864045000421
+        ],
+        "R": 40,
+        "r1": 24.721359549995796,
+        "r2": 15.27864045000421
+      },
+      "organic": {
+        "variant": "organic",
+        "fold": 5,
+        "figure": "φ circles · organic",
+        "figureId": "circles",
+        "spineCount": 5,
+        "branchCount": 26,
+        "notchCount": 14,
+        "rings": [
+          39.68,
+          24.86968770729577,
+          15.034182202804141,
+          9.44271909999159,
+          5.695859237612318
+        ],
+        "R": 40,
+        "r1": 24.721359549995796,
+        "r2": 15.27864045000421
+      }
+    },
+    {
+      "id": "7fold",
+      "fingerprint": "b87f9458752e861638a866c6a9953f912d9a3d7a",
+      "crystal": {
+        "variant": "crystal",
+        "fold": 7,
+        "figure": "heptagram {7/3}",
+        "figureId": "star-alt",
+        "spineCount": 7,
+        "branchCount": 16,
+        "notchCount": 20,
+        "rings": [
+          40.836,
+          25.03532081628074,
+          15.410036757874243,
+          9.485211335941553,
+          6.125383048973246
+        ],
+        "R": 41,
+        "r1": 25.33939353874569,
+        "r2": 15.660606461254313
+      },
+      "growth": {
+        "variant": "growth",
+        "fold": 6,
+        "figure": "{6/2} growth",
+        "figureId": "growth",
+        "spineCount": 6,
+        "branchCount": 19,
+        "notchCount": 16,
+        "rings": [
+          41,
+          25.33939353874569,
+          15.660606461254313
+        ],
+        "R": 41,
+        "r1": 25.33939353874569,
+        "r2": 15.660606461254313
+      },
+      "organic": {
+        "variant": "organic",
+        "fold": 7,
+        "figure": "heptagram {7/3} · organic",
+        "figureId": "star-alt",
+        "spineCount": 7,
+        "branchCount": 30,
+        "notchCount": 20,
+        "rings": [
+          40.836,
+          25.03532081628074,
+          15.410036757874243,
+          9.485211335941553,
+          6.125383048973246
+        ],
+        "R": 41,
+        "r1": 25.33939353874569,
+        "r2": 15.660606461254313
+      }
+    },
+    {
+      "id": "10fold",
+      "fingerprint": "871c3fa218f7e66d7567689d25558ca1b6f20fe2",
+      "crystal": {
+        "variant": "crystal",
+        "fold": 3,
+        "figure": "circle",
+        "figureId": "circle",
+        "spineCount": 3,
+        "branchCount": 8,
+        "notchCount": 8,
+        "rings": [
+          43.172,
+          26.575461516245483,
+          16.161745868014453,
+          10.25243226281587,
+          6.273615451263567
+        ],
+        "R": 43,
+        "r1": 26.575461516245483,
+        "r2": 16.424538483754525
+      },
+      "growth": {
+        "variant": "growth",
+        "fold": 3,
+        "figure": "growth",
+        "figureId": "growth",
+        "spineCount": 3,
+        "branchCount": 10,
+        "notchCount": 8,
+        "rings": [
+          43,
+          26.575461516245483,
+          16.424538483754525
+        ],
+        "R": 43,
+        "r1": 26.575461516245483,
+        "r2": 16.424538483754525
+      },
+      "organic": {
+        "variant": "organic",
+        "fold": 3,
+        "figure": "circle · organic",
+        "figureId": "circle",
+        "spineCount": 3,
+        "branchCount": 19,
+        "notchCount": 8,
+        "rings": [
+          43.172,
+          26.575461516245483,
+          16.161745868014453,
+          10.25243226281587,
+          6.273615451263567
+        ],
+        "R": 43,
+        "r1": 26.575461516245483,
+        "r2": 16.424538483754525
+      }
+    }
+  ]
+}

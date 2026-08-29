@@ -8,11 +8,13 @@
 - Soft **φ pond droplets** + **ogham notches**
 - Crystal dendrites + facets + N-gon habit frames
 
-## Lab A/B (kept — do not overwrite)
-- **`growth`** — original from Metatron demotion (`21d858c`): seed-fold, recursive spine forks + ogham, faint `{n/k}` only, no named glyphs / arcs / orbs
-- **`organic`** — recent Crystal clone with recursive Growth forks (same sacred figure / droplets)
+## Lab A/B (frozen — do not overwrite)
+See **[`archive/`](./archive/)** for screenshots, SVGs, and JSON fixtures.
 
-Full commit history lives on PR #57 / branch `cursor/solar-ember-ui-l8-bb68` — variants are how we stop losing earlier looks while iterating.
+- **`growth`** — original from Metatron demotion (`21d858c`): seed-fold, recursive spine forks + ogham, faint `{n/k}` only
+- **`organic`** — recent Crystal clone with recursive Growth forks
+
+When iterating: **add a new variant** instead of mutating these. Full commit history also lives on the PR branch.
 
 ## Demoted (lab-only)
 `seed` / `flower` / `metatron` in `SACRED_DEMOTED` — not in `SACRED_FLAT`.
@@ -20,3 +22,4 @@ Full commit history lives on PR #57 / branch `cursor/solar-ember-ui-l8-bb68` —
 ## Files
 - `IdentitySeal.tsx` — `composePhiSeal`, `composeGrowthSeal`, `composeOrganicSeal`
 - `sacred-geometry.ts` — catalog + `SACRED_DEMOTED`
+- `archive/` — frozen reference looks

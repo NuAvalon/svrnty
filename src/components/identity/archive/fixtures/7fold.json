@@ -1,0 +1,59 @@
+{
+  "id": "7fold",
+  "fingerprint": "b87f9458752e861638a866c6a9953f912d9a3d7a",
+  "crystal": {
+    "variant": "crystal",
+    "fold": 7,
+    "figure": "heptagram {7/3}",
+    "figureId": "star-alt",
+    "spineCount": 7,
+    "branchCount": 16,
+    "notchCount": 20,
+    "rings": [
+      40.836,
+      25.03532081628074,
+      15.410036757874243,
+      9.485211335941553,
+      6.125383048973246
+    ],
+    "R": 41,
+    "r1": 25.33939353874569,
+    "r2": 15.660606461254313
+  },
+  "growth": {
+    "variant": "growth",
+    "fold": 6,
+    "figure": "{6/2} growth",
+    "figureId": "growth",
+    "spineCount": 6,
+    "branchCount": 19,
+    "notchCount": 16,
+    "rings": [
+      41,
+      25.33939353874569,
+      15.660606461254313
+    ],
+    "R": 41,
+    "r1": 25.33939353874569,
+    "r2": 15.660606461254313
+  },
+  "organic": {
+    "variant": "organic",
+    "fold": 7,
+    "figure": "heptagram {7/3} · organic",
+    "figureId": "star-alt",
+    "spineCount": 7,
+    "branchCount": 30,
+    "notchCount": 20,
+    "rings": [
+      40.836,
+      25.03532081628074,
+      15.410036757874243,
+      9.485211335941553,
+      6.125383048973246
+    ],
+    "R": 41,
+    "r1": 25.33939353874569,
+    "r2": 15.660606461254313
+  }
+}
