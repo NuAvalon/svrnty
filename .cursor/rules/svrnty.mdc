@@ -1,0 +1,24 @@
+---
+description: svrnty build boundary — always in context
+alwaysApply: true
+---
+# svrnty — build rules (full brief: /CURSOR.md)
+
+You accelerate the **UI rendering only.** The team owns the security-critical logic and verifies every output you produce. You render the glass; the team holds the locks.
+
+## ⛔ HARD BOUNDARY — never modify these (call them, never reimplement / modify / "improve"):
+- **Crypto:** `recovery.ts` (Shamir / soul-seed), PSI, the message envelope, all key-derivation.
+- **Gate-logic / constitution:** disclosure-reach enforcement, `visible()` / edge-visibility, consent-by-inclusion (opted-out data is un-computable by construction, never client-side-hidden), plausible-deniability (never fetch-then-hide, no side-channels).
+- **Relay / server:** `satellite.py` and any server endpoints.
+
+If a UI needs something here, call the existing function. If you'd cross this line, **STOP and flag it in a README** — a blocked component is fine; a silently-modified lock is not.
+
+## Invariants to honor in the UI (don't restate/redefine):
+- **I-3** no-aggregate (no scores/counts/standings)
+- **I-4** reachability-not-location
+- **I-6** render-provenance — nothing renders presence / last-seen / online; the living/dim state comes from the receiver's LOCAL witnessed-receipt clock, never a pushed field. Identicons/rosettes/seals derive **deterministically from identity material** — no decorative randomness on identity surfaces.
+- **I-7** tamper-evidence
+- **Invariant-1** fingerprint ≡ H(public_key)
+
+## Aesthetic (Solar Ember):
+`--bg:#0f0a06` · gold `#f9a825` → orange `#ff7a1a` · warm cream text `#fbead2` · **Space Grotesk** · glass (backdrop-filter blur 16–24px) · soft glows opacity 0.06–0.25 (never hard neon) · particle-lattice canvas for graph views. No Orbitron, no emoji glyphs. Egocentric graph (you at center), never global/PageRank. Full tokens + component scope in **/CURSOR.md**.
