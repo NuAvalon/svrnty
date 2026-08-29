@@ -56,6 +56,22 @@ background: radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparen
 
 **⚠️ HARD REQ — the identity rosette/seal must be DETERMINISTIC from the fingerprint** (an identicon, not decoration). Derive the seal's geometry from the person's fingerprint hash so the *same fingerprint always renders the same seal* — a verification aid AND beauty at once. A random/decorative rosette is "a lie in the house style." (I-6 render-provenance, Peter-endorsed.) The generative key-derived seal = a rune-sigil. The social-graph view = an **egocentric** particle-lattice (points-of-light contacts + connection lines) — NOT a card-list, NOT a global/PageRank graph.
 
+**🔒 seal-v1 — the fingerprint→seal generator is VERSION-FROZEN (a recognition aid, NOT proof):** now that people recognize each other by seal, the generator is trust-UX-load-bearing:
+- **⚡ RECOMPUTE, NEVER TRANSMIT — this IS the seal's unforgeability, not aesthetics.** The client ALWAYS recomputes the seal from the fingerprint at render-time. NEVER accept, cache, or ship a seal as a wire/card field — the card carries the **fingerprint**; the client draws the seal FROM it. A transmitted seal is paste-forgeable (an attacker puts a victim's seal on their own card); a recomputed seal is key-bound (fingerprint ≡ H(pubkey), Invariant-1). If the seal is ever transmitted instead of recomputed, the entire unforgeability property collapses. Derive it via a **domain-separated hash of the canonical fingerprint** — `seal_seed = H("svrnty/seal/v1" ‖ fingerprint)` — so an attacker can't grind visuals without grinding keys.
+- **Pin + version + freeze it as `seal-v1`.** The algorithm, the parameter-derivation from the fingerprint bytes, and the rendering rules are a **wire-freeze-class** artifact — the same fingerprint MUST render the same seal forever. A silent generator change would make everyone's identity *appear* to change (a trust-UX earthquake). Any future evolution is an EXPLICIT versioned event (`seal-v2`), never a drift; old seals keep rendering under seal-v1. (Same law as the PSI fingerprint-serialization freeze.)
+- **It's a recognition AID, never a verification primitive.** The visual space is far smaller than the key space → near-collisions exist and an attacker can grind keys toward a lookalike seal. NEVER build UI that treats "the seals look the same" as proof of identity — the fingerprint check-ritual is the verification; the seal only helps someone NOTICE something's off.
+
+---
+
+## 🛡️ I-10a · Render untrusted data SAFELY (XSS guardrail — DEMO-CRITICAL)
+Every field on a contact you **imported** — `display_name`, `safeword`, the relay hint / `satellite_url`, contact-method URLs, PQ keys — came from someone ELSE's card. Treat it as **untrusted, hostile-until-sanitized** input. When you render it:
+- **URLs / contact links = scheme-allowlist ONLY.** Render as a clickable link only if the scheme is `https:` · `tel:` · `mailto:` · `sms:` · or a known app deep-link (`wa.me` / `signal.me` / `t.me` / `instagram.com` / `facebook.com`). **NEVER render a `javascript:` or `data:` URL as a link** — a poisoned card would become executable code in your app (stored XSS). Unknown/other scheme → render as plain text, not a link.
+- **Text fields = escape + bound.** Render through the framework's auto-escaping (**never** `dangerouslySetInnerHTML` / `innerHTML` with card data), enforce a display char-limit, strip control characters.
+- **Don't trust length/shape from the wire.** The relay validates too (defense-in-depth), but the UI must sanitize before it renders.
+- **Canvas / three.js / SVG text (the particle-lattice graph labels, identity marks) — DOM auto-escaping does NOT reach these sinks.** Canvas text isn't HTML-parsed (code-execution vector is lower there), BUT you must still **bound + strip control chars + NFC-normalize + reject bidi-override / RTL-spoof characters** on any card text drawn into a canvas/SVG label — homoglyph/bidi-override impersonation and overflow work in canvas too. Escaping is a DOM tool; for canvas/SVG use bound+strip+normalize. (Ties I-10a → I-6 identity-mark safety.)
+
+A contact must not be able to inject code or markup into your view by crafting their card. This composes with I-6 render-provenance — I-10a is the *render-it-safely* limb. When in doubt, render as inert text + flag in a README.
+
 ---
 
 ## ✅ WHAT to build (UI rendering over the EXISTING primitives)
@@ -63,6 +79,25 @@ background: radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparen
 - Set-your-soul-seed-phrase UI: 12+ words, a live **entropy strength meter** (warn if too simple/common — a famous quote is guessable; guide toward personal/unique). The phrase is ALWAYS a 2nd factor.
 - Self-recovery flow: local backup file **+** phrase (both required) → restore.
 - *[fast-follow]* social collect-back UI (gather shards from keepers). Ships only after a survivor-safety review + team greenlight.
+
+**L8 · The recovery crypto API (team-owned — CALL it, never reimplement):**
+> ⛔ **THE GUARDRAIL:** the master key is ALWAYS randomly generated (CSPRNG). The soul-seed phrase only **WRAPS** it — it NEVER derives it. `master = Argon2id(phrase)` is a **brain-wallet** (a guessable phrase → guessable keys → anyone who guesses it becomes the user) — FORBIDDEN. If any path tempts you toward phrase→keys, STOP + flag in a README. (This is exactly the boundary you already respected — keep respecting it.)
+>
+> **Two creation paths — offer both** (different recovery properties):
+>
+> | Path | Master | Recovery |
+> |---|---|---|
+> | **Generated (default)** | random → 12-word BIP39 mnemonic | the mnemonic ENCODES the master → **standalone** ("write it down") |
+> | **User-set soul-seed** | random, then phrase-WRAPPED | phrase is a **2nd factor** → needs phrase **+** the backup blob/shares (memorable, NOT standalone) |
+>
+> **The two calls (both team-owned):**
+> - `createKeyVaultWithSoulSeedRecovery(phrase, opts) → KeyVault` — generates a random master and wraps it with the phrase; returns the KeyVault (encrypted keys + wrap + salt + verify-tag). No plaintext key ever leaves.
+> - `openKeyVaultWithSoulSeed(vaultBlob, phrase) → bundle | PHRASE_MISMATCH` — the restore mirror. A wrong phrase fails LOUD (verify-tag) → warm "that's not quite it," **no lockout**, let them retry.
+>
+> **Your UI responsibilities:**
+> - The **entropy meter runs BEFORE** the create call — reject/redirect famous/weak phrases (a famous quote is guessable); the API assumes the phrase already passed.
+> - Backup (`.svrnty` blob) = encrypted keys + encrypted contacts, **no plaintext keys** → restore ALWAYS needs the soul-seed (or another factor). Say so honestly in the UI.
+> - Phrase normalization must be byte-identical at set-time and restore-time — call the team's shared `normalize` fn, never roll your own (a mismatch = permanent lockout).
 
 **L1 · Living contacts:** update-contact-method SEND UI (edit your card → broadcast to who you shared with) + **version-control** (versioned methods; correct/retract an errored update; recipients see the corrected version).
 
