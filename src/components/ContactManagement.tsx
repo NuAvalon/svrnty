@@ -1,9 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
-import {
-  Card, CardHeader, CardTitle, CardContent, CardDescription
-} from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SVRNTY_DOMAIN } from '@/lib/config/domain';
@@ -28,6 +25,7 @@ import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { TwoSidedBook } from '@/components/TwoSidedBook';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact, removeContact,
   getContactByFingerprint, loadKey,
@@ -85,11 +83,16 @@ interface ContactsProps {
 function TrustBadge({ contact }: { contact: Contact }) {
   const trusted = isTrusted(contact);
   return (
-    <Badge className={`border font-medium ${
-      trusted
-        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-        : 'bg-gray-500/10 text-gray-400 border-gray-500/20'
-    }`}>
+    <Badge
+      className="border font-medium"
+      style={{
+        fontFamily: E.fontMono,
+        letterSpacing: '0.06em',
+        background: trusted ? 'rgba(249,168,37,0.1)' : 'rgba(143,117,80,0.1)',
+        color: trusted ? E.accent : E.dim,
+        borderColor: trusted ? E.borderLit : E.border,
+      }}
+    >
       {trustLabel(contact)}
     </Badge>
   );
@@ -98,9 +101,9 @@ function TrustBadge({ contact }: { contact: Contact }) {
 function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; className?: string }) {
   const trusted = isTrusted(contact);
   if (trusted) {
-    return <ShieldCheck className={`${className} text-amber-400`} />;
+    return <ShieldCheck className={className} style={{ color: E.accent }} />;
   }
-  return <Eye className={`${className} text-gray-400`} />;
+  return <Eye className={className} style={{ color: E.dim }} />;
 }
 
 // Convert IndexedDB ContactRecord to component Contact type
@@ -606,29 +609,82 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   // --- Render ---
 
   return (
-    <Card className="w-full border-border/40 bg-card/50 backdrop-blur-sm shadow-lg">
-      <CardHeader className="border-b border-border/40">
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-          <CardTitle className="flex items-center gap-2 text-xl sm:text-2xl">
-            <Shield className="h-6 w-6 text-amber-500" />
-            <span>Trust Network</span>
-          </CardTitle>
+    <div
+      className="w-full"
+      style={{
+        fontFamily: E.fontSans,
+        color: E.text,
+        borderRadius: 16,
+        border: `1px solid ${E.border}`,
+        background: E.surface,
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        boxShadow: '0 0 40px rgba(249,168,37,.05)',
+        overflow: 'hidden',
+      }}
+    >
+      <div style={{ borderBottom: `1px solid ${E.border}`, padding: '20px 20px 16px' }}>
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
+          <div>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 11,
+                letterSpacing: '0.2em',
+                textTransform: 'uppercase',
+                color: E.accent,
+                fontFamily: E.fontSans,
+                fontWeight: 500,
+              }}
+            >
+              Living book
+            </p>
+            <h2
+              style={{
+                margin: '6px 0 0',
+                fontFamily: E.fontSerif,
+                fontWeight: 300,
+                fontSize: 28,
+                letterSpacing: '0.03em',
+                color: E.text,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+              }}
+            >
+              <Shield className="h-5 w-5" style={{ color: E.accent }} />
+              Your circle
+            </h2>
+            <p
+              style={{
+                margin: '8px 0 0',
+                fontSize: 14,
+                fontWeight: 300,
+                color: E.muted,
+                fontFamily: E.fontSans,
+                maxWidth: 420,
+                lineHeight: 1.55,
+              }}
+            >
+              People you hold — living and resting. Local-first, never a global map.
+            </p>
+          </div>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={handleShareIdentity} className="bg-amber-600 hover:bg-amber-700">
+            <Button size="sm" onClick={handleShareIdentity} style={emberPrimaryBtn}>
               <Share2 className="h-4 w-4 mr-2" />
               Share Identity
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)}>
+            <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)} style={emberGhostBtn}>
               <Download className="h-4 w-4 mr-2" />
               Import Contact
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowVcardImport(true)} data-testid="import-contacts-trigger">
+            <Button variant="outline" size="sm" onClick={() => setShowVcardImport(true)} data-testid="import-contacts-trigger" style={emberGhostBtn}>
               <Upload className="h-4 w-4 mr-2" />
               Import contacts
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" style={emberGhostBtn}>
                   <Share2 className="h-4 w-4 mr-2" />
                   More
                 </Button>
@@ -637,7 +693,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 <DropdownMenuLabel>Vault</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleVaultExport} disabled={vaultExporting}>
-                  <Download className="h-4 w-4 mr-2 text-amber-500" />
+                  <Download className="h-4 w-4 mr-2" style={{ color: E.accent }} />
                   {vaultExporting ? 'Exporting...' : 'Export Vault (.svrnty)'}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
@@ -655,12 +711,9 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             </DropdownMenu>
           </div>
         </div>
-        <CardDescription className="mt-2 text-muted-foreground">
-          Your sovereign trust graph. Local-first, encrypted, auditable.
-        </CardDescription>
-      </CardHeader>
+      </div>
 
-      <CardContent className="p-4 sm:p-6">
+      <div className="p-4 sm:p-6">
         {error && (
           <Alert variant="destructive" className="mb-4">
             <AlertTitle>Error</AlertTitle>
@@ -670,16 +723,22 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 
         {/* Search + Add */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-          <div className="relative w-full sm:w-64">
-            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+          <div className="relative w-full sm:w-72">
+            <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
             <Input
               placeholder="Search by name, email, fingerprint..."
               className="pl-8"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                fontFamily: E.fontSans,
+                background: 'rgba(12,8,5,0.7)',
+                borderColor: E.border,
+                color: E.text,
+              }}
             />
           </div>
-          <Button onClick={() => setShowAddDialog(true)}>
+          <Button onClick={() => setShowAddDialog(true)} style={emberPrimaryBtn}>
             <UserPlus className="h-4 w-4 mr-2" />
             Add Contact
           </Button>
@@ -687,11 +746,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 
         {/* Tabs — contacts (all) and trusted (subset) */}
         <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="mb-4 w-full sm:w-auto">
-            <TabsTrigger value="all">
+          <TabsList
+            className="mb-4 w-full sm:w-auto"
+            style={{
+              background: 'rgba(12,8,5,0.55)',
+              border: `1px solid ${E.border}`,
+              fontFamily: E.fontSans,
+            }}
+          >
+            <TabsTrigger value="all" style={{ fontFamily: E.fontSans }}>
               Contacts ({contacts.length})
             </TabsTrigger>
-            <TabsTrigger value="trusted">
+            <TabsTrigger value="trusted" style={{ fontFamily: E.fontSans }}>
               Trusted ({trustedCount})
             </TabsTrigger>
           </TabsList>
@@ -699,18 +765,24 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           <TabsContent value={activeTab} className="mt-0">
             {loading ? (
               <div className="flex justify-center p-8">
-                <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+                <RefreshCw className="h-8 w-8 animate-spin" style={{ color: E.dim }} />
               </div>
             ) : filteredContacts.length === 0 ? (
-              <div className="text-center p-12 rounded-lg border border-dashed border-border/60">
-                <div className="inline-flex justify-center items-center w-16 h-16 rounded-full bg-muted mb-4">
-                  {searchQuery ? <Search className="h-8 w-8 text-muted-foreground" /> : <UserPlus className="h-8 w-8 text-muted-foreground" />}
+              <div
+                className="text-center p-12 rounded-lg"
+                style={{ border: `1px dashed ${E.border}` }}
+              >
+                <div
+                  className="inline-flex justify-center items-center w-16 h-16 rounded-full mb-4"
+                  style={{ background: 'rgba(249,168,37,0.08)', border: `1px solid ${E.border}` }}
+                >
+                  {searchQuery ? <Search className="h-8 w-8" style={{ color: E.dim }} /> : <UserPlus className="h-8 w-8" style={{ color: E.dim }} />}
                 </div>
-                <p className="text-lg font-medium">
+                <p style={{ fontFamily: E.fontSerif, fontSize: 22, fontWeight: 300, color: E.text, margin: 0 }}>
                   {searchQuery ? 'No matching contacts' : 'No contacts yet'}
                 </p>
-                <p className="text-sm text-muted-foreground mt-2 max-w-md mx-auto">
-                  {searchQuery ? 'Try a different search' : 'Add your first contact to begin building your trust network'}
+                <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
+                  {searchQuery ? 'Try a different search' : 'Add your first contact to begin building your circle'}
                 </p>
               </div>
             ) : (
@@ -1048,7 +1120,22 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           />
         )}
 
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
+
+const emberPrimaryBtn: React.CSSProperties = {
+  background: 'rgba(249,168,37,0.14)',
+  border: `1px solid ${E.borderLit}`,
+  color: E.accent,
+  fontFamily: E.fontSans,
+  letterSpacing: '0.04em',
+};
+
+const emberGhostBtn: React.CSSProperties = {
+  background: 'transparent',
+  border: `1px solid ${E.border}`,
+  color: E.muted,
+  fontFamily: E.fontSans,
+};
