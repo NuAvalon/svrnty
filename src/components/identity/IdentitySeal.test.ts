@@ -101,6 +101,14 @@ test('inversions appear in the wild', () => {
   assert.ok(found);
 });
 
+test('no UI label says inverted pentagram', () => {
+  for (const h of CRYSTAL_HABITS) {
+    for (const o of SACRED_CATALOG[h]) {
+      assert.ok(!/inverted pentagram/i.test(o.label), o.label);
+    }
+  }
+});
+
 test('lab sigil variant remains 5-fold', () => {
   assert.equal(composeSigilSeal(FP_A).fold, 5);
 });
