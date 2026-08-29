@@ -19,6 +19,7 @@ If a UI needs something here, call the existing function. If you'd cross this li
 - **I-6** render-provenance — nothing renders presence / last-seen / online; the living/dim state comes from the receiver's LOCAL witnessed-receipt clock, never a pushed field. Identicons/rosettes/seals derive **deterministically from identity material** — no decorative randomness on identity surfaces.
 - **I-7** tamper-evidence
 - **Invariant-1** fingerprint ≡ H(public_key)
+- **I-10a** render-safety (DEMO-CRITICAL) — fields from an IMPORTED contact (display_name, safeword, URLs, keys) are UNTRUSTED: scheme-allowlist URLs (`https`/`tel`/`mailto`/`sms`/app-links only — NEVER `javascript:`/`data:`), escape+bound text (never `innerHTML`/`dangerouslySetInnerHTML` with card data). A poisoned card must not become code. See /CURSOR.md.
 
 ## Aesthetic (Solar Ember):
 `--bg:#0f0a06` · gold `#f9a825` → orange `#ff7a1a` · warm cream text `#fbead2` · **Space Grotesk** · glass (backdrop-filter blur 16–24px) · soft glows opacity 0.06–0.25 (never hard neon) · particle-lattice canvas for graph views. No Orbitron, no emoji glyphs. Egocentric graph (you at center), never global/PageRank. Full tokens + component scope in **/CURSOR.md**.

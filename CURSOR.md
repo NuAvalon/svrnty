@@ -58,6 +58,16 @@ background: radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparen
 
 ---
 
+## 🛡️ I-10a · Render untrusted data SAFELY (XSS guardrail — DEMO-CRITICAL)
+Every field on a contact you **imported** — `display_name`, `safeword`, the relay hint / `satellite_url`, contact-method URLs, PQ keys — came from someone ELSE's card. Treat it as **untrusted, hostile-until-sanitized** input. When you render it:
+- **URLs / contact links = scheme-allowlist ONLY.** Render as a clickable link only if the scheme is `https:` · `tel:` · `mailto:` · `sms:` · or a known app deep-link (`wa.me` / `signal.me` / `t.me` / `instagram.com` / `facebook.com`). **NEVER render a `javascript:` or `data:` URL as a link** — a poisoned card would become executable code in your app (stored XSS). Unknown/other scheme → render as plain text, not a link.
+- **Text fields = escape + bound.** Render through the framework's auto-escaping (**never** `dangerouslySetInnerHTML` / `innerHTML` with card data), enforce a display char-limit, strip control characters.
+- **Don't trust length/shape from the wire.** The relay validates too (defense-in-depth), but the UI must sanitize before it renders.
+
+A contact must not be able to inject code or markup into your view by crafting their card. This composes with I-6 render-provenance — I-10a is the *render-it-safely* limb. When in doubt, render as inert text + flag in a README.
+
+---
+
 ## ✅ WHAT to build (UI rendering over the EXISTING primitives)
 **L8 · Recovery (crypto is DONE — build the UI over it):**
 - Set-your-soul-seed-phrase UI: 12+ words, a live **entropy strength meter** (warn if too simple/common — a famous quote is guessable; guide toward personal/unique). The phrase is ALWAYS a 2nd factor.
