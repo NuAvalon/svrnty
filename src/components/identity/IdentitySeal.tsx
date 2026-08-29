@@ -34,7 +34,7 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'growth' | 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'growth', title: 'Growth', blurb: 'Branches · notches · arcs · orbs · φ ripples' },
+  { id: 'growth', title: 'Growth', blurb: 'Branches past the rim · broken ripple-arcs · notches · orbs' },
   { id: 'phi', title: 'Crystal', blurb: 'Sacred tech · {n/k} stars · φ measure (flower/Metatron demoted)' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
@@ -281,10 +281,9 @@ export function composePhiSeal(fingerprint: string) {
 }
 
 /**
- * Growth seal — fold + φ skeleton, identity lives in recursive spine-guided
- * branches, ogham-ish notches, gated arcs, tip/fork orbs, and φ pond ripples.
- * Opacities + stroke weights are formulaic: veil × φ⁻ᵈᵉᵖᵗʰ (fingerprint sets veil).
- * No named sacred fills (flower/Metatron/…).
+ * Growth seal — fold + φ skeleton; branches, notches, orbs, and broken ripple-arcs.
+ * Opacities/weights: veil × φ⁻ᵈ (fingerprint sets veil). No named sacred fills.
+ * Ripples are gated arc segments (not solid circles) so the seal isn't caged.
  */
 export function composeGrowthSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -303,7 +302,6 @@ export function composeGrowthSeal(fingerprint: string) {
   const structMix = ((seed >>> 3) % 1000) / 1000;
   const radiusJitter = ((n[1] + n[4]) % 7) / 7;
 
-  // veil ∈ ~[φ⁻¹·0.85, φ⁻¹·(0.85+φ⁻¹)] from fingerprint
   const veil = PHI_INV * (0.85 + structMix * PHI_INV);
   const opAt = (d: number) => Math.max(0.1, veil * PHI_INV ** d);
   const wAt = (d: number) => Math.max(0.4, PHI * PHI_INV ** d);
@@ -339,6 +337,23 @@ export function composeGrowthSeal(fingerprint: string) {
   const forkOrbOp = opAt(2);
   const coreOrbOp = opAt(0);
 
+  const pushSectorArc = (
+    radius: number,
+    a0: number,
+    a1: number,
+    depth: number,
+    bright = false,
+  ) => {
+    if (a1 <= a0) return;
+    const p0 = pt(cx, cy, radius, a0);
+    const p1 = pt(cx, cy, radius, a1);
+    arcs.push({
+      d: `M ${fmt(p0)} A ${radius.toFixed(2)},${radius.toFixed(2)} 0 0 1 ${fmt(p1)}`,
+      op: bright ? Math.min(veil, opAt(depth) * PHI) : opAt(depth),
+      w: bright ? wAt(depth) : wAt(depth + 1),
+    });
+  };
+
   for (let i = 0; i < fold; i++) {
     const a = rot + (i * 2 * Math.PI) / fold;
     const tip = pt(cx, cy, R, a);
@@ -347,6 +362,8 @@ export function composeGrowthSeal(fingerprint: string) {
     const bit = n[i % n.length];
     const bit2 = n[(i + 5) % n.length];
     const bit3 = n[(i + 9) % n.length];
+    const nextBit = n[(i + 1) % n.length];
+    const aNext = a + (2 * Math.PI) / fold;
 
     const tipR = PHI_INV * (1.1 + (bit % 3) * 0.35 + radiusJitter * 0.2);
     orbs.push({ cx: tip.x, cy: tip.y, r: tipR, op: tipOrbOp, w: wAt(2) });
@@ -369,10 +386,11 @@ export function composeGrowthSeal(fingerprint: string) {
     let left: { x: number; y: number; ang: number } | null = null;
     let right: { x: number; y: number; ang: number } | null = null;
 
-    if (bit & 1) {
-      const len1 = (R - r1) * PHI_INV * (0.75 + (bit / 20) + structMix * 0.2 + radiusJitter * 0.1);
+    // Branches grow more often and can overshoot the rim slightly
+    if (bit & 1 || bit2 & 1) {
+      const len1 = (R - r1) * (0.85 + (bit / 18) + structMix * 0.25 + radiusJitter * 0.15);
       left = forkAt(r1, a, len1, 1, -1);
-      right = forkAt(r1, a, len1 * (PHI_INV + structMix * PHI_INV * PHI_INV), 1, 1);
+      right = forkAt(r1, a, len1 * (0.9 + structMix * PHI_INV), 1, 1);
 
       if (bit2 & 1) {
         orbs.push({
@@ -389,8 +407,8 @@ export function composeGrowthSeal(fingerprint: string) {
         });
       }
 
-      if (bit2 & 1) {
-        const len2 = len1 * PHI_INV * (0.7 + (bit2 / 24));
+      if (bit2 & 1 || bit3 & 1) {
+        const len2 = len1 * PHI_INV * (0.85 + (bit2 / 20));
         for (const tipB of [left, right]) {
           const side = tipB === left ? -1 : 1;
           const end = {
@@ -404,13 +422,13 @@ export function composeGrowthSeal(fingerprint: string) {
         }
       }
       if (bit2 & 2) {
-        const len2b = len1 * PHI_INV * PHI_INV * (0.9 + structMix * 0.2);
+        const len2b = len1 * PHI_INV * (0.7 + structMix * 0.25);
         forkAt((r1 + r2) / 2, a, len2b, 2, (bit3 & 1) ? 1 : -1);
       }
     }
 
     if (bit3 & 2) {
-      const lenIn = (r1 - r2) * PHI_INV * (0.7 + (bit3 / 22) + radiusJitter * 0.1);
+      const lenIn = (r1 - r2) * (0.8 + (bit3 / 20) + radiusJitter * 0.1);
       forkAt(r2, a, lenIn, 1, -1);
       forkAt(r2, a, lenIn * PHI_INV, 1, 1);
     }
@@ -441,21 +459,41 @@ export function composeGrowthSeal(fingerprint: string) {
       }
     }
 
-    const nextBit = n[(i + 1) % n.length];
+    // ── Broken ripple-arcs (the pond) — frequent sectors, not full circles ──
+    const inset = 0.06 + (bit % 3) * 0.02;
+    const a0 = a + inset;
+    const a1 = aNext - inset;
+
+    // Soft weather on r1 / r2 / r3 — most sectors get at least one
+    if (bit & 1 || nextBit & 1) {
+      pushSectorArc(r1 * (1 + ((bit % 3) - 1) * 0.008), a0, a1, 1, false);
+    }
+    if (bit & 2 || nextBit & 2) {
+      pushSectorArc(r2 * (1 + ((bit2 % 3) - 1) * 0.01), a0, a1, 2, false);
+    }
+    if (bit3 & 1 || (bit ^ nextBit) & 1) {
+      pushSectorArc(r3 * (1 + ((bit3 % 3) - 1) * 0.012), a0, a1, 3, false);
+    }
+
+    // Brighter accent breaths (rarer) — still on φ radii
     if ((bit & 4) && (nextBit & 1)) {
-      const a0 = a + 0.08;
-      const a1 = a + (2 * Math.PI) / fold - 0.08;
-      if (a1 > a0) {
-        const depth = bit & 2 ? 1 : 2;
-        const arcR = depth === 1 ? r1 : r2;
-        const p0 = pt(cx, cy, arcR, a0);
-        const p1 = pt(cx, cy, arcR, a1);
-        arcs.push({
-          d: `M ${fmt(p0)} A ${arcR.toFixed(2)},${arcR.toFixed(2)} 0 0 1 ${fmt(p1)}`,
-          op: Math.min(veil, opAt(depth) * PHI),
-          w: wAt(depth),
-        });
-      }
+      pushSectorArc(bit & 2 ? r1 : r2, a0 + 0.02, a1 - 0.02, bit & 2 ? 1 : 2, true);
+    }
+
+    // Soft tip curl — small arc past the rim between neighboring tips (organic, not a cage)
+    if (bit3 & 1 || bit & 1) {
+      const tip0 = pt(cx, cy, R * 0.96, a);
+      const tip1 = pt(cx, cy, R * 0.96, aNext);
+      const midA = (a + aNext) / 2;
+      // Arc radius slightly larger than chord → gentle outward petal
+      const chord = Math.hypot(tip1.x - tip0.x, tip1.y - tip0.y);
+      const petalR = Math.max(chord * PHI_INV * 1.15, R * PHI_INV * PHI_INV);
+      arcs.push({
+        d: `M ${fmt(tip0)} A ${petalR.toFixed(2)},${petalR.toFixed(2)} 0 0 1 ${fmt(tip1)}`,
+        op: opAt(1),
+        w: wAt(2),
+      });
+      void midA;
     }
   }
 
@@ -471,15 +509,12 @@ export function composeGrowthSeal(fingerprint: string) {
       return fmt(pt(cx, cy, radius, a));
     }).join(' ');
 
-  const rippleRadii = [
-    R * (1 + ((n[0] % 5) - 2) * 0.003),
-    r1 * (1 + ((n[3] % 5) - 2) * 0.004),
-    r2 * (1 + ((n[6] % 5) - 2) * 0.005),
-    r3 * (1 + ((n[9] % 5) - 2) * 0.006),
-    rCore * (1 + ((n[11] % 5) - 2) * 0.008),
-  ];
+  // Only whisper-faint full rings (inner) — the visible pond is the arcs above
+  const rippleRadii = [r1, r2, r3];
   const ripples: Ripple[] = rippleRadii.map((r, i) => ({
-    r, op: opAt(i), w: wAt(i + 1),
+    r,
+    op: opAt(i + 2), // quieter: start at depth 2
+    w: wAt(i + 3),
   }));
 
   return {
@@ -499,12 +534,12 @@ export function composeGrowthSeal(fingerprint: string) {
     hexMid: hexAt(r1),
     hexInner: hexAt(r2),
     hexCore: hexAt(r3),
-    hexOp: opAt(2),
+    hexOp: opAt(3),
     hexW: wAt(3),
     coreOp: opAt(0),
     coreW: wAt(1),
     ripples,
-    rings: rippleRadii as unknown as readonly [number, number, number, number, number],
+    rings: [...rippleRadii, rCore, R * PHI_INV ** 4] as unknown as readonly [number, number, number, number, number],
   };
 }
 

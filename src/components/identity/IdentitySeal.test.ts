@@ -147,15 +147,11 @@ test('growth seal is deterministic and spine-0 up', () => {
   assert.equal(g.spines.length, g.fold);
   assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
   assert.ok(g.orbs.length >= g.fold + 1, 'tip orbs + core orb');
-  assert.ok(Array.isArray(g.arcs), 'arcs array present');
-  assert.equal(g.ripples.length, 5, 'φ pond ripples through rCore');
+  assert.ok(g.arcs.length >= g.fold, 'broken ripple-arcs present (not caged in full circles)');
+  assert.ok(g.ripples.length >= 3, 'whisper full rings under arcs');
   assert.ok(g.veil > 0.4 && g.veil < 0.95, `veil in formula range, got ${g.veil}`);
-  // Ripple opacities cascade by φ⁻¹ (formulaic depth)
-  for (let i = 1; i < g.ripples.length; i++) {
-    assert.ok(g.ripples[i]!.op < g.ripples[i - 1]!.op + 1e-9, 'ripple opacity fades inward');
-    assert.ok(g.ripples[i]!.r < g.ripples[i - 1]!.r, 'ripple radius fades inward');
-  }
-  // Spine opacity ≈ veil (depth 0)
+  // Whisper rings stay quieter than spines
+  assert.ok(g.ripples[0]!.op < g.spines[0]!.op);
   assert.ok(Math.abs(g.spines[0]!.op - g.veil) < 1e-9);
   assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
   assert.ok(Math.abs(g.spines[0].x2 - g.spines[0].x1) < 1.5);

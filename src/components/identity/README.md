@@ -9,8 +9,10 @@
 - **Ogham-ish notches** on spines (1–3 bars, occasional double)
 - **Gated arcs** — rare brighter segments on the same φ radii as the ripples (no free vesica / tip bridges)
 - **Orbs** — stroke-only tip / fork / core punctuation (not orb fields)
-- **φ pond ripples** — 5-ring cascade; opacity/weight = `veil · φ⁻ᵈ` / `φ · φ⁻ᵈ` (fingerprint sets veil)
-- All layer opacities formulaic (spine d0 → branch d1/d2 → notch/orb depths) — no freehand constants
+- **Broken ripple-arcs** — pond weather as gated sectors on r1/r2/r3 + soft tip petals (not solid circle cages)
+- Whisper-faint full rings only under the arcs
+- Longer branches that can overshoot the rim
+- Opacities still formulaic: `veil · φ⁻ᵈ`
 
 ## Demoted (lab-only)
 `seed` / `flower` / `metatron` live in `SACRED_DEMOTED` — path generators remain, but they are **not** in the production flat pool (`SACRED_FLAT`). Named glyphs were overpowering identity.
