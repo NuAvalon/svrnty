@@ -512,15 +512,15 @@ function CrystalLayers({
       <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.32" strokeWidth="0.8" />
       <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
 
-      {/* Sacred geometry figure */}
+      {/* Sacred geometry figure — quiet under growth */}
       {g.sacredPaths?.map((p, i) => (
         <path
           key={`sg${i}`}
           d={p.d}
           fill="none"
           stroke={E.accent}
-          strokeOpacity={p.op}
-          strokeWidth={p.w}
+          strokeOpacity={p.op * 0.72}
+          strokeWidth={p.w * 0.92}
           strokeLinejoin="miter"
         />
       ))}
