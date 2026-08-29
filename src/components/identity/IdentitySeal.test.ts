@@ -16,6 +16,7 @@ import {
   SACRED_CATALOG,
   SACRED_FLAT,
   starPolygonPath,
+  unicursalHexagramPaths,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -48,22 +49,26 @@ test('fold ∈ 3–10 and matches spine count + flat entry', () => {
   assert.equal(g.figureId, entry.option.id);
 });
 
-test('flat pool covers every fold; no Crowley unicursal ids', () => {
+test('flat pool covers every fold; no dead gon', () => {
   assert.ok(SACRED_FLAT.length >= 30);
   for (const h of CRYSTAL_HABITS) {
     assert.ok(SACRED_CATALOG[h].length >= 2, `fold ${h} needs options`);
-    assert.ok(!SACRED_CATALOG[h].some((o) => String(o.id).includes('unicursal')));
+    assert.ok(!SACRED_CATALOG[h].some((o) => (o.id as string) === 'gon'));
   }
   const folds = new Set(SACRED_FLAT.map((e) => e.fold));
   for (const h of CRYSTAL_HABITS) assert.ok(folds.has(h));
 });
 
-test('pentagram {5/2} is a continuous stroke; hexagram is compound', () => {
+test('pentagram {5/2} continuous; unicursal hexagram present among peers', () => {
   assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'star' && o.k === 2));
   assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'hexagram'));
-  assert.ok(!SACRED_CATALOG[6].some((o) => String(o.id).includes('unicursal')));
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal'));
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal-inv'));
   const pent = starPolygonPath(50, 50, 40, 5, 2, 0);
   assert.equal(pent.split(' L ').length, 6);
+  const uni = unicursalHexagramPaths(50, 50, 40, 0);
+  assert.equal(uni.length, 1);
+  assert.equal(uni[0].split(' L ').length, 6);
 });
 
 test('flower + metatron on fold 6; circles on selected folds', () => {

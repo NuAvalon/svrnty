@@ -12,6 +12,8 @@ export type SacredFigureId =
   | 'star-alt-inv'
   | 'hexagram'
   | 'hexagram-inv'
+  | 'unicursal'
+  | 'unicursal-inv'
   | 'triquetra'
   | 'vesica'
   | 'diamond'
@@ -59,6 +61,8 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
   6: [
     { id: 'hexagram', label: 'hexagram' },
     { id: 'hexagram-inv', label: 'inverted hexagram' },
+    { id: 'unicursal', label: 'unicursal hexagram' },
+    { id: 'unicursal-inv', label: 'inverted unicursal hexagram' },
     { id: 'seed', label: 'seed of life' },
     { id: 'flower', label: 'flower of life' },
     { id: 'metatron', label: "Metatron's cube" },
@@ -177,6 +181,36 @@ export function hexagramCompoundPath(
   const up = [0, 2, 4].map((i) => fmt(pt(cx, cy, R, base + (i * Math.PI) / 3)));
   const down = [1, 3, 5].map((i) => fmt(pt(cx, cy, R, base + (i * Math.PI) / 3)));
   return `M ${up.join(' L ')} Z M ${down.join(' L ')} Z`;
+}
+
+/**
+ * Unicursal hexagram — regular hexagon + R/√3 waist points (Crowley proportions).
+ * One continuous stroke among a broader sacred-tech catalog.
+ */
+export function unicursalHexagramPaths(
+  cx: number,
+  cy: number,
+  R: number,
+  rot: number
+): string[] {
+  const SQRT3 = Math.sqrt(3);
+  const base = rot - Math.PI / 2;
+  const hex = (i: number) => pt(cx, cy, R, base + (i * Math.PI) / 3);
+  const waistY = -R / (2 * SQRT3);
+  const waistX = R / 2;
+  const c = Math.cos(rot);
+  const s = Math.sin(rot);
+  const waist = (lx: number, ly: number) => {
+    const xr = lx * c - ly * s;
+    const yr = lx * s + ly * c;
+    return { x: cx + xr, y: cy + yr };
+  };
+  const verts = [hex(0), hex(2), waist(-waistX, waistY), waist(waistX, waistY), hex(4), hex(3)];
+  return [`M ${verts.map(fmt).join(' L ')} Z`];
+}
+
+export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
+  return unicursalHexagramPaths(cx, cy, R, rot)[0];
 }
 
 /** Exact circle as SVG path (two semicircle arcs). */
@@ -347,6 +381,12 @@ export function composeSacredFigure(
       break;
     case 'hexagram-inv':
       push(hexagramCompoundPath(cx, cy, r, rot, true), 0.65, 1.05);
+      break;
+    case 'unicursal':
+      push(unicursalHexagramPaths(cx, cy, r, rot)[0], 0.72, 1.15);
+      break;
+    case 'unicursal-inv':
+      push(unicursalHexagramPaths(cx, cy, r, rot + Math.PI)[0], 0.72, 1.15);
       break;
     case 'triquetra':
       push(triquetraPath(cx, cy, r, rot), 0.65, 1.05);

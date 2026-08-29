@@ -20,6 +20,8 @@ export {
   pickSacredEntry,
   composeSacredFigure,
   starPolygonPath,
+  unicursalHexagramPath,
+  unicursalHexagramPaths,
 } from './sacred-geometry';
 export type { SacredOption, SacredFigureId, SacredEntry } from './sacred-geometry';
 
