@@ -146,6 +146,8 @@ test('growth seal is deterministic and spine-0 up', () => {
   assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
   assert.equal(g.spines.length, g.fold);
   assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
+  assert.ok(g.orbs.length >= g.fold + 1, 'tip orbs + core orb');
+  assert.ok(g.arcs.length >= 1, 'at least one gated arc');
   assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
   assert.ok(Math.abs(g.spines[0].x2 - g.spines[0].x1) < 1.5);
 });
@@ -154,6 +156,7 @@ test('growth differs across fingerprints; no named glyph ids', () => {
   const a = composeGrowthSeal(FP_A);
   const b = composeGrowthSeal(FP_B);
   assert.notDeepEqual(a.branches, b.branches);
+  assert.notDeepEqual(a.arcs, b.arcs);
   assert.equal(a.figureId, 'growth');
   for (let i = 0; i < 80; i++) {
     const id = composeGrowthSeal(randomFingerprint()).figureId;

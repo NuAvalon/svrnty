@@ -7,6 +7,8 @@
 - Fold (3–10) + φ radial skeleton
 - Recursive **spine-guided branches** (gen-1 / gen-2) from fingerprint bits
 - **Ogham-ish notches** on spines (1–3 bars, occasional double)
+- **Gated arcs** — broken φ-ring segments, outer vesica bulges, gen-1 tip bridges
+- **Orbs** — stroke-only tip / fork / core punctuation (not orb fields)
 - Optional faint `{n/k}` star accent only — **no named sacred fills**
 
 ## Demoted (lab-only)

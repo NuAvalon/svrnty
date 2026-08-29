@@ -102,8 +102,9 @@ export default function SealLabPage() {
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
           Production default is <strong style={{ color: E.accent, fontWeight: 500 }}>Growth</strong>: fold + φ
-          skeleton, recursive spine-guided branches, ogham-ish notches. Flower / Metatron / seed are demoted
-          (lab-only). Crystal variant still uses {'{n/k}'} stars + hexagrams — no named overpowering glyphs.
+          skeleton, recursive spine-guided branches, ogham-ish notches, gated arcs, tip/fork orbs. Flower /
+          Metatron / seed are demoted (lab-only). Crystal variant still uses {'{n/k}'} stars + hexagrams —
+          no named overpowering glyphs.
         </p>
 
         {/* Controls */}
