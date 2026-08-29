@@ -13,6 +13,7 @@ import {
   shiftFingerprintDigit,
   foldFromFingerprint,
   HABIT_LABEL,
+  composePhiSeal,
 } from '@/components/identity/IdentitySeal';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -30,8 +31,8 @@ function fmtGroups(fp: string): string {
 }
 
 function habitBlurb(fp: string): string {
-  const f = foldFromFingerprint(fp);
-  return `${f}-fold · ${HABIT_LABEL[f]}`;
+  const g = composePhiSeal(fp);
+  return `${g.fold}-fold · ${g.figure}`;
 }
 
 const btn: CSSProperties = {
@@ -96,9 +97,9 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Same fingerprint drives every variant (I-6). Crystal habit is 3–9 fold from a base-10
-          digit of the fingerprint seed; 6-fold draws a unicursal hexagram (one stroke). Randomize
-          and nudge a hex digit ±1 to compare shapes.
+          Fingerprint seeds fold (3–9) and a sacred-geometry figure: hexagrams (compound ★),
+          unicursal hexagrams, pentagrams, heptagrams, inversions, triquetra, vesica. φ measures
+          the crystal cascade. Randomize to walk the catalog.
         </p>
 
         {/* Controls */}
@@ -168,7 +169,7 @@ export default function SealLabPage() {
         <p style={{ margin: '0 0 28px', fontFamily: E.fontMono, fontSize: 11, color: E.dim }}>
           key · {fmtGroups(hex)}
           {' · '}
-          habit {foldFromFingerprint(hex)}-fold ({HABIT_LABEL[foldFromFingerprint(hex)]})
+          {habitBlurb(hex)}
         </p>
 
         {/* All variants for current FP */}

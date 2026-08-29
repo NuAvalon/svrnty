@@ -2,11 +2,19 @@
 
 // Deterministic identity seals from fingerprint (I-6).
 // Variants share the same fingerprint → different geometry grammars.
-// Default production variant: `phi` — 6-fold crystalline snowflake (φ branch lengths).
+// Default production variant: `phi` — sacred-geometry crystal (φ measure + catalog figure).
 // Lab-only `sigil` keeps the earlier 5-fold pentagram stack for comparison.
 
 import { useMemo } from 'react';
 import { solarEmber as E } from '../recovery/solar-ember';
+import {
+  pickSacredOption,
+  composeSacredFigure,
+  type CrystalHabit as SacredHabit,
+} from './sacred-geometry';
+
+export { unicursalHexagramPath, SACRED_CATALOG, pickSacredOption, composeSacredFigure } from './sacred-geometry';
+export type { SacredOption, SacredFigureId } from './sacred-geometry';
 
 /** φ = (1 + √5) / 2 */
 export const PHI = (1 + Math.sqrt(5)) / 2;
@@ -16,7 +24,7 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'Crystal', blurb: '3–9 fold habit · unicursal hexagram when 6 · φ measure' },
+  { id: 'phi', title: 'Crystal', blurb: 'Sacred geometry seed · hexagrams + unicursal + inversions · φ measure' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -25,14 +33,14 @@ export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] 
 ];
 
 /**
- * Crystal habits — trigonal through nonagon, including 7 & 9.
- * 6-fold draws a unicursal hexagram (one continuous stroke), not two triangles.
+ * Crystal habits — trigonal through nonagon.
+ * Sacred figure (hexagram, unicursal, star, inversion…) is picked separately from the catalog.
  */
 export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
 
 /**
- * Base-10 digit of FNV(fingerprint) → habit (one digit each; 6 gets a little extra weight via digit 3).
+ * Base-10 digit of FNV(fingerprint) → habit.
  * 0→3, 1→4, 2→5, 3→6, 4→6, 5→7, 6→8, 7→9, 8→7, 9→9
  */
 export function foldFromFingerprint(fingerprint: string): CrystalHabit {
@@ -45,41 +53,11 @@ export const HABIT_LABEL: Record<CrystalHabit, string> = {
   3: 'trigonal',
   4: 'square',
   5: 'pentagon',
-  6: 'unicursal hexagram',
+  6: 'hexagonal',
   7: 'heptagon',
   8: 'octagon',
   9: 'nonagon',
 };
-
-/**
- * Crowley-style unicursal hexagram — one continuous stroke (not ★ = two triangles).
- * Unit verts in draw order; scale by R, rotate by `rot` (radians, 0 = tip up after -π/2).
- */
-export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
-  // Normalized extents ≈ 1; stroke order visits six tips + waist crossings for the classic ribbon.
-  // Proportions adapted from the traditional unicursal hexagram (continuous path).
-  const unit: [number, number][] = [
-    [0.0, -1.0],
-    [0.42, 0.12],
-    [0.92, -0.18],
-    [0.5, 0.38],
-    [0.72, 1.0],
-    [0.0, 0.42],
-    [-0.72, 1.0],
-    [-0.5, 0.38],
-    [-0.92, -0.18],
-    [-0.42, 0.12],
-  ];
-  const c = Math.cos(rot);
-  const s = Math.sin(rot);
-  const pts = unit.map(([x, y]) => {
-    const xr = x * c - y * s;
-    const yr = x * s + y * c;
-    return `${(cx + xr * R).toFixed(2)},${(cy + yr * R).toFixed(2)}`;
-  });
-  return `M ${pts[0]} L ${pts.slice(1).join(' L ')} Z`;
-}
-
 export function hexNibbles(fingerprint: string): number[] {
   const hex = fingerprint.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   const out: number[] = [];
@@ -132,9 +110,8 @@ function fmt(p: { x: number; y: number }) {
 type Line = { x1: number; y1: number; x2: number; y2: number; op: number; w: number };
 
 /**
- * Default seal: crystalline habit (3–9 fold from fingerprint).
- * φ sets radial cascade + dendrite lengths; fold is the crystal habit.
- * Habit 6 draws a unicursal hexagram (one stroke). Fingerprint also gates branches/facets.
+ * Default seal: crystalline habit + sacred-geometry figure from fingerprint.
+ * φ sets radial cascade + dendrite lengths; fold + catalog figure are seeded separately.
  */
 export function composePhiSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -150,8 +127,12 @@ export function composePhiSeal(fingerprint: string) {
 
   const fold = foldFromFingerprint(fingerprint);
   const rot = ((seed % 360) + (n[1] / 15) * (360 / fold)) * (Math.PI / 180);
-  // Dendrite angle: half-sector (reads as crystal, not a fixed 60° star)
   const branchAng = Math.PI / fold;
+
+  // Second seed axis → sacred figure within this fold's catalog
+  const figureSeed = (seed >>> 8) ^ (n[2] * 17 + n[3]);
+  const sacredOpt = pickSacredOption(fold as SacredHabit, figureSeed);
+  const sacred = composeSacredFigure(fold as SacredHabit, sacredOpt, cx, cy, R, rot);
 
   const spines: Line[] = [];
   const branches: Line[] = [];
@@ -234,9 +215,8 @@ export function composePhiSeal(fingerprint: string) {
   const hexInner = hexAt(r2);
   const hexCore = hexAt(r3);
 
-  // 6-fold → unicursal hexagram (one stroke), not a Star-of-David double triangle
-  const unicursal =
-    fold === 6 ? unicursalHexagramPath(cx, cy, R * 0.92, rot + Math.PI / 2) : null;
+  // Compatibility: first sacred path as `unicursal` when present (lab/tests)
+  const unicursal = sacred.paths[0]?.d ?? null;
 
   // Edge ticks at vertices + mid-edges
   const ticks: { x1: number; y1: number; x2: number; y2: number; major: boolean }[] = [];
@@ -260,6 +240,9 @@ export function composePhiSeal(fingerprint: string) {
     R, r1, r2, r3, rCore,
     fold,
     habit: HABIT_LABEL[fold],
+    figure: sacred.label,
+    figureId: sacredOpt.id,
+    sacredPaths: sacred.paths,
     blades,
     facets,
     spines,
@@ -363,6 +346,9 @@ export function composeSigilSeal(fingerprint: string) {
     hexInner: '',
     hexCore: corePent,
     unicursal: null as string | null,
+    sacredPaths: [] as { d: string; op: number; w: number }[],
+    figure: 'sigil',
+    figureId: 'gon' as const,
     rings: [R, r1, r2] as const,
     fold,
   };
@@ -456,17 +442,18 @@ function CrystalLayers({
       <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.32" strokeWidth="0.8" />
       <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
 
-      {/* 6-fold: unicursal hexagram (one continuous stroke) */}
-      {g.unicursal && (
+      {/* Sacred geometry figure (hexagram / unicursal / star / inversion / …) */}
+      {g.sacredPaths?.map((p, i) => (
         <path
-          d={g.unicursal}
+          key={`sg${i}`}
+          d={p.d}
           fill="none"
           stroke={E.accent}
-          strokeOpacity="0.7"
-          strokeWidth="1.15"
+          strokeOpacity={p.op}
+          strokeWidth={p.w}
           strokeLinejoin="miter"
         />
-      )}
+      ))}
 
       {g.ticks.map((t, i) => (
         <line
