@@ -7,6 +7,7 @@ import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
 import { Ceremony } from '@/components/Ceremony';
+import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
@@ -202,7 +203,11 @@ export default function Home() {
         justifyContent: 'center',
         alignItems: 'center',
         padding: '20px',
+        position: 'relative' as const,
       }}>
+        <div style={{ position: 'absolute', top: 20, right: 20 }}>
+          <AppearanceToggle />
+        </div>
         <div style={{
           maxWidth: '400px',
           width: '100%',
@@ -260,7 +265,7 @@ export default function Home() {
               autoFocus
               style={{
                 width: '100%',
-                background: 'rgba(12, 8, 5, 0.85)',
+                background: E.inputBg,
                 border: `1px solid ${unlockError ? 'rgba(255, 143, 122, 0.45)' : E.border}`,
                 borderRadius: '8px',
                 padding: '14px 16px',
@@ -410,7 +415,10 @@ export default function Home() {
             local-first
           </span>
         </div>
-        <HelpGuide />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <AppearanceToggle />
+          <HelpGuide />
+        </div>
       </header>
 
       <main className="max-w-6xl mx-auto">

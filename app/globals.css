@@ -5,33 +5,92 @@
 /* Fonts self-hosted via next/font in layout.tsx — no external requests */
 
 @layer base {
-  :root {
-    /* SVRNTY Dark Space Theme */
-    --background: 240 33% 4%;
-    --foreground: 40 15% 87%;
-    --card: 240 25% 6%;
-    --card-foreground: 40 15% 87%;
-    --popover: 240 25% 6%;
-    --popover-foreground: 40 15% 87%;
-    --primary: 43 60% 55%;
-    --primary-foreground: 240 33% 4%;
-    --secondary: 240 15% 12%;
-    --secondary-foreground: 40 15% 87%;
-    --muted: 240 15% 12%;
-    --muted-foreground: 35 10% 50%;
-    --accent: 174 55% 55%;
-    --accent-foreground: 240 33% 4%;
+  :root,
+  html[data-appearance="dark"] {
+    /* Solar Ember — dark (default) */
+    --se-bg: #0f0a06;
+    --se-surface: rgba(30, 20, 10, 0.55);
+    --se-surface-solid: rgba(28, 19, 10, 0.92);
+    --se-border: rgba(255, 190, 120, 0.10);
+    --se-border-lit: rgba(255, 170, 70, 0.38);
+    --se-accent: #f9a825;
+    --se-accent2: #ff7a1a;
+    --se-text: #fbead2;
+    --se-muted: #c9a271;
+    --se-dim: #8f7550;
+    --se-danger: #ff8f7a;
+    --se-ok: #c8e6a0;
+    --se-input-bg: rgba(12, 8, 5, 0.85);
+    --se-glass-shadow: 0 0 40px rgba(249, 168, 37, 0.06);
+    --se-bg-css: radial-gradient(70% 70% at 50% 42%, rgba(249, 168, 37, 0.14), transparent 60%), #0f0a06;
+    --se-wash: rgba(249, 168, 37, 0.12);
+
+    /* shadcn/tailwind bridge */
+    --background: 24 40% 4%;
+    --foreground: 36 70% 91%;
+    --card: 24 35% 7%;
+    --card-foreground: 36 70% 91%;
+    --popover: 24 35% 7%;
+    --popover-foreground: 36 70% 91%;
+    --primary: 40 94% 56%;
+    --primary-foreground: 24 40% 4%;
+    --secondary: 24 25% 12%;
+    --secondary-foreground: 36 70% 91%;
+    --muted: 24 25% 12%;
+    --muted-foreground: 30 30% 50%;
+    --accent: 24 40% 14%;
+    --accent-foreground: 36 70% 91%;
     --destructive: 10 55% 55%;
-    --destructive-foreground: 40 15% 87%;
-    --border: 43 25% 18%;
-    --input: 240 15% 10%;
-    --ring: 43 60% 55%;
+    --destructive-foreground: 36 70% 91%;
+    --border: 30 40% 18%;
+    --input: 24 30% 10%;
+    --ring: 40 94% 56%;
     --radius: 0.75rem;
-    --chart-1: 43 60% 55%;
-    --chart-2: 174 55% 55%;
+    --chart-1: 40 94% 56%;
+    --chart-2: 174 55% 45%;
     --chart-3: 270 30% 50%;
     --chart-4: 10 55% 55%;
     --chart-5: 150 40% 45%;
+  }
+
+  /* Solar Ember — daylight parchment (same brand, higher ambient) */
+  html[data-appearance="light"] {
+    --se-bg: #f2e4cc;
+    --se-surface: rgba(255, 248, 235, 0.78);
+    --se-surface-solid: rgba(255, 251, 243, 0.96);
+    --se-border: rgba(120, 70, 20, 0.14);
+    --se-border-lit: rgba(170, 95, 15, 0.42);
+    --se-accent: #b56a00;
+    --se-accent2: #c4470a;
+    --se-text: #1f140a;
+    --se-muted: #5c4030;
+    --se-dim: #8a6548;
+    --se-danger: #c44530;
+    --se-ok: #3d6b28;
+    --se-input-bg: rgba(255, 252, 246, 0.92);
+    --se-glass-shadow: 0 0 40px rgba(180, 100, 20, 0.08);
+    --se-bg-css: radial-gradient(70% 70% at 50% 42%, rgba(249, 168, 37, 0.22), transparent 62%), #f2e4cc;
+    --se-wash: rgba(249, 168, 37, 0.18);
+
+    --background: 36 55% 88%;
+    --foreground: 24 45% 10%;
+    --card: 36 50% 95%;
+    --card-foreground: 24 45% 10%;
+    --popover: 36 50% 95%;
+    --popover-foreground: 24 45% 10%;
+    --primary: 36 100% 35%;
+    --primary-foreground: 36 55% 96%;
+    --secondary: 36 30% 90%;
+    --secondary-foreground: 24 45% 10%;
+    --muted: 36 25% 88%;
+    --muted-foreground: 24 25% 35%;
+    --accent: 36 40% 90%;
+    --accent-foreground: 24 45% 10%;
+    --destructive: 8 65% 42%;
+    --destructive-foreground: 36 55% 96%;
+    --border: 30 35% 72%;
+    --input: 36 40% 92%;
+    --ring: 36 100% 35%;
   }
 }
 
@@ -43,9 +102,9 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif;
-    background: #0f0a06;
+    background: var(--se-bg);
     min-height: 100vh;
-    color: #fbead2;
+    color: var(--se-text);
   }
 
   /* Soft ember wash — matches solar-ember bgCss */
@@ -56,7 +115,7 @@
     left: 0;
     width: 100%;
     height: 100%;
-    background: radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.12), transparent 60%);
+    background: radial-gradient(70% 70% at 50% 42%, var(--se-wash), transparent 60%);
     pointer-events: none;
     z-index: -1;
   }
@@ -86,32 +145,32 @@
 
 /* --- Card overrides --- */
 [data-slot="card"] {
-  background: rgba(15, 15, 25, 0.75) !important;
+  background: var(--se-surface-solid) !important;
   backdrop-filter: blur(12px);
-  border-color: rgba(180, 160, 100, 0.12) !important;
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+  border-color: var(--se-border) !important;
+  box-shadow: var(--se-glass-shadow);
 }
 
 [data-slot="card"]:hover {
-  border-color: rgba(180, 160, 100, 0.22) !important;
+  border-color: var(--se-border-lit) !important;
 }
 
 /* --- Input overrides --- */
 input, textarea, select {
-  background: rgba(15, 10, 6, 0.75) !important;
-  border-color: rgba(255,190,120,0.12) !important;
-  color: #fbead2 !important;
+  background: var(--se-input-bg) !important;
+  border-color: var(--se-border) !important;
+  color: var(--se-text) !important;
   font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif !important;
 }
 
 input:focus, textarea:focus, select:focus {
-  border-color: rgba(249,168,37,0.4) !important;
-  box-shadow: 0 0 0 2px rgba(249,168,37,0.08) !important;
+  border-color: var(--se-border-lit) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--se-accent) 18%, transparent) !important;
   outline: none !important;
 }
 
 input::placeholder, textarea::placeholder {
-  color: rgba(143, 117, 80, 0.65) !important;
+  color: color-mix(in srgb, var(--se-dim) 75%, transparent) !important;
 }
 
 /* --- Button overrides --- */
@@ -147,15 +206,15 @@ button[data-variant="outline"]:hover {
 
 /* --- Tab overrides --- */
 [role="tablist"] {
-  background: rgba(15, 15, 25, 0.6) !important;
-  border: 1px solid rgba(180, 160, 100, 0.1) !important;
+  background: var(--se-surface) !important;
+  border: 1px solid var(--se-border) !important;
   backdrop-filter: blur(12px);
   border-radius: 10px !important;
   padding: 4px !important;
 }
 
 [role="tab"] {
-  color: #8f7550 !important;
+  color: var(--se-dim) !important;
   font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif !important;
   font-size: 13px !important;
   font-weight: 500 !important;
@@ -166,13 +225,13 @@ button[data-variant="outline"]:hover {
 }
 
 [role="tab"][data-state="active"] {
-  background: rgba(249,168,37,0.14) !important;
-  color: #fbead2 !important;
+  background: color-mix(in srgb, var(--se-accent) 16%, transparent) !important;
+  color: var(--se-text) !important;
   box-shadow: none !important;
 }
 
 [role="tab"]:hover:not([data-state="active"]) {
-  color: #c9a271 !important;
+  color: var(--se-muted) !important;
 }
 
 /* --- Badge overrides --- */
@@ -190,18 +249,18 @@ button[data-variant="outline"]:hover {
 
 /* --- Dialog overrides --- */
 [role="dialog"] {
-  background: rgba(15, 15, 25, 0.95) !important;
-  border: 1px solid rgba(180, 160, 100, 0.15) !important;
+  background: var(--se-surface-solid) !important;
+  border: 1px solid var(--se-border) !important;
   backdrop-filter: blur(16px);
 }
 
 /* --- Selection --- */
 ::selection {
-  background: rgba(200, 168, 78, 0.25);
-  color: #fff;
+  background: color-mix(in srgb, var(--se-accent) 28%, transparent);
+  color: var(--se-text);
 }
 
-/* --- Ambient star field (subtle) --- */
+/* --- Ambient star field (subtle; muted in light) --- */
 @keyframes twinkle {
   0%, 100% { opacity: 0.3; }
   50% { opacity: 0.8; }
@@ -224,6 +283,11 @@ button[data-variant="outline"]:hover {
     radial-gradient(1px 1px at 55% 45%, rgba(78, 205, 196, 0.15) 0%, transparent 100%),
     radial-gradient(1px 1px at 80% 85%, rgba(180, 160, 100, 0.2) 0%, transparent 100%),
     radial-gradient(1px 1px at 35% 15%, rgba(200, 168, 78, 0.2) 0%, transparent 100%);
+}
+
+html[data-appearance="light"] .stars {
+  opacity: 0.22;
+  filter: saturate(0.7);
 }
 
 /* --- Text utilities --- */
