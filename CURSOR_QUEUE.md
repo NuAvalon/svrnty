@@ -50,7 +50,7 @@ Cursor renders **UI to our specs only**. It NEVER touches: `visible()`/`reach()`
 - Wrong password: **"Incorrect password. This backup requires your password to restore."**  [do NOT offer seed-only recovery — not available on this format]
 - Wrong/invalid phrase (Case B): **"That recovery phrase doesn't match this backup."**
 
-**PR:** ☐  ·  **Verify:** Hypatia (copy/claim-honesty) · Flint (matches crypto model) · Athena (frontend/merge)
+**PR:** [x] [#60](https://github.com/NuAvalon/svrnty/pull/60)  ·  **Verify:** Hypatia (copy/claim-honesty) · Flint (matches crypto model) · Athena (frontend/merge)
 
 > **SEPARATE future task — do NOT build yet:** a true seed-ONLY "lost your passphrase" recovery path. GATED on Flint's v4 dual-envelope format change (moves the recovery vault outside the passphrase layer). It will be queued when the format lands. Until then, no screen may promise seed-only recovery.
 
