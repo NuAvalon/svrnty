@@ -5,7 +5,7 @@
 
 ## What we changed
 - Retinted SVG tokens to Solar Ember (CSS vars → light/dark).
-- Click node → seal + **alive contact sheet** (edit, TRUST/remove, accept pending intro, introduce stub, send-update stub, version-history WIP note, multi-select → group).
+- Click node → seal + **alive contact sheet** (edit, TRUST/remove, accept pending intro, introduce stub, **Send update → CUR-1 revise dialog**, version-history WIP note, multi-select → group).
 - Sample circle (`sample-circle.ts`): mutual trust self↔Ada/Grace/Margaret; owner-authored tags (`core`, `builders`, `radio`, …) → **cluster chords + centroid pull**; Frank = pending intro from Grace (pending ≠ trust).
 - Known vs trusted visuals sharpened (hollow dashed known · lit fill + halo trusted · double-glow mutual · pulsing dashed pending).
 - Intro UI creates a local pending contact for demo; dual-accept protocol is team-owned.
@@ -13,7 +13,8 @@
 ## Still open (UI)
 - Particle-lattice canvas (dist &lt; ~130 accent lines) — next pass.
 - Reach-settings / “awaken the circle” — need team visibility contracts.
-- Version history surface (L1) — placeholder only.
+- Version history surface (CUR-2) — placeholder only.
+- Wire broadcast for Send update — Flint (`identity/contact-method-send.ts` stub).
 - Real introduce wire (pending both sides until accept) — stubbed locally.
 
 ## Questions
