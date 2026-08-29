@@ -55,12 +55,13 @@ test('decagram fold 10 is in the habit set', () => {
   assert.ok(SACRED_CATALOG[10].some((o) => o.k === 4), 'expects compound {10/4}');
 });
 
-test('Crowley unicursal is two interlaced Wikimedia paths', () => {
+test('Crowley unicursal is a single wireframe path', () => {
   const paths = unicursalHexagramPaths(50, 50, 40, 0);
-  assert.equal(paths.length, 2);
+  assert.equal(paths.length, 1);
   assert.ok(paths[0].startsWith('M '));
-  assert.ok(paths[1].startsWith('M '));
-  assert.notEqual(paths[0], paths[1]);
+  assert.ok(paths[0].endsWith(' Z') || paths[0].endsWith('Z'));
+  // Six vertices + close ⇒ five " L " separators in the polyline
+  assert.equal(paths[0].split(' L ').length, 6);
 });
 
 test('hexagonal seals include compound hexagram and unicursal options', () => {

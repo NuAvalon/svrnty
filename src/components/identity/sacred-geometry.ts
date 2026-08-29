@@ -147,11 +147,9 @@ export function hexagramCompoundPath(
 }
 
 /**
- * Crowley unicursal hexagram — Wikimedia Commons geometry
- * (File:Crowley_unicursal_hexagram.svg). Two interlaced triangle-paths
- * (one + rotate 180°), not a banner outline or regular-hexagon stitch.
- * Returns one or more SVG path `d` strings in viewBox-local form already
- * mapped into (cx,cy,R) with optional rotation about center.
+ * Crowley unicursal hexagram — single continuous wireframe (one stroke).
+ * Six vertices in unicursal order: top → SE → NW → NE → SW → bottom → top.
+ * Not the double/interlaced filled ribbon from Wikimedia.
  */
 export function unicursalHexagramPaths(
   cx: number,
@@ -159,48 +157,28 @@ export function unicursalHexagramPaths(
   R: number,
   rot: number
 ): string[] {
-  // Absolute vertices of the Wikimedia "triangle" path (viewBox 0 0 200 220).
-  // Origin path: m100,10 l86.60,150 l-86.60,-50 l62.46,25.86 l-62.46,-105.86
-  //              l-62.46,105.86 l62.46,-25.86 l-86.60,50 l86.60,-150 z
-  const ox = 100;
-  const oy = 110; // rotate origin in the SVG
+  // Unit coords (y-down), classic Crowley proportions
   const raw: [number, number][] = [
-    [100, 10],
-    [186.602539, 160],
-    [100, 110],
-    [162.460411, 135.85787],
-    [100, 30],
-    [37.539589, 135.85787],
-    [100, 110],
-    [13.397461, 160],
-    [100, 10],
+    [0, -1],
+    [0.8660254, 0.5],
+    [-0.5, -0.2886751],
+    [0.5, -0.2886751],
+    [-0.8660254, 0.5],
+    [0, 1],
   ];
-  // Fit height 200 → diameter 2R
-  const scale = (2 * R) / 200;
   const c = Math.cos(rot);
   const s = Math.sin(rot);
-
-  const mapPts = (pts: [number, number][], mirror: boolean) => {
-    const out = pts.map(([x, y]) => {
-      let lx = (x - ox) * scale;
-      let ly = (y - oy) * scale;
-      if (mirror) {
-        lx = -lx;
-        ly = -ly;
-      }
-      const xr = lx * c - ly * s;
-      const yr = lx * s + ly * c;
-      return `${(cx + xr).toFixed(2)},${(cy + yr).toFixed(2)}`;
-    });
-    return `M ${out.join(' L ')} Z`;
-  };
-
-  return [mapPts(raw, false), mapPts(raw, true)];
+  const pts = raw.map(([x, y]) => {
+    const xr = (x * c - y * s) * R;
+    const yr = (x * s + y * c) * R;
+    return `${(cx + xr).toFixed(2)},${(cy + yr).toFixed(2)}`;
+  });
+  return [`M ${pts.join(' L ')} Z`];
 }
 
-/** Single-string helper (joins both interlaced paths). */
+/** Single-string helper (one wireframe path). */
 export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
-  return unicursalHexagramPaths(cx, cy, R, rot).join(' ');
+  return unicursalHexagramPaths(cx, cy, R, rot)[0];
 }
 
 /** Triquetra — three vesica lobes (approximate circular arcs as polylines). */
@@ -291,14 +269,10 @@ export function composeSacredFigure(
       push(hexagramCompoundPath(cx, cy, r, rot, true), 0.65, 1.05);
       break;
     case 'unicursal':
-      for (const d of unicursalHexagramPaths(cx, cy, r, rot)) {
-        push(d, 0.72, 1.1);
-      }
+      push(unicursalHexagramPaths(cx, cy, r, rot)[0], 0.72, 1.15);
       break;
     case 'unicursal-inv':
-      for (const d of unicursalHexagramPaths(cx, cy, r, rot + Math.PI)) {
-        push(d, 0.72, 1.1);
-      }
+      push(unicursalHexagramPaths(cx, cy, r, rot + Math.PI)[0], 0.72, 1.15);
       break;
     case 'triquetra':
       push(triquetraPath(cx, cy, r, rot), 0.6, 1.0);
