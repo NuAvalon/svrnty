@@ -95,9 +95,9 @@ await recoverFromSeedPhrase(kv, phrase); // 12-word phrase → identity
 ### POST-SUCCESS INTERSTITIAL (contacts-honesty — UNMISSABLE; team-FINAL: Flint crypto-GREEN + Hypatia claim-honesty-final)
 Show AFTER a successful seed-only restore — the inline pre-success line is missable; THIS is the moment the user learns contacts aren't back:
 - Heading: **"Your identity is back."**
-- Body: **"Your keys and identity are recovered. Your contacts and trust connections weren't restored — they were sealed with the passphrase you lost, and your recovery phrase can't unlock them. If you still have a backup whose password you remember, you can restore your contacts from it. Otherwise, you'll rebuild your connections as you reconnect with people."**
+- Body: **"Your keys and identity are recovered. Your contacts and trust connections weren't restored — they were sealed with the passphrase you lost, and your recovery phrase can't unlock them. You'll rebuild your connections as you reconnect with people."**
 - Button: **"Continue"**
-- Honest BOTH ways: no phantom seed-restore of contacts (Flint crypto-confirmed the recovery envelope never carries the contacts body) AND no false forever-despair (a remembered-passphrase backup CAN restore contacts). Do NOT add a "restore from another backup" CTA — the rare edge would confuse the common lost-passphrase user.
+- Honest via SCOPE-TO-FLOW: "the passphrase you lost / your recovery phrase can't unlock them" = this-flow limit, NOT an absolute forever-gone claim (a user with a remembered passphrase wouldn't be on this seed path). No phantom seed-restore (Flint crypto-confirmed), no false-despair (scope-to-flow), and NO CTA — a "restore from another backup" link confuses the common lost-passphrase case + is a separate flow (team-reconciled to no-CTA, Hypatia #123876).
 
 ### POST-QUANTUM keys (follow-on — NOT a merge blocker; Flint's lane)
 - seedVaultRestore returning PQ SECRETS only is CORRECT (publics are derivable: ML-KEM-1024 pk is embedded in the sk; ML-DSA-87 pk recomputes from the sk). Do NOT invent a PQ layout in the UI — flag, don't build (render-glass ✓).
