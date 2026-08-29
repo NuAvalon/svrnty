@@ -343,7 +343,28 @@ export function TrustMap({
           }}
         >
           <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-            <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
+            {focusEdge.peer_fingerprint ? (
+              <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
+            ) : (
+              <div
+                style={{
+                  width: 72,
+                  height: 72,
+                  borderRadius: 12,
+                  border: `1px dashed ${E.border}`,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: E.dim,
+                  fontSize: 10,
+                  fontFamily: E.fontSans,
+                  textAlign: 'center',
+                  padding: 8,
+                }}
+              >
+                no key yet
+              </div>
+            )}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
                 <div>

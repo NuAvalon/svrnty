@@ -488,13 +488,20 @@ export default function Home() {
                 onAssignGroup={async (fingerprints, groupName) => {
                   const label = groupName.trim();
                   if (!label) return;
+                  const { getAllContacts } = await import('@/lib/identity/client-store');
+                  const records = await getAllContacts(identity.identity.fingerprint);
                   for (const fp of fingerprints) {
+                    const rec = records.find(
+                      (r) => (r.fingerprint || r.id) === fp || r.id === contacts.find((c) => c.peer_fingerprint === fp)?.id
+                    );
                     const edge = contacts.find((c) => c.peer_fingerprint === fp);
-                    if (!edge?.id) continue;
-                    const tags = Array.from(new Set([...(edge.tags || []), label]));
-                    await updateContact(edge.id, {
+                    const id = rec?.id || edge?.id;
+                    if (!id) continue;
+                    const prevTags = (rec as any)?.tags || (rec as any)?.metadata?.tags || edge?.tags || [];
+                    const tags = Array.from(new Set([...prevTags, label]));
+                    await updateContact(id, {
                       tags,
-                      metadata: { ...(typeof edge === 'object' ? {} : {}), tags },
+                      metadata: { ...((rec as any)?.metadata || {}), tags },
                     } as any);
                   }
                   await refreshContacts();
