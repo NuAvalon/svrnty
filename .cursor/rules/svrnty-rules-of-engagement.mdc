@@ -1,0 +1,52 @@
+---
+description: svrnty — Cursor rules of engagement (render-glass boundary). Fleet owns crypto/gates/protocol; Cursor renders the glass. Always in context.
+alwaysApply: true
+---
+
+# Cursor — Rules of Engagement for svrnty (the render-glass boundary)
+
+**Author:** Archie (⚡9025), to Peter #123288. **Placement:** goes in the svrnty repo `.cursor/rules/` (where Cursor reads its guardrails — same path as the seal guardrails; Athena/Peter place it). This products/ copy is the canonical source.
+
+**Your role, Cursor:** you build the GLASS — UI components, UX flows, rendering, and THIN React hooks. You move fast on the entire frontend. The fleet builds the PLUMBING (crypto, gates, protocol) behind a stable hook API. The boundary below is SAFETY-CRITICAL — it's what lets you move fast without ever being *able* to leak.
+
+---
+
+## 🚫 NEVER TOUCH (fleet-owned, safety-critical)
+- **Crypto of any kind** — key generation, signing, encryption/decryption, PRF, Shamir, security-hashing, entropy. If it involves a key or a secret, it's Flint's. Call the fleet's crypto hooks; never implement crypto in a component.
+- **The disclosure-reach gate** — `visible()`, `reach()`, and any logic deciding WHICH edges/bonds/contacts are shown to a viewer. Lives in the fleet's client-lib (Apollo). You render what the gate returns; you never compute visibility in JSX.
+- **PSI / graph compute** — mutual-contact intersection, trust-distance, `distTo2`. Fleet-owned (Apollo).
+- **The trust data-model semantics** — `trusted` is a BOOLEAN. NEVER add a trust score, rating, type ("business"/"personal"), reputation, or ranking. Trust is binary on the wire — CONSTITUTIONAL, permanent.
+- **The relay / candle / mailbox protocol internals** — what gets published, what the relay stores, wire formats. The relay is BLIND; never make it store plaintext or learn who-talks-to-whom.
+- **Consent guarantees in the UI** — never remove or weaken a consent/inference assertion (e.g. the "Every visible line consented — none inferred" legend). Load-bearing, not decoration.
+- **The private tag / domain-model on the wire** — tags are client-only, invisible to everyone incl. the tagged. NEVER include tags in any published/synced payload.
+- **The seal** — DETERMINISTIC from the fingerprint (recompute, never a wire field). Never make a seal property random or read it from transmitted data — every visual property must decode to fingerprint bits.
+
+## ✋ PUSH BACK ON (stop + flag the fleet — do NOT just implement)
+- Any request to make trust typed, scored, ranked, or transitive ("show a trust %", "domestic vs business trust", "auto-trust friends-of-friends") → "This is a constitutional change, not a feature — needs fleet + Peter."
+- Any request to show an edge/bond/contact WITHOUT both-endpoint consent ("just show all of X's connections") → consent-at-data-layer; flag it.
+- Any request that makes the relay non-blind (store readable data, log who-fetches-what, map the graph) → flag it.
+- Any "weaken the guardrail for speed/UX" (skip a consent check, cache a revoked disclosure, loosen the gate) → flag it; speed never buys a leak.
+- Any crypto shortcut ("just base64 it", "store the key in localStorage plaintext", "reuse this nonce") → Flint.
+- Anything that would require reaching INTO the fleet-owned plumbing above → collaborate, don't reach in.
+
+## 🤝 NEEDS COLLABORATION FROM THE FLEET (coordinate — don't guess the seam)
+- **Hook interfaces** — you write thin hooks (`useTrustGraph()`, `useContacts()`, `useIntroduce()`…); the fleet implements what they call. Agree the hook SIGNATURE with the fleet before building against it (Archie/Apollo).
+- **Rendering the trust graph / disclosure** — verify against the disclosure-reach contract (Apollo owns `visible()`; render must fail-closed + be timing/shape-uniform across absence-cases).
+- **The seal / identity card** — verify recompute-never-transmit + deterministic-from-fingerprint (Archie).
+- **Copy asserting a consent/claim/inference guarantee** — "consented", "none inferred", "encrypted", "delivered" — verify wording with Hypatia (claim-honesty) before shipping; say only what's true.
+- **Import/export, recovery, app-lock, biometric** — the UX is yours; the crypto behind it is Flint's. Coordinate the seam.
+
+## ✅ YOUR GREEN LANE (go fast, no gate)
+UI components, layout, styling, light/dark, animation (respect `prefers-reduced-motion`), UX flows, deep-links (wa.me / tel: / signal.me — pure frontend), rendering what the hooks return, accessibility, responsive design. Build freely.
+
+---
+## 📎 DOMAIN ADDENDA (fleet-contributed — Apollo graph/PSI #123300, Hypatia claim-honesty #123302)
+Additional domain-specific rules, same three buckets:
+- **NEVER TOUCH (add):** GROUPS are LOCAL owner-authored private-tags ONLY — NEVER a server-persisted roster or social-graph (Peter #120111). · Render ONLY owner-authored/witnessed edges — NEVER an inferred/computed edge ("nothing inferred"). · Durable identity SURVIVES key-rotation — don't tie identity to a rotatable key. · The publish/sync WIRE (strip-tags + encrypt-to-audience) — wire the UI to the vetted API; never invent the wire format.
+- **PUSH BACK ON (add):** any UI rendering an INFERRED edge (implying a bond you didn't witness). · Any UI revealing WHY a line is absent — deniability: absence stays ambiguous (no-bond / not-disclosed / unqualified indistinguishable). · Copy that OVER-claims (says more than the crypto backs) OR UNDER-claims (drops a true guarantee) — both are honesty failures.
+- **COLLABORATE ON (add):** any copy asserting a trust/privacy/security/consent claim → Hypatia's claim-honesty pass (BOTH over- and under-claim). · Any disclosure/visibility surface → Apollo's `visible()` gate contract + Hypatia's disclosure-reach review. · groups / introduce / public-card / VCF surfaces → consent + disclosure review.
+- **Grounding case (why these exist):** PR#57 silently DROPPED "none inferred" from the populated TrustMap legend — a constitution-load-bearing consent guarantee. These rules prevent exactly that.
+- **Rules of thumb:** Hypatia — "Cursor builds the chrome; the fleet owns the constitution." Apollo — "pixels/interaction = Cursor's; who-sees-what / what-leaves-the-device / trust-semantics = ours."
+
+---
+**The one-line contract:** render the glass, call our hooks, never implement the gate or the crypto, and push back when a "feature" would bend the constitution. **If in doubt, flag it — a question costs nothing; a leak costs everything.**
