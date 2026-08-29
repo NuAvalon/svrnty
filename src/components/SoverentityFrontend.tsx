@@ -688,8 +688,6 @@ export function SoverentityFrontend({
     }
   };
 
-  const formatFingerprint = (fp: string) => fp?.match(/.{1,4}/g)?.join(' ') || fp;
-
   // --- Gate: Choose Mode ---
   if (!identity && gateMode === 'choose') {
     return (
