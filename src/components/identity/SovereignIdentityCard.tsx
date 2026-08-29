@@ -3,15 +3,10 @@
 // Archie's Sovereign Identity card — Solar Ember home surface.
 // UI-only: renders existing identity fields. "Revise" is an L1 stub (no broadcast crypto).
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { IdentitySeal } from './IdentitySeal';
 import { solarEmber as E, solarGlass } from '../recovery/solar-ember';
 import { SVRNTY_DOMAIN } from '@/lib/config/domain';
-import {
-  downloadSealPng,
-  downloadSealSvg,
-  sealFilename,
-} from '@/lib/identity/seal-export';
 
 export type MethodKind = 'email' | 'signal' | 'site';
 
@@ -204,17 +199,10 @@ export function SovereignIdentityCard({
   onOpenCircle,
 }: SovereignIdentityCardProps) {
   const [reviseNote, setReviseNote] = useState<string | null>(null);
-  const [exportNote, setExportNote] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
-  const sealWrapRef = useRef<HTMLDivElement>(null);
   const displayHandle = handle
     ? (handle.startsWith('@') ? handle : `@${handle}`)
     : `@….${SVRNTY_DOMAIN}`;
   const signalDisplay = signal ? maskSignal(signal) : undefined;
-  const exportBase = useMemo(() => {
-    const slug = handle?.replace(/^@/, '') || name || fingerprint.slice(0, 8);
-    return slug;
-  }, [handle, name, fingerprint]);
 
   const handleRevise = (kind: MethodKind) => {
     if (onRevise) {
@@ -228,30 +216,6 @@ export function SovereignIdentityCard({
           ? 'Revise Signal — living method SEND is L1 (UI stub; team owns broadcast).'
           : 'Revise site — living method SEND is L1 (UI stub; team owns broadcast).'
     );
-  };
-
-  const findSealSvg = (): SVGSVGElement | null => {
-    return sealWrapRef.current?.querySelector('svg[data-identity-seal]') ?? null;
-  };
-
-  const handleExport = async (format: 'svg' | 'png') => {
-    const svg = findSealSvg();
-    if (!svg) {
-      setExportNote('Seal not ready — try again.');
-      return;
-    }
-    setExporting(true);
-    setExportNote(null);
-    try {
-      const file = sealFilename(exportBase, format);
-      if (format === 'svg') downloadSealSvg(svg, file);
-      else await downloadSealPng(svg, file);
-      setExportNote('Saved — your crystal only; not your key.');
-    } catch {
-      setExportNote('Could not export seal.');
-    } finally {
-      setExporting(false);
-    }
   };
 
   return (
@@ -291,85 +255,8 @@ export function SovereignIdentityCard({
           background: 'linear-gradient(165deg, rgba(36,24,12,.72), rgba(18,12,7,.88))',
         }}
       >
-        <div
-          ref={sealWrapRef}
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 10,
-            marginBottom: 18,
-          }}
-        >
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
           <IdentitySeal fingerprint={fingerprint} size={96} />
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button
-              type="button"
-              disabled={exporting}
-              onClick={() => void handleExport('png')}
-              style={{
-                background: 'rgba(249,168,37,.08)',
-                border: `1px solid ${E.borderLit}`,
-                color: E.accent,
-                fontSize: 11,
-                fontFamily: E.fontSans,
-                fontWeight: 500,
-                letterSpacing: '0.04em',
-                padding: '6px 12px',
-                borderRadius: 8,
-                cursor: exporting ? 'wait' : 'pointer',
-                opacity: exporting ? 0.6 : 1,
-              }}
-            >
-              Save PNG
-            </button>
-            <button
-              type="button"
-              disabled={exporting}
-              onClick={() => void handleExport('svg')}
-              style={{
-                background: 'transparent',
-                border: `1px solid ${E.border}`,
-                color: E.muted,
-                fontSize: 11,
-                fontFamily: E.fontSans,
-                fontWeight: 500,
-                letterSpacing: '0.04em',
-                padding: '6px 12px',
-                borderRadius: 8,
-                cursor: exporting ? 'wait' : 'pointer',
-                opacity: exporting ? 0.6 : 1,
-              }}
-            >
-              Save SVG
-            </button>
-          </div>
-          <p
-            style={{
-              margin: 0,
-              fontSize: 10,
-              color: E.dim,
-              fontFamily: E.fontSans,
-              textAlign: 'center',
-              lineHeight: 1.45,
-              maxWidth: 260,
-            }}
-          >
-            Your crystal — unique to your key, shareable, not reversible.
-          </p>
-          {exportNote && (
-            <p
-              style={{
-                margin: 0,
-                fontSize: 10,
-                color: E.ok,
-                fontFamily: E.fontSans,
-                textAlign: 'center',
-              }}
-            >
-              {exportNote}
-            </p>
-          )}
         </div>
 
         <h2

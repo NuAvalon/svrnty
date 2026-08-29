@@ -760,7 +760,7 @@ export function SoverentityFrontend({
                 Your identity. Your trust. Your sovereignty.
               </p>
               <p style={s.gateHint}>
-                A vessel for your key. After you begin, your seal is a unique crystal of that key — shareable, not reversible.
+                A vessel for your key. Your seal crystallizes from your fingerprint — peers only see it once you&apos;re in their circle.
               </p>
             </div>
 

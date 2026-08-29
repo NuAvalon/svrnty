@@ -666,7 +666,6 @@ export function IdentitySeal({
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
       <svg
-        data-identity-seal
         width={size}
         height={size}
         viewBox="0 0 100 100"

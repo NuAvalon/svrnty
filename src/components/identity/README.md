@@ -20,5 +20,5 @@ spins of the whole seal.
 
 φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
 
-**Export:** Identity card can save the seal as SVG/PNG (`seal-export.ts`) — lossy visual only,
-not reversible to a key.
+Peers see a seal only after a contact is added — geometry is regenerated from their
+fingerprint locally (I-6). No image export; the seal is not a transport or QR substitute.
