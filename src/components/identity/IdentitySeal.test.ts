@@ -1,14 +1,17 @@
-// IdentitySeal crystal geometry — determinism + φ cascade + digit shift.
+// IdentitySeal crystal geometry — determinism + φ cascade + habit fold + digit shift.
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   PHI,
   PHI_INV,
+  CRYSTAL_HABITS,
   composePhiSeal,
   composeSigilSeal,
+  foldFromFingerprint,
   shiftFingerprintDigit,
   fingerprintHex,
+  randomFingerprint,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -35,10 +38,21 @@ test('rings follow φ cascade R · φ⁻ⁿ', () => {
   assert.ok(Math.abs(PHI * PHI_INV - 1) < 1e-12);
 });
 
-test('six crystal spines (hexagonal / snowflake habit)', () => {
+test('fold is an elegant habit (4|5|6|8) and matches spine count', () => {
   const g = composePhiSeal(FP_A);
-  assert.equal(g.fold, 6);
-  assert.equal(g.spines.length, 6);
+  assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
+  assert.equal(g.spines.length, g.fold);
+  assert.equal(g.fold, foldFromFingerprint(FP_A));
+});
+
+test('base-10 habit picker can yield every elegant fold', () => {
+  const seen = new Set<number>();
+  for (let i = 0; i < 200 && seen.size < CRYSTAL_HABITS.length; i++) {
+    seen.add(foldFromFingerprint(randomFingerprint()));
+  }
+  for (const h of CRYSTAL_HABITS) {
+    assert.ok(seen.has(h), `missing habit ${h}`);
+  }
 });
 
 test('lab sigil variant remains 5-fold', () => {

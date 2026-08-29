@@ -16,13 +16,39 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'Crystal', blurb: '6-fold snowflake · φ branch lengths · facets' },
+  { id: 'phi', title: 'Crystal', blurb: '4/5/6/8-fold habit from fingerprint · φ measure' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
-  { id: 'ring', title: 'Ring', blurb: 'Hex cascade + core only' },
+  { id: 'ring', title: 'Ring', blurb: 'Polygon cascade + core only' },
   { id: 'none', title: 'None', blurb: 'Empty mark — card without a seal' },
 ];
+
+/**
+ * Elegant crystal habits only — square, pentagon, hex snowflake, octagon.
+ * Avoids 7/9/10/11-gons (busy, inelegant). Base-10 digit picks among these.
+ */
+export const CRYSTAL_HABITS = [4, 5, 6, 8] as const;
+export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
+
+/**
+ * Base-10 digit of FNV(fingerprint) → habit.
+ * Weighted toward hex (snowflake), still varies: 0–1→4, 2–3→5, 4–6→6, 7–9→8.
+ */
+export function foldFromFingerprint(fingerprint: string): CrystalHabit {
+  const digit = fnv(fingerprint) % 10;
+  if (digit <= 1) return 4;
+  if (digit <= 3) return 5;
+  if (digit <= 6) return 6;
+  return 8;
+}
+
+export const HABIT_LABEL: Record<CrystalHabit, string> = {
+  4: 'square',
+  5: 'pentagon',
+  6: 'hex snowflake',
+  8: 'octagon',
+};
 
 export function hexNibbles(fingerprint: string): number[] {
   const hex = fingerprint.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
@@ -76,9 +102,9 @@ function fmt(p: { x: number; y: number }) {
 type Line = { x1: number; y1: number; x2: number; y2: number; op: number; w: number };
 
 /**
- * Default seal: hexagonal crystal / snowflake.
- * φ sets radial cascade + dendrite lengths; 6-fold is the crystal habit (honeycomb),
- * not a stacked pentagram. Fingerprint gates which branches/facets light.
+ * Default seal: crystalline habit (4 / 5 / 6 / 8-fold from fingerprint).
+ * φ sets radial cascade + dendrite lengths; fold is the crystal habit.
+ * Fingerprint also gates which branches/facets light.
  */
 export function composePhiSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -92,13 +118,15 @@ export function composePhiSeal(fingerprint: string) {
   const r3 = R * PHI_INV ** 3;
   const rCore = R * PHI_INV ** 4;
 
-  const fold = 6; // snowflake / honeycomb
-  const rot = ((seed % 360) + (n[1] / 15) * 30) * (Math.PI / 180);
+  const fold = foldFromFingerprint(fingerprint);
+  const rot = ((seed % 360) + (n[1] / 15) * (360 / fold)) * (Math.PI / 180);
+  // Dendrite angle: half-sector (reads as crystal, not a fixed 60° star)
+  const branchAng = Math.PI / fold;
 
   const spines: Line[] = [];
   const branches: Line[] = [];
   const facets: string[] = []; // filled diamond facets along arms
-  const blades: string[] = []; // alias for tests / filled arm wedges (kept empty — facets instead)
+  const blades: string[] = []; // unused filled wedges (compat)
 
   for (let i = 0; i < fold; i++) {
     const a = rot + (i * 2 * Math.PI) / fold;
@@ -109,10 +137,9 @@ export function composePhiSeal(fingerprint: string) {
     // Primary spine
     spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.55, w: 1.05 });
 
-    // Dendrites at R/φ — ±60° (crystal angle), length ≈ (R−r1)·φ⁻¹
+    // Dendrites at R/φ — ± half-sector, length ≈ (R−r1)·φ⁻¹
     const branchLen = (R - r1) * PHI_INV * (0.75 + (n[i % n.length] / 15) * 0.45);
-    const branchAng = Math.PI / 3; // 60°
-    if (n[i] >= 2) {
+    if (n[i % n.length] >= 2) {
       branches.push({
         x1: mid.x, y1: mid.y,
         x2: mid.x + Math.cos(a - branchAng) * branchLen,
@@ -146,7 +173,7 @@ export function composePhiSeal(fingerprint: string) {
 
     // Crystal facet (rhombus) between r2 and r1 along the arm
     if (n[(i + 2) % n.length] >= 3) {
-      const half = (Math.PI / fold) * PHI_INV * (0.55 + (n[i] / 20));
+      const half = (Math.PI / fold) * PHI_INV * (0.55 + (n[i % n.length] / 20));
       const p0 = pt(cx, cy, r2, a);
       const p1 = pt(cx, cy, (r1 + r2) / 2, a - half);
       const p2 = pt(cx, cy, r1, a);
@@ -198,6 +225,7 @@ export function composePhiSeal(fingerprint: string) {
   return {
     R, r1, r2, r3, rCore,
     fold,
+    habit: HABIT_LABEL[fold],
     blades, // unused filled wedges
     facets,
     spines,

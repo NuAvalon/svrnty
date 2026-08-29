@@ -11,6 +11,8 @@ import {
   fingerprintHex,
   randomFingerprint,
   shiftFingerprintDigit,
+  foldFromFingerprint,
+  HABIT_LABEL,
 } from '@/components/identity/IdentitySeal';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -25,6 +27,11 @@ const SAMPLES = [
 
 function fmtGroups(fp: string): string {
   return fingerprintHex(fp).match(/.{1,4}/g)?.join('·') ?? fp;
+}
+
+function habitBlurb(fp: string): string {
+  const f = foldFromFingerprint(fp);
+  return `${f}-fold · ${HABIT_LABEL[f]}`;
 }
 
 const btn: CSSProperties = {
@@ -89,8 +96,9 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Same fingerprint drives every variant (I-6). Randomize, nudge a single hex digit ±1, and
-          compare φ sigil vs softer drafts — including a card with no seal.
+          Same fingerprint drives every variant (I-6). Crystal habit is 4 / 5 / 6 / 8-fold from a
+          base-10 digit of the fingerprint seed (never literal 10-gons). Randomize, nudge a hex digit
+          ±1, compare shapes.
         </p>
 
         {/* Controls */}
@@ -159,6 +167,8 @@ export default function SealLabPage() {
         </div>
         <p style={{ margin: '0 0 28px', fontFamily: E.fontMono, fontSize: 11, color: E.dim }}>
           key · {fmtGroups(hex)}
+          {' · '}
+          habit {foldFromFingerprint(hex)}-fold ({HABIT_LABEL[foldFromFingerprint(hex)]})
         </p>
 
         {/* All variants for current FP */}
@@ -189,11 +199,11 @@ export default function SealLabPage() {
             marginBottom: 36,
           }}
         >
-          <VariantCard variant="phi" title="Current" blurb={fmtGroups(neighbors.base).slice(0, 19)} fingerprint={neighbors.base} />
-          <VariantCard variant="phi" title="First −1" blurb={fmtGroups(neighbors.firstMinus).slice(0, 19)} fingerprint={neighbors.firstMinus} />
-          <VariantCard variant="phi" title="First +1" blurb={fmtGroups(neighbors.firstPlus).slice(0, 19)} fingerprint={neighbors.firstPlus} />
-          <VariantCard variant="phi" title="Last −1" blurb={fmtGroups(neighbors.lastMinus).slice(0, 19)} fingerprint={neighbors.lastMinus} />
-          <VariantCard variant="phi" title="Last +1" blurb={fmtGroups(neighbors.lastPlus).slice(0, 19)} fingerprint={neighbors.lastPlus} />
+          <VariantCard variant="phi" title="Current" blurb={habitBlurb(neighbors.base)} fingerprint={neighbors.base} />
+          <VariantCard variant="phi" title="First −1" blurb={habitBlurb(neighbors.firstMinus)} fingerprint={neighbors.firstMinus} />
+          <VariantCard variant="phi" title="First +1" blurb={habitBlurb(neighbors.firstPlus)} fingerprint={neighbors.firstPlus} />
+          <VariantCard variant="phi" title="Last −1" blurb={habitBlurb(neighbors.lastMinus)} fingerprint={neighbors.lastMinus} />
+          <VariantCard variant="phi" title="Last +1" blurb={habitBlurb(neighbors.lastPlus)} fingerprint={neighbors.lastPlus} />
         </div>
 
         {/* Card with / without seal */}
@@ -251,7 +261,7 @@ export default function SealLabPage() {
             >
               <IdentitySeal fingerprint={s} variant="phi" size={72} />
               <span style={{ fontFamily: E.fontMono, fontSize: 9, color: E.dim, wordBreak: 'break-all' }}>
-                {fingerprintHex(s).slice(0, 8)}…
+                {foldFromFingerprint(s)}·{fingerprintHex(s).slice(0, 6)}…
               </span>
             </button>
           ))}
