@@ -81,11 +81,15 @@ export function ContactMethodReviseDialog({
     setValue(initialValue);
     setStatus(null);
     setLocalNote(null);
-    const preset = new Set(preselectedFingerprints ?? []);
-    if (preset.size === 0) {
+    const preset = new Set<string>();
+    const seed = (preselectedFingerprints ?? []).filter((fp) => typeof fp === 'string' && fp.trim());
+    if (seed.length > 0) {
+      for (const fp of seed) preset.add(fp.trim());
+    } else {
       // Default: trusted peers with a public key (honest encrypt targets later).
       for (const c of contacts) {
-        if (c.trusted && c.public_key) preset.add(c.fingerprint);
+        const fp = (c.fingerprint || '').trim();
+        if (fp && c.trusted && c.public_key) preset.add(fp);
       }
     }
     setSelected(preset);
