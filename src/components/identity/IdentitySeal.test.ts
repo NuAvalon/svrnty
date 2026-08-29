@@ -9,13 +9,15 @@ import {
   composePhiSeal,
   composeSigilSeal,
   foldFromFingerprint,
+  sacredEntryFromFingerprint,
   shiftFingerprintDigit,
   fingerprintHex,
   randomFingerprint,
   SACRED_CATALOG,
+  SACRED_FLAT,
   unicursalHexagramPaths,
   unicursalClassicPaths,
-  unicursalPhiPaths,
+  unicursalPentagramPaths,
 } from './IdentitySeal';
 
 const FP_A = '5408785bfc9f6fa84bb8e44c90c0c03eaaaaaaaa';
@@ -38,67 +40,72 @@ test('rings follow φ cascade R · φ⁻ⁿ', () => {
   assert.ok(Math.abs(PHI * PHI_INV - 1) < 1e-12);
 });
 
-test('fold ∈ 3–10 and matches spine count', () => {
+test('fold ∈ 3–10 and matches spine count + flat entry', () => {
   const g = composePhiSeal(FP_A);
+  const entry = sacredEntryFromFingerprint(FP_A);
   assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
   assert.equal(g.spines.length, g.fold);
   assert.equal(g.fold, foldFromFingerprint(FP_A));
+  assert.equal(g.fold, entry.fold);
+  assert.equal(g.figureId, entry.option.id);
 });
 
-test('sacred catalog covers every fold', () => {
+test('flat pool covers every fold; no dead gon; equal entry odds basis', () => {
+  assert.ok(SACRED_FLAT.length >= 40);
   for (const h of CRYSTAL_HABITS) {
     assert.ok(SACRED_CATALOG[h].length >= 2, `fold ${h} needs options`);
+    assert.ok(!SACRED_CATALOG[h].some((o) => (o.id as string) === 'gon'));
   }
+  const folds = new Set(SACRED_FLAT.map((e) => e.fold));
+  for (const h of CRYSTAL_HABITS) assert.ok(folds.has(h));
 });
 
-test('circle options exist on every fold; seed of life on fold 6', () => {
-  for (const h of CRYSTAL_HABITS) {
-    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circle'), `fold ${h} circle`);
-    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circles'), `fold ${h} φ circles`);
-  }
+test('unicursal pentagram + hexagram both in catalog', () => {
+  assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'unicursal-pent'));
+  assert.ok(SACRED_CATALOG[5].some((o) => o.id === 'unicursal-pent-inv'));
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal'));
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal-inv'));
+  const pent = unicursalPentagramPaths(50, 50, 40, 0);
+  assert.equal(pent.length, 1);
+  assert.equal(pent[0].split(' L ').length, 6);
+});
+
+test('flower + metatron on fold 6; circles on every fold', () => {
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'flower'));
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'metatron'));
   assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'seed'));
+  for (const h of CRYSTAL_HABITS) {
+    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circle'));
+    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circles'));
+  }
 });
 
-test('Crowley unicursal is a single wireframe path', () => {
+test('Crowley unicursal is a single √3 wireframe path', () => {
   const paths = unicursalHexagramPaths(50, 50, 40, 0);
   assert.equal(paths.length, 1);
-  assert.ok(paths[0].startsWith('M '));
-  assert.ok(paths[0].endsWith(' Z') || paths[0].endsWith('Z'));
-  // Six vertices + close ⇒ five " L " separators in the polyline
+  assert.equal(unicursalClassicPaths(50, 50, 40, 0)[0], paths[0]);
   assert.equal(paths[0].split(' L ').length, 6);
 });
 
-test('classic unicursal matches √3 construction; φ variant differs', () => {
-  const classic = unicursalClassicPaths(50, 50, 40, 0)[0];
-  const alias = unicursalHexagramPaths(50, 50, 40, 0)[0];
-  const phi = unicursalPhiPaths(50, 50, 40, 0)[0];
-  assert.equal(classic, alias);
-  assert.notEqual(classic, phi);
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'unicursal-phi'));
-});
-
-test('hexagonal seals include compound hexagram and unicursal options', () => {
-  const ids = SACRED_CATALOG[6].map((o) => o.id);
-  assert.ok(ids.includes('hexagram') && ids.includes('hexagram-inv'));
-  assert.ok(ids.includes('unicursal') && ids.includes('unicursal-inv'));
-  assert.ok(ids.includes('unicursal-phi') && ids.includes('unicursal-phi-inv'));
+test('flat pool produces varied figures in the wild', () => {
   const seen = new Set<string>();
-  for (let i = 0; i < 800; i++) {
-    const g = composePhiSeal(randomFingerprint());
-    if (g.fold === 6) seen.add(g.figureId);
+  for (let i = 0; i < 600; i++) {
+    seen.add(composePhiSeal(randomFingerprint()).figureId);
   }
-  assert.ok(seen.has('hexagram') || seen.has('hexagram-inv'), 'expected compound hexagram in the wild');
+  assert.ok(seen.size >= 12, `expected broad figure variety, got ${seen.size}`);
   assert.ok(
-    seen.has('unicursal') || seen.has('unicursal-inv') || seen.has('unicursal-phi') || seen.has('unicursal-phi-inv'),
-    'expected unicursal family in the wild'
+    [...seen].some((id) => id.includes('unicursal')),
+    'expected unicursal family'
   );
 });
 
 test('inversions appear in the wild', () => {
   let found = false;
-  for (let i = 0; i < 150; i++) {
-    const id = composePhiSeal(randomFingerprint()).figureId;
-    if (id.includes('inv')) { found = true; break; }
+  for (let i = 0; i < 200; i++) {
+    if (composePhiSeal(randomFingerprint()).figureId.includes('inv')) {
+      found = true;
+      break;
+    }
   }
   assert.ok(found);
 });

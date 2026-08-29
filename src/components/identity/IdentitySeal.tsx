@@ -8,13 +8,23 @@
 import { useMemo } from 'react';
 import { solarEmber as E } from '../recovery/solar-ember';
 import {
-  pickSacredOption,
+  pickSacredEntry,
   composeSacredFigure,
   type CrystalHabit as SacredHabit,
 } from './sacred-geometry';
 
-export { unicursalHexagramPath, unicursalHexagramPaths, unicursalClassicPaths, unicursalPhiPaths, SACRED_CATALOG, pickSacredOption, composeSacredFigure } from './sacred-geometry';
-export type { SacredOption, SacredFigureId } from './sacred-geometry';
+export {
+  unicursalHexagramPath,
+  unicursalHexagramPaths,
+  unicursalClassicPaths,
+  unicursalPentagramPaths,
+  SACRED_CATALOG,
+  SACRED_FLAT,
+  pickSacredOption,
+  pickSacredEntry,
+  composeSacredFigure,
+} from './sacred-geometry';
+export type { SacredOption, SacredFigureId, SacredEntry } from './sacred-geometry';
 
 /** φ = (1 + √5) / 2 */
 export const PHI = (1 + Math.sqrt(5)) / 2;
@@ -24,7 +34,7 @@ export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'Crystal', blurb: 'Sacred geometry seed · hexagrams + unicursal + inversions · φ measure' },
+  { id: 'phi', title: 'Crystal', blurb: 'Flat sacred pool · unicursal pent/hex · flower · Metatron · φ measure' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -40,11 +50,17 @@ export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9, 10] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
 
 /**
- * Uniform habit pick — one fold per seed bucket, no preference weighting.
- * fold ∈ {3…10} equally likely from FNV(fingerprint).
+ * Uniform habit over the flat sacred pool — fold comes with the figure.
+ * Every (fold, figure) entry is equally likely (no preference weights).
  */
+export function sacredEntryFromFingerprint(fingerprint: string) {
+  const n = hexNibbles(fingerprint);
+  const seed = fnv(fingerprint) ^ (n[2] * 17 + n[3] * 31 + (n[5] << 4));
+  return pickSacredEntry(seed);
+}
+
 export function foldFromFingerprint(fingerprint: string): CrystalHabit {
-  return CRYSTAL_HABITS[fnv(fingerprint) % CRYSTAL_HABITS.length];
+  return sacredEntryFromFingerprint(fingerprint).fold;
 }
 
 export const HABIT_LABEL: Record<CrystalHabit, string> = {
@@ -118,25 +134,28 @@ export function composePhiSeal(fingerprint: string) {
   const cx = 50;
   const cy = 50;
 
-  const R = 41 + (n[0] % 3); // 41–43
+  const R = 40 + (n[0] % 5); // 40–44 — wider radius spread
   const r1 = R * PHI_INV;
   const r2 = R * PHI_INV * PHI_INV;
   const r3 = R * PHI_INV ** 3;
   const rCore = R * PHI_INV ** 4;
 
-  const fold = foldFromFingerprint(fingerprint);
-  const rot = ((seed % 360) + (n[1] / 15) * (360 / fold)) * (Math.PI / 180);
+  // Flat sacred pool → fold + figure equally likely across all catalog entries
+  const entry = sacredEntryFromFingerprint(fingerprint);
+  const fold = entry.fold;
+  const sacredOpt = entry.option;
+
+  // Richer rotation entropy from fingerprint bits
+  const rotDeg = ((seed >>> 3) % 3600) / 10 + (n[1] + n[4]) * (180 / fold / 8);
+  const rot = rotDeg * (Math.PI / 180);
   const branchAng = Math.PI / fold;
 
-  // Second seed axis → sacred figure within this fold's catalog
-  const figureSeed = (seed >>> 8) ^ (n[2] * 17 + n[3]);
-  const sacredOpt = pickSacredOption(fold as SacredHabit, figureSeed);
   const sacred = composeSacredFigure(fold as SacredHabit, sacredOpt, cx, cy, R, rot);
 
   const spines: Line[] = [];
   const branches: Line[] = [];
-  const facets: string[] = []; // filled diamond facets along arms
-  const blades: string[] = []; // unused filled wedges (compat)
+  const facets: string[] = [];
+  const blades: string[] = [];
 
   for (let i = 0; i < fold; i++) {
     const a = rot + (i * 2 * Math.PI) / fold;
@@ -144,12 +163,11 @@ export function composePhiSeal(fingerprint: string) {
     const mid = pt(cx, cy, r1, a);
     const near = pt(cx, cy, r2, a);
 
-    // Primary spine
     spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.55, w: 1.05 });
 
-    // Dendrites at R/φ — ± half-sector, length ≈ (R−r1)·φ⁻¹
+    // ~50/50 dendrite gates from nibble bits (more variation, no taste bias)
     const branchLen = (R - r1) * PHI_INV * (0.75 + (n[i % n.length] / 15) * 0.45);
-    if (n[i % n.length] >= 2) {
+    if (n[i % n.length] & 1) {
       branches.push({
         x1: mid.x, y1: mid.y,
         x2: mid.x + Math.cos(a - branchAng) * branchLen,
@@ -164,8 +182,7 @@ export function composePhiSeal(fingerprint: string) {
       });
     }
 
-    // Secondary dendrites at R/φ² — shorter, gated harder
-    if (n[(i + 6) % n.length] >= 8) {
+    if (n[(i + 6) % n.length] & 2) {
       const len2 = (r1 - r2) * PHI_INV * (0.7 + (n[(i + 3) % n.length] / 20));
       branches.push({
         x1: near.x, y1: near.y,
@@ -181,8 +198,7 @@ export function composePhiSeal(fingerprint: string) {
       });
     }
 
-    // Crystal facet (rhombus) between r2 and r1 along the arm
-    if (n[(i + 2) % n.length] >= 3) {
+    if (n[(i + 2) % n.length] & 1) {
       const half = (Math.PI / fold) * PHI_INV * (0.55 + (n[i % n.length] / 20));
       const p0 = pt(cx, cy, r2, a);
       const p1 = pt(cx, cy, (r1 + r2) / 2, a - half);
@@ -191,8 +207,7 @@ export function composePhiSeal(fingerprint: string) {
       facets.push(`M ${fmt(p0)} L ${fmt(p1)} L ${fmt(p2)} L ${fmt(p3)} Z`);
     }
 
-    // Outer tip facet (smaller diamond near tip)
-    if (n[(i + 4) % n.length] >= 5) {
+    if (n[(i + 4) % n.length] & 4) {
       const half = (Math.PI / fold) * 0.35;
       const p0 = pt(cx, cy, r1 + (R - r1) * PHI_INV, a);
       const p1 = pt(cx, cy, (r1 + R) / 2, a - half);

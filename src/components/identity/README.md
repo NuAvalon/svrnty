@@ -1,10 +1,17 @@
 ## IdentitySeal
 **I-6:** seal geometry is derived only from the fingerprint string. Same fingerprint ⇒ same seal. No `Math.random`.
 
-**Two seed axes** (uniform — no preference weights)
-1. **Fold** ∈ {3…10} via `FNV(fp) % 8` over `{3,4,5,6,7,8,9,10}` equally
-2. **Sacred figure** via `seed % catalog.length` — one of each option per fold (hexagram ★, unicursal, `{n/k}` stars incl. decagram `{10/3}`, **circle / φ circles**, seed of life on 6, triquetra, vesica…)
+**Flat sacred pool** (equal odds — no preference weights)
+- Every `(fold, figure)` catalog entry is equally likely via `pickSacredEntry`.
+- Fold ∈ {3…10} comes with the figure (not a separate weighted habit map).
+- Crystal spines / φ cascade / dendrites still follow the chosen fold.
 
-All sacred wireframes are **generated from geometry** (`{n/k}` stars, √3 hexagon Crowley unicursal, φ-scaled unicursal alternate, arcs/circles). No uploaded SVG assets. Classic Crowley look is kept (`unicursal`); `unicursal-phi` is the φ alternate.
+**Catalog (formula-generated, no uploaded SVG)**
+- Unicursal pentagram `{5/2}` + unicursal hexagram (Crowley √3)
+- Compound hexagram ★, flower of life, Metatron’s cube, seed of life
+- `{n/k}` stars (incl. decagram, `{8/2}`, `{9/3}`, `{9/4}`…) + inversions
+- Circle / φ-nested circles, vesica, triquetra, diamond
 
-φ still measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
+Removed: dead `gon` overlay, φ-unicursal alternate (classic Crowley kept).
+
+φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.

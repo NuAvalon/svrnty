@@ -96,9 +96,9 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Fingerprint seeds fold (3–10) and a sacred-geometry figure: hexagrams (compound ★),
-          unicursal hexagrams, circles / φ nests, seed of life, pentagrams, heptagrams, inversions,
-          triquetra, vesica. φ measures the crystal cascade. Randomize to walk the catalog.
+          Fingerprint picks a (fold, figure) pair from a flat equal-odds pool: unicursal
+          pentagram / hexagram, flower of life, Metatron, hexagrams, `{n/k}` stars, circles,
+          vesica, triquetra. φ measures the crystal cascade. Randomize to walk the catalog.
         </p>
 
         {/* Controls */}
