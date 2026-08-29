@@ -36,15 +36,15 @@ const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container w
 
 // Tokens lifted from the crystalline-lattice reference.
 const T = {
-  field: '#0A0E1A',
-  myEdge: '#5DCAA5',   // teal — my direct (you→peer) edges
-  dimFill: '#232A45',  // undisclosed / dim rim fill
-  dimStroke: '#3A4468',
-  lit: '#7DD8E8',      // cyan — a trusted, lit node
-  selfRing: '#9FE8E0',
-  selfDot: '#E8FBFF',
-  label: '#9FB0D8',
-  caption: '#6B7699',
+  field: '#0f0a06',
+  myEdge: '#f9a825',      // solar gold — my direct edges
+  dimFill: 'rgba(28,19,10,.92)',
+  dimStroke: 'rgba(255,190,120,.22)',
+  lit: '#ff7a1a',         // sacral orange — trusted / lit
+  selfRing: '#f9a825',
+  selfDot: '#fbead2',
+  label: '#c9a271',
+  caption: '#8f7550',
 } as const;
 
 function nodeStroke(state: TrustState): string {

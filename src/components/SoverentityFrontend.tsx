@@ -5,6 +5,9 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from '@/lib/identity/client-store';
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
+import { EntropyMeter } from '@/components/recovery/EntropyMeter';
+import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
+import { solarEmber as SE } from '@/components/recovery/solar-ember';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -229,6 +232,7 @@ export function SoverentityFrontend({
   const [vaultFile, setVaultFile] = useState<File | null>(null);
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
+  const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
 
   // PQ migration state (shown after v1 import)
   const [pendingPqMigration, setPendingPqMigration] = useState<{ fingerprint: string; identity: any } | null>(null);
@@ -471,7 +475,7 @@ export function SoverentityFrontend({
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
-        const { importAll, storeIdentity, storeKey, addContact, setActiveFingerprint, loadIdentity } = await import('@/lib/identity/client-store');
+        const { importAll, storeKey, addContact, loadIdentity } = await import('@/lib/identity/client-store');
 
         // Detect format and normalize
         if (data.type === 'svrnty-full-backup') {
@@ -504,6 +508,33 @@ export function SoverentityFrontend({
             await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
+
+          // L8: when a KeyVault is present, soul-seed is the second factor (CURSOR.md).
+          if (backup.vault) {
+            if (!soulSeedPhrase.trim()) {
+              setRestoreError('Enter your soul-seed recovery phrase (second factor).');
+              return;
+            }
+            try {
+              const { recoverFromSeedPhrase } = await import('@/lib/crypto/recovery');
+              const bundle = await recoverFromSeedPhrase(backup.vault, soulSeedPhrase.trim());
+              // Prefer recovering keys from the vault when plaintext keys were omitted (true 2nd factor).
+              if (!backup.keys) {
+                backup.keys = {
+                  privateKey: bundle.classical_private_key,
+                  passphrase: bundle.classical_passphrase,
+                };
+              }
+              // PQ private material shape is team-owned (serializeKeypairBundle). If the backup
+              // omitted pq_keys, flag in recovery README — do not invent a bundle layout here.
+              void bundle.pq_signing_secret_key;
+              void bundle.pq_kem_secret_key;
+            } catch {
+              setRestoreError('Soul-seed does not open the recovery vault. Check the phrase and try again.');
+              return;
+            }
+          }
+
           await importAll(backup);
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
@@ -520,6 +551,25 @@ export function SoverentityFrontend({
           onIdentityUpdate?.(backup.identity);
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
+          if (data.vault) {
+            if (!soulSeedPhrase.trim()) {
+              setRestoreError('Enter your soul-seed recovery phrase (second factor).');
+              return;
+            }
+            try {
+              const { recoverFromSeedPhrase } = await import('@/lib/crypto/recovery');
+              const bundle = await recoverFromSeedPhrase(data.vault, soulSeedPhrase.trim());
+              if (!data.keys) {
+                data.keys = {
+                  privateKey: bundle.classical_private_key,
+                  passphrase: bundle.classical_passphrase,
+                };
+              }
+            } catch {
+              setRestoreError('Soul-seed does not open the recovery vault. Check the phrase and try again.');
+              return;
+            }
+          }
           await importAll(data);
 
           // PQ migration: check for missing PRIVATE PQ keys
@@ -811,8 +861,9 @@ export function SoverentityFrontend({
               onChange={e => { setUnlockConfirm(e.target.value); setUnlockError(''); }}
               style={{ ...s.input, marginTop: '8px' }}
             />
+            <EntropyMeter value={unlockPassphrase} label="Unlock strength" />
             {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
-            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down.</p>
+            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Soul-seed recovery phrase is shown next — a separate second factor.)</p>
           </div>
 
           <button
@@ -843,66 +894,17 @@ export function SoverentityFrontend({
 
   // --- Gate: one-time recovery reveal (seed phrase) ---
   if (!identity && gateMode === 'recovery-reveal' && pendingRecovery) {
+    const fp = pendingRecovery.identity?.identity?.fingerprint || '';
     return (
-      <div style={s.outerWrap}>
-        <div style={s.createCard}>
-          <div style={s.keyIcon}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-            </svg>
-          </div>
-          <h1 style={s.createTitle}>Write this down.</h1>
-          <p style={s.createSub}>
-            This recovery phrase reconstructs your master secret. It is shown once.
-            It is NOT your vault passphrase — the passphrase unlocks this device,
-            the recovery phrase rebuilds your identity if you lose the device.
-            Social-recovery shards ({pendingRecovery.threshold}-of-{pendingRecovery.shardCount}) are stored locally for the tear ceremony.
-          </p>
-          <div style={{
-            background: 'rgba(6, 10, 8, 0.9)',
-            border: '1px solid rgba(200, 168, 78, 0.25)',
-            borderRadius: '10px',
-            padding: '16px',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '13px',
-            color: '#e8e4d9',
-            wordBreak: 'break-all' as const,
-            lineHeight: 1.7,
-            marginBottom: '16px',
-            userSelect: 'all' as const,
-          }}>
-            {pendingRecovery.seedPhrase}
-          </div>
-          <label style={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
-            fontFamily: "'Space Grotesk', sans-serif",
-            fontSize: '12px',
-            color: 'rgba(255,255,255,0.55)',
-            marginBottom: '16px',
-            cursor: 'pointer',
-          }}>
-            <input
-              type="checkbox"
-              checked={recoveryAcked}
-              onChange={e => setRecoveryAcked(e.target.checked)}
-              style={{ marginTop: '2px' }}
-            />
-            <span>I have written this down offline. I understand there is no email recovery.</span>
-          </label>
-          <button
-            onClick={confirmRecoveryReveal}
-            disabled={!recoveryAcked}
-            style={{
-              ...s.primaryBtn,
-              opacity: recoveryAcked ? 1 : 0.45,
-            }}
-          >
-            <span style={s.btnInner}>I have it. Continue.</span>
-          </button>
-        </div>
-      </div>
+      <SoulSeedReveal
+        seedPhrase={pendingRecovery.seedPhrase}
+        fingerprint={fp}
+        threshold={pendingRecovery.threshold}
+        shardCount={pendingRecovery.shardCount}
+        acked={recoveryAcked}
+        onAckChange={setRecoveryAcked}
+        onContinue={confirmRecoveryReveal}
+      />
     );
   }
 
@@ -1068,6 +1070,17 @@ export function SoverentityFrontend({
                   {showPassphrase ? '🙈' : '👁'}
                 </button>
               </div>
+            </div>
+            <div style={s.field}>
+              <label style={{ ...s.label, color: SE.accent }}>SOUL-SEED RECOVERY PHRASE</label>
+              <textarea
+                placeholder="Paste the recovery phrase shown at forge (hex groups)"
+                value={soulSeedPhrase}
+                onChange={e => setSoulSeedPhrase(e.target.value)}
+                rows={3}
+                style={{ ...s.input, fontFamily: "'JetBrains Mono', monospace", fontSize: 12, resize: 'vertical' as const }}
+              />
+              <p style={s.hint}>Second factor when the backup includes a KeyVault. Required to open sealed recovery material.</p>
             </div>
             </>
           ) : (
