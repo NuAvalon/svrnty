@@ -144,10 +144,14 @@ export function composePhiSeal(fingerprint: string) {
   const fold = entry.fold;
   const sacredOpt = entry.option;
 
-  // Richer rotation entropy from fingerprint bits
-  const rotDeg = ((seed >>> 3) % 3600) / 10 + (n[1] + n[4]) * (180 / fold / 8);
-  const rot = rotDeg * (Math.PI / 180);
+  // Canonical orientation: spine / vertex 0 at top. No free whole-seal rotation —
+  // two fingerprints must never be the same crystal merely spun (incl. 360°/fold twins).
+  // Former rotation entropy goes into per-arm structure below instead.
+  const rot = -Math.PI / 2;
   const branchAng = Math.PI / fold;
+  // 0..1 from leftover seed bits — scales dendrite/facet asymmetry, not spin
+  const structMix = ((seed >>> 3) % 1000) / 1000;
+  const radiusJitter = ((n[1] + n[4]) % 7) / 7;
 
   const sacred = composeSacredFigure(fold as SacredHabit, sacredOpt, cx, cy, R, rot);
 
@@ -164,8 +168,9 @@ export function composePhiSeal(fingerprint: string) {
 
     spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.55, w: 1.05 });
 
-    // ~50/50 dendrite gates from nibble bits (more variation, no taste bias)
-    const branchLen = (R - r1) * PHI_INV * (0.75 + (n[i % n.length] / 15) * 0.45);
+    // ~50/50 dendrite gates; lengths use structMix so orientation bits still alter shape
+    const branchLen =
+      (R - r1) * PHI_INV * (0.7 + (n[i % n.length] / 15) * 0.4 + structMix * 0.2 + radiusJitter * 0.1);
     if (n[i % n.length] & 1) {
       branches.push({
         x1: mid.x, y1: mid.y,
@@ -175,14 +180,14 @@ export function composePhiSeal(fingerprint: string) {
       });
       branches.push({
         x1: mid.x, y1: mid.y,
-        x2: mid.x + Math.cos(a + branchAng) * branchLen,
-        y2: mid.y + Math.sin(a + branchAng) * branchLen,
+        x2: mid.x + Math.cos(a + branchAng) * branchLen * (0.85 + structMix * 0.2),
+        y2: mid.y + Math.sin(a + branchAng) * branchLen * (0.85 + structMix * 0.2),
         op: 0.42, w: 0.75,
       });
     }
 
     if (n[(i + 6) % n.length] & 2) {
-      const len2 = (r1 - r2) * PHI_INV * (0.7 + (n[(i + 3) % n.length] / 20));
+      const len2 = (r1 - r2) * PHI_INV * (0.65 + (n[(i + 3) % n.length] / 20) + structMix * 0.15);
       branches.push({
         x1: near.x, y1: near.y,
         x2: near.x + Math.cos(a - branchAng) * len2,
@@ -198,7 +203,7 @@ export function composePhiSeal(fingerprint: string) {
     }
 
     if (n[(i + 2) % n.length] & 1) {
-      const half = (Math.PI / fold) * PHI_INV * (0.55 + (n[i % n.length] / 20));
+      const half = (Math.PI / fold) * PHI_INV * (0.5 + (n[i % n.length] / 20) + structMix * 0.1);
       const p0 = pt(cx, cy, r2, a);
       const p1 = pt(cx, cy, (r1 + r2) / 2, a - half);
       const p2 = pt(cx, cy, r1, a);
@@ -207,7 +212,7 @@ export function composePhiSeal(fingerprint: string) {
     }
 
     if (n[(i + 4) % n.length] & 4) {
-      const half = (Math.PI / fold) * 0.35;
+      const half = (Math.PI / fold) * (0.3 + radiusJitter * 0.1);
       const p0 = pt(cx, cy, r1 + (R - r1) * PHI_INV, a);
       const p1 = pt(cx, cy, (r1 + R) / 2, a - half);
       const p2 = tip;

@@ -113,8 +113,24 @@ test('lab sigil variant remains 5-fold', () => {
   assert.equal(composeSigilSeal(FP_A).fold, 5);
 });
 
-test('±1 digit changes the crystal', () => {
+test('canonical orientation: spine 0 points up — no free whole-seal rotation', () => {
+  for (let i = 0; i < 40; i++) {
+    const g = composePhiSeal(randomFingerprint());
+    const s0 = g.spines[0];
+    // tip should be above center (smaller y in SVG)
+    assert.ok(s0.y2 < s0.y1 - 5, 'spine 0 tip above center');
+    // tip roughly on vertical axis through center
+    assert.ok(Math.abs(s0.x2 - s0.x1) < 1.5, 'spine 0 near vertical');
+  }
+});
+
+test('±1 digit does not yield a pure rotation twin of the same crystal', () => {
   const base = fingerprintHex(FP_A);
-  const shifted = shiftFingerprintDigit(base, 0, 1);
-  assert.notDeepEqual(composePhiSeal(base).spines, composePhiSeal(shifted).spines);
+  const shifted = shiftFingerprintDigit(base, 7, 1);
+  const a = composePhiSeal(base);
+  const b = composePhiSeal(shifted);
+  // If fold+figure match, dendrite/facet structure must still differ (not spin-only)
+  if (a.fold === b.fold && a.figureId === b.figureId && a.R === b.R) {
+    assert.notDeepEqual(a.branches, b.branches);
+  }
 });

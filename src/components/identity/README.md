@@ -13,4 +13,9 @@
 - Circle / φ-nested circles, vesica, triquetra, diamond
 - Unicursal hexagram (Crowley √3 proportions) as one peer among many
 
+**Orientation:** spine / vertex 0 is always at the top (canonical). There is no free whole-seal
+rotation axis — two fingerprints cannot be the same crystal merely spun (including `360°/fold`
+symmetry twins). Catalog “rotated …” figures are intentional π-flips of the sacred overlay, not
+spins of the whole seal.
+
 φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
