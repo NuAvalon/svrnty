@@ -17,7 +17,10 @@ export type SacredFigureId =
   | 'star-alt-inv'
   | 'triquetra'
   | 'vesica'
-  | 'diamond';
+  | 'diamond'
+  | 'circle'
+  | 'circles' // φ-nested concentric rings
+  | 'seed'; // seed of life (fold 6)
 
 export interface SacredOption {
   id: SacredFigureId;
@@ -26,22 +29,28 @@ export interface SacredOption {
   k?: number;
 }
 
-/** Catalog per fold — sacred geometry seed set. */
+/** Catalog per fold — sacred geometry seed set (uniform; no preference weights). */
 export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
   3: [
     { id: 'gon', label: 'triangle' },
     { id: 'triquetra', label: 'triquetra' },
     { id: 'vesica', label: 'vesica piscis' },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
   4: [
     { id: 'gon', label: 'square' },
     { id: 'diamond', label: 'diamond' },
     { id: 'vesica', label: 'vesica cross' },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
   5: [
     { id: 'gon', label: 'pentagon' },
     { id: 'star', label: 'pentagram', k: 2 },
     { id: 'star-inv', label: 'inverted pentagram', k: 2 },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
   6: [
     { id: 'gon', label: 'hexagon' },
@@ -49,23 +58,32 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'hexagram-inv', label: 'inverted hexagram' },
     { id: 'unicursal', label: 'unicursal hexagram' },
     { id: 'unicursal-inv', label: 'inverted unicursal' },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
+    { id: 'seed', label: 'seed of life' },
   ],
   7: [
     { id: 'gon', label: 'heptagon' },
     { id: 'star', label: 'heptagram {7/2}', k: 2 },
     { id: 'star-alt', label: 'heptagram {7/3}', k: 3 },
     { id: 'star-inv', label: 'inverted {7/2}', k: 2 },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
   8: [
     { id: 'gon', label: 'octagon' },
     { id: 'star', label: 'octagram {8/3}', k: 3 },
     { id: 'star-inv', label: 'inverted octagram', k: 3 },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
   9: [
     { id: 'gon', label: 'nonagon' },
     { id: 'star', label: 'nonagram {9/2}', k: 2 },
     { id: 'star-alt', label: 'nonagram {9/4}', k: 4 },
     { id: 'star-inv', label: 'inverted {9/2}', k: 2 },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
   10: [
     { id: 'gon', label: 'decagon' },
@@ -73,6 +91,8 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star-inv', label: 'inverted {10/3}', k: 3 },
     { id: 'star-alt', label: 'compound {10/4}', k: 4 },
     { id: 'star-alt-inv', label: 'inverted {10/4}', k: 4 },
+    { id: 'circle', label: 'circle' },
+    { id: 'circles', label: 'φ circles' },
   ],
 };
 
@@ -223,6 +243,35 @@ export function vesicaPaths(cx: number, cy: number, R: number, rot: number, cros
   return out;
 }
 
+/** Exact circle as SVG path (two semicircle arcs). */
+export function circlePath(cx: number, cy: number, r: number): string {
+  const x0 = (cx + r).toFixed(2);
+  const x1 = (cx - r).toFixed(2);
+  const y = cy.toFixed(2);
+  const rr = r.toFixed(2);
+  return `M ${x0},${y} A ${rr},${rr} 0 1 1 ${x1},${y} A ${rr},${rr} 0 1 1 ${x0},${y}`;
+}
+
+/** Concentric φ cascade: R, R·φ⁻¹, R·φ⁻². */
+export function phiCirclePaths(cx: number, cy: number, R: number): string[] {
+  const r1 = R;
+  const r2 = R * PHI_INV;
+  const r3 = R * PHI_INV * PHI_INV;
+  return [circlePath(cx, cy, r1), circlePath(cx, cy, r2), circlePath(cx, cy, r3)];
+}
+
+/** Seed of life — center + 6 petal circles (radius = R·φ⁻¹). */
+export function seedOfLifePaths(cx: number, cy: number, R: number, rot: number): string[] {
+  const r = R * PHI_INV;
+  const out = [circlePath(cx, cy, r)];
+  for (let i = 0; i < 6; i++) {
+    const a = rot - Math.PI / 2 + (i * Math.PI) / 3;
+    const c = pt(cx, cy, r, a);
+    out.push(circlePath(c.x, c.y, r));
+  }
+  return out;
+}
+
 export interface SacredRender {
   label: string;
   paths: { d: string; op: number; w: number }[];
@@ -280,6 +329,17 @@ export function composeSacredFigure(
     case 'vesica':
       for (const d of vesicaPaths(cx, cy, R, rot, fold === 4)) {
         push(d, 0.4, 0.85);
+      }
+      break;
+    case 'circle':
+      push(circlePath(cx, cy, r), 0.75, 1.2);
+      break;
+    case 'circles':
+      phiCirclePaths(cx, cy, r).forEach((d, i) => push(d, 0.7 - i * 0.12, 1.15 - i * 0.15));
+      break;
+    case 'seed':
+      for (const d of seedOfLifePaths(cx, cy, R, rot)) {
+        push(d, 0.55, 0.95);
       }
       break;
     default:

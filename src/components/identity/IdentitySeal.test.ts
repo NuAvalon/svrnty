@@ -49,10 +49,12 @@ test('sacred catalog covers every fold', () => {
   }
 });
 
-test('decagram fold 10 is in the habit set', () => {
-  assert.ok((CRYSTAL_HABITS as readonly number[]).includes(10));
-  assert.ok(SACRED_CATALOG[10].some((o) => o.k === 3), 'expects {10/3}');
-  assert.ok(SACRED_CATALOG[10].some((o) => o.k === 4), 'expects compound {10/4}');
+test('circle options exist on every fold; seed of life on fold 6', () => {
+  for (const h of CRYSTAL_HABITS) {
+    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circle'), `fold ${h} circle`);
+    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circles'), `fold ${h} φ circles`);
+  }
+  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'seed'));
 });
 
 test('Crowley unicursal is a single wireframe path', () => {
