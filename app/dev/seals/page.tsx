@@ -96,9 +96,9 @@ export default function SealLabPage() {
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
         <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Production Crystal: fingerprint picks a (fold, figure) pair from a flat equal-odds pool
-          ({'{n/k}'} stars, hexagrams ★, circles, vesica, triquetra) plus soft φ pond droplets and
-          ogham spine notches. Seed / flower / Metatron stay lab-only (demoted).
+          Production Crystal: organic recursive spine forks (gen-1 / gen-2), soft φ pond droplets,
+          and ogham notches — plus a sacred figure from a flat equal-odds pool ({'{n/k}'} stars,
+          hexagrams ★, circles, vesica, triquetra). Seed / flower / Metatron stay lab-only.
         </p>
 
         {/* Controls */}

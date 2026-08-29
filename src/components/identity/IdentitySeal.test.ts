@@ -55,6 +55,16 @@ test('ogham notches: at least one per spine', () => {
   assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
 });
 
+test('organic growth forks: recursive branches appear across fingerprints', () => {
+  let maxBranches = 0;
+  for (let i = 0; i < 80; i++) {
+    const g = composePhiSeal(randomFingerprint());
+    maxBranches = Math.max(maxBranches, g.branches.length);
+  }
+  // Gen-1 + gen-2 + inner forks → denser than early crystal's 2-per-arm dendrites
+  assert.ok(maxBranches >= 12, `expected organic fork density, got max ${maxBranches}`);
+});
+
 test('fold ∈ 3–10 and matches spine count + flat entry', () => {
   const g = composePhiSeal(FP_A);
   const entry = sacredEntryFromFingerprint(FP_A);
