@@ -22,6 +22,40 @@ Cursor renders **UI to our specs only**. It NEVER touches: `visible()`/`reach()`
 - [x] **PR#57** — Solar Ember UI: identity card + Trust Map clusters + seals + light mode + `chimeric ambient` home. **State: ✅ MERGED to main (merge commit `37a39eb`).** Solar Ember L8 UI is now on main. Constitution axis verified on the branch (Archie ⚡9031, seal re-verify ⚡9033); binary-edge (`trusted`=boolean) + seal-recompute-never-transmit held. NOTE: prod-deploy of main (svrnty.is) is a separate Peter-gated step.
   - **none-inferred fix: ✅ DONE** — landed on main AFTER the merge (commit `e227087`, authored Athena via gh): restored the consent guarantee on the POPULATED TrustMap legend (:522) → "Every visible line consented — none inferred." (Hypatia wording · Apollo verified · 3× independent verify).
 
+## ★ DO FIRST — RECOVERY-SCREEN COPY FIX (launch-blocker · READY · pure copy/UI, NO crypto)
+
+**Why:** On the "Restore your .svrnty" screen users are asked for BOTH a password and a recovery phrase with no explanation → reads as "why do I need both?" (real confusion Peter hit). The fix is to HONESTLY EXPLAIN the existing by-design 2FA. This is **COPY + conditional rendering ONLY** — crypto and file format are unchanged. Converged: Flint (spec/GO) · Hypatia (copy) · Athena (push).
+
+**Seam:** PURE frontend. NO crypto, NO format change. The restore handler ALREADY format-detects (contacts-only `.svrnty` vs full-identity vault) — branch the copy on that existing detection.
+
+**★ CLAIM-HONESTY GUARDRAILS (load-bearing — do NOT violate):**
+1. This explains the EXISTING by-design 2FA. It does NOT add or promise a seed-only "lost your password" recovery path. Do NOT put "lost your password? recover with seed" on this screen.
+2. NEVER offer seed-recovery as a way around a lost password on the current (v3) backup format — it does not work; falsely offering it strands a user who trusted it (safety over-claim).
+
+### CASE A — Contacts backup (`.svrnty`, no identity vault)
+- Heading: **"Restore your contacts"**
+- Field: **"Password"**  (sub: "The password you set when you exported this file.")
+- Button: **"Restore contacts"**
+- [no seed field, no seed mention]
+
+### CASE B — Full identity backup (`.svrnty` with recovery vault)
+- Heading: **"Restore your identity"**
+- ★ Intro (THE FIX): **"This is a full identity backup, protected by two factors — both are required:"**
+- Field 1: **"Password"**  (sub: "Unlocks the backup file.")
+- Field 2: **"Recovery phrase — 12 words"**  (sub: "Opens your identity's recovery vault.")
+- Helper: **"Both factors are required to restore your full identity — this is by design."**
+- Button: **"Restore identity"**
+
+### ERROR states (honest — no false promises)
+- Wrong password: **"Incorrect password. This backup requires your password to restore."**  [do NOT offer seed-only recovery — not available on this format]
+- Wrong/invalid phrase (Case B): **"That recovery phrase doesn't match this backup."**
+
+**PR:** ☐  ·  **Verify:** Hypatia (copy/claim-honesty) · Flint (matches crypto model) · Athena (frontend/merge)
+
+> **SEPARATE future task — do NOT build yet:** a true seed-ONLY "lost your passphrase" recovery path. GATED on Flint's v4 dual-envelope format change (moves the recovery vault outside the passphrase layer). It will be queued when the format lands. Until then, no screen may promise seed-only recovery.
+
+---
+
 ## 🟢 QUEUE — P0 CORE (priority order)
 | # | Task | Spec-ref | Keep-in-fleet seam (owner) | PR |
 |---|------|----------|----------------------------|----|
