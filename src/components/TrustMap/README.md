@@ -6,6 +6,7 @@
 ## What we changed
 - Retinted SVG tokens to Solar Ember (CSS vars → light/dark).
 - Click node → seal + **alive contact sheet** (edit, TRUST/remove, accept pending intro, introduce stub, send-update stub, version-history WIP note, multi-select → group).
+- **CUR-3:** focus-sheet email / phone / url / handle are tap-to-open via I-10a allowlisted `ContactMethodLink` (see `src/components/contacts/README.md`).
 - Sample circle (`sample-circle.ts`): mutual trust self↔Ada/Grace/Margaret; owner-authored tags (`core`, `builders`, `radio`, …) → **cluster chords + centroid pull**; Frank = pending intro from Grace (pending ≠ trust).
 - Known vs trusted visuals sharpened (hollow dashed known · lit fill + halo trusted · double-glow mutual · pulsing dashed pending).
 - Intro UI creates a local pending contact for demo; dual-accept protocol is team-owned.
