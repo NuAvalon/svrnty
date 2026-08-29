@@ -8,6 +8,7 @@ import {
   CRYSTAL_HABITS,
   composePhiSeal,
   composeOrganicSeal,
+  composeGrowthSeal,
   composeSigilSeal,
   foldFromFingerprint,
   sacredEntryFromFingerprint,
@@ -71,6 +72,17 @@ test('organic is a Crystal clone with denser recursive forks', () => {
     maxBranches = Math.max(maxBranches, composeOrganicSeal(randomFingerprint()).branches.length);
   }
   assert.ok(maxBranches >= 12, `expected organic fork density, got max ${maxBranches}`);
+});
+
+test('growth (post-Metatron) is deterministic, spine-0 up, no named glyphs', () => {
+  assert.deepEqual(composeGrowthSeal(FP_A), composeGrowthSeal(FP_A));
+  const g = composeGrowthSeal(FP_A);
+  assert.equal(g.figureId, 'growth');
+  assert.ok(g.notches.length >= g.fold);
+  assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
+  for (let i = 0; i < 40; i++) {
+    assert.equal(composeGrowthSeal(randomFingerprint()).figureId, 'growth');
+  }
 });
 
 test('fold ∈ 3–10 and matches spine count + flat entry', () => {
@@ -170,4 +182,36 @@ test('±1 digit does not yield a pure rotation twin of the same crystal', () => 
   if (a.fold === b.fold && a.figureId === b.figureId && a.R === b.R) {
     assert.notDeepEqual(a.branches, b.branches);
   }
+});
+
+test('archive freeze fixtures still match Crystal / Growth / Organic', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  // IdentitySeal.test.ts lives next to archive/
+  const here = dirname(fileURLToPath(import.meta.url));
+  const frozen = JSON.parse(readFileSync(join(here, 'archive/fixtures/5fold.json'), 'utf8')) as {
+    fingerprint: string;
+    crystal: { fold: number; figureId: string; spineCount: number; branchCount: number; notchCount: number };
+    growth: { fold: number; figureId: string; spineCount: number; branchCount: number; notchCount: number };
+    organic: { fold: number; figureId: string; spineCount: number; branchCount: number; notchCount: number };
+  };
+  const crystal = composePhiSeal(frozen.fingerprint);
+  const growth = composeGrowthSeal(frozen.fingerprint);
+  const organic = composeOrganicSeal(frozen.fingerprint);
+  assert.equal(crystal.fold, frozen.crystal.fold);
+  assert.equal(crystal.figureId, frozen.crystal.figureId);
+  assert.equal(crystal.spines.length, frozen.crystal.spineCount);
+  assert.equal(crystal.branches.length, frozen.crystal.branchCount);
+  assert.equal(crystal.notches.length, frozen.crystal.notchCount);
+  assert.equal(growth.fold, frozen.growth.fold);
+  assert.equal(growth.figureId, frozen.growth.figureId);
+  assert.equal(growth.spines.length, frozen.growth.spineCount);
+  assert.equal(growth.branches.length, frozen.growth.branchCount);
+  assert.equal(growth.notches.length, frozen.growth.notchCount);
+  assert.equal(organic.fold, frozen.organic.fold);
+  assert.equal(organic.figureId, frozen.organic.figureId);
+  assert.equal(organic.spines.length, frozen.organic.spineCount);
+  assert.equal(organic.branches.length, frozen.organic.branchCount);
+  assert.equal(organic.notches.length, frozen.organic.notchCount);
 });

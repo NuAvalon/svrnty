@@ -95,12 +95,12 @@ export default function SealLabPage() {
           Dev lab · IdentitySeal
         </p>
         <h1 style={{ margin: '8px 0 6px', fontSize: 28, fontWeight: 600 }}>Seal playground</h1>
-        <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 640, lineHeight: 1.55, fontSize: 14 }}>
-          Production Crystal: fingerprint picks a (fold, figure) pair from a flat equal-odds pool
-          ({'{n/k}'} stars, hexagrams ★, circles, vesica, triquetra) plus soft φ pond droplets and
-          ogham spine notches. Seed / flower / Metatron stay lab-only. Compare with{' '}
-          <strong style={{ color: E.accent, fontWeight: 500 }}>Organic</strong> in Variants — same
-          crystal, recursive Growth forks instead of stiff dendrites.
+        <p style={{ margin: '0 0 24px', color: E.muted, maxWidth: 720, lineHeight: 1.55, fontSize: 14 }}>
+          Production Crystal: sacred figure + φ droplets + ogham. Variants also keep{' '}
+          <strong style={{ color: E.accent, fontWeight: 500 }}>Growth</strong> (the post-Metatron
+          original — spine forks, no named glyphs) and{' '}
+          <strong style={{ color: E.accent, fontWeight: 500 }}>Organic</strong> (recent Crystal
+          clone with recursive forks). Seed / flower / Metatron stay lab-only.
         </p>
 
         {/* Controls */}
