@@ -1,7 +1,9 @@
 # Identity surfaces — Cursor UI notes
 
 ## IdentitySeal
-**I-6:** seal geometry is derived only from the fingerprint string (hex nibbles + FNV). Same fingerprint ⇒ same seal. No `Math.random`. Rosette includes concentric rings, tick marks, lattice petals, and a center hex — still fully deterministic.
+**I-6:** seal geometry is derived only from the fingerprint string (hex nibbles + FNV). Same fingerprint ⇒ same seal. No `Math.random`.
+
+**φ grammar:** rings at `R · φ⁻ⁿ`, 5-fold pentagon/pentagram chords, angular blades (straight segments — sigil, not soft Bezier), Fibonacci(13) ticks stepped by the golden angle `2π/φ²`. Fingerprint only chooses rotation and which chords/blade widths light up — proportions stay golden.
 
 ## SovereignIdentityCard (Archie mockup → home)
 Solar Ember **sovereign identity card** matching Archie's first theme redesign mockup:
