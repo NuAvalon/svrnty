@@ -1,27 +1,24 @@
-## IdentitySeal
-**I-6:** seal geometry is derived only from the fingerprint string. Same fingerprint ⇒ same seal. No `Math.random`.
+# IdentitySeal — Cursor UI notes
 
-**Flat sacred pool** (equal odds — no preference weights)
-- Every `(fold, figure)` catalog entry is equally likely via `pickSacredEntry`.
-- Fold ∈ {3…10} comes with the figure.
-- Crystal spines / φ cascade / dendrites follow the chosen fold.
+**Brief:** `CURSOR.md` I-6 · Aesthetic: Solar Ember  
+**Invariant:** fingerprint → deterministic geometry. No decorative randomness.
 
-**Catalog — formula figures, not hand-drawn glyphs**
-- `{n/k}` star polygons (pentagram, heptagram, nonagram, decagram…) — continuous stroke when `gcd(n,k)=1`
-- Compound figures when `gcd>1` (hexagram ★ = `{6/2}`, `{8/2}`, `{9/3}`, `{10/4}`…)
-- Flower of life, Metatron’s cube, seed of life — light accents
-- Circle / φ-nested circles, vesica, triquetra, diamond
-- **No Crowley unicursal** — dropped; fold-6 still has a star via compound hexagram ★. Spines/branches already vary line count and angles from the fingerprint.
+## Production default: `growth`
+- Fold (3–10) + φ radial skeleton
+- Recursive **spine-guided branches** (gen-1 / gen-2) from fingerprint bits
+- **Ogham-ish notches** on spines (1–3 bars, occasional double)
+- Optional faint `{n/k}` star accent only — **no named sacred fills**
 
-**Orientation:** spine / vertex 0 is always at the top (canonical). There is no free whole-seal
-rotation axis — two fingerprints cannot be the same crystal merely spun (including `360°/fold`
-symmetry twins). Catalog “rotated …” figures are intentional π-flips of the sacred overlay, not
-spins of the whole seal.
+## Demoted (lab-only)
+`seed` / `flower` / `metatron` live in `SACRED_DEMOTED` — path generators remain, but they are **not** in the production flat pool (`SACRED_FLAT`). Named glyphs were overpowering identity.
 
-φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
+## Other variants
+- `phi` — crystal + formula figures (stars, hexagram, vesica, …) without demoted set
+- `lattice` / `ring` / `sigil` / `rosette` — lab A/B
 
-Peers see a seal only after a contact is added — geometry is regenerated from their
-fingerprint locally (I-6). No image export; the seal is not a transport or QR substitute.
+## Lab
+`/dev/seals` — compare all variants, ±1 digit sensitivity, growth gallery.
 
-**Render:** stroke-only wire (no opaque fills) so the seal sits cleanly on light or dark
-backgrounds — lines over whatever is behind it.
+## Files
+- `IdentitySeal.tsx` — `composeGrowthSeal`, default `variant='growth'`
+- `sacred-geometry.ts` — catalog + `SACRED_DEMOTED`

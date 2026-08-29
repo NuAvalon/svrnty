@@ -7,6 +7,7 @@ import {
   PHI_INV,
   CRYSTAL_HABITS,
   composePhiSeal,
+  composeGrowthSeal,
   composeSigilSeal,
   foldFromFingerprint,
   sacredEntryFromFingerprint,
@@ -15,6 +16,7 @@ import {
   randomFingerprint,
   SACRED_CATALOG,
   SACRED_FLAT,
+  SACRED_DEMOTED,
   starPolygonPath,
   hexagramCompoundPath,
 } from './IdentitySeal';
@@ -69,10 +71,14 @@ test('pentagram {5/2} continuous; hexagram ★ remains the fold-6 star (no Crowl
   assert.ok(hex.includes('Z M'), 'compound ★ is two triangles');
 });
 
-test('flower + metatron on fold 6; circles on selected folds', () => {
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'flower'));
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'metatron'));
-  assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'seed'));
+test('flower + metatron + seed demoted from production pool', () => {
+  assert.ok(!SACRED_CATALOG[6].some((o) => o.id === 'flower'));
+  assert.ok(!SACRED_CATALOG[6].some((o) => o.id === 'metatron'));
+  assert.ok(!SACRED_CATALOG[6].some((o) => o.id === 'seed'));
+  assert.ok(SACRED_DEMOTED.some((e) => e.option.id === 'flower'));
+  assert.ok(SACRED_DEMOTED.some((e) => e.option.id === 'metatron'));
+  assert.ok(SACRED_DEMOTED.some((e) => e.option.id === 'seed'));
+  assert.ok(!SACRED_FLAT.some((e) => e.option.id === 'flower' || e.option.id === 'metatron' || e.option.id === 'seed'));
   for (const h of [3, 5, 6, 10] as const) {
     assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circle'), `fold ${h} circle`);
     assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circles'), `fold ${h} φ circles`);
@@ -84,8 +90,9 @@ test('flat pool produces varied figures in the wild', () => {
   for (let i = 0; i < 600; i++) {
     seen.add(composePhiSeal(randomFingerprint()).figureId);
   }
-  assert.ok(seen.size >= 10, `expected broad figure variety, got ${seen.size}`);
-  assert.ok(seen.has('star') || seen.has('hexagram') || seen.has('flower'));
+  assert.ok(seen.size >= 8, `expected broad figure variety, got ${seen.size}`);
+  assert.ok(seen.has('star') || seen.has('hexagram'));
+  assert.ok(!seen.has('flower') && !seen.has('metatron') && !seen.has('seed'));
 });
 
 test('inversions appear in the wild', () => {
@@ -130,5 +137,26 @@ test('±1 digit does not yield a pure rotation twin of the same crystal', () => 
   // If fold+figure match, dendrite/facet structure must still differ (not spin-only)
   if (a.fold === b.fold && a.figureId === b.figureId && a.R === b.R) {
     assert.notDeepEqual(a.branches, b.branches);
+  }
+});
+
+test('growth seal is deterministic and spine-0 up', () => {
+  assert.deepEqual(composeGrowthSeal(FP_A), composeGrowthSeal(FP_A));
+  const g = composeGrowthSeal(FP_A);
+  assert.ok((CRYSTAL_HABITS as readonly number[]).includes(g.fold));
+  assert.equal(g.spines.length, g.fold);
+  assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
+  assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
+  assert.ok(Math.abs(g.spines[0].x2 - g.spines[0].x1) < 1.5);
+});
+
+test('growth differs across fingerprints; no named glyph ids', () => {
+  const a = composeGrowthSeal(FP_A);
+  const b = composeGrowthSeal(FP_B);
+  assert.notDeepEqual(a.branches, b.branches);
+  assert.equal(a.figureId, 'growth');
+  for (let i = 0; i < 80; i++) {
+    const id = composeGrowthSeal(randomFingerprint()).figureId;
+    assert.equal(id, 'growth');
   }
 });

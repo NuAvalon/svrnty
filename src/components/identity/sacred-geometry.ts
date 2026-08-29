@@ -59,11 +59,9 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
   6: [
     { id: 'hexagram', label: 'hexagram ★' },
     { id: 'hexagram-inv', label: 'rotated hexagram' },
-    { id: 'seed', label: 'seed of life' },
-    { id: 'flower', label: 'flower of life' },
-    { id: 'metatron', label: "Metatron's cube" },
     { id: 'circle', label: 'circle' },
     { id: 'circles', label: 'φ circles' },
+    { id: 'star', label: 'compound {6/2}', k: 2 },
   ],
   7: [
     { id: 'star', label: 'heptagram {7/2}', k: 2 },
@@ -94,6 +92,16 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'circles', label: 'φ circles' },
   ],
 };
+
+/**
+ * Demoted from the production flat pool — still formula-drawn for lab A/B,
+ * but not selected by fingerprints in live seals (named glyphs overpower identity).
+ */
+export const SACRED_DEMOTED: SacredEntry[] = [
+  { fold: 6, option: { id: 'seed', label: 'seed of life (lab)' } },
+  { fold: 6, option: { id: 'flower', label: 'flower of life (lab)' } },
+  { fold: 6, option: { id: 'metatron', label: "Metatron's cube (lab)" } },
+];
 
 /** Flat pool — every (fold, figure) entry equally likely. */
 export const SACRED_FLAT: SacredEntry[] = (
