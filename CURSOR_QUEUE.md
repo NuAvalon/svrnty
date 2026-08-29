@@ -92,7 +92,18 @@ await recoverFromSeedPhrase(kv, phrase); // 12-word phrase → identity
 ### HONEST ERRORS
 - Invalid phrase: **"That recovery phrase doesn't match an identity."** (no false success)
 
-**PR:** ☐ · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection) · Hypatia (copy/claim-honesty) · Athena (frontend/merge)
+### POST-SUCCESS INTERSTITIAL (contacts-honesty — UNMISSABLE; team-FINAL: Flint crypto-GREEN + Hypatia claim-honesty-final)
+Show AFTER a successful seed-only restore — the inline pre-success line is missable; THIS is the moment the user learns contacts aren't back:
+- Heading: **"Your identity is back."**
+- Body: **"Your keys and identity are recovered. Your contacts and trust connections weren't restored — they were sealed with the passphrase you lost, and your recovery phrase can't unlock them. If you still have a backup whose password you remember, you can restore your contacts from it. Otherwise, you'll rebuild your connections as you reconnect with people."**
+- Button: **"Continue"**
+- Honest BOTH ways: no phantom seed-restore of contacts (Flint crypto-confirmed the recovery envelope never carries the contacts body) AND no false forever-despair (a remembered-passphrase backup CAN restore contacts). Do NOT add a "restore from another backup" CTA — the rare edge would confuse the common lost-passphrase user.
+
+### POST-QUANTUM keys (follow-on — NOT a merge blocker; Flint's lane)
+- seedVaultRestore returning PQ SECRETS only is CORRECT (publics are derivable: ML-KEM-1024 pk is embedded in the sk; ML-DSA-87 pk recomputes from the sk). Do NOT invent a PQ layout in the UI — flag, don't build (render-glass ✓).
+- CLAIM-HONESTY until Flint wires `reconstitutePQPublicKeys`: the recovered identity has working PQ SECRETS + classical identity — do NOT claim "post-quantum identity fully restored." A one-line note ("post-quantum keys re-derive on next card publish") keeps it honest.
+
+**PR:** ☐ · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection · PQ-reconstitution follow-on) · Hypatia (copy/claim-honesty · interstitial) · Athena (frontend/merge)
 
 ---
 
