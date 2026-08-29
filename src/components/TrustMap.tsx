@@ -518,9 +518,14 @@ export function TrustMap({
           </g>
 
           {!isEmpty && (
-            <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
-              Groups you named · mutual glow · pending ≠ trust
-            </text>
+            <g data-testid="trust-map-legend">
+              <text x={VIEW / 2} y={VIEW - 21} textAnchor="middle" fontSize={8} fill={T.caption}>
+                Groups you named · mutual glow · pending ≠ trust
+              </text>
+              <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
+                Every visible line consented — none inferred.
+              </text>
+            </g>
           )}
 
           {isEmpty && (
