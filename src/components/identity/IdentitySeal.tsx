@@ -527,7 +527,14 @@ export function composeGrowthSeal(fingerprint: string) {
     hexMid: hexAt(r1),
     hexInner: hexAt(r2),
     hexCore: hexAt(r3),
-    rings: [R, r1, r2] as const,
+    // Pond ripples — φ cascade with micro aberrations (not perfect clones)
+    rings: [
+      R * (1 + ((n[0] % 5) - 2) * 0.004),
+      r1 * (1 + ((n[3] % 5) - 2) * 0.006),
+      r2 * (1 + ((n[6] % 5) - 2) * 0.008),
+      r3 * (1 + ((n[9] % 5) - 2) * 0.01),
+      rCore * (1 + ((n[11] % 5) - 2) * 0.012),
+    ] as const,
   };
 }
 
@@ -688,6 +695,7 @@ export function composeRosetteSeal(fingerprint: string) {
 function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
   return (
     <>
+      {/* φ pond ripples — soft cascade with micro aberrations */}
       {g.rings.map((r, i) => (
         <circle
           key={`ring-${i}`}
@@ -695,9 +703,9 @@ function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
           cy="50"
           r={r}
           fill="none"
-          stroke={E.accent2}
-          strokeOpacity={0.1 - i * 0.02}
-          strokeWidth={0.55}
+          stroke={i % 2 === 0 ? E.accent : E.accent2}
+          strokeOpacity={0.2 - i * 0.028}
+          strokeWidth={0.85 - i * 0.08}
         />
       ))}
       <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.22" strokeWidth="0.8" />

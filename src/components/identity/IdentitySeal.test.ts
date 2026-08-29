@@ -148,6 +148,11 @@ test('growth seal is deterministic and spine-0 up', () => {
   assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
   assert.ok(g.orbs.length >= g.fold + 1, 'tip orbs + core orb');
   assert.ok(g.arcs.length >= 1, 'at least one gated arc');
+  assert.equal(g.rings.length, 5, 'φ pond ripples through rCore');
+  // Ripples fade inward in radius
+  for (let i = 1; i < g.rings.length; i++) {
+    assert.ok(g.rings[i]! < g.rings[i - 1]!, 'rings cascade inward');
+  }
   assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
   assert.ok(Math.abs(g.spines[0].x2 - g.spines[0].x1) < 1.5);
 });

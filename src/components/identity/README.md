@@ -9,6 +9,7 @@
 - **Ogham-ish notches** on spines (1–3 bars, occasional double)
 - **Gated arcs** — broken φ-ring segments, outer vesica bulges, gen-1 tip bridges
 - **Orbs** — stroke-only tip / fork / core punctuation (not orb fields)
+- **φ pond ripples** — 5-ring cascade (`R`→`rCore`) with micro radius aberrations
 - Optional faint `{n/k}` star accent only — **no named sacred fills**
 
 ## Demoted (lab-only)
