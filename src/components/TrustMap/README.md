@@ -6,6 +6,7 @@
 ## What we changed
 - Retinted SVG tokens to Solar Ember (warm ember field, gold edges, sacral orange lit nodes).
 - Tokens use CSS vars (`solarEmber`) so light/dark appearance follows the header toggle.
+- Click a node → seal + contact sheet; shift-click / Select to multi-pick; **Add to group** writes a local tag label.
 - Left layout/provenance logic untouched (egocentric, no peer↔peer inference, I-6).
 
 ## Still open (UI)

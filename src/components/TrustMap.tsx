@@ -25,8 +25,8 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { IdentitySeal } from '@/components/identity/IdentitySeal';
 
 interface TrustMapProps {
   ownerFingerprint: string;
@@ -34,6 +34,8 @@ interface TrustMapProps {
   contacts: TrustEdge[];
   /** Optional demo seed when the lattice is empty */
   onLoadSample?: () => void | Promise<void>;
+  /** Assign a local group label (tag) to selected peers */
+  onAssignGroup?: (fingerprints: string[], groupName: string) => void | Promise<void>;
 }
 
 const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container width.
@@ -60,206 +62,451 @@ function nodeFill(state: TrustState): string {
   return state === 'known' ? T.dimFill : T.field;
 }
 
-export function TrustMap({ ownerFingerprint, ownerName, contacts, onLoadSample }: TrustMapProps) {
+function formatKeyGroups(fp: string): string {
+  const hex = fp.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  if (!hex) return '····';
+  const groups = hex.match(/.{1,4}/g) || [];
+  return groups.slice(0, 6).join('·');
+}
+
+export function TrustMap({
+  ownerFingerprint,
+  ownerName,
+  contacts,
+  onLoadSample,
+  onAssignGroup,
+}: TrustMapProps) {
   const layout = useMemo(
     () => computeTrustLayout(ownerFingerprint, ownerName, contacts, { width: VIEW, height: VIEW }),
     [ownerFingerprint, ownerName, contacts],
   );
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = layout.nodes.find((n) => n.id === selectedId) ?? null;
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [groupName, setGroupName] = useState('');
+  const [groupNote, setGroupNote] = useState<string | null>(null);
+  const [assigning, setAssigning] = useState(false);
+
+  const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
+  const focusEdge = useMemo(
+    () => contacts.find((c) => c.peer_fingerprint === focusId) ?? null,
+    [contacts, focusId]
+  );
 
   const isEmpty = contacts.length === 0;
-  const clearSel = useCallback(() => setSelectedId(null), []);
+
+  const clearFocus = useCallback(() => setFocusId(null), []);
+
+  const handleNodeClick = useCallback((id: string, multi: boolean) => {
+    setFocusId(id);
+    if (multi) {
+      setPicked((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    }
+  }, []);
+
+  const togglePick = useCallback((id: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearPicks = useCallback(() => {
+    setPicked(new Set());
+    setGroupNote(null);
+  }, []);
+
+  const handleAssign = async () => {
+    const name = groupName.trim();
+    if (!name || picked.size === 0 || !onAssignGroup) return;
+    setAssigning(true);
+    setGroupNote(null);
+    try {
+      await onAssignGroup([...picked], name);
+      setGroupNote(`Added ${picked.size} to “${name}”.`);
+      setGroupName('');
+      setPicked(new Set());
+    } catch {
+      setGroupNote('Could not save group label.');
+    } finally {
+      setAssigning(false);
+    }
+  };
 
   return (
-    <div
-      data-testid="trust-map"
-      style={{
-        position: 'relative',
-        width: '100%',
-        maxWidth: 560,
-        margin: '0 auto',
-        aspectRatio: '1 / 1', // square container ⇄ square viewBox → nothing clipped
-        borderRadius: 16,
-        overflow: 'hidden',
-        border: `1px solid ${E.borderLit}`,
-        background: E.bgCss,
-      }}
-    >
-      {/* Crystallization + provenance styles. Facets grow; reduced-motion shows the
-          final (already-correct) opacities immediately. */}
-      <style>{`
-        .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
-                   animation: tm-grow 1.05s cubic-bezier(.2,.8,.2,1) both; }
-        .tm-edge, .tm-label { opacity: var(--tm-o, 1); animation: tm-fade 1.05s ease-out both; }
-        .tm-self { animation: tm-fade .8s ease-out both; }
-        @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
-        @keyframes tm-fade { from { opacity: 0; } to { opacity: var(--tm-o,1); } }
-        @media (prefers-reduced-motion: reduce) {
-          .tm-node, .tm-edge, .tm-label, .tm-self { animation: none; }
-          .tm-node { transform: none; }
-        }
-      `}</style>
-
-      <svg
-        data-testid="trust-map-svg"
-        viewBox={`0 0 ${VIEW} ${VIEW}`}
-        width="100%"
-        height="100%"
-        preserveAspectRatio="xMidYMid meet"
-        role="img"
-        aria-label={`Trust map: ${contacts.length} connection${contacts.length === 1 ? '' : 's'}`}
-        onClick={clearSel}
-        style={{ display: 'block' }}
+    <div style={{ width: '100%', maxWidth: 560, margin: '0 auto' }}>
+      <div
+        data-testid="trust-map"
+        style={{
+          position: 'relative',
+          width: '100%',
+          aspectRatio: '1 / 1',
+          borderRadius: 16,
+          overflow: 'hidden',
+          border: `1px solid ${E.borderLit}`,
+          background: E.bgCss,
+        }}
       >
-        {/* ── edges: my real you→peer connections (teal). Nothing peer↔peer. ── */}
-        <g>
-          {layout.nodes.map((n, i) => (
-            <line
-              key={`e-${n.id}`}
-              className="tm-edge"
-              data-testid="trust-edge"
-              x1={layout.self.x}
-              y1={layout.self.y}
-              x2={n.x}
-              y2={n.y}
-              stroke={T.myEdge}
-              strokeWidth={n.state === 'trusted' ? 1.3 : 0.8}
-              strokeDasharray={n.state === 'decayed' ? '3 3' : undefined}
-              style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.15 + i * 0.03}s` }}
-            />
-          ))}
-        </g>
+        <style>{`
+          .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
+                     animation: tm-grow 1.05s cubic-bezier(.2,.8,.2,1) both; }
+          .tm-edge, .tm-label { opacity: var(--tm-o, 1); animation: tm-fade 1.05s ease-out both; }
+          .tm-self { animation: tm-fade .8s ease-out both; }
+          @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
+          @keyframes tm-fade { from { opacity: 0; } to { opacity: var(--tm-o,1); } }
+          @media (prefers-reduced-motion: reduce) {
+            .tm-node, .tm-edge, .tm-label, .tm-self { animation: none; }
+            .tm-node { transform: none; }
+          }
+        `}</style>
 
-        {/* ── contact nodes: radius = salience, opacity = disclosure depth ── */}
-        <g>
-          {layout.nodes.map((n, i) => (
-            <ContactNode
-              key={n.id}
-              node={n}
-              index={i}
-              selected={n.id === selectedId}
-              onSelect={(id) => setSelectedId(id)}
-            />
-          ))}
-        </g>
-
-        {/* ── self: the viewer, at center — standing-ring + core + dot ── */}
-        <g
-          className="tm-self"
-          data-testid="trust-map-self"
-          style={{ ['--tm-o' as string]: 1 }}
+        <svg
+          data-testid="trust-map-svg"
+          viewBox={`0 0 ${VIEW} ${VIEW}`}
+          width="100%"
+          height="100%"
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label={`Trust map: ${contacts.length} connection${contacts.length === 1 ? '' : 's'}`}
+          onClick={clearFocus}
+          style={{ display: 'block' }}
         >
-          <circle cx={layout.self.x} cy={layout.self.y} r={SELF_RING_RADIUS}
-                  fill="none" stroke={T.selfRing} strokeWidth={0.8} opacity={0.4} />
-          <circle cx={layout.self.x} cy={layout.self.y} r={SELF_CORE_RADIUS}
-                  fill={T.field} stroke={T.selfRing} strokeWidth={1.6} />
-          <circle cx={layout.self.x} cy={layout.self.y} r={5} fill={T.selfDot} />
-          <text x={layout.self.x} y={layout.self.y + SELF_CORE_RADIUS + 15}
-                textAnchor="middle" fontSize={12} fill={T.label}>You</text>
-        </g>
+          <g>
+            {layout.nodes.map((n, i) => (
+              <line
+                key={`e-${n.id}`}
+                className="tm-edge"
+                data-testid="trust-edge"
+                x1={layout.self.x}
+                y1={layout.self.y}
+                x2={n.x}
+                y2={n.y}
+                stroke={T.myEdge}
+                strokeOpacity={n.state === 'trusted' ? 0.55 : 0.28}
+                strokeWidth={n.state === 'trusted' ? 1.2 : 0.8}
+                strokeDasharray={n.state === 'decayed' ? '3 3' : undefined}
+                style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.15 + i * 0.03}s` }}
+              />
+            ))}
+          </g>
 
-        {/* ── labels ── */}
-        <g>
-          {layout.nodes.map((n, i) => (
+          <g>
+            {layout.nodes.map((n, i) => (
+              <ContactNode
+                key={n.id}
+                node={n}
+                index={i}
+                selected={focusId === n.id}
+                picked={picked.has(n.id)}
+                onSelect={handleNodeClick}
+              />
+            ))}
+          </g>
+
+          <g className="tm-self" data-testid="trust-map-self" style={{ ['--tm-o' as string]: 1 }}>
+            <circle
+              cx={layout.self.x}
+              cy={layout.self.y}
+              r={SELF_RING_RADIUS}
+              fill="none"
+              stroke={T.selfRing}
+              strokeWidth={0.8}
+              opacity={0.4}
+            />
+            <circle
+              cx={layout.self.x}
+              cy={layout.self.y}
+              r={SELF_CORE_RADIUS}
+              fill={T.field}
+              stroke={T.selfRing}
+              strokeWidth={1.6}
+            />
+            <circle cx={layout.self.x} cy={layout.self.y} r={5} fill={T.selfDot} />
             <text
-              key={`l-${n.id}`}
-              className="tm-label"
-              x={n.x}
-              y={n.y + n.radius + 11}
+              x={layout.self.x}
+              y={layout.self.y + SELF_CORE_RADIUS + 15}
               textAnchor="middle"
-              fontSize={9}
-              fill={n.state === 'known' ? T.label : nodeStroke(n.state)}
-              style={{ ['--tm-o' as string]: Math.max(n.opacity, 0.5), animationDelay: `${0.2 + i * 0.03}s`, pointerEvents: 'none' }}
-            >
-              {truncate(n.name)}
-            </text>
-          ))}
-        </g>
-
-        {/* ── ethics caption (steals the reference's user-facing copy) ── */}
-        {!isEmpty && (
-          <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
-            Every visible line is consented · none inferred
-          </text>
-        )}
-
-        {/* ── empty-state (unlit = privacy, not absence) ── */}
-        {isEmpty && (
-          <g data-testid="trust-map-empty">
-            <text
-              x={VIEW / 2}
-              y={VIEW / 2 + 58}
-              textAnchor="middle"
-              fontSize={14}
+              fontSize={12}
               fill={T.label}
-              style={{ fontFamily: 'var(--font-sans), Space Grotesk, sans-serif' }}
+              style={{ fontFamily: E.fontSans }}
             >
-              Your lattice is dark
-            </text>
-            <text
-              x={VIEW / 2}
-              y={VIEW / 2 + 78}
-              textAnchor="middle"
-              fontSize={10}
-              fill={T.caption}
-              style={{ fontFamily: 'var(--font-sans), Space Grotesk, sans-serif' }}
-            >
-              Trusted connections crystallize here as you form them.
-            </text>
-            <text
-              x={VIEW / 2}
-              y={VIEW / 2 + 94}
-              textAnchor="middle"
-              fontSize={10}
-              fill={T.caption}
-              style={{ fontFamily: 'var(--font-sans), Space Grotesk, sans-serif' }}
-            >
-              Every line consented — none inferred.
+              You
             </text>
           </g>
+
+          <g>
+            {layout.nodes.map((n, i) => (
+              <text
+                key={`l-${n.id}`}
+                className="tm-label"
+                x={n.x}
+                y={n.y + n.radius + 11}
+                textAnchor="middle"
+                fontSize={9}
+                fill={n.state === 'known' ? T.label : nodeStroke(n.state)}
+                style={{
+                  fontFamily: E.fontSans,
+                  ['--tm-o' as string]: Math.max(n.opacity, 0.5),
+                  animationDelay: `${0.2 + i * 0.03}s`,
+                  pointerEvents: 'none',
+                }}
+              >
+                {truncate(n.name)}
+              </text>
+            ))}
+          </g>
+
+          {!isEmpty && (
+            <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
+              Every visible line is consented · none inferred
+            </text>
+          )}
+
+          {isEmpty && (
+            <g data-testid="trust-map-empty">
+              <text
+                x={VIEW / 2}
+                y={VIEW / 2 + 58}
+                textAnchor="middle"
+                fontSize={14}
+                fill={T.label}
+                style={{ fontFamily: E.fontSans }}
+              >
+                Your lattice is dark
+              </text>
+              <text
+                x={VIEW / 2}
+                y={VIEW / 2 + 78}
+                textAnchor="middle"
+                fontSize={10}
+                fill={T.caption}
+                style={{ fontFamily: E.fontSans }}
+              >
+                Trusted connections crystallize here as you form them.
+              </text>
+              <text
+                x={VIEW / 2}
+                y={VIEW / 2 + 94}
+                textAnchor="middle"
+                fontSize={10}
+                fill={T.caption}
+                style={{ fontFamily: E.fontSans }}
+              >
+                Every line consented — none inferred.
+              </text>
+            </g>
+          )}
+        </svg>
+
+        {isEmpty && onLoadSample && (
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
+            <button
+              type="button"
+              onClick={() => void onLoadSample()}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                letterSpacing: '0.08em',
+                color: T.myEdge,
+                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                border: `1px solid ${T.dimStroke}`,
+                borderRadius: 8,
+                padding: '8px 14px',
+                cursor: 'pointer',
+              }}
+            >
+              Load sample circle
+            </button>
+          </div>
         )}
-      </svg>
+      </div>
 
-      {isEmpty && onLoadSample && (
-        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
-          <button
-            type="button"
-            onClick={() => void onLoadSample()}
-            style={{
-              fontFamily: E.fontSans,
-              fontSize: 12,
-              letterSpacing: '0.08em',
-              color: T.myEdge,
-              background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-              border: `1px solid ${T.dimStroke}`,
-              borderRadius: 8,
-              padding: '8px 14px',
-              cursor: 'pointer',
-            }}
-          >
-            Load sample circle
-          </button>
-        </div>
-      )}
-
-      {/* ── selection detail (tap a node) ── */}
-      {selected && (
+      {/* Contact sheet — seal + info + multi-select / group */}
+      {focusNode && focusEdge && (
         <div
           data-testid="trust-node-detail"
-          onClick={clearSel}
+          onClick={(e) => e.stopPropagation()}
           style={{
-            position: 'absolute', left: 12, right: 12, bottom: 12,
-            padding: '10px 12px', borderRadius: 10,
-            background: E.surfaceSolid, border: `1px solid ${E.borderLit}`,
-            color: T.label, fontSize: 12,
-            fontFamily: E.fontSans,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8,
+            marginTop: 14,
+            padding: 16,
+            borderRadius: 14,
+            background: E.surfaceSolid,
+            border: `1px solid ${E.borderLit}`,
             boxShadow: 'var(--se-glass-shadow)',
+            fontFamily: E.fontSans,
           }}
         >
-          <span style={{ fontWeight: 600, color: nodeStroke(selected.state) }}>{selected.name}</span>
-          <span style={{ color: T.caption }}>{describe(selected)}</span>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+            <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+                <div>
+                  <p style={{ margin: 0, fontSize: 16, fontWeight: 600, color: E.text }}>
+                    {focusEdge.peer_name || focusNode.name}
+                  </p>
+                  <p style={{ margin: '4px 0 0', fontSize: 12, color: E.accent }}>
+                    {describe(focusNode)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearFocus}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: E.dim,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    fontFamily: E.fontSans,
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+              {focusEdge.peer_email && (
+                <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted }}>
+                  {focusEdge.peer_email}
+                </p>
+              )}
+              {focusEdge.contact_info?.phones?.[0] && (
+                <p style={{ margin: '4px 0 0', fontSize: 13, color: E.muted }}>
+                  {focusEdge.contact_info.phones[0]}
+                </p>
+              )}
+              <p
+                style={{
+                  margin: '8px 0 0',
+                  fontSize: 11,
+                  color: E.dim,
+                  fontFamily: E.fontMono,
+                  letterSpacing: '0.04em',
+                  wordBreak: 'break-all',
+                }}
+              >
+                key · {formatKeyGroups(focusEdge.peer_fingerprint)}
+              </p>
+              {focusEdge.tags?.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                  {focusEdge.tags.map((t) => (
+                    <span
+                      key={t}
+                      style={{
+                        fontSize: 10,
+                        letterSpacing: '0.06em',
+                        padding: '3px 8px',
+                        borderRadius: 999,
+                        border: `1px solid ${E.border}`,
+                        color: E.accent,
+                        background: 'color-mix(in srgb, var(--se-accent) 8%, transparent)',
+                      }}
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div
+            style={{
+              marginTop: 14,
+              paddingTop: 12,
+              borderTop: `1px solid ${E.border}`,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+            }}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                onClick={() => togglePick(focusEdge.peer_fingerprint)}
+                style={{
+                  fontSize: 12,
+                  fontFamily: E.fontSans,
+                  padding: '7px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${E.borderLit}`,
+                  background: picked.has(focusEdge.peer_fingerprint)
+                    ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+                    : 'transparent',
+                  color: E.accent,
+                  cursor: 'pointer',
+                }}
+              >
+                {picked.has(focusEdge.peer_fingerprint) ? 'Selected' : 'Select'}
+              </button>
+              <span style={{ fontSize: 11, color: E.dim }}>
+                Tip: shift-click nodes on the map to multi-select
+              </span>
+            </div>
+
+            {picked.size > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 12, color: E.muted }}>{picked.size} selected</span>
+                <input
+                  type="text"
+                  placeholder="Group label"
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  style={{
+                    flex: 1,
+                    minWidth: 120,
+                    background: E.inputBg,
+                    border: `1px solid ${E.border}`,
+                    borderRadius: 8,
+                    padding: '8px 10px',
+                    color: E.text,
+                    fontFamily: E.fontSans,
+                    fontSize: 13,
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={!groupName.trim() || assigning || !onAssignGroup}
+                  onClick={() => void handleAssign()}
+                  style={{
+                    fontSize: 12,
+                    fontFamily: E.fontSans,
+                    fontWeight: 500,
+                    padding: '8px 12px',
+                    borderRadius: 8,
+                    border: `1px solid ${E.borderLit}`,
+                    background: 'color-mix(in srgb, var(--se-accent) 14%, transparent)',
+                    color: E.accent,
+                    cursor: groupName.trim() && onAssignGroup ? 'pointer' : 'default',
+                    opacity: !groupName.trim() || !onAssignGroup ? 0.5 : 1,
+                  }}
+                >
+                  {assigning ? 'Saving…' : 'Add to group'}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearPicks}
+                  style={{
+                    fontSize: 12,
+                    fontFamily: E.fontSans,
+                    background: 'none',
+                    border: 'none',
+                    color: E.dim,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+            {groupNote && (
+              <p style={{ margin: 0, fontSize: 11, color: E.ok }}>{groupNote}</p>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -267,12 +514,17 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts, onLoadSample }
 }
 
 function ContactNode({
-  node, index, selected, onSelect,
+  node,
+  index,
+  selected,
+  picked,
+  onSelect,
 }: {
   node: LaidOutNode;
   index: number;
   selected: boolean;
-  onSelect: (id: string) => void;
+  picked: boolean;
+  onSelect: (id: string, multi: boolean) => void;
 }) {
   return (
     <circle
@@ -282,13 +534,16 @@ function ContactNode({
       data-trust-state={node.state}
       cx={node.x}
       cy={node.y}
-      r={selected ? node.radius + 2 : node.radius}
+      r={selected || picked ? node.radius + 2.5 : node.radius}
       fill={nodeFill(node.state)}
-      stroke={selected ? T.selfDot : nodeStroke(node.state)}
-      strokeWidth={node.state === 'trusted' ? 1.3 : 0.9}
+      stroke={picked ? E.accent : selected ? T.selfDot : nodeStroke(node.state)}
+      strokeWidth={picked || node.state === 'trusted' ? 1.5 : 0.9}
       strokeDasharray={node.state === 'decayed' ? '2 2' : undefined}
       style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.04}s`, cursor: 'pointer' }}
-      onClick={(e) => { e.stopPropagation(); onSelect(node.id); }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
+      }}
     >
       <title>{`${node.name} — ${describe(node)}`}</title>
     </circle>
@@ -298,7 +553,6 @@ function ContactNode({
 function describe(n: LaidOutNode): string {
   if (n.state === 'known') return 'known';
   if (n.state === 'decayed') return 'trust decayed';
-  // trusted
   if (n.daysLeft > 365) return `trusted · ${Math.round(n.daysLeft / 365)}y until decay`;
   return `trusted · ${n.daysLeft}d until decay`;
 }

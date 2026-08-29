@@ -121,7 +121,7 @@ function MethodRow({
         gap: 12,
         padding: '12px 14px',
         borderRadius: 12,
-        background: 'rgba(12,8,5,.55)',
+        background: E.inputBg,
         border: `1px solid ${E.border}`,
       }}
     >
@@ -135,7 +135,7 @@ function MethodRow({
           alignItems: 'center',
           justifyContent: 'center',
           flexShrink: 0,
-          background: 'rgba(249,168,37,.04)',
+          background: 'color-mix(in srgb, var(--se-accent) 8%, transparent)',
         }}
       >
         <MethodIcon kind={kind} />
@@ -251,8 +251,8 @@ export function SovereignIdentityCard({
           padding: '28px 22px 22px',
           borderRadius: 20,
           border: `1px solid ${E.borderLit}`,
-          boxShadow: `0 0 48px rgba(249,168,37,.08), inset 0 1px 0 rgba(255,190,120,.06)`,
-          background: 'linear-gradient(165deg, rgba(36,24,12,.72), rgba(18,12,7,.88))',
+          boxShadow: 'var(--se-glass-shadow)',
+          background: E.surfaceSolid,
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
@@ -351,7 +351,7 @@ export function SovereignIdentityCard({
               padding: '7px 12px',
               borderRadius: 999,
               border: `1px solid ${E.border}`,
-              background: 'rgba(12,8,5,.45)',
+              background: E.inputBg,
               fontSize: 11,
               color: E.muted,
               fontFamily: E.fontMono,
@@ -368,7 +368,7 @@ export function SovereignIdentityCard({
               padding: '7px 12px',
               borderRadius: 999,
               border: `1px solid ${E.border}`,
-              background: 'rgba(12,8,5,.45)',
+              background: E.inputBg,
               fontSize: 11,
               color: E.muted,
               fontFamily: E.fontMono,

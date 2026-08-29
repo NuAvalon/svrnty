@@ -24,6 +24,7 @@ import {
   lockSession,
   listIdentities,
   setActiveFingerprint,
+  updateContact,
 } from '@/lib/identity/client-store';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
@@ -482,6 +483,20 @@ export default function Home() {
                 onLoadSample={async () => {
                   const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
                   await seedSampleCircle(identity.identity.fingerprint);
+                  await refreshContacts();
+                }}
+                onAssignGroup={async (fingerprints, groupName) => {
+                  const label = groupName.trim();
+                  if (!label) return;
+                  for (const fp of fingerprints) {
+                    const edge = contacts.find((c) => c.peer_fingerprint === fp);
+                    if (!edge?.id) continue;
+                    const tags = Array.from(new Set([...(edge.tags || []), label]));
+                    await updateContact(edge.id, {
+                      tags,
+                      metadata: { ...(typeof edge === 'object' ? {} : {}), tags },
+                    } as any);
+                  }
                   await refreshContacts();
                 }}
               />

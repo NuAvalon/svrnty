@@ -37,7 +37,7 @@ export const solarEmber = {
 } as const;
 
 export const solarGlass: Record<string, string | number> = {
-  background: 'var(--se-surface)',
+  background: 'var(--se-surface-solid)',
   backdropFilter: 'blur(20px)',
   WebkitBackdropFilter: 'blur(20px)',
   border: '1px solid var(--se-border)',

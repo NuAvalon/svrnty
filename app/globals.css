@@ -53,44 +53,44 @@
     --chart-5: 150 40% 45%;
   }
 
-  /* Solar Ember — daylight parchment (same brand, higher ambient) */
+  /* Solar Ember — light: crisp white + gold (no cream parchment) */
   html[data-appearance="light"] {
-    --se-bg: #f2e4cc;
-    --se-surface: rgba(255, 248, 235, 0.78);
-    --se-surface-solid: rgba(255, 251, 243, 0.96);
-    --se-border: rgba(120, 70, 20, 0.14);
-    --se-border-lit: rgba(170, 95, 15, 0.42);
-    --se-accent: #b56a00;
-    --se-accent2: #c4470a;
-    --se-text: #1f140a;
-    --se-muted: #5c4030;
-    --se-dim: #8a6548;
+    --se-bg: #f7f7f5;
+    --se-surface: rgba(255, 255, 255, 0.9);
+    --se-surface-solid: #ffffff;
+    --se-border: rgba(180, 130, 40, 0.16);
+    --se-border-lit: rgba(200, 145, 30, 0.42);
+    --se-accent: #b8860b;
+    --se-accent2: #c45f12;
+    --se-text: #1a1a1a;
+    --se-muted: #5c5c5c;
+    --se-dim: #8a8a8a;
     --se-danger: #c44530;
     --se-ok: #3d6b28;
-    --se-input-bg: rgba(255, 252, 246, 0.92);
-    --se-glass-shadow: 0 0 40px rgba(180, 100, 20, 0.08);
-    --se-bg-css: radial-gradient(70% 70% at 50% 42%, rgba(249, 168, 37, 0.22), transparent 62%), #f2e4cc;
-    --se-wash: rgba(249, 168, 37, 0.18);
+    --se-input-bg: #ffffff;
+    --se-glass-shadow: 0 8px 32px rgba(20, 16, 8, 0.06);
+    --se-bg-css: radial-gradient(70% 70% at 50% 38%, rgba(249, 168, 37, 0.09), transparent 58%), #f7f7f5;
+    --se-wash: rgba(249, 168, 37, 0.07);
 
-    --background: 36 55% 88%;
-    --foreground: 24 45% 10%;
-    --card: 36 50% 95%;
-    --card-foreground: 24 45% 10%;
-    --popover: 36 50% 95%;
-    --popover-foreground: 24 45% 10%;
-    --primary: 36 100% 35%;
-    --primary-foreground: 36 55% 96%;
-    --secondary: 36 30% 90%;
-    --secondary-foreground: 24 45% 10%;
-    --muted: 36 25% 88%;
-    --muted-foreground: 24 25% 35%;
-    --accent: 36 40% 90%;
-    --accent-foreground: 24 45% 10%;
+    --background: 60 8% 97%;
+    --foreground: 0 0% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
+    --primary: 43 90% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 40 12% 94%;
+    --secondary-foreground: 0 0% 10%;
+    --muted: 40 8% 94%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 43 40% 94%;
+    --accent-foreground: 0 0% 10%;
     --destructive: 8 65% 42%;
-    --destructive-foreground: 36 55% 96%;
-    --border: 30 35% 72%;
-    --input: 36 40% 92%;
-    --ring: 36 100% 35%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 40 15% 85%;
+    --input: 0 0% 100%;
+    --ring: 43 90% 38%;
   }
 }
 
