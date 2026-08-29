@@ -64,6 +64,25 @@ background: radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparen
 - Self-recovery flow: local backup file **+** phrase (both required) → restore.
 - *[fast-follow]* social collect-back UI (gather shards from keepers). Ships only after a survivor-safety review + team greenlight.
 
+**L8 · The recovery crypto API (team-owned — CALL it, never reimplement):**
+> ⛔ **THE GUARDRAIL:** the master key is ALWAYS randomly generated (CSPRNG). The soul-seed phrase only **WRAPS** it — it NEVER derives it. `master = Argon2id(phrase)` is a **brain-wallet** (a guessable phrase → guessable keys → anyone who guesses it becomes the user) — FORBIDDEN. If any path tempts you toward phrase→keys, STOP + flag in a README. (This is exactly the boundary you already respected — keep respecting it.)
+>
+> **Two creation paths — offer both** (different recovery properties):
+>
+> | Path | Master | Recovery |
+> |---|---|---|
+> | **Generated (default)** | random → 12-word BIP39 mnemonic | the mnemonic ENCODES the master → **standalone** ("write it down") |
+> | **User-set soul-seed** | random, then phrase-WRAPPED | phrase is a **2nd factor** → needs phrase **+** the backup blob/shares (memorable, NOT standalone) |
+>
+> **The two calls (both team-owned):**
+> - `createKeyVaultWithSoulSeedRecovery(phrase, opts) → KeyVault` — generates a random master and wraps it with the phrase; returns the KeyVault (encrypted keys + wrap + salt + verify-tag). No plaintext key ever leaves.
+> - `openKeyVaultWithSoulSeed(vaultBlob, phrase) → bundle | PHRASE_MISMATCH` — the restore mirror. A wrong phrase fails LOUD (verify-tag) → warm "that's not quite it," **no lockout**, let them retry.
+>
+> **Your UI responsibilities:**
+> - The **entropy meter runs BEFORE** the create call — reject/redirect famous/weak phrases (a famous quote is guessable); the API assumes the phrase already passed.
+> - Backup (`.svrnty` blob) = encrypted keys + encrypted contacts, **no plaintext keys** → restore ALWAYS needs the soul-seed (or another factor). Say so honestly in the UI.
+> - Phrase normalization must be byte-identical at set-time and restore-time — call the team's shared `normalize` fn, never roll your own (a mismatch = permanent lockout).
+
 **L1 · Living contacts:** update-contact-method SEND UI (edit your card → broadcast to who you shared with) + **version-control** (versioned methods; correct/retract an errored update; recipients see the corrected version).
 
 **L2 · Trust graph:** the **TrustMap** render — **egocentric** (you at center, your bonds + who they vouch for), particle-lattice, NEVER global/PageRank · reach-settings UI (private / L1 / L2 + per-group if it ships) · the **"awaken the circle"** global opt-in toggle (composes WITH per-edge reach — global-on never overrides a finer per-edge restriction) · click-node → glyph + contact info.

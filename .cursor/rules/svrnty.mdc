@@ -7,7 +7,7 @@ alwaysApply: true
 You accelerate the **UI rendering only.** The team owns the security-critical logic and verifies every output you produce. You render the glass; the team holds the locks.
 
 ## ⛔ HARD BOUNDARY — never modify these (call them, never reimplement / modify / "improve"):
-- **Crypto:** `recovery.ts` (Shamir / soul-seed), PSI, the message envelope, all key-derivation.
+- **Crypto:** `recovery.ts` (Shamir / soul-seed), PSI, the message envelope, all key-derivation. ⛔ The soul-seed phrase only **WRAPS** a random master — it NEVER derives keys (`master = Argon2id(phrase)` is a forbidden brain-wallet). For recovery call `createKeyVaultWithSoulSeedRecovery` / `openKeyVaultWithSoulSeed` — see /CURSOR.md L8.
 - **Gate-logic / constitution:** disclosure-reach enforcement, `visible()` / edge-visibility, consent-by-inclusion (opted-out data is un-computable by construction, never client-side-hidden), plausible-deniability (never fetch-then-hide, no side-channels).
 - **Relay / server:** `satellite.py` and any server endpoints.
 
