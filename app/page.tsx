@@ -1,7 +1,7 @@
 // app/page.tsx
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
@@ -10,6 +10,7 @@ import { Ceremony } from '@/components/Ceremony';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   hasIdentity,
   getActiveFingerprint,
@@ -26,6 +27,13 @@ import {
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
+const shellBg: CSSProperties = {
+  minHeight: '100vh',
+  background: E.bgCss,
+  color: E.text,
+  fontFamily: E.fontSans,
+};
+
 export default function Home() {
   const [appState, setAppState] = useState<AppState>('checking');
   const [identity, setIdentity] = useState<any>(null);
@@ -38,6 +46,8 @@ export default function Home() {
   // state — never persisted as a new cross-identity link (Flint's correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
+  // Archie home: identity card is the first surface; Trust Map via "Your circle".
+  const [mainTab, setMainTab] = useState('identity');
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -96,6 +106,7 @@ export default function Home() {
         setAppState('unlocked');
         setPassphrase('');
         setLockedIdentity(null);
+        setMainTab('identity');
       } else {
         lockSession();
         setUnlockError('Identity data not found');
@@ -143,6 +154,7 @@ export default function Home() {
     setIdentity(newIdentity);
     setAppState('unlocked');
     setLockedIdentity(null);
+    setMainTab('identity');
   };
 
   // Load contacts — extracted as callback so ContactManagement can trigger refresh
@@ -168,17 +180,14 @@ export default function Home() {
   if (appState === 'checking') {
     return (
       <div style={{
-        minHeight: '100vh',
-        background: '#0a0a0f',
+        ...shellBg,
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        fontFamily: "'Space Grotesk', sans-serif",
-        color: 'rgba(255,255,255,0.3)',
         fontSize: '14px',
         letterSpacing: '4px',
+        color: E.dim,
       }}>
-        {/* Fonts self-hosted via next/font in layout.tsx */}
         RESOLVING...
       </div>
     );
@@ -188,47 +197,45 @@ export default function Home() {
   if (appState === 'locked' && lockedIdentity) {
     return (
       <div style={{
-        minHeight: '100vh',
-        background: '#0a0a0f',
+        ...shellBg,
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
         padding: '20px',
       }}>
-        {/* Fonts self-hosted via next/font in layout.tsx */}
         <div style={{
           maxWidth: '400px',
           width: '100%',
-          background: 'rgba(10, 14, 12, 0.92)',
-          border: '1px solid rgba(52, 211, 153, 0.1)',
+          background: E.surfaceSolid,
+          border: `1px solid ${E.borderLit}`,
           borderRadius: '16px',
           padding: '40px',
-          boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(52, 211, 153, 0.03)',
+          boxShadow: '0 4px 60px rgba(0, 0, 0, 0.45), 0 0 80px rgba(249, 168, 37, 0.06)',
           textAlign: 'center' as const,
+          backdropFilter: 'blur(20px)',
         }}>
-          {/* Lock icon */}
           <div style={{
             width: '64px',
             height: '64px',
             borderRadius: '50%',
-            background: 'rgba(52, 211, 153, 0.06)',
-            border: '1px solid rgba(52, 211, 153, 0.12)',
+            background: 'rgba(249, 168, 37, 0.06)',
+            border: `1px solid ${E.borderLit}`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             margin: '0 auto 20px',
           }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={E.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
           </div>
 
           <h1 style={{
-            fontFamily: "'Cormorant Garamond', serif",
+            fontFamily: E.fontSerif,
             fontSize: '24px',
             fontWeight: 300,
-            color: '#e8e4d9',
+            color: E.text,
             letterSpacing: '2px',
             margin: '0 0 4px',
           }}>
@@ -236,9 +243,9 @@ export default function Home() {
           </h1>
 
           <p style={{
-            fontFamily: "'JetBrains Mono', monospace",
+            fontFamily: E.fontMono,
             fontSize: '12px',
-            color: 'rgba(255,255,255,0.3)',
+            color: E.muted,
             marginBottom: '28px',
           }}>
             {lockedIdentity.name}
@@ -253,13 +260,13 @@ export default function Home() {
               autoFocus
               style={{
                 width: '100%',
-                background: 'rgba(6, 10, 8, 0.8)',
-                border: `1px solid ${unlockError ? 'rgba(239, 68, 68, 0.4)' : 'rgba(52, 211, 153, 0.15)'}`,
+                background: 'rgba(12, 8, 5, 0.85)',
+                border: `1px solid ${unlockError ? 'rgba(255, 143, 122, 0.45)' : E.border}`,
                 borderRadius: '8px',
                 padding: '14px 16px',
-                color: '#e8e4d9',
+                color: E.text,
                 fontSize: '14px',
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 outline: 'none',
                 marginBottom: '8px',
                 boxSizing: 'border-box' as const,
@@ -268,9 +275,9 @@ export default function Home() {
 
             {unlockError && (
               <p style={{
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 fontSize: '12px',
-                color: '#ef4444',
+                color: E.danger,
                 marginBottom: '8px',
               }}>
                 {unlockError}
@@ -282,14 +289,14 @@ export default function Home() {
               disabled={unlocking || !passphrase}
               style={{
                 width: '100%',
-                background: passphrase ? 'rgba(52, 211, 153, 0.12)' : 'rgba(52, 211, 153, 0.04)',
-                border: `1px solid ${passphrase ? 'rgba(52, 211, 153, 0.3)' : 'rgba(52, 211, 153, 0.1)'}`,
+                background: passphrase ? 'rgba(249, 168, 37, 0.14)' : 'rgba(249, 168, 37, 0.04)',
+                border: `1px solid ${passphrase ? E.borderLit : E.border}`,
                 borderRadius: '8px',
                 padding: '14px 20px',
-                color: passphrase ? '#34d399' : 'rgba(52, 211, 153, 0.3)',
+                color: passphrase ? E.accent : E.dim,
                 fontSize: '12px',
                 fontWeight: 500,
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 letterSpacing: '2px',
                 textTransform: 'uppercase' as const,
                 cursor: passphrase ? 'pointer' : 'default',
@@ -306,11 +313,11 @@ export default function Home() {
             {otherIdentities.length > 0 && (
               <div data-testid="switch-identity" style={{ marginBottom: '4px' }}>
                 <p style={{
-                  fontFamily: "'JetBrains Mono', monospace",
+                  fontFamily: E.fontMono,
                   fontSize: '10px',
                   letterSpacing: '1px',
                   textTransform: 'uppercase' as const,
-                  color: 'rgba(255,255,255,0.25)',
+                  color: E.dim,
                   marginBottom: '6px',
                 }}>
                   Switch identity
@@ -322,13 +329,13 @@ export default function Home() {
                     onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
                     style={{
                       width: '100%',
-                      background: 'rgba(255,255,255,0.03)',
-                      border: '1px solid rgba(255,255,255,0.08)',
+                      background: 'rgba(255,190,120,0.03)',
+                      border: `1px solid ${E.border}`,
                       borderRadius: '8px',
                       padding: '10px 14px',
-                      color: 'rgba(232,228,217,0.8)',
+                      color: E.text,
                       fontSize: '13px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: E.fontSans,
                       textAlign: 'left' as const,
                       cursor: 'pointer',
                       marginBottom: '6px',
@@ -345,12 +352,12 @@ export default function Home() {
               style={{
                 width: '100%',
                 background: 'none',
-                border: '1px dashed rgba(52, 211, 153, 0.25)',
+                border: `1px dashed ${E.borderLit}`,
                 borderRadius: '8px',
                 padding: '12px 16px',
-                color: 'rgba(52, 211, 153, 0.7)',
+                color: E.muted,
                 fontSize: '12px',
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 letterSpacing: '1px',
                 cursor: 'pointer',
               }}
@@ -365,11 +372,17 @@ export default function Home() {
 
   // Gate (no identity) or main app
   return (
-    <div className="min-h-screen p-8" style={{ background: '#0a0a0f', color: '#e0dcd0' }}>
-      <header className="mb-12 text-center relative">
-        <h1 className="text-3xl font-bold mb-2" style={{ color: '#c8a84e', letterSpacing: '3px' }}>SVRNTY</h1>
-        <p style={{ color: '#8a8070', fontSize: '14px' }}>Self-Sovereign Trust Network</p>
-        <p style={{ color: '#5a5548', fontSize: '11px', marginTop: '4px' }}>from NuAvalon</p>
+    <div className="min-h-screen p-6 sm:p-8" style={shellBg}>
+      <header className="mb-10 text-center relative">
+        <h1
+          className="text-3xl font-semibold mb-2"
+          style={{ color: E.accent, letterSpacing: '0.28em', fontFamily: E.fontSans }}
+        >
+          SVRNTY
+        </h1>
+        <p style={{ color: E.muted, fontSize: '14px', fontFamily: E.fontSerif, fontStyle: 'italic' }}>
+          Your card. Your circle. Local-first.
+        </p>
         <HelpGuide />
       </header>
 
@@ -377,13 +390,53 @@ export default function Home() {
         {!identity ? (
           <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} />
         ) : (
-          <Tabs defaultValue="trust-map" className="w-full">
-            <TabsList className="w-full max-w-2xl mx-auto mb-8">
-              <TabsTrigger value="trust-map" className="flex-1">Trust Map</TabsTrigger>
-              <TabsTrigger value="ceremony" className="flex-1">Ceremony</TabsTrigger>
-              <TabsTrigger value="contacts" className="flex-1">Contacts</TabsTrigger>
-              <TabsTrigger value="identity" className="flex-1">Identity</TabsTrigger>
+          <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
+            <TabsList
+              className="w-full max-w-2xl mx-auto mb-8"
+              style={{
+                background: 'rgba(30,20,10,.55)',
+                border: `1px solid ${E.border}`,
+                height: 'auto',
+                padding: 4,
+              }}
+            >
+              <TabsTrigger
+                value="identity"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted }}
+              >
+                Identity
+              </TabsTrigger>
+              <TabsTrigger
+                value="trust-map"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted }}
+              >
+                Trust Map
+              </TabsTrigger>
+              <TabsTrigger
+                value="ceremony"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted }}
+              >
+                Ceremony
+              </TabsTrigger>
+              <TabsTrigger
+                value="contacts"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted }}
+              >
+                Contacts
+              </TabsTrigger>
             </TabsList>
+
+            <TabsContent value="identity">
+              <SoverentityFrontend
+                existingIdentity={identity}
+                onIdentityUpdate={handleIdentityUpdate}
+                onOpenCircle={() => setMainTab('trust-map')}
+              />
+            </TabsContent>
 
             <TabsContent value="trust-map">
               <TrustMap
@@ -400,20 +453,12 @@ export default function Home() {
             <TabsContent value="contacts">
               <ContactManagement identity={identity} onContactsChange={refreshContacts} />
             </TabsContent>
-
-            <TabsContent value="identity">
-              <SoverentityFrontend
-                existingIdentity={identity}
-                onIdentityUpdate={handleIdentityUpdate}
-              />
-            </TabsContent>
           </Tabs>
         )}
       </main>
 
-      <footer className="mt-16 text-center text-sm" style={{ color: '#5a5548' }}>
-        <p>SVRNTY — Self-Sovereign Trust Network</p>
-        <p className="mt-1">All data is encrypted and stored locally. No server can read it. No tracking.</p>
+      <footer className="mt-16 text-center text-sm" style={{ color: E.dim }}>
+        <p>The card is yours. No account. No server that can read you.</p>
       </footer>
     </div>
   );

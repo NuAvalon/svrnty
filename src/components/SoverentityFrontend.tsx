@@ -8,11 +8,14 @@ import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
+import { SovereignIdentityCard } from '@/components/identity/SovereignIdentityCard';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
   onVaultRestore?: (contents: any) => void;
+  /** Jump to Trust Map from the card's "Your circle" affordance */
+  onOpenCircle?: () => void;
 }
 
 type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
@@ -126,8 +129,8 @@ function SacredGeometryBg() {
           50% { box-shadow: 0 0 50px rgba(200, 168, 78, 0.2), 0 0 80px rgba(200, 168, 78, 0.06); }
         }
         @keyframes emerald-pulse {
-          0%, 100% { box-shadow: 0 0 20px rgba(52, 211, 153, 0.06); }
-          50% { box-shadow: 0 0 40px rgba(52, 211, 153, 0.15), 0 0 60px rgba(52, 211, 153, 0.04); }
+          0%, 100% { box-shadow: 0 0 20px rgba(249, 168, 37, 0.06); }
+          50% { box-shadow: 0 0 40px rgba(249, 168, 37, 0.15), 0 0 60px rgba(249, 168, 37, 0.04); }
         }
       `}</style>
 
@@ -138,8 +141,8 @@ function SacredGeometryBg() {
       }}>
         <defs>
           <radialGradient id="sacredGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="0.06" />
-            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+            <stop offset="0%" stopColor="#f9a825" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#f9a825" stopOpacity="0" />
           </radialGradient>
         </defs>
         {/* Flower of Life circles */}
@@ -148,7 +151,7 @@ function SacredGeometryBg() {
             key={`flower-${i}`}
             cx={c.cx} cy={c.cy} r={60}
             fill="none"
-            stroke="#34d399"
+            stroke="#f9a825"
             strokeWidth="0.5"
             opacity={0.06}
           />
@@ -184,7 +187,7 @@ function SacredGeometryBg() {
             width: `${node.size}px`,
             height: `${node.size}px`,
             borderRadius: '50%',
-            background: node.id % 3 === 0 ? '#34d399' : '#c8a84e',
+            background: node.id % 3 === 0 ? '#f9a825' : '#c8a84e',
             boxShadow: `0 0 6px ${node.id % 3 === 0 ? 'rgba(52,211,153,0.3)' : 'rgba(200,168,78,0.3)'}`,
             '--dx': `${node.drift}px`,
             '--dy': `${node.drift * 0.7}px`,
@@ -211,6 +214,7 @@ export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
   onVaultRestore,
+  onOpenCircle,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
@@ -700,7 +704,7 @@ export function SoverentityFrontend({
                 <svg width="100" height="100" viewBox="-55 -55 110 110" style={{ overflow: 'visible' }}>
                   <defs>
                     <linearGradient id="domeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#34d399" stopOpacity="0.6" />
+                      <stop offset="0%" stopColor="#f9a825" stopOpacity="0.6" />
                       <stop offset="100%" stopColor="#c8a84e" stopOpacity="0.4" />
                     </linearGradient>
                   </defs>
@@ -711,15 +715,15 @@ export function SoverentityFrontend({
                     {/* Pentagon ring bottom (rotated) */}
                     <polygon points="0,48 -45.6,14.8 -28.2,-38.8 28.2,-38.8 45.6,14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.3" />
                     {/* Connecting triangles */}
-                    <line x1="0" y1="-48" x2="45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
-                    <line x1="0" y1="-48" x2="-45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
-                    <line x1="45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
-                    <line x1="-45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
+                    <line x1="0" y1="-48" x2="45.6" y2="14.8" stroke="#f9a825" strokeWidth="0.4" opacity="0.3" />
+                    <line x1="0" y1="-48" x2="-45.6" y2="14.8" stroke="#f9a825" strokeWidth="0.4" opacity="0.3" />
+                    <line x1="45.6" y1="-14.8" x2="0" y2="48" stroke="#f9a825" strokeWidth="0.4" opacity="0.25" />
+                    <line x1="-45.6" y1="-14.8" x2="0" y2="48" stroke="#f9a825" strokeWidth="0.4" opacity="0.25" />
                     <line x1="28.2" y1="38.8" x2="-28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
                     <line x1="-28.2" y1="38.8" x2="28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
                     {/* Inner triangulation */}
-                    <line x1="45.6" y1="-14.8" x2="-28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="-45.6" y1="-14.8" x2="28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
+                    <line x1="45.6" y1="-14.8" x2="-28.2" y2="38.8" stroke="#f9a825" strokeWidth="0.3" opacity="0.15" />
+                    <line x1="-45.6" y1="-14.8" x2="28.2" y2="38.8" stroke="#f9a825" strokeWidth="0.3" opacity="0.15" />
                     <line x1="28.2" y1="38.8" x2="45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
                     <line x1="-28.2" y1="38.8" x2="-45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
                   </g>
@@ -733,7 +737,7 @@ export function SoverentityFrontend({
                     </svg>
                   </g>
                   {/* Glow */}
-                  <circle cx="0" cy="0" r="50" fill="none" stroke="#34d399" strokeWidth="0.3" opacity="0.08" style={{ animation: 'pulse-node 6s ease-in-out infinite' }} />
+                  <circle cx="0" cy="0" r="50" fill="none" stroke="#f9a825" strokeWidth="0.3" opacity="0.08" style={{ animation: 'pulse-node 6s ease-in-out infinite' }} />
                 </svg>
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
@@ -1303,54 +1307,19 @@ export function SoverentityFrontend({
   return (
     <div style={s.outerWrap}>
       <div style={s.identityPanel}>
-        {/* Identity Card */}
-        <div style={s.idCard}>
-          <div style={s.idHeader}>
-            <div style={{
-              ...s.statusDot,
-              background: '#6a9a6a',
-              boxShadow: '0 0 8px rgba(106,154,106,0.4)',
-            }} />
-            <div>
-              <h3 style={s.idName}>{identity.identity.name}</h3>
-              <p style={s.idEmail}>{identity.identity.email}</p>
-            </div>
-            <span style={{
-              ...s.statusBadge,
-              color: '#6a9a6a',
-              borderColor: 'rgba(106,154,106,0.3)',
-              background: 'rgba(106,154,106,0.1)',
-            }}>
-              SOVEREIGN
-            </span>
-          </div>
-
-          <div style={s.fpSection}>
-            <label style={s.label}>FINGERPRINT</label>
-            <div style={s.fpValue}>{formatFingerprint(identity.identity.fingerprint)}</div>
-          </div>
-
-          <div style={s.cryptoTags}>
-            <span style={s.tag}>ED25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-DSA-87</span>}
-            <span style={s.tag}>Curve25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-KEM-1024</span>}
-          </div>
-        </div>
-
-        {/* (§1, Peter #116236) The email-verification section is removed: there is no server account
-            and nothing to verify. Onboarding flows straight through (genesis → import) with no email step. */}
-
-        <div style={s.verifiedBanner}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
-          <span>Self-certifying identity. You are sovereign.</span>
-        </div>
+        <SovereignIdentityCard
+          name={identity.identity.name}
+          fingerprint={identity.identity.fingerprint}
+          handle={claimedUrl || undefined}
+          email={identity.identity.email}
+          site={claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined}
+          hasPqKeys={!!hasPqKeys}
+          onOpenCircle={onOpenCircle}
+        />
 
         {/* Export / Backup Section */}
         {identity && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '28px', maxWidth: 440, width: '100%' }}>
             <button
               onClick={() => { setShowFullBackupDialog(true); setFullBackupPassword(''); setFullBackupConfirm(''); setFullBackupError(null); }}
               style={{
@@ -1359,11 +1328,12 @@ export function SoverentityFrontend({
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
-                background: 'rgba(106, 154, 106, 0.1)',
-                borderColor: '#6a9a6a',
+                background: 'rgba(249, 168, 37, 0.08)',
+                borderColor: 'rgba(249, 168, 37, 0.35)',
+                color: SE.accent,
               }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SE.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
               Full Backup (Encrypted)
@@ -1523,10 +1493,10 @@ export function SoverentityFrontend({
               onClick={() => setShowPassphraseDialog(true)}
               style={{
                 background: 'none',
-                border: '1px solid rgba(52, 211, 153, 0.15)',
+                border: '1px solid rgba(249, 168, 37, 0.15)',
                 borderRadius: '8px',
                 padding: '10px 20px',
-                color: 'rgba(52, 211, 153, 0.6)',
+                color: 'rgba(249, 168, 37, 0.6)',
                 fontSize: '11px',
                 fontFamily: "'Space Grotesk', sans-serif",
                 letterSpacing: '1px',
@@ -1591,7 +1561,7 @@ export function SoverentityFrontend({
           }} onClick={() => setShowPassphraseDialog(false)}>
             <div style={{
               background: 'rgba(10, 14, 12, 0.98)',
-              border: '1px solid rgba(52, 211, 153, 0.15)',
+              border: '1px solid rgba(249, 168, 37, 0.15)',
               borderRadius: '16px',
               padding: '32px',
               maxWidth: '380px',
@@ -1608,7 +1578,7 @@ export function SoverentityFrontend({
                 {passphraseSuccess ? 'Passphrase Set' : 'Set Passphrase'}
               </h3>
               {passphraseSuccess ? (
-                <p style={{ textAlign: 'center' as const, color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px' }}>
+                <p style={{ textAlign: 'center' as const, color: '#f9a825', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px' }}>
                   Your identity is now protected.
                 </p>
               ) : (
@@ -1622,7 +1592,7 @@ export function SoverentityFrontend({
                     style={{
                       width: '100%',
                       background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      border: '1px solid rgba(249, 168, 37, 0.15)',
                       borderRadius: '8px',
                       padding: '12px 14px',
                       color: '#e8e4d9',
@@ -1641,7 +1611,7 @@ export function SoverentityFrontend({
                     style={{
                       width: '100%',
                       background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      border: '1px solid rgba(249, 168, 37, 0.15)',
                       borderRadius: '8px',
                       padding: '12px 14px',
                       color: '#e8e4d9',
@@ -1660,11 +1630,11 @@ export function SoverentityFrontend({
                     disabled={!newPassphrase || !confirmPassphrase}
                     style={{
                       width: '100%',
-                      background: 'rgba(52, 211, 153, 0.12)',
-                      border: '1px solid rgba(52, 211, 153, 0.3)',
+                      background: 'rgba(249, 168, 37, 0.12)',
+                      border: '1px solid rgba(249, 168, 37, 0.3)',
                       borderRadius: '8px',
                       padding: '12px',
-                      color: '#34d399',
+                      color: '#f9a825',
                       fontSize: '12px',
                       fontFamily: "'Space Grotesk', sans-serif",
                       letterSpacing: '1px',
@@ -1698,7 +1668,7 @@ export function SoverentityFrontend({
               </h3>
               {claimStatus === 'success' ? (
                 <div style={{ textAlign: 'center' as const }}>
-                  <p style={{ color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', marginBottom: '12px' }}>
+                  <p style={{ color: '#f9a825', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', marginBottom: '12px' }}>
                     Your identity is now at:
                   </p>
                   <p style={{ color: '#c8a84e', fontFamily: "'Space Grotesk', sans-serif", fontSize: '16px', fontWeight: 600 }}>
@@ -1790,30 +1760,30 @@ const s: Record<string, React.CSSProperties> = {
   gatePanel: {
     position: 'relative' as const,
     zIndex: 1,
-    background: 'rgba(10, 14, 12, 0.9)',
+    background: 'rgba(28, 19, 10, 0.92)',
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    border: '1px solid rgba(255, 170, 70, 0.22)',
     borderRadius: '16px',
     padding: '48px 40px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(249, 168, 37, 0.06), inset 0 1px 0 rgba(255,190,120,0.05)',
   },
   gateTitle: {
     fontSize: '32px',
     fontWeight: 300,
     fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
+    color: '#fbead2',
     letterSpacing: '6px',
     textTransform: 'lowercase' as const,
     marginBottom: '8px',
-    textShadow: '0 0 40px rgba(200, 168, 78, 0.2)',
+    textShadow: '0 0 40px rgba(249, 168, 37, 0.2)',
   },
   gateSub: {
     fontSize: '14px',
     fontFamily: "'Cormorant Garamond', serif",
     fontWeight: 300,
     fontStyle: 'italic' as const,
-    color: 'rgba(255,255,255,0.4)',
+    color: 'rgba(201, 162, 113, 0.85)',
     lineHeight: '1.7',
   },
   doorContainer: {
@@ -1827,8 +1797,8 @@ const s: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '28px 24px',
-    background: 'rgba(6, 10, 8, 0.5)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    background: 'rgba(15, 10, 6, 0.55)',
+    border: '1px solid rgba(255, 190, 120, 0.12)',
     borderRadius: '12px',
     cursor: 'pointer',
     transition: 'all 0.3s ease',
@@ -1838,7 +1808,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '16px',
     fontWeight: 300,
     fontFamily: "'Cormorant Garamond', serif",
-    color: '#c8a84e',
+    color: '#f9a825',
     letterSpacing: '1px',
     marginBottom: '8px',
   },
@@ -1846,20 +1816,20 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: '12px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
     fontWeight: 300,
-    color: 'rgba(255,255,255,0.25)',
+    color: 'rgba(201, 162, 113, 0.7)',
     lineHeight: '1.6',
     maxWidth: '280px',
   },
   // --- Shared ---
   createPanel: {
-    background: 'rgba(10, 14, 12, 0.9)',
+    background: 'rgba(28, 19, 10, 0.92)',
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    border: '1px solid rgba(255, 170, 70, 0.22)',
     borderRadius: '16px',
     padding: '40px',
     maxWidth: '460px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(249, 168, 37, 0.06), inset 0 1px 0 rgba(255,190,120,0.05)',
   },
   backBtn: {
     display: 'flex',
@@ -1932,11 +1902,11 @@ const s: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
-    background: 'rgba(6, 10, 8, 0.8)',
-    border: '1px solid rgba(52, 211, 153, 0.1)',
+    background: 'rgba(12, 8, 5, 0.85)',
+    border: '1px solid rgba(255, 190, 120, 0.12)',
     borderRadius: '8px',
     padding: '12px 16px',
-    color: '#e8e4d9',
+    color: '#fbead2',
     fontSize: '14px',
     fontFamily: "'JetBrains Mono', monospace",
     outline: 'none',
@@ -1945,16 +1915,16 @@ const s: Record<string, React.CSSProperties> = {
   },
   hint: {
     fontSize: '11px',
-    color: '#5a5548',
+    color: '#8f7550',
     marginTop: '6px',
   },
   primaryBtn: {
     width: '100%',
-    background: 'rgba(52, 211, 153, 0.1)',
-    border: '1px solid rgba(52, 211, 153, 0.3)',
+    background: 'rgba(249, 168, 37, 0.12)',
+    border: '1px solid rgba(249, 168, 37, 0.35)',
     borderRadius: '8px',
     padding: '14px 20px',
-    color: '#34d399',
+    color: '#f9a825',
     fontSize: '12px',
     fontWeight: 500,
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
@@ -1963,7 +1933,7 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'all 0.3s',
     marginTop: '8px',
-    boxShadow: '0 0 20px rgba(52, 211, 153, 0.06)',
+    boxShadow: '0 0 20px rgba(249, 168, 37, 0.06)',
   },
   restoreBtn: {
     width: '100%',
@@ -2132,10 +2102,10 @@ const s: Record<string, React.CSSProperties> = {
   idCard: {
     background: 'rgba(10, 14, 12, 0.92)',
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.1)',
+    border: '1px solid rgba(249, 168, 37, 0.1)',
     borderRadius: '16px',
     padding: '32px',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(52, 211, 153, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(249, 168, 37, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
   },
   idHeader: {
     display: 'flex',
@@ -2210,7 +2180,7 @@ const s: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: '10px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: '#34d399',
+    color: '#f9a825',
     letterSpacing: '3px',
     fontWeight: 500,
     marginBottom: '16px',
@@ -2225,14 +2195,14 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    background: 'rgba(52, 211, 153, 0.06)',
-    border: '1px solid rgba(52, 211, 153, 0.15)',
+    background: 'rgba(249, 168, 37, 0.06)',
+    border: '1px solid rgba(249, 168, 37, 0.15)',
     borderRadius: '10px',
     padding: '14px 20px',
     marginTop: '16px',
     fontSize: '13px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: '#34d399',
-    boxShadow: '0 0 30px rgba(52, 211, 153, 0.04)',
+    color: '#f9a825',
+    boxShadow: '0 0 30px rgba(249, 168, 37, 0.04)',
   },
 };

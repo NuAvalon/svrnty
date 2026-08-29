@@ -78,8 +78,8 @@ export function TrustMap({ ownerFingerprint, ownerName, contacts }: TrustMapProp
         aspectRatio: '1 / 1', // square container ⇄ square viewBox → nothing clipped
         borderRadius: 16,
         overflow: 'hidden',
-        border: `1px solid rgba(159, 232, 224, 0.14)`,
-        background: T.field,
+        border: `1px solid rgba(255, 170, 70, 0.22)`,
+        background: 'radial-gradient(70% 70% at 50% 42%, rgba(249,168,37,.14), transparent 60%), #0f0a06',
       }}
     >
       {/* Crystallization + provenance styles. Facets grow; reduced-motion shows the
