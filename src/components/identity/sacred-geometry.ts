@@ -44,11 +44,13 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star-inv', label: 'inverted pentagram', k: 2 },
   ],
   6: [
-    { id: 'gon', label: 'hexagon' },
+    // Hexagrams weighted — compound ★ is the favorite; unicursal kept for variety
+    { id: 'hexagram', label: 'hexagram' },
     { id: 'hexagram', label: 'hexagram' },
     { id: 'hexagram-inv', label: 'inverted hexagram' },
     { id: 'unicursal', label: 'unicursal hexagram' },
     { id: 'unicursal-inv', label: 'inverted unicursal' },
+    { id: 'gon', label: 'hexagon' },
   ],
   7: [
     { id: 'gon', label: 'heptagon' },
@@ -121,28 +123,34 @@ export function hexagramCompoundPath(
 }
 
 /**
- * Crowley-style unicursal hexagram — one continuous stroke.
- * Unit verts in draw order; scale by R, rotate by `rot`.
+ * Classic Crowley / Thelemic unicursal hexagram — one continuous outline.
+ * Proportions match the familiar banner shape (not a regular-hexagon stitch).
+ * Unit coords derived from the standard 0–100 glyph: top tip, upper points,
+ * waist crossings, lower tips, back to top.
  */
 export function unicursalHexagramPath(cx: number, cy: number, R: number, rot: number): string {
+  // Normalized from classic viewBox path
+  // M50,0 L61,33 L100,33 L70,55 L82,100 L50,72 L18,100 L30,55 L0,33 L39,33 Z
   const unit: [number, number][] = [
     [0.0, -1.0],
-    [0.42, 0.12],
-    [0.92, -0.18],
-    [0.5, 0.38],
-    [0.72, 1.0],
-    [0.0, 0.42],
-    [-0.72, 1.0],
-    [-0.5, 0.38],
-    [-0.92, -0.18],
-    [-0.42, 0.12],
+    [0.22, -0.34],
+    [1.0, -0.34],
+    [0.4, 0.1],
+    [0.64, 1.0],
+    [0.0, 0.44],
+    [-0.64, 1.0],
+    [-0.4, 0.1],
+    [-1.0, -0.34],
+    [-0.22, -0.34],
   ];
+  // Fit width-1.0 glyph into radius R (glyph half-width ≈ 1)
+  const scale = R * 0.92;
   const c = Math.cos(rot);
   const s = Math.sin(rot);
   const pts = unit.map(([x, y]) => {
     const xr = x * c - y * s;
     const yr = x * s + y * c;
-    return `${(cx + xr * R).toFixed(2)},${(cy + yr * R).toFixed(2)}`;
+    return `${(cx + xr * scale).toFixed(2)},${(cy + yr * scale).toFixed(2)}`;
   });
   return `M ${pts[0]} L ${pts.slice(1).join(' L ')} Z`;
 }
