@@ -650,7 +650,7 @@ export default function Home() {
             contacts={contacts.map((c) => ({
               fingerprint: c.peer_fingerprint,
               name: c.peer_name || 'Unnamed',
-              public_key: (c as any).peer_public_key || undefined,
+              public_key: c.peer_public_key || undefined,
               trusted: !!c.trusted,
             }))}
             onClose={() => setMapRevise(null)}

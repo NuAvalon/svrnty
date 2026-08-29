@@ -59,7 +59,7 @@ Cursor renders **UI to our specs only**. It NEVER touches: `visible()`/`reach()`
 ## 🟢 QUEUE — P0 CORE (priority order)
 | # | Task | Spec-ref | Keep-in-fleet seam (owner) | PR |
 |---|------|----------|----------------------------|----|
-| CUR-1 | **L1 send/update contact-method UI** (P0.1) — update-send flow + shared-with propagation surface | launch-plan L1a/L1b | per-peer-encrypt (Flint) | ☐ [PR pending] |
+| CUR-1 | **L1 send/update contact-method UI** (P0.1) — update-send flow + shared-with propagation surface | launch-plan L1a/L1b | per-peer-encrypt (Flint) | ☐ [#59](https://github.com/NuAvalon/svrnty/pull/59) |
 | CUR-2 | **L1c version-control UI** (P0.2) — one-tap revert/restore-previous + version-history view | launch-plan L1c | signed monotonic revisions (Flint) | ☐ |
 | CUR-3 | **L1g deep-linked contact methods** — tap-to-open (wa.me/tel:/signal.me/mailto:) | launch-plan L1g | none — PURE frontend, zero crypto | ☐ |
 | CUR-4 | **L4 import/export UI polish + export-behind-auth prompt** (P0.5) | launch-plan L4 | key crypto (Flint) | ☐ |
