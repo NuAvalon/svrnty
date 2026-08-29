@@ -22,3 +22,6 @@ spins of the whole seal.
 
 Peers see a seal only after a contact is added — geometry is regenerated from their
 fingerprint locally (I-6). No image export; the seal is not a transport or QR substitute.
+
+**Render:** stroke-only wire (no opaque fills) so the seal sits cleanly on light or dark
+backgrounds — lines over whatever is behind it.

@@ -499,17 +499,16 @@ function CrystalLayers({
           <path
             key={`f${i}`}
             d={d}
-            fill={E.accent}
-            fillOpacity={0.1 + (i % 3) * 0.04}
+            fill="none"
             stroke={E.accent}
             strokeOpacity={0.55}
             strokeWidth="0.65"
           />
         ))}
 
-      <polygon points={g.hexCore} fill={E.bg} stroke={E.accent} strokeOpacity="0.8" strokeWidth="1.1" />
-      <circle cx="50" cy="50" r={g.rCore} fill={E.bg} stroke={E.accent} strokeWidth="1.05" />
-      <circle cx="50" cy="50" r="1.8" fill={E.accent} />
+      <polygon points={g.hexCore} fill="none" stroke={E.accent} strokeOpacity="0.8" strokeWidth="1.1" />
+      <circle cx="50" cy="50" r={g.rCore} fill="none" stroke={E.accent} strokeWidth="1.05" />
+      <circle cx="50" cy="50" r="1.8" fill="none" stroke={E.accent} strokeWidth="1" />
     </>
   );
 }
@@ -545,8 +544,7 @@ function SigilLayers({ g }: { g: ReturnType<typeof composeSigilSeal> }) {
         <path
           key={`b${i}`}
           d={d}
-          fill={E.accent}
-          fillOpacity={0.07 + (i % 3) * 0.03}
+          fill="none"
           stroke={E.accent}
           strokeOpacity={0.55}
           strokeWidth="0.7"
@@ -556,9 +554,9 @@ function SigilLayers({ g }: { g: ReturnType<typeof composeSigilSeal> }) {
         <line key={`c${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
       ))}
       <polygon points={g.dualPts} fill="none" stroke={E.accent} strokeOpacity="0.4" strokeWidth="0.85" />
-      <polygon points={g.corePent} fill={E.bg} stroke={E.accent} strokeOpacity="0.75" strokeWidth="1.05" />
-      <circle cx="50" cy="50" r={g.rCore} fill={E.bg} stroke={E.accent} strokeWidth="1.1" />
-      <circle cx="50" cy="50" r="1.8" fill={E.accent} />
+      <polygon points={g.corePent} fill="none" stroke={E.accent} strokeOpacity="0.75" strokeWidth="1.05" />
+      <circle cx="50" cy="50" r={g.rCore} fill="none" stroke={E.accent} strokeWidth="1.1" />
+      <circle cx="50" cy="50" r="1.8" fill="none" stroke={E.accent} strokeWidth="1" />
     </>
   );
 }
@@ -581,9 +579,9 @@ function RingOnly({ g }: { g: ReturnType<typeof composePhiSeal> }) {
           strokeWidth={t.major ? 1 : 0.5}
         />
       ))}
-      <polygon points={g.hexCore} fill={E.bg} stroke={E.accent} strokeOpacity="0.8" strokeWidth="1.1" />
-      <circle cx="50" cy="50" r={g.rCore} fill={E.bg} stroke={E.accent} strokeWidth="1.05" />
-      <circle cx="50" cy="50" r="1.8" fill={E.accent} />
+      <polygon points={g.hexCore} fill="none" stroke={E.accent} strokeOpacity="0.8" strokeWidth="1.1" />
+      <circle cx="50" cy="50" r={g.rCore} fill="none" stroke={E.accent} strokeWidth="1.05" />
+      <circle cx="50" cy="50" r="1.8" fill="none" stroke={E.accent} strokeWidth="1" />
     </>
   );
 }
@@ -619,8 +617,7 @@ function RosetteLayers({ g }: { g: ReturnType<typeof composeRosetteSeal> }) {
         <path
           key={`p${i}`}
           d={d}
-          fill={E.accent}
-          fillOpacity={0.08 + (i % 3) * 0.035}
+          fill="none"
           stroke={E.accent}
           strokeOpacity={0.5}
           strokeWidth="0.65"
@@ -629,9 +626,9 @@ function RosetteLayers({ g }: { g: ReturnType<typeof composeRosetteSeal> }) {
       {g.arcs.map((a, i) => (
         <path key={`a${i}`} d={a.d} fill="none" stroke={E.accent} strokeOpacity={a.op} strokeWidth="0.7" />
       ))}
-      <polygon points={g.hexPts} fill={E.bg} stroke={E.accent} strokeOpacity="0.7" strokeWidth="1" />
-      <circle cx="50" cy="50" r={g.core} fill={E.bg} stroke={E.accent} strokeWidth="1.2" />
-      <circle cx="50" cy="50" r="2" fill={E.accent} />
+      <polygon points={g.hexPts} fill="none" stroke={E.accent} strokeOpacity="0.7" strokeWidth="1" />
+      <circle cx="50" cy="50" r={g.core} fill="none" stroke={E.accent} strokeWidth="1.2" />
+      <circle cx="50" cy="50" r="2" fill="none" stroke={E.accent} strokeWidth="1" />
     </>
   );
 }
