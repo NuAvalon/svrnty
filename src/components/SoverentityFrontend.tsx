@@ -7,9 +7,8 @@ import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
-import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { SovereignIdentityCard } from '@/components/identity/SovereignIdentityCard';
-import { ChimericSealAmbient } from '@/components/identity/ChimericSealAmbient';
+import { solarEmber as SE } from '@/components/recovery/solar-ember';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -699,7 +698,62 @@ export function SoverentityFrontend({
             {/* Hero */}
             <div style={s.hero}>
               <div style={s.shieldIcon}>
-                <ChimericSealAmbient size={148} />
+                {/* Pointy-top hexagon + key — quiet pre-identity mark */}
+                <svg
+                  width="120"
+                  height="120"
+                  viewBox="0 0 100 100"
+                  aria-hidden
+                  style={{ overflow: 'visible', animation: 'gate-breathe 6s ease-in-out infinite' }}
+                >
+                  <defs>
+                    <linearGradient id="hexGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor={SE.accent} stopOpacity="0.7" />
+                      <stop offset="100%" stopColor={SE.accent2} stopOpacity="0.35" />
+                    </linearGradient>
+                  </defs>
+                  <style>{`
+                    @keyframes gate-breathe {
+                      0%, 100% { filter: drop-shadow(0 0 10px rgba(249,168,37,.2)); }
+                      50% { filter: drop-shadow(0 0 18px rgba(249,168,37,.4)); }
+                    }
+                    @keyframes gate-key-pulse {
+                      0%, 100% { opacity: 0.88; }
+                      50% { opacity: 1; }
+                    }
+                  `}</style>
+                  {/* Pointy-top regular hexagon */}
+                  <polygon
+                    points="50,8 86,29 86,71 50,92 14,71 14,29"
+                    fill="none"
+                    stroke="url(#hexGrad)"
+                    strokeWidth="1.4"
+                    strokeLinejoin="miter"
+                  />
+                  <polygon
+                    points="50,20 76,35 76,65 50,80 24,65 24,35"
+                    fill="none"
+                    stroke={SE.accent}
+                    strokeOpacity="0.28"
+                    strokeWidth="0.9"
+                  />
+                  {/* Key */}
+                  <g
+                    transform="translate(50,50)"
+                    style={{ animation: 'gate-key-pulse 4s ease-in-out infinite' }}
+                    stroke={SE.accent}
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                  >
+                    <circle cx="0" cy="-8" r="7" />
+                    <circle cx="0" cy="-8" r="2.5" fill={SE.bg} stroke={SE.accent} />
+                    <line x1="0" y1="-1" x2="0" y2="16" />
+                    <line x1="0" y1="8" x2="6" y2="8" />
+                    <line x1="0" y1="13" x2="4.5" y2="13" />
+                  </g>
+                </svg>
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
               <p style={s.gateSub}>
@@ -1811,12 +1865,12 @@ const s: Record<string, React.CSSProperties> = {
     marginBottom: '32px',
   },
   shieldIcon: {
-    width: '160px',
-    height: '160px',
+    width: '120px',
+    height: '120px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    margin: '0 auto 20px',
+    margin: '0 auto 18px',
   },
   keyIcon: {
     width: '72px',
