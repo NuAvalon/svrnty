@@ -52,7 +52,47 @@ Cursor renders **UI to our specs only**. It NEVER touches: `visible()`/`reach()`
 
 **PR:** ☐  ·  **Verify:** Hypatia (copy/claim-honesty) · Flint (matches crypto model) · Athena (frontend/merge)
 
-> **SEPARATE future task — do NOT build yet:** a true seed-ONLY "lost your passphrase" recovery path. GATED on Flint's v4 dual-envelope format change (moves the recovery vault outside the passphrase layer). It will be queued when the format lands. Until then, no screen may promise seed-only recovery.
+> The seed-only "lost your passphrase" recovery path is now its own **DO-SECOND** task below — Flint's v4 dual-envelope merged (4df1be429), so it's buildable and TRUE on v4 (no longer a false promise).
+
+---
+
+## ★ DO SECOND — SEED-ONLY RECOVERY ("Lost your passphrase?") — now BUILDABLE (v4 merged 4df1be429)
+
+**Status:** UNBLOCKED. The v4 dual-envelope format merged to main (#61) — `extractRecoveryVault(data)` now reads the recovery vault passphrase-free, so seed-only recovery is architecturally TRUE (it was a false promise on v3). Converged: Flint (v4 crypto + seam) · Hypatia (copy) · Athena (push).
+
+**Seam (Flint — 2 calls, NO crypto in the UI):**
+```
+const kv = extractRecoveryVault(data);   // no passphrase needed (v4)
+await recoverFromSeedPhrase(kv, phrase); // 12-word phrase → identity
+// guardian-shard variant: recoverFromShards(kv, shards)
+```
+
+**★ FORMAT-DETECT = the honest gate (do NOT skip):** detect v3 vs v4 backup. The seed-only path shows ONLY for v4. See the v3-guard below.
+
+### RESTORE — "Lost your passphrase?" path (v4 backups only)
+- Entry (alongside the passphrase path): **[Lost your passphrase?]** → "Recover with your seed phrase"
+- Screen — Heading: **"Recover with your seed phrase"**
+  - Body: **"Enter your 12-word recovery phrase to unlock this backup — it works without your passphrase."**
+  - Field: **"Recovery phrase (12 words)"** · Button: **"Recover my identity"**
+  - ⚠️ CLAIM-HONESTY (Flint co-verify): recovery needs the phrase AND this backup FILE — the phrase DECRYPTS the file (replacing your passphrase); it does NOT reconstruct identity from nothing. Do NOT imply "phrase alone / no file needed."
+- Guardian shards (v4, if in scope): **[Recover with guardian shards]** → "Enter recovery shares from your guardians (**{threshold}** of **{total_shares}** needed)." — bind numbers to `kv.shamir.threshold` (needed) and `.total_shares` (total) IN THAT ORDER (never "5 of 3").
+
+### ★ v3-backup GUARD (critical — the honest gate)
+- Detection: `readVaultHeader(data).version` returns `3 | 4`. If v3 (pre-v4): do NOT show the seed-only path. Show: **"This backup was created before passphrase-free recovery. It can be restored only with your passphrase."** + if device access remains: **"Re-export your identity to enable seed-phrase recovery."**
+- NEVER offer seed-only recovery on v3 (can't work = the false promise we guard against).
+- Fail-safe (Flint): even if the UI-gate is bypassed, `extractRecoveryVault` HARD-REFUSES a v3 file with an actionable "re-export" throw — the crypto refuses too. Belt + suspenders.
+
+### GENESIS re-verify (seed-reveal at identity creation — now TRUE on v4)
+- **"Your 12-word recovery phrase. Write it down and keep it somewhere safe you'll still have if you lose your passphrase. If you lose your passphrase, the phrase unlocks your backup without it. Shown once — this is NOT your everyday passphrase."**  (Do NOT promise standalone device-loss recovery — lose device AND backup file = not recoverable; that backstop is a separate follow-on.)
+- CO-LOCATION DIAL (Peter/team choice — NOT defaulted): the recovery model (file+phrase, no passphrase) means file+phrase together = full access. The neutral genesis phrasing above ships either way. If an active "don't store your phrase next to your backup file" warning is wanted, it's a one-line add — Peter's call.
+
+### MIGRATION NUDGE (v3 users — Do-No-Harm, prompt BEFORE a loss event)
+- **"Update your backup to enable passphrase-free recovery"** → prompts re-export to v4.
+
+### HONEST ERRORS
+- Invalid phrase: **"That recovery phrase doesn't match an identity."** (no false success)
+
+**PR:** ☐ · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection) · Hypatia (copy/claim-honesty) · Athena (frontend/merge)
 
 ---
 
