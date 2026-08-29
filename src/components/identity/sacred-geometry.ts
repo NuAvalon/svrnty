@@ -282,9 +282,9 @@ export function phiCirclePaths(cx: number, cy: number, R: number): string[] {
   ];
 }
 
-/** Seed of life — center + 6 petal circles. */
+/** Seed of life — center + 6 petal circles (scaled inside the crystal). */
 export function seedOfLifePaths(cx: number, cy: number, R: number, rot: number): string[] {
-  const r = R * PHI_INV;
+  const r = R * PHI_INV * 0.85;
   const out = [circlePath(cx, cy, r)];
   for (let i = 0; i < 6; i++) {
     const a = rot - Math.PI / 2 + (i * Math.PI) / 3;
@@ -295,11 +295,11 @@ export function seedOfLifePaths(cx: number, cy: number, R: number, rot: number):
 }
 
 /**
- * Flower of life — seed + second ring (6 at 2r on axes + 6 at 2r on mid-angles).
- * 19 circles total.
+ * Flower of life — seed + one outer ring (13 circles).
+ * Held inside ~0.55R so it accents the crystal instead of filling the seal.
  */
 export function flowerOfLifePaths(cx: number, cy: number, R: number, rot: number): string[] {
-  const r = R * PHI_INV * 0.72;
+  const r = R * PHI_INV * 0.55;
   const paths = [circlePath(cx, cy, r)];
   for (let i = 0; i < 6; i++) {
     const a = rot - Math.PI / 2 + (i * Math.PI) / 3;
@@ -311,31 +311,43 @@ export function flowerOfLifePaths(cx: number, cy: number, R: number, rot: number
     const c = pt(cx, cy, 2 * r, a);
     paths.push(circlePath(c.x, c.y, r));
   }
-  for (let i = 0; i < 6; i++) {
-    const a = rot - Math.PI / 2 + Math.PI / 6 + (i * Math.PI) / 3;
-    const c = pt(cx, cy, 2 * r, a);
-    paths.push(circlePath(c.x, c.y, r));
-  }
   return paths;
 }
 
 /**
- * Metatron's cube — 13 fruit-of-life centers, every pair joined.
+ * Metatron's cube — light skeleton, not every-pair spaghetti.
+ * 13 fruit-of-life centers; draw radii, inner/outer hex, and compound hexagram.
+ * Reads as Metatron without burying the crystal.
  */
 export function metatronPaths(cx: number, cy: number, R: number, rot: number): string[] {
-  const r = R * PHI_INV * 0.55;
-  const centers = [{ x: cx, y: cy }];
-  for (let i = 0; i < 6; i++) {
-    centers.push(pt(cx, cy, r, rot - Math.PI / 2 + (i * Math.PI) / 3));
-  }
-  for (let i = 0; i < 6; i++) {
-    centers.push(pt(cx, cy, 2 * r, rot - Math.PI / 2 + (i * Math.PI) / 3));
-  }
+  const r = R * PHI_INV * 0.42;
+  const base = rot - Math.PI / 2;
+  const inner = Array.from({ length: 6 }, (_, i) => pt(cx, cy, r, base + (i * Math.PI) / 3));
+  const outer = Array.from({ length: 6 }, (_, i) => pt(cx, cy, 2 * r, base + (i * Math.PI) / 3));
   const lines: string[] = [];
-  for (let i = 0; i < centers.length; i++) {
-    for (let j = i + 1; j < centers.length; j++) {
-      lines.push(`M ${fmt(centers[i])} L ${fmt(centers[j])}`);
+
+  // Radii: center → inner → outer along each ray
+  for (let i = 0; i < 6; i++) {
+    lines.push(`M ${fmt({ x: cx, y: cy })} L ${fmt(outer[i])}`);
+  }
+  // Inner hexagon
+  for (let i = 0; i < 6; i++) {
+    lines.push(`M ${fmt(inner[i])} L ${fmt(inner[(i + 1) % 6])}`);
+  }
+  // Outer hexagon
+  for (let i = 0; i < 6; i++) {
+    lines.push(`M ${fmt(outer[i])} L ${fmt(outer[(i + 1) % 6])}`);
+  }
+  // Compound hexagram on outer vertices
+  for (const step of [2, 3]) {
+    for (let i = 0; i < 6; i++) {
+      if (step === 3 && i >= 3) continue; // diameters once
+      lines.push(`M ${fmt(outer[i])} L ${fmt(outer[(i + step) % 6])}`);
     }
+  }
+  // Inner hexagram accents
+  for (let i = 0; i < 6; i++) {
+    lines.push(`M ${fmt(inner[i])} L ${fmt(inner[(i + 2) % 6])}`);
   }
   return lines;
 }
@@ -404,17 +416,17 @@ export function composeSacredFigure(
       break;
     case 'seed':
       for (const d of seedOfLifePaths(cx, cy, R, rot)) {
-        push(d, 0.55, 0.95);
+        push(d, 0.42, 0.8);
       }
       break;
     case 'flower':
       for (const d of flowerOfLifePaths(cx, cy, R, rot)) {
-        push(d, 0.4, 0.7);
+        push(d, 0.28, 0.55);
       }
       break;
     case 'metatron':
       for (const d of metatronPaths(cx, cy, R, rot)) {
-        push(d, 0.28, 0.55);
+        push(d, 0.32, 0.5);
       }
       break;
     default:

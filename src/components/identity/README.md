@@ -9,8 +9,8 @@
 **Catalog — cybermagic / sacred technology** (formula-generated, no uploaded SVG)
 - `{n/k}` star polygons (pentagram, heptagram, nonagram, decagram…) — continuous stroke when `gcd(n,k)=1`
 - Compound figures when `gcd>1` (hexagram ★, `{8/2}`, `{9/3}`, `{10/4}`…)
-- Unicursal hexagram (Crowley √3 proportions) as one peer among many — not the whole vibe
-- Flower of life, Metatron’s cube, seed of life
+- Flower of life, Metatron’s cube, seed of life — kept light/scaled so they accent the crystal, not bury it
 - Circle / φ-nested circles, vesica, triquetra, diamond
+- Unicursal hexagram (Crowley √3 proportions) as one peer among many
 
 φ measures the crystal cascade `R · φ⁻ⁿ` and dendrites. Lab: `/dev/seals`.
