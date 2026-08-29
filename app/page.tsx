@@ -641,12 +641,12 @@ export default function Home() {
           </Tabs>
         )}
 
-        {mapRevise && identity && (
+        {identity && (
           <ContactMethodReviseDialog
-            open={!!mapRevise}
-            kind={mapRevise.kind}
+            open={mapRevise !== null}
+            kind={mapRevise?.kind ?? 'email'}
             initialValue={identity.identity?.email || ''}
-            preselectedFingerprints={mapRevise.preselected}
+            preselectedFingerprints={mapRevise?.preselected}
             contacts={contacts.map((c) => ({
               fingerprint: c.peer_fingerprint,
               name: c.peer_name || 'Unnamed',

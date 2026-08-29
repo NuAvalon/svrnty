@@ -1371,40 +1371,38 @@ export function SoverentityFrontend({
           onOpenCircle={onOpenCircle}
         />
 
-        {reviseKind && (
-          <ContactMethodReviseDialog
-            open={!!reviseKind}
-            kind={reviseKind}
-            initialValue={
-              reviseKind === 'email'
-                ? identity.identity.email || ''
-                : reviseKind === 'signal'
-                  ? localMethods.signal || ''
-                  : localMethods.site ||
-                    (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : '') ||
-                    ''
+        <ContactMethodReviseDialog
+          open={reviseKind !== null}
+          kind={reviseKind ?? 'email'}
+          initialValue={
+            reviseKind === 'signal'
+              ? localMethods.signal || ''
+              : reviseKind === 'site'
+                ? localMethods.site ||
+                  (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : '') ||
+                  ''
+                : identity.identity.email || ''
+          }
+          contacts={audience}
+          onClose={() => setReviseKind(null)}
+          onLocalSave={async (kind, value) => {
+            const fp = identity.identity.fingerprint as string;
+            if (kind === 'email') {
+              const next = {
+                ...identity,
+                identity: { ...identity.identity, email: value },
+              };
+              await storeIdentity(fp, next);
+              setIdentity(next);
+              onIdentityUpdate?.(next);
+              return;
             }
-            contacts={audience}
-            onClose={() => setReviseKind(null)}
-            onLocalSave={async (kind, value) => {
-              const fp = identity.identity.fingerprint as string;
-              if (kind === 'email') {
-                const next = {
-                  ...identity,
-                  identity: { ...identity.identity, email: value },
-                };
-                await storeIdentity(fp, next);
-                setIdentity(next);
-                onIdentityUpdate?.(next);
-                return;
-              }
-              const nextMethods = saveLocalMethods(fp, {
-                [kind]: value,
-              });
-              setLocalMethods(nextMethods);
-            }}
-          />
-        )}
+            const nextMethods = saveLocalMethods(fp, {
+              [kind]: value,
+            });
+            setLocalMethods(nextMethods);
+          }}
+        />
 
         {/* Export / Backup Section */}
         {identity && (

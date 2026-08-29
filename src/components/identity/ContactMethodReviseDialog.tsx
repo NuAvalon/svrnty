@@ -148,7 +148,13 @@ export function ContactMethodReviseDialog({
         : 'Site/URL is local-only for now — not in contact.update allowlist yet (fleet grow).';
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Controlled: only close when Radix requests it — never unmount on open.
+        if (!next) onClose();
+      }}
+    >
       <DialogContent
         className="max-w-md border-[var(--se-border)] bg-[var(--se-surface-solid)] text-[var(--se-text)] sm:rounded-2xl"
         style={{ fontFamily: E.fontSans }}
@@ -326,19 +332,32 @@ export function ContactMethodReviseDialog({
           <button type="button" onClick={onClose} disabled={busy} style={ghostBtnWide}>
             Close
           </button>
-          <button type="button" onClick={() => void handleSaveLocal()} disabled={busy} style={ghostBtnWide}>
-            Save locally
-          </button>
           <button
             type="button"
             onClick={() => void handleSend()}
-            disabled={busy}
+            disabled={busy || selected.size === 0 || !value.trim()}
+            title={
+              selected.size === 0
+                ? 'Pick someone to notify, or Save locally'
+                : 'Wire send is stubbed — Flint owns encrypt+deposit'
+            }
             style={{
-              ...primaryBtn,
-              opacity: busy ? 0.6 : 1,
+              ...ghostBtnWide,
+              opacity: busy || selected.size === 0 || !value.trim() ? 0.45 : 1,
             }}
           >
             {busy ? '…' : 'Send update'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSaveLocal()}
+            disabled={busy || !value.trim()}
+            style={{
+              ...primaryBtn,
+              opacity: busy || !value.trim() ? 0.6 : 1,
+            }}
+          >
+            {busy ? '…' : 'Save locally'}
           </button>
         </DialogFooter>
       </DialogContent>
