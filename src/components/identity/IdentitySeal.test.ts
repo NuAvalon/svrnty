@@ -8,6 +8,7 @@ import {
   CRYSTAL_HABITS,
   composePhiSeal,
   composeOrganicSeal,
+  composeGrowthSeal,
   composeSigilSeal,
   foldFromFingerprint,
   sacredEntryFromFingerprint,
@@ -71,6 +72,17 @@ test('organic is a Crystal clone with denser recursive forks', () => {
     maxBranches = Math.max(maxBranches, composeOrganicSeal(randomFingerprint()).branches.length);
   }
   assert.ok(maxBranches >= 12, `expected organic fork density, got max ${maxBranches}`);
+});
+
+test('growth (post-Metatron) is deterministic, spine-0 up, no named glyphs', () => {
+  assert.deepEqual(composeGrowthSeal(FP_A), composeGrowthSeal(FP_A));
+  const g = composeGrowthSeal(FP_A);
+  assert.equal(g.figureId, 'growth');
+  assert.ok(g.notches.length >= g.fold);
+  assert.ok(g.spines[0].y2 < g.spines[0].y1 - 5);
+  for (let i = 0; i < 40; i++) {
+    assert.equal(composeGrowthSeal(randomFingerprint()).figureId, 'growth');
+  }
 });
 
 test('fold ∈ 3–10 and matches spine count + flat entry', () => {

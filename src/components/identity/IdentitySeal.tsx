@@ -10,6 +10,7 @@ import { solarEmber as E } from '../recovery/solar-ember';
 import {
   pickSacredEntry,
   composeSacredFigure,
+  starPolygonPath,
   type CrystalHabit as SacredHabit,
 } from './sacred-geometry';
 
@@ -30,11 +31,16 @@ export const PHI = (1 + Math.sqrt(5)) / 2;
 export const PHI_INV = PHI - 1;
 export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 
-export type SealVariant = 'phi' | 'organic' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
+export type SealVariant = 'phi' | 'growth' | 'organic' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
   { id: 'phi', title: 'Crystal', blurb: 'Sacred figures · φ droplets · ogham notches' },
-  { id: 'organic', title: 'Organic', blurb: 'Crystal clone · recursive Growth forks' },
+  {
+    id: 'growth',
+    title: 'Growth',
+    blurb: 'Post-Metatron original · spine forks + ogham · no named glyphs',
+  },
+  { id: 'organic', title: 'Organic', blurb: 'Crystal + recursive forks (recent A/B clone)' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -396,6 +402,165 @@ export function composeOrganicSeal(fingerprint: string) {
   };
 }
 
+/**
+ * Original Growth from Metatron demotion (`21d858c`) — fold from seed (not sacred
+ * catalog), recursive spine forks + ogham, faint {n/k} only. No named glyphs,
+ * no arcs/orbs/pond cages. Lab A/B — kept beside Crystal + Organic.
+ */
+export function composeGrowthSeal(fingerprint: string) {
+  const n = hexNibbles(fingerprint);
+  const seed = fnv(fingerprint);
+  const cx = 50;
+  const cy = 50;
+
+  const R = 40 + (n[0] % 5);
+  const r1 = R * PHI_INV;
+  const r2 = R * PHI_INV * PHI_INV;
+  const r3 = R * PHI_INV ** 3;
+  const rCore = R * PHI_INV ** 4;
+
+  // Uniform habit 3–10 from seed (independent of sacred catalog)
+  const fold = CRYSTAL_HABITS[((seed >>> 5) + n[2] + n[7]) % CRYSTAL_HABITS.length];
+  const rot = -Math.PI / 2;
+  const structMix = ((seed >>> 3) % 1000) / 1000;
+  const radiusJitter = ((n[1] + n[4]) % 7) / 7;
+
+  // Optional faint star accent — formula {n/k} only, never named glyphs
+  const starKs: Partial<Record<CrystalHabit, number>> = {
+    5: 2,
+    6: 2,
+    7: 2 + (n[8] % 2),
+    8: 2 + (n[8] % 2),
+    9: 2 + (n[8] % 3),
+    10: 3 + (n[8] % 2),
+  };
+  const k = starKs[fold];
+  const sacredPaths =
+    k != null
+      ? [
+          {
+            d: starPolygonPath(cx, cy, R * 0.88, fold, k, rot, false),
+            op: 0.22 + structMix * 0.08,
+            w: 0.55,
+          },
+        ]
+      : [];
+
+  const spines: Line[] = [];
+  const branches: Line[] = [];
+  const notches: Line[] = [];
+
+  for (let i = 0; i < fold; i++) {
+    const a = rot + (i * 2 * Math.PI) / fold;
+    const tip = pt(cx, cy, R, a);
+    spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.62, w: 1.1 });
+
+    const bit = n[i % n.length];
+    const bit2 = n[(i + 5) % n.length];
+    const bit3 = n[(i + 9) % n.length];
+
+    const forkAt = (baseR: number, ang: number, len: number, op: number, w: number, side: number) => {
+      const origin = pt(cx, cy, baseR, a);
+      const ba = ang + side * ((Math.PI / fold) * (0.55 + structMix * 0.25 + bit / 30));
+      branches.push({
+        x1: origin.x,
+        y1: origin.y,
+        x2: origin.x + Math.cos(ba) * len,
+        y2: origin.y + Math.sin(ba) * len,
+        op,
+        w,
+      });
+      return { x: origin.x + Math.cos(ba) * len, y: origin.y + Math.sin(ba) * len, ang: ba };
+    };
+
+    if (bit & 1) {
+      const len1 = (R - r1) * PHI_INV * (0.75 + bit / 20 + structMix * 0.2 + radiusJitter * 0.1);
+      const left = forkAt(r1, a, len1, 0.48, 0.78, -1);
+      const right = forkAt(r1, a, len1 * (0.82 + structMix * 0.15), 0.48, 0.78, 1);
+
+      if (bit2 & 1) {
+        const len2 = len1 * PHI_INV * (0.7 + bit2 / 24);
+        for (const tipB of [left, right]) {
+          const side = tipB === left ? -1 : 1;
+          branches.push({
+            x1: tipB.x,
+            y1: tipB.y,
+            x2: tipB.x + Math.cos(tipB.ang + side * 0.55) * len2,
+            y2: tipB.y + Math.sin(tipB.ang + side * 0.55) * len2,
+            op: 0.34,
+            w: 0.55,
+          });
+        }
+      }
+      if (bit2 & 2) {
+        const len2b = len1 * PHI_INV * PHI_INV * (0.9 + structMix * 0.2);
+        forkAt((r1 + r2) / 2, a, len2b, 0.3, 0.5, bit3 & 1 ? 1 : -1);
+      }
+    }
+
+    if (bit3 & 2) {
+      const lenIn = (r1 - r2) * PHI_INV * (0.7 + bit3 / 22 + radiusJitter * 0.1);
+      forkAt(r2, a, lenIn, 0.36, 0.58, -1);
+      forkAt(r2, a, lenIn * 0.9, 0.36, 0.58, 1);
+    }
+
+    const notchCount = 1 + (bit % 3);
+    for (let t = 0; t < notchCount; t++) {
+      const frac = PHI_INV * (0.45 + t * 0.22 + ((bit3 + t) % 5) * 0.02);
+      const along = rCore + (R - rCore) * Math.min(0.92, frac);
+      const p = pt(cx, cy, along, a);
+      const perp = a + Math.PI / 2;
+      const half = 1.6 + (bit % 3) * 0.55 + (t === 0 ? 0.4 : 0);
+      notches.push({
+        x1: p.x - Math.cos(perp) * half,
+        y1: p.y - Math.sin(perp) * half,
+        x2: p.x + Math.cos(perp) * half,
+        y2: p.y + Math.sin(perp) * half,
+        op: 0.5,
+        w: 0.7,
+      });
+      if (bit2 & 4 && t === 0) {
+        const p2 = pt(cx, cy, along + 1.4, a);
+        notches.push({
+          x1: p2.x - Math.cos(perp) * (half * 0.85),
+          y1: p2.y - Math.sin(perp) * (half * 0.85),
+          x2: p2.x + Math.cos(perp) * (half * 0.85),
+          y2: p2.y + Math.sin(perp) * (half * 0.85),
+          op: 0.4,
+          w: 0.55,
+        });
+      }
+    }
+  }
+
+  const hexAt = (radius: number) =>
+    Array.from({ length: fold }, (_, i) => {
+      const a = rot + (i * 2 * Math.PI) / fold;
+      return fmt(pt(cx, cy, radius, a));
+    }).join(' ');
+
+  return {
+    R,
+    r1,
+    r2,
+    r3,
+    rCore,
+    fold,
+    habit: HABIT_LABEL[fold],
+    figure: k != null ? `{${fold}/${k}} growth` : 'growth',
+    figureId: 'growth' as const,
+    sacredPaths,
+    spines,
+    branches,
+    notches,
+    hexOuter: hexAt(R),
+    hexMid: hexAt(r1),
+    hexInner: hexAt(r2),
+    hexCore: hexAt(r3),
+    rings: [R, r1, r2] as const,
+  };
+}
+
 /** Lab-only: earlier 5-fold pentagram stack (kept for A/B). */
 export function composeSigilSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -548,6 +713,53 @@ export function composeRosetteSeal(fingerprint: string) {
     hexPts,
     rings: [ringR + 6, ringR, ringR - 5] as const,
   };
+}
+
+function GrowthLayers({ g }: { g: ReturnType<typeof composeGrowthSeal> }) {
+  return (
+    <>
+      {g.rings.map((r, i) => (
+        <circle
+          key={`ring-${i}`}
+          cx="50"
+          cy="50"
+          r={r}
+          fill="none"
+          stroke={E.accent2}
+          strokeOpacity={0.1 - i * 0.02}
+          strokeWidth={0.55}
+        />
+      ))}
+      <polygon points={g.hexOuter} fill="none" stroke={E.accent} strokeOpacity="0.28" strokeWidth="0.85" />
+      <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.18" strokeWidth="0.65" />
+
+      {g.sacredPaths.map((p, i) => (
+        <path
+          key={`sg${i}`}
+          d={p.d}
+          fill="none"
+          stroke={E.accent}
+          strokeOpacity={p.op}
+          strokeWidth={p.w}
+          strokeLinejoin="miter"
+        />
+      ))}
+
+      {g.spines.map((c, i) => (
+        <line key={`s${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
+      ))}
+      {g.branches.map((c, i) => (
+        <line key={`br${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent} strokeOpacity={c.op} strokeWidth={c.w} />
+      ))}
+      {g.notches.map((c, i) => (
+        <line key={`n${i}`} x1={c.x1} y1={c.y1} x2={c.x2} y2={c.y2} stroke={E.accent2} strokeOpacity={c.op} strokeWidth={c.w} />
+      ))}
+
+      <polygon points={g.hexCore} fill="none" stroke={E.accent} strokeOpacity="0.75" strokeWidth="1.05" />
+      <circle cx="50" cy="50" r={g.rCore} fill="none" stroke={E.accent} strokeWidth="1" />
+      <circle cx="50" cy="50" r="1.8" fill="none" stroke={E.accent} strokeWidth="1" />
+    </>
+  );
 }
 
 function CrystalLayers({
@@ -776,6 +988,10 @@ export function IdentitySeal({
     () => (variant === 'organic' ? composeOrganicSeal(fingerprint) : null),
     [fingerprint, variant]
   );
+  const growth = useMemo(
+    () => (variant === 'growth' ? composeGrowthSeal(fingerprint) : null),
+    [fingerprint, variant]
+  );
   const sigil = useMemo(
     () => (variant === 'sigil' ? composeSigilSeal(fingerprint) : null),
     [fingerprint, variant]
@@ -808,6 +1024,7 @@ export function IdentitySeal({
           />
         )}
         {variant === 'phi' && crystal && <CrystalLayers g={crystal} facets />}
+        {variant === 'growth' && growth && <GrowthLayers g={growth} />}
         {variant === 'organic' && organic && <CrystalLayers g={organic} facets />}
         {variant === 'lattice' && crystal && <CrystalLayers g={crystal} facets={false} />}
         {variant === 'ring' && crystal && <RingOnly g={crystal} />}
