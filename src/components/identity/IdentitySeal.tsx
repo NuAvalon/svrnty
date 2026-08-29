@@ -40,13 +40,11 @@ export const CRYSTAL_HABITS = [3, 4, 5, 6, 7, 8, 9] as const;
 export type CrystalHabit = (typeof CRYSTAL_HABITS)[number];
 
 /**
- * Base-10 digit of FNV(fingerprint) → habit.
- * 0→3, 1→4, 2→5, 3→6, 4→6, 5→7, 6→8, 7→9, 8→7, 9→9
+ * Uniform habit pick — one fold per seed bucket, no preference weighting.
+ * fold ∈ {3,4,5,6,7,8,9} equally likely from FNV(fingerprint).
  */
 export function foldFromFingerprint(fingerprint: string): CrystalHabit {
-  const digit = fnv(fingerprint) % 10;
-  const map: CrystalHabit[] = [3, 4, 5, 6, 6, 7, 8, 9, 7, 9];
-  return map[digit];
+  return CRYSTAL_HABITS[fnv(fingerprint) % CRYSTAL_HABITS.length];
 }
 
 export const HABIT_LABEL: Record<CrystalHabit, string> = {
