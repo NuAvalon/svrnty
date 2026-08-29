@@ -90,7 +90,7 @@ export function ChimericSealAmbient({ size = 148 }: { size?: number }) {
           transform: reduceMotion ? undefined : `rotate(${visible ? 0 : 8}deg)`,
         }}
       >
-        <IdentitySeal fingerprint={fp} size={size} variant="phi" label="Unformed chimeric seal" />
+        <IdentitySeal fingerprint={fp} size={size} variant="phi" />
       </div>
     </div>
   );
