@@ -5,22 +5,19 @@
 
 ## Production default: `phi` (Crystal)
 - Fold (3–10) + formula sacred figure from the flat pool
-- **Organic recursive forks** — Growth-style gen-1 / gen-2 branches from spines (asymmetric, can overshoot rim)
-- Soft **φ pond droplets** — concentric rings with micro aberrations (not a circle cage)
-- **Ogham notches** — 1–3 perpendicular ticks on each spine (occasional double bar)
-- Whisper facets + N-gon habit frames (crystal structure, quieter than growth)
+- Soft **φ pond droplets** — concentric rings with micro aberrations
+- **Ogham notches** — 1–3 perpendicular ticks on each spine
+- Crystal dendrites + facets + N-gon habit frames
 
-No arcs / tip orbs / tip petals — those overbuilt the mark.
+## Lab A/B: `organic`
+Crystal clone — same fold / sacred / droplets / ogham — with **recursive Growth forks** instead of stiff dendrites. Compare side-by-side in `/dev/seals` Variants. Not production default.
 
 ## Demoted (lab-only)
-`seed` / `flower` / `metatron` live in `SACRED_DEMOTED` — path generators remain, but they are **not** in the production flat pool (`SACRED_FLAT`). Named glyphs were overpowering identity.
+`seed` / `flower` / `metatron` live in `SACRED_DEMOTED` — path generators remain, but they are **not** in the production flat pool (`SACRED_FLAT`).
 
 ## Other variants
 - `lattice` / `ring` / `sigil` / `rosette` — lab A/B
 
-## Lab
-`/dev/seals` — compare all variants, ±1 digit sensitivity, crystal gallery.
-
 ## Files
-- `IdentitySeal.tsx` — `composePhiSeal`, default `variant='phi'`
+- `IdentitySeal.tsx` — `composePhiSeal` (default), `composeOrganicSeal` (lab)
 - `sacred-geometry.ts` — catalog + `SACRED_DEMOTED`

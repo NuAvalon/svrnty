@@ -7,6 +7,7 @@ import {
   PHI_INV,
   CRYSTAL_HABITS,
   composePhiSeal,
+  composeOrganicSeal,
   composeSigilSeal,
   foldFromFingerprint,
   sacredEntryFromFingerprint,
@@ -55,13 +56,20 @@ test('ogham notches: at least one per spine', () => {
   assert.ok(g.notches.length >= g.fold, 'at least one notch per spine');
 });
 
-test('organic growth forks: recursive branches appear across fingerprints', () => {
+test('organic is a Crystal clone with denser recursive forks', () => {
+  const crystal = composePhiSeal(FP_A);
+  const organic = composeOrganicSeal(FP_A);
+  assert.equal(organic.fold, crystal.fold);
+  assert.equal(organic.figureId, crystal.figureId);
+  assert.deepEqual(organic.rings, crystal.rings);
+  assert.deepEqual(organic.notches, crystal.notches);
+  assert.deepEqual(organic.spines, crystal.spines);
+  assert.notDeepEqual(organic.branches, crystal.branches);
+  assert.ok(organic.figure.includes('organic'));
   let maxBranches = 0;
-  for (let i = 0; i < 80; i++) {
-    const g = composePhiSeal(randomFingerprint());
-    maxBranches = Math.max(maxBranches, g.branches.length);
+  for (let i = 0; i < 60; i++) {
+    maxBranches = Math.max(maxBranches, composeOrganicSeal(randomFingerprint()).branches.length);
   }
-  // Gen-1 + gen-2 + inner forks → denser than early crystal's 2-per-arm dendrites
   assert.ok(maxBranches >= 12, `expected organic fork density, got max ${maxBranches}`);
 });
 

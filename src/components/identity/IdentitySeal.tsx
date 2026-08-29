@@ -30,10 +30,11 @@ export const PHI = (1 + Math.sqrt(5)) / 2;
 export const PHI_INV = PHI - 1;
 export const GOLDEN_ANGLE = (2 * Math.PI) / (PHI * PHI);
 
-export type SealVariant = 'phi' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
+export type SealVariant = 'phi' | 'organic' | 'sigil' | 'rosette' | 'lattice' | 'ring' | 'none';
 
 export const SEAL_VARIANTS: { id: SealVariant; title: string; blurb: string }[] = [
-  { id: 'phi', title: 'Crystal', blurb: 'Organic forks · φ droplets · ogham · sacred figure' },
+  { id: 'phi', title: 'Crystal', blurb: 'Sacred figures · φ droplets · ogham notches' },
+  { id: 'organic', title: 'Organic', blurb: 'Crystal clone · recursive Growth forks' },
   { id: 'sigil', title: 'Sigil (old)', blurb: 'Earlier 5-fold pentagram stack' },
   { id: 'rosette', title: 'Rosette', blurb: 'Soft Bezier petals (earlier draft)' },
   { id: 'lattice', title: 'Lattice', blurb: 'Crystal spines + branches, no facets' },
@@ -125,9 +126,9 @@ function fmt(p: { x: number; y: number }) {
 type Line = { x1: number; y1: number; x2: number; y2: number; op: number; w: number };
 
 /**
- * Default seal: crystalline habit + sacred figure + organic Growth branches.
- * Recursive spine-guided forks (gen-1 / gen-2) restore the living feel;
- * soft φ pond droplets + ogham notches stay. No arcs / orbs / circle cages.
+ * Default seal: crystalline habit + sacred-geometry figure from fingerprint.
+ * φ sets radial cascade + dendrite lengths; fold + catalog figure are seeded separately.
+ * Adds soft φ pond-droplet rings and ogham-ish spine notches — nothing else from Growth.
  */
 export function composePhiSeal(fingerprint: string) {
   const n = hexNibbles(fingerprint);
@@ -150,6 +151,7 @@ export function composePhiSeal(fingerprint: string) {
   // two fingerprints must never be the same crystal merely spun (incl. 360°/fold twins).
   // Former rotation entropy goes into per-arm structure below instead.
   const rot = -Math.PI / 2;
+  const branchAng = Math.PI / fold;
   // 0..1 from leftover seed bits — scales dendrite/facet asymmetry, not spin
   const structMix = ((seed >>> 3) % 1000) / 1000;
   const radiusJitter = ((n[1] + n[4]) % 7) / 7;
@@ -165,60 +167,50 @@ export function composePhiSeal(fingerprint: string) {
   for (let i = 0; i < fold; i++) {
     const a = rot + (i * 2 * Math.PI) / fold;
     const tip = pt(cx, cy, R, a);
+    const mid = pt(cx, cy, r1, a);
+    const near = pt(cx, cy, r2, a);
     const bit = n[i % n.length];
     const bit2 = n[(i + 5) % n.length];
     const bit3 = n[(i + 9) % n.length];
 
-    spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.58, w: 1.08 });
+    spines.push({ x1: cx, y1: cy, x2: tip.x, y2: tip.y, op: 0.55, w: 1.05 });
 
-    // Organic Growth forks — recursive, asymmetric, can overshoot the rim slightly
-    const forkAt = (baseR: number, ang: number, len: number, op: number, w: number, side: number) => {
-      const origin = pt(cx, cy, baseR, a);
-      const ba = ang + side * ((Math.PI / fold) * (0.55 + structMix * 0.25 + bit / 30));
-      const end = {
-        x: origin.x + Math.cos(ba) * len,
-        y: origin.y + Math.sin(ba) * len,
-      };
-      branches.push({ x1: origin.x, y1: origin.y, x2: end.x, y2: end.y, op, w });
-      return { ...end, ang: ba };
-    };
-
-    if (bit & 1 || bit2 & 1) {
-      const len1 = (R - r1) * (0.85 + bit / 18 + structMix * 0.25 + radiusJitter * 0.15);
-      const left = forkAt(r1, a, len1, 0.48, 0.78, -1);
-      const right = forkAt(r1, a, len1 * (0.9 + structMix * PHI_INV), 0.48, 0.78, 1);
-
-      // Gen-2 — grow from gen-1 tips
-      if (bit2 & 1 || bit3 & 1) {
-        const len2 = len1 * PHI_INV * (0.85 + bit2 / 20);
-        for (const tipB of [left, right]) {
-          const side = tipB === left ? -1 : 1;
-          branches.push({
-            x1: tipB.x,
-            y1: tipB.y,
-            x2: tipB.x + Math.cos(tipB.ang + side * PHI_INV) * len2,
-            y2: tipB.y + Math.sin(tipB.ang + side * PHI_INV) * len2,
-            op: 0.34,
-            w: 0.55,
-          });
-        }
-      }
-      if (bit2 & 2) {
-        const len2b = len1 * PHI_INV * (0.7 + structMix * 0.25);
-        forkAt((r1 + r2) / 2, a, len2b, 0.3, 0.5, bit3 & 1 ? 1 : -1);
-      }
+    // ~50/50 dendrite gates; lengths use structMix so orientation bits still alter shape
+    const branchLen =
+      (R - r1) * PHI_INV * (0.7 + (bit / 15) * 0.4 + structMix * 0.2 + radiusJitter * 0.1);
+    if (bit & 1) {
+      branches.push({
+        x1: mid.x, y1: mid.y,
+        x2: mid.x + Math.cos(a - branchAng) * branchLen,
+        y2: mid.y + Math.sin(a - branchAng) * branchLen,
+        op: 0.42, w: 0.75,
+      });
+      branches.push({
+        x1: mid.x, y1: mid.y,
+        x2: mid.x + Math.cos(a + branchAng) * branchLen * (0.85 + structMix * 0.2),
+        y2: mid.y + Math.sin(a + branchAng) * branchLen * (0.85 + structMix * 0.2),
+        op: 0.42, w: 0.75,
+      });
     }
 
-    // Inner gen-1 near r2
-    if (bit3 & 2) {
-      const lenIn = (r1 - r2) * (0.9 + bit3 / 22 + radiusJitter * 0.1);
-      forkAt(r2, a, lenIn, 0.36, 0.58, -1);
-      forkAt(r2, a, lenIn * 0.9, 0.36, 0.58, 1);
+    if (n[(i + 6) % n.length] & 2) {
+      const len2 = (r1 - r2) * PHI_INV * (0.65 + (n[(i + 3) % n.length] / 20) + structMix * 0.15);
+      branches.push({
+        x1: near.x, y1: near.y,
+        x2: near.x + Math.cos(a - branchAng) * len2,
+        y2: near.y + Math.sin(a - branchAng) * len2,
+        op: 0.32, w: 0.6,
+      });
+      branches.push({
+        x1: near.x, y1: near.y,
+        x2: near.x + Math.cos(a + branchAng) * len2,
+        y2: near.y + Math.sin(a + branchAng) * len2,
+        op: 0.32, w: 0.6,
+      });
     }
 
-    // Whisper facets — crystal habit, kept quieter so growth reads first
     if (n[(i + 2) % n.length] & 1) {
-      const half = (Math.PI / fold) * PHI_INV * (0.5 + bit / 20 + structMix * 0.1);
+      const half = (Math.PI / fold) * PHI_INV * (0.5 + (bit / 20) + structMix * 0.1);
       const p0 = pt(cx, cy, r2, a);
       const p1 = pt(cx, cy, (r1 + r2) / 2, a - half);
       const p2 = pt(cx, cy, r1, a);
@@ -327,6 +319,80 @@ export function composePhiSeal(fingerprint: string) {
     hexCore,
     sacredPath,
     rings,
+  };
+}
+
+/**
+ * Lab A/B: Crystal clone with recursive Growth forks instead of stiff dendrites.
+ * Same fold / sacred figure / φ droplets / ogham — only the branch grammar changes.
+ */
+export function composeOrganicSeal(fingerprint: string) {
+  const base = composePhiSeal(fingerprint);
+  const n = hexNibbles(fingerprint);
+  const seed = fnv(fingerprint);
+  const cx = 50;
+  const cy = 50;
+  const { R, r1, r2, fold } = base;
+  const rot = -Math.PI / 2;
+  const structMix = ((seed >>> 3) % 1000) / 1000;
+  const radiusJitter = ((n[1] + n[4]) % 7) / 7;
+
+  const branches: Line[] = [];
+
+  for (let i = 0; i < fold; i++) {
+    const a = rot + (i * 2 * Math.PI) / fold;
+    const bit = n[i % n.length];
+    const bit2 = n[(i + 5) % n.length];
+    const bit3 = n[(i + 9) % n.length];
+
+    const forkAt = (baseR: number, ang: number, len: number, op: number, w: number, side: number) => {
+      const origin = pt(cx, cy, baseR, a);
+      const ba = ang + side * ((Math.PI / fold) * (0.55 + structMix * 0.25 + bit / 30));
+      const end = {
+        x: origin.x + Math.cos(ba) * len,
+        y: origin.y + Math.sin(ba) * len,
+      };
+      branches.push({ x1: origin.x, y1: origin.y, x2: end.x, y2: end.y, op, w });
+      return { ...end, ang: ba };
+    };
+
+    if (bit & 1 || bit2 & 1) {
+      const len1 = (R - r1) * (0.85 + bit / 18 + structMix * 0.25 + radiusJitter * 0.15);
+      const left = forkAt(r1, a, len1, 0.48, 0.78, -1);
+      const right = forkAt(r1, a, len1 * (0.9 + structMix * PHI_INV), 0.48, 0.78, 1);
+
+      if (bit2 & 1 || bit3 & 1) {
+        const len2 = len1 * PHI_INV * (0.85 + bit2 / 20);
+        for (const tipB of [left, right]) {
+          const side = tipB === left ? -1 : 1;
+          branches.push({
+            x1: tipB.x,
+            y1: tipB.y,
+            x2: tipB.x + Math.cos(tipB.ang + side * PHI_INV) * len2,
+            y2: tipB.y + Math.sin(tipB.ang + side * PHI_INV) * len2,
+            op: 0.34,
+            w: 0.55,
+          });
+        }
+      }
+      if (bit2 & 2) {
+        const len2b = len1 * PHI_INV * (0.7 + structMix * 0.25);
+        forkAt((r1 + r2) / 2, a, len2b, 0.3, 0.5, bit3 & 1 ? 1 : -1);
+      }
+    }
+
+    if (bit3 & 2) {
+      const lenIn = (r1 - r2) * (0.9 + bit3 / 22 + radiusJitter * 0.1);
+      forkAt(r2, a, lenIn, 0.36, 0.58, -1);
+      forkAt(r2, a, lenIn * 0.9, 0.36, 0.58, 1);
+    }
+  }
+
+  return {
+    ...base,
+    branches,
+    chords: [...base.spines, ...branches],
+    figure: `${base.figure} · organic`,
   };
 }
 
@@ -488,7 +554,7 @@ function CrystalLayers({
   g,
   facets,
 }: {
-  g: ReturnType<typeof composePhiSeal>;
+  g: ReturnType<typeof composePhiSeal> | ReturnType<typeof composeOrganicSeal>;
   facets: boolean;
 }) {
   return (
@@ -512,15 +578,15 @@ function CrystalLayers({
       <polygon points={g.hexMid} fill="none" stroke={E.accent} strokeOpacity="0.32" strokeWidth="0.8" />
       <polygon points={g.hexInner} fill="none" stroke={E.accent2} strokeOpacity="0.22" strokeWidth="0.7" />
 
-      {/* Sacred geometry figure — quiet under growth */}
+      {/* Sacred geometry figure */}
       {g.sacredPaths?.map((p, i) => (
         <path
           key={`sg${i}`}
           d={p.d}
           fill="none"
           stroke={E.accent}
-          strokeOpacity={p.op * 0.72}
-          strokeWidth={p.w * 0.92}
+          strokeOpacity={p.op}
+          strokeWidth={p.w}
           strokeLinejoin="miter"
         />
       ))}
@@ -556,8 +622,8 @@ function CrystalLayers({
             d={d}
             fill="none"
             stroke={E.accent}
-            strokeOpacity={0.32}
-            strokeWidth="0.55"
+            strokeOpacity={0.55}
+            strokeWidth="0.65"
           />
         ))}
 
@@ -706,6 +772,10 @@ export function IdentitySeal({
         : null,
     [fingerprint, variant]
   );
+  const organic = useMemo(
+    () => (variant === 'organic' ? composeOrganicSeal(fingerprint) : null),
+    [fingerprint, variant]
+  );
   const sigil = useMemo(
     () => (variant === 'sigil' ? composeSigilSeal(fingerprint) : null),
     [fingerprint, variant]
@@ -738,6 +808,7 @@ export function IdentitySeal({
           />
         )}
         {variant === 'phi' && crystal && <CrystalLayers g={crystal} facets />}
+        {variant === 'organic' && organic && <CrystalLayers g={organic} facets />}
         {variant === 'lattice' && crystal && <CrystalLayers g={crystal} facets={false} />}
         {variant === 'ring' && crystal && <RingOnly g={crystal} />}
         {variant === 'sigil' && sigil && <SigilLayers g={sigil} />}
