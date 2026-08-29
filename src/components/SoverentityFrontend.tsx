@@ -239,6 +239,8 @@ export function SoverentityFrontend({
   const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
+  /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
+  const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
 
   // PQ migration state (shown after v1 import)
   const [pendingPqMigration, setPendingPqMigration] = useState<{ fingerprint: string; identity: any } | null>(null);
@@ -477,6 +479,14 @@ export function SoverentityFrontend({
   /** v4 dual-envelope: lost passphrase → extractRecoveryVault + recoverFromSeedPhrase (fleet seam). */
   const handleSeedVaultRestore = async () => {
     if (!vaultFile || vaultHeader?.format !== 'svrnty-vault') return;
+    // v3-guard: never offer / run seed-only on pre-v4 (UI + crypto belt).
+    if (vaultHeader.version !== 4) {
+      setRestoreError(
+        'This backup was created before passphrase-free recovery. It can be restored only with your passphrase.',
+      );
+      setRestorePath('passphrase');
+      return;
+    }
     try {
       setRestoreLoading(true);
       setRestoreError(null);
@@ -499,8 +509,9 @@ export function SoverentityFrontend({
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
-      if (/master secret|seed phrase|Invalid seed|hash/i.test(msg)) {
-        setRestoreError("That recovery phrase doesn't match this backup.");
+      // Hypatia DO-SECOND honest error (seed-only path).
+      if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
+        setRestoreError("That recovery phrase doesn't match an identity.");
       } else {
         setRestoreError(msg || 'Could not recover from this backup.');
       }
@@ -714,6 +725,10 @@ export function SoverentityFrontend({
         setIdentity(contents.identity);
         onIdentityUpdate?.(contents.identity);
         onVaultRestore?.(contents);
+        // Migration nudge (DO-SECOND): v3 users should re-export before a loss event.
+        if (vaultHeader?.version === 3) {
+          setShowV3MigrationNudge(true);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
@@ -725,7 +740,7 @@ export function SoverentityFrontend({
       setRestoreError(
         looksLikeDecryptFail
           ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
-            ? 'Incorrect passphrase. Try again, or recover with your recovery phrase below.'
+            ? 'Incorrect passphrase. Try again, or recover with your seed phrase below.'
             : 'Incorrect password. This backup requires your password to restore.'
           : msg || 'Failed to restore'
       );
@@ -1074,11 +1089,11 @@ export function SoverentityFrontend({
               </svg>
             </div>
             <h2 style={s.heroTitle}>
-              {seedPathActive ? 'Recover with phrase' : 'Open Your Vault'}
+              {seedPathActive ? 'Recover with your seed phrase' : 'Open Your Vault'}
             </h2>
             {seedPathActive && (
               <p style={s.heroSub}>
-                Lost your passphrase? This v4 backup can restore your identity keys from the recovery phrase alone.
+                Enter your 12-word recovery phrase to unlock this backup — it works without your passphrase.
               </p>
             )}
           </div>
@@ -1092,7 +1107,7 @@ export function SoverentityFrontend({
               </div>
               <p style={s.safeWordHint}>
                 {seedPathActive
-                  ? 'Seed recovery restores your identity keys. Contacts and settings sealed under the passphrase stay locked until you unlock with the passphrase or import a separate contacts backup.'
+                  ? 'The phrase decrypts this backup file (replacing your passphrase). You need both the phrase and this file — the phrase alone cannot reconstruct identity from nothing.'
                   : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
               </p>
             </div>
@@ -1199,9 +1214,15 @@ export function SoverentityFrontend({
             vaultHeader?.format === 'json-full-encrypted' ||
             (vaultHeader?.format === 'json-backup' && vaultHeader?._jsonData?.vault)) && (
             <div style={s.field}>
-              <label style={{ ...s.label, color: SE.accent }}>RECOVERY PHRASE</label>
+              <label style={{ ...s.label, color: SE.accent }}>
+                {seedPathActive ? 'Recovery phrase (12 words)' : 'RECOVERY PHRASE'}
+              </label>
               <textarea
-                placeholder="Paste the recovery phrase shown at forge (hex groups)"
+                placeholder={
+                  seedPathActive
+                    ? 'Enter your 12-word recovery phrase'
+                    : 'Paste the recovery phrase shown at forge (hex groups)'
+                }
                 value={soulSeedPhrase}
                 onChange={e => setSoulSeedPhrase(e.target.value)}
                 rows={3}
@@ -1210,7 +1231,7 @@ export function SoverentityFrontend({
               />
               <p style={s.hint}>
                 {seedPathActive
-                  ? 'Opens the recovery vault outside the passphrase layer (v4). Wrong phrase fails closed — no lockout; try again.'
+                  ? 'Wrong phrase fails closed — no lockout; try again.'
                   : 'Second factor when the backup includes a KeyVault. Required to open sealed recovery material.'}
               </p>
             </div>
@@ -1262,7 +1283,7 @@ export function SoverentityFrontend({
                     <Spinner /> Recovering...
                   </span>
                 ) : (
-                  <span style={s.btnInner}>Recover identity</span>
+                  <span style={s.btnInner}>Recover my identity</span>
                 )}
               </button>
               <button
@@ -1277,7 +1298,7 @@ export function SoverentityFrontend({
                 I have my passphrase
               </button>
               <p style={s.footer}>
-                Recovery runs locally. Your phrase never leaves this device.
+                Recovery runs locally on this device with the backup file you selected.
                 <br />
                 Contacts sealed under the passphrase are not restored on this path.
               </p>
@@ -1322,13 +1343,18 @@ export function SoverentityFrontend({
                     textUnderlineOffset: 3,
                   }}
                 >
-                  Lost your passphrase? Recover with your recovery phrase
+                  Lost your passphrase? Recover with your seed phrase
                 </button>
               )}
               {isV3Vault && (
-                <p style={{ ...s.hint, marginTop: 16, textAlign: 'center' }}>
-                  This backup is v3 — passphrase-free recovery needs a re-export (open with your passphrase, then export again to get a v4 file).
-                </p>
+                <div style={{ ...s.hint, marginTop: 16, textAlign: 'center' }}>
+                  <p style={{ margin: '0 0 6px' }}>
+                    This backup was created before passphrase-free recovery. It can be restored only with your passphrase.
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    Re-export your identity to enable seed-phrase recovery.
+                  </p>
+                </div>
               )}
 
               <p style={s.footer}>
@@ -1470,6 +1496,42 @@ export function SoverentityFrontend({
         {/* Export / Backup Section */}
         {identity && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '28px', maxWidth: 440, width: '100%' }}>
+            {showV3MigrationNudge && (
+              <div
+                role="status"
+                style={{
+                  background: 'rgba(249, 168, 37, 0.08)',
+                  border: '1px solid rgba(249, 168, 37, 0.28)',
+                  borderRadius: 12,
+                  padding: '14px 16px',
+                  marginBottom: 4,
+                }}
+              >
+                <p style={{ margin: '0 0 8px', color: SE.accent, fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
+                  Update your backup to enable passphrase-free recovery
+                </p>
+                <p style={{ margin: '0 0 12px', color: SE.muted, fontSize: 12, lineHeight: 1.5 }}>
+                  This identity was opened from a v3 backup. Re-export a new .svrnty file so seed-phrase recovery works if you lose your passphrase.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowV3MigrationNudge(false)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: SE.dim,
+                    fontFamily: SE.fontSans,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    textUnderlineOffset: 2,
+                    padding: 0,
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             <button
               onClick={() => { setShowFullBackupDialog(true); setFullBackupPassword(''); setFullBackupConfirm(''); setFullBackupError(null); }}
               style={{
