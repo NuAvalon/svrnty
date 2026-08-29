@@ -70,13 +70,13 @@ test('unicursal pentagram + hexagram both in catalog', () => {
   assert.equal(pent[0].split(' L ').length, 6);
 });
 
-test('flower + metatron on fold 6; circles on every fold', () => {
+test('flower + metatron on fold 6; circles on selected folds', () => {
   assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'flower'));
   assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'metatron'));
   assert.ok(SACRED_CATALOG[6].some((o) => o.id === 'seed'));
-  for (const h of CRYSTAL_HABITS) {
-    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circle'));
-    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circles'));
+  for (const h of [3, 5, 6, 10] as const) {
+    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circle'), `fold ${h} circle`);
+    assert.ok(SACRED_CATALOG[h].some((o) => o.id === 'circles'), `fold ${h} φ circles`);
   }
 });
 

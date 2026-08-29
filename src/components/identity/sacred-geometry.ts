@@ -52,8 +52,6 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'diamond', label: 'diamond' },
     { id: 'vesica', label: 'vesica cross' },
     { id: 'star', label: 'compound {4/2}', k: 2 },
-    { id: 'circle', label: 'circle' },
-    { id: 'circles', label: 'φ circles' },
   ],
   5: [
     { id: 'unicursal-pent', label: 'unicursal pentagram', k: 2 },
@@ -78,16 +76,12 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star-inv', label: 'inverted {7/2}', k: 2 },
     { id: 'star-alt', label: 'heptagram {7/3}', k: 3 },
     { id: 'star-alt-inv', label: 'inverted {7/3}', k: 3 },
-    { id: 'circle', label: 'circle' },
-    { id: 'circles', label: 'φ circles' },
   ],
   8: [
     { id: 'star', label: 'octagram {8/3}', k: 3 },
     { id: 'star-inv', label: 'inverted {8/3}', k: 3 },
     { id: 'star-alt', label: 'compound {8/2}', k: 2 },
     { id: 'star-alt-inv', label: 'inverted {8/2}', k: 2 },
-    { id: 'circle', label: 'circle' },
-    { id: 'circles', label: 'φ circles' },
   ],
   9: [
     { id: 'star', label: 'nonagram {9/2}', k: 2 },
@@ -96,8 +90,6 @@ export const SACRED_CATALOG: Record<CrystalHabit, SacredOption[]> = {
     { id: 'star-alt-inv', label: 'inverted {9/3}', k: 3 },
     { id: 'star', label: 'nonagram {9/4}', k: 4 },
     { id: 'star-inv', label: 'inverted {9/4}', k: 4 },
-    { id: 'circle', label: 'circle' },
-    { id: 'circles', label: 'φ circles' },
   ],
   10: [
     { id: 'star', label: 'decagram {10/3}', k: 3 },
