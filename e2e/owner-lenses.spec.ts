@@ -45,7 +45,10 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(ada).toBeVisible({ timeout: 25_000 });
     await expect(ada).toHaveAttribute('data-svrn', '1');
 
-    const hypatia = bookRow('Hypatia');
+    const hypatia = page
+      .locator('[data-testid="contact-row"][data-master-book-row="1"][data-svrn="0"]')
+      .filter({ hasText: 'Hypatia' })
+      .filter({ hasNotText: 'Alexandria' });
     await expect(hypatia).toBeVisible({ timeout: 25_000 });
     await expect(hypatia).toHaveAttribute('data-svrn', '0');
 

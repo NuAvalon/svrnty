@@ -245,10 +245,10 @@ export function TrustMapGalaxy({
       viewW: w,
       viewH: h,
       pxPerWorld,
-      maxLabels: 56,
-      boxW: pxPerWorld < 1.2 ? 56 : 78,
-      boxH: 14,
-      pad: 3,
+      maxLabels: 36,
+      boxW: pxPerWorld < 1.3 ? 64 : 92,
+      boxH: 16,
+      pad: 6,
     });
     ctx.font = '12px "Space Grotesk", sans-serif';
     ctx.textAlign = 'center';

@@ -264,6 +264,8 @@ function buildSampleRoster(): SampleContact[] {
 
   const out: SampleContact[] = [];
   for (const p of ordered) {
+    // Keep classical "Hypatia" as the hollow book row (e2e + Invariant-1 contrast).
+    if (p.id === 'hypatia') continue;
     const tags = tagsFor(p.id);
     if (pendingIds.has(p.id)) {
       const grace = LIVING_BY_ID.get('grace');
@@ -325,6 +327,14 @@ function buildSampleRoster(): SampleContact[] {
   // Classical hollows — keyless contrast (Invariant-1: no fingerprint).
   const classical: SampleContact[] = [
     {
+      name: 'Hypatia',
+      email: '',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: [],
+      notes: 'Classical book · no channels shared yet.',
+    },
+    {
       name: 'Analog Alice',
       email: 'alice@paper.mail',
       fingerprint: '',
@@ -371,14 +381,6 @@ function buildSampleRoster(): SampleContact[] {
       fingerprint: '',
       trust_level: 'unverified',
       tags: ['compilers'],
-      notes: 'Classical book · keyless.',
-    },
-    {
-      name: 'Ledger Lea',
-      email: 'lea@books.local',
-      fingerprint: '',
-      trust_level: 'unverified',
-      tags: ['bletchley'],
       notes: 'Classical book · keyless.',
     },
     {

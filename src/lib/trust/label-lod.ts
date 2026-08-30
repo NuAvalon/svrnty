@@ -55,14 +55,14 @@ export function labelBudget(pxPerWorld: number, maxLabels = 48): {
   allowKnown: boolean;
   cap: number;
 } {
-  if (pxPerWorld < 0.55) {
+  if (pxPerWorld < 0.7) {
     return { allowTrusted: false, allowLiving: false, allowKnown: false, cap: 0 };
   }
-  if (pxPerWorld < 1.15) {
-    return { allowTrusted: true, allowLiving: true, allowKnown: false, cap: Math.min(24, maxLabels) };
+  if (pxPerWorld < 1.25) {
+    return { allowTrusted: true, allowLiving: false, allowKnown: false, cap: Math.min(14, maxLabels) };
   }
-  if (pxPerWorld < 2.0) {
-    return { allowTrusted: true, allowLiving: true, allowKnown: true, cap: Math.min(40, maxLabels) };
+  if (pxPerWorld < 2.2) {
+    return { allowTrusted: true, allowLiving: true, allowKnown: false, cap: Math.min(28, maxLabels) };
   }
   return { allowTrusted: true, allowLiving: true, allowKnown: true, cap: maxLabels };
 }
@@ -93,9 +93,9 @@ export function selectLabels(
   opts: LabelLodOptions,
 ): LabelPick[] {
   const maxLabels = opts.maxLabels ?? 48;
-  const boxW = opts.boxW ?? 72;
-  const boxH = opts.boxH ?? 14;
-  const pad = opts.pad ?? 4;
+  const boxW = opts.boxW ?? 88;
+  const boxH = opts.boxH ?? 16;
+  const pad = opts.pad ?? 6;
   const budget = labelBudget(opts.pxPerWorld, maxLabels);
 
   const force: LabelCandidate[] = [];

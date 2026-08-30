@@ -8,9 +8,10 @@ test('labelBudget: far zoom is force-only', () => {
   assert.equal(b.allowTrusted, false);
 });
 
-test('labelBudget: mid zoom allows trusted', () => {
-  const b = labelBudget(0.8);
+test('labelBudget: mid zoom allows trusted only', () => {
+  const b = labelBudget(0.9);
   assert.equal(b.allowTrusted, true);
+  assert.equal(b.allowLiving, false);
   assert.equal(b.allowKnown, false);
   assert.ok(b.cap > 0);
 });
