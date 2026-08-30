@@ -1,7 +1,7 @@
 // app/page.tsx
 "use client";
 
-import { useState, useEffect, useCallback, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
@@ -12,6 +12,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import {
+  loadMethodHistory,
+  seedDemoMethodHistory,
+} from '@/components/identity/method-history';
 import {
   hasIdentity,
   getActiveFingerprint,
@@ -25,7 +29,11 @@ import {
   listIdentities,
   setActiveFingerprint,
   updateContact,
+  storeIdentity,
 } from '@/lib/identity/client-store';
+import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
+import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -50,6 +58,11 @@ export default function Home() {
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
   // Archie home: identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
+  const [mapRevise, setMapRevise] = useState<{
+    kind: MethodKind;
+    preselected: string[];
+  } | null>(null);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -180,6 +193,12 @@ export default function Home() {
 
   // Demo circle can refresh when the book is empty or sample-only
   const [sampleRefreshable, setSampleRefreshable] = useState(false);
+  const [methodHistoryTick, setMethodHistoryTick] = useState(0);
+  const methodHistory = useMemo(() => {
+    if (!identity?.identity?.fingerprint) return [];
+    void methodHistoryTick;
+    return loadMethodHistory(identity.identity.fingerprint);
+  }, [identity, methodHistoryTick]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -506,8 +525,13 @@ export default function Home() {
                 onLoadSample={async () => {
                   const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
                   await seedSampleCircle(identity.identity.fingerprint);
+                  // CUR-2: seed local demo revisions once so history UI is exercisable
+                  seedDemoMethodHistory(identity.identity.fingerprint);
+                  setMethodHistoryTick((t) => t + 1);
                   await refreshContacts();
                 }}
+                methodHistory={methodHistory}
+                onMethodHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
                 onAssignGroup={async (fingerprints, groupName) => {
                   const label = groupName.trim();
                   if (!label) return;
@@ -580,6 +604,12 @@ export default function Home() {
                   } as any);
                   await refreshContacts();
                 }}
+                onSendMethodUpdate={(edge) => {
+                  setMapRevise({
+                    kind: 'email',
+                    preselected: [edge.peer_fingerprint],
+                  });
+                }}
                 onIntroduce={async (fromEdge, introduceeName) => {
                   // UI demo: create a pending contact introduced by the focused peer.
                   // Real dual-pending protocol is team-owned — this is local visualization only.
@@ -624,6 +654,43 @@ export default function Home() {
               <ContactManagement identity={identity} onContactsChange={refreshContacts} />
             </TabsContent>
           </Tabs>
+        )}
+
+        {identity && (
+          <ContactMethodReviseDialog
+            open={mapRevise !== null}
+            kind={mapRevise?.kind ?? 'email'}
+            initialValue={identity.identity?.email || ''}
+            ownerFingerprint={identity.identity.fingerprint}
+            preselectedFingerprints={mapRevise?.preselected}
+            contacts={contacts
+              .map((c) => {
+                const peerFp = String(c.peer_fingerprint || '').trim();
+                if (!peerFp) return null;
+                return {
+                  fingerprint: peerFp,
+                  name: c.peer_name || 'Unnamed',
+                  public_key: c.peer_public_key || undefined,
+                  trusted: !!c.trusted,
+                };
+              })
+              .filter((c): c is NonNullable<typeof c> => c != null)}
+            onClose={() => setMapRevise(null)}
+            onHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
+            onLocalSave={async (kind, value) => {
+              const fp = identity.identity.fingerprint as string;
+              if (kind === 'email') {
+                const next = {
+                  ...identity,
+                  identity: { ...identity.identity, email: value },
+                };
+                await storeIdentity(fp, next);
+                setIdentity(next);
+                return;
+              }
+              saveLocalMethods(fp, { [kind]: value });
+            }}
+          />
         )}
       </main>
 
