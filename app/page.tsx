@@ -567,6 +567,26 @@ export default function Home() {
                   await removeContact(edge.id);
                   await refreshContacts();
                 }}
+                onBlockContact={async (edge, blocked) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  await updateContact(edge.id, {
+                    blocked,
+                    // Block clears local vouch — no trusted+blocked half-state.
+                    ...(blocked
+                      ? {
+                          trusted: false,
+                          trust_level: 'unverified',
+                          trusted_since: null,
+                        }
+                      : {}),
+                    metadata: {
+                      ...((rec as any)?.metadata || {}),
+                      blocked,
+                    },
+                  } as any);
+                  await refreshContacts();
+                }}
                 onAcceptIntro={async (edge) => {
                   const records = await getAllContacts(identity.identity.fingerprint);
                   const rec = records.find((r) => r.id === edge.id);
