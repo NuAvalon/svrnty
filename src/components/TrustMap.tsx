@@ -1218,10 +1218,13 @@ export function TrustMap({
           )}
         </svg>
 
+        </>
+        )}
         {showSampleBtn && (
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, zIndex: 4, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
             <button
               type="button"
+              data-testid="trust-map-load-sample"
               onClick={() => void onLoadSample?.()}
               style={{
                 fontFamily: E.fontSans,
@@ -1233,13 +1236,12 @@ export function TrustMap({
                 borderRadius: 8,
                 padding: '8px 14px',
                 cursor: 'pointer',
+                pointerEvents: 'auto',
               }}
             >
               {isEmpty ? 'Load sample circle' : 'Refresh demo circle'}
             </button>
           </div>
-        )}
-        </>
         )}
         </div>
 
