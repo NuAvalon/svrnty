@@ -23,8 +23,9 @@ async function genesis(page: Page, name: string) {
 }
 
 async function openShareQrTab(page: Page) {
-  await page.getByRole('tab', { name: 'Contacts' }).click();
-  await page.getByRole('button', { name: /share identity/i }).click();
+  // Share identity lives on the Identity card (Master Address Book pass) — not Contacts.
+  await page.getByRole('tab', { name: 'Identity' }).click();
+  await page.getByTestId('share-identity-from-card').click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   await dialog.getByRole('tab', { name: /qr/i }).click();

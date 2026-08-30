@@ -1,7 +1,7 @@
 # Master Address Book + Social Graph (UI pass)
 
 ## What changed
-- **Share identity** lives on the **Identity** card (not Contacts).
+- **Share identity** lives on the **Identity** card (not Contacts). E2E: `e2e/share-qr.spec.ts` opens via Identity tab + `share-identity-from-card`.
 - **Contacts** is the **Master Address Book** — flat list, **no living/resting** chrome.
 - Filters: **All** (default) · **Classical** · **SVRNTY** (Known / Trusted). Blocked is under **⋯** — not a primary tab.
 - Rows keep `data-testid="contact-row"` + `data-live="push"` on live-apply (demo-arc beat-4 hinge). Living/resting chrome stays retired.
