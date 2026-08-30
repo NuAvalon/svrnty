@@ -819,10 +819,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       setLoading(true);
       const fp = linkFingerprint.trim();
       const pk = linkPublicKey.trim();
-      if (fp.length < 16 || !pk) {
-        throw new Error('Paste their SVRNTY fingerprint (16+ chars) and public key.');
+      if (!fp || !pk) {
+        throw new Error('Paste their SVRNTY fingerprint and public key.');
       }
-      const patch = buildLinkToSvrntyUpdate({
+      const patch = await buildLinkToSvrntyUpdate({
         fingerprint: fp,
         public_key: pk,
         existing: {

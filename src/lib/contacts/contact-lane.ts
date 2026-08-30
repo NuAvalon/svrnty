@@ -102,8 +102,10 @@ export function snapshotClassicalExtras(c: {
   };
 }
 
-/** Merge link payload: classical → SVRNTY (pending until fleet confirms reciprocal). */
-export function buildLinkToSvrntyUpdate(args: {
+/** Merge link payload: classical → SVRNTY (pending until fleet confirms reciprocal).
+ * Binds fingerprint to the pasted public key (Invariant-1) — stores DERIVED fp only.
+ */
+export async function buildLinkToSvrntyUpdate(args: {
   fingerprint: string;
   public_key: string;
   existing: {
@@ -112,12 +114,14 @@ export function buildLinkToSvrntyUpdate(args: {
     contact_info?: ClassicalExtras | null;
     metadata?: Record<string, unknown> | null;
   };
-}): {
+}): Promise<{
   fingerprint: string;
   public_key: string;
   connection_status: 'pending';
   metadata: Record<string, unknown>;
-} {
+}> {
+  const { bindPastedFingerprintToKey } = await import('@/lib/identity/fingerprint');
+  const derivedFp = await bindPastedFingerprintToKey(args.fingerprint, args.public_key);
   const extras = snapshotClassicalExtras({
     name: args.existing.name,
     email: args.existing.email,
@@ -126,7 +130,7 @@ export function buildLinkToSvrntyUpdate(args: {
   });
   const prev = (args.existing.metadata || {}) as Record<string, unknown>;
   return {
-    fingerprint: args.fingerprint.trim(),
+    fingerprint: derivedFp,
     public_key: args.public_key.trim(),
     connection_status: 'pending',
     metadata: {

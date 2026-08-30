@@ -535,13 +535,14 @@ export async function getHeldShards(holderFingerprint: string): Promise<HeldShar
 // ── Contact operations ───────────────────────────────────────────
 
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
-  // C2 / Invariant-1 (Flint KB#85781): fail-closed binding check at the store, so NO caller
-  // can persist a contact whose fingerprint doesn't match its key. Calibrated — enforced only
-  // when a key is present: a MISSING key is not a MITM vector (nothing to encrypt toward an
-  // attacker; the private key stays the victim's), and several callers legitimately add keyless
-  // contacts. A MISMATCHED key is the attack (attacker's key + victim's real fingerprint), and
-  // it is refused here for every caller (relay, manual form-add, bulk/exchange import).
-  if (contact.public_key && !(await fingerprintMatchesKey(contact.fingerprint, contact.public_key))) {
+  // Invariant-1: a fingerprint exists only with a bound key.
+  // Keyless rows MUST NOT carry a fingerprint (even a placeholder).
+  const pk = (contact.public_key || '').trim();
+  if (!pk) {
+    contact = { ...contact, fingerprint: '', public_key: '' };
+  } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk))) {
+    // C2 / Invariant-1 (Flint KB#85781): fail-closed when a key is present —
+    // refuse mismatched attacker-key + victim-fingerprint pairs.
     throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
   const id = crypto.randomUUID();
@@ -556,6 +557,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   // second gray with fingerprint='' throws a ConstraintError — store an empty fingerprint as absent
   // instead. (Verified in-browser: two ''-fp puts → 2nd errors; two absent-fp puts → both OK.)
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
+  if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
   await txPut('contacts', record);
   return record;
 }
@@ -564,10 +566,12 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   const existing = await txGet<ContactRecord>('contacts', id);
   if (!existing) throw new Error('Contact not found');
   const next = { ...existing, ...updates, id: existing.id };
-  // Same fail-closed binding as addContact — refuse fingerprint↔key swaps via update.
-  const fp = next.fingerprint;
-  const pk = next.public_key;
-  if (pk && !(await fingerprintMatchesKey(fp, pk))) {
+  const pk = (next.public_key || '').trim();
+  // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
+  if (!pk) {
+    next.public_key = '';
+    delete (next as { fingerprint?: string }).fingerprint;
+  } else if (!(await fingerprintMatchesKey(next.fingerprint, pk))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
   await txPut('contacts', next);

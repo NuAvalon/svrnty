@@ -19,7 +19,8 @@ type SampleTrust = 'verified' | 'unverified';
 interface SampleContact {
   name: string;
   email: string;
-  fingerprint: string;
+  /** Classical rows: omit / ''. Living SVRNTY rows get fp from SAMPLE_SVRNTY_PEERS at seed. */
+  fingerprint?: string;
   trust_level: SampleTrust;
   /** Owner-authored group labels → cluster chords on the map */
   tags: string[];
@@ -81,7 +82,7 @@ const SAMPLE_FPS = new Set([
  * revision auto-upgrade on load so a hard refresh picks up the denser circle
  * without a manual “Refresh demo circle” click. Never touches non-sample books.
  */
-export const SAMPLE_CIRCLE_REVISION = 5;
+export const SAMPLE_CIRCLE_REVISION = 6;
 
 /**
  * Reciprocal + open-visibility clique among living (SVRNTY) demo peers.
@@ -110,7 +111,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Ada Lovelace',
     email: 'ada@analytical.engine',
-    fingerprint: ADA,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['core', 'builders', 'math'],
     phones: ['+44 20 7946 0001'],
@@ -122,7 +123,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Grace Hopper',
     email: 'grace@cobol.dev',
-    fingerprint: GRACE,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['core', 'builders', 'compilers'],
     phones: ['+1 202 555 0142'],
@@ -133,7 +134,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Margaret Hamilton',
     email: 'margaret@apollo.mit',
-    fingerprint: MARGARET,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['core', 'builders', 'orbital'],
     phones: ['+1 617 555 0130'],
@@ -143,7 +144,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Barbara Liskov',
     email: 'barbara@mit.edu',
-    fingerprint: BARBARA,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['core', 'builders', 'compilers'],
     handles: { signal: '@b.liskov' },
@@ -153,7 +154,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Radia Perlman',
     email: 'radia@routing.net',
-    fingerprint: RADIA,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['core', 'radio', 'builders'],
     phones: ['+1 650 555 0199'],
@@ -165,7 +166,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Alan Turing',
     email: 'alan@bletchley.uk',
-    fingerprint: ALAN,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['builders', 'bletchley', 'math'],
     phones: ['+44 1625 555 019'],
@@ -176,7 +177,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Dorothy Vaughan',
     email: 'dorothy@langley.nasa',
-    fingerprint: DOROTHY,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['orbital', 'builders', 'math'],
     reciprocal: false,
@@ -185,7 +186,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Lynn Conway',
     email: 'lynn@vlsi.edu',
-    fingerprint: LYNN,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['builders', 'compilers'],
     handles: { signal: '@lynn.conway' },
@@ -197,7 +198,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Joan Clarke',
     email: 'joan@bletchley.uk',
-    fingerprint: JOAN,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['bletchley', 'math', 'core'],
     reciprocal: true,
@@ -206,7 +207,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Jean Bartik',
     email: 'jean@eniac.org',
-    fingerprint: JEAN,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['builders', 'compilers', 'math'],
     phones: ['+1 215 555 0160'],
@@ -216,7 +217,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Sophie Germain',
     email: 'sophie@primes.fr',
-    fingerprint: SOPHIE,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['math', 'bletchley'],
     reciprocal: true,
@@ -225,7 +226,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Émilie du Châtelet',
     email: 'emilie@newton.fr',
-    fingerprint: EMILIE,
+    fingerprint: '',
     trust_level: 'verified',
     tags: ['math', 'orbital'],
     reciprocal: true,
@@ -237,7 +238,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Claude Shannon',
     email: 'claude@bell.labs',
-    fingerprint: CLAUDE,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: ['radio', 'bletchley', 'math'],
     handles: { email_alt: 'shannon@theory.info' },
@@ -246,7 +247,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Hedy Lamarr',
     email: 'hedy@fhss.radio',
-    fingerprint: HEDY,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: ['radio'],
     phones: ['+1 310 555 0188'],
@@ -256,7 +257,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Katherine Johnson',
     email: 'katherine@nasa.gov',
-    fingerprint: KATHERINE,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: ['radio', 'orbital', 'math'],
     notes: 'Known · orbital mechanics.',
@@ -264,7 +265,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Rosalind Franklin',
     email: 'rosalind@kings.ac.uk',
-    fingerprint: ROSALIND,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: ['math'],
     notes: 'Known · Photo 51 — not yet vouched.',
@@ -272,7 +273,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Marie Curie',
     email: 'marie@radium.fr',
-    fingerprint: MARIE,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: ['orbital', 'math'],
     notes: 'Known · two Nobels — introduction pending trust.',
@@ -280,7 +281,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Nikola Tesla',
     email: '',
-    fingerprint: NIKOLA,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: ['orbital', 'radio'],
     notes: 'Known · keyless / gray.',
@@ -288,7 +289,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Hypatia',
     email: '',
-    fingerprint: HYPATIA,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: [],
     notes: 'Known · no channels shared yet.',
@@ -298,7 +299,7 @@ const SAMPLE: SampleContact[] = [
   {
     name: 'Frank Garcia',
     email: 'frank@pending.intro',
-    fingerprint: FRANK,
+    fingerprint: '',
     trust_level: 'unverified',
     tags: [],
     phones: ['+1 415 555 0177'],
@@ -351,8 +352,9 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
     await addContact(ownerFingerprint, {
       name: c.name,
       email: c.email,
-      fingerprint: fingerprint || undefined,
-      public_key: public_key || undefined,
+      // Living peers: bound fp+key from SAMPLE_SVRNTY_PEERS. Classical: empty (Invariant-1).
+      fingerprint: fingerprint || '',
+      public_key: public_key || '',
       trust_level: trusted ? 'verified' : 'unverified',
       trusted,
       trusted_since: trusted ? now : null,
