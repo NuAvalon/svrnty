@@ -171,7 +171,7 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
       name: c.name,
       email: c.email,
       fingerprint: c.fingerprint || undefined,
-      public_key: '',
+      // Keyless demo peers — omit public_key (empty string is truthy and fails fp↔key bind).
       trust_level: c.trust_level,
       trusted,
       trusted_since: trusted ? now : null,

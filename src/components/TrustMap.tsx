@@ -1225,7 +1225,15 @@ export function TrustMap({
             <button
               type="button"
               data-testid="trust-map-load-sample"
-              onClick={() => void onLoadSample?.()}
+              onClick={() => {
+                void (async () => {
+                  try {
+                    await onLoadSample?.();
+                  } catch (err) {
+                    setGroupNote(err instanceof Error ? err.message : 'Sample seed failed');
+                  }
+                })();
+              }}
               style={{
                 fontFamily: E.fontSans,
                 fontSize: 12,
