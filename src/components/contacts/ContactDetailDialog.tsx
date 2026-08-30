@@ -573,6 +573,7 @@ export function ContactDetailDialog({
                     <SectionLabel>{svrn ? 'Fingerprint' : 'Living key'}</SectionLabel>
                     {svrn && contact.fingerprint ? (
                       <div
+                        data-testid="living-fingerprint"
                         style={{
                           marginTop: 6,
                           fontFamily: E.fontMono,
@@ -588,7 +589,10 @@ export function ContactDetailDialog({
                         {contact.fingerprint.match(/.{1,4}/g)?.join(' ')}
                       </div>
                     ) : (
-                      <p style={{ margin: '6px 0 0', fontSize: 12, color: E.muted, lineHeight: 1.45 }}>
+                      <p
+                        data-testid="classical-no-fingerprint"
+                        style={{ margin: '6px 0 0', fontSize: 12, color: E.muted, lineHeight: 1.45 }}
+                      >
                         Classical book — no fingerprint. A fingerprint exists only with a living key
                         (invite or link this person to SVRNTY).
                       </p>
