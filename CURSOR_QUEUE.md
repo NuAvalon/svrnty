@@ -103,7 +103,7 @@ Show AFTER a successful seed-only restore — the inline pre-success line is mis
 - seedVaultRestore returning PQ SECRETS only is CORRECT (publics are derivable: ML-KEM-1024 pk is embedded in the sk; ML-DSA-87 pk recomputes from the sk). Do NOT invent a PQ layout in the UI — flag, don't build (render-glass ✓).
 - CLAIM-HONESTY until Flint wires `reconstitutePQPublicKeys`: the recovered identity has working PQ SECRETS + classical identity — do NOT claim "post-quantum identity fully restored." A one-line note ("post-quantum keys re-derive on next card publish") keeps it honest.
 
-**PR:** ☐ · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection · PQ-reconstitution follow-on) · Hypatia (copy/claim-honesty · interstitial) · Athena (frontend/merge)
+**PR:** [#65](https://github.com/NuAvalon/svrnty/pull/65) · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection · PQ-reconstitution follow-on) · Hypatia (copy/claim-honesty · interstitial) · Athena (frontend/merge)
 
 ---
 
