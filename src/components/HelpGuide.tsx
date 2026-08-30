@@ -8,6 +8,9 @@ import { Button } from '@/components/ui/button';
 import { HelpCircle, ChevronRight } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { HELP_STEPS } from '@/components/help/copy';
+
+const backupStep = HELP_STEPS.find((s) => s.title === 'Back Up Your Identity')!;
 
 const steps = [
   {
@@ -27,6 +30,7 @@ const steps = [
       'Export a vault with an encryption password you set at export — that is not a website login.',
     ],
   },
+  backupStep,
   {
     title: 'Grow the Galaxy',
     content: [
