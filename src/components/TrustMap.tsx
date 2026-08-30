@@ -62,6 +62,15 @@ import {
   revisionsForPeer,
   type MethodRevision,
 } from '@/components/identity/method-history';
+import { ReachSettingsPanel } from '@/components/reach-settings/ReachSettingsPanel';
+import { BondReachControl } from '@/components/reach-settings/BondReachControl';
+import { commitReachIntent } from '@/components/reach-settings/apollo-reach-seam';
+import {
+  DEFAULT_REACH_PREFS,
+  readReachPrefs,
+  withEdgeReach,
+  type ReachPrefs,
+} from '@/components/reach-settings/reach-prefs';
 
 interface PendingIntro {
   introduced_by: string;
@@ -322,6 +331,21 @@ export function TrustMap({
   const [showHistory, setShowHistory] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  /** CUR-10 — disclosure-reach intent (local). Never filters this map. */
+  const [reachPrefs, setReachPrefs] = useState<ReachPrefs>(() => ({
+    ...DEFAULT_REACH_PREFS,
+    edgeReach: {},
+  }));
+  const [showReachSettings, setShowReachSettings] = useState(false);
+
+  useEffect(() => {
+    setReachPrefs(readReachPrefs());
+  }, []);
+
+  const persistReachPrefs = useCallback(async (next: ReachPrefs) => {
+    setReachPrefs(next);
+    await commitReachIntent(next);
+  }, []);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -629,6 +653,27 @@ export function TrustMap({
           flexShrink: 0,
         }}
       >
+        <button
+          type="button"
+          data-testid="reach-settings-toggle"
+          onClick={() => setShowReachSettings((v) => !v)}
+          style={{
+            fontFamily: E.fontSans,
+            fontSize: 11,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase' as const,
+            color: showReachSettings ? E.accent : E.muted,
+            background: showReachSettings
+              ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
+              : 'transparent',
+            border: `1px solid ${showReachSettings ? E.borderLit : E.border}`,
+            borderRadius: 8,
+            padding: '7px 12px',
+            cursor: 'pointer',
+          }}
+        >
+          {showReachSettings ? 'Hide reach' : 'Disclosure reach'}
+        </button>
         {onRefresh ? (
           <button
             type="button"
@@ -665,6 +710,12 @@ export function TrustMap({
           </button>
         </div>
       </div>
+
+      {showReachSettings && (
+        <div style={{ flexShrink: 0, marginBottom: 12 }}>
+          <ReachSettingsPanel prefs={reachPrefs} onChange={(next) => void persistReachPrefs(next)} />
+        </div>
+      )}
 
       <div
         ref={viewportElRef}
@@ -1269,6 +1320,18 @@ export function TrustMap({
                   ))}
                 </div>
               )}
+
+              {/* CUR-10 — per-bond reach override (narrow-only). Does not filter this map. */}
+              <BondReachControl
+                prefs={reachPrefs}
+                peerFingerprint={focusEdge.peer_fingerprint}
+                peerName={focusEdge.peer_name || focusNode.name}
+                onChange={(level) => {
+                  void persistReachPrefs(
+                    withEdgeReach(reachPrefs, focusEdge.peer_fingerprint, level)
+                  );
+                }}
+              />
             </div>
           </div>
 
