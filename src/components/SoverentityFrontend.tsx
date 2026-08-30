@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
+import { VaultExportDialog } from '@/components/export/VaultExportDialog';
+import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts } from '@/lib/identity/client-store';
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
@@ -256,9 +258,11 @@ export function SoverentityFrontend({
   const [pqMigrating, setPqMigrating] = useState(false);
   const [hasPqKeys, setHasPqKeys] = useState(false);
 
-  // Export dialog state
+  // Export dialog state (CUR-4 — auth gate before sensitive export)
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showKeyExportDialog, setShowKeyExportDialog] = useState(false);
+  const [showVaultExportDialog, setShowVaultExportDialog] = useState(false);
+  const [pendingExportAuth, setPendingExportAuth] = useState<'contacts' | 'keys' | null>(null);
   const [showFullBackupDialog, setShowFullBackupDialog] = useState(false);
   const [fullBackupPassword, setFullBackupPassword] = useState('');
   const [fullBackupConfirm, setFullBackupConfirm] = useState('');
@@ -1599,7 +1603,7 @@ export function SoverentityFrontend({
           }}
         />
 
-        {/* Export / Backup Section */}
+        {/* Export / Backup Section — CUR-4: vault via fleet packVault + export-behind-auth */}
         {identity && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '28px', maxWidth: 440, width: '100%' }}>
             {showV3MigrationNudge && (
@@ -1639,7 +1643,8 @@ export function SoverentityFrontend({
               </div>
             )}
             <button
-              onClick={() => { setShowFullBackupDialog(true); setFullBackupPassword(''); setFullBackupConfirm(''); setFullBackupError(null); }}
+              onClick={() => setShowVaultExportDialog(true)}
+              data-testid="full-backup-open"
               style={{
                 ...s.outlineBtn,
                 display: 'flex',
@@ -1656,118 +1661,9 @@ export function SoverentityFrontend({
               </svg>
               Full Backup (Encrypted)
             </button>
-            {showFullBackupDialog && (
-              <div style={{ background: 'rgba(15,15,25,0.95)', border: '1px solid rgba(180,160,100,0.2)', borderRadius: '8px', padding: '16px', marginTop: '8px' }}>
-                <p style={{ color: '#c8a84e', fontSize: '12px', fontWeight: 600, marginBottom: '8px' }}>
-                  🔒 Encrypt your backup with a password
-                </p>
-                <p style={{ color: '#8a8070', fontSize: '11px', marginBottom: '12px', lineHeight: '1.5' }}>
-                  Your private keys will be encrypted with AES-256-GCM. Without this password, the backup cannot be restored.
-                </p>
-                <input
-                  type="password"
-                  placeholder="Password (min 8 characters)"
-                  value={fullBackupPassword}
-                  onChange={e => setFullBackupPassword(e.target.value)}
-                  style={{ ...s.input, marginBottom: '8px' }}
-                  autoFocus
-                />
-                <input
-                  type="password"
-                  placeholder="Confirm password"
-                  value={fullBackupConfirm}
-                  onChange={e => setFullBackupConfirm(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && fullBackupPassword.length >= 8 && fullBackupPassword === fullBackupConfirm) document.getElementById('fullBackupBtn')?.click(); }}
-                  style={s.input}
-                />
-                {fullBackupConfirm && fullBackupPassword !== fullBackupConfirm && (
-                  <p style={{ color: '#c85a4e', fontSize: '11px', marginTop: '4px' }}>Passwords do not match</p>
-                )}
-                {fullBackupError && (
-                  <p style={{ color: '#c85a4e', fontSize: '11px', marginTop: '4px' }}>{fullBackupError}</p>
-                )}
-                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                  <button
-                    onClick={() => setShowFullBackupDialog(false)}
-                    style={{ ...s.outlineBtn, flex: 1, fontSize: '12px' }}
-                  >Cancel</button>
-                  <button
-                    id="fullBackupBtn"
-                    disabled={fullBackupLoading || fullBackupPassword.length < 8 || fullBackupPassword !== fullBackupConfirm}
-                    onClick={async () => {
-                      try {
-                        setFullBackupLoading(true);
-                        setFullBackupError(null);
-                        const { exportAll } = await import('@/lib/identity/client-store');
-                        const fp = identity.identity?.fingerprint;
-                        if (!fp) return;
-                        const backup = await exportAll(fp, true);
-                        const json = JSON.stringify(backup);
-
-                        // Encrypt with AES-256-GCM
-                        const enc = new TextEncoder();
-                        const salt = crypto.getRandomValues(new Uint8Array(16));
-                        const iv = crypto.getRandomValues(new Uint8Array(12));
-                        const keyMaterial = await crypto.subtle.importKey(
-                          'raw', enc.encode(fullBackupPassword), 'PBKDF2', false, ['deriveKey']
-                        );
-                        const derivedKey = await crypto.subtle.deriveKey(
-                          { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-                          keyMaterial,
-                          { name: 'AES-GCM', length: 256 },
-                          false,
-                          ['encrypt']
-                        );
-                        const encrypted = new Uint8Array(
-                          await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, enc.encode(json))
-                        );
-                        // Loop, NOT String.fromCharCode(...b): the full backup's encrypted `data` is
-                        // large enough to exceed mobile Safari's argument-count limit on the spread
-                        // ("too many function arguments" — this is the failing Full-backup button).
-                        const toB64 = (b: Uint8Array) => { let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); };
-                        const result = JSON.stringify({
-                          type: 'svrnty-full-backup',
-                          version: '1.0',
-                          algorithm: 'AES-256-GCM',
-                          kdf: 'PBKDF2-SHA256-100k',
-                          salt: toB64(salt),
-                          iv: toB64(iv),
-                          data: toB64(encrypted),
-                          fingerprint_hint: fp.slice(-8),
-                          exported_at: new Date().toISOString(),
-                        }, null, 2);
-
-                        const blob = new Blob([result], { type: 'application/json' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `svrnty-backup-${new Date().toISOString().split('T')[0]}.svrnty`;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-                        setShowFullBackupDialog(false);
-                      } catch (err) {
-                        setFullBackupError(err instanceof Error ? err.message : 'Backup failed');
-                      } finally {
-                        setFullBackupLoading(false);
-                      }
-                    }}
-                    style={{
-                      ...s.primaryBtn,
-                      flex: 1,
-                      fontSize: '12px',
-                      opacity: (fullBackupLoading || fullBackupPassword.length < 8 || fullBackupPassword !== fullBackupConfirm) ? 0.5 : 1,
-                    }}
-                  >
-                    {fullBackupLoading ? 'Encrypting...' : '🔒 Download Encrypted Backup'}
-                  </button>
-                </div>
-              </div>
-            )}
             <div style={{ display: 'flex', gap: '10px' }}>
               <button
-                onClick={() => setShowKeyExportDialog(true)}
+                onClick={() => setPendingExportAuth('keys')}
                 style={{
                   ...s.outlineBtn,
                   flex: 1,
@@ -1783,7 +1679,7 @@ export function SoverentityFrontend({
                 Download Keys
               </button>
               <button
-                onClick={() => setShowExportDialog(true)}
+                onClick={() => setPendingExportAuth('contacts')}
                 style={{
                   ...s.outlineBtn,
                   flex: 1,
@@ -2056,7 +1952,34 @@ export function SoverentityFrontend({
           </div>
         )}
 
-        {/* Export Dialogs */}
+        {/* Export Dialogs — CUR-4 auth gate + vault packer */}
+        <ExportAuthGate
+          open={pendingExportAuth !== null}
+          fingerprint={identity?.identity?.fingerprint || ''}
+          exportLabel={
+            pendingExportAuth === 'keys'
+              ? 'your private keys'
+              : 'your contacts backup'
+          }
+          onClose={() => setPendingExportAuth(null)}
+          onAuthenticated={() => {
+            const kind = pendingExportAuth;
+            setPendingExportAuth(null);
+            if (kind === 'keys') setShowKeyExportDialog(true);
+            if (kind === 'contacts') setShowExportDialog(true);
+          }}
+          onSessionLocked={() => {
+            window.location.reload();
+          }}
+        />
+        <VaultExportDialog
+          open={showVaultExportDialog}
+          onClose={() => setShowVaultExportDialog(false)}
+          fingerprint={identity?.identity?.fingerprint || ''}
+          onSessionLocked={() => {
+            window.location.reload();
+          }}
+        />
         <SecureExportDialog
           open={showExportDialog}
           onClose={() => setShowExportDialog(false)}

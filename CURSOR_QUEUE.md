@@ -113,9 +113,9 @@ Show AFTER a successful seed-only restore — the inline pre-success line is mis
 |---|------|----------|----------------------------|----|
 | CUR-1 | **L1 send/update contact-method UI** (P0.1) — update-send flow + shared-with propagation surface | launch-plan L1a/L1b | per-peer-encrypt (Flint) | ✅ [#59](https://github.com/NuAvalon/svrnty/pull/59) |
 | CUR-2 | **L1c version-control UI** (P0.2) — one-tap revert/restore-previous + version-history view | launch-plan L1c | signed monotonic revisions (Flint) | ✅ [#64](https://github.com/NuAvalon/svrnty/pull/64) |
-| CUR-3 | **L1g deep-linked contact methods** — tap-to-open (wa.me/tel:/signal.me/mailto:) | launch-plan L1g | none — PURE frontend, zero crypto | ☐ [#63](https://github.com/NuAvalon/svrnty/pull/63) |
-| CUR-4 | **L4 import/export UI polish + export-behind-auth prompt** (P0.5) | launch-plan L4 | key crypto (Flint) | ☐ |
-| CUR-5 | **L3 trust/untrust/remove/block UI + confirm flows** | launch-plan L3 | relay-auth calls (Flint/Athena) | ☐ → see open PR |
+| CUR-3 | **L1g deep-linked contact methods** — tap-to-open (wa.me/tel:/signal.me/mailto:) | launch-plan L1g | none — PURE frontend, zero crypto | ✅ [#63](https://github.com/NuAvalon/svrnty/pull/63) |
+| CUR-4 | **L4 import/export UI polish + export-behind-auth prompt** (P0.5) | launch-plan L4 | key crypto (Flint) | ☐ [#66](https://github.com/NuAvalon/svrnty/pull/66) |
+| CUR-5 | **L3 trust/untrust/remove/block UI + confirm flows** | launch-plan L3 | relay-auth calls (Flint/Athena) | ✅ [#67](https://github.com/NuAvalon/svrnty/pull/67) |
 
 ## 🔵 FAST-FOLLOW (after P0 core lands)
 | # | Task | Keep-in-fleet seam (owner) | PR |
