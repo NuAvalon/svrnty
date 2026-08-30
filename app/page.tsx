@@ -38,6 +38,11 @@ import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { distressWentPersistPatch } from '@/lib/trust/distress';
+import { BiometricUnlockButton } from '@/components/biometric/BiometricUnlockButton';
+import {
+  getBiometricEnrollment,
+  probeBiometricCapability,
+} from '@/components/biometric/biometric-seam';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -60,6 +65,8 @@ export default function Home() {
   // state — never persisted as a new cross-identity link (the correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
+  // CUR-6 — show device-unlock CTA when platform authenticator is available
+  const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
@@ -116,23 +123,7 @@ export default function Home() {
     try {
       // User unlock passphrase derives the session key — it is NOT the PGP key passphrase.
       await initSessionKey(passphrase);
-      const key = await loadKey(lockedIdentity.fingerprint);
-      if (!key) {
-        lockSession();
-        setUnlockError('Could not decrypt keys — wrong passphrase?');
-        return;
-      }
-      const id = await loadIdentity(lockedIdentity.fingerprint);
-      if (id) {
-        setIdentity(id);
-        setAppState('unlocked');
-        setPassphrase('');
-        setLockedIdentity(null);
-        setMainTab('identity');
-      } else {
-        lockSession();
-        setUnlockError('Identity data not found');
-      }
+      await finishUnlockFromSession();
     } catch {
       lockSession();
       setUnlockError('Incorrect passphrase');
@@ -159,6 +150,52 @@ export default function Home() {
     })();
     return () => { cancelled = true; };
   }, [appState, lockedIdentity?.fingerprint]);
+
+  // CUR-6: probe platform authenticator on the lock screen (feature detect only — no crypto).
+  // Show the device-unlock CTA whenever UVPA is available; stub unlock falls through to passphrase.
+  useEffect(() => {
+    if (appState !== 'locked' || !lockedIdentity?.fingerprint) {
+      setBiometricUnlockVisible(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const cap = await probeBiometricCapability();
+        // Prefer showing when enrolled; still offer when available so UX is discoverable pre-Flint.
+        const enr = await getBiometricEnrollment(lockedIdentity.fingerprint);
+        if (!cancelled) {
+          setBiometricUnlockVisible(cap.status === 'available' || enr.enrolled);
+        }
+      } catch {
+        if (!cancelled) setBiometricUnlockVisible(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appState, lockedIdentity?.fingerprint]);
+
+  const finishUnlockFromSession = async () => {
+    if (!lockedIdentity) return;
+    const key = await loadKey(lockedIdentity.fingerprint);
+    if (!key) {
+      lockSession();
+      setUnlockError('Could not decrypt keys — wrong passphrase?');
+      return;
+    }
+    const id = await loadIdentity(lockedIdentity.fingerprint);
+    if (id) {
+      setIdentity(id);
+      setAppState('unlocked');
+      setPassphrase('');
+      setLockedIdentity(null);
+      setMainTab('identity');
+    } else {
+      lockSession();
+      setUnlockError('Identity data not found');
+    }
+  };
 
   // Phase-1 swap: choose another EXISTING vault to unlock instead of the current one. We are already
   // locked (no keys in memory); lockSession() first is defensive so no key material bleeds across the
@@ -360,6 +397,26 @@ export default function Home() {
               {unlocking ? 'UNLOCKING...' : 'UNLOCK'}
             </button>
           </form>
+
+          {/* CUR-6 — device unlock (WebAuthn/PRF = Flint). Stub falls through to passphrase. */}
+          <BiometricUnlockButton
+            fingerprint={lockedIdentity.fingerprint}
+            visible={biometricUnlockVisible}
+            disabled={unlocking}
+            onFallbackMessage={(msg) => setUnlockError(msg)}
+            onUnlocked={async () => {
+              setUnlocking(true);
+              setUnlockError('');
+              try {
+                await finishUnlockFromSession();
+              } catch {
+                lockSession();
+                setUnlockError('Device unlock failed. Enter your passphrase.');
+              } finally {
+                setUnlocking(false);
+              }
+            }}
+          />
 
           {/* Phase-1 identity switcher (home screen) — UI only, no vault changes. Single-identity case
               shows only "New Identity"; the switch list appears solely when 2+ vaults exist on-device. */}

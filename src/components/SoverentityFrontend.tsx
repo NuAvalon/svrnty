@@ -22,6 +22,7 @@ import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodRe
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -1917,6 +1918,14 @@ export function SoverentityFrontend({
               </button>
             )}
           </div>
+        )}
+
+        {/* CUR-6 — device unlock (WebAuthn/PRF seam = Flint; stub is claim-honest) */}
+        {identity?.identity?.fingerprint && (
+          <BiometricSettingsPanel
+            fingerprint={identity.identity.fingerprint}
+            compact
+          />
         )}
 
         {/* Passphrase Dialog */}
