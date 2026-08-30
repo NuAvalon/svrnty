@@ -166,29 +166,42 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
 
   // ── Beat 5: the candle — export the whole self ───────────────────────────────────────
   // The exit right made visible (Fable §9.3). "What survives the fire" has two halves:
-  //   • encrypted-vault export — WIRED + tested here (Full Backup, SoverentityFrontend export section).
-  //   • vCard-all export — the lib exists (toVCardFile) but has NO UI caller yet → tracked, kept .fixme below.
+  //   • encrypted-vault export — CUR-4: auth gate → vault passphrase → fleet packVault (v4).
+  //   • vCard-all export — Contacts → More → Export all as vCard (auth-gated).
   // Honesty gate: we test only what SHIPS. A green here means an encrypted .svrnty vault really leaves the
-  // device (real download event) — no server, no second Alexandria. Selectors verified vs live source @main.
+  // device (real download event) — no server, no second Alexandria.
   test('beat 5 (vault export): the candle — the whole encrypted vault survives the fire', async ({ page }) => {
-    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');   // an identity worth carrying out of the fire
-    await page.getByRole('tab', { name: 'Identity' }).click();    // the export/backup section lives on the Identity tab
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
+    await page.getByRole('tab', { name: 'Identity' }).click();
     await page.getByRole('button', { name: /full backup/i }).click();
-    // Encrypt-at-rest: the vault is AES-256-GCM under a password; the button stays disabled until it's ≥8 + matches.
-    await page.getByPlaceholder('Password (min 8 characters)').fill('vault-pass-e2e-1234');
-    await page.getByPlaceholder('Confirm password').fill('vault-pass-e2e-1234');
-    // The download IS the candle. Arm the listener BEFORE the click (the anchor fires synchronously).
+
+    // CUR-4 export-behind-auth: re-enter unlock passphrase before the vault packer.
+    await expect(page.getByRole('heading', { name: /confirm it/i })).toBeVisible();
+    await page.getByPlaceholder('Your everyday unlock passphrase').fill('e2e-passphrase-1234');
+    await page.getByRole('button', { name: /^Continue$/ }).click();
+
+    // Fleet packVault floor: 12+ char vault passphrase (not the unlock passphrase).
+    await expect(page.getByTestId('vault-export-dialog')).toBeVisible();
+    await page.getByTestId('vault-export-passphrase').fill('vault-pass-e2e');
+    await page.getByTestId('vault-export-confirm').fill('vault-pass-e2e');
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#fullBackupBtn').click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toMatch(/^svrnty-backup-.*\.svrnty$/);
+    expect(download.suggestedFilename()).toMatch(/^vault-.*\.svrnty$/);
   });
 
-  // Beat 5 (vCard-all) — the OTHER half of the candle: a portable, plain-text vCard of every relationship.
-  // toVCardFile() exists (src/lib/contacts/vcard.ts) but has ZERO UI callers → un-fixme when an
-  // "Export all as vCard" button lands. Kept here so the canon (vCard + vault) isn't silently dropped.
-  test.fixme('beat 5 (vCard-all, pending UI): export every relationship as a portable vCard', async () => {
-    // INTENDED: Contacts → "Export all as vCard" → assert a .vcf download of all edges.
+  // Beat 5 (vCard-all) — portable plaintext of every relationship (auth-gated, not encrypted).
+  test('beat 5 (vCard-all): export every relationship as a portable vCard', async ({ page }) => {
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
+    await importGraySea(page);
+    await page.getByRole('button', { name: /more/i }).click();
+    await page.getByRole('menuitem', { name: /export all as vcard/i }).click();
+    await expect(page.getByRole('heading', { name: /confirm it/i })).toBeVisible();
+    await page.getByPlaceholder('Your everyday unlock passphrase').fill('e2e-passphrase-1234');
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: /^Continue$/ }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^svrnty-contacts-.*\.vcf$/);
   });
 });
 

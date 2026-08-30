@@ -25,6 +25,8 @@ import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { TwoSidedBook } from '@/components/TwoSidedBook';
+import { VaultExportDialog } from '@/components/export/VaultExportDialog';
+import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact, removeContact,
@@ -35,6 +37,8 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { toVCardFile } from '@/lib/contacts/vcard';
+import type { TrustEdge } from '@/lib/trust/types';
 
 // --- Types ---
 // Binary trust: known or trusted. No tiers.
@@ -145,7 +149,8 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
   const [showVcardImport, setShowVcardImport] = useState(false);
   const [showShardGiveDialog, setShowShardGiveDialog] = useState(false);
-  const [vaultExporting, setVaultExporting] = useState(false);
+  const [showVaultExportDialog, setShowVaultExportDialog] = useState(false);
+  const [pendingBookExport, setPendingBookExport] = useState<'json' | 'vcard' | null>(null);
 
   // Form state
   const [newContactForm, setNewContactForm] = useState({
@@ -487,55 +492,49 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     }
   };
 
-  const handleVaultExport = async () => {
+  const handleVaultExport = () => {
+    if (!fingerprint) return;
+    setShowVaultExportDialog(true);
+  };
+
+  const runBookExport = async (kind: 'json' | 'vcard') => {
     if (!fingerprint) return;
     try {
-      setVaultExporting(true);
+      setLoading(true);
       setError(null);
-      // Load all data from IndexedDB
-      const { exportAll, loadPQKeys, loadVault: loadVaultData } = await import('@/lib/identity/client-store');
-      const backup = await exportAll(fingerprint, true);
-      const pqKeys = await loadPQKeys(fingerprint);
-      const vaultData = await loadVaultData(fingerprint);
-
-      // Format identity for vault module (VaultIdentity shape)
-      const vaultIdentity = backup.identity; // already in full identity format from storeIdentity
-
-      // Format keys for vault module (VaultKeys shape)
-      const vaultKeys = {
-        classical: backup.keys || { privateKey: '', passphrase: '' },
-        pq: pqKeys || null,
-      };
-
-      // Build trust graph from contacts
-      const trustGraph = {
-        edges: backup.contacts.map((c: any) => ({
-          source: fingerprint,
-          target: c.fingerprint,
-          trust_level: c.trust_level || 'unverified',
-          added_at: c.added_at,
-          metadata: { name: c.name, email: c.email, public_key: c.public_key, ...c.metadata },
-        })),
-        contacts: backup.contacts,
-      };
-
-      // Pack into vault format
-      const { createVaultContents, packVault, downloadVault } = await import('@/lib/sync/vault');
-      const contents = createVaultContents(
-        vaultIdentity,
-        vaultKeys,
-        trustGraph,
-        { safeWord: '' },
-        vaultData || null,
-      );
-      const passphrase = prompt('Enter a passphrase to encrypt your vault.\nThis protects your private keys, contacts, and trust network.\n\nAt least 12 characters. This is your vault passphrase, not your recovery phrase — you will need it to restore.');
-      if (!passphrase) { setVaultExporting(false); return; }
-      const packed = await packVault(contents, passphrase);
-      downloadVault(packed);
+      const records = await getAllContacts(fingerprint);
+      if (kind === 'json') {
+        const exportData = JSON.stringify(
+          { contacts: records, exported_at: new Date().toISOString() },
+          null,
+          2,
+        );
+        const blob = new Blob([exportData], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `svrnty-contacts-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } else {
+        const edges = records.map((r) => contactRecordToEdge(r)) as TrustEdge[];
+        const vcf = toVCardFile(edges);
+        const blob = new Blob([vcf], { type: 'text/vcard' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `svrnty-contacts-${new Date().toISOString().slice(0, 10)}.vcf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to export vault');
+      setError(err instanceof Error ? err.message : 'Failed to export');
     } finally {
-      setVaultExporting(false);
+      setLoading(false);
     }
   };
 
@@ -567,29 +566,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       } else {
         setImportError(err instanceof Error ? err.message : 'Failed to import');
       }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleExportContacts = async () => {
-    if (!fingerprint) return;
-    try {
-      setLoading(true);
-      setError(null);
-      const records = await getAllContacts(fingerprint);
-      const exportData = JSON.stringify({ contacts: records, exported_at: new Date().toISOString() }, null, 2);
-      const blob = new Blob([exportData], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'soverentity-contacts.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to export');
     } finally {
       setLoading(false);
     }
@@ -694,16 +670,20 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               <DropdownMenuContent>
                 <DropdownMenuLabel>Vault</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleVaultExport} disabled={vaultExporting}>
+                <DropdownMenuItem onClick={handleVaultExport}>
                   <Download className="h-4 w-4 mr-2" style={{ color: E.accent }} />
-                  {vaultExporting ? 'Exporting...' : 'Export Vault (.svrnty)'}
+                  Export Vault (.svrnty)
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuLabel>Data</DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleExportContacts}>
+                <DropdownMenuItem onClick={() => setPendingBookExport('json')}>
                   <FileJson className="h-4 w-4 mr-2" />
                   Export Contacts as JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setPendingBookExport('vcard')}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Export all as vCard
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowImportDialog(true)}>
                   <Upload className="h-4 w-4 mr-2" />
@@ -1123,6 +1103,37 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             onOpenChange={setShowVcardImport}
             onImported={loadContacts}
           />
+        )}
+
+        {fingerprint && (
+          <>
+            <VaultExportDialog
+              open={showVaultExportDialog}
+              onClose={() => setShowVaultExportDialog(false)}
+              fingerprint={fingerprint}
+              onSessionLocked={() => {
+                window.location.reload();
+              }}
+            />
+            <ExportAuthGate
+              open={pendingBookExport !== null}
+              fingerprint={fingerprint}
+              exportLabel={
+                pendingBookExport === 'vcard'
+                  ? 'all contacts as vCard'
+                  : 'contacts as JSON'
+              }
+              onClose={() => setPendingBookExport(null)}
+              onAuthenticated={() => {
+                const kind = pendingBookExport;
+                setPendingBookExport(null);
+                if (kind) void runBookExport(kind);
+              }}
+              onSessionLocked={() => {
+                window.location.reload();
+              }}
+            />
+          </>
         )}
 
       </div>

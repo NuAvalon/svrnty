@@ -73,7 +73,7 @@ export function SecureExportDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [includePublicKeys, setIncludePublicKeys] = useState(true);
-  const [usePassword, setUsePassword] = useState(true);
+  // CUR-4: password protection is REQUIRED — no plaintext contacts export.
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [exportedData, setExportedData] = useState<string | null>(null);
@@ -114,30 +114,33 @@ export function SecureExportDialog({
       let result: string;
       let method: string;
 
-      if (usePassword && password) {
-        // Encrypt with AES-256-GCM via password
-        const salt = new Uint8Array(16);
-        crypto.getRandomValues(salt);
-        const iv = new Uint8Array(12);
-        crypto.getRandomValues(iv);
-        const key = await deriveKey(password, salt);
-        const enc = new TextEncoder();
-        const encrypted = new Uint8Array(
-          await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr))
-        );
-        result = JSON.stringify({
-          encrypted: true,
-          algorithm: 'AES-256-GCM',
-          kdf: 'PBKDF2-SHA256-100k',
-          salt: toBase64(salt),
-          iv: toBase64(iv),
-          data: toBase64(encrypted),
-        });
-        method = 'AES-256-GCM';
-      } else {
-        result = jsonStr;
-        method = 'none';
+      if (!password || password.length < 8) {
+        throw new Error('A password (8+ characters) is required to export contacts.');
       }
+
+      // Encrypt with AES-256-GCM via password
+      // NOTE (CUR-4 README): this dialog still uses the legacy PBKDF2 path that
+      // lived here before polish. Fleet preferred path for identity is packVault
+      // (Argon2id). Contacts-only Argon2id seam = Flint follow-up — do not invent
+      // a parallel KDF in the UI.
+      const salt = new Uint8Array(16);
+      crypto.getRandomValues(salt);
+      const iv = new Uint8Array(12);
+      crypto.getRandomValues(iv);
+      const key = await deriveKey(password, salt);
+      const enc = new TextEncoder();
+      const encrypted = new Uint8Array(
+        await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr))
+      );
+      result = JSON.stringify({
+        encrypted: true,
+        algorithm: 'AES-256-GCM',
+        kdf: 'PBKDF2-SHA256-100k',
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        data: toBase64(encrypted),
+      });
+      method = 'AES-256-GCM';
 
       setExportedData(result);
       setExportComplete(true);
@@ -177,7 +180,6 @@ export function SecureExportDialog({
   const handleClose = () => {
     setExportedData(null);
     setExportComplete(false);
-    setUsePassword(false);
     setPassword('');
     setIncludePublicKeys(true);
     setError(null);
@@ -190,7 +192,7 @@ export function SecureExportDialog({
         <DialogHeader>
           <DialogTitle className="text-[var(--se-text)]">Secure Contact Export</DialogTitle>
           <DialogDescription className="text-[var(--se-muted)]">
-            Export your contacts with encryption for secure backup or transfer.
+            Export your contacts password-protected for backup or transfer. A password is always required.
           </DialogDescription>
         </DialogHeader>
 
@@ -212,48 +214,37 @@ export function SecureExportDialog({
               <Label htmlFor="includePublicKeys">Include public keys</Label>
             </div>
 
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="usePassword"
-                checked={usePassword}
-                onCheckedChange={(checked) => setUsePassword(checked === true)}
-              />
-              <Label htmlFor="usePassword">Password-protect export</Label>
-            </div>
-
-            {usePassword && (
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <div className="flex">
-                  <Input
-                    id="password"
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter secure password"
-                    className="flex-1"
-                  />
-                  <Button
-                    variant="outline"
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="ml-2"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                </div>
-                <p className="text-xs text-slate-500">
-                  Choose a strong password you can remember. This password will be needed to import these contacts.
-                </p>
+            <div className="space-y-2">
+              <Label htmlFor="password">Export password (required)</Label>
+              <div className="flex">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter a password (8+ characters)"
+                  className="flex-1"
+                />
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="ml-2"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
               </div>
-            )}
+              <p className="text-xs text-[var(--se-dim)]">
+                You will need this password to import these contacts. Prefer Full Backup for a complete identity vault.
+              </p>
+            </div>
           </div>
         ) : (
           <div className="space-y-4 py-4">
-            <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900">
-              <Lock className="h-4 w-4 text-green-600 dark:text-green-500" />
-              <AlertDescription className="text-green-800 dark:text-green-300">
-                Your contacts have been successfully exported with encryption.
+            <Alert className="bg-[color-mix(in_srgb,var(--se-ok)_12%,var(--se-surface-solid))] border-[var(--se-border)]">
+              <Lock className="h-4 w-4 text-[var(--se-ok)]" />
+              <AlertDescription className="text-[var(--se-text)]">
+                Your contacts have been exported with password protection.
               </AlertDescription>
             </Alert>
 
@@ -286,15 +277,12 @@ export function SecureExportDialog({
               </div>
             </div>
 
-            {usePassword && (
-              <Alert>
-                <AlertTitle>Password Protection</AlertTitle>
-                <AlertDescription>
-                  You will need the password <span className="font-medium">{password}</span> to import these contacts.
-                  Please save it securely.
-                </AlertDescription>
-              </Alert>
-            )}
+            <Alert>
+              <AlertTitle>Password Protection</AlertTitle>
+              <AlertDescription>
+                You will need the export password to import these contacts. Save it securely — it is not shown again after you close this dialog.
+              </AlertDescription>
+            </Alert>
           </div>
         )}
 
@@ -309,7 +297,7 @@ export function SecureExportDialog({
           {!exportComplete && (
             <Button
               onClick={handleExport}
-              disabled={loading || (usePassword && !password)}
+              disabled={loading || password.length < 8}
               className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
