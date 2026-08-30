@@ -39,6 +39,13 @@ import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import type { TrustEdge } from '@/lib/trust/types';
+import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
+import {
+  safeEmailLink,
+  safePhoneLink,
+  safeUrlLink,
+  safeHandleLink,
+} from '@/lib/contacts/safe-contact-link';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
   applyTrustAction,
@@ -998,7 +1005,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Email</h4>
                       <div className="flex items-center gap-1 mt-1">
                         <Mail className="h-4 w-4 text-muted-foreground" />
-                        <span>{selectedContact.email}</span>
+                        <ContactMethodLink safe={safeEmailLink(selectedContact.email)} />
                       </div>
                     </div>
                     <div>
@@ -1006,6 +1013,22 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       <div className="mt-1"><TrustBadge contact={selectedContact} /></div>
                     </div>
                   </div>
+
+                  {selectedContact.contact_info?.emails?.some(Boolean) && (
+                    <div>
+                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        More email{selectedContact.contact_info.emails.filter(Boolean).length > 1 ? 's' : ''}
+                      </h4>
+                      <div className="mt-1 space-y-1">
+                        {selectedContact.contact_info.emails.filter(Boolean).map((email, i) => (
+                          <div key={i} className="flex items-center gap-1">
+                            <Mail className="h-4 w-4 text-muted-foreground" />
+                            <ContactMethodLink safe={safeEmailLink(email)} />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {selectedContact.contact_info?.phones?.some(Boolean) && (
                     <div>
@@ -1016,7 +1039,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                         {selectedContact.contact_info.phones.filter(Boolean).map((phone, i) => (
                           <div key={i} className="flex items-center gap-1">
                             <Phone className="h-4 w-4 text-muted-foreground" />
-                            <span>{phone}</span>
+                            <ContactMethodLink safe={safePhoneLink(phone)} />
                           </div>
                         ))}
                       </div>
@@ -1030,9 +1053,9 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       </h4>
                       <div className="mt-1 space-y-1">
                         {selectedContact.contact_info.urls.filter(Boolean).map((url, i) => (
-                          <div key={i} className="flex items-center gap-1">
+                          <div key={i} className="flex items-center gap-1 min-w-0">
                             <Link2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                            <span className="truncate">{url}</span>
+                            <ContactMethodLink safe={safeUrlLink(url)} className="truncate" />
                           </div>
                         ))}
                       </div>
@@ -1044,9 +1067,12 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Handles</h4>
                       <div className="mt-1 space-y-1">
                         {Object.entries(selectedContact.contact_info.handles).map(([platform, handle]) => (
-                          <div key={platform} className="flex items-center gap-1">
+                          <div key={platform} className="flex items-center gap-1 min-w-0">
                             <AtSign className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                            <span className="truncate"><span className="text-muted-foreground">{platform}:</span> {handle}</span>
+                            <span className="truncate">
+                              <span className="text-muted-foreground">{platform}: </span>
+                              <ContactMethodLink safe={safeHandleLink(platform, handle)} />
+                            </span>
                           </div>
                         ))}
                       </div>

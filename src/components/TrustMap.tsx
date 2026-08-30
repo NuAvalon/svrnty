@@ -28,6 +28,13 @@ import {
 } from '@/lib/trust/trust-map-layout';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
+import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
+import {
+  safeEmailLink,
+  safePhoneLink,
+  safeUrlLink,
+  safeHandleLink,
+} from '@/lib/contacts/safe-contact-link';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
   applyTrustAction,
@@ -784,23 +791,36 @@ export function TrustMap({
                 <>
                   {focusEdge.peer_email && (
                     <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted }}>
-                      {focusEdge.peer_email}
+                      <ContactMethodLink
+                        safe={safeEmailLink(focusEdge.peer_email)}
+                        style={{ color: E.muted }}
+                      />
                     </p>
                   )}
                   {focusEdge.contact_info?.phones?.[0] && (
                     <p style={{ margin: '4px 0 0', fontSize: 13, color: E.muted }}>
-                      {focusEdge.contact_info.phones[0]}
+                      <ContactMethodLink
+                        safe={safePhoneLink(focusEdge.contact_info.phones[0])}
+                        style={{ color: E.muted }}
+                      />
                     </p>
                   )}
                   {focusEdge.contact_info?.handles &&
                     Object.entries(focusEdge.contact_info.handles).map(([k, v]) => (
                       <p key={k} style={{ margin: '4px 0 0', fontSize: 12, color: E.muted }}>
-                        {k} · {v}
+                        {k} ·{' '}
+                        <ContactMethodLink
+                          safe={safeHandleLink(k, v)}
+                          style={{ color: E.muted }}
+                        />
                       </p>
                     ))}
                   {focusEdge.contact_info?.urls?.[0] && (
                     <p style={{ margin: '4px 0 0', fontSize: 12, color: E.accent }}>
-                      {focusEdge.contact_info.urls[0]}
+                      <ContactMethodLink
+                        safe={safeUrlLink(focusEdge.contact_info.urls[0])}
+                        style={{ color: E.accent }}
+                      />
                     </p>
                   )}
                   {focusEdge.notes && (
