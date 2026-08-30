@@ -53,7 +53,7 @@ export async function restoreIdentityFromSeedVault(
 ): Promise<SeedVaultRestoreResult> {
   const phrase = seedPhrase.trim();
   if (!phrase) {
-    throw new Error('Enter your recovery phrase.');
+    throw new Error('Enter your recovery code.');
   }
 
   // Fleet seam — do not reimplement.
