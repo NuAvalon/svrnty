@@ -520,6 +520,11 @@ export default function Home() {
               <TrustMap
                 ownerFingerprint={identity.identity.fingerprint}
                 ownerName={identity.identity.name}
+                ownerCard={{
+                  name: identity.identity.name,
+                  fingerprint: identity.identity.fingerprint,
+                  email: identity.identity.email || undefined,
+                }}
                 contacts={contacts}
                 sampleRefreshable={sampleRefreshable}
                 onLoadSample={async () => {
@@ -692,6 +697,7 @@ export default function Home() {
                   name: c.peer_name || 'Unnamed',
                   public_key: c.peer_public_key || undefined,
                   trusted: !!c.trusted,
+                  tags: c.tags || [],
                 };
               })
               .filter((c): c is NonNullable<typeof c> => c != null)}

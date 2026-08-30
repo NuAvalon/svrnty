@@ -48,6 +48,16 @@ import {
   revisionsForPeer,
   type MethodRevision,
 } from '@/components/identity/method-history';
+import {
+  CardAsSeenByDialog,
+  type CardAsSeenAudience,
+  type OwnerCardSnapshot,
+} from '@/components/identity/CardAsSeenByDialog';
+import {
+  collectGroupTags,
+  computeBrowseClusters,
+} from '@/lib/trust/trust-map-browse-layout';
+import { loadLocalMethods } from '@/components/identity/local-methods';
 
 interface PendingIntro {
   introduced_by: string;
@@ -63,6 +73,8 @@ type EdgeExtras = TrustEdge & {
 interface TrustMapProps {
   ownerFingerprint: string;
   ownerName: string;
+  /** Living methods on YOUR card — used for “as they see it” preview. */
+  ownerCard?: OwnerCardSnapshot;
   contacts: TrustEdge[];
   /** Optional demo seed when the lattice is empty / refreshable */
   onLoadSample?: () => void | Promise<void>;
@@ -198,6 +210,7 @@ function clusterChords(contacts: TrustEdge[]): { a: string; b: string; tag: stri
 export function TrustMap({
   ownerFingerprint,
   ownerName,
+  ownerCard,
   contacts,
   onLoadSample,
   sampleRefreshable,
@@ -213,10 +226,39 @@ export function TrustMap({
   onMethodHistoryChange,
 }: TrustMapProps) {
   // Blocked contacts stay off the lattice (local owner filter — not a disclosure gate).
-  const visibleContacts = useMemo(
-    () => contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })),
-    [contacts],
+
+  const [viewMode, setViewMode] = useState<'orbit' | 'browse'>('orbit');
+  const [selectMode, setSelectMode] = useState(false);
+  const [groupFilter, setGroupFilter] = useState<string | null>(null);
+  const [cardAudience, setCardAudience] = useState<CardAsSeenAudience | null>(null);
+  const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
+
+  const visibleContacts = useMemo(() => {
+    return contacts.filter((c) => {
+      if (isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })) return false;
+      if (!groupFilter) return true;
+      return (c.tags || []).includes(groupFilter);
+    });
+  }, [contacts, groupFilter]);
+
+  const allGroupTags = useMemo(() => collectGroupTags(contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } }))), [contacts]);
+
+  const browseClusters = useMemo(
+    () => computeBrowseClusters(visibleContacts, VIEW, VIEW),
+    [visibleContacts],
   );
+
+  const ownerCardSnapshot = useMemo(() => {
+    const local = loadLocalMethods(ownerFingerprint);
+    return {
+      name: ownerName,
+      fingerprint: ownerFingerprint,
+      email: ownerCard?.email,
+      signal: ownerCard?.signal ?? local.signal,
+      site: ownerCard?.site ?? local.site,
+      handle: ownerCard?.handle,
+    };
+  }, [ownerFingerprint, ownerName, ownerCard]);
 
   const baseLayout = useMemo(
     () =>
@@ -257,6 +299,7 @@ export function TrustMap({
   const [showHistory, setShowHistory] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -344,16 +387,66 @@ export function TrustMap({
   }, [edgeByFp]);
 
   const handleNodeClick = useCallback((id: string, multi: boolean) => {
-    openFocus(id);
-    if (multi) {
+    if (selectMode || multi) {
       setPicked((prev) => {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id);
         else next.add(id);
         return next;
       });
+      if (!selectMode) openFocus(id);
+      return;
     }
-  }, [openFocus]);
+    openFocus(id);
+  }, [openFocus, selectMode]);
+
+  const openCardPreviewForPeer = useCallback((edge: TrustEdge) => {
+    setCardAudience({
+      kind: 'peer',
+      name: edge.peer_name || 'Contact',
+      fingerprint: edge.peer_fingerprint,
+      trusted: !!edge.trusted,
+    });
+    setCardPreviewOpen(true);
+  }, []);
+
+  const openCardPreviewForSelection = useCallback(() => {
+    if (picked.size === 0) return;
+    if (picked.size === 1) {
+      const fp = [...picked][0];
+      const edge = edgeByFp.get(fp);
+      if (edge) openCardPreviewForPeer(edge);
+      return;
+    }
+    const members = [...picked].map((fp) => edgeByFp.get(fp)).filter(Boolean) as TrustEdge[];
+    const trustedCount = members.filter((m) => m.trusted).length;
+    setCardAudience({
+      kind: 'group',
+      name: groupFilter || groupName.trim() || 'Selection',
+      memberCount: members.length,
+      trustedCount,
+      knownCount: members.length - trustedCount,
+    });
+    setCardPreviewOpen(true);
+  }, [picked, edgeByFp, groupFilter, groupName, openCardPreviewForPeer]);
+
+  const openCardPreviewForGroup = useCallback((tag: string) => {
+    const members = contacts.filter((c) => {
+      if (isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })) return false;
+      const tags = c.tags || [];
+      if (tag === 'Ungrouped') return tags.length === 0;
+      return tags.includes(tag);
+    });
+    const trustedCount = members.filter((m) => m.trusted).length;
+    setCardAudience({
+      kind: 'group',
+      name: tag,
+      memberCount: members.length,
+      trustedCount,
+      knownCount: members.length - trustedCount,
+    });
+    setCardPreviewOpen(true);
+  }, [contacts]);
 
   const togglePick = useCallback((id: string) => {
     setPicked((prev) => {
@@ -402,6 +495,112 @@ export function TrustMap({
   return (
     <div style={{ width: '100%', maxWidth: 560, margin: '0 auto' }}>
       <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          alignItems: 'center',
+          marginBottom: 10,
+          fontFamily: E.fontSans,
+        }}
+      >
+        <div
+          style={{
+            display: 'inline-flex',
+            borderRadius: 8,
+            border: `1px solid ${E.border}`,
+            overflow: 'hidden',
+          }}
+        >
+          {(['orbit', 'browse'] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              style={{
+                fontSize: 11,
+                padding: '6px 10px',
+                border: 'none',
+                cursor: 'pointer',
+                fontFamily: E.fontSans,
+                background:
+                  viewMode === mode
+                    ? 'color-mix(in srgb, var(--se-accent) 16%, transparent)'
+                    : 'transparent',
+                color: viewMode === mode ? E.accent : E.muted,
+              }}
+            >
+              {mode === 'orbit' ? 'Orbit' : 'Browse'}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setSelectMode((v) => !v);
+            if (selectMode) setPicked(new Set());
+          }}
+          style={{
+            fontSize: 11,
+            padding: '6px 10px',
+            borderRadius: 8,
+            border: `1px solid ${E.border}`,
+            cursor: 'pointer',
+            fontFamily: E.fontSans,
+            background: selectMode
+              ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+              : 'transparent',
+            color: E.accent,
+          }}
+        >
+          {selectMode ? 'Done selecting' : 'Select'}
+        </button>
+        {allGroupTags.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', flex: 1 }}>
+            <button
+              type="button"
+              onClick={() => setGroupFilter(null)}
+              style={{
+                fontSize: 10,
+                padding: '4px 8px',
+                borderRadius: 6,
+                border: `1px solid ${groupFilter === null ? E.borderLit : E.border}`,
+                background: groupFilter === null ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)' : 'transparent',
+                color: E.muted,
+                cursor: 'pointer',
+                fontFamily: E.fontSans,
+              }}
+            >
+              All
+            </button>
+            {allGroupTags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => setGroupFilter((cur) => (cur === tag ? null : tag))}
+                onDoubleClick={() => openCardPreviewForGroup(tag)}
+                title="Click to filter · double-click to preview your card for this group"
+                style={{
+                  fontSize: 10,
+                  padding: '4px 8px',
+                  borderRadius: 6,
+                  border: `1px solid ${groupFilter === tag ? E.borderLit : E.border}`,
+                  background:
+                    groupFilter === tag
+                      ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
+                      : 'transparent',
+                  color: E.muted,
+                  cursor: 'pointer',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div
         data-testid="trust-map"
         style={{
           position: 'relative',
@@ -413,6 +612,93 @@ export function TrustMap({
           background: E.bgCss,
         }}
       >
+        {viewMode === 'browse' ? (
+          <div
+            data-testid="trust-map-browse"
+            style={{
+              position: 'relative',
+              width: '100%',
+              height: '100%',
+              background:
+                'radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--se-accent) 10%, transparent), transparent 55%)',
+            }}
+          >
+            <svg viewBox={`0 0 ${VIEW} ${VIEW}`} width="100%" height="100%" role="img" aria-label="Browse groups as seal clusters">
+              {browseClusters.map((cl) => (
+                <g key={cl.tag}>
+                  <circle
+                    cx={cl.cx}
+                    cy={cl.cy}
+                    r={cl.r}
+                    fill="color-mix(in srgb, var(--se-accent) 8%, transparent)"
+                    stroke={E.border}
+                    strokeWidth={1}
+                    strokeDasharray={cl.tag === 'Ungrouped' ? '3 3' : undefined}
+                    style={{ cursor: 'pointer' }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setGroupFilter(cl.tag === 'Ungrouped' ? null : cl.tag);
+                      openCardPreviewForGroup(cl.tag === 'Ungrouped' ? 'Ungrouped' : cl.tag);
+                    }}
+                  >
+                    <title>{`${cl.tag} · ${cl.members.length} · owner group (not inferred trust)`}</title>
+                  </circle>
+                  <text
+                    x={cl.cx}
+                    y={cl.cy - cl.r - 6}
+                    textAnchor="middle"
+                    fill={E.muted}
+                    fontSize={10}
+                    fontFamily={E.fontSans}
+                  >
+                    {cl.tag}
+                  </text>
+                  {cl.members.map((m) => (
+                    <g
+                      key={m.id}
+                      style={{ cursor: 'pointer' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleNodeClick(m.id, selectMode || e.shiftKey || e.metaKey || e.ctrlKey);
+                      }}
+                    >
+                      <circle
+                        cx={m.x}
+                        cy={m.y}
+                        r={picked.has(m.id) ? 12 : 9}
+                        fill={m.trusted ? 'color-mix(in srgb, var(--se-accent) 35%, transparent)' : 'transparent'}
+                        stroke={picked.has(m.id) ? E.accent : m.trusted ? E.accent : E.border}
+                        strokeWidth={m.trusted || picked.has(m.id) ? 1.6 : 1}
+                      />
+                      <title>{`${m.name}${m.trusted ? ' · trusted' : ' · known'}`}</title>
+                    </g>
+                  ))}
+                </g>
+              ))}
+              {/* You — soft origin, not a GPS pin */}
+              <circle cx={VIEW / 2} cy={VIEW / 2} r={10} fill={E.accent} opacity={0.85} />
+              <text x={VIEW / 2} y={VIEW / 2 + 22} textAnchor="middle" fill={E.dim} fontSize={9} fontFamily={E.fontSans}>
+                you
+              </text>
+            </svg>
+            <p
+              style={{
+                position: 'absolute',
+                left: 10,
+                right: 10,
+                bottom: 8,
+                margin: 0,
+                fontSize: 10,
+                color: E.dim,
+                fontFamily: E.fontSans,
+                textAlign: 'center',
+              }}
+            >
+              Clusters = your groups · co-members ≠ trust · reachability, never location
+            </p>
+          </div>
+        ) : (
+        <>
         <style>{`
           .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
                      animation: tm-grow 1.05s cubic-bezier(.2,.8,.2,1) both; }
@@ -681,6 +967,8 @@ export function TrustMap({
               {isEmpty ? 'Load sample circle' : 'Refresh demo circle'}
             </button>
           </div>
+        )}
+        </>
         )}
       </div>
 
@@ -1019,6 +1307,10 @@ export function TrustMap({
                 label={picked.has(focusEdge.peer_fingerprint) ? 'Selected' : 'Select'}
                 onClick={() => togglePick(focusEdge.peer_fingerprint)}
               />
+              <ActionBtn
+                label="My card as they see it"
+                onClick={() => openCardPreviewForPeer(focusEdge)}
+              />
             </div>
 
             {showHistory && focusEdge && (
@@ -1085,6 +1377,10 @@ export function TrustMap({
                   primary
                   onClick={() => void handleAssign()}
                 />
+                <ActionBtn
+                  label="My card as they see it"
+                  onClick={() => openCardPreviewForSelection()}
+                />
                 <ActionBtn label="Clear" onClick={clearPicks} />
               </div>
             )}
@@ -1092,11 +1388,23 @@ export function TrustMap({
               <p style={{ margin: 0, fontSize: 11, color: E.ok }}>{groupNote || actionNote}</p>
             )}
             <p style={{ margin: 0, fontSize: 11, color: E.dim }}>
-              Tip: shift-click nodes to multi-select · groups form clusters on the map
+              {selectMode
+                ? 'Select mode on — tap seals to multi-select · Add to group or preview your card'
+                : 'Tip: Select button or shift-click · Browse = group clusters (not GPS) · Orbit = your vouch ring'}
             </p>
           </div>
         </div>
       )}
+
+      <CardAsSeenByDialog
+        open={cardPreviewOpen}
+        onClose={() => {
+          setCardPreviewOpen(false);
+          setCardAudience(null);
+        }}
+        owner={ownerCardSnapshot}
+        audience={cardAudience}
+      />
 
       <TrustActionConfirmDialog
         open={!!confirmKind && !!confirmTarget}

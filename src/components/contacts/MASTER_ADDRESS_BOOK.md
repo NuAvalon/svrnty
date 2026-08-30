@@ -9,6 +9,8 @@
 - Classical contacts: editable; **SVRN network contacts: edit locked** (key-bound).
 - Detail: compact **Reach / Card / Manage** tabs (phone + web) — viewport-clamped with always-visible Close (tall single-scroll was trapping the Radix X off-screen). Call / Text / WhatsApp / Signal / Email chips (CUR-3 allowlist) + **Invite to SVRNTY** (link or QR).
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).
+- Social Graph: **Orbit** (vouch ring) + **Browse** (group seal-clusters); Select + groups; **My card as they see it** for a peer/group (disclosure preview — not a send receipt).
+- Revise contact method: notify **Trusted** or a **local group** chip.
 
 ## ★ Team asks (need fleet answers — not review comments)
 1. **Invite → response special setting** — Peter asked for invites that allow a response with a special setting. What is the wire/consent model (pending joiner, reach ACL, one-shot reply envelope)? Cursor only ships send chrome + reuse of signed share short-link until this exists.

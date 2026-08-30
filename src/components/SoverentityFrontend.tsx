@@ -278,7 +278,7 @@ export function SoverentityFrontend({
   const [shareError, setShareError] = useState<string | null>(null);
   const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
   const [audience, setAudience] = useState<
-    { fingerprint: string; name: string; public_key?: string; trusted?: boolean }[]
+    { fingerprint: string; name: string; public_key?: string; trusted?: boolean; tags?: string[] }[]
   >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
@@ -334,6 +334,9 @@ export function SoverentityFrontend({
                 String(c.trust_level || '').toLowerCase() === 'trusted' ||
                 String(c.trust_level || '').toLowerCase() === 'verified' ||
                 c.trusted === true,
+              tags: (c as { tags?: string[]; metadata?: { tags?: string[] } }).tags
+                || (c as { metadata?: { tags?: string[] } }).metadata?.tags
+                || [],
             };
           })
           .filter((c): c is NonNullable<typeof c> => c != null)
