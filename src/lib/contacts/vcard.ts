@@ -1,6 +1,8 @@
 // src/lib/contacts/vcard.ts
-// vCard 3.0 export — generate .vcf files from TrustEdge contacts.
-// Import into any phone, email client, or contact manager.
+// vCard 3.0 — portable phone book.
+// Export is classical contact data only: name, emails, phones, urls, org/title,
+// notes, handles. SVRNTY trust, fingerprints, group tags, they_trust, and
+// share settings never leave on .vcf (device-local / living-wire — not a phone book).
 
 import type { TrustEdge } from '@/lib/trust/types';
 
@@ -60,13 +62,9 @@ export function toVCard(edge: TrustEdge): string {
     }
   }
 
-  // Notes — classical re-export stays a phone book (no trust dump).
-  // SVRNTY keeps fingerprint as an X-field, not jammed into NOTE.
+  // Notes — portable phone book. Trust / fingerprint / owner-local groups stay off .vcf.
   if (edge.notes) {
     lines.push(`NOTE:${escapeVCard(edge.notes)}`);
-  }
-  if (edge.peer_fingerprint && edge.peer_fingerprint.length >= 8 && edge.peer_public_key) {
-    lines.push(`X-SVRNTY-FINGERPRINT:${escapeVCard(edge.peer_fingerprint)}`);
   }
 
   // Handles as X-fields
@@ -74,11 +72,6 @@ export function toVCard(edge: TrustEdge): string {
     for (const [platform, handle] of Object.entries(edge.contact_info.handles)) {
       lines.push(`X-${platform.toUpperCase()}:${escapeVCard(handle)}`);
     }
-  }
-
-  // Tags as categories
-  if (edge.tags.length > 0) {
-    lines.push(`CATEGORIES:${edge.tags.map(escapeVCard).join(',')}`);
   }
 
   lines.push('END:VCARD');
@@ -149,6 +142,7 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
         const parts = value.split(';');
         edge.contact_info!.adr = unescapeVCard(parts.slice(2).join(' ').replace(/\s+/g, ' ').trim() || value);
       } else if (PROP === 'X-SVRNTY-FINGERPRINT') {
+        // Inbound only — we no longer WRITE this on export. Old .vcf files may still carry it.
         edge.peer_fingerprint = unescapeVCard(value);
       } else if (PROP === 'NOTE') {
         edge.notes = unescapeVCard(value).replace(/\\n/g, '\n');

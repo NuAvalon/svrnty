@@ -23,7 +23,7 @@ async function genesis(page: Page, name: string) {
 }
 
 async function openShareQrTab(page: Page) {
-  // Share identity lives on the Identity card (Master Address Book pass) — not Contacts.
+  // Share identity lives on the Identity card (Living Address Book pass) — not Contacts.
   await page.getByRole('tab', { name: 'Identity' }).click();
   await page.getByTestId('share-identity-from-card').click();
   const dialog = page.getByRole('dialog');

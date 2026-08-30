@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Flat Master Address Book rows — no living/resting chrome.
+ * Flat Living Address Book rows — no living/resting chrome.
  */
 
 import type { CSSProperties } from 'react';

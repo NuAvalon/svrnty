@@ -316,14 +316,16 @@ export function ContactDetailDialog({
                       }}
                     >
                       <p style={{ margin: 0, fontSize: 12, color: E.muted, lineHeight: 1.45 }}>
-                        Classical contact — edit their numbers here, or link them onto SVRNTY
-                        when you have their living card. Trust lives only on SVRNTY.
+                        Classical contact — edit their numbers here. Invite sends your card;
+                        Link to SVRNTY is how you attach their living key once you have it.
+                        Trust lives only on SVRNTY.
                       </p>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={onInvite}
+                          data-testid="contact-invite-svrnty"
                           style={{ alignSelf: 'flex-start' }}
                         >
                           Invite to SVRNTY
@@ -650,6 +652,24 @@ export function ContactDetailDialog({
                     fontFamily: E.fontSans,
                   }}
                 >
+                  {!svrn ? (
+                    <DropdownMenuItem
+                      onClick={onInvite}
+                      data-testid="contact-action-invite"
+                      style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                    >
+                      <LinkIcon className="mr-2 h-4 w-4" /> Invite to SVRNTY
+                    </DropdownMenuItem>
+                  ) : null}
+                  {!svrn && onLinkToSvrnty ? (
+                    <DropdownMenuItem
+                      onClick={onLinkToSvrnty}
+                      data-testid="contact-action-link-svrnty"
+                      style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                    >
+                      <LinkIcon className="mr-2 h-4 w-4" /> Link to SVRNTY
+                    </DropdownMenuItem>
+                  ) : null}
                   {svrn && !isBlocked ? (
                     <DropdownMenuItem
                       onClick={onTrustToggle}

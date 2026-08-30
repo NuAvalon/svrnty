@@ -928,7 +928,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               }}
             >
               <Shield className="h-5 w-5" style={{ color: E.accent }} />
-              Master Address Book
+              Living Address Book
             </h2>
             <p
               style={{
@@ -942,8 +942,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               }}
             >
               Every imported contact (VCF and exchange). Classical entries you can edit;
-              SVRN network peers are key-bound — edit their living methods on their card, not here.
-              Share your own identity from the Identity tab.
+              SVRNTY peers are key-bound. Share your own identity from the Identity tab.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -978,7 +977,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setPendingBookExport('vcard')}>
                   <Download className="h-4 w-4 mr-2" />
-                  Export all as vCard
+                  Export as vCard (phone book)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowImportDialog(true)}>
                   <Upload className="h-4 w-4 mr-2" />
@@ -1770,14 +1769,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             <DialogHeader>
               <DialogTitle>Link to SVRNTY</DialogTitle>
               <DialogDescription>
-                Paste their living fingerprint and public key. They leave Classical and appear under SVRNTY as pending until they add you back. Classical numbers stay on the card as additional information.
+                Paste their living fingerprint and public key once you have them (in person, from their
+                card, or after they join). They leave Classical and appear under SVRNTY as pending until
+                they add you back. Classical numbers stay on the card as additional information.
               </DialogDescription>
             </DialogHeader>
             {linkError && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{linkError}</AlertDescription></Alert>}
             <div className="space-y-3 py-2">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium" htmlFor="link-fp">Fingerprint</label>
-                <Input id="link-fp" value={linkFingerprint} onChange={e => setLinkFingerprint(e.target.value)} placeholder="64-hex fingerprint" className="font-mono text-xs" />
+                <Input id="link-fp" value={linkFingerprint} onChange={e => setLinkFingerprint(e.target.value)} placeholder="40-hex fingerprint" className="font-mono text-xs" />
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium" htmlFor="link-pk">Public key</label>
@@ -1886,7 +1887,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               fingerprint={fingerprint}
               exportLabel={
                 pendingBookExport === 'vcard'
-                  ? 'all contacts as vCard'
+                  ? 'all contacts as a phone-book vCard'
                   : 'contacts as JSON'
               }
               onClose={() => setPendingBookExport(null)}

@@ -25,6 +25,27 @@ test('toVCard: one TEL per phone; trust from trusted boolean, no legacy trust_le
   assert.ok(!vcf.includes('Trust: trusted')); // classical re-export is a phone book, not a trust dump
 });
 
+test('toVCard: portable phone book — no trust, fingerprint, or owner-local group tags', () => {
+  const vcf = toVCard(edge({
+    peer_fingerprint: '1aaa4630e04f3b1ccf8ad54e6d42a8942b275e15',
+    peer_public_key: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nMIIB\n-----END PGP PUBLIC KEY BLOCK-----',
+    trusted: true,
+    tags: ['core', 'builders'],
+    they_trust: ['someone'],
+    open_visibility: true,
+    notes: 'met at the dock',
+  }));
+  assert.ok(vcf.includes('FN:Ada Lovelace'));
+  assert.ok(vcf.includes('NOTE:met at the dock'));
+  assert.ok(!vcf.includes('CATEGORIES'));
+  assert.ok(!vcf.includes('builders'));
+  assert.ok(!vcf.includes('X-SVRNTY-FINGERPRINT'));
+  assert.ok(!vcf.includes('1aaa4630e04f3b1ccf8ad54e6d42a8942b275e15'));
+  assert.ok(!vcf.includes('they_trust'));
+  assert.ok(!vcf.includes('open_visibility'));
+  assert.ok(!vcf.includes('trust_level'));
+});
+
 test('fromVCard: parses ALL TEL lines into phones[] (no last-wins number loss)', () => {
   const vcf = [
     'BEGIN:VCARD', 'VERSION:3.0', 'FN:Grace Hopper',

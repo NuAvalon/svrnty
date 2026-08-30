@@ -3,9 +3,12 @@
 /**
  * Invite to SVRNTY — asks how to send (link vs QR).
  *
- * ★ TEAM ASK: invitation responses need a special setting (reach / consent /
- * pending-joiner). Cursor ships send chrome only; fleet owns invite→response wire.
- * Until then we reuse the owner's signed share short-link as the invite payload.
+ * ★ TEAM ASK (Peter): when they join FROM THIS invite, this classical row
+ * should become their living SVRNTY contact (same person, now keyed).
+ * Glass only sends the owner's signed share short-link today — we do not
+ * bind the join back onto this row. Fleet owns invite→join correlation
+ * (pending joiner, reach ACL). Until that wire exists, use Link to SVRNTY
+ * once you have their fingerprint + public key.
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
@@ -85,8 +88,9 @@ export function InviteToSvrntyDialog({
             Invite {contactName || 'contact'} to SVRNTY
           </DialogTitle>
           <DialogDescription style={{ color: E.muted, fontSize: 13, lineHeight: 1.5 }}>
-            Choose how to send the invite. Their response uses a special setting the fleet
-            still owns (see PR team asks).
+            This sends them your signed card (same QR/link as Share identity). Joining from
+            this invite should attach to this contact — that bind is a fleet wire, not on
+            the glass yet. Once you have their fingerprint and public key, use Link to SVRNTY.
           </DialogDescription>
         </DialogHeader>
 
