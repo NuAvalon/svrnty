@@ -19,6 +19,13 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
   Mail,
   Phone,
   Link2,
@@ -28,6 +35,7 @@ import {
   ShieldOff,
   ShieldCheck,
   HeartCrack,
+  ChevronDown,
 } from 'lucide-react';
 import { ContactReachActions } from '@/components/contacts/ContactReachActions';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -200,14 +208,14 @@ export function ContactDetailDialog({
                     color: svrn ? E.accent : E.dim,
                   }}
                 >
-                  {svrn ? 'SVRN' : 'Classical'}
+                  {svrn ? 'SVRNTY' : 'Classical'}
                 </span>
               </DialogDescription>
             </DialogHeader>
 
             <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
               <TabsList
-                className="mx-4 mt-3 grid h-9 w-auto shrink-0 grid-cols-3"
+                className="mx-4 mt-3 grid h-9 w-auto shrink-0 grid-cols-2"
                 style={{
                   background: E.inputBg,
                   border: `1px solid ${E.border}`,
@@ -219,9 +227,6 @@ export function ContactDetailDialog({
                 </TabsTrigger>
                 <TabsTrigger value="card" style={{ fontFamily: E.fontSans, fontSize: 12 }}>
                   Card
-                </TabsTrigger>
-                <TabsTrigger value="manage" style={{ fontFamily: E.fontSans, fontSize: 12 }}>
-                  Manage
                 </TabsTrigger>
               </TabsList>
 
@@ -392,22 +397,38 @@ export function ContactDetailDialog({
                 </div>
               </TabsContent>
 
-              <TabsContent
-                value="manage"
-                className="mt-0 min-h-0 flex-1 overflow-y-auto px-4 py-3 data-[state=inactive]:hidden"
-                forceMount
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            </Tabs>
+
+            <div
+              className="shrink-0 flex gap-2 px-4 py-3"
+              style={{ borderTop: `1px solid ${E.border}` }}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    style={{ fontFamily: E.fontSans }}
+                  >
+                    Actions
+                    <ChevronDown className="ml-2 h-4 w-4 opacity-70" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="w-52"
+                  style={{
+                    background: E.surfaceSolid,
+                    border: `1px solid ${E.border}`,
+                    color: E.text,
+                    fontFamily: E.fontSans,
+                  }}
+                >
                   {!isBlocked ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
+                    <DropdownMenuItem
                       onClick={onTrustToggle}
-                      className={
-                        isTrusted
-                          ? 'justify-start text-amber-400 border-amber-500/30'
-                          : 'justify-start text-emerald-400 border-emerald-500/30'
-                      }
+                      style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
                     >
                       {isTrusted ? (
                         <>
@@ -418,54 +439,46 @@ export function ContactDetailDialog({
                           <ShieldCheck className="mr-2 h-4 w-4" /> Trust
                         </>
                       )}
-                    </Button>
+                    </DropdownMenuItem>
                   ) : null}
                   {svrn ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled
-                      className="justify-start"
-                      title="SVRN network contacts are key-bound — classical fields are not editable here"
-                    >
+                    <DropdownMenuItem disabled style={{ fontFamily: E.fontSans }}>
                       <Edit className="mr-2 h-4 w-4" /> Edit locked
-                    </Button>
+                    </DropdownMenuItem>
                   ) : (
-                    <Button variant="outline" size="sm" className="justify-start" onClick={onEdit}>
+                    <DropdownMenuItem
+                      onClick={onEdit}
+                      style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                    >
                       <Edit className="mr-2 h-4 w-4" /> Edit
-                    </Button>
+                    </DropdownMenuItem>
                   )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="justify-start text-amber-400 border-amber-500/30"
+                  <DropdownMenuItem
                     onClick={onGivePiece}
+                    style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
                   >
                     <HeartCrack className="mr-2 h-4 w-4" /> Give a piece
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="justify-start text-amber-400/90 border-amber-500/20"
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
                     onClick={onBlockToggle}
+                    style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
                   >
                     {isBlocked ? 'Unblock' : 'Block'}
-                  </Button>
-                  <Button variant="destructive" size="sm" className="justify-start" onClick={onRemove}>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={onRemove}
+                    className="text-red-400 focus:text-red-300"
+                    style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                  >
                     <Trash2 className="mr-2 h-4 w-4" /> Remove
-                  </Button>
-                </div>
-              </TabsContent>
-            </Tabs>
-
-            <div
-              className="shrink-0 px-4 py-3"
-              style={{ borderTop: `1px solid ${E.border}` }}
-            >
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 type="button"
                 variant="outline"
-                className="w-full"
+                className="flex-1"
                 onClick={onClose}
                 style={{ fontFamily: E.fontSans }}
               >

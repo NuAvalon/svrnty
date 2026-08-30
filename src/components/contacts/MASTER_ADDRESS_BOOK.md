@@ -3,11 +3,9 @@
 ## What changed
 - **Share identity** lives on the **Identity** card (not Contacts).
 - **Contacts** is the **Master Address Book** — flat list, **no living/resting** chrome.
-- Filters: All · Classical (VCF/keyless) · **SVRN contacts** (Known / Trusted) + multi-select actions.
-- **Select multiple** works on every scope (not only SVRN). Bulk Trust / Revoke apply to SVRN rows in the selection; Block / Delete / **Add to group** apply to all selected.
-- **Groups** = owner-local private tags (`metadata.tags`), same model as Social Graph — inline label + reuse chips; tags render on list rows. Never published (strip-on-wire).
-- Classical contacts: editable; **SVRN network contacts: edit locked** (key-bound).
-- Detail: compact **Reach / Card / Manage** tabs (phone + web) — viewport-clamped with always-visible Close (tall single-scroll was trapping the Radix X off-screen). Call / Text / WhatsApp / Signal / Email chips (CUR-3 allowlist) + **Invite to SVRNTY** (link or QR).
+- Filters: **Classical** · **SVRNTY** (Known / Trusted). Blocked is under **⋯** — not a primary tab.
+- Contact card: Reach / Card tabs + **Actions** menu (trust, edit, give a piece, block, remove).
+- **Select multiple** works on every scope. Bulk Trust / Revoke apply to SVRNTY rows in the selection; Block / Delete / **Add to group** apply to all selected.
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).
 - Social Graph: **Orbit** (vouch ring) + **Browse** (group seal-clusters); Select + groups; **My card as they see it** for a peer/group (disclosure preview — not a send receipt).
 - Revise contact method: notify **Trusted** or a **local group** chip.

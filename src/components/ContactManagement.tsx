@@ -8,13 +8,12 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
   Check, Edit, Download, Upload, RefreshCw, FileJson, Eye,
-  ShieldCheck, Copy
+  ShieldCheck, Copy, MoreHorizontal
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
   DialogTitle, DialogFooter
 } from '@/components/ui/dialog';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger
@@ -152,7 +151,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
 
@@ -170,9 +168,11 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [vaultExporting, setVaultExporting] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
-  /** Master book scope — not living/resting. */
-  const [bookScope, setBookScope] = useState<'all' | 'classical' | 'svrn'>('all');
-  /** Within SVRN: known vs trusted (binary trust, not a score). */
+  /** Master book scope — Classical vs SVRNTY (not living/resting). */
+  const [bookScope, setBookScope] = useState<'classical' | 'svrn'>('classical');
+  /** Quiet: view blocked list (⋯ menu — not a primary tab). */
+  const [showBlocked, setShowBlocked] = useState(false);
+  /** Within SVRNTY: known vs trusted (binary trust, not a score). */
   const [svrnFilter, setSvrnFilter] = useState<'all' | 'known' | 'trusted'>('all');
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -260,27 +260,23 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       const hay = `${contact.name} ${contact.email} ${contact.fingerprint}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    if (activeTab === 'blocked') {
-      return isContactBlocked(contact);
-    }
-    if (isContactBlocked(contact) && activeTab !== 'blocked') {
-      // Blocked stay on Blocked tab only
-      if (bookScope !== 'svrn') return false;
-    }
     const svrn = isSvrnNetworkContact(contact);
+    const blocked = isContactBlocked(contact);
+
+    if (showBlocked) {
+      if (!blocked) return false;
+      if (bookScope === 'classical' && svrn) return false;
+      if (bookScope === 'svrn' && !svrn) return false;
+      return true;
+    }
+
+    if (blocked) return false;
     if (bookScope === 'classical' && svrn) return false;
     if (bookScope === 'svrn' && !svrn) return false;
-    if (bookScope === 'svrn' || (bookScope === 'all' && activeTab === 'trusted')) {
-      if (activeTab === 'trusted' && !isTrusted(contact)) return false;
-      if (activeTab === 'known' && isTrusted(contact)) return false;
-    }
     if (bookScope === 'svrn') {
       if (svrnFilter === 'trusted' && !isTrusted(contact)) return false;
       if (svrnFilter === 'known' && isTrusted(contact)) return false;
-      if (svrnFilter !== 'all' && isContactBlocked(contact)) return false;
     }
-    if (activeTab === 'blocked') return isContactBlocked(contact);
-    if (isContactBlocked(contact)) return false;
     return true;
   });
 
@@ -902,12 +898,11 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </Button>
         </div>
 
-        {/* Scope: All / Classical / SVRN */}
-        <div className="flex flex-wrap gap-2 mb-3">
+        {/* Primary tabs: Classical / SVRNTY — Blocked lives in ⋯ */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
           {([
-            ['all', `All (${activeContacts.length})`],
             ['classical', `Classical (${classicalCount})`],
-            ['svrn', `SVRN contacts (${svrnCount})`],
+            ['svrn', `SVRNTY (${svrnCount})`],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -915,48 +910,65 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               onClick={() => {
                 setBookScope(id);
                 setSelectedIds(new Set());
+                setShowBlocked(false);
               }}
               style={{
                 fontFamily: E.fontSans,
                 fontSize: 12,
                 padding: '6px 12px',
                 borderRadius: 999,
-                border: `1px solid ${bookScope === id ? E.borderLit : E.border}`,
-                background: bookScope === id ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
-                color: bookScope === id ? E.accent : E.muted,
+                border: `1px solid ${bookScope === id && !showBlocked ? E.borderLit : E.border}`,
+                background:
+                  bookScope === id && !showBlocked
+                    ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+                    : 'transparent',
+                color: bookScope === id && !showBlocked ? E.accent : E.muted,
                 cursor: 'pointer',
               }}
             >
               {label}
             </button>
           ))}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          {bookScope === 'svrn' &&
-            ([
-              ['all', 'All SVRN'],
-              ['known', `Known (${knownCount})`],
-              ['trusted', `Trusted (${trustedCount})`],
-            ] as const).map(([id, label]) => (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
               <button
-                key={id}
                 type="button"
-                onClick={() => setSvrnFilter(id)}
+                aria-label="Book options"
+                title="Book options"
                 style={{
                   fontFamily: E.fontSans,
                   fontSize: 11,
-                  padding: '4px 10px',
+                  padding: '6px 8px',
                   borderRadius: 8,
-                  border: `1px solid ${svrnFilter === id ? E.borderLit : E.border}`,
-                  background: svrnFilter === id ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)' : 'transparent',
-                  color: E.text,
+                  border: `1px solid ${E.border}`,
+                  background: showBlocked
+                    ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                    : 'transparent',
+                  color: E.muted,
                   cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
                 }}
               >
-                {label}
+                <MoreHorizontal className="h-4 w-4" />
               </button>
-            ))}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" style={{ fontFamily: E.fontSans }}>
+              <DropdownMenuLabel style={{ fontFamily: E.fontSans }}>Book</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => {
+                  setShowBlocked((v) => !v);
+                  setSelectedIds(new Set());
+                  setSelectionMode(false);
+                }}
+                style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+              >
+                {showBlocked ? 'Hide blocked contacts' : 'View blocked contacts'}
+                {!showBlocked && blockedCount > 0 ? ` (${blockedCount})` : ''}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <button
             type="button"
             onClick={() => {
@@ -980,6 +992,47 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             {selectionMode ? 'Done selecting' : 'Select multiple'}
           </button>
         </div>
+
+        {showBlocked ? (
+          <p
+            style={{
+              margin: '0 0 10px',
+              fontSize: 12,
+              color: E.dim,
+              fontFamily: E.fontSans,
+            }}
+          >
+            Showing blocked · turn off via ⋯
+          </p>
+        ) : null}
+
+        {!showBlocked && bookScope === 'svrn' ? (
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {([
+              ['all', 'All SVRNTY'],
+              ['known', `Known (${knownCount})`],
+              ['trusted', `Trusted (${trustedCount})`],
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSvrnFilter(id)}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${svrnFilter === id ? E.borderLit : E.border}`,
+                  background: svrnFilter === id ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)' : 'transparent',
+                  color: E.text,
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         {selectionMode && (
           <div
@@ -1154,24 +1207,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </div>
         )}
 
-        <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList
-            className="mb-4 w-full sm:w-auto"
-            style={{
-              background: E.surface,
-              border: `1px solid ${E.border}`,
-              fontFamily: E.fontSans,
-            }}
-          >
-            <TabsTrigger value="all" style={{ fontFamily: E.fontSans }}>
-              List
-            </TabsTrigger>
-            <TabsTrigger value="blocked" style={{ fontFamily: E.fontSans }}>
-              Blocked ({blockedCount})
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value={activeTab} className="mt-0">
+        <div className="w-full">
             {loading ? (
               <div className="flex justify-center p-8">
                 <RefreshCw className="h-8 w-8 animate-spin" style={{ color: E.dim }} />
@@ -1191,10 +1227,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                   {searchQuery ? <Search className="h-8 w-8" style={{ color: E.dim }} /> : <UserPlus className="h-8 w-8" style={{ color: E.dim }} />}
                 </div>
                 <p style={{ fontFamily: E.fontSerif, fontSize: 22, fontWeight: 300, color: E.text, margin: 0 }}>
-                  {searchQuery ? 'No matching contacts' : 'No contacts yet'}
+                  {searchQuery
+                    ? 'No matching contacts'
+                    : showBlocked
+                      ? 'No blocked contacts'
+                      : 'No contacts yet'}
                 </p>
                 <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
-                  {searchQuery ? 'Try a different search' : 'Import a VCF or add someone to start your master book'}
+                  {searchQuery
+                    ? 'Try a different search'
+                    : showBlocked
+                      ? 'Blocked stays out of the main book — exit via ⋯'
+                      : 'Import a VCF or add someone to start your master book'}
                 </p>
               </div>
             ) : (
@@ -1211,8 +1255,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 }}
               />
             )}
-          </TabsContent>
-        </Tabs>
+          </div>
 
         {/* === DIALOGS === */}
 
