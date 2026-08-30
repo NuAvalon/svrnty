@@ -22,7 +22,7 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-import { constellationCaption, focusConstellation } from '@/lib/trust/constellation';
+import { constellationCaption, focusConstellation, partitionConstellation } from '@/lib/trust/constellation';
 import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
 import { TrustMapLatticeField } from '@/components/TrustMapLatticeField';
 import { TrustMapGalaxy } from '@/components/TrustMapGalaxy';
@@ -385,6 +385,7 @@ export function TrustMap({
     () => (focusId ? focusConstellation(focusId, visibleContacts) : null),
     [focusId, visibleContacts],
   );
+  const lampParts = useMemo(() => (lamped ? partitionConstellation(lamped) : null), [lamped]);
   const peerChords = useMemo(
     () => witnessedPeerTrustChords(visibleContacts),
     [visibleContacts],
@@ -1145,7 +1146,7 @@ export function TrustMap({
               top: 12,
               zIndex: 3,
               pointerEvents: 'none',
-              maxWidth: 'min(280px, 70%)',
+              maxWidth: 'min(320px, 72%)',
               padding: '8px 12px',
               borderRadius: 10,
               background: 'color-mix(in srgb, var(--se-bg) 82%, transparent)',
@@ -1162,14 +1163,45 @@ export function TrustMap({
               const trusted = !!edge?.trusted || node?.state === 'trusted';
               const living = id ? livingNodeIds.has(id) : false;
               const mutual = !!(edge as EdgeExtras | undefined)?.mutual?.reciprocal;
+              const nameOf = (fp: string) => edgeByFp.get(fp)?.peer_name || fp.slice(0, 8);
+              const trustNames = (lampParts?.witnessedTrust || []).map(nameOf);
+              const groupNames = (lampParts?.groupOnly || []).map(nameOf);
+              const circleNames = (lampParts?.disclosedCircle || []).map(nameOf);
+              const showLampLists = !!focusId && id === focusId && lampParts;
               return (
                 <>
                   <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text }}>{name}</p>
                   <p style={{ margin: '4px 0 0', fontSize: 11, color: E.muted }}>
                     {trusted ? 'Trusted' : living ? 'Known · SVRNTY' : 'Classical book'}
-                    {mutual ? ' · mutual' : ''}
+                    {mutual ? ' · mutual with you' : ''}
                     {hoverId && focusId && hoverId !== focusId ? ' · hover' : ''}
                   </p>
+                  {showLampLists ? (
+                    <div data-testid="trust-map-lamp-links" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
+                      {trustNames.length > 0 ? (
+                        <p style={{ margin: '0 0 4px', color: E.accent2 }}>
+                          <span style={{ fontWeight: 600 }}>Witnessed mutual trust</span>
+                          {' · '}
+                          {trustNames.slice(0, 8).join(', ')}
+                          {trustNames.length > 8 ? '…' : ''}
+                        </p>
+                      ) : (
+                        <p style={{ margin: '0 0 4px', color: E.dim }}>No witnessed peer mutuals on this device</p>
+                      )}
+                      {circleNames.length > 0 ? (
+                        <p style={{ margin: '0 0 4px', color: E.accent }}>
+                          Circle they showed you · {circleNames.slice(0, 6).join(', ')}
+                          {circleNames.length > 6 ? '…' : ''}
+                        </p>
+                      ) : null}
+                      {groupNames.length > 0 ? (
+                        <p style={{ margin: 0, color: E.muted }}>
+                          Groups you named (not trust) · {groupNames.slice(0, 6).join(', ')}
+                          {groupNames.length > 6 ? '…' : ''}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </>
               );
             })()}

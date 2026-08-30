@@ -35,6 +35,13 @@ We did **not** port Three.js. The Cathedral 3D universe is a global knowledge gr
 - Corner **nameplate** always shows who you’re hovering or lamped.
 - Search → Enter/Go flies the camera and pulses the match.
 
+### Lamp a person (click)
+Shows their constellation with **two visual states** (never inferred trust from tags):
+- **Ember solid + double ring** — witnessed open-visibility peer mutual trust (`they_trust`)
+- **Dashed gold + dashed halo** — groups *you* named (co-membership ≠ trust)
+- Disclosed circle they showed you — solid gold (consent, not tag inference)
+While lamped, unrelated peer filaments hide; nameplate lists witnessed mutuals vs group-only.
+
 ### What we will not draw
 - Peer↔peer bonds from co-membership, “we both know them,” or friends-of-friends.
 - Mutual-friend **counts** on identity (I-3).

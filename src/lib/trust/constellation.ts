@@ -20,6 +20,9 @@ import { peerTrustNeighbors } from '@/lib/trust/peer-trust-chords';
 
 export type ConstellationReason = 'shared-group' | 'disclosed-circle' | 'they-trust';
 
+/** How the glass should draw a lamp→member link. Never invents trust from tags. */
+export type ConstellationLinkKind = 'witnessed-trust' | 'disclosed-circle' | 'group-only';
+
 export type ConstellationMember = {
   id: string;
   reasons: ConstellationReason[];
@@ -31,6 +34,30 @@ export type FocusConstellation = {
   focusId: string;
   members: Map<string, ConstellationMember>;
 };
+
+/** Prefer witnessed trust over disclosed circle over owner-local group. */
+export function constellationLinkKind(mem: ConstellationMember): ConstellationLinkKind {
+  if (mem.reasons.includes('they-trust')) return 'witnessed-trust';
+  if (mem.reasons.includes('disclosed-circle')) return 'disclosed-circle';
+  return 'group-only';
+}
+
+export function partitionConstellation(c: FocusConstellation): {
+  witnessedTrust: string[];
+  disclosedCircle: string[];
+  groupOnly: string[];
+} {
+  const witnessedTrust: string[] = [];
+  const disclosedCircle: string[] = [];
+  const groupOnly: string[] = [];
+  for (const [id, mem] of c.members) {
+    const kind = constellationLinkKind(mem);
+    if (kind === 'witnessed-trust') witnessedTrust.push(id);
+    else if (kind === 'disclosed-circle') disclosedCircle.push(id);
+    else groupOnly.push(id);
+  }
+  return { witnessedTrust, disclosedCircle, groupOnly };
+}
 
 function extra(edge: TrustEdge): {
   mutual_contacts?: string[];
@@ -110,12 +137,10 @@ export function constellationCaption(c: FocusConstellation, focusTrusted: boolea
       ? 'Your bond · no shared group or disclosed circle on this device'
       : 'Known · lamp them to see groups you named';
   }
-  const hasCircle = [...c.members.values()].some((m) => m.reasons.includes('disclosed-circle'));
-  const hasTrust = [...c.members.values()].some((m) => m.reasons.includes('they-trust'));
-  const hasGroup = [...c.members.values()].some((m) => m.reasons.includes('shared-group'));
+  const parts = partitionConstellation(c);
   const bits: string[] = [];
-  if (hasGroup) bits.push('groups you named');
-  if (hasCircle) bits.push('circle they showed you');
-  if (hasTrust) bits.push('open-visibility peer trust · witnessed');
+  if (parts.witnessedTrust.length) bits.push('ember = witnessed mutual trust');
+  if (parts.disclosedCircle.length) bits.push('circle they showed you');
+  if (parts.groupOnly.length) bits.push('dashed gold = groups you named · not trust');
   return bits.join(' · ') || 'Your bond';
 }

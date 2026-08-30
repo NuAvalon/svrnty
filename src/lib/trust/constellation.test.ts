@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { constellationCaption, focusConstellation } from './constellation';
+import { constellationCaption, constellationLinkKind, focusConstellation, partitionConstellation } from './constellation';
 import type { TrustEdge } from './types';
 
 function edge(fp: string, tags: string[], extra: Partial<TrustEdge> = {}): TrustEdge {
@@ -75,7 +75,7 @@ test('they-trust lights only under open-visibility reciprocal + they_trust both 
   assert.equal(c.members.has('b'), false, 'hub did not list b');
   assert.equal(c.members.has('c'), false, 'c did not opt into open visibility');
   const cap = constellationCaption(focusConstellation('hub', contacts), true);
-  assert.ok(cap.includes('open-visibility peer trust'));
+  assert.ok(cap.includes('ember = witnessed mutual trust'));
   assert.ok(!/\d+/.test(cap), cap);
 });
 
@@ -93,5 +93,20 @@ test('caption stays qualitative — no mutual-friend score', () => {
   const contacts = [edge('hub', ['crew']), edge('a', ['crew'])];
   const cap = constellationCaption(focusConstellation('hub', contacts), true);
   assert.ok(cap.includes('groups you named'));
+  assert.ok(cap.includes('not trust'));
   assert.ok(!/\d+/.test(cap), cap);
+});
+
+test('constellationLinkKind prefers witnessed trust over group', () => {
+  const contacts = [
+    edge('hub', ['crew'], { ...openMutual, they_trust: ['a'] }),
+    edge('a', ['crew'], { ...openMutual, they_trust: ['hub'] }),
+  ];
+  const c = focusConstellation('hub', contacts);
+  const mem = c.members.get('a');
+  assert.ok(mem);
+  assert.equal(constellationLinkKind(mem!), 'witnessed-trust');
+  const parts = partitionConstellation(c);
+  assert.deepEqual(parts.witnessedTrust, ['a']);
+  assert.deepEqual(parts.groupOnly, []);
 });

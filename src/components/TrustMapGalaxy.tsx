@@ -5,6 +5,7 @@ import type { Camera } from '@/lib/trust/graph-camera';
 import { hitTestNodes } from '@/lib/trust/graph-camera';
 import type { LaidOutNode, TrustLayout } from '@/lib/trust/trust-map-layout';
 import type { FocusConstellation } from '@/lib/trust/constellation';
+import { constellationLinkKind } from '@/lib/trust/constellation';
 import type { WitnessedPeerChord } from '@/lib/trust/peer-trust-chords';
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 
@@ -89,21 +90,30 @@ export function TrustMapGalaxy({
     for (const n of L.nodes) {
       const p = worldToScreen(C, w, h, n.x, n.y);
       const isLit = focusId === n.id || lit.has(n.id);
+      const mem = lit.get(n.id);
+      const kind = mem ? constellationLinkKind(mem) : null;
       const dim = focusId && !isLit;
       ctx.beginPath();
       ctx.moveTo(self.x, self.y);
       ctx.lineTo(p.x, p.y);
-      if (n.state === 'trusted') {
-        ctx.strokeStyle = dim ? 'rgba(255,122,26,0.05)' : 'rgba(255,122,26,0.28)';
-        ctx.lineWidth = isLit ? 1.8 : 0.7;
+      if (focusId === n.id) {
+        const focusTrusted = n.state === 'trusted';
+        ctx.strokeStyle = focusTrusted ? 'rgba(255,122,26,0.72)' : 'rgba(249,168,37,0.35)';
+        ctx.lineWidth = focusTrusted ? 2.4 : 1.2;
+      } else if (kind === 'witnessed-trust') {
+        ctx.strokeStyle = 'rgba(255,122,26,0.22)';
+        ctx.lineWidth = 1.0;
+      } else if (n.state === 'trusted') {
+        ctx.strokeStyle = dim ? 'rgba(255,122,26,0.03)' : 'rgba(255,122,26,0.22)';
+        ctx.lineWidth = isLit ? 1.4 : 0.7;
       } else {
-        ctx.strokeStyle = dim ? 'rgba(249,168,37,0.03)' : 'rgba(249,168,37,0.10)';
+        ctx.strokeStyle = dim ? 'rgba(249,168,37,0.02)' : 'rgba(249,168,37,0.10)';
         ctx.lineWidth = 0.45;
       }
       ctx.stroke();
     }
 
-    // Witnessed peer-trust filaments — ember, solid. Distinct from dashed group beams.
+    // Witnessed peer-trust filaments — when lamped, only chords involving the lamp stay.
     const nodeById = new Map(L.nodes.map((n) => [n.id.toLowerCase(), n]));
     for (const chord of peerChords) {
       const na = nodeById.get(chord.a.toLowerCase());
@@ -115,41 +125,50 @@ export function TrustMapGalaxy({
         !!focusId &&
         (chord.a.toLowerCase() === focusId.toLowerCase() ||
           chord.b.toLowerCase() === focusId.toLowerCase());
-      const dim = !!focusId && !involvesLamp;
+      if (focusId && !involvesLamp) continue;
       ctx.beginPath();
       ctx.moveTo(pa.x, pa.y);
       ctx.lineTo(pb.x, pb.y);
-      ctx.strokeStyle = dim
-        ? 'rgba(255,122,26,0.05)'
-        : involvesLamp
-          ? 'rgba(255,122,26,0.58)'
-          : 'rgba(255,122,26,0.22)';
-      ctx.lineWidth = involvesLamp ? 2.3 : 1.15;
+      ctx.strokeStyle = involvesLamp ? 'rgba(255,122,26,0.70)' : 'rgba(255,122,26,0.22)';
+      ctx.lineWidth = involvesLamp ? 2.6 : 1.15;
       ctx.stroke();
     }
 
-    // Volumetric beams from the lamped person to constellation (Cathedral select)
+    // Beams from the lamped person — witnessed trust vs disclosed vs group (not trust)
     if (focusId) {
       const lamp = L.nodes.find((n) => n.id === focusId);
       if (lamp) {
         const a = worldToScreen(C, w, h, lamp.x, lamp.y);
-        for (const [id, mem] of lit) {
+        const ordered = [...lit.entries()].sort(([, ma], [, mb]) => {
+          const rank = (m: (typeof ma)) => {
+            const k = constellationLinkKind(m);
+            return k === 'witnessed-trust' ? 2 : k === 'disclosed-circle' ? 1 : 0;
+          };
+          return rank(ma) - rank(mb);
+        });
+        for (const [id, mem] of ordered) {
           const other = L.nodes.find((n) => n.id === id);
           if (!other) continue;
           const b = worldToScreen(C, w, h, other.x, other.y);
-          const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-          const witnessed = mem.reasons.includes('disclosed-circle') || mem.reasons.includes('they-trust');
-          const groupOnly = mem.reasons.includes('shared-group') && !witnessed;
-          g.addColorStop(0, witnessed ? 'rgba(255,122,26,0.35)' : 'rgba(201,162,113,0.22)');
-          g.addColorStop(1, 'rgba(249,168,37,0.02)');
+          const kind = constellationLinkKind(mem);
           ctx.beginPath();
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
-          ctx.strokeStyle = g;
-          ctx.lineWidth = witnessed ? 2.4 : 1.3;
-          if (groupOnly) ctx.setLineDash([5, 5]);
+          if (kind === 'witnessed-trust') {
+            ctx.strokeStyle = 'rgba(255,122,26,0.78)';
+            ctx.lineWidth = 2.8;
+            ctx.setLineDash([]);
+          } else if (kind === 'disclosed-circle') {
+            ctx.strokeStyle = 'rgba(249,168,37,0.55)';
+            ctx.lineWidth = 2.0;
+            ctx.setLineDash([]);
+          } else {
+            ctx.strokeStyle = 'rgba(201,162,113,0.42)';
+            ctx.lineWidth = 1.35;
+            ctx.setLineDash([4, 5]);
+          }
           ctx.stroke();
-          if (groupOnly) ctx.setLineDash([]);
+          ctx.setLineDash([]);
         }
       }
     }
@@ -173,12 +192,16 @@ export function TrustMapGalaxy({
     for (const n of L.nodes) {
       const p = worldToScreen(C, w, h, n.x, n.y);
       const isFocus = focusId === n.id;
-      const isLit = isFocus || lit.has(n.id);
+      const mem = lit.get(n.id);
+      const linkKind = mem ? constellationLinkKind(mem) : null;
+      const isLit = isFocus || !!mem;
       const isPick = picked.has(n.id);
       const isHover = hover === n.id;
       const match = q && n.name.toLowerCase().includes(q);
       const dim = focusId && !isLit && !match && !isHover;
-      const r = (isFocus || isPick || isHover ? n.radius + 2 : n.radius) * Math.min(2.2, Math.max(0.7, pxPerWorld));
+      const r =
+        (isFocus || isPick || isHover || linkKind === 'witnessed-trust' ? n.radius + 2 : n.radius) *
+        Math.min(2.2, Math.max(0.7, pxPerWorld));
 
       if (pulse === n.id) {
         if (!pulseT0.current) pulseT0.current = now;
@@ -191,6 +214,31 @@ export function TrustMapGalaxy({
           ctx.lineWidth = 2;
           ctx.stroke();
         }
+      }
+
+      // Mutual witnessed ring — solid ember double-ring (trust). Group-only gets a thin dashed halo (not trust).
+      if (linkKind === 'witnessed-trust' && !dim) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 6, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,122,26,0.85)';
+        ctx.lineWidth = 2.0;
+        ctx.setLineDash([]);
+        ctx.stroke();
+      } else if (linkKind === 'group-only' && !dim) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(201,162,113,0.55)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (linkKind === 'disclosed-circle' && !dim) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(249,168,37,0.65)';
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([]);
+        ctx.stroke();
       }
 
       if (n.state === 'trusted') {
@@ -217,7 +265,7 @@ export function TrustMapGalaxy({
         ctx.lineWidth = 1.1;
         ctx.stroke();
       }
-      if (isPick || isHover) {
+      if (isPick || isHover || isFocus) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2);
         ctx.strokeStyle = '#f9a825';
