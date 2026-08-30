@@ -21,6 +21,7 @@ import {
   loadKey,
   loadPQKeys,
 } from '@/lib/identity/client-store';
+import { contactsEncryptedExportFilename } from '@/components/export/contacts-export-name';
 
 // ── Helpers ────────────────────────────────────────────
 
@@ -169,7 +170,8 @@ export function SecureExportDialog({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `svrnty-contacts-${new Date().toISOString().split('T')[0]}.svrnty`;
+      // Not bare `.svrnty` — that is the identity vault. See contacts-export-name.ts.
+      a.download = contactsEncryptedExportFilename();
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -190,9 +192,9 @@ export function SecureExportDialog({
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle className="text-[var(--se-text)]">Secure Contact Export</DialogTitle>
+          <DialogTitle className="text-[var(--se-text)]">Export contacts</DialogTitle>
           <DialogDescription className="text-[var(--se-muted)]">
-            Export your contacts password-protected for backup or transfer. A password is always required.
+            Password-protected contacts only — not your identity vault. For keys + contacts + trust, use Full Backup (.svrnty).
           </DialogDescription>
         </DialogHeader>
 
@@ -235,7 +237,7 @@ export function SecureExportDialog({
                 </Button>
               </div>
               <p className="text-xs text-[var(--se-dim)]">
-                You will need this password to import these contacts. Prefer Full Backup for a complete identity vault.
+                You will need this password to import these contacts. This file cannot restore your identity.
               </p>
             </div>
           </div>
@@ -302,7 +304,7 @@ export function SecureExportDialog({
             >
               {loading ?
                 <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Exporting...</> :
-                <><Lock className="h-4 w-4 mr-2" />Secure Export</>
+                <><Lock className="h-4 w-4 mr-2" />Export contacts</>
               }
             </Button>
           )}
@@ -630,9 +632,9 @@ export function SecureImportDialog({
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle className="text-[var(--se-text)]">Secure Contact Import</DialogTitle>
+          <DialogTitle className="text-[var(--se-text)]">Import contacts</DialogTitle>
           <DialogDescription className="text-[var(--se-muted)]">
-            Import contacts from an encrypted export.
+            Import contacts from a password-protected contacts export (not an identity vault).
           </DialogDescription>
         </DialogHeader>
 
@@ -723,7 +725,7 @@ export function SecureImportDialog({
             >
               {loading ?
                 <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> :
-                <><Upload className="h-4 w-4 mr-2" />Secure Import</>
+                <><Upload className="h-4 w-4 mr-2" />Import contacts</>
               }
             </Button>
           )}
