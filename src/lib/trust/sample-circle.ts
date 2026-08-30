@@ -8,9 +8,11 @@
 //     draws witnessed Sally↔Joe filaments (Peter’s spec) — NOT inferred from tags.
 //   • Owner-authored overlapping group tags → cluster chords / Browse hulls
 //     (co-membership ≠ trust).
-//   • Mix of trusted-mutual / trusted-one-way / known / pending intro.
+//   • SVRNTY demo peers carry a frozen public_key (fingerprint ≡ H(key)).
+//   • Classical book rows are keyless — no fingerprint (Invariant-1: fp only exists with a key).
 
 import { addContact, getAllContacts, removeContact } from '@/lib/identity/client-store';
+import { SAMPLE_SVRNTY_FPS, SAMPLE_SVRNTY_PEERS } from '@/lib/trust/sample-svrnty-keys';
 
 type SampleTrust = 'verified' | 'unverified';
 
@@ -45,7 +47,7 @@ interface SampleContact {
   };
 }
 
-/** Deterministic fake fingerprints (40 hex) — no matching keys; gray/keyless OK. */
+/** Historical fake fingerprints — recognize older sample seeds so revision auto-upgrades. Not stored on new classical rows. */
 const ADA = 'a11a10e1ace00000000000000000000000000001';
 const ALAN = 'a1a2011216000000000000000000000000000002';
 const GRACE = '61ace00000000000000000000000000000000003';
@@ -71,6 +73,7 @@ const RADIA = '1ad1a00000000000000000000000000000000014';
 const SAMPLE_FPS = new Set([
   ADA, ALAN, GRACE, CLAUDE, HEDY, KATHERINE, FRANK, NIKOLA, HYPATIA, MARGARET,
   BARBARA, DOROTHY, JOAN, JEAN, ROSALIND, SOPHIE, EMILIE, MARIE, LYNN, RADIA,
+  ...SAMPLE_SVRNTY_FPS,
 ]);
 
 /**
@@ -78,16 +81,15 @@ const SAMPLE_FPS = new Set([
  * revision auto-upgrade on load so a hard refresh picks up the denser circle
  * without a manual “Refresh demo circle” click. Never touches non-sample books.
  */
-export const SAMPLE_CIRCLE_REVISION = 3;
+export const SAMPLE_CIRCLE_REVISION = 5;
 
 /**
- * Reciprocal + open-visibility clique. Demo stand-in for PSI: each lists the
- * others in `they_trust`. Alan/Dorothy/Lynn are trusted but not reciprocal —
- * they do not join these filaments. Émilie is mutual with you and may open vis
- * without they_trust — tags still are not a bond.
+ * Reciprocal + open-visibility clique among living (SVRNTY) demo peers.
  */
-const OPEN_VIS_CLIQUE = [ADA, GRACE, MARGARET, BARBARA, RADIA, JOAN, JEAN, SOPHIE];
+const CLIQUE_IDS = new Set(['ada', 'grace', 'margaret', 'barbara', 'radia', 'joan', 'jean', 'sophie']);
+const OPEN_VIS_CLIQUE = SAMPLE_SVRNTY_PEERS.filter((p) => CLIQUE_IDS.has(p.id)).map((p) => p.fingerprint);
 const OPEN_VIS_SET = new Set(OPEN_VIS_CLIQUE);
+const LIVING_BY_NAME = new Map(SAMPLE_SVRNTY_PEERS.map((p) => [p.name, p]));
 
 function demoTheyTrust(fp: string): string[] | undefined {
   if (!OPEN_VIS_SET.has(fp)) return undefined;
@@ -188,7 +190,7 @@ const SAMPLE: SampleContact[] = [
     tags: ['builders', 'compilers'],
     handles: { signal: '@lynn.conway' },
     reciprocal: false,
-    notes: 'Trusted · VLSI & Mead–Conway — PSI pending.',
+    notes: 'Classical book · VLSI & Mead–Conway.',
   },
 
   // ── More mutuals in overlapping clusters (dense group chords) ────────────
@@ -228,7 +230,7 @@ const SAMPLE: SampleContact[] = [
     tags: ['math', 'orbital'],
     reciprocal: true,
     open_visibility: true,
-    notes: 'Mutual (PSI) · open vis without they_trust — not a peer chord.',
+    notes: 'Classical book · living force & Newton — no key yet.',
   },
 
   // ── Known (not trusted) — fills outer ring / cluster hulls ───────────────
@@ -302,7 +304,7 @@ const SAMPLE: SampleContact[] = [
     phones: ['+1 415 555 0177'],
     pending_intro: {
       introduced_by: 'Grace Hopper',
-      introduced_by_fp: GRACE,
+      introduced_by_fp: LIVING_BY_NAME.get('Grace Hopper')?.fingerprint || '',
       context: 'Grace introduced you at the compiler salon',
     },
     notes: 'Pending connection — accept to know; trust is separate.',
@@ -340,15 +342,18 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
   const now = new Date().toISOString();
   let n = 0;
   for (const c of SAMPLE) {
-    const trusted = c.trust_level === 'verified';
-    const theyTrust = c.they_trust ?? demoTheyTrust(c.fingerprint);
-    const openVis = c.open_visibility ?? OPEN_VIS_SET.has(c.fingerprint);
+    const living = LIVING_BY_NAME.get(c.name);
+    const fingerprint = living?.fingerprint;
+    const public_key = living?.public_key;
+    const trusted = !!living && c.trust_level === 'verified';
+    const theyTrust = fingerprint ? demoTheyTrust(fingerprint) : undefined;
+    const openVis = fingerprint ? (c.open_visibility ?? OPEN_VIS_SET.has(fingerprint)) : false;
     await addContact(ownerFingerprint, {
       name: c.name,
       email: c.email,
-      fingerprint: c.fingerprint || undefined,
-      // Keyless demo peers — omit public_key (empty string is truthy and fails fp↔key bind).
-      trust_level: c.trust_level,
+      fingerprint: fingerprint || undefined,
+      public_key: public_key || undefined,
+      trust_level: trusted ? 'verified' : 'unverified',
       trusted,
       trusted_since: trusted ? now : null,
       last_interaction: now,
@@ -363,12 +368,13 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         urls: c.urls,
         emails: c.email ? [c.email] : undefined,
       },
-      mutual: {
-        // Demo stand-in for PSI: they_trust_me + reciprocal when mutual with YOU.
-        they_trust_me: c.reciprocal === true ? true : c.reciprocal === false ? false : null,
-        last_sync: c.reciprocal ? now : null,
-        reciprocal: !!c.reciprocal,
-      },
+      mutual: living
+        ? {
+            they_trust_me: c.reciprocal === true ? true : c.reciprocal === false ? false : null,
+            last_sync: c.reciprocal ? now : null,
+            reciprocal: !!c.reciprocal,
+          }
+        : { they_trust_me: null, last_sync: null, reciprocal: false },
       verification: trusted
         ? { method: 'in_person', verified_at: now }
         : { method: 'none', verified_at: null },
@@ -380,15 +386,17 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         notes: c.notes,
         pending_intro: c.pending_intro || undefined,
         connection_status: c.pending_intro ? 'pending' : 'accepted',
-        /** Demo hint only — not a published PSI transcript. */
-        psi_mutual: !!c.reciprocal,
+        psi_mutual: !!(living && c.reciprocal),
         they_trust: theyTrust,
-        share_settings: {
-          share_card: true,
-          share_trusted_circle: false,
-          share_groups: false,
-          open_visibility: openVis,
-        },
+        share_settings: living
+          ? {
+              share_card: true,
+              share_trusted_circle: false,
+              share_groups: false,
+              open_visibility: openVis,
+            }
+          : undefined,
+        sample_lane: living ? 'svrnty' : 'classical',
       },
     } as any);
     n++;
