@@ -58,6 +58,28 @@ const MARIE = 'a11e000000000000000000000000000000000012';
 const LYNN = '1777000000000000000000000000000000000013';
 const RADIA = '1ad1a00000000000000000000000000000000014';
 
+/** All demo fingerprints — used to recognize older seeds that lack metadata.sample. */
+const SAMPLE_FPS = new Set([
+  ADA, ALAN, GRACE, CLAUDE, HEDY, KATHERINE, FRANK, NIKOLA, HYPATIA, MARGARET,
+  BARBARA, DOROTHY, JOAN, JEAN, ROSALIND, SOPHIE, EMILIE, MARIE, LYNN, RADIA,
+]);
+
+/**
+ * Bump when the demo roster changes. Sample-only books with a lower (or missing)
+ * revision auto-upgrade on load so a hard refresh picks up the denser circle
+ * without a manual “Refresh demo circle” click. Never touches non-sample books.
+ */
+export const SAMPLE_CIRCLE_REVISION = 2;
+
+function isSampleContact(c: {
+  fingerprint?: string;
+  metadata?: { sample?: boolean; sample_revision?: number };
+}): boolean {
+  if (c.metadata?.sample) return true;
+  const fp = (c.fingerprint || '').toLowerCase();
+  return !!fp && SAMPLE_FPS.has(fp);
+}
+
 const SAMPLE: SampleContact[] = [
   // ── Core mutual ring (PSI reciprocal with you) ───────────────────────────
   {
@@ -263,6 +285,16 @@ const SAMPLE: SampleContact[] = [
   },
 ];
 
+/** True when the living book is demo-only and behind SAMPLE_CIRCLE_REVISION. */
+export function sampleCircleNeedsUpgrade(
+  contacts: Array<{ fingerprint?: string; metadata?: { sample?: boolean; sample_revision?: number } }>,
+): boolean {
+  if (contacts.length === 0) return false;
+  if (!contacts.every((c) => isSampleContact(c))) return false;
+  if (contacts.length !== SAMPLE.length) return true;
+  return contacts.some((c) => c.metadata?.sample_revision !== SAMPLE_CIRCLE_REVISION);
+}
+
 /**
  * Seed (or refresh) the demo sample circle.
  * - Empty book → seed.
@@ -271,8 +303,8 @@ const SAMPLE: SampleContact[] = [
  */
 export async function seedSampleCircle(ownerFingerprint: string): Promise<number> {
   const existing = await getAllContacts(ownerFingerprint);
-  const samples = existing.filter((c) => !!(c as { metadata?: { sample?: boolean } }).metadata?.sample);
-  const real = existing.filter((c) => !(c as { metadata?: { sample?: boolean } }).metadata?.sample);
+  const samples = existing.filter((c) => isSampleContact(c as any));
+  const real = existing.filter((c) => !isSampleContact(c as any));
 
   // Never mix demo data into a living book.
   if (real.length > 0) return 0;
@@ -315,6 +347,7 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
       connection_status: c.pending_intro ? 'pending' : 'accepted',
       metadata: {
         sample: true,
+        sample_revision: SAMPLE_CIRCLE_REVISION,
         tags: c.tags,
         notes: c.notes,
         pending_intro: c.pending_intro || undefined,
@@ -332,5 +365,5 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
 export async function canRefreshSampleCircle(ownerFingerprint: string): Promise<boolean> {
   const existing = await getAllContacts(ownerFingerprint);
   if (existing.length === 0) return true;
-  return existing.every((c) => !!(c as { metadata?: { sample?: boolean } }).metadata?.sample);
+  return existing.every((c) => isSampleContact(c as any));
 }

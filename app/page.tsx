@@ -16,7 +16,11 @@ import {
   loadMethodHistory,
   seedDemoMethodHistory,
 } from '@/components/identity/method-history';
-import { seedSampleCircle, canRefreshSampleCircle } from '@/lib/trust/sample-circle';
+import {
+  seedSampleCircle,
+  canRefreshSampleCircle,
+  sampleCircleNeedsUpgrade,
+} from '@/lib/trust/sample-circle';
 import {
   hasIdentity,
   getActiveFingerprint,
@@ -192,7 +196,9 @@ export default function Home() {
     refreshContacts();
   }, [refreshContacts]);
 
-  // Demo circle can refresh when the book is empty or sample-only
+  // Demo circle can refresh when the book is empty or sample-only.
+  // Sample-only books behind SAMPLE_CIRCLE_REVISION auto-upgrade on load
+  // (hard refresh alone used to keep the old IndexedDB roster).
   const [sampleRefreshable, setSampleRefreshable] = useState(false);
   const [methodHistoryTick, setMethodHistoryTick] = useState(0);
   const methodHistory = useMemo(() => {
@@ -207,9 +213,18 @@ export default function Home() {
         if (!cancelled) setSampleRefreshable(false);
         return;
       }
+      const fp = identity.identity.fingerprint;
       try {
-        const ok = await canRefreshSampleCircle(identity.identity.fingerprint);
+        const ok = await canRefreshSampleCircle(fp);
         if (!cancelled) setSampleRefreshable(ok);
+        if (!ok || cancelled) return;
+        const existing = await getAllContacts(fp);
+        if (!sampleCircleNeedsUpgrade(existing)) return;
+        const n = await seedSampleCircle(fp);
+        if (cancelled || n === 0) return;
+        seedDemoMethodHistory(fp);
+        setMethodHistoryTick((t) => t + 1);
+        await refreshContacts();
       } catch {
         if (!cancelled) setSampleRefreshable(false);
       }
@@ -217,7 +232,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [identity, contacts]);
+  }, [identity, contacts, refreshContacts]);
 
   // Loading state
   if (appState === 'checking') {
