@@ -57,6 +57,7 @@ import {
   collectGroupTags,
   computeBrowseClusters,
 } from '@/lib/trust/trust-map-browse-layout';
+import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { loadLocalMethods } from '@/components/identity/local-methods';
 import { hydrateOwnerCard, methodsForLens, methodKindLabel } from '@/components/identity/owner-card';
@@ -178,10 +179,20 @@ export function TrustMap({
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [editGroupName, setEditGroupName] = useState('');
   const [fullscreen, setFullscreen] = useState(false);
-  const { cam, reset: resetVp, zoomBy, applyFit, elRef: viewportElRef, handlers: vpHandlers } = useGraphViewport();
+  const {
+    cam,
+    reset: resetVp,
+    zoomBy,
+    focusOn,
+    applyFit,
+    elRef: viewportElRef,
+    handlers: vpHandlers,
+  } = useGraphViewport();
   const [selectionPanel, setSelectionPanel] = useState<'view' | 'edit' | 'options' | null>(null);
   const [cardAudience, setCardAudience] = useState<CardAsSeenAudience | null>(null);
   const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [pulseId, setPulseId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -296,6 +307,79 @@ export function TrustMap({
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
 
+  const flyToNode = useCallback(
+    (id: string) => {
+      const n = layout.nodes.find((node) => node.id === id);
+      if (n) {
+        focusOn(n.x, n.y, 0.28);
+      } else if (viewMode === 'browse') {
+        for (const cl of browseClusters) {
+          const m = cl.members.find((mem) => mem.id === id);
+          if (m) {
+            focusOn(m.x, m.y, 0.32);
+            break;
+          }
+        }
+      }
+      setFocusId(id);
+      setPulseId(id);
+      setSelectionPanel('view');
+      window.setTimeout(() => setPulseId((cur) => (cur === id ? null : cur)), 1100);
+    },
+    [layout.nodes, focusOn, viewMode, browseClusters],
+  );
+
+  const browseMemberLabels = useMemo(() => {
+    const el = viewportElRef.current;
+    const vw = el?.clientWidth ?? 640;
+    const vh = el?.clientHeight ?? 640;
+    const pxPerWorld = vw / Math.max(cam.w, 1);
+    const q = searchQuery.trim().toLowerCase();
+    const cands: LabelCandidate[] = [];
+    for (const cl of browseClusters) {
+      for (const m of cl.members) {
+        const sx = ((m.x - cam.x) / Math.max(cam.w, 1e-6)) * vw;
+        const sy = ((m.y - cam.y) / Math.max(cam.h, 1e-6)) * vh;
+        const rPx = Math.max(8 * pxPerWorld, 6);
+        const force =
+          m.id === focusId ||
+          m.id === hoverId ||
+          (!!q && m.name.toLowerCase().includes(q));
+        cands.push({
+          id: m.id,
+          name: pxPerWorld < 1.3 ? shortDisplayName(m.name) : m.name,
+          x: sx,
+          y: sy,
+          r: rPx,
+          priority: force ? 'force' : m.trusted ? 'trusted' : 'living',
+        });
+      }
+    }
+    const picks = selectLabels(cands, {
+      viewW: vw,
+      viewH: vh,
+      pxPerWorld,
+      maxLabels: 40,
+      boxW: 64,
+      boxH: 12,
+    });
+    return picks.map((p) => {
+      const wx = cam.x + (p.x / Math.max(vw, 1)) * cam.w;
+      const wy = cam.y + (p.textY / Math.max(vh, 1)) * cam.h;
+      return { id: p.id, name: p.name, x: wx, y: wy };
+    });
+  }, [browseClusters, cam, searchQuery, focusId, hoverId, viewportElRef]);
+
+  /** Enter / unique match → fly-to + pulse. */
+  const runSearchFly = useCallback(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return;
+    const hits = visibleContacts.filter((c) => c.peer_name.toLowerCase().includes(q));
+    if (hits.length === 0) return;
+    const exact = hits.find((c) => c.peer_name.toLowerCase() === q);
+    const pick = exact || (hits.length === 1 ? hits[0] : null);
+    if (pick) flyToNode(pick.peer_fingerprint);
+  }, [searchQuery, visibleContacts, flyToNode]);
 
   const lamped = useMemo(
     () => (focusId ? focusConstellation(focusId, visibleContacts) : null),
@@ -648,6 +732,12 @@ export function TrustMap({
           data-testid="trust-map-search"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              runSearchFly();
+            }
+          }}
           placeholder="Find someone…"
           aria-label="Find someone in your lattice"
           style={{
@@ -657,6 +747,15 @@ export function TrustMap({
             fontSize: 11,
           }}
         />
+        <button
+          type="button"
+          data-testid="trust-map-search-go"
+          aria-label="Fly to search match"
+          onClick={() => runSearchFly()}
+          style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}
+        >
+          Go
+        </button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
@@ -933,10 +1032,16 @@ export function TrustMap({
                             : 'transparent'
                         }
                         stroke={
-                          picked.has(m.id) ? E.accent : m.trusted ? E.accent2 : E.border
+                          picked.has(m.id) || hoverId === m.id
+                            ? E.accent
+                            : m.trusted
+                              ? E.accent2
+                              : E.border
                         }
-                        strokeWidth={m.trusted || picked.has(m.id) ? 1.7 : 1.1}
+                        strokeWidth={m.trusted || picked.has(m.id) || hoverId === m.id ? 1.7 : 1.1}
                         strokeDasharray={m.trusted ? undefined : '2.5 2'}
+                        onPointerEnter={() => setHoverId(m.id)}
+                        onPointerLeave={() => setHoverId((h) => (h === m.id ? null : h))}
                       />
                       <title>{`${m.name}${m.trusted ? ' · trusted' : ' · known'}${m.mutual ? ' · mutual' : ''}`}</title>
                     </g>
@@ -944,6 +1049,20 @@ export function TrustMap({
                 </g>
                 );
               })}
+              {browseMemberLabels.map((lab) => (
+                <text
+                  key={`lbl-${lab.id}`}
+                  x={lab.x}
+                  y={lab.y}
+                  textAnchor="middle"
+                  fill={E.text}
+                  fontSize={Math.max(8, (12 * cam.w) / Math.max(viewportElRef.current?.clientWidth ?? 640, 1))}
+                  fontFamily={E.fontSans}
+                  style={{ pointerEvents: 'none' }}
+                >
+                  {lab.name}
+                </text>
+              ))}
             </svg>
             <p
               style={{
@@ -961,6 +1080,43 @@ export function TrustMap({
             >
               Neighborhoods you named · glow is trust · not a map
             </p>
+            {(hoverId || focusId) && (
+              <div
+                data-testid="trust-map-nameplate"
+                style={{
+                  position: 'absolute',
+                  left: 12,
+                  top: 12,
+                  zIndex: 3,
+                  pointerEvents: 'none',
+                  maxWidth: 'min(280px, 70%)',
+                  padding: '8px 12px',
+                  borderRadius: 10,
+                  background: 'color-mix(in srgb, var(--se-bg) 82%, transparent)',
+                  border: `1px solid ${E.border}`,
+                  backdropFilter: 'blur(12px)',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                {(() => {
+                  const id = hoverId || focusId;
+                  const edge = id ? edgeByFp.get(id) : null;
+                  const name = edge?.peer_name || 'Someone';
+                  const trusted = !!edge?.trusted;
+                  const living = id ? livingNodeIds.has(id) : false;
+                  const mutual = !!edge?.mutual?.reciprocal;
+                  return (
+                    <>
+                      <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text }}>{name}</p>
+                      <p style={{ margin: '4px 0 0', fontSize: 11, color: E.muted }}>
+                        {trusted ? 'Trusted' : living ? 'Known · SVRNTY' : 'Classical book'}
+                        {mutual ? ' · mutual' : ''}
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
 
         ) : (
@@ -969,6 +1125,8 @@ export function TrustMap({
           layout={layout}
           cam={cam}
           focusId={focusId}
+          hoverId={hoverId}
+          pulseId={pulseId}
           constellation={lamped}
           peerChords={peerChords}
           picked={picked}
@@ -976,7 +1134,47 @@ export function TrustMap({
           livingIds={livingNodeIds}
           onNodeClick={handleNodeClick}
           onBackgroundClick={clearFocus}
+          onHoverChange={setHoverId}
         />
+        {(hoverId || focusId) && !isEmpty ? (
+          <div
+            data-testid="trust-map-nameplate"
+            style={{
+              position: 'absolute',
+              left: 12,
+              top: 12,
+              zIndex: 3,
+              pointerEvents: 'none',
+              maxWidth: 'min(280px, 70%)',
+              padding: '8px 12px',
+              borderRadius: 10,
+              background: 'color-mix(in srgb, var(--se-bg) 82%, transparent)',
+              border: `1px solid ${E.border}`,
+              backdropFilter: 'blur(12px)',
+              fontFamily: E.fontSans,
+            }}
+          >
+            {(() => {
+              const id = hoverId || focusId;
+              const edge = id ? edgeByFp.get(id) : null;
+              const node = layout.nodes.find((n) => n.id === id);
+              const name = edge?.peer_name || node?.name || 'Someone';
+              const trusted = !!edge?.trusted || node?.state === 'trusted';
+              const living = id ? livingNodeIds.has(id) : false;
+              const mutual = !!(edge as EdgeExtras | undefined)?.mutual?.reciprocal;
+              return (
+                <>
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text }}>{name}</p>
+                  <p style={{ margin: '4px 0 0', fontSize: 11, color: E.muted }}>
+                    {trusted ? 'Trusted' : living ? 'Known · SVRNTY' : 'Classical book'}
+                    {mutual ? ' · mutual' : ''}
+                    {hoverId && focusId && hoverId !== focusId ? ' · hover' : ''}
+                  </p>
+                </>
+              );
+            })()}
+          </div>
+        ) : null}
         {!isEmpty ? (
           <p
             data-testid="trust-map-legend"

@@ -29,6 +29,12 @@ Fail closed if any piece is missing. **Owner tags never create a peer chord.** T
 
 We did **not** port Three.js. The Cathedral 3D universe is a global knowledge graph; svrnty’s graph is **egocentric + your book**. 2D canvas + camera is the particle-lattice CURSOR.md asks for. Tilt/3D is a later aesthetic pass if Peter wants it — not a new data model.
 
+### Labels at density (LOD)
+- Screen-space names (fixed ~12px), not world-scaled stickers.
+- Far zoom: force-only (lamp / hover / search). Mid: trusted + collision-capped. Near: denser neighborhood labels.
+- Corner **nameplate** always shows who you’re hovering or lamped.
+- Search → Enter/Go flies the camera and pulses the match.
+
 ### What we will not draw
 - Peer↔peer bonds from co-membership, “we both know them,” or friends-of-friends.
 - Mutual-friend **counts** on identity (I-3).

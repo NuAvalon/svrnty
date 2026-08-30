@@ -6,14 +6,7 @@ import { hitTestNodes } from '@/lib/trust/graph-camera';
 import type { LaidOutNode, TrustLayout } from '@/lib/trust/trust-map-layout';
 import type { FocusConstellation } from '@/lib/trust/constellation';
 import type { WitnessedPeerChord } from '@/lib/trust/peer-trust-chords';
-
-function safeLabel(s: string, max = 22): string {
-  return s
-    .normalize('NFC')
-    .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
-    .replace(/[\x00-\x1f]/g, '')
-    .slice(0, max);
-}
+import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 
 function worldToScreen(cam: Camera, w: number, h: number, x: number, y: number) {
   return {
@@ -26,6 +19,8 @@ export function TrustMapGalaxy({
   layout,
   cam,
   focusId,
+  hoverId,
+  pulseId,
   constellation,
   peerChords = [],
   picked,
@@ -33,25 +28,34 @@ export function TrustMapGalaxy({
   livingIds,
   onNodeClick,
   onBackgroundClick,
+  onHoverChange,
 }: {
   layout: TrustLayout;
   cam: Camera;
   focusId: string | null;
+  hoverId?: string | null;
+  /** Brief search / fly-to pulse target. */
+  pulseId?: string | null;
   constellation: FocusConstellation | null;
-  /** Open-visibility witnessed peer trust (Peter's spec) — always drawn, brighter when lamped. */
   peerChords?: WitnessedPeerChord[];
   picked: Set<string>;
   query: string;
-  /** Nodes with a living key (fingerprint ≡ H(pubkey)). Classical book = hollow. */
   livingIds?: Set<string>;
   onNodeClick: (id: string, multi: boolean) => void;
   onBackgroundClick: () => void;
+  onHoverChange?: (id: string | null) => void;
 }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
   const camRef = useRef(cam);
   camRef.current = cam;
+  const hoverRef = useRef<string | null>(hoverId ?? null);
+  hoverRef.current = hoverId ?? null;
+  const pulseRef = useRef(pulseId ?? null);
+  pulseRef.current = pulseId ?? null;
+  const pulseT0 = useRef(0);
+  const rafRef = useRef<number | null>(null);
 
   const paint = useCallback(() => {
     const canvas = ref.current;
@@ -77,8 +81,9 @@ export function TrustMapGalaxy({
     const q = query.trim().toLowerCase();
     const lit = constellation?.members ?? new Map();
     const pxPerWorld = w / Math.max(C.w, 1);
-    const showLabels = pxPerWorld > 0.85 || !!focusId || q.length > 0;
     const self = worldToScreen(C, w, h, L.self.x, L.self.y);
+    const hover = hoverRef.current;
+    const pulse = pulseRef.current;
 
     // Dim spokes to everyone — the book is yours. Brighten the lamped constellation.
     for (const n of L.nodes) {
@@ -162,14 +167,32 @@ export function TrustMapGalaxy({
     ctx.fillStyle = '#fbead2';
     ctx.fill();
 
+    const candidates: LabelCandidate[] = [];
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+
     for (const n of L.nodes) {
       const p = worldToScreen(C, w, h, n.x, n.y);
       const isFocus = focusId === n.id;
       const isLit = isFocus || lit.has(n.id);
       const isPick = picked.has(n.id);
+      const isHover = hover === n.id;
       const match = q && n.name.toLowerCase().includes(q);
-      const dim = focusId && !isLit && !match;
-      const r = (isFocus || isPick ? n.radius + 2 : n.radius) * Math.min(2.2, Math.max(0.7, pxPerWorld));
+      const dim = focusId && !isLit && !match && !isHover;
+      const r = (isFocus || isPick || isHover ? n.radius + 2 : n.radius) * Math.min(2.2, Math.max(0.7, pxPerWorld));
+
+      if (pulse === n.id) {
+        if (!pulseT0.current) pulseT0.current = now;
+        const t = (now - pulseT0.current) / 900;
+        if (t < 1) {
+          const ring = r + 6 + t * 18;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, ring, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(249,168,37,${(1 - t) * 0.7})`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+      }
+
       if (n.state === 'trusted') {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
@@ -194,23 +217,54 @@ export function TrustMapGalaxy({
         ctx.lineWidth = 1.1;
         ctx.stroke();
       }
-      if (isPick) {
+      if (isPick || isHover) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2);
         ctx.strokeStyle = '#f9a825';
         ctx.lineWidth = 1.2;
         ctx.stroke();
       }
-      const label = showLabels && (isLit || isFocus || match || pxPerWorld > 1.4);
-      if (label) {
-        ctx.font = '11px "Space Grotesk", sans-serif';
-        ctx.fillStyle = dim ? 'rgba(201,162,113,0.35)' : '#fbead2';
-        ctx.textAlign = 'center';
-        ctx.fillText(safeLabel(n.name), p.x, p.y + r + 12);
-      }
+
+      const force = !!(isLit || isFocus || match || isHover);
+      let priority: LabelCandidate['priority'] = 'known';
+      if (force) priority = 'force';
+      else if (n.state === 'trusted') priority = 'trusted';
+      else if (living.has(n.id)) priority = 'living';
+      candidates.push({
+        id: n.id,
+        name: pxPerWorld < 1.4 ? shortDisplayName(n.name) : n.name,
+        x: p.x,
+        y: p.y,
+        r,
+        priority,
+      });
     }
 
-    ctx.font = '11px "Space Grotesk", sans-serif';
+    // Screen-space labels (fixed CSS px font) + collision LOD
+    const labels = selectLabels(candidates, {
+      viewW: w,
+      viewH: h,
+      pxPerWorld,
+      maxLabels: 56,
+      boxW: pxPerWorld < 1.2 ? 56 : 78,
+      boxH: 14,
+      pad: 3,
+    });
+    ctx.font = '12px "Space Grotesk", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    for (const lab of labels) {
+      const forced = candidates.find((c) => c.id === lab.id)?.priority === 'force';
+      ctx.fillStyle = forced ? '#fbead2' : 'rgba(251,234,210,0.82)';
+      // Soft plate for legibility on dense fields
+      const tw = ctx.measureText(lab.name).width;
+      ctx.fillStyle = 'rgba(15,10,6,0.55)';
+      ctx.fillRect(lab.x - tw / 2 - 4, lab.textY - 11, tw + 8, 14);
+      ctx.fillStyle = forced ? '#fbead2' : 'rgba(251,234,210,0.88)';
+      ctx.fillText(lab.name, lab.x, lab.textY);
+    }
+
+    ctx.font = '12px "Space Grotesk", sans-serif';
     ctx.fillStyle = '#c9a271';
     ctx.textAlign = 'center';
     ctx.fillText('You', self.x, self.y + 22);
@@ -218,7 +272,25 @@ export function TrustMapGalaxy({
 
   useEffect(() => {
     paint();
-  }, [paint, layout, cam, focusId, constellation, peerChords, picked, query]);
+  }, [paint, layout, cam, focusId, constellation, peerChords, picked, query, hoverId, pulseId]);
+
+  useEffect(() => {
+    if (!pulseId) {
+      pulseT0.current = 0;
+      return;
+    }
+    pulseT0.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const tick = () => {
+      paint();
+      const elapsed =
+        (typeof performance !== 'undefined' ? performance.now() : Date.now()) - pulseT0.current;
+      if (elapsed < 1000) rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+    };
+  }, [pulseId, paint]);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -259,6 +331,22 @@ export function TrustMapGalaxy({
       }}
       onPointerCancel={() => {
         drag.current = null;
+      }}
+      onPointerMove={(e) => {
+        const n = hit(e.clientX, e.clientY);
+        const next = n?.id ?? null;
+        if (next !== hoverRef.current) {
+          hoverRef.current = next;
+          onHoverChange?.(next);
+          paint();
+        }
+      }}
+      onPointerLeave={() => {
+        if (hoverRef.current) {
+          hoverRef.current = null;
+          onHoverChange?.(null);
+          paint();
+        }
       }}
       onPointerUp={(e) => {
         const start = drag.current;

@@ -12,6 +12,7 @@ import {
   panCamera,
   zoomCamera,
   cameraCenter,
+  cameraLookingAt,
   zoomLimits,
   wheelZoomFactor,
 } from '@/lib/trust/graph-camera';
@@ -71,6 +72,25 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
     },
     [zoomAtClient],
   );
+
+  /** Fly the camera to a world point (search / lamp). Optional tighter window. */
+  const focusOn = useCallback((worldX: number, worldY: number, zoomFactor = 0.35) => {
+    setCam((prev) => {
+      const fitW = fitRef.current.w;
+      const targetW = Math.min(
+        prev.w,
+        Math.max(minWRef.current, fitW * zoomFactor),
+      );
+      return cameraLookingAt(
+        prev,
+        worldX,
+        worldY,
+        targetW,
+        minWRef.current,
+        maxWRef.current,
+      );
+    });
+  }, []);
 
   useEffect(() => {
     const el = elRef.current;
@@ -173,6 +193,7 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
     cam,
     reset,
     zoomBy,
+    focusOn,
     applyFit,
     elRef,
     handlers: {

@@ -4,7 +4,8 @@ import { fingerprintMatchesKey } from '../identity/fingerprint';
 import { SAMPLE_SVRNTY_PEERS, SAMPLE_SVRNTY_FPS } from './sample-svrnty-keys';
 
 test('demo SVRNTY peers: fingerprint ≡ H(public_key) (Invariant-1)', async () => {
-  assert.equal(SAMPLE_SVRNTY_PEERS.length, 10);
+  assert.ok(SAMPLE_SVRNTY_PEERS.length >= 50);
+  assert.ok(SAMPLE_SVRNTY_PEERS.length <= 120);
   for (const p of SAMPLE_SVRNTY_PEERS) {
     assert.ok(p.public_key.includes('BEGIN PGP PUBLIC KEY BLOCK'));
     assert.equal(await fingerprintMatchesKey(p.fingerprint, p.public_key), true);

@@ -154,3 +154,24 @@ export function panCamera(cam: Camera, dxWorld: number, dyWorld: number): Camera
 export function cameraCenter(cam: Camera): { x: number; y: number } {
   return { x: cam.x + cam.w / 2, y: cam.y + cam.h / 2 };
 }
+
+/** Center the camera on a world point, optionally tightening the window (zoom in). */
+export function cameraLookingAt(
+  cam: Camera,
+  worldX: number,
+  worldY: number,
+  worldW?: number,
+  minW = 36,
+  maxW = 2400,
+): Camera {
+  const lo = Math.min(minW, maxW);
+  const hi = Math.max(minW, maxW);
+  const w = worldW != null ? Math.min(hi, Math.max(lo, worldW)) : cam.w;
+  const h = (cam.h / Math.max(cam.w, 1e-6)) * w;
+  return {
+    x: worldX - w / 2,
+    y: worldY - h / 2,
+    w,
+    h,
+  };
+}
