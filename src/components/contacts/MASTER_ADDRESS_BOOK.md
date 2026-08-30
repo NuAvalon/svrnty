@@ -7,7 +7,7 @@
 - **Select multiple** works on every scope (not only SVRN). Bulk Trust / Revoke apply to SVRN rows in the selection; Block / Delete / **Add to group** apply to all selected.
 - **Groups** = owner-local private tags (`metadata.tags`), same model as Social Graph — inline label + reuse chips; tags render on list rows. Never published (strip-on-wire).
 - Classical contacts: editable; **SVRN network contacts: edit locked** (key-bound).
-- Detail: Call / Text / WhatsApp / Signal / Email chips (CUR-3 allowlist) + **Invite to SVRNTY** (link or QR).
+- Detail: compact **Reach / Card / Manage** tabs (phone + web) — viewport-clamped with always-visible Close (tall single-scroll was trapping the Radix X off-screen). Call / Text / WhatsApp / Signal / Email chips (CUR-3 allowlist) + **Invite to SVRNTY** (link or QR).
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).
 
 ## ★ Team asks (need fleet answers — not review comments)

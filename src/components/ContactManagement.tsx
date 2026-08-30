@@ -6,9 +6,9 @@ import { Input } from '@/components/ui/input';
 import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
-  Shield, Mail, UserPlus, Search,
-  Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, Eye, Phone, Link2, AtSign, ShieldOff, ShieldCheck, Copy, HeartCrack
+  Shield, UserPlus, Search, Share2,
+  Check, Edit, Download, Upload, RefreshCw, FileJson, Eye,
+  ShieldCheck, Copy
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -25,7 +25,7 @@ import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookList';
-import { ContactReachActions } from '@/components/contacts/ContactReachActions';
+import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { createRelay } from '@/lib/sync/relay';
@@ -43,13 +43,6 @@ import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import type { TrustEdge } from '@/lib/trust/types';
-import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
-import {
-  safeEmailLink,
-  safePhoneLink,
-  safeUrlLink,
-  safeHandleLink,
-} from '@/lib/contacts/safe-contact-link';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
   applyTrustAction,
@@ -1310,216 +1303,34 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </DialogContent>
         </Dialog>
 
-        {/* Contact Detail */}
-        <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-          <DialogContent className="sm:max-w-lg">
-            {selectedContact && (
-              <>
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
-                    <div className={`flex-shrink-0 rounded-full h-8 w-8 flex items-center justify-center ${
-                      isTrusted(selectedContact) ? 'bg-amber-500/15' : 'bg-gray-500/15'
-                    }`}>
-                      <TrustIcon contact={selectedContact} />
-                    </div>
-                    <span>{selectedContact.name}</span>
-                  </DialogTitle>
-                  <DialogDescription>Contact details and trust management.</DialogDescription>
-                </DialogHeader>
-
-                <div className="space-y-5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Email</h4>
-                      <div className="flex items-center gap-1 mt-1">
-                        <Mail className="h-4 w-4 text-muted-foreground" />
-                        <ContactMethodLink safe={safeEmailLink(selectedContact.email)} />
-                      </div>
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trust</h4>
-                      <div className="mt-1"><TrustBadge contact={selectedContact} /></div>
-                    </div>
-                  </div>
-
-                  {selectedContact.contact_info?.emails?.some(Boolean) && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        More email{selectedContact.contact_info.emails.filter(Boolean).length > 1 ? 's' : ''}
-                      </h4>
-                      <div className="mt-1 space-y-1">
-                        {selectedContact.contact_info.emails.filter(Boolean).map((email, i) => (
-                          <div key={i} className="flex items-center gap-1">
-                            <Mail className="h-4 w-4 text-muted-foreground" />
-                            <ContactMethodLink safe={safeEmailLink(email)} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedContact.contact_info?.phones?.some(Boolean) && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Phone{selectedContact.contact_info.phones.filter(Boolean).length > 1 ? 's' : ''}
-                      </h4>
-                      <div className="mt-1 space-y-1">
-                        {selectedContact.contact_info.phones.filter(Boolean).map((phone, i) => (
-                          <div key={i} className="flex items-center gap-1">
-                            <Phone className="h-4 w-4 text-muted-foreground" />
-                            <ContactMethodLink safe={safePhoneLink(phone)} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedContact.contact_info?.urls?.some(Boolean) && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Link{selectedContact.contact_info.urls.filter(Boolean).length > 1 ? 's' : ''}
-                      </h4>
-                      <div className="mt-1 space-y-1">
-                        {selectedContact.contact_info.urls.filter(Boolean).map((url, i) => (
-                          <div key={i} className="flex items-center gap-1 min-w-0">
-                            <Link2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                            <ContactMethodLink safe={safeUrlLink(url)} className="truncate" />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedContact.contact_info?.handles && Object.keys(selectedContact.contact_info.handles).length > 0 && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Handles</h4>
-                      <div className="mt-1 space-y-1">
-                        {Object.entries(selectedContact.contact_info.handles).map(([platform, handle]) => (
-                          <div key={platform} className="flex items-center gap-1 min-w-0">
-                            <AtSign className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                            <span className="truncate">
-                              <span className="text-muted-foreground">{platform}: </span>
-                              <ContactMethodLink safe={safeHandleLink(platform, handle)} />
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Fingerprint</h4>
-                    <div className="mt-1 font-mono text-sm bg-muted p-2 rounded border border-border/40">
-                      {selectedContact.fingerprint.match(/.{1,4}/g)?.join(' ')}
-                    </div>
-                  </div>
-
-                  {selectedContact.metadata?.notes && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes</h4>
-                      <div className="mt-1 p-3 bg-muted rounded-md">
-                        <p className="text-sm whitespace-pre-wrap">{selectedContact.metadata.notes}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Added</h4>
-                      <p className="mt-1">{new Date(selectedContact.added_at).toLocaleDateString()}</p>
-                    </div>
-                    {selectedContact.verified_at && (
-                      <div>
-                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trusted Since</h4>
-                        <p className="mt-1">{new Date(selectedContact.verified_at).toLocaleDateString()}</p>
-                      </div>
-                    )}
-                  </div>
-
-
-                  <ContactReachActions
-                    info={{
-                      email: selectedContact.email,
-                      phones: selectedContact.contact_info?.phones || [],
-                      handles: selectedContact.contact_info?.handles || {},
-                    }}
-                  />
-
-                  {!isSvrnNetworkContact(selectedContact) && (
-                    <div className="rounded-lg border border-border/40 p-3 space-y-2">
-                      <p className="text-xs text-muted-foreground">
-                        Classical contact — invite them onto SVRNTY with a link or QR.
-                      </p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setInviteOpen(true)}
-                      >
-                        Invite to SVRNTY
-                      </Button>
-                    </div>
-                  )}
-
-
-                  {/* Actions — CUR-5: confirm before trust / break / remove / block */}
-                  <div className="border-t border-border/40 pt-4 flex flex-col sm:flex-row gap-2 justify-between">
-                    <div className="flex gap-2 flex-wrap">
-                      {!isContactBlocked(selectedContact) && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust')
-                          }
-                          className={isTrusted(selectedContact) ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}
-                        >
-                          {isTrusted(selectedContact)
-                            ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</>
-                            : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>
-                          }
-                        </Button>
-                      )}
-                      {isSvrnNetworkContact(selectedContact) ? (
-                        <Button variant="outline" size="sm" disabled title="SVRN network contacts are key-bound — classical fields are not editable here">
-                          <Edit className="h-4 w-4 mr-1" /> Edit locked
-                        </Button>
-                      ) : (
-                        <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
-                          <Edit className="h-4 w-4 mr-1" /> Edit
-                        </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => { setShowShardGiveDialog(true); setShowDetailDialog(false); }}
-                        className="text-amber-400 border-amber-500/30"
-                      >
-                        <HeartCrack className="h-4 w-4 mr-1" /> Give a piece
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block')
-                        }
-                        className="text-amber-400/90 border-amber-500/20"
-                      >
-                        {isContactBlocked(selectedContact) ? 'Unblock' : 'Block'}
-                      </Button>
-                    </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => setConfirmKind('remove')}
-                    >
-                      <Trash2 className="h-4 w-4 mr-1" /> Remove
-                    </Button>
-                  </div>
-                </div>
-              </>
-            )}
-          </DialogContent>
-        </Dialog>
+        <ContactDetailDialog
+          open={showDetailDialog}
+          contact={selectedContact}
+          onClose={() => setShowDetailDialog(false)}
+          trustBadge={selectedContact ? <TrustBadge contact={selectedContact} /> : null}
+          trustIcon={selectedContact ? <TrustIcon contact={selectedContact} className="h-4 w-4" /> : null}
+          isTrusted={!!selectedContact && isTrusted(selectedContact)}
+          isBlocked={!!selectedContact && isContactBlocked(selectedContact)}
+          onTrustToggle={() => {
+            if (!selectedContact) return;
+            setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust');
+          }}
+          onEdit={() => {
+            if (!selectedContact) return;
+            openEditDialog(selectedContact);
+            setShowDetailDialog(false);
+          }}
+          onGivePiece={() => {
+            setShowShardGiveDialog(true);
+            setShowDetailDialog(false);
+          }}
+          onBlockToggle={() => {
+            if (!selectedContact) return;
+            setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block');
+          }}
+          onRemove={() => setConfirmKind('remove')}
+          onInvite={() => setInviteOpen(true)}
+        />
 
         <TrustActionConfirmDialog
           open={!!confirmKind && !!confirmTarget}
