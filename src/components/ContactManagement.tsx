@@ -8,7 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
   Check, Edit, Download, Upload, RefreshCw, FileJson, Eye,
-  ShieldCheck, Copy, MoreHorizontal
+  ShieldCheck, Copy, MoreHorizontal, Users
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -179,6 +179,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   /** Inline group label for multi-select (same local-tag model as Social Graph). */
   const [bulkGroupName, setBulkGroupName] = useState('');
   const [bulkGroupNote, setBulkGroupNote] = useState<string | null>(null);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [editingGroupTag, setEditingGroupTag] = useState<string | null>(null);
+  const [editGroupTagName, setEditGroupTagName] = useState('');
+  const [groupFilterTag, setGroupFilterTag] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [inviteLoading, setInviteLoading] = useState(false);
@@ -277,6 +281,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       if (svrnFilter === 'trusted' && !isTrusted(contact)) return false;
       if (svrnFilter === 'known' && isTrusted(contact)) return false;
     }
+    if (groupFilterTag && !(contact.metadata?.tags || []).includes(groupFilterTag)) return false;
     return true;
   });
 
@@ -971,6 +976,29 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </DropdownMenu>
           <button
             type="button"
+            data-testid="book-groups-btn"
+            onClick={() => setGroupsOpen((v) => !v)}
+            style={{
+              fontFamily: E.fontSans,
+              fontSize: 11,
+              padding: '4px 10px',
+              borderRadius: 8,
+              border: `1px solid ${groupsOpen || groupFilterTag ? E.borderLit : E.border}`,
+              background: groupsOpen
+                ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+                : 'transparent',
+              color: E.accent,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <Users className="h-3.5 w-3.5" />
+            Groups{groupFilterTag ? ` · ${groupFilterTag}` : knownGroupTags.length ? ` (${knownGroupTags.length})` : ''}
+          </button>
+          <button
+            type="button"
             onClick={() => {
               setSelectionMode((v) => !v);
               setSelectedIds(new Set());
@@ -992,6 +1020,204 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             {selectionMode ? 'Done selecting' : 'Select multiple'}
           </button>
         </div>
+
+        {groupsOpen ? (
+          <div
+            data-testid="book-groups-panel"
+            className="mb-3 p-3 rounded-xl"
+            style={{ border: `1px solid ${E.border}`, background: E.surfaceSolid, fontFamily: E.fontSans }}
+          >
+            <div className="flex justify-between gap-2 mb-2">
+              <p style={{ margin: 0, fontSize: 12, color: E.muted }}>
+                Local groups · select · rename · remove · never published
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setGroupFilterTag(null);
+                  setGroupsOpen(false);
+                }}
+                style={{
+                  fontSize: 11,
+                  padding: '4px 8px',
+                  borderRadius: 8,
+                  border: `1px solid ${E.border}`,
+                  background: 'transparent',
+                  color: E.muted,
+                  cursor: 'pointer',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              <button
+                type="button"
+                onClick={() => setGroupFilterTag(null)}
+                style={{
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${groupFilterTag === null ? E.borderLit : E.border}`,
+                  background: groupFilterTag === null ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)' : 'transparent',
+                  color: E.muted,
+                  cursor: 'pointer',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                All contacts
+              </button>
+            </div>
+            {knownGroupTags.length === 0 ? (
+              <p style={{ margin: 0, fontSize: 12, color: E.dim }}>
+                No groups yet — Select multiple, then Add to group.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {knownGroupTags.map((tag) => {
+                  const count = contacts.filter((c) => (c.metadata?.tags || []).includes(tag)).length;
+                  const isEditing = editingGroupTag === tag;
+                  return (
+                    <li
+                      key={tag}
+                      className="flex flex-wrap gap-2 items-center"
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: 10,
+                        border: `1px solid ${groupFilterTag === tag ? E.borderLit : E.border}`,
+                        background:
+                          groupFilterTag === tag
+                            ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                            : 'transparent',
+                      }}
+                    >
+                      {isEditing ? (
+                        <>
+                          <Input
+                            value={editGroupTagName}
+                            onChange={(e) => setEditGroupTagName(e.target.value)}
+                            className="flex-1 min-w-[120px]"
+                            aria-label={`Rename ${tag}`}
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={loading || !editGroupTagName.trim()}
+                            onClick={async () => {
+                              const next = editGroupTagName.trim();
+                              if (!next || next === tag) return;
+                              try {
+                                for (const c of contacts) {
+                                  const prev = c.metadata?.tags || [];
+                                  if (!prev.includes(tag)) continue;
+                                  const tags = Array.from(new Set(prev.map((t) => (t === tag ? next : t))));
+                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                }
+                                if (groupFilterTag === tag) setGroupFilterTag(next);
+                                setEditingGroupTag(null);
+                                setEditGroupTagName('');
+                                setBulkGroupNote(`Renamed “${tag}” → “${next}” (local only).`);
+                                await loadContacts();
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : 'Could not rename group');
+                              }
+                            }}
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setEditingGroupTag(null);
+                              setEditGroupTagName('');
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setGroupFilterTag((cur) => (cur === tag ? null : tag))}
+                            style={{
+                              flex: 1,
+                              textAlign: 'left',
+                              background: 'none',
+                              border: 'none',
+                              color: E.text,
+                              cursor: 'pointer',
+                              fontFamily: E.fontSans,
+                              fontSize: 13,
+                              padding: 0,
+                            }}
+                          >
+                            {tag}
+                            <span style={{ color: E.dim, marginLeft: 8, fontSize: 11 }}>{count}</span>
+                          </button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const ids = contacts
+                                .filter((c) => (c.metadata?.tags || []).includes(tag))
+                                .map((c) => c.id);
+                              setSelectedIds(new Set(ids));
+                              setSelectionMode(true);
+                              setGroupFilterTag(tag);
+                              setGroupsOpen(false);
+                            }}
+                          >
+                            Select
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setEditingGroupTag(tag);
+                              setEditGroupTagName(tag);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={loading}
+                            onClick={async () => {
+                              if (!window.confirm(`Remove group “${tag}” from all contacts? Tags are local-only.`)) return;
+                              try {
+                                for (const c of contacts) {
+                                  const prev = c.metadata?.tags || [];
+                                  if (!prev.includes(tag)) continue;
+                                  const tags = prev.filter((t) => t !== tag);
+                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                }
+                                if (groupFilterTag === tag) setGroupFilterTag(null);
+                                setBulkGroupNote(`Removed group “${tag}”.`);
+                                await loadContacts();
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : 'Could not remove group');
+                              }
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        ) : null}
 
         {showBlocked ? (
           <p

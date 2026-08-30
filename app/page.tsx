@@ -557,6 +557,44 @@ export default function Home() {
                   }
                   await refreshContacts();
                 }}
+                onRenameGroup={async (from, to) => {
+                  const next = to.trim();
+                  if (!next || next === from) return;
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  for (const rec of records) {
+                    const prev =
+                      (rec as any)?.tags ||
+                      (rec as any)?.metadata?.tags ||
+                      contacts.find((c) => c.id === rec.id)?.tags ||
+                      [];
+                    if (!prev.includes(from)) continue;
+                    const tags = Array.from(
+                      new Set(prev.map((t: string) => (t === from ? next : t))),
+                    );
+                    await updateContact(rec.id, {
+                      tags,
+                      metadata: { ...((rec as any)?.metadata || {}), tags },
+                    } as any);
+                  }
+                  await refreshContacts();
+                }}
+                onDeleteGroup={async (tag) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  for (const rec of records) {
+                    const prev =
+                      (rec as any)?.tags ||
+                      (rec as any)?.metadata?.tags ||
+                      contacts.find((c) => c.id === rec.id)?.tags ||
+                      [];
+                    if (!prev.includes(tag)) continue;
+                    const tags = prev.filter((t: string) => t !== tag);
+                    await updateContact(rec.id, {
+                      tags,
+                      metadata: { ...((rec as any)?.metadata || {}), tags },
+                    } as any);
+                  }
+                  await refreshContacts();
+                }}
                 onTrustToggle={async (edge) => {
                   const nextTrusted = !edge.trusted;
                   await updateContact(edge.id, {

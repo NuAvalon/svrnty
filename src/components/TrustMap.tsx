@@ -17,7 +17,9 @@
 
 "use client";
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import { Maximize2, Minimize2, ZoomIn, ZoomOut, Users } from 'lucide-react';
+import { useGraphViewport } from '@/lib/trust/use-graph-viewport';
 import type { TrustEdge } from '@/lib/trust/types';
 import {
   computeTrustLayout,
@@ -82,6 +84,10 @@ interface TrustMapProps {
   sampleRefreshable?: boolean;
   /** Assign a local group label (tag) to selected peers */
   onAssignGroup?: (fingerprints: string[], groupName: string) => void | Promise<void>;
+  /** Rename a local group tag across members (owner-private). */
+  onRenameGroup?: (from: string, to: string) => void | Promise<void>;
+  /** Strip a local group tag from every contact that has it. */
+  onDeleteGroup?: (tag: string) => void | Promise<void>;
   onTrustToggle?: (edge: TrustEdge) => void | Promise<void>;
   onRemoveContact?: (edge: TrustEdge) => void | Promise<void>;
   /** Local block / unblock — owner-only flag; relay stays blind (CUR-5). */
@@ -215,6 +221,8 @@ export function TrustMap({
   onLoadSample,
   sampleRefreshable,
   onAssignGroup,
+  onRenameGroup,
+  onDeleteGroup,
   onTrustToggle,
   onRemoveContact,
   onBlockContact,
@@ -230,8 +238,28 @@ export function TrustMap({
   const [viewMode, setViewMode] = useState<'orbit' | 'browse'>('orbit');
   const [selectMode, setSelectMode] = useState(false);
   const [groupFilter, setGroupFilter] = useState<string | null>(null);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<string | null>(null);
+  const [editGroupName, setEditGroupName] = useState('');
+  const [fullscreen, setFullscreen] = useState(false);
+  const { vp, reset: resetVp, zoomBy, handlers: vpHandlers } = useGraphViewport();
+  const [selectionPanel, setSelectionPanel] = useState<'view' | 'edit' | 'options' | null>(null);
   const [cardAudience, setCardAudience] = useState<CardAsSeenAudience | null>(null);
   const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
 
   const visibleContacts = useMemo(() => {
     return contacts.filter((c) => {
@@ -472,11 +500,50 @@ export function TrustMap({
       setGroupNote(`Added ${picked.size} to “${name}”.`);
       setGroupName('');
       setPicked(new Set());
+      setGroupsOpen(true);
     } catch {
       setGroupNote('Could not save group label.');
     } finally {
       setAssigning(false);
     }
+  };
+
+  const handleRenameGroup = async (from: string) => {
+    const to = editGroupName.trim();
+    if (!to || !onRenameGroup || to === from) return;
+    try {
+      await onRenameGroup(from, to);
+      if (groupFilter === from) setGroupFilter(to);
+      setEditingGroup(null);
+      setEditGroupName('');
+      setGroupNote(`Renamed “${from}” → “${to}” (local only).`);
+    } catch {
+      setGroupNote('Could not rename group.');
+    }
+  };
+
+  const handleDeleteGroup = async (tag: string) => {
+    if (!onDeleteGroup) return;
+    if (!window.confirm(`Remove group “${tag}” from all contacts? Tags are local-only.`)) return;
+    try {
+      await onDeleteGroup(tag);
+      if (groupFilter === tag) setGroupFilter(null);
+      setEditingGroup(null);
+      setGroupNote(`Removed group “${tag}”.`);
+    } catch {
+      setGroupNote('Could not remove group.');
+    }
+  };
+
+  const selectGroupMembers = (tag: string) => {
+    const fps = contacts
+      .filter((c) => (c.tags || []).includes(tag))
+      .map((c) => c.peer_fingerprint);
+    setPicked(new Set(fps));
+    setSelectMode(true);
+    setGroupFilter(tag);
+    setGroupsOpen(false);
+    setSelectionPanel('options');
   };
 
   const runAction = async (fn: () => void | Promise<void>, okMsg: string) => {
@@ -492,8 +559,25 @@ export function TrustMap({
     }
   };
 
+  const shellStyle: React.CSSProperties = fullscreen
+    ? {
+        position: 'fixed',
+        inset: 0,
+        zIndex: 80,
+        width: '100%',
+        maxWidth: 'none',
+        margin: 0,
+        padding: 12,
+        boxSizing: 'border-box',
+        background: E.bgCss,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }
+    : { width: '100%', maxWidth: 560, margin: '0 auto' };
+
   return (
-    <div style={{ width: '100%', maxWidth: 560, margin: '0 auto' }}>
+    <div style={shellStyle} data-testid="trust-map-shell" data-fullscreen={fullscreen ? '1' : '0'}>
       <div
         style={{
           display: 'flex',
@@ -502,6 +586,7 @@ export function TrustMap({
           alignItems: 'center',
           marginBottom: 10,
           fontFamily: E.fontSans,
+          flexShrink: 0,
         }}
       >
         <div
@@ -538,7 +623,12 @@ export function TrustMap({
           type="button"
           onClick={() => {
             setSelectMode((v) => !v);
-            if (selectMode) setPicked(new Set());
+            if (selectMode) {
+              setPicked(new Set());
+              setSelectionPanel(null);
+            } else {
+              setSelectionPanel('options');
+            }
           }}
           style={{
             fontSize: 11,
@@ -555,15 +645,90 @@ export function TrustMap({
         >
           {selectMode ? 'Done selecting' : 'Select'}
         </button>
-        {allGroupTags.length > 0 ? (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', flex: 1 }}>
+        <button
+          type="button"
+          data-testid="trust-map-groups-btn"
+          onClick={() => setGroupsOpen((v) => !v)}
+          style={{
+            fontSize: 11,
+            padding: '6px 10px',
+            borderRadius: 8,
+            border: `1px solid ${groupsOpen || groupFilter ? E.borderLit : E.border}`,
+            cursor: 'pointer',
+            fontFamily: E.fontSans,
+            background: groupsOpen
+              ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+              : 'transparent',
+            color: E.accent,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <Users className="h-3.5 w-3.5" />
+          Groups{groupFilter ? ` · ${groupFilter}` : allGroupTags.length ? ` (${allGroupTags.length})` : ''}
+        </button>
+        <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(0.88)} style={iconBtnStyle()}>
+            <ZoomOut className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.12)} style={iconBtnStyle()}>
+            <ZoomIn className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" aria-label="Reset view" onClick={resetVp} style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}>
+            1×
+          </button>
+          <button
+            type="button"
+            data-testid="trust-map-fullscreen"
+            aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
+            onClick={() => {
+              setFullscreen((v) => !v);
+              resetVp();
+            }}
+            style={iconBtnStyle()}
+          >
+            {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {groupsOpen ? (
+        <div
+          data-testid="trust-map-groups-panel"
+          style={{
+            marginBottom: 10,
+            padding: 12,
+            borderRadius: 12,
+            border: `1px solid ${E.border}`,
+            background: E.surfaceSolid,
+            fontFamily: E.fontSans,
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <p style={{ margin: 0, fontSize: 12, color: E.muted }}>
+              Local groups · select · rename · remove · never published
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setGroupFilter(null);
+                setGroupsOpen(false);
+              }}
+              style={{ ...iconBtnStyle(), fontSize: 11, padding: '4px 8px' }}
+            >
+              Close
+            </button>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
             <button
               type="button"
               onClick={() => setGroupFilter(null)}
               style={{
-                fontSize: 10,
-                padding: '4px 8px',
-                borderRadius: 6,
+                fontSize: 11,
+                padding: '5px 10px',
+                borderRadius: 8,
                 border: `1px solid ${groupFilter === null ? E.borderLit : E.border}`,
                 background: groupFilter === null ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)' : 'transparent',
                 color: E.muted,
@@ -571,47 +736,118 @@ export function TrustMap({
                 fontFamily: E.fontSans,
               }}
             >
-              All
+              All contacts
             </button>
-            {allGroupTags.map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => setGroupFilter((cur) => (cur === tag ? null : tag))}
-                onDoubleClick={() => openCardPreviewForGroup(tag)}
-                title="Click to filter · double-click to preview your card for this group"
-                style={{
-                  fontSize: 10,
-                  padding: '4px 8px',
-                  borderRadius: 6,
-                  border: `1px solid ${groupFilter === tag ? E.borderLit : E.border}`,
-                  background:
-                    groupFilter === tag
-                      ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
-                      : 'transparent',
-                  color: E.muted,
-                  cursor: 'pointer',
-                  fontFamily: E.fontSans,
-                }}
-              >
-                {tag}
-              </button>
-            ))}
           </div>
-        ) : null}
-      </div>
+          {allGroupTags.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 12, color: E.dim }}>
+              No groups yet — Select seals, then Add to group.
+            </p>
+          ) : (
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {allGroupTags.map((tag) => {
+                const count = contacts.filter((c) => (c.tags || []).includes(tag)).length;
+                const isEditing = editingGroup === tag;
+                return (
+                  <li
+                    key={tag}
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                      alignItems: 'center',
+                      padding: '8px 10px',
+                      borderRadius: 10,
+                      border: `1px solid ${groupFilter === tag ? E.borderLit : E.border}`,
+                      background:
+                        groupFilter === tag
+                          ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                          : 'transparent',
+                    }}
+                  >
+                    {isEditing ? (
+                      <>
+                        <input
+                          value={editGroupName}
+                          onChange={(e) => setEditGroupName(e.target.value)}
+                          style={{ ...fieldStyle(), flex: 1, minWidth: 120 }}
+                          aria-label={`Rename ${tag}`}
+                        />
+                        <ActionBtn label="Save" primary onClick={() => void handleRenameGroup(tag)} />
+                        <ActionBtn
+                          label="Cancel"
+                          onClick={() => {
+                            setEditingGroup(null);
+                            setEditGroupName('');
+                          }}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setGroupFilter((cur) => (cur === tag ? null : tag))}
+                          style={{
+                            flex: 1,
+                            textAlign: 'left',
+                            background: 'none',
+                            border: 'none',
+                            color: E.text,
+                            cursor: 'pointer',
+                            fontFamily: E.fontSans,
+                            fontSize: 13,
+                            padding: 0,
+                          }}
+                        >
+                          {tag}
+                          <span style={{ color: E.dim, marginLeft: 8, fontSize: 11 }}>{count}</span>
+                        </button>
+                        <ActionBtn label="Select" onClick={() => selectGroupMembers(tag)} />
+                        <ActionBtn
+                          label="Edit"
+                          onClick={() => {
+                            setEditingGroup(tag);
+                            setEditGroupName(tag);
+                          }}
+                        />
+                        <ActionBtn label="Card" onClick={() => openCardPreviewForGroup(tag)} />
+                        <ActionBtn label="Remove" danger onClick={() => void handleDeleteGroup(tag)} />
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
+
+
       <div
         data-testid="trust-map"
         style={{
           position: 'relative',
           width: '100%',
-          aspectRatio: '1 / 1',
-          borderRadius: 16,
+          flex: fullscreen ? 1 : undefined,
+          aspectRatio: fullscreen ? undefined : '1 / 1',
+          minHeight: fullscreen ? 0 : undefined,
+          borderRadius: fullscreen ? 12 : 16,
           overflow: 'hidden',
           border: `1px solid ${E.borderLit}`,
           background: E.bgCss,
+          touchAction: 'none',
         }}
+        {...vpHandlers}
       >
+        <div
+          style={{
+            width: '100%',
+            height: '100%',
+            transform: `translate(${vp.tx}px, ${vp.ty}px) scale(${vp.scale})`,
+            transformOrigin: '0 0',
+            willChange: 'transform',
+          }}
+        >
         {viewMode === 'browse' ? (
           <div
             data-testid="trust-map-browse"
@@ -619,18 +855,26 @@ export function TrustMap({
               position: 'relative',
               width: '100%',
               height: '100%',
+              minHeight: fullscreen ? '100%' : undefined,
+              aspectRatio: fullscreen ? undefined : '1 / 1',
               background:
-                'radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--se-accent) 10%, transparent), transparent 55%)',
+                'radial-gradient(ellipse at 42% 38%, color-mix(in srgb, var(--se-accent) 9%, transparent), transparent 58%)',
             }}
           >
-            <svg viewBox={`0 0 ${VIEW} ${VIEW}`} width="100%" height="100%" role="img" aria-label="Browse groups as seal clusters">
+            <svg
+              viewBox={`0 0 ${VIEW} ${VIEW}`}
+              width="100%"
+              height="100%"
+              role="img"
+              aria-label="Browse clusters — trust, known, mutual (not egocentric)"
+            >
               {browseClusters.map((cl) => (
-                <g key={cl.tag}>
+                <g key={cl.tag} data-graph-cluster={cl.tag}>
                   <circle
                     cx={cl.cx}
                     cy={cl.cy}
                     r={cl.r}
-                    fill="color-mix(in srgb, var(--se-accent) 8%, transparent)"
+                    fill="color-mix(in srgb, var(--se-accent) 7%, transparent)"
                     stroke={E.border}
                     strokeWidth={1}
                     strokeDasharray={cl.tag === 'Ungrouped' ? '3 3' : undefined}
@@ -638,14 +882,14 @@ export function TrustMap({
                     onClick={(e) => {
                       e.stopPropagation();
                       setGroupFilter(cl.tag === 'Ungrouped' ? null : cl.tag);
-                      openCardPreviewForGroup(cl.tag === 'Ungrouped' ? 'Ungrouped' : cl.tag);
+                      setGroupsOpen(false);
                     }}
                   >
-                    <title>{`${cl.tag} · ${cl.members.length} · owner group (not inferred trust)`}</title>
+                    <title>{`${cl.tag} · ${cl.trustedCount} trusted · ${cl.knownCount} known · ${cl.mutualCount} mutual · owner group (not inferred)`}</title>
                   </circle>
                   <text
                     x={cl.cx}
-                    y={cl.cy - cl.r - 6}
+                    y={cl.cy - cl.r - 8}
                     textAnchor="middle"
                     fill={E.muted}
                     fontSize={10}
@@ -653,33 +897,58 @@ export function TrustMap({
                   >
                     {cl.tag}
                   </text>
+                  <text
+                    x={cl.cx}
+                    y={cl.cy - cl.r + 4}
+                    textAnchor="middle"
+                    fill={E.dim}
+                    fontSize={8}
+                    fontFamily={E.fontSans}
+                  >
+                    {cl.trustedCount}t · {cl.knownCount}k{cl.mutualCount ? ` · ${cl.mutualCount}↔` : ''}
+                  </text>
                   {cl.members.map((m) => (
                     <g
                       key={m.id}
+                      data-graph-node={m.id}
                       style={{ cursor: 'pointer' }}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleNodeClick(m.id, selectMode || e.shiftKey || e.metaKey || e.ctrlKey);
+                        if (!selectMode) setSelectionPanel('view');
                       }}
                     >
+                      {m.mutual ? (
+                        <circle
+                          cx={m.x}
+                          cy={m.y}
+                          r={picked.has(m.id) ? 15 : 13}
+                          fill="none"
+                          stroke={E.accent2}
+                          strokeWidth={1.2}
+                          strokeOpacity={0.55}
+                        />
+                      ) : null}
                       <circle
                         cx={m.x}
                         cy={m.y}
-                        r={picked.has(m.id) ? 12 : 9}
-                        fill={m.trusted ? 'color-mix(in srgb, var(--se-accent) 35%, transparent)' : 'transparent'}
-                        stroke={picked.has(m.id) ? E.accent : m.trusted ? E.accent : E.border}
-                        strokeWidth={m.trusted || picked.has(m.id) ? 1.6 : 1}
+                        r={picked.has(m.id) ? 11 : 9}
+                        fill={
+                          m.trusted
+                            ? 'color-mix(in srgb, var(--se-accent2) 38%, transparent)'
+                            : 'transparent'
+                        }
+                        stroke={
+                          picked.has(m.id) ? E.accent : m.trusted ? E.accent2 : E.border
+                        }
+                        strokeWidth={m.trusted || picked.has(m.id) ? 1.7 : 1.1}
+                        strokeDasharray={m.trusted ? undefined : '2.5 2'}
                       />
-                      <title>{`${m.name}${m.trusted ? ' · trusted' : ' · known'}`}</title>
+                      <title>{`${m.name}${m.trusted ? ' · trusted' : ' · known'}${m.mutual ? ' · mutual' : ''}`}</title>
                     </g>
                   ))}
                 </g>
               ))}
-              {/* You — soft origin, not a GPS pin */}
-              <circle cx={VIEW / 2} cy={VIEW / 2} r={10} fill={E.accent} opacity={0.85} />
-              <text x={VIEW / 2} y={VIEW / 2 + 22} textAnchor="middle" fill={E.dim} fontSize={9} fontFamily={E.fontSans}>
-                you
-              </text>
             </svg>
             <p
               style={{
@@ -692,11 +961,13 @@ export function TrustMap({
                 color: E.dim,
                 fontFamily: E.fontSans,
                 textAlign: 'center',
+                pointerEvents: 'none',
               }}
             >
-              Clusters = your groups · co-members ≠ trust · reachability, never location
+              Clusters · filled = trusted · dashed = known · outer ring = mutual · not a map
             </p>
           </div>
+
         ) : (
         <>
         <style>{`
@@ -969,6 +1240,78 @@ export function TrustMap({
           </div>
         )}
         </>
+        )}
+        </div>
+
+        {(picked.size > 0 || focusId) && (
+          <div
+            data-testid="trust-map-selection-bar"
+            style={{
+              position: 'absolute',
+              left: 10,
+              right: 10,
+              bottom: 12,
+              zIndex: 5,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              alignItems: 'center',
+              padding: '10px 12px',
+              borderRadius: 12,
+              border: `1px solid ${E.borderLit}`,
+              background: 'color-mix(in srgb, var(--se-surface-solid) 92%, transparent)',
+              backdropFilter: 'blur(12px)',
+              fontFamily: E.fontSans,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span style={{ fontSize: 12, color: E.muted, marginRight: 4 }}>
+              {picked.size > 0 ? `${picked.size} selected` : '1 focused'}
+            </span>
+            <ActionBtn
+              label="View"
+              primary={selectionPanel === 'view'}
+              onClick={() => {
+                setSelectionPanel('view');
+                if (picked.size === 1) {
+                  const id = [...picked][0];
+                  handleNodeClick(id, false);
+                }
+              }}
+            />
+            <ActionBtn
+              label="Edit"
+              primary={selectionPanel === 'edit'}
+              onClick={() => {
+                setSelectionPanel('edit');
+                if (focusId) setEditing(true);
+                else if (picked.size === 1) {
+                  const id = [...picked][0];
+                  handleNodeClick(id, false);
+                  setEditing(true);
+                }
+              }}
+            />
+            <ActionBtn
+              label="Options"
+              primary={selectionPanel === 'options'}
+              onClick={() => setSelectionPanel('options')}
+            />
+            {selectionPanel === 'options' && picked.size > 0 ? (
+              <>
+                <input
+                  type="text"
+                  placeholder="Group label"
+                  value={groupName}
+                  onChange={(e) => setGroupName(e.target.value)}
+                  style={{ ...fieldStyle(), flex: 1, minWidth: 100 }}
+                />
+                <ActionBtn label={assigning ? 'Saving…' : 'Add to group'} primary onClick={() => void handleAssign()} />
+                <ActionBtn label="Card preview" onClick={() => openCardPreviewForSelection()} />
+                <ActionBtn label="Clear" onClick={clearPicks} />
+              </>
+            ) : null}
+          </div>
         )}
       </div>
 
@@ -1419,6 +1762,23 @@ export function TrustMap({
       />
     </div>
   );
+}
+
+
+function iconBtnStyle(): React.CSSProperties {
+  return {
+    fontSize: 11,
+    padding: '6px 8px',
+    borderRadius: 8,
+    border: `1px solid ${E.border}`,
+    background: 'transparent',
+    color: E.muted,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontFamily: E.fontSans,
+  };
 }
 
 function fieldStyle(): React.CSSProperties {

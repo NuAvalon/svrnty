@@ -5,9 +5,11 @@
 - **Contacts** is the **Master Address Book** — flat list, **no living/resting** chrome.
 - Filters: **Classical** · **SVRNTY** (Known / Trusted). Blocked is under **⋯** — not a primary tab.
 - Contact card: Reach / Card tabs + **Actions** menu (trust, edit, give a piece, block, remove).
+- **Groups** button (book + Social Graph) opens a quiet panel to filter / select / rename / remove local tags — not a primary tab.
 - **Select multiple** works on every scope. Bulk Trust / Revoke apply to SVRNTY rows in the selection; Block / Delete / **Add to group** apply to all selected.
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).
-- Social Graph: **Orbit** (vouch ring) + **Browse** (group seal-clusters); Select + groups; **My card as they see it** for a peer/group (disclosure preview — not a send receipt).
+- Social Graph: **Orbit** (vouch ring) + **Browse** (non-egocentric group clusters with trust / known / mutual visible on nodes); **Select** + floating View / Edit / Options bar; **fullscreen** + zoom / pan / pinch.
+- **My card as they see it** for a peer/group (disclosure preview — not a send receipt).
 - Revise contact method: notify **Trusted** or a **local group** chip.
 
 ## ★ Team asks (need fleet answers — not review comments)
@@ -19,3 +21,4 @@
 
 ## Boundary
 No crypto / `visible()` / relay changes. Invite payload = existing signed card → `createRelay` URL.
+Groups remain owner-local private tags (never a server roster). Browse shows witnessed trust/mutual on YOUR edges only — no inferred peer↔peer bonds.
