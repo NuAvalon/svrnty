@@ -241,7 +241,7 @@ export function TrustMap({
     } else {
       applyFit(boundsOf([layout.self, ...layout.nodes], 28), aspect);
     }
-  }, [layout, browseClusters, viewMode, fullscreen, applyFit, viewportElRef]);
+  }, [layout, browseClusters, viewMode, fullscreen, applyFit, viewportElRef, world]);
   const edgeByFp = useMemo(() => {
     const m = new Map<string, EdgeExtras>();
     for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
