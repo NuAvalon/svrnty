@@ -11,6 +11,7 @@ import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 import { SeedRestoreInterstitial } from '@/components/recovery/SeedRestoreInterstitial';
 import { SovereignIdentityCard, type MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { OwnerCardStudio } from '@/components/identity/OwnerCardStudio';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
@@ -1596,6 +1597,20 @@ export function SoverentityFrontend({
           onRevise={(kind) => setReviseKind(kind)}
           onOpenCircle={onOpenCircle}
           onShareIdentity={() => { void handleShareIdentityFromCard(); }}
+        />
+        <OwnerCardStudio
+          fingerprint={identity.identity.fingerprint}
+          email={identity.identity.email}
+          onEmailChange={async (value) => {
+            const fp = identity.identity.fingerprint as string;
+            const next = {
+              ...identity,
+              identity: { ...identity.identity, email: value },
+            };
+            await storeIdentity(fp, next);
+            setIdentity(next);
+            onIdentityUpdate?.(next);
+          }}
         />
         {shareError ? (
           <p style={{ color: 'var(--se-danger)', fontSize: 12, textAlign: 'center' }}>{shareError}</p>

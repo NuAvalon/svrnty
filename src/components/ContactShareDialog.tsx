@@ -13,6 +13,13 @@ import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { isNfcAvailable, writeNfc } from '@/lib/trust/nfc-transport';
 import { createRelay } from '@/lib/sync/relay';
 import { shareUrl } from '@/lib/config/domain';
+import {
+  hydrateOwnerCard,
+  methodKindLabel,
+  methodsForLens,
+  preferredMethod,
+  type OwnerCardBag,
+} from '@/components/identity/owner-card';
 
 interface ContactShareDialogProps {
   open: boolean;
@@ -49,6 +56,8 @@ export function ContactShareDialog({
   });
   const [timeLeft, setTimeLeft] = useState<string>('');
   const [linkCopied, setLinkCopied] = useState(false);
+  const [lensBag, setLensBag] = useState<OwnerCardBag | null>(null);
+  const [lensId, setLensId] = useState<string | undefined>(undefined);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Reset state when dialog opens
@@ -59,11 +68,14 @@ export function ContactShareDialog({
       setNfcError(null);
       setShortCode({ code: null, key: null, expiresAt: null, loading: false, error: null });
       setLinkCopied(false);
+      const bag = hydrateOwnerCard(fingerprint);
+      setLensBag(bag);
+      setLensId(bag.defaultLensId);
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [open]);
+  }, [open, fingerprint]);
 
   // Countdown timer for short code expiry
   useEffect(() => {
@@ -185,9 +197,51 @@ export function ContactShareDialog({
             Share Your Identity
           </DialogTitle>
           <DialogDescription className="text-gray-400">
-            Choose how to share your signed identity package.
+            Choose how to share your signed identity package. The QR and link are still you — one key.
           </DialogDescription>
         </DialogHeader>
+
+        {lensBag && lensBag.lenses.length > 0 ? (
+          <div className="mt-3 space-y-2" data-testid="share-lens-picker">
+            <p className="text-xs uppercase tracking-wider text-amber-500/80">Face for this handoff</p>
+            <div className="flex flex-wrap gap-1.5">
+              {lensBag.lenses.map((l) => (
+                <button
+                  key={l.id}
+                  type="button"
+                  onClick={() => setLensId(l.id)}
+                  className={`rounded-md border px-2.5 py-1 text-xs ${
+                    l.id === lensId
+                      ? 'border-amber-500/60 bg-amber-500/10 text-amber-300'
+                      : 'border-gray-800 text-gray-400'
+                  }`}
+                >
+                  {l.name}
+                  {l.id === lensBag.defaultLensId ? ' · default' : ''}
+                </button>
+              ))}
+            </div>
+            {(() => {
+              const pref = preferredMethod(lensBag, lensId);
+              const shown = methodsForLens(lensBag, lensId);
+              if (!shown.length) {
+                return (
+                  <p className="text-xs text-gray-500">
+                    This lens has no extra methods yet. Recipients still get your signed name and key.
+                  </p>
+                );
+              }
+              return (
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  {pref
+                    ? `Preferred: ${methodKindLabel(pref.kind)}${pref.value ? ` · ${pref.value}` : ''}. `
+                    : ''}
+                  Extra methods stay on this device until the living card schema carries them.
+                </p>
+              );
+            })()}
+          </div>
+        ) : null}
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full mt-2">
           <TabsList className="grid w-full grid-cols-4 bg-gray-900 border border-gray-800">

@@ -21,6 +21,12 @@ import { Button } from '@/components/ui/button';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
+export type OwnerCardMethodView = {
+  label: string;
+  value: string;
+  preferred?: boolean;
+};
+
 export type OwnerCardSnapshot = {
   name: string;
   fingerprint: string;
@@ -28,6 +34,10 @@ export type OwnerCardSnapshot = {
   signal?: string;
   site?: string;
   handle?: string;
+  /** Default-lens methods (local faces — not the signed exchange card). */
+  methods?: OwnerCardMethodView[];
+  /** Named lenses for group-matched faces. */
+  lenses?: Array<{ id: string; name: string; methods: OwnerCardMethodView[] }>;
 };
 
 export type CardAsSeenAudience =
@@ -72,15 +82,31 @@ function Field({ label, value }: { label: string; value?: string }) {
   );
 }
 
+function methodsForAudience(
+  owner: OwnerCardSnapshot,
+  audience: CardAsSeenAudience | null,
+): OwnerCardMethodView[] {
+  if (audience?.kind === 'group' && owner.lenses?.length) {
+    const want = audience.name.trim().toLowerCase();
+    const named = owner.lenses.find((l) => l.name.trim().toLowerCase() === want);
+    if (named) return named.methods;
+  }
+  return owner.methods || [];
+}
+
 function CardFace({
   owner,
   showMethods,
   caption,
+  methods,
 }: {
   owner: OwnerCardSnapshot;
   showMethods: boolean;
   caption: ReactNode;
+  methods?: OwnerCardMethodView[];
 }) {
+  const methodsToShow = methods && methods.length ? methods : owner.methods || [];
+
   return (
     <div
       style={{
@@ -115,14 +141,26 @@ function CardFace({
       </p>
       {showMethods ? (
         <div style={{ textAlign: 'left', marginTop: 8 }}>
-          <Field label="Email" value={owner.email} />
-          <Field label="Signal" value={owner.signal} />
-          <Field label="Site" value={owner.site} />
-          {!owner.email && !owner.signal && !owner.site ? (
-            <p style={{ margin: '10px 0 0', fontSize: 12, color: E.muted, fontFamily: E.fontSans }}>
-              No living methods on your card yet.
-            </p>
-          ) : null}
+          {methodsToShow.length > 0 ? (
+            methodsToShow.map((m, i) => (
+              <Field
+                key={`${m.label}-${i}`}
+                label={m.preferred ? `${m.label} · preferred` : m.label}
+                value={m.value}
+              />
+            ))
+          ) : (
+            <>
+              <Field label="Email" value={owner.email} />
+              <Field label="Signal" value={owner.signal} />
+              <Field label="Site" value={owner.site} />
+              {!owner.email && !owner.signal && !owner.site ? (
+                <p style={{ margin: '10px 0 0', fontSize: 12, color: E.muted, fontFamily: E.fontSans }}>
+                  No living methods on your card yet.
+                </p>
+              ) : null}
+            </>
+          )}
         </div>
       ) : (
         <p style={{ margin: '12px 0 0', fontSize: 12, color: E.muted, fontFamily: E.fontSans, lineHeight: 1.45 }}>
@@ -185,6 +223,7 @@ export function CardAsSeenByDialog({ open, onClose, owner, audience }: CardAsSee
             <CardFace
               owner={owner}
               showMethods={audience.trusted}
+              methods={methodsForAudience(owner, audience)}
               caption={
                 audience.trusted
                   ? 'Trusted with you — living methods on the card are visible.'
@@ -210,6 +249,7 @@ export function CardAsSeenByDialog({ open, onClose, owner, audience }: CardAsSee
                   <CardFace
                     owner={owner}
                     showMethods
+                    methods={methodsForAudience(owner, audience)}
                     caption="Trusted members of this group see living methods."
                   />
                 </div>

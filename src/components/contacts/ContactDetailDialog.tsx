@@ -49,6 +49,7 @@ import {
 } from '@/lib/contacts/safe-contact-link';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import {
   defaultShareSettings,
   isPendingSvrntyContact,
@@ -206,16 +207,20 @@ export function ContactDetailDialog({
                 className="flex items-center gap-2"
                 style={{ color: E.text, fontFamily: E.fontSans }}
               >
-                <span
-                  className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full"
-                  style={{
-                    background: isTrusted
-                      ? 'color-mix(in srgb, var(--se-accent) 18%, transparent)'
-                      : 'color-mix(in srgb, var(--se-dim) 18%, transparent)',
-                  }}
-                >
-                  {trustIcon}
-                </span>
+                {svrn && contact.fingerprint ? (
+                  <IdentitySeal fingerprint={contact.fingerprint} size={32} />
+                ) : (
+                  <span
+                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full"
+                    style={{
+                      background: isTrusted
+                        ? 'color-mix(in srgb, var(--se-accent) 18%, transparent)'
+                        : 'color-mix(in srgb, var(--se-dim) 18%, transparent)',
+                    }}
+                  >
+                    {trustIcon}
+                  </span>
+                )}
                 <span
                   style={{
                     overflow: 'hidden',
@@ -565,24 +570,29 @@ export function ContactDetailDialog({
                   ) : null}
 
                   <div>
-                    <SectionLabel>Fingerprint</SectionLabel>
-                    <div
-                      style={{
-                        marginTop: 6,
-                        fontFamily: E.fontMono,
-                        fontSize: 11,
-                        lineHeight: 1.45,
-                        padding: '8px 10px',
-                        borderRadius: 8,
-                        border: `1px solid ${E.border}`,
-                        background: E.inputBg,
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {contact.fingerprint
-                        ? contact.fingerprint.match(/.{1,4}/g)?.join(' ')
-                        : '—'}
-                    </div>
+                    <SectionLabel>{svrn ? 'Fingerprint' : 'Living key'}</SectionLabel>
+                    {svrn && contact.fingerprint ? (
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontFamily: E.fontMono,
+                          fontSize: 11,
+                          lineHeight: 1.45,
+                          padding: '8px 10px',
+                          borderRadius: 8,
+                          border: `1px solid ${E.border}`,
+                          background: E.inputBg,
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {contact.fingerprint.match(/.{1,4}/g)?.join(' ')}
+                      </div>
+                    ) : (
+                      <p style={{ margin: '6px 0 0', fontSize: 12, color: E.muted, lineHeight: 1.45 }}>
+                        Classical book — no fingerprint. A fingerprint exists only with a living key
+                        (invite or link this person to SVRNTY).
+                      </p>
+                    )}
                   </div>
                   {contact.metadata?.notes ? (
                     <div>

@@ -30,6 +30,7 @@ export function TrustMapGalaxy({
   peerChords = [],
   picked,
   query,
+  livingIds,
   onNodeClick,
   onBackgroundClick,
 }: {
@@ -41,6 +42,8 @@ export function TrustMapGalaxy({
   peerChords?: WitnessedPeerChord[];
   picked: Set<string>;
   query: string;
+  /** Nodes with a living key (fingerprint ≡ H(pubkey)). Classical book = hollow. */
+  livingIds?: Set<string>;
   onNodeClick: (id: string, multi: boolean) => void;
   onBackgroundClick: () => void;
 }) {
@@ -70,6 +73,7 @@ export function TrustMapGalaxy({
 
     const L = layoutRef.current;
     const C = camRef.current;
+    const living = livingIds ?? new Set<string>();
     const q = query.trim().toLowerCase();
     const lit = constellation?.members ?? new Map();
     const pxPerWorld = w / Math.max(C.w, 1);
@@ -175,6 +179,14 @@ export function TrustMapGalaxy({
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fillStyle = dim ? 'rgba(255,122,26,0.15)' : 'rgba(255,122,26,0.55)';
         ctx.fill();
+      } else if (living.has(n.id)) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = dim ? 'rgba(249,168,37,0.10)' : 'rgba(249,168,37,0.32)';
+        ctx.fill();
+        ctx.strokeStyle = dim ? 'rgba(249,168,37,0.20)' : 'rgba(249,168,37,0.70)';
+        ctx.lineWidth = 1.1;
+        ctx.stroke();
       } else {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -202,7 +214,7 @@ export function TrustMapGalaxy({
     ctx.fillStyle = '#c9a271';
     ctx.textAlign = 'center';
     ctx.fillText('You', self.x, self.y + 22);
-  }, [focusId, constellation, peerChords, picked, query]);
+  }, [focusId, constellation, peerChords, picked, query, livingIds]);
 
   useEffect(() => {
     paint();

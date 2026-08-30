@@ -136,7 +136,12 @@ export function MasterAddressBookList({
                     textOverflow: 'ellipsis',
                   }}
                 >
-                  {row.email || (row.fingerprint ? `${row.fingerprint.slice(0, 12)}…` : 'no key yet')}
+                  {row.email ||
+                    (svrn && row.fingerprint
+                      ? `${row.fingerprint.slice(0, 12)}…`
+                      : svrn
+                        ? 'SVRNTY · no name yet'
+                        : 'classical book')}
                 </span>
                 {row.tags && row.tags.length > 0 ? (
                   <span

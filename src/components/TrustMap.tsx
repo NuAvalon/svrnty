@@ -57,7 +57,9 @@ import {
   collectGroupTags,
   computeBrowseClusters,
 } from '@/lib/trust/trust-map-browse-layout';
+import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { loadLocalMethods } from '@/components/identity/local-methods';
+import { hydrateOwnerCard, methodsForLens, methodKindLabel } from '@/components/identity/owner-card';
 
 interface PendingIntro {
   introduced_by: string;
@@ -203,6 +205,21 @@ export function TrustMap({
     });
   }, [contacts, groupFilter]);
 
+  const livingNodeIds = useMemo(() => {
+    const s = new Set<string>();
+    for (const c of visibleContacts) {
+      if (
+        isSvrnNetworkContact({
+          fingerprint: c.peer_fingerprint,
+          public_key: c.peer_public_key,
+        })
+      ) {
+        s.add(c.peer_fingerprint);
+      }
+    }
+    return s;
+  }, [visibleContacts]);
+
   const world = useMemo(() => worldSizeForCount(visibleContacts.length), [visibleContacts.length]);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -215,6 +232,15 @@ export function TrustMap({
 
   const ownerCardSnapshot = useMemo(() => {
     const local = loadLocalMethods(ownerFingerprint);
+    const bag = hydrateOwnerCard(ownerFingerprint, ownerCard?.email);
+    const asViews = (lensId?: string) => {
+      const lens = bag.lenses.find((l) => l.id === lensId) || bag.lenses.find((l) => l.id === bag.defaultLensId);
+      return methodsForLens(bag, lens?.id).map((m) => ({
+        label: m.kind === 'custom' ? m.label || 'Custom' : methodKindLabel(m.kind),
+        value: m.value,
+        preferred: lens?.preferredMethodId === m.id,
+      }));
+    };
     return {
       name: ownerName,
       fingerprint: ownerFingerprint,
@@ -222,6 +248,8 @@ export function TrustMap({
       signal: ownerCard?.signal ?? local.signal,
       site: ownerCard?.site ?? local.site,
       handle: ownerCard?.handle,
+      methods: asViews(bag.defaultLensId),
+      lenses: bag.lenses.map((l) => ({ id: l.id, name: l.name, methods: asViews(l.id) })),
     };
   }, [ownerFingerprint, ownerName, ownerCard]);
 
@@ -945,6 +973,7 @@ export function TrustMap({
           peerChords={peerChords}
           picked={picked}
           query={searchQuery}
+          livingIds={livingNodeIds}
           onNodeClick={handleNodeClick}
           onBackgroundClick={clearFocus}
         />
@@ -968,8 +997,8 @@ export function TrustMap({
             {lamped && focusId
               ? `${constellationCaption(lamped, !!focusEdge?.trusted)}. Every visible line consented — none inferred.`
               : peerChords.length > 0
-                ? 'Your bonds · glow is trust · ember filaments are open-visibility peer trust. Every visible line consented — none inferred.'
-                : 'Your bonds · glow is trust · lamp a person to see their constellation. Every visible line consented — none inferred.'}
+                ? 'Your bonds · glow is SVRNTY trust · hollow is classical book. Ember filaments are open-visibility peer trust. Every visible line consented — none inferred.'
+                : 'Your bonds · glow is SVRNTY trust · hollow is classical book. Lamp a person to see their constellation. Every visible line consented — none inferred.'}
           </p>
         ) : (
           <div
@@ -1153,7 +1182,10 @@ export function TrustMap({
           }}
         >
           <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-            {focusEdge.peer_fingerprint ? (
+            {isSvrnNetworkContact({
+              fingerprint: focusEdge.peer_fingerprint,
+              public_key: focusEdge.peer_public_key,
+            }) ? (
               <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
             ) : (
               <div
@@ -1303,6 +1335,10 @@ export function TrustMap({
                 </div>
               )}
 
+              {isSvrnNetworkContact({
+                fingerprint: focusEdge.peer_fingerprint,
+                public_key: focusEdge.peer_public_key,
+              }) ? (
               <p
                 style={{
                   margin: '8px 0 0',
@@ -1315,6 +1351,11 @@ export function TrustMap({
               >
                 key · {formatKeyGroups(focusEdge.peer_fingerprint)}
               </p>
+              ) : (
+              <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim, fontFamily: E.fontSans }}>
+                Classical book · no living key
+              </p>
+              )}
               {focusEdge.tags?.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
                   {focusEdge.tags.map((t) => (
@@ -1693,6 +1734,11 @@ function describe(n: LaidOutNode): string {
 
 function describeAlive(n: LaidOutNode, edge: EdgeExtras): string {
   if (isPending(edge)) return 'pending connection · not yet known';
+  const svrn = isSvrnNetworkContact({
+    fingerprint: edge.peer_fingerprint,
+    public_key: edge.peer_public_key,
+  });
+  if (!svrn) return 'classical book · no living key';
   if (n.state === 'known') return 'known · not trusted';
   if (n.state === 'decayed') return 'trust decayed';
   const mutual = edge.mutual?.reciprocal ? ' · mutual' : '';
