@@ -8,6 +8,7 @@ import type { FocusConstellation } from '@/lib/trust/constellation';
 import { constellationLinkKind } from '@/lib/trust/constellation';
 import type { WitnessedPeerChord } from '@/lib/trust/peer-trust-chords';
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
+import type { LivingEdgeStatus } from '@/lib/trust/living-edge-status';
 
 function worldToScreen(cam: Camera, w: number, h: number, x: number, y: number) {
   return {
@@ -27,6 +28,8 @@ export function TrustMapGalaxy({
   picked,
   query,
   livingIds,
+  livingById,
+  introLinks = [],
   onNodeClick,
   onBackgroundClick,
   onHoverChange,
@@ -42,6 +45,9 @@ export function TrustMapGalaxy({
   picked: Set<string>;
   query: string;
   livingIds?: Set<string>;
+  livingById?: Map<string, LivingEdgeStatus>;
+  /** Pending intro → introducer filaments (not trust). */
+  introLinks?: Array<{ from: string; to: string }>;
   onNodeClick: (id: string, multi: boolean) => void;
   onBackgroundClick: () => void;
   onHoverChange?: (id: string | null) => void;
@@ -134,6 +140,23 @@ export function TrustMapGalaxy({
       ctx.stroke();
     }
 
+    // Intro filaments — pending → introducer (not trust)
+    for (const link of introLinks) {
+      const aN = nodeById.get(link.from.toLowerCase()) || L.nodes.find((n) => n.id === link.from);
+      const bN = nodeById.get(link.to.toLowerCase()) || L.nodes.find((n) => n.id === link.to);
+      if (!aN || !bN) continue;
+      const pa = worldToScreen(C, w, h, aN.x, aN.y);
+      const pb = worldToScreen(C, w, h, bN.x, bN.y);
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.strokeStyle = 'rgba(201,162,113,0.45)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([2, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     // Beams from the lamped person — witnessed trust vs disclosed vs group (not trust)
     if (focusId) {
       const lamp = L.nodes.find((n) => n.id === focusId);
@@ -188,6 +211,7 @@ export function TrustMapGalaxy({
 
     const candidates: LabelCandidate[] = [];
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const breath = 0.5 + 0.5 * Math.sin(now / 900);
 
     for (const n of L.nodes) {
       const p = worldToScreen(C, w, h, n.x, n.y);
@@ -199,9 +223,16 @@ export function TrustMapGalaxy({
       const isHover = hover === n.id;
       const match = q && n.name.toLowerCase().includes(q);
       const dim = focusId && !isLit && !match && !isHover;
-      const r =
-        (isFocus || isPick || isHover || linkKind === 'witnessed-trust' ? n.radius + 2 : n.radius) *
-        Math.min(2.2, Math.max(0.7, pxPerWorld));
+      const st = livingById?.get(n.id);
+      const decay = st?.decayFreshness ?? 1;
+      const mutualAlive = st?.trust === 'mutual';
+      const outboundTrust = st?.trust === 'outbound';
+      const rBase =
+        (isFocus || isPick || isHover || linkKind === 'witnessed-trust' || mutualAlive
+          ? n.radius + 2
+          : n.radius) * Math.min(2.2, Math.max(0.7, pxPerWorld));
+      const r = mutualAlive && !dim ? rBase * (1 + 0.06 * breath) : rBase;
+      const alphaMul = dim ? 0.35 : 0.45 + 0.55 * decay;
 
       if (pulse === n.id) {
         if (!pulseT0.current) pulseT0.current = now;
@@ -216,8 +247,22 @@ export function TrustMapGalaxy({
         }
       }
 
-      // Mutual witnessed ring — solid ember double-ring (trust). Group-only gets a thin dashed halo (not trust).
-      if (linkKind === 'witnessed-trust' && !dim) {
+      // Mutual = double ring; outbound trust sent = single directed tick (not mutual)
+      if (mutualAlive && !dim) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 7, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,122,26,${0.55 + 0.3 * breath})`;
+        ctx.lineWidth = 2.0;
+        ctx.stroke();
+      } else if (outboundTrust && !dim) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,122,26,0.55)';
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([5, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (linkKind === 'witnessed-trust' && !dim) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 6, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255,122,26,0.85)';
@@ -244,24 +289,24 @@ export function TrustMapGalaxy({
       if (n.state === 'trusted') {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
-        ctx.fillStyle = dim ? 'rgba(255,122,26,0.04)' : 'rgba(255,122,26,0.16)';
+        ctx.fillStyle = `rgba(255,122,26,${(dim ? 0.04 : 0.16) * alphaMul})`;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = dim ? 'rgba(255,122,26,0.15)' : 'rgba(255,122,26,0.55)';
+        ctx.fillStyle = `rgba(255,122,26,${(dim ? 0.15 : 0.55) * alphaMul})`;
         ctx.fill();
       } else if (living.has(n.id)) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = dim ? 'rgba(249,168,37,0.10)' : 'rgba(249,168,37,0.32)';
+        ctx.fillStyle = `rgba(249,168,37,${(dim ? 0.1 : 0.32) * alphaMul})`;
         ctx.fill();
-        ctx.strokeStyle = dim ? 'rgba(249,168,37,0.20)' : 'rgba(249,168,37,0.70)';
+        ctx.strokeStyle = `rgba(249,168,37,${(dim ? 0.2 : 0.7) * alphaMul})`;
         ctx.lineWidth = 1.1;
         ctx.stroke();
       } else {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = dim ? 'rgba(249,168,37,0.12)' : 'rgba(249,168,37,0.55)';
+        ctx.strokeStyle = `rgba(249,168,37,${(dim ? 0.12 : 0.55) * alphaMul})`;
         ctx.lineWidth = 1.1;
         ctx.stroke();
       }
@@ -316,11 +361,27 @@ export function TrustMapGalaxy({
     ctx.fillStyle = '#c9a271';
     ctx.textAlign = 'center';
     ctx.fillText('You', self.x, self.y + 22);
-  }, [focusId, constellation, peerChords, picked, query, livingIds]);
+  }, [focusId, constellation, peerChords, picked, query, livingIds, livingById, introLinks]);
 
   useEffect(() => {
     paint();
-  }, [paint, layout, cam, focusId, constellation, peerChords, picked, query, hoverId, pulseId]);
+  }, [paint, layout, cam, focusId, constellation, peerChords, picked, query, hoverId, pulseId, livingById, introLinks]);
+
+  // Soft breathe for mutual-alive nodes
+  useEffect(() => {
+    let hasMutual = false;
+    livingById?.forEach((s) => {
+      if (s.trust === 'mutual') hasMutual = true;
+    });
+    if (!hasMutual && !pulseId) return;
+    let id = 0;
+    const tick = () => {
+      paint();
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, [livingById, pulseId, paint]);
 
   useEffect(() => {
     if (!pulseId) {

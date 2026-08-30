@@ -80,7 +80,7 @@ const SAMPLE_FPS = new Set([...LEGACY_FPS, ...SAMPLE_SVRNTY_FPS]);
  * revision auto-upgrade on load so a hard refresh picks up the denser circle
  * without a manual “Refresh demo circle” click. Never touches non-sample books.
  */
-export const SAMPLE_CIRCLE_REVISION = 7;
+export const SAMPLE_CIRCLE_REVISION = 8;
 
 /** Open-visibility clique among living (SVRNTY) demo peers — Peter's filament demo. */
 const CORE_CLIQUE_IDS = new Set([
@@ -481,6 +481,31 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         connection_status: c.pending_intro ? 'pending' : 'accepted',
         psi_mutual: !!(living && c.reciprocal),
         they_trust: theyTrust,
+        // Living phases for glass QA (fleet will own real probe/acks).
+        trust_outbound: !!(living && trusted && !c.reciprocal),
+        trust_probe:
+          living && trusted && !c.reciprocal
+            ? peerId && ['alan', 'dorothy', 'dennis'].includes(peerId)
+              ? 'no-ack'
+              : 'pending'
+            : living && c.reciprocal
+              ? 'reciprocal'
+              : undefined,
+        method_delivery: living
+          ? peerId && ['tim', 'vint', 'guido'].includes(peerId)
+            ? 'undelivered'
+            : peerId && ['grace', 'ada', 'margaret'].includes(peerId)
+              ? 'acked'
+              : peerId && ['barbara', 'radia', 'lynn'].includes(peerId)
+                ? 'awaiting-ack'
+                : undefined
+          : undefined,
+        last_moment_at: c.reciprocal ? now : trusted ? now : undefined,
+        last_moment: c.reciprocal
+          ? 'Mutual confirmed'
+          : trusted
+            ? 'Trust granted on this device'
+            : undefined,
         share_settings: living
           ? {
               share_card: true,

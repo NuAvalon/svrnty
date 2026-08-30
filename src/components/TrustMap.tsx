@@ -53,6 +53,8 @@ import {
   type CardAsSeenAudience,
   type OwnerCardSnapshot,
 } from '@/components/identity/CardAsSeenByDialog';
+import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
+import { applyLayoutMemory, loadLayoutMemory, saveLayoutMemory } from '@/lib/trust/layout-memory';
 import {
   collectGroupTags,
   computeBrowseClusters,
@@ -193,6 +195,8 @@ export function TrustMap({
   const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [pulseId, setPulseId] = useState<string | null>(null);
+  const [crystallizeNote, setCrystallizeNote] = useState<string | null>(null);
+  const prevMutualRef = React.useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -264,14 +268,27 @@ export function TrustMap({
     };
   }, [ownerFingerprint, ownerName, ownerCard]);
 
-  const layout = useMemo(
-    () =>
-      computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
-        width: world,
-        height: world,
-      }),
-    [ownerFingerprint, ownerName, visibleContacts, world],
-  );
+  const layout = useMemo(() => {
+    const raw = computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
+      width: world,
+      height: world,
+    });
+    const memory = loadLayoutMemory(ownerFingerprint);
+    const nodes = applyLayoutMemory(raw.nodes, memory, 0.88);
+    return { ...raw, nodes };
+  }, [ownerFingerprint, ownerName, visibleContacts, world]);
+
+  // Persist neighborhoods so the map feels like yours.
+  useEffect(() => {
+    if (!ownerFingerprint || layout.nodes.length === 0) return;
+    const t = window.setTimeout(() => {
+      saveLayoutMemory(
+        ownerFingerprint,
+        layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
+      );
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [ownerFingerprint, layout.nodes]);
 
   useEffect(() => {
     const el = viewportElRef.current;
@@ -288,6 +305,32 @@ export function TrustMap({
     for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
     return m;
   }, [visibleContacts]);
+
+  // Crystallize when mutual trust newly appears (FACETS GROW). Skip first paint.
+  useEffect(() => {
+    const now = new Set<string>();
+    for (const c of visibleContacts) {
+      if (c.mutual?.reciprocal) now.add(c.peer_fingerprint);
+    }
+    const prev = prevMutualRef.current;
+    if (prev.size === 0 && now.size > 0) {
+      prevMutualRef.current = now;
+      return;
+    }
+    for (const id of now) {
+      if (!prev.has(id)) {
+        const name = edgeByFp.get(id)?.peer_name || 'Someone';
+        setCrystallizeNote(`Mutual trust crystallised with ${name}`);
+        setPulseId(id);
+        window.setTimeout(() => {
+          setCrystallizeNote(null);
+          setPulseId((cur) => (cur === id ? null : cur));
+        }, 3200);
+        break;
+      }
+    }
+    prevMutualRef.current = now;
+  }, [visibleContacts, edgeByFp]);
 
   const [focusId, setFocusId] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
@@ -380,6 +423,23 @@ export function TrustMap({
     const pick = exact || (hits.length === 1 ? hits[0] : null);
     if (pick) flyToNode(pick.peer_fingerprint);
   }, [searchQuery, visibleContacts, flyToNode]);
+
+  const livingById = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof livingEdgeStatus>>();
+    for (const c of visibleContacts) m.set(c.peer_fingerprint, livingEdgeStatus(c));
+    return m;
+  }, [visibleContacts]);
+
+  const introLinks = useMemo(() => {
+    const links: Array<{ from: string; to: string }> = [];
+    for (const c of visibleContacts) {
+      const intro = (c as EdgeExtras).pending_intro;
+      if (intro?.introduced_by_fp) {
+        links.push({ from: c.peer_fingerprint, to: intro.introduced_by_fp });
+      }
+    }
+    return links;
+  }, [visibleContacts]);
 
   const lamped = useMemo(
     () => (focusId ? focusConstellation(focusId, visibleContacts) : null),
@@ -1133,10 +1193,35 @@ export function TrustMap({
           picked={picked}
           query={searchQuery}
           livingIds={livingNodeIds}
+          livingById={livingById}
+          introLinks={introLinks}
           onNodeClick={handleNodeClick}
           onBackgroundClick={clearFocus}
           onHoverChange={setHoverId}
         />
+        {crystallizeNote ? (
+          <div
+            data-testid="trust-map-crystallize"
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: 16,
+              transform: 'translateX(-50%)',
+              zIndex: 5,
+              padding: '10px 16px',
+              borderRadius: 12,
+              background: 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))',
+              border: `1px solid ${E.accent2}`,
+              color: E.text,
+              fontFamily: E.fontSans,
+              fontSize: 13,
+              pointerEvents: 'none',
+              boxShadow: '0 0 28px color-mix(in srgb, var(--se-accent2) 28%, transparent)',
+            }}
+          >
+            {crystallizeNote}
+          </div>
+        ) : null}
         {(hoverId || focusId) && !isEmpty ? (
           <div
             data-testid="trust-map-nameplate"
@@ -1160,9 +1245,7 @@ export function TrustMap({
               const edge = id ? edgeByFp.get(id) : null;
               const node = layout.nodes.find((n) => n.id === id);
               const name = edge?.peer_name || node?.name || 'Someone';
-              const trusted = !!edge?.trusted || node?.state === 'trusted';
-              const living = id ? livingNodeIds.has(id) : false;
-              const mutual = !!(edge as EdgeExtras | undefined)?.mutual?.reciprocal;
+              const st = id ? livingById.get(id) : null;
               const nameOf = (fp: string) => edgeByFp.get(fp)?.peer_name || fp.slice(0, 8);
               const trustNames = (lampParts?.witnessedTrust || []).map(nameOf);
               const groupNames = (lampParts?.groupOnly || []).map(nameOf);
@@ -1172,10 +1255,20 @@ export function TrustMap({
                 <>
                   <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text }}>{name}</p>
                   <p style={{ margin: '4px 0 0', fontSize: 11, color: E.muted }}>
-                    {trusted ? 'Trusted' : living ? 'Known · SVRNTY' : 'Classical book'}
-                    {mutual ? ' · mutual with you' : ''}
+                    {st?.statusLine || 'Someone'}
+                    {st?.lastMoment ? ` · ${st.lastMoment}` : ''}
                     {hoverId && focusId && hoverId !== focusId ? ' · hover' : ''}
                   </p>
+                  {st?.detailLine ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: E.dim }}>{st.detailLine}</p>
+                  ) : null}
+                  {st?.canCommunicate ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: E.ok }}>Linked · can communicate</p>
+                  ) : st?.connection === 'pending' ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: E.accent }}>
+                      Not linked yet · communicate waits on reciprocal know
+                    </p>
+                  ) : null}
                   {showLampLists ? (
                     <div data-testid="trust-map-lamp-links" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
                       {trustNames.length > 0 ? (
@@ -1195,12 +1288,33 @@ export function TrustMap({
                         </p>
                       ) : null}
                       {groupNames.length > 0 ? (
-                        <p style={{ margin: 0, color: E.muted }}>
+                        <p style={{ margin: '0 0 4px', color: E.muted }}>
                           Groups you named (not trust) · {groupNames.slice(0, 6).join(', ')}
                           {groupNames.length > 6 ? '…' : ''}
                         </p>
                       ) : null}
                     </div>
+                  ) : null}
+                  {edge && focusId === id ? (
+                    <button
+                      type="button"
+                      data-testid="trust-map-nameplate-card"
+                      onClick={() => openCardPreviewForPeer(edge)}
+                      style={{
+                        marginTop: 8,
+                        pointerEvents: 'auto',
+                        fontSize: 11,
+                        fontFamily: E.fontSans,
+                        color: E.accent,
+                        background: 'transparent',
+                        border: `1px solid ${E.border}`,
+                        borderRadius: 8,
+                        padding: '4px 8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      My card as they see it
+                    </button>
                   ) : null}
                 </>
               );
@@ -1247,6 +1361,9 @@ export function TrustMap({
             <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
             <p style={{ margin: '8px 0 0', fontSize: 11, color: T.caption }}>
               Bonds crystallize here as you form them. Every line consented — none inferred.
+            </p>
+            <p style={{ margin: '10px 0 0', fontSize: 11, color: E.muted, maxWidth: 340, marginLeft: 'auto', marginRight: 'auto' }}>
+              Invite someone from Contacts — when they join from your invite, that classical row should become this living contact (fleet-owned link). Until then, load a demo circle to explore the map.
             </p>
           </div>
         )}
@@ -1374,8 +1491,8 @@ export function TrustMap({
           <span style={{ color: E.accent2 }}>● trusted</span>
           <span>○ known</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
-          <span style={{ color: E.accent2 }}>═ mutual</span>
-          <span>- - group</span>
+          <span style={{ color: E.accent2 }}>═ mutual trust</span>
+          <span>- - group (not trust)</span>
         </div>
       )}
 

@@ -42,6 +42,13 @@ Shows their constellation with **two visual states** (never inferred trust from 
 - Disclosed circle they showed you — solid gold (consent, not tag inference)
 While lamped, unrelated peer filaments hide; nameplate lists witnessed mutuals vs group-only.
 
+### Living phases (glass)
+- **Linked / can communicate** — both known (accepted); pending = not yet
+- **Trust sent (outbound)** ≠ **mutual** — dashed outbound ring vs mutual breathe
+- **Method ack** — awaiting / acked / undelivered (demo metadata; wire = Flint)
+- Layout memory, decay weather, intro filaments, crystallize toast on new mutual
+- Fleet ask: `src/lib/trust/FLEET_TRUST_RECIPROCITY.md`
+
 ### What we will not draw
 - Peer↔peer bonds from co-membership, “we both know them,” or friends-of-friends.
 - Mutual-friend **counts** on identity (I-3).

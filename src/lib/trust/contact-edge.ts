@@ -57,5 +57,20 @@ export function contactRecordToEdge(c: any): TrustEdge {
     open_visibility: !!(
       c.open_visibility ?? c.metadata?.share_settings?.open_visibility
     ),
+    // Living-book glass phases (local / demo metadata — fleet fills receipts later).
+    metadata: c.metadata
+      ? {
+          connection_status: c.metadata.connection_status,
+          pending_intro: c.metadata.pending_intro,
+          method_delivery: c.metadata.method_delivery,
+          trust_outbound: c.metadata.trust_outbound,
+          trust_probe: c.metadata.trust_probe,
+          last_moment: c.metadata.last_moment,
+          last_moment_at: c.metadata.last_moment_at,
+          sample_lane: c.metadata.sample_lane,
+          sample: c.metadata.sample,
+          sample_revision: c.metadata.sample_revision,
+        }
+      : undefined,
   } as TrustEdge;
 }
