@@ -10,6 +10,7 @@ You may build **render-glass UI autonomously**. But anything that touches a lock
 - `src/lib/crypto/*` — recovery.ts, kdf.ts, pq.ts, encrypted-backup.ts, sign-envelope, message-signing, did:key
 - `src/lib/sync/vault.ts` — the `.svrnty` FORMAT: packVault / unpackVault / extractRecoveryVault, MAGIC bytes, AAD, BODY_LEN layout, the recovery envelope
 - `src/lib/identity/*` — key generation / storage
+- **Signing / PSI / trust-sync crypto** — message signing, PSI compute, trust-graph sync crypto (call the existing function; never reimplement)
 - **Restore-gate CONTROL FLOW** (not copy): `seedPathActive` / path-selection / which-key-decrypts-what / step-up + auth gates / trust-block wire-strip logic
 
 If a UI needs something here, **call** the existing function; if you'd cross the line, STOP and leave a README note. A blocked component is fine; a silently-modified lock is not.
