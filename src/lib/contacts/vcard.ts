@@ -46,13 +46,28 @@ export function toVCard(edge: TrustEdge): string {
     }
   }
 
-  // Notes — include trust state and fingerprint
-  const noteLines = [
-    `svrnty fingerprint: ${edge.peer_fingerprint}`,
-    `Trust: ${edge.trusted ? 'trusted' : 'known'}${edge.trusted_since ? ` since ${edge.trusted_since.slice(0, 10)}` : ''}`,
-  ];
-  if (edge.notes) noteLines.push(edge.notes);
-  lines.push(`NOTE:${escapeVCard(noteLines.join('\\n'))}`);
+  const ci = edge.contact_info;
+  if (ci?.org) lines.push(`ORG:${escapeVCard(ci.org)}`);
+  if (ci?.title) lines.push(`TITLE:${escapeVCard(ci.title)}`);
+  if (ci?.nickname) lines.push(`NICKNAME:${escapeVCard(ci.nickname)}`);
+  if (ci?.bday) lines.push(`BDAY:${escapeVCard(ci.bday)}`);
+  if (ci?.adr) lines.push(`ADR;TYPE=HOME:;;${escapeVCard(ci.adr)};;;;`);
+  if (ci?.extras) {
+    for (const extra of ci.extras) {
+      if (!extra.label || !extra.value) continue;
+      const key = extra.label.replace(/[^A-Za-z0-9-]/g, '').toUpperCase() || 'CUSTOM';
+      lines.push(`X-${key}:${escapeVCard(extra.value)}`);
+    }
+  }
+
+  // Notes — classical re-export stays a phone book (no trust dump).
+  // SVRNTY keeps fingerprint as an X-field, not jammed into NOTE.
+  if (edge.notes) {
+    lines.push(`NOTE:${escapeVCard(edge.notes)}`);
+  }
+  if (edge.peer_fingerprint && edge.peer_fingerprint.length >= 8 && edge.peer_public_key) {
+    lines.push(`X-SVRNTY-FINGERPRINT:${escapeVCard(edge.peer_fingerprint)}`);
+  }
 
   // Handles as X-fields
   if (edge.contact_info?.handles) {
@@ -92,7 +107,7 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
     const lines = block.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
 
     const edge: Partial<TrustEdge> = {
-      contact_info: { phones: [], emails: [], handles: {}, urls: [] },
+      contact_info: { phones: [], emails: [], handles: {}, urls: [], extras: [] },
       tags: [],
       connection_channels: [],
     };
@@ -122,12 +137,33 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
         edge.contact_info!.phones!.push(value);
       } else if (PROP === 'URL') {
         edge.contact_info!.urls!.push(value);
+      } else if (PROP === 'ORG') {
+        edge.contact_info!.org = unescapeVCard(value);
+      } else if (PROP === 'TITLE') {
+        edge.contact_info!.title = unescapeVCard(value);
+      } else if (PROP === 'NICKNAME') {
+        edge.contact_info!.nickname = unescapeVCard(value);
+      } else if (PROP === 'BDAY') {
+        edge.contact_info!.bday = unescapeVCard(value);
+      } else if (PROP === 'ADR') {
+        const parts = value.split(';');
+        edge.contact_info!.adr = unescapeVCard(parts.slice(2).join(' ').replace(/\s+/g, ' ').trim() || value);
+      } else if (PROP === 'X-SVRNTY-FINGERPRINT') {
+        edge.peer_fingerprint = unescapeVCard(value);
+      } else if (PROP === 'NOTE') {
+        edge.notes = unescapeVCard(value).replace(/\\n/g, '\n');
       } else if (PROP.startsWith('X-') && !PROP.startsWith('X-AB')) {
         // X-<platform> handles (twitter, signal, …). Skip Apple's internal X-AB* label
         // metadata (X-ABLabel/X-ABADR), which aren't reachable contact channels.
         const platform = PROP.slice(2).toLowerCase();
-        edge.contact_info!.handles![platform] = value;
-        edge.connection_channels!.push(platform);
+        const social = ['signal', 'telegram', 'twitter', 'x', 'whatsapp', 'impp', 'discord', 'instagram', 'matrix'];
+        if (social.includes(platform)) {
+          edge.contact_info!.handles![platform] = value;
+          edge.connection_channels!.push(platform);
+        } else {
+          edge.contact_info!.extras = edge.contact_info!.extras || [];
+          edge.contact_info!.extras.push({ label: platform, value: unescapeVCard(value) });
+        }
       } else if (PROP === 'CATEGORIES') {
         edge.tags = value.split(',').map(unescapeVCard);
       }

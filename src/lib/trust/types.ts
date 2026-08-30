@@ -15,11 +15,18 @@ export interface TrustEdge {
   peer_public_key: string;
   // Contact details (encrypted, never shared without consent)
   contact_info?: {
-    phones?: string[];                  // phone numbers (E.164 where known); multiple per §9.2 now-set
-    emails?: string[];                  // additional emails beyond peer_email
-    handles?: Record<string, string>;   // 'signal' -> '@handle', 'telegram' -> '@handle', etc.
-    urls?: string[];                    // personal sites, profiles
-    verified_claims?: VerifiedClaim[];  // what has been proved
+    phones?: string[];
+    emails?: string[];
+    handles?: Record<string, string>;
+    urls?: string[];
+    verified_claims?: VerifiedClaim[];
+    /** Local classical book — round-trip through vCard, never a living-wire field. */
+    org?: string;
+    title?: string;
+    nickname?: string;
+    bday?: string;
+    adr?: string;
+    extras?: Array<{ label: string; value: string }>;
   };
   // Trust — binary
   trusted: boolean;                     // vouched or not
@@ -46,6 +53,15 @@ export interface TrustEdge {
   added_at: string;
   /** Owner-local mute (CUR-5). Never publish — strip on wire like tags. */
   blocked?: boolean;
+  /**
+   * Fingerprints in YOUR book that this peer disclosed to you
+   * (fleet `visible()` ∩ book). Absent until Apollo fills it — glass never infers.
+   */
+  disclosed_circle?: string[];
+  /**
+   * People in your book this peer also trusts (fleet PSI). Not transitive trust.
+   */
+  they_trust?: string[];
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys

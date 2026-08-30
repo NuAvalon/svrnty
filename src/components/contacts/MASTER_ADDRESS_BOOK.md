@@ -8,7 +8,8 @@
 - **Groups** button (book + Social Graph) opens a quiet panel to filter / select / rename / remove local tags — not a primary tab.
 - **Select multiple** works on every scope. Bulk Trust / Revoke apply to SVRNTY rows in the selection; Block / Delete / **Add to group** apply to all selected.
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).
-- Social Graph: **Lattice** (egocentric particle field + trust glow overlay) + **Browse** (organic group neighborhoods); camera zoom/pan/pinch; **Select** + floating bar; **fullscreen**.
+- Social Graph: canvas **galaxy** (lamp a person → constellation of groups you named + fleet-disclosed circle). Trust is glow. Search + camera zoom. Not concentric rings, not inferred peer bonds.
+- Classical contacts: **Add field** (phone, address, org, title, birthday, custom…) and re-export as a clean vCard.
 - Sample circle (~20 peers): denser PSI-mutual (reciprocal with you) + overlapping owner groups so Orbit/Browse read as a web — still no inferred peer↔peer trust edges.
 - **My card as they see it** for a peer/group (disclosure preview — not a send receipt).
 - Revise contact method: notify **Trusted** or a **local group** chip.

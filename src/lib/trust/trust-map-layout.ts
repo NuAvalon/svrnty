@@ -48,10 +48,8 @@ export interface TrustLayout {
   cloudRadius: number;
 }
 
-export interface LayoutOptions {
-  width?: number;
-  height?: number;
-  labelMargin?: number;
+export function worldSizeForCount(n: number): number {
+  return Math.max(640, Math.round(180 + Math.sqrt(Math.max(n, 1)) * 58));
 }
 
 /** Salience — visual overlay, not orbital distance. */

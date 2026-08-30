@@ -17,13 +17,13 @@ import { boundsOf } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
 import {
   computeTrustLayout,
-  SELF_CORE_RADIUS,
-  SELF_RING_RADIUS,
+  worldSizeForCount,
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-import { latticeChords } from '@/lib/trust/graph-forces';
+import { constellationCaption, focusConstellation } from '@/lib/trust/constellation';
 import { TrustMapLatticeField } from '@/components/TrustMapLatticeField';
+import { TrustMapGalaxy } from '@/components/TrustMapGalaxy';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -102,7 +102,6 @@ interface TrustMapProps {
   onMethodHistoryChange?: () => void;
 }
 
-const VIEW = 640; // world size; camera viewBox frames it (never CSS-scale the SVG).
 
 // Solar Ember via CSS vars — follows light/dark appearance.
 const T = {
@@ -202,11 +201,14 @@ export function TrustMap({
     });
   }, [contacts, groupFilter]);
 
+  const world = useMemo(() => worldSizeForCount(visibleContacts.length), [visibleContacts.length]);
+  const [searchQuery, setSearchQuery] = useState('');
+
   const allGroupTags = useMemo(() => collectGroupTags(contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } }))), [contacts]);
 
   const browseClusters = useMemo(
-    () => computeBrowseClusters(visibleContacts, VIEW, VIEW),
-    [visibleContacts],
+    () => computeBrowseClusters(visibleContacts, world, world),
+    [visibleContacts, world],
   );
 
   const ownerCardSnapshot = useMemo(() => {
@@ -224,22 +226,18 @@ export function TrustMap({
   const layout = useMemo(
     () =>
       computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
-        width: VIEW,
-        height: VIEW,
+        width: world,
+        height: world,
       }),
-    [ownerFingerprint, ownerName, visibleContacts],
+    [ownerFingerprint, ownerName, visibleContacts, world],
   );
-  const chords = useMemo(() => {
-    const positions = new Map(layout.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
-    return latticeChords(visibleContacts, positions, 2);
-  }, [layout.nodes, visibleContacts]);
 
   useEffect(() => {
     const el = viewportElRef.current;
     const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
     if (viewMode === 'browse') {
       const pts = browseClusters.flatMap((c) => c.members);
-      applyFit(boundsOf(pts.length ? pts : [{ x: VIEW / 2, y: VIEW / 2, radius: 24 }], 20), aspect);
+      applyFit(boundsOf(pts.length ? pts : [{ x: world / 2, y: world / 2, radius: 24 }], 20), aspect);
     } else {
       applyFit(boundsOf([layout.self, ...layout.nodes], 28), aspect);
     }
@@ -269,6 +267,10 @@ export function TrustMap({
   const [confirmBusy, setConfirmBusy] = useState(false);
 
 
+  const lamped = useMemo(
+    () => (focusId ? focusConstellation(focusId, visibleContacts) : null),
+    [focusId, visibleContacts],
+  );
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
     () => (focusId ? edgeByFp.get(focusId) ?? null : null),
@@ -555,7 +557,7 @@ export function TrustMap({
                 color: viewMode === mode ? E.accent : E.muted,
               }}
             >
-              {viewMode === 'orbit' ? 'Lattice' : 'Browse'}
+              {mode === 'orbit' ? 'Lattice' : 'Browse'}
             </button>
           ))}
         </div>
@@ -608,6 +610,19 @@ export function TrustMap({
           <Users className="h-3.5 w-3.5" />
           Groups{groupFilter ? ` · ${groupFilter}` : allGroupTags.length ? ` (${allGroupTags.length})` : ''}
         </button>
+        <input
+          data-testid="trust-map-search"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="Find someone…"
+          aria-label="Find someone in your lattice"
+          style={{
+            ...fieldStyle(),
+            width: 140,
+            padding: '6px 10px',
+            fontSize: 11,
+          }}
+        />
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.28)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
@@ -916,218 +931,16 @@ export function TrustMap({
 
         ) : (
         <>
-        <style>{`
-          .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
-                     animation: tm-grow 1.05s cubic-bezier(.2,.8,.2,1) both; }
-          .tm-edge, .tm-label, .tm-cluster { opacity: var(--tm-o, 1); animation: tm-fade 1.05s ease-out both; }
-          .tm-self { animation: tm-fade .8s ease-out both; }
-          .tm-pending { animation: tm-pulse 1.8s ease-in-out infinite; }
-          @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
-          @keyframes tm-fade { from { opacity: 0; } to { opacity: var(--tm-o,1); } }
-          @keyframes tm-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.95; } }
-          @media (prefers-reduced-motion: reduce) {
-            .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending { animation: none; }
-            .tm-node { transform: none; }
-          }
-        `}</style>
-
-        <svg
-          data-testid="trust-map-svg"
-          viewBox={`${cam.x} ${cam.y} ${cam.w} ${cam.h}`}
-          width="100%"
-          height="100%"
-          preserveAspectRatio="none"
-          role="img"
-          aria-label={`Trust map: ${visibleContacts.length} connection${visibleContacts.length === 1 ? '' : 's'}`}
-          onClick={clearFocus}
-          style={{ display: 'block', position: 'relative', zIndex: 1 }}
-        >
-          <defs>
-            <filter id="tm-filament" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur stdDeviation="1.8" result="b" />
-              <feMerge>
-                <feMergeNode in="b" />
-                <feMergeNode in="SourceGraphic" />
-              </feMerge>
-            </filter>
-          </defs>
-          {/* Owner-authored group cluster chords */}
-          <g>
-            {chords.map((ch, i) => {
-              const a = layout.nodes.find((n) => n.id === ch.a);
-              const b = layout.nodes.find((n) => n.id === ch.b);
-              if (!a || !b) return null;
-              return (
-                <line
-                  key={`c-${ch.tag}-${ch.a}-${ch.b}`}
-                  className="tm-cluster"
-                  data-testid="trust-cluster-edge"
-                  data-group={ch.tag}
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  stroke={T.cluster}
-                  strokeOpacity={0.22}
-                  strokeWidth={0.85}
-                  strokeDasharray="1.5 5"
-                  style={{ ['--tm-o' as string]: 0.9, animationDelay: `${0.05 + i * 0.02}s` }}
-                >
-                  <title>{`Group · ${ch.tag}`}</title>
-                </line>
-              );
-            })}
-          </g>
-
-          {/* Pending intro chords (introducer → introducee) — authored metadata */}
-          <g>
-            {contacts.map((c) => {
-              const pe = c as EdgeExtras;
-              const intro = pe.pending_intro;
-              if (!intro?.introduced_by_fp) return null;
-              const from = layout.nodes.find((n) => n.id === intro.introduced_by_fp);
-              const to = layout.nodes.find((n) => n.id === c.peer_fingerprint);
-              if (!from || !to) return null;
-              return (
-                <line
-                  key={`intro-${c.peer_fingerprint}`}
-                  className="tm-cluster tm-pending"
-                  data-testid="trust-intro-edge"
-                  x1={from.x}
-                  y1={from.y}
-                  x2={to.x}
-                  y2={to.y}
-                  stroke={T.pending}
-                  strokeOpacity={0.55}
-                  strokeWidth={1}
-                  strokeDasharray="4 3"
-                >
-                  <title>{`Introduction · ${intro.introduced_by} → ${c.peer_name}`}</title>
-                </line>
-              );
-            })}
-          </g>
-
-          <g>
-            {layout.nodes.map((n, i) => {
-              const edge = edgeByFp.get(n.id);
-              const pending = isPending(edge);
-              const mutual = !!edge?.mutual?.reciprocal;
-              return (
-                <g key={`e-${n.id}`}>
-                  <line
-                    className="tm-edge"
-                    data-testid="trust-edge"
-                    x1={layout.self.x}
-                    y1={layout.self.y}
-                    x2={n.x}
-                    y2={n.y}
-                    stroke={pending ? T.pending : n.state === 'trusted' ? T.lit : T.myEdge}
-                    strokeOpacity={
-                      pending ? 0.4 : n.state === 'trusted' ? (mutual ? 0.78 : 0.48) : 0.2
-                    }
-                    strokeWidth={n.state === 'trusted' ? (mutual ? 1.85 : 1.25) : pending ? 1.05 : 0.65}
-                    strokeDasharray={
-                      pending ? '5 4' : n.state === 'decayed' ? '3 3' : n.state === 'known' ? '2.5 4' : undefined
-                    }
-                    filter={n.state === 'trusted' ? 'url(#tm-filament)' : undefined}
-                    style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.15 + i * 0.03}s` }}
-                  />
-                  {mutual && n.state === 'trusted' && (
-                    <line
-                      className="tm-edge"
-                      x1={layout.self.x}
-                      y1={layout.self.y}
-                      x2={n.x}
-                      y2={n.y}
-                      stroke={T.lit}
-                      strokeOpacity={0.2}
-                      strokeWidth={4}
-                      style={{ ['--tm-o' as string]: 0.8, animationDelay: `${0.15 + i * 0.03}s` }}
-                    />
-                  )}
-                </g>
-              );
-            })}
-          </g>
-
-          <g>
-            {layout.nodes.map((n, i) => {
-              const edge = edgeByFp.get(n.id);
-              return (
-                <ContactNode
-                  key={n.id}
-                  node={n}
-                  index={i}
-                  selected={focusId === n.id}
-                  picked={picked.has(n.id)}
-                  pending={isPending(edge)}
-                  mutual={!!edge?.mutual?.reciprocal}
-                  onSelect={handleNodeClick}
-                />
-              );
-            })}
-          </g>
-
-          <g className="tm-self" data-testid="trust-map-self" style={{ ['--tm-o' as string]: 1 }}>
-            <circle
-              cx={layout.self.x}
-              cy={layout.self.y}
-              r={SELF_RING_RADIUS}
-              fill="none"
-              stroke={T.selfRing}
-              strokeWidth={0.8}
-              opacity={0.4}
-            />
-            <circle
-              cx={layout.self.x}
-              cy={layout.self.y}
-              r={SELF_CORE_RADIUS}
-              fill={T.field}
-              stroke={T.selfRing}
-              strokeWidth={1.6}
-            />
-            <circle cx={layout.self.x} cy={layout.self.y} r={5} fill={T.selfDot} />
-            <text
-              x={layout.self.x}
-              y={layout.self.y + SELF_CORE_RADIUS + 15}
-              textAnchor="middle"
-              fontSize={12}
-              fill={T.label}
-              style={{ fontFamily: E.fontSans }}
-            >
-              You
-            </text>
-          </g>
-
-          <g>
-            {layout.nodes.map((n, i) => {
-              const edge = edgeByFp.get(n.id);
-              const pending = isPending(edge);
-              return (
-                <text
-                  key={`l-${n.id}`}
-                  className="tm-label"
-                  x={n.x}
-                  y={n.y + n.radius + 11}
-                  textAnchor="middle"
-                  fontSize={9}
-                  fill={pending ? T.pending : n.state === 'known' ? T.caption : nodeStroke(n.state, false)}
-                  style={{
-                    fontFamily: E.fontSans,
-                    ['--tm-o' as string]: Math.max(n.opacity, 0.5),
-                    animationDelay: `${0.2 + i * 0.03}s`,
-                    pointerEvents: 'none',
-                    fontWeight: n.state === 'trusted' ? 600 : 400,
-                  }}
-                >
-                  {truncate(n.name)}
-                </text>
-              );
-            })}
-          </g>
-
-        </svg>
+        <TrustMapGalaxy
+          layout={layout}
+          cam={cam}
+          focusId={focusId}
+          constellation={lamped}
+          picked={picked}
+          query={searchQuery}
+          onNodeClick={handleNodeClick}
+          onBackgroundClick={clearFocus}
+        />
         {!isEmpty ? (
           <p
             data-testid="trust-map-legend"
@@ -1145,7 +958,9 @@ export function TrustMap({
               zIndex: 2,
             }}
           >
-            Your bonds · glow is trust · groups you named. Every visible line consented — none inferred.
+            {lamped && focusId
+              ? `${constellationCaption(lamped, !!focusEdge?.trusted)}. Every visible line consented — none inferred.`
+              : 'Your bonds · glow is trust · lamp a person to see their constellation. Every visible line consented — none inferred.'}
           </p>
         ) : (
           <div

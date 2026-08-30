@@ -170,3 +170,22 @@ test('empty contacts → just self, on-screen', () => {
   assert.equal(layout.self.x, 160);
   assert.equal(layout.self.y, 160);
 });
+
+test('dense book (200) still fits the world and does not ring-pack trust', () => {
+  const contacts = Array.from({ length: 200 }, (_, i) =>
+    i % 2 === 0
+      ? trustedEdge({ tags: [i % 8 === 0 ? 'a' : 'b'], peer_fingerprint: `t${i}` })
+      : knownEdge({ tags: [i % 8 === 0 ? 'a' : 'c'], peer_fingerprint: `k${i}` }),
+  );
+  const size = 1200;
+  const layout = computeTrustLayout('o', 'Me', contacts, { width: size, height: size });
+  assert.equal(layout.nodes.length, 200);
+  for (const n of layout.nodes) {
+    assert.ok(n.x - n.radius >= 0 && n.x + n.radius <= size);
+    assert.ok(n.y - n.radius >= 0 && n.y + n.radius <= size);
+  }
+  const dist = (n: { x: number; y: number }) => Math.hypot(n.x - layout.cx, n.y - layout.cy);
+  const tR = layout.nodes.filter((n) => n.state === 'trusted').map(dist);
+  const kR = layout.nodes.filter((n) => n.state === 'known').map(dist);
+  assert.ok(Math.max(...tR) > Math.min(...kR));
+});

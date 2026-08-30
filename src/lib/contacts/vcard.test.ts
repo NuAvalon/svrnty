@@ -21,8 +21,8 @@ test('toVCard: one TEL per phone; trust from trusted boolean, no legacy trust_le
   const tels = vcf.split(/\r\n/).filter((l) => l.startsWith('TEL'));
   assert.equal(tels.length, 2);
   assert.ok(vcf.includes('+14155550001') && vcf.includes('+442071838750'));
-  assert.ok(vcf.includes('Trust: trusted'));                 // mapped from trusted:boolean
   assert.ok(!vcf.includes('trust_level') && !vcf.includes('Lundefined')); // legacy bug gone
+  assert.ok(!vcf.includes('Trust: trusted')); // classical re-export is a phone book, not a trust dump
 });
 
 test('fromVCard: parses ALL TEL lines into phones[] (no last-wins number loss)', () => {
@@ -62,7 +62,26 @@ test('fromVCard: real-world Apple/iCloud export — item1.-grouped fields, param
   assert.ok(!('ablabel' in (c.contact_info?.handles ?? {})));       // Apple X-AB* is NOT a reachable channel
 });
 
-test('round-trip: multi-phone survives toVCard -> fromVCard', () => {
-  const [back] = fromVCard(toVCard(edge()));
-  assert.deepEqual(back.contact_info?.phones, ['+14155550001', '+442071838750']);
+test('round-trip: org/title/address/custom extras survive toVCard -> fromVCard', () => {
+  const vcf = toVCard(edge({
+    notes: 'met at the dock',
+    contact_info: {
+      phones: ['+1'],
+      emails: [],
+      org: 'Analytical Engine Co',
+      title: 'Poet',
+      nickname: 'Ada',
+      bday: '1815-12-10',
+      adr: 'London',
+      extras: [{ label: 'pronouns', value: 'she' }],
+    },
+  }));
+  const [back] = fromVCard(vcf);
+  assert.equal(back.contact_info?.org, 'Analytical Engine Co');
+  assert.equal(back.contact_info?.title, 'Poet');
+  assert.equal(back.contact_info?.nickname, 'Ada');
+  assert.equal(back.contact_info?.bday, '1815-12-10');
+  assert.ok(back.contact_info?.adr?.includes('London'));
+  assert.equal(back.notes, 'met at the dock');
+  assert.ok(back.contact_info?.extras?.some((x) => x.label === 'pronouns' && x.value === 'she'));
 });

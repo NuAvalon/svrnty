@@ -52,5 +52,7 @@ export function contactRecordToEdge(c: any): TrustEdge {
     pending_intro: c.pending_intro || c.metadata?.pending_intro,
     // CUR-5 — owner-local block flag (like tags: never publish on the wire).
     blocked: !!(c.blocked ?? c.metadata?.blocked),
+    disclosed_circle: c.disclosed_circle || c.metadata?.disclosed_circle || c.metadata?.mutual_contacts,
+    they_trust: c.they_trust || c.metadata?.they_trust,
   } as TrustEdge;
 }

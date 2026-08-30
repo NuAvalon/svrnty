@@ -1,28 +1,29 @@
 # TrustMap (L2) — Cursor UI notes
 
 **Brief:** `CURSOR.md` L2 · Aesthetic: Solar Ember  
-**Layout:** `src/lib/trust/trust-map-layout.ts` — organic egocentric lattice (not concentric trust rings). Trust is a visual overlay (filament glow). Camera in `graph-camera.ts`.
+**Layout:** egocentric particle **galaxy** (canvas). Trust is glow. Camera is viewBox-space pan/zoom.
 
-## What we changed
-- Lattice seed: tag-sector + phyllotaxis, then spacing/cluster gravity. **No inner/outer trust rings.**
-- Zoom/pan/pinch via SVG **viewBox camera** (wheel toward cursor, pinch toward midpoint, Fit). CSS-scale zoom is gone.
-- Particle wash behind the graph (`TrustMapLatticeField`) — motes are atmosphere, not contacts.
-- Browse: organic hulls, trust overlay on nodes, no member-count badges (I-3).
-- Click node → seal + **alive contact sheet** (edit, TRUST/remove **behind confirm**, accept pending intro, introduce stub, **Send update → CUR-1 revise dialog**, **CUR-2 version history panel**, multi-select → group).
-- **CUR-3:** focus-sheet email / phone / url / handle via I-10a `ContactMethodLink`.
-- **CUR-5:** trust / break / remove / block open `TrustActionConfirmDialog`. Blocked contacts filtered off the lattice.
-- Sample circle: owner-authored tags → lattice chords (k-NN within tag, not complete graph). Frank = pending intro from Grace.
-- Legend: “Every visible line consented — none inferred.”
+## How 2,000 friends display (Cathedral-inspired, not Facebook lists)
 
-## Still open (UI)
-- Reach-settings / “awaken the circle” — need team visibility contracts.
-- Real introduce wire — stubbed locally.
-- Wire broadcast for Send update — Flint.
+Everyone on the lattice is already in **your** book — presence here is not inferred.
 
-## ⛔ Flint seam (CUR-2)
-- Restore/retract = sign next **higher** `ContactUpdateEnvelope.version`.
-- Local `svrnty.method-history.v1:*` is UI glass only.
+1. **Zoomed out** — points of light. Labels only when close, searched, or lamped.
+2. **Lamp a person** (click) — volumetric beams to their **constellation**:
+   - **Groups you named** (owner tags)
+   - **Circle they showed you** (`disclosed_circle` / exchange `mutual_contacts`) — fleet `visible()` ∩ book
+   - **They trust too** (`they_trust` / `peer_mutual`) — fleet PSI, not transitive invention
+3. **Trust overlay** — ember fill on people *you* trusted; known stay hollow. The “20 you trust of those 85” is the glow on the lamped set, not a score.
+4. **Search** finds a person in a dense book.
 
-## Questions
-1. OK to keep group filaments as owner-authored tag k-NN (current), or should tribes live in a separate store?
-2. Should recipient sheet show **peer** revision history or **owner** outbound only (current)?
+We did **not** port Three.js. The Cathedral 3D universe is a global knowledge graph; svrnty’s graph is **egocentric + your book**. 2D canvas + camera is the particle-lattice CURSOR.md asks for. Tilt/3D is a later aesthetic pass if Peter wants it — not a new data model.
+
+### What we will not draw
+- Peer↔peer bonds that nobody disclosed (the “your trusted friend also trusts 10” **only** lights when PSI/`they_trust` is present).
+- Mutual-friend **counts** on identity (I-3).
+- Why a line is absent (deniability).
+
+## Classical vCard
+Add-a-field editor on classical contacts (phone, email, link, address, org, title, nickname, birthday, handle, custom). Export omits trust dumps so a round-trip `.vcf` stays a phone book.
+
+## Boundary
+No crypto / `visible()` / relay. `disclosed_circle` and `they_trust` are read-only fleet fields.

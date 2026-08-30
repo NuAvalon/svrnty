@@ -206,29 +206,56 @@ export function relaxGraphNodes<T extends ForceNode>(
       }
     }
 
-    // 3) Pairwise spacing / collision
+    // 3) Spatial-hash collision — O(n) neighborhood, so 2000-book density stays interactive
+    const maxR = nodes.reduce((m, n) => Math.max(m, n.radius), 8);
+    const cell = Math.max(maxR * 2 + padding, 24);
+    const buckets = new Map<string, number[]>();
+    const cellKey = (x: number, y: number) =>
+      `${Math.floor(x / cell)}:${Math.floor(y / cell)}`;
     for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i];
-        const b = nodes[j];
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let dist = Math.hypot(dx, dy);
-        const minDist = a.radius + b.radius + padding;
-        if (dist < 1e-6) {
-          const ang = ((hash32(a.id) % 360) * Math.PI) / 180;
-          dx = Math.cos(ang);
-          dy = Math.sin(ang);
-          dist = 1e-6;
+      const k = cellKey(nodes[i].x, nodes[i].y);
+      const list = buckets.get(k);
+      if (list) list.push(i);
+      else buckets.set(k, [i]);
+    }
+    const collide = (i: number, j: number) => {
+      const a = nodes[i];
+      const b = nodes[j];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let dist = Math.hypot(dx, dy);
+      const minDist = a.radius + b.radius + padding;
+      if (dist < 1e-6) {
+        const ang = ((hash32(a.id) % 360) * Math.PI) / 180;
+        dx = Math.cos(ang);
+        dy = Math.sin(ang);
+        dist = 1e-6;
+      }
+      if (dist >= minDist) return;
+      const push = ((minDist - dist) / dist) * 0.5 * repulsion * (0.35 + 0.65 * cool);
+      const ox = dx * push;
+      const oy = dy * push;
+      a.x -= ox;
+      a.y -= oy;
+      b.x += ox;
+      b.y += oy;
+    };
+    for (const [key, list] of buckets) {
+      const [cx0, cy0] = key.split(':').map(Number);
+      for (let dx = 0; dx <= 1; dx++) {
+        for (let dy = dx === 0 ? 0 : -1; dy <= 1; dy++) {
+          const other = dx === 0 && dy === 0 ? list : buckets.get(`${cx0 + dx}:${cy0 + dy}`);
+          if (!other) continue;
+          if (other === list) {
+            for (let i = 0; i < list.length; i++) {
+              for (let j = i + 1; j < list.length; j++) collide(list[i], list[j]);
+            }
+          } else {
+            for (const i of list) {
+              for (const j of other) collide(i, j);
+            }
+          }
         }
-        if (dist >= minDist) continue;
-        const push = ((minDist - dist) / dist) * 0.5 * repulsion * (0.35 + 0.65 * cool);
-        const ox = dx * push;
-        const oy = dy * push;
-        a.x -= ox;
-        a.y -= oy;
-        b.x += ox;
-        b.y += oy;
       }
     }
 

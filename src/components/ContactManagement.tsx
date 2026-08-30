@@ -46,6 +46,12 @@ import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
+import {
+  ClassicalFieldsEditor,
+  fieldsFromContactInfo,
+  fieldsToContactInfo,
+  type BookField,
+} from '@/components/contacts/ClassicalFieldsEditor';
 import type { TrustEdge } from '@/lib/trust/types';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
@@ -87,6 +93,12 @@ interface Contact {
     emails?: string[];
     urls?: string[];
     handles?: Record<string, string>;
+    org?: string;
+    title?: string;
+    nickname?: string;
+    bday?: string;
+    adr?: string;
+    extras?: Array<{ label: string; value: string }>;
   };
   connection_status?: string;
 }
@@ -219,6 +231,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [linkFingerprint, setLinkFingerprint] = useState('');
   const [linkPublicKey, setLinkPublicKey] = useState('');
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [bookFields, setBookFields] = useState<BookField[]>([]);
 
   // Share state
   const [importData, setImportData] = useState('');
@@ -438,35 +451,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setError(null);
-      if (!editContactForm.name || !editContactForm.email) {
-        throw new Error('Name and email are required');
+      if (!editContactForm.name) {
+        throw new Error('Name is required');
       }
-      const phones = editContactForm.phonesText.split('\n').map(s => s.trim()).filter(Boolean);
-      const emails = editContactForm.emailsText.split('\n').map(s => s.trim()).filter(Boolean);
-      const urls = editContactForm.urlsText.split('\n').map(s => s.trim()).filter(Boolean);
-      const handles: Record<string, string> = {};
-      for (const line of editContactForm.handlesText.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const idx = trimmed.indexOf(':');
-        if (idx <= 0) continue;
-        const platform = trimmed.slice(0, idx).trim();
-        const handle = trimmed.slice(idx + 1).trim();
-        if (platform && handle) handles[platform] = handle;
-      }
+      const info = fieldsToContactInfo(bookFields);
       // Classical-only edit — refuse to mutate SVRNTY profile fields here.
       if (selectedContact && isSvrnNetworkContact(selectedContact)) {
         throw new Error('SVRNTY contacts are key-bound — edit is locked. Change trust, groups, or share settings instead.');
       }
       await updateContact(editContactForm.id, {
         name: editContactForm.name,
-        email: editContactForm.email,
-        contact_info: {
-          phones,
-          emails,
-          urls,
-          handles,
-        },
+        email: editContactForm.email || '',
+        contact_info: info,
         metadata: {
           notes: editContactForm.notes,
           ...(selectedContact?.metadata ? {
@@ -799,7 +795,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       return;
     }
     setSelectedContact(contact);
-    const handles = contact.contact_info?.handles || {};
     setEditContactForm({
       id: contact.id,
       name: contact.name,
@@ -807,11 +802,12 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       fingerprint: contact.fingerprint,
       public_key: contact.public_key,
       notes: contact.metadata?.notes || '',
-      phonesText: (contact.contact_info?.phones || []).join('\n'),
-      emailsText: (contact.contact_info?.emails || []).join('\n'),
-      urlsText: (contact.contact_info?.urls || []).join('\n'),
-      handlesText: Object.entries(handles).map(([k, v]) => `${k}: ${v}`).join('\n'),
+      phonesText: '',
+      emailsText: '',
+      urlsText: '',
+      handlesText: '',
     });
+    setBookFields(fieldsFromContactInfo(contact.contact_info));
     setShowEditDialog(true);
   };
 
@@ -1677,23 +1673,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 <label htmlFor="edit-notes" className="text-sm font-medium">Notes</label>
                 <Textarea id="edit-notes" value={editContactForm.notes} onChange={e => setEditContactForm(p => ({ ...p, notes: e.target.value }))} placeholder="Private notes about this contact..." rows={3} />
               </div>
-              <div className="space-y-1.5">
-                <label htmlFor="edit-phones" className="text-sm font-medium">Phones</label>
-                <Textarea id="edit-phones" value={editContactForm.phonesText} onChange={e => setEditContactForm(p => ({ ...p, phonesText: e.target.value }))} placeholder={"One per line\n+1 555 0100"} rows={2} />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="edit-emails" className="text-sm font-medium">More emails</label>
-                <Textarea id="edit-emails" value={editContactForm.emailsText} onChange={e => setEditContactForm(p => ({ ...p, emailsText: e.target.value }))} placeholder="One per line" rows={2} />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="edit-urls" className="text-sm font-medium">Links</label>
-                <Textarea id="edit-urls" value={editContactForm.urlsText} onChange={e => setEditContactForm(p => ({ ...p, urlsText: e.target.value }))} placeholder="https://..." rows={2} />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="edit-handles" className="text-sm font-medium">Handles</label>
-                <Textarea id="edit-handles" value={editContactForm.handlesText} onChange={e => setEditContactForm(p => ({ ...p, handlesText: e.target.value }))} placeholder={"signal: @name\ntelegram: @name"} rows={2} />
-                <p className="text-xs text-muted-foreground">Classical only — numbers &amp; channels you keep locally.</p>
-              </div>
+              <ClassicalFieldsEditor fields={bookFields} onChange={setBookFields} />
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Fingerprint</label>
                 <Input value={editContactForm.fingerprint} readOnly className="font-mono text-xs opacity-60" />
@@ -1702,7 +1682,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
-              <Button onClick={handleUpdateContact} disabled={loading || !editContactForm.name || !editContactForm.email}>
+              <Button onClick={handleUpdateContact} disabled={loading || !editContactForm.name}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Saving...</> : <><Check className="h-4 w-4 mr-2" />Save</>}
               </Button>
             </DialogFooter>
