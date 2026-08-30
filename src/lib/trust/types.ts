@@ -44,6 +44,8 @@ export interface TrustEdge {
   notes: string;                        // private notes (never shared)
   connection_channels: string[];        // 'signal', 'email', 'telegram', etc.
   added_at: string;
+  /** Owner-local mute (CUR-5). Never publish — strip on wire like tags. */
+  blocked?: boolean;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys

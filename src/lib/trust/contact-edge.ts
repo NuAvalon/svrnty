@@ -50,5 +50,7 @@ export function contactRecordToEdge(c: any): TrustEdge {
     // Demo / UI connection lifecycle (pending intro ≠ trust). Open-bag passthrough.
     connection_status: c.connection_status || c.metadata?.connection_status,
     pending_intro: c.pending_intro || c.metadata?.pending_intro,
+    // CUR-5 — owner-local block flag (like tags: never publish on the wire).
+    blocked: !!(c.blocked ?? c.metadata?.blocked),
   } as TrustEdge;
 }
