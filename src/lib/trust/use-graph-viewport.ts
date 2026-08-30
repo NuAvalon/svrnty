@@ -1,58 +1,83 @@
 /**
- * Viewport transform for Social Graph (zoom / pan / pinch).
+ * Viewport camera for Social Graph (zoom / pan / pinch) in world space.
  * Pure UI — no trust semantics.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type Camera,
+  type Bounds,
+  clientToWorld,
+  fitCamera,
+  panCamera,
+  zoomCamera,
+  cameraCenter,
+} from '@/lib/trust/graph-camera';
 
-export type GraphViewport = {
-  scale: number;
-  tx: number;
-  ty: number;
-};
+const DEFAULT: Camera = { x: 0, y: 0, w: 640, h: 640 };
 
-const MIN = 0.55;
-const MAX = 3.2;
-
-export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty: 0 }) {
-  const [vp, setVp] = useState<GraphViewport>(initial);
-  const vpRef = useRef(vp);
-  vpRef.current = vp;
-  const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
-  const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+export function useGraphViewport(initial: Camera = DEFAULT) {
+  const [cam, setCam] = useState<Camera>(initial);
+  const camRef = useRef(cam);
+  camRef.current = cam;
+  const pinchRef = useRef<{ dist: number; cam: Camera; mx: number; my: number } | null>(null);
+  const panRef = useRef<{
+    x: number;
+    y: number;
+    cam: Camera;
+  } | null>(null);
   const elRef = useRef<HTMLDivElement | null>(null);
+  const fitRef = useRef<Camera>(initial);
+  const minWRef = useRef(80);
+  const maxWRef = useRef(2400);
 
-  const reset = useCallback(() => setVp({ scale: 1, tx: 0, ty: 0 }), []);
+  const applyFit = useCallback((bounds: Bounds, aspect: number) => {
+    const fitted = fitCamera(bounds, aspect, 36);
+    fitRef.current = fitted;
+    minWRef.current = fitted.w * 0.42;
+    maxWRef.current = fitted.w / 7;
+    setCam(fitted);
+  }, []);
 
-  const zoomBy = useCallback((factor: number, cx?: number, cy?: number) => {
-    setVp((prev) => {
-      const nextScale = Math.min(MAX, Math.max(MIN, prev.scale * factor));
-      if (nextScale === prev.scale) return prev;
-      if (cx == null || cy == null) return { ...prev, scale: nextScale };
-      const ratio = nextScale / prev.scale;
-      return {
-        scale: nextScale,
-        tx: cx - (cx - prev.tx) * ratio,
-        ty: cy - (cy - prev.ty) * ratio,
-      };
+  const reset = useCallback(() => setCam(fitRef.current), []);
+
+  const zoomAtClient = useCallback((factor: number, clientX?: number, clientY?: number) => {
+    setCam((prev) => {
+      const el = elRef.current;
+      let wx: number;
+      let wy: number;
+      if (el && clientX != null && clientY != null) {
+        const rect = el.getBoundingClientRect();
+        const p = clientToWorld(prev, rect, clientX, clientY);
+        wx = p.x;
+        wy = p.y;
+      } else {
+        const c = cameraCenter(prev);
+        wx = c.x;
+        wy = c.y;
+      }
+      return zoomCamera(prev, factor, wx, wy, minWRef.current, maxWRef.current);
     });
   }, []);
 
-  // Non-passive wheel — React's onWheel is passive and can't preventDefault.
+  const zoomBy = useCallback(
+    (factor: number) => {
+      zoomAtClient(factor);
+    },
+    [zoomAtClient],
+  );
+
   useEffect(() => {
     const el = elRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const rect = el.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      const factor = e.deltaY > 0 ? 0.92 : 1.08;
-      zoomBy(factor, cx, cy);
+      const factor = Math.exp(-e.deltaY * 0.0016);
+      zoomAtClient(factor, e.clientX, e.clientY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [zoomBy]);
+  }, [zoomAtClient]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button === 1 || e.button === 0) {
@@ -63,8 +88,7 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
       panRef.current = {
         x: e.clientX,
         y: e.clientY,
-        tx: vpRef.current.tx,
-        ty: vpRef.current.ty,
+        cam: camRef.current,
       };
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
     }
@@ -72,13 +96,15 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!panRef.current) return;
-    const dx = e.clientX - panRef.current.x;
-    const dy = e.clientY - panRef.current.y;
-    setVp((prev) => ({
-      ...prev,
-      tx: panRef.current!.tx + dx,
-      ty: panRef.current!.ty + dy,
-    }));
+    const el = elRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const start = panRef.current;
+    const dxPx = e.clientX - start.x;
+    const dyPx = e.clientY - start.y;
+    const dxWorld = (dxPx / Math.max(rect.width, 1)) * start.cam.w;
+    const dyWorld = (dyPx / Math.max(rect.height, 1)) * start.cam.h;
+    setCam(panCamera(start.cam, dxWorld, dyWorld));
   }, []);
 
   const onPointerUp = useCallback(() => {
@@ -90,7 +116,12 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
       const a = e.touches[0];
       const b = e.touches[1];
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-      pinchRef.current = { dist, scale: vpRef.current.scale };
+      pinchRef.current = {
+        dist,
+        cam: camRef.current,
+        mx: (a.clientX + b.clientX) / 2,
+        my: (a.clientY + b.clientY) / 2,
+      };
       panRef.current = null;
     }
   }, []);
@@ -101,11 +132,15 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
       const a = e.touches[0];
       const b = e.touches[1];
       const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-      const nextScale = Math.min(
-        MAX,
-        Math.max(MIN, pinchRef.current.scale * (dist / Math.max(pinchRef.current.dist, 1))),
+      const factor = dist / Math.max(pinchRef.current.dist, 1);
+      const origin = pinchRef.current.cam;
+      const el = elRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const p = clientToWorld(origin, rect, pinchRef.current.mx, pinchRef.current.my);
+      setCam(
+        zoomCamera(origin, factor, p.x, p.y, minWRef.current, maxWRef.current),
       );
-      setVp((prev) => ({ ...prev, scale: nextScale }));
     }
   }, []);
 
@@ -121,10 +156,10 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
   }, []);
 
   return {
-    vp,
-    setVp,
+    cam,
     reset,
     zoomBy,
+    applyFit,
     elRef,
     handlers: {
       onPointerDown,

@@ -1,15 +1,16 @@
 /**
  * Deterministic spacing + gravity for the Social Graph.
  *
- * Pure layout post-process — no crypto, no visibility inference.
- * Owner-authored group tags may softly attract; peer↔peer trust is NEVER invented.
+ * Organic lattice — NOT concentric trust rings. Trust is an overlay (glow),
+ * never a radius from self. Owner-authored group tags may softly attract;
+ * peer↔peer trust is NEVER invented.
  *
  * Forces (each iteration):
- *   1. Ring gravity — keep Orbit nodes near their intended radius from self
- *   2. Cluster gravity — soft pull toward shared owner-local tags
+ *   1. Soft cloud keep — stay in a wide disk around self (not a ring)
+ *   2. Cluster gravity — pull toward shared owner-local tags
  *   3. Collision / spacing — push overlapping seals apart
  *   4. Self clearance — keep out of the center seal
- *   5. Bounds clamp — stay inside the viewBox
+ *   5. Bounds clamp — stay inside the world
  */
 
 export type ForceNode = {
@@ -22,11 +23,9 @@ export type ForceNode = {
 export type ForceOptions = {
   width: number;
   height: number;
-  /** Center of gravity for Orbit (self). */
+  /** Center of gravity (self). */
   cx: number;
   cy: number;
-  /** Preferred distance from center keyed by node id (Orbit rings). */
-  preferredRadius?: Map<string, number>;
   /** Owner-authored tag → member ids (cluster gravity only). */
   tagMembers?: Map<string, string[]>;
   /** Min clear gap between seal edges. */
@@ -34,10 +33,13 @@ export type ForceOptions = {
   /** Keep nodes outside this radius from center (self seal). */
   selfClearance?: number;
   iterations?: number;
-  /** Strength of pull back onto preferred ring [0..1]. */
-  ringGravity?: number;
   /** Strength of same-tag centroid pull [0..1]. */
   clusterGravity?: number;
+  /** Weak pull toward self so the cloud stays egocentric [0..1]. */
+  centerGravity?: number;
+  /** Wide disk — radial force ONLY outside this band (not a ring). */
+  cloudMin?: number;
+  cloudMax?: number;
   /** Collision strength multiplier. */
   repulsion?: number;
   margin?: number;
@@ -47,46 +49,94 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
-/**
- * Adaptive ring radius so arc spacing stays readable as the roster grows.
- * If count exceeds what maxR can hold, callers should split across rings.
- */
-export function radiusForCount(
-  count: number,
-  minR: number,
-  maxR: number,
-  minArc = 30,
-): number {
-  if (count <= 0) return minR;
-  const needed = (count * minArc) / (2 * Math.PI);
-  return clamp(needed, minR, maxR);
+export function hash32(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+
 /**
- * Split a long roster across concentric rings so seals don't stack on one circle.
- * Returns per-item { ringIndex, indexOnRing, ringCount }.
+ * Vogel sunflower seed — even packing without discrete rings.
+ * Deterministic; optional angular offset from a hash.
  */
-export function assignConcentricSlots(
+export function seedPhyllotaxis(
   count: number,
-  maxPerRing: number,
-): Array<{ ring: number; index: number; onRing: number }> {
+  cx: number,
+  cy: number,
+  minR: number,
+  spread: number,
+  angle0 = 0,
+): Array<{ x: number; y: number }> {
   if (count <= 0) return [];
-  const rings = Math.max(1, Math.ceil(count / Math.max(1, maxPerRing)));
-  const base = Math.floor(count / rings);
-  const rem = count % rings;
-  const out: Array<{ ring: number; index: number; onRing: number }> = [];
-  let cursor = 0;
-  for (let r = 0; r < rings; r++) {
-    const onRing = base + (r < rem ? 1 : 0);
-    for (let i = 0; i < onRing; i++) {
-      out[cursor++] = { ring: r, index: i, onRing };
-    }
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < count; i++) {
+    const r = minR + spread * Math.sqrt((i + 0.5) / count);
+    const theta = angle0 + i * GOLDEN;
+    out.push({ x: cx + Math.cos(theta) * r, y: cy + Math.sin(theta) * r });
   }
   return out;
 }
 
 /**
- * Relax node positions with spacing + gravity. Deterministic; no Math.random.
+ * Seed around self: same-tag contacts share a sector (neighborhood),
+ * radii grow with index (not with trust). Untagged scatter by phyllotaxis.
+ */
+export function seedEgocentric(
+  ids: Array<{ id: string; tags?: string[] }>,
+  cx: number,
+  cy: number,
+  minR: number,
+  spread: number,
+): Array<{ id: string; x: number; y: number }> {
+  const tagAngle = new Map<string, number>();
+  const seenTags: string[] = [];
+  for (const item of ids) {
+    const primary = (item.tags || []).find((t) => !!t);
+    if (primary && !tagAngle.has(primary)) {
+      seenTags.push(primary);
+      tagAngle.set(primary, 0);
+    }
+  }
+  const nTags = Math.max(seenTags.length, 1);
+  seenTags.forEach((t, i) => {
+    const jitter = ((hash32(t) % 100) / 100 - 0.5) * 0.22;
+    tagAngle.set(t, (i / nTags) * Math.PI * 2 - Math.PI / 2 + jitter);
+  });
+  const out: Array<{ id: string; x: number; y: number }> = [];
+  for (let i = 0; i < ids.length; i++) {
+    const item = ids[i];
+    const primary = (item.tags || []).find((t) => !!t);
+    const jitter = (hash32(item.id) % 1000) / 1000;
+    let theta: number;
+    let r: number;
+    if (primary) {
+      if (!tagAngle.has(primary)) {
+        tagAngle.set(primary, ((hash32(primary) % 360) * Math.PI) / 180);
+      }
+      const base = tagAngle.get(primary)!;
+      const slot = (hash32(item.id + primary) % 1000) / 1000;
+      theta = base + (slot - 0.5) * 0.95;
+      r = minR + spread * (0.22 + jitter * 0.78) + Math.sqrt(i + 1) * 9;
+    } else {
+      theta = i * GOLDEN + jitter * 0.55;
+      r = minR + spread * Math.sqrt((i + 0.35) / Math.max(ids.length, 1));
+    }
+    out.push({
+      id: item.id,
+      x: cx + Math.cos(theta) * r,
+      y: cy + Math.sin(theta) * r,
+    });
+  }
+  return out;
+}
+
+/**
+ * Relax node positions. Deterministic; no Math.random.
  */
 export function relaxGraphNodes<T extends ForceNode>(
   input: T[],
@@ -97,13 +147,14 @@ export function relaxGraphNodes<T extends ForceNode>(
     height,
     cx,
     cy,
-    preferredRadius,
     tagMembers,
     padding = 14,
     selfClearance = 42,
     iterations = 48,
-    ringGravity = 0.18,
-    clusterGravity = 0.12,
+    clusterGravity = 0.14,
+    centerGravity = 0.035,
+    cloudMin = 0,
+    cloudMax = 0,
     repulsion = 0.55,
     margin = 22,
   } = opts;
@@ -112,20 +163,31 @@ export function relaxGraphNodes<T extends ForceNode>(
   const byId = new Map(nodes.map((n) => [n.id, n]));
 
   for (let iter = 0; iter < iterations; iter++) {
-    const cool = 1 - iter / iterations; // ease out
+    const cool = 1 - iter / iterations;
 
-    // 1) Ring gravity — restore Orbit structure after collisions shove nodes
-    if (preferredRadius && preferredRadius.size > 0) {
+    // 1) Wide cloud keep — radial force only if outside the band
+    if (cloudMax > cloudMin && cloudMax > 0) {
       for (const n of nodes) {
-        const pref = preferredRadius.get(n.id);
-        if (pref == null) continue;
         const dx = n.x - cx;
         const dy = n.y - cy;
         const dist = Math.hypot(dx, dy) || 1e-6;
-        const targetX = cx + (dx / dist) * pref;
-        const targetY = cy + (dy / dist) * pref;
-        n.x += (targetX - n.x) * ringGravity * cool;
-        n.y += (targetY - n.y) * ringGravity * cool;
+        if (dist > cloudMax) {
+          const t = ((dist - cloudMax) / dist) * 0.22 * cool;
+          n.x -= dx * t;
+          n.y -= dy * t;
+        } else if (dist < cloudMin && dist > 0) {
+          const t = ((cloudMin - dist) / dist) * 0.18 * cool;
+          n.x += dx * t;
+          n.y += dy * t;
+        }
+      }
+    }
+
+    // Weak egocentric pull so the lattice doesn't drift into a corner
+    if (centerGravity > 0) {
+      for (const n of nodes) {
+        n.x += (cx - n.x) * centerGravity * cool;
+        n.y += (cy - n.y) * centerGravity * cool;
       }
     }
 
@@ -154,10 +216,7 @@ export function relaxGraphNodes<T extends ForceNode>(
         let dist = Math.hypot(dx, dy);
         const minDist = a.radius + b.radius + padding;
         if (dist < 1e-6) {
-          // Deterministic nudge from id hash so stacked nodes separate
-          let h = 0;
-          for (let k = 0; k < a.id.length; k++) h = (h * 31 + a.id.charCodeAt(k)) | 0;
-          const ang = ((h >>> 0) % 360) * (Math.PI / 180);
+          const ang = ((hash32(a.id) % 360) * Math.PI) / 180;
           dx = Math.cos(ang);
           dy = Math.sin(ang);
           dist = 1e-6;
@@ -205,4 +264,72 @@ export function tagMembership(
     }
   }
   return map;
+}
+
+/**
+ * Lattice chords: k-nearest neighbors among co-members of an owner tag.
+ * Co-membership ≠ trust — these are authored group filaments, not bonds.
+ */
+export function latticeChords(
+  contacts: Array<{ peer_fingerprint: string; tags?: string[] }>,
+  positions: Map<string, { x: number; y: number }>,
+  k = 2,
+): Array<{ a: string; b: string; tag: string }> {
+  const byTag = tagMembership(contacts);
+  const out: Array<{ a: string; b: string; tag: string }> = [];
+  const seen = new Set<string>();
+  for (const [tag, ids] of byTag) {
+    if (ids.length < 2) continue;
+    for (const id of ids) {
+      const p = positions.get(id);
+      if (!p) continue;
+      const others = ids
+        .filter((o) => o !== id)
+        .map((o) => {
+          const q = positions.get(o);
+          const d = q ? Math.hypot(q.x - p.x, q.y - p.y) : Infinity;
+          return { o, d };
+        })
+        .sort((a, b) => a.d - b.d)
+        .slice(0, k);
+      for (const { o } of others) {
+        const key = [id, o].sort().join('|') + '|' + tag;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ a: id, b: o, tag });
+      }
+    }
+  }
+  return out;
+}
+
+/** Andrew's monotone chain — for faint Browse hulls. */
+export function convexHull(
+  pts: Array<{ x: number; y: number }>,
+): Array<{ x: number; y: number }> {
+  if (pts.length <= 2) return pts.slice();
+  const p = [...pts].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+  const cross = (
+    o: { x: number; y: number },
+    a: { x: number; y: number },
+    b: { x: number; y: number },
+  ) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: Array<{ x: number; y: number }> = [];
+  for (const pt of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pt) <= 0) {
+      lower.pop();
+    }
+    lower.push(pt);
+  }
+  const upper: Array<{ x: number; y: number }> = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const pt = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pt) <= 0) {
+      upper.pop();
+    }
+    upper.push(pt);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
 }

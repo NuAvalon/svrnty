@@ -1,32 +1,28 @@
 # TrustMap (L2) — Cursor UI notes
 
 **Brief:** `CURSOR.md` L2 · Aesthetic: Solar Ember  
-**Layout/crypto:** `src/lib/trust/trust-map-layout.ts` — **do not modify** (team-owned invariants + tests). Clustering / group chords are render-only in this component.
+**Layout:** `src/lib/trust/trust-map-layout.ts` — organic egocentric lattice (not concentric trust rings). Trust is a visual overlay (filament glow). Camera in `graph-camera.ts`.
 
 ## What we changed
-- Retinted SVG tokens to Solar Ember (CSS vars → light/dark).
+- Lattice seed: tag-sector + phyllotaxis, then spacing/cluster gravity. **No inner/outer trust rings.**
+- Zoom/pan/pinch via SVG **viewBox camera** (wheel toward cursor, pinch toward midpoint, Fit). CSS-scale zoom is gone.
+- Particle wash behind the graph (`TrustMapLatticeField`) — motes are atmosphere, not contacts.
+- Browse: organic hulls, trust overlay on nodes, no member-count badges (I-3).
 - Click node → seal + **alive contact sheet** (edit, TRUST/remove **behind confirm**, accept pending intro, introduce stub, **Send update → CUR-1 revise dialog**, **CUR-2 version history panel**, multi-select → group).
-- **CUR-3:** focus-sheet email / phone / url / handle are tap-to-open via I-10a allowlisted `ContactMethodLink` (see `src/components/contacts/README.md`).
-- **CUR-5:** trust / break / remove / block open `TrustActionConfirmDialog` (Solar Ember). Blocked contacts are filtered off the lattice (local owner flag).
-- Sample circle (`sample-circle.ts`): mutual trust self↔Ada/Grace/Margaret; owner-authored tags (`core`, `builders`, `radio`, …) → **cluster chords + centroid pull**; Frank = pending intro from Grace (pending ≠ trust).
-- Known vs trusted visuals sharpened (hollow dashed known · lit fill + halo trusted · double-glow mutual · pulsing dashed pending).
-- Intro UI creates a local pending contact for demo; dual-accept protocol is team-owned.
-- **CUR-2:** `MethodHistoryPanel` — local method-revision log + one-tap **Restore previous** (appends a new local draft; signing stubbed).
+- **CUR-3:** focus-sheet email / phone / url / handle via I-10a `ContactMethodLink`.
+- **CUR-5:** trust / break / remove / block open `TrustActionConfirmDialog`. Blocked contacts filtered off the lattice.
+- Sample circle: owner-authored tags → lattice chords (k-NN within tag, not complete graph). Frank = pending intro from Grace.
+- Legend: “Every visible line consented — none inferred.”
 
 ## Still open (UI)
-- Particle-lattice canvas (dist &lt; ~130 accent lines) — next pass.
 - Reach-settings / “awaken the circle” — need team visibility contracts.
-- Real introduce wire (pending both sides until accept) — stubbed locally.
-- Wire broadcast for Send update — Flint (`identity/contact-method-send.ts` stub).
-- CUR-1 Send update → should `appendMethodRevision` on successful queue (hook when wiring).
-+ CUR-1 revise dialog now calls `appendMethodRevision` on Save locally / Send update (local drafts).
+- Real introduce wire — stubbed locally.
+- Wire broadcast for Send update — Flint.
 
 ## ⛔ Flint seam (CUR-2)
-- Restore/retract = sign next **higher** `ContactUpdateEnvelope.version` with prior field values + per-peer encrypt + deposit.
-- Never roll wire version backward (receivers reject `stale-version`).
-- Local `svrnty.method-history.v1:*` is UI glass only — not the wire ledger.
+- Restore/retract = sign next **higher** `ContactUpdateEnvelope.version`.
+- Local `svrnty.method-history.v1:*` is UI glass only.
 
 ## Questions
-1. OK to keep group chords as owner-authored tag edges (current), or should tribes live in a separate store before we draw them?
-2. Should pending intros sit outside the known ring until accepted, or stay on the rim (current)?
-3. Should recipient sheet show **peer** revision history (applied deltas) or **owner** outbound correct/retract only (current)?
+1. OK to keep group filaments as owner-authored tag k-NN (current), or should tribes live in a separate store?
+2. Should recipient sheet show **peer** revision history or **owner** outbound only (current)?

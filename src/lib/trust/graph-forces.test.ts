@@ -4,33 +4,36 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  assignConcentricSlots,
-  radiusForCount,
+  convexHull,
+  latticeChords,
   relaxGraphNodes,
+  seedEgocentric,
+  seedPhyllotaxis,
   tagMembership,
 } from './graph-forces';
 
-test('radiusForCount grows with roster until maxR', () => {
-  const r3 = radiusForCount(3, 40, 120, 30);
-  const r12 = radiusForCount(12, 40, 120, 30);
-  const r60 = radiusForCount(60, 40, 120, 30);
-  assert.ok(r3 >= 40);
-  assert.ok(r12 > r3);
-  assert.equal(r60, 120);
+test('seedPhyllotaxis is even packing — radii are not a single ring', () => {
+  const pts = seedPhyllotaxis(16, 200, 200, 40, 80);
+  assert.equal(pts.length, 16);
+  const rs = pts.map((p) => Math.hypot(p.x - 200, p.y - 200));
+  const min = Math.min(...rs);
+  const max = Math.max(...rs);
+  assert.ok(max - min > 30, `sunflower collapsed to a ring: ${min}–${max}`);
 });
 
-test('assignConcentricSlots spreads evenly across rings', () => {
-  const slots = assignConcentricSlots(10, 4);
-  assert.equal(slots.length, 10);
-  const rings = new Set(slots.map((s) => s.ring));
-  assert.equal(rings.size, 3);
-  // Each ring's onRing matches how many slots claim that ring
-  for (const ring of rings) {
-    const onRing = slots.filter((s) => s.ring === ring);
-    assert.ok(onRing.every((s) => s.onRing === onRing.length));
-    const indices = onRing.map((s) => s.index).sort((a, b) => a - b);
-    assert.deepEqual(indices, [...Array(onRing.length).keys()]);
-  }
+test('seedEgocentric groups same-tag ids into a sector, not by trust', () => {
+  const ids = [
+    { id: 'a', tags: ['crew'] },
+    { id: 'b', tags: ['crew'] },
+    { id: 'c', tags: ['other'] },
+    { id: 'd', tags: ['other'] },
+  ];
+  const pts = seedEgocentric(ids, 200, 200, 50, 90);
+  const byId = Object.fromEntries(pts.map((p) => [p.id, p]));
+  const crew = Math.hypot(byId.a.x - byId.b.x, byId.a.y - byId.b.y);
+  const other = Math.hypot(byId.c.x - byId.d.x, byId.c.y - byId.d.y);
+  const cross = Math.hypot(byId.a.x - byId.c.x, byId.a.y - byId.c.y);
+  assert.ok(crew < cross * 1.15 || other < cross, 'tag sectors did not form');
 });
 
 test('relaxGraphNodes separates overlapping seals', () => {
@@ -47,8 +50,8 @@ test('relaxGraphNodes separates overlapping seals', () => {
     padding: 14,
     selfClearance: 0,
     iterations: 40,
-    ringGravity: 0,
     clusterGravity: 0,
+    centerGravity: 0,
     repulsion: 0.8,
   });
   for (let i = 0; i < out.length; i++) {
@@ -59,34 +62,6 @@ test('relaxGraphNodes separates overlapping seals', () => {
         `nodes ${out[i].id}/${out[j].id} still overlap: dist=${dist}`,
       );
     }
-  }
-});
-
-test('ring gravity restores preferred radius', () => {
-  const nodes = [
-    { id: 'a', x: 200 + 40, y: 200, radius: 8 },
-    { id: 'b', x: 200, y: 200 + 40, radius: 8 },
-  ];
-  const preferred = new Map([
-    ['a', 80],
-    ['b', 80],
-  ]);
-  const out = relaxGraphNodes(nodes, {
-    width: 400,
-    height: 400,
-    cx: 200,
-    cy: 200,
-    preferredRadius: preferred,
-    padding: 8,
-    selfClearance: 20,
-    iterations: 50,
-    ringGravity: 0.35,
-    clusterGravity: 0,
-    repulsion: 0.3,
-  });
-  for (const n of out) {
-    const r = Math.hypot(n.x - 200, n.y - 200);
-    assert.ok(Math.abs(r - 80) < 12, `${n.id} radius ${r} not near 80`);
   }
 });
 
@@ -106,13 +81,12 @@ test('cluster gravity pulls same-tag members together', () => {
     padding: 10,
     selfClearance: 0,
     iterations: 40,
-    ringGravity: 0,
     clusterGravity: 0.25,
+    centerGravity: 0,
     repulsion: 0.2,
   });
   const after = Math.hypot(out[1].x - out[0].x, out[1].y - out[0].y);
   assert.ok(after < before * 0.85, `same-tag pair did not converge: ${before} → ${after}`);
-  // Untagged node should not be yanked into the pair centroid as hard
   const midX = (out[0].x + out[1].x) / 2;
   const midY = (out[0].y + out[1].y) / 2;
   const cDist = Math.hypot(out[2].x - midX, out[2].y - midY);
@@ -130,6 +104,38 @@ test('tagMembership indexes owner-local tags only', () => {
   assert.equal(map.has(''), false);
 });
 
+test('latticeChords are k-NN within a tag, not a complete graph', () => {
+  const contacts = [
+    { peer_fingerprint: 'a', tags: ['g'] },
+    { peer_fingerprint: 'b', tags: ['g'] },
+    { peer_fingerprint: 'c', tags: ['g'] },
+    { peer_fingerprint: 'd', tags: ['g'] },
+  ];
+  const positions = new Map([
+    ['a', { x: 0, y: 0 }],
+    ['b', { x: 10, y: 0 }],
+    ['c', { x: 100, y: 0 }],
+    ['d', { x: 110, y: 0 }],
+  ]);
+  const chords = latticeChords(contacts, positions, 1);
+  // 4 nodes × 1 neighbor, undirected → 2 components of pairs, not K4
+  assert.ok(chords.length <= 4);
+  assert.ok(chords.every((c) => c.tag === 'g'));
+  assert.ok(!chords.some((c) => (c.a === 'a' && c.b === 'd') || (c.a === 'd' && c.b === 'a')));
+});
+
+test('convexHull is the outer polygon', () => {
+  const hull = convexHull([
+    { x: 0, y: 0 },
+    { x: 10, y: 0 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+    { x: 5, y: 5 },
+  ]);
+  assert.equal(hull.length, 4);
+  assert.ok(!hull.some((p) => p.x === 5 && p.y === 5));
+});
+
 test('relaxGraphNodes is deterministic', () => {
   const seed = [
     { id: 'x', x: 150, y: 150, radius: 9 },
@@ -141,17 +147,12 @@ test('relaxGraphNodes is deterministic', () => {
     height: 360,
     cx: 180,
     cy: 180,
-    preferredRadius: new Map([
-      ['x', 70],
-      ['y', 70],
-      ['z', 90],
-    ]),
     tagMembers: new Map([['t', ['x', 'y']]]),
     padding: 12,
     selfClearance: 36,
     iterations: 48,
-    ringGravity: 0.2,
     clusterGravity: 0.1,
+    centerGravity: 0.03,
     repulsion: 0.55,
   };
   const a = relaxGraphNodes(seed, opts);

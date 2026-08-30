@@ -44,10 +44,10 @@ test('browse clusters bucket by first tag and surface trust/mutual counts', () =
   assert.equal(clusters.length, 3);
   const family = clusters.find((c) => c.tag === 'Family');
   assert.ok(family);
-  assert.equal(family!.trustedCount, 1);
-  assert.equal(family!.knownCount, 1);
-  assert.equal(family!.mutualCount, 1);
+  assert.equal(family!.members.filter((m) => m.trusted).length, 1);
+  assert.equal(family!.members.filter((m) => !m.trusted).length, 1);
   assert.ok(family!.members.some((m) => m.mutual));
+  assert.ok(family!.hull.length >= 1);
 });
 
 test('browse layout stays inside the view (non-egocentric pack)', () => {

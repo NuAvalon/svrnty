@@ -1,25 +1,19 @@
 // src/components/TrustMap.tsx
-// The crystalline trust-map — a flat, responsive SVG rendering of the viewer's
-// trust lattice. Replaces the old <canvas> constellation, whose ABSOLUTE pixel
-// radii pushed every node off-screen on a phone ("only the center shows"). This
-// renders inside a fixed viewBox scaled to 100% width, so it fits any device.
+// Egocentric particle-lattice: you at center, contacts in organic neighborhoods
+// (owner-authored tags). Trust is a GLOW overlay on your bonds — not concentric
+// rings. Camera viewBox handles pan/zoom (never CSS-scale a tiny SVG).
 //
-// Design reference: docs/design/svrnty-crystalline-lattice-template.svg
-// Tokens + the two constitutional rules (vivre spec §3):
-//   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize in ~1s on entry.
-//   (b) I-6 RENDER PROVENANCE — every visual property decodes to something the
-//       viewer AUTHORED or WITNESSED; nothing inferred; unlit = privacy, not absence.
-// Positions/opacities/radii come from ./lib/trust/trust-map-layout (pure + tested).
-// We render self + my real you→peer edges + real contact nodes.
-// Owner-authored group tags → soft cluster chords + centroid pull (NOT peer↔peer
-// trust inference). Mutual reciprocal is witnessed on the edge. Pending intros
-// are explicit metadata (introduction ≠ trust).
+// Constitutional:
+//   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize on entry.
+//   (b) I-6 RENDER PROVENANCE — authored or witnessed only; none inferred.
+// Layout: src/lib/trust/trust-map-layout.ts (pure). Camera: graph-camera.ts.
 
 "use client";
 
 import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { Maximize2, Minimize2, ZoomIn, ZoomOut, Users } from 'lucide-react';
 import { useGraphViewport } from '@/lib/trust/use-graph-viewport';
+import { boundsOf } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
 import {
   computeTrustLayout,
@@ -28,7 +22,8 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-import { relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
+import { latticeChords } from '@/lib/trust/graph-forces';
+import { TrustMapLatticeField } from '@/components/TrustMapLatticeField';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -107,7 +102,7 @@ interface TrustMapProps {
   onMethodHistoryChange?: () => void;
 }
 
-const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container width.
+const VIEW = 640; // world size; camera viewBox frames it (never CSS-scale the SVG).
 
 // Solar Ember via CSS vars — follows light/dark appearance.
 const T = {
@@ -150,70 +145,6 @@ function formatKeyGroups(fp: string): string {
   return groups.slice(0, 6).join('·');
 }
 
-/** Soft spacing + gravity over Orbit seals (owner tags attract; no peer trust inferred). */
-function clusterPull(
-  nodes: LaidOutNode[],
-  contacts: TrustEdge[],
-  width: number,
-  height: number,
-  cx: number,
-  cy: number,
-): LaidOutNode[] {
-  if (nodes.length === 0) return nodes;
-  const preferredRadius = new Map<string, number>();
-  for (const n of nodes) {
-    preferredRadius.set(n.id, Math.hypot(n.x - cx, n.y - cy));
-  }
-  const relaxed = relaxGraphNodes(nodes, {
-    width,
-    height,
-    cx,
-    cy,
-    preferredRadius,
-    tagMembers: tagMembership(contacts),
-    padding: 16,
-    selfClearance: 48,
-    iterations: 56,
-    ringGravity: 0.22,
-    clusterGravity: 0.1,
-    repulsion: 0.62,
-    margin: 24,
-  });
-  // Preserve LaidOutNode fields; only x/y move.
-  const byId = new Map(relaxed.map((n) => [n.id, n]));
-  return nodes.map((n) => {
-    const r = byId.get(n.id);
-    return r ? { ...n, x: r.x, y: r.y } : n;
-  });
-}
-
-/** Owner-authored shared-tag chords (not inferred peer trust). */
-function clusterChords(contacts: TrustEdge[]): { a: string; b: string; tag: string }[] {
-  const chords: { a: string; b: string; tag: string }[] = [];
-  const seen = new Set<string>();
-  const byTag = new Map<string, string[]>();
-  for (const c of contacts) {
-    for (const t of c.tags || []) {
-      if (!t) continue;
-      const list = byTag.get(t) || [];
-      list.push(c.peer_fingerprint);
-      byTag.set(t, list);
-    }
-  }
-  for (const [tag, fps] of byTag) {
-    for (let i = 0; i < fps.length; i++) {
-      for (let j = i + 1; j < fps.length; j++) {
-        const a = fps[i];
-        const b = fps[j];
-        const key = [a, b].sort().join('|') + '|' + tag;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        chords.push({ a, b, tag });
-      }
-    }
-  }
-  return chords;
-}
 
 export function TrustMap({
   ownerFingerprint,
@@ -244,7 +175,7 @@ export function TrustMap({
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [editGroupName, setEditGroupName] = useState('');
   const [fullscreen, setFullscreen] = useState(false);
-  const { vp, reset: resetVp, zoomBy, elRef: viewportElRef, handlers: vpHandlers } = useGraphViewport();
+  const { cam, reset: resetVp, zoomBy, applyFit, elRef: viewportElRef, handlers: vpHandlers } = useGraphViewport();
   const [selectionPanel, setSelectionPanel] = useState<'view' | 'edit' | 'options' | null>(null);
   const [cardAudience, setCardAudience] = useState<CardAsSeenAudience | null>(null);
   const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
@@ -290,7 +221,7 @@ export function TrustMap({
     };
   }, [ownerFingerprint, ownerName, ownerCard]);
 
-  const baseLayout = useMemo(
+  const layout = useMemo(
     () =>
       computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
         width: VIEW,
@@ -298,14 +229,21 @@ export function TrustMap({
       }),
     [ownerFingerprint, ownerName, visibleContacts],
   );
-  const layout = useMemo(
-    () => ({
-      ...baseLayout,
-      nodes: clusterPull(baseLayout.nodes, visibleContacts, VIEW, VIEW, baseLayout.cx, baseLayout.cy),
-    }),
-    [baseLayout, visibleContacts],
-  );
-  const chords = useMemo(() => clusterChords(visibleContacts), [visibleContacts]);
+  const chords = useMemo(() => {
+    const positions = new Map(layout.nodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+    return latticeChords(visibleContacts, positions, 2);
+  }, [layout.nodes, visibleContacts]);
+
+  useEffect(() => {
+    const el = viewportElRef.current;
+    const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
+    if (viewMode === 'browse') {
+      const pts = browseClusters.flatMap((c) => c.members);
+      applyFit(boundsOf(pts.length ? pts : [{ x: VIEW / 2, y: VIEW / 2, radius: 24 }], 20), aspect);
+    } else {
+      applyFit(boundsOf([layout.self, ...layout.nodes], 28), aspect);
+    }
+  }, [layout, browseClusters, viewMode, fullscreen, applyFit, viewportElRef]);
   const edgeByFp = useMemo(() => {
     const m = new Map<string, EdgeExtras>();
     for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
@@ -617,7 +555,7 @@ export function TrustMap({
                 color: viewMode === mode ? E.accent : E.muted,
               }}
             >
-              {mode === 'orbit' ? 'Orbit' : 'Browse'}
+              {viewMode === 'orbit' ? 'Lattice' : 'Browse'}
             </button>
           ))}
         </div>
@@ -671,14 +609,14 @@ export function TrustMap({
           Groups{groupFilter ? ` · ${groupFilter}` : allGroupTags.length ? ` (${allGroupTags.length})` : ''}
         </button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(0.88)} style={iconBtnStyle()}>
+          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.28)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
           </button>
-          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.12)} style={iconBtnStyle()}>
+          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.28)} style={iconBtnStyle()}>
             <ZoomIn className="h-3.5 w-3.5" />
           </button>
-          <button type="button" aria-label="Reset view" onClick={resetVp} style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}>
-            1×
+          <button type="button" aria-label="Fit network" onClick={resetVp} style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}>
+            Fit
           </button>
           <button
             type="button"
@@ -842,15 +780,7 @@ export function TrustMap({
         }}
         {...vpHandlers}
       >
-        <div
-          style={{
-            width: '100%',
-            height: '100%',
-            transform: `translate(${vp.tx}px, ${vp.ty}px) scale(${vp.scale})`,
-            transformOrigin: '0 0',
-            willChange: 'transform',
-          }}
-        >
+        <TrustMapLatticeField />
         {viewMode === 'browse' ? (
           <div
             data-testid="trust-map-browse"
@@ -859,56 +789,67 @@ export function TrustMap({
               width: '100%',
               height: '100%',
               minHeight: fullscreen ? '100%' : undefined,
-              aspectRatio: fullscreen ? undefined : '1 / 1',
-              background:
-                'radial-gradient(ellipse at 42% 38%, color-mix(in srgb, var(--se-accent) 9%, transparent), transparent 58%)',
+              zIndex: 1,
             }}
           >
             <svg
-              viewBox={`0 0 ${VIEW} ${VIEW}`}
+              viewBox={`${cam.x} ${cam.y} ${cam.w} ${cam.h}`}
               width="100%"
               height="100%"
+              preserveAspectRatio="none"
               role="img"
-              aria-label="Browse clusters — trust, known, mutual (not egocentric)"
+              aria-label="Browse clusters — owner groups with trust overlay"
             >
-              {browseClusters.map((cl) => (
+              <defs>
+                <filter id="tm-soft" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="1.4" />
+                </filter>
+              </defs>
+              {browseClusters.map((cl) => {
+                const hull = cl.hull.length >= 3
+                  ? cl.hull.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ') + ' Z'
+                  : null;
+                return (
                 <g key={cl.tag} data-graph-cluster={cl.tag}>
-                  <circle
-                    cx={cl.cx}
-                    cy={cl.cy}
-                    r={cl.r}
-                    fill="color-mix(in srgb, var(--se-accent) 7%, transparent)"
-                    stroke={E.border}
-                    strokeWidth={1}
-                    strokeDasharray={cl.tag === 'Ungrouped' ? '3 3' : undefined}
-                    style={{ cursor: 'pointer' }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setGroupFilter(cl.tag === 'Ungrouped' ? null : cl.tag);
-                      setGroupsOpen(false);
-                    }}
-                  >
-                    <title>{`${cl.tag} · ${cl.trustedCount} trusted · ${cl.knownCount} known · ${cl.mutualCount} mutual · owner group (not inferred)`}</title>
-                  </circle>
+                  {hull ? (
+                    <path
+                      d={hull}
+                      fill="color-mix(in srgb, var(--se-accent) 8%, transparent)"
+                      stroke={E.border}
+                      strokeWidth={1.1}
+                      strokeDasharray={cl.tag === 'Ungrouped' ? '3 4' : undefined}
+                      style={{ cursor: 'pointer' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setGroupFilter(cl.tag === 'Ungrouped' ? null : cl.tag);
+                        setGroupsOpen(false);
+                      }}
+                    >
+                      <title>{`${cl.tag} · owner group · not inferred`}</title>
+                    </path>
+                  ) : (
+                    <circle
+                      cx={cl.cx}
+                      cy={cl.cy}
+                      r={cl.r}
+                      fill="color-mix(in srgb, var(--se-accent) 7%, transparent)"
+                      stroke={E.border}
+                      strokeWidth={1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setGroupFilter(cl.tag === 'Ungrouped' ? null : cl.tag);
+                      }}
+                    />
+                  )}
                   <text
                     x={cl.cx}
-                    y={cl.cy - cl.r - 8}
+                    y={cl.cy - cl.r - 6}
                     textAnchor="middle"
                     fill={E.muted}
-                    fontSize={10}
+                    fontSize={11}
                     fontFamily={E.fontSans}
                   >
                     {cl.tag}
-                  </text>
-                  <text
-                    x={cl.cx}
-                    y={cl.cy - cl.r + 4}
-                    textAnchor="middle"
-                    fill={E.dim}
-                    fontSize={8}
-                    fontFamily={E.fontSans}
-                  >
-                    {cl.trustedCount}t · {cl.knownCount}k{cl.mutualCount ? ` · ${cl.mutualCount}↔` : ''}
                   </text>
                   {cl.members.map((m) => (
                     <g
@@ -925,17 +866,18 @@ export function TrustMap({
                         <circle
                           cx={m.x}
                           cy={m.y}
-                          r={picked.has(m.id) ? 15 : 13}
+                          r={picked.has(m.id) ? 15 : 12}
                           fill="none"
                           stroke={E.accent2}
                           strokeWidth={1.2}
-                          strokeOpacity={0.55}
+                          strokeOpacity={0.5}
+                          filter="url(#tm-soft)"
                         />
                       ) : null}
                       <circle
                         cx={m.x}
                         cy={m.y}
-                        r={picked.has(m.id) ? 11 : 9}
+                        r={picked.has(m.id) ? 11 : 8}
                         fill={
                           m.trusted
                             ? 'color-mix(in srgb, var(--se-accent2) 38%, transparent)'
@@ -951,7 +893,8 @@ export function TrustMap({
                     </g>
                   ))}
                 </g>
-              ))}
+                );
+              })}
             </svg>
             <p
               style={{
@@ -967,7 +910,7 @@ export function TrustMap({
                 pointerEvents: 'none',
               }}
             >
-              Clusters · filled = trusted · dashed = known · outer ring = mutual · not a map
+              Neighborhoods you named · glow is trust · not a map
             </p>
           </div>
 
@@ -990,15 +933,24 @@ export function TrustMap({
 
         <svg
           data-testid="trust-map-svg"
-          viewBox={`0 0 ${VIEW} ${VIEW}`}
+          viewBox={`${cam.x} ${cam.y} ${cam.w} ${cam.h}`}
           width="100%"
           height="100%"
-          preserveAspectRatio="xMidYMid meet"
+          preserveAspectRatio="none"
           role="img"
           aria-label={`Trust map: ${visibleContacts.length} connection${visibleContacts.length === 1 ? '' : 's'}`}
           onClick={clearFocus}
-          style={{ display: 'block' }}
+          style={{ display: 'block', position: 'relative', zIndex: 1 }}
         >
+          <defs>
+            <filter id="tm-filament" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="1.8" result="b" />
+              <feMerge>
+                <feMergeNode in="b" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
           {/* Owner-authored group cluster chords */}
           <g>
             {chords.map((ch, i) => {
@@ -1016,9 +968,9 @@ export function TrustMap({
                   x2={b.x}
                   y2={b.y}
                   stroke={T.cluster}
-                  strokeOpacity={0.28}
-                  strokeWidth={0.9}
-                  strokeDasharray="2 3"
+                  strokeOpacity={0.22}
+                  strokeWidth={0.85}
+                  strokeDasharray="1.5 5"
                   style={{ ['--tm-o' as string]: 0.9, animationDelay: `${0.05 + i * 0.02}s` }}
                 >
                   <title>{`Group · ${ch.tag}`}</title>
@@ -1070,14 +1022,15 @@ export function TrustMap({
                     y1={layout.self.y}
                     x2={n.x}
                     y2={n.y}
-                    stroke={pending ? T.pending : T.myEdge}
+                    stroke={pending ? T.pending : n.state === 'trusted' ? T.lit : T.myEdge}
                     strokeOpacity={
-                      pending ? 0.4 : n.state === 'trusted' ? (mutual ? 0.75 : 0.55) : 0.22
+                      pending ? 0.4 : n.state === 'trusted' ? (mutual ? 0.78 : 0.48) : 0.2
                     }
-                    strokeWidth={n.state === 'trusted' ? (mutual ? 2 : 1.4) : pending ? 1.1 : 0.7}
+                    strokeWidth={n.state === 'trusted' ? (mutual ? 1.85 : 1.25) : pending ? 1.05 : 0.65}
                     strokeDasharray={
-                      pending ? '5 4' : n.state === 'decayed' ? '3 3' : n.state === 'known' ? '2 3' : undefined
+                      pending ? '5 4' : n.state === 'decayed' ? '3 3' : n.state === 'known' ? '2.5 4' : undefined
                     }
+                    filter={n.state === 'trusted' ? 'url(#tm-filament)' : undefined}
                     style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.15 + i * 0.03}s` }}
                   />
                   {mutual && n.state === 'trusted' && (
@@ -1174,52 +1127,46 @@ export function TrustMap({
             })}
           </g>
 
-          {!isEmpty && (
-            <g data-testid="trust-map-legend">
-              <text x={VIEW / 2} y={VIEW - 21} textAnchor="middle" fontSize={8} fill={T.caption}>
-                Groups you named · mutual glow · pending ≠ trust
-              </text>
-              <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
-                Every visible line consented — none inferred.
-              </text>
-            </g>
-          )}
-
-          {isEmpty && (
-            <g data-testid="trust-map-empty">
-              <text
-                x={VIEW / 2}
-                y={VIEW / 2 + 58}
-                textAnchor="middle"
-                fontSize={14}
-                fill={T.label}
-                style={{ fontFamily: E.fontSans }}
-              >
-                Your lattice is dark
-              </text>
-              <text
-                x={VIEW / 2}
-                y={VIEW / 2 + 78}
-                textAnchor="middle"
-                fontSize={10}
-                fill={T.caption}
-                style={{ fontFamily: E.fontSans }}
-              >
-                Trusted connections crystallize here as you form them.
-              </text>
-              <text
-                x={VIEW / 2}
-                y={VIEW / 2 + 94}
-                textAnchor="middle"
-                fontSize={10}
-                fill={T.caption}
-                style={{ fontFamily: E.fontSans }}
-              >
-                Every line consented — none inferred.
-              </text>
-            </g>
-          )}
         </svg>
+        {!isEmpty ? (
+          <p
+            data-testid="trust-map-legend"
+            style={{
+              position: 'absolute',
+              left: 12,
+              right: 12,
+              bottom: 10,
+              margin: 0,
+              fontSize: 10,
+              color: T.caption,
+              fontFamily: E.fontSans,
+              textAlign: 'center',
+              pointerEvents: 'none',
+              zIndex: 2,
+            }}
+          >
+            Your bonds · glow is trust · groups you named. Every visible line consented — none inferred.
+          </p>
+        ) : (
+          <div
+            data-testid="trust-map-empty"
+            style={{
+              position: 'absolute',
+              left: 16,
+              right: 16,
+              top: '58%',
+              textAlign: 'center',
+              pointerEvents: 'none',
+              zIndex: 2,
+              fontFamily: E.fontSans,
+            }}
+          >
+            <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
+            <p style={{ margin: '8px 0 0', fontSize: 11, color: T.caption }}>
+              Bonds crystallize here as you form them. Every line consented — none inferred.
+            </p>
+          </div>
+        )}
 
         </>
         )}
@@ -1254,7 +1201,6 @@ export function TrustMap({
             </button>
           </div>
         )}
-        </div>
 
         {(picked.size > 0 || focusId) && (
           <div
@@ -1746,7 +1692,7 @@ export function TrustMap({
             <p style={{ margin: 0, fontSize: 11, color: E.dim }}>
               {selectMode
                 ? 'Select mode on — tap seals to multi-select · Add to group or preview your card'
-                : 'Tip: Select button or shift-click · Browse = group clusters (not GPS) · Orbit = your vouch ring'}
+                : 'Tip: wheel or pinch to zoom toward the cursor · Fit recenters · glow is the trust overlay'}
             </p>
           </div>
         </div>
@@ -1865,6 +1811,7 @@ function ContactNode({
   return (
     <g
       className={`tm-node${pending ? ' tm-pending' : ''}`}
+      data-graph-node={node.id}
       style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.04}s`, cursor: 'pointer' }}
       onClick={(e) => {
         e.stopPropagation();

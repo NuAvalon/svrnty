@@ -108,16 +108,28 @@ test('trust state maps to real state + salience radius', () => {
   assert.ok(byState.known.radius > byState.decayed.radius);
 });
 
-test('trusted sit on the inner ring, known/decayed on the outer rim', () => {
-  const layout = computeTrustLayout('o', 'Me', [trustedEdge(), knownEdge()], {
-    width: 400,
-    height: 400,
-  });
-  const t = layout.nodes.find((n) => n.state === 'trusted')!;
-  const k = layout.nodes.find((n) => n.state === 'known')!;
-  const dist = (n: { x: number; y: number }) =>
-    Math.hypot(n.x - layout.cx, n.y - layout.cy);
-  assert.ok(dist(t) < dist(k), 'trusted closer to self than known');
+test('trust is an overlay — not an inner/outer ring', () => {
+  const contacts = [
+    ...Array.from({ length: 6 }, (_, i) =>
+      trustedEdge({ tags: ['crew'], peer_fingerprint: `t${i}`, peer_name: `T${i}` }),
+    ),
+    ...Array.from({ length: 6 }, (_, i) =>
+      knownEdge({ tags: ['crew'], peer_fingerprint: `k${i}`, peer_name: `K${i}` }),
+    ),
+    ...Array.from({ length: 4 }, (_, i) =>
+      trustedEdge({ tags: ['other'], peer_fingerprint: `u${i}`, peer_name: `U${i}` }),
+    ),
+    ...Array.from({ length: 4 }, (_, i) =>
+      knownEdge({ tags: ['other'], peer_fingerprint: `v${i}`, peer_name: `V${i}` }),
+    ),
+  ];
+  const layout = computeTrustLayout('o', 'Me', contacts, { width: 640, height: 640 });
+  const dist = (n: { x: number; y: number }) => Math.hypot(n.x - layout.cx, n.y - layout.cy);
+  const trustedR = layout.nodes.filter((n) => n.state === 'trusted').map(dist);
+  const knownR = layout.nodes.filter((n) => n.state === 'known').map(dist);
+  assert.ok(Math.max(...trustedR) > Math.min(...knownR), 'trusted still stacked inside known');
+  const allR = [...trustedR, ...knownR];
+  assert.ok(Math.max(...allR) - Math.min(...allR) > 20, 'lattice collapsed to a ring');
 });
 
 // ── I-6: opacity decodes to disclosure depth (what they shared) ──────────────
