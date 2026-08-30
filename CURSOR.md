@@ -76,8 +76,8 @@ A contact must not be able to inject code or markup into your view by crafting t
 
 ## ✅ WHAT to build (UI rendering over the EXISTING primitives)
 **L8 · Recovery (crypto is DONE — build the UI over it):**
-- Set-your-soul-seed-phrase UI: 12+ words, a live **entropy strength meter** (warn if too simple/common — a famous quote is guessable; guide toward personal/unique). The phrase is ALWAYS a 2nd factor.
-- Self-recovery flow: local backup file **+** phrase (both required) → restore.
+- Set-your-recovery-code UI: strong secret + a live **entropy strength meter** (warn if too simple/common — a famous quote is guessable; guide toward personal/unique). ⚠️ Format = **recovery code** (8 groups of 8 hex chars), NOT "12 words" (BIP39-24 is a follow-on).
+- Self-recovery flow: backup file **+** ONE key → restore. **Password** → everything (identity + contacts + trust); OR **recovery code** (if password lost) → identity only. ⚠️ Alternatives, NOT "both required" — password ALONE opens a v4 backup (Flint's matrix; honest model shipped #65). Correcting the earlier "both required" over-claim.
 - *[fast-follow]* social collect-back UI (gather shards from keepers). Ships only after a survivor-safety review + team greenlight.
 
 **L8 · The recovery crypto API (team-owned — CALL it, never reimplement):**

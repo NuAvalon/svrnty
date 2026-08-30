@@ -31,6 +31,7 @@ const bundle = await recoverFromSeedPhrase(kv, phrase);
 | v4 with no recovery configured | `extractRecoveryVault` fails honestly ("no recovery vault") |
 
 ### Hypatia / Flint copy (shipped)
+> ⚠️ **SUPERSEDED by #65 (2026-08-30).** The strings below are the pre-#65 draft. ACTUAL shipped copy: term = **"recovery code"** (not "12-word phrase"); vaultInfo = "Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can't rebuild you from nothing."; wrong-code error = "That recovery code doesn't match this backup."; genesis = identity-scope ("restores your identity", not "unlocks your backup"). Format = 8×8 hex, NOT BIP39-12.
 - Entry: Lost your passphrase? → Recover with your seed phrase
 - Heading: Recover with your seed phrase
 - Body: Enter your 12-word recovery phrase to unlock this backup — it works without your passphrase.

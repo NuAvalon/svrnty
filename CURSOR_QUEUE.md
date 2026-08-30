@@ -40,10 +40,11 @@ Cursor renders **UI to our specs only**. It NEVER touches: `visible()`/`reach()`
 
 ### CASE B — Full identity backup (`.svrnty` with recovery vault)
 - Heading: **"Restore your identity"**
-- ★ Intro (THE FIX): **"This is a full identity backup, protected by two factors — both are required:"**
-- Field 1: **"Password"**  (sub: "Unlocks the backup file.")
-- Field 2: **"Recovery phrase — 12 words"**  (sub: "Opens your identity's recovery vault.")
-- Helper: **"Both factors are required to restore your full identity — this is by design."**
+- ⚠️ **SUPERSEDED (2026-08-30) — do NOT implement "both required".** Crypto ground-truth (Flint's matrix): the FILE is always required; PASSWORD and RECOVERY CODE are ALTERNATIVE keys (password OR code, never both). Password ALONE opens a v4 backup fully. This block's PR (#60) was CLOSED as superseded; the honest model shipped in #65. Correct copy below:
+- ★ Intro: **"Two ways to restore — both need your backup file:"**
+- Case A (has password): **"Password + backup file → everything (identity, contacts, and trust)."**
+- Case B (lost password): **"Recovery code + backup file → your identity only (no contacts; reconnect those)."**
+- Field: **"Recovery code"** (8 groups of 8 hex chars — NOT "12 words"; BIP39-24 is a separate follow-on)
 - Button: **"Restore identity"**
 
 ### ERROR states (honest — no false promises)
