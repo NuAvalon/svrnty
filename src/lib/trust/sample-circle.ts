@@ -3,9 +3,11 @@
 //
 // Designed to show a denser “web of trust” that stays constitutional:
 //   • Many YOU↔peer edges you trusted (Orbit spokes).
-//   • mutual.reciprocal = PSI-witnessed they-trust-you-too (glow) — NOT peer↔peer trust.
+//   • mutual.reciprocal = PSI-witnessed they-trust-you-too (glow).
+//   • Open-visibility clique: Ada/Grace/… they_trust each other so the galaxy
+//     draws witnessed Sally↔Joe filaments (Peter’s spec) — NOT inferred from tags.
 //   • Owner-authored overlapping group tags → cluster chords / Browse hulls
-//     (co-membership ≠ trust; never inferred bonds).
+//     (co-membership ≠ trust).
 //   • Mix of trusted-mutual / trusted-one-way / known / pending intro.
 
 import { addContact, getAllContacts, removeContact } from '@/lib/identity/client-store';
@@ -24,9 +26,16 @@ interface SampleContact {
   urls?: string[];
   /**
    * Mutual trust with YOU (demo stand-in for PSI sync).
-   * Sets mutual.reciprocal + they_trust_me — witnessed on YOUR edge only.
+   * Sets mutual.reciprocal + they_trust_me — witnessed on YOUR edge.
    */
   reciprocal?: boolean;
+  /**
+   * Owner opted into open visibility toward this peer (demo).
+   * Combined with they_trust, this is how peer↔peer filaments appear.
+   */
+  open_visibility?: boolean;
+  /** People in this demo book this peer also trusts (PSI stand-in). */
+  they_trust?: string[];
   notes?: string;
   /** Pending intro — known≠accepted; trust still false */
   pending_intro?: {
@@ -69,7 +78,21 @@ const SAMPLE_FPS = new Set([
  * revision auto-upgrade on load so a hard refresh picks up the denser circle
  * without a manual “Refresh demo circle” click. Never touches non-sample books.
  */
-export const SAMPLE_CIRCLE_REVISION = 2;
+export const SAMPLE_CIRCLE_REVISION = 3;
+
+/**
+ * Reciprocal + open-visibility clique. Demo stand-in for PSI: each lists the
+ * others in `they_trust`. Alan/Dorothy/Lynn are trusted but not reciprocal —
+ * they do not join these filaments. Émilie is mutual with you and may open vis
+ * without they_trust — tags still are not a bond.
+ */
+const OPEN_VIS_CLIQUE = [ADA, GRACE, MARGARET, BARBARA, RADIA, JOAN, JEAN, SOPHIE];
+const OPEN_VIS_SET = new Set(OPEN_VIS_CLIQUE);
+
+function demoTheyTrust(fp: string): string[] | undefined {
+  if (!OPEN_VIS_SET.has(fp)) return undefined;
+  return OPEN_VIS_CLIQUE.filter((other) => other !== fp);
+}
 
 function isSampleContact(c: {
   fingerprint?: string;
@@ -204,7 +227,8 @@ const SAMPLE: SampleContact[] = [
     trust_level: 'verified',
     tags: ['math', 'orbital'],
     reciprocal: true,
-    notes: 'Mutual (PSI) · living force & Newton.',
+    open_visibility: true,
+    notes: 'Mutual (PSI) · open vis without they_trust — not a peer chord.',
   },
 
   // ── Known (not trusted) — fills outer ring / cluster hulls ───────────────
@@ -317,6 +341,8 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
   let n = 0;
   for (const c of SAMPLE) {
     const trusted = c.trust_level === 'verified';
+    const theyTrust = c.they_trust ?? demoTheyTrust(c.fingerprint);
+    const openVis = c.open_visibility ?? OPEN_VIS_SET.has(c.fingerprint);
     await addContact(ownerFingerprint, {
       name: c.name,
       email: c.email,
@@ -329,6 +355,8 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
       decay_days: 730,
       tags: c.tags,
       notes: c.notes || '',
+      they_trust: theyTrust,
+      open_visibility: openVis,
       contact_info: {
         phones: c.phones,
         handles: c.handles,
@@ -354,6 +382,13 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         connection_status: c.pending_intro ? 'pending' : 'accepted',
         /** Demo hint only — not a published PSI transcript. */
         psi_mutual: !!c.reciprocal,
+        they_trust: theyTrust,
+        share_settings: {
+          share_card: true,
+          share_trusted_circle: false,
+          share_groups: false,
+          open_visibility: openVis,
+        },
       },
     } as any);
     n++;

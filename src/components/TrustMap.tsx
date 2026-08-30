@@ -6,6 +6,7 @@
 // Constitutional:
 //   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize on entry.
 //   (b) I-6 RENDER PROVENANCE — authored or witnessed only; none inferred.
+//   Peer filaments: open-visibility reciprocal they_trust (Peter's spec), never tags.
 // Layout: src/lib/trust/trust-map-layout.ts (pure). Camera: graph-camera.ts.
 
 "use client";
@@ -22,6 +23,7 @@ import {
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
 import { constellationCaption, focusConstellation } from '@/lib/trust/constellation';
+import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
 import { TrustMapLatticeField } from '@/components/TrustMapLatticeField';
 import { TrustMapGalaxy } from '@/components/TrustMapGalaxy';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -270,6 +272,10 @@ export function TrustMap({
   const lamped = useMemo(
     () => (focusId ? focusConstellation(focusId, visibleContacts) : null),
     [focusId, visibleContacts],
+  );
+  const peerChords = useMemo(
+    () => witnessedPeerTrustChords(visibleContacts),
+    [visibleContacts],
   );
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -936,6 +942,7 @@ export function TrustMap({
           cam={cam}
           focusId={focusId}
           constellation={lamped}
+          peerChords={peerChords}
           picked={picked}
           query={searchQuery}
           onNodeClick={handleNodeClick}
@@ -960,7 +967,9 @@ export function TrustMap({
           >
             {lamped && focusId
               ? `${constellationCaption(lamped, !!focusEdge?.trusted)}. Every visible line consented — none inferred.`
-              : 'Your bonds · glow is trust · lamp a person to see their constellation. Every visible line consented — none inferred.'}
+              : peerChords.length > 0
+                ? 'Your bonds · glow is trust · ember filaments are open-visibility peer trust. Every visible line consented — none inferred.'
+                : 'Your bonds · glow is trust · lamp a person to see their constellation. Every visible line consented — none inferred.'}
           </p>
         ) : (
           <div

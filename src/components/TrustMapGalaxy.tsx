@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import type { Camera } from '@/lib/trust/graph-camera';
 import type { LaidOutNode, TrustLayout } from '@/lib/trust/trust-map-layout';
 import type { FocusConstellation } from '@/lib/trust/constellation';
+import type { WitnessedPeerChord } from '@/lib/trust/peer-trust-chords';
 
 function safeLabel(s: string, max = 22): string {
   return s
@@ -32,6 +33,7 @@ export function TrustMapGalaxy({
   cam,
   focusId,
   constellation,
+  peerChords = [],
   picked,
   query,
   onNodeClick,
@@ -41,6 +43,8 @@ export function TrustMapGalaxy({
   cam: Camera;
   focusId: string | null;
   constellation: FocusConstellation | null;
+  /** Open-visibility witnessed peer trust (Peter's spec) — always drawn, brighter when lamped. */
+  peerChords?: WitnessedPeerChord[];
   picked: Set<string>;
   query: string;
   onNodeClick: (id: string, multi: boolean) => void;
@@ -96,6 +100,31 @@ export function TrustMapGalaxy({
       ctx.stroke();
     }
 
+    // Witnessed peer-trust filaments — ember, solid. Distinct from dashed group beams.
+    const nodeById = new Map(L.nodes.map((n) => [n.id.toLowerCase(), n]));
+    for (const chord of peerChords) {
+      const na = nodeById.get(chord.a.toLowerCase());
+      const nb = nodeById.get(chord.b.toLowerCase());
+      if (!na || !nb) continue;
+      const pa = worldToScreen(C, w, h, na.x, na.y);
+      const pb = worldToScreen(C, w, h, nb.x, nb.y);
+      const involvesLamp =
+        !!focusId &&
+        (chord.a.toLowerCase() === focusId.toLowerCase() ||
+          chord.b.toLowerCase() === focusId.toLowerCase());
+      const dim = !!focusId && !involvesLamp;
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.strokeStyle = dim
+        ? 'rgba(255,122,26,0.05)'
+        : involvesLamp
+          ? 'rgba(255,122,26,0.58)'
+          : 'rgba(255,122,26,0.22)';
+      ctx.lineWidth = involvesLamp ? 2.3 : 1.15;
+      ctx.stroke();
+    }
+
     // Volumetric beams from the lamped person to constellation (Cathedral select)
     if (focusId) {
       const lamp = L.nodes.find((n) => n.id === focusId);
@@ -107,6 +136,7 @@ export function TrustMapGalaxy({
           const b = worldToScreen(C, w, h, other.x, other.y);
           const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
           const witnessed = mem.reasons.includes('disclosed-circle') || mem.reasons.includes('they-trust');
+          const groupOnly = mem.reasons.includes('shared-group') && !witnessed;
           g.addColorStop(0, witnessed ? 'rgba(255,122,26,0.35)' : 'rgba(201,162,113,0.22)');
           g.addColorStop(1, 'rgba(249,168,37,0.02)');
           ctx.beginPath();
@@ -114,7 +144,9 @@ export function TrustMapGalaxy({
           ctx.lineTo(b.x, b.y);
           ctx.strokeStyle = g;
           ctx.lineWidth = witnessed ? 2.4 : 1.3;
+          if (groupOnly) ctx.setLineDash([5, 5]);
           ctx.stroke();
+          if (groupOnly) ctx.setLineDash([]);
         }
       }
     }
@@ -176,11 +208,11 @@ export function TrustMapGalaxy({
     ctx.fillStyle = '#c9a271';
     ctx.textAlign = 'center';
     ctx.fillText('You', self.x, self.y + 22);
-  }, [focusId, constellation, picked, query]);
+  }, [focusId, constellation, peerChords, picked, query]);
 
   useEffect(() => {
     paint();
-  }, [paint, layout, cam, focusId, constellation, picked, query]);
+  }, [paint, layout, cam, focusId, constellation, peerChords, picked, query]);
 
   useEffect(() => {
     const canvas = ref.current;

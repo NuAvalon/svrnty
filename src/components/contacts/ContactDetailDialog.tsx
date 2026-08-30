@@ -83,7 +83,7 @@ export type ContactDetailModel = {
     urls?: string[];
     handles?: Record<string, string>;
   };
-  /** Fleet PSI may populate later — glass never invents peer↔peer edges. */
+  /** Fleet PSI may populate later — glass never invents peer↔peer from tags. */
   peer_mutual?: Array<{ peer_name: string; peer_fingerprint: string }>;
 };
 
@@ -353,15 +353,17 @@ export function ContactDetailDialog({
                     >
                       <SectionLabel>What you share</SectionLabel>
                       <p style={{ margin: 0, fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
-                        Local intent for this peer. Disclosure-reach / PSI wire stays with the
-                        fleet — these toggles never invent a bond.
+                        Local intent for this peer. When you both trust each other and
+                        open visibility, they can see you trust them — and you can see
+                        they trust others who also opted in. Disclosure-reach / PSI
+                        stay with the fleet; these toggles never invent a bond.
                       </p>
                       {(
                         [
                           ['share_card', 'Show them my card'],
                           ['share_trusted_circle', 'Share trusted-circle membership'],
                           ['share_groups', 'Share overlapping groups I name'],
-                          ['open_visibility', 'Open visibility (mutual trust via PSI when ready)'],
+                          ['open_visibility', 'Open visibility for trusted contacts'],
                         ] as const
                       ).map(([key, label]) => (
                         <label
