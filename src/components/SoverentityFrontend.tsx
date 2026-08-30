@@ -1202,6 +1202,11 @@ export function SoverentityFrontend({
                 This is not a website or account login password.
               </p>
             )}
+            {isV4Vault && !seedPathActive && (
+              <p style={s.heroSub}>
+                Two ways to restore — both need your backup file:
+              </p>
+            )}
           </div>
 
           {/* Type recognition only — nothing identity-revealing pre-decrypt. */}
@@ -1211,11 +1216,25 @@ export function SoverentityFrontend({
                 <span style={s.vaultInfoLabel}>FILE</span>
                 <span style={s.vaultInfoValue}>Encrypted svrnty vault · v{vaultHeader.version}</span>
               </div>
-              <p style={s.safeWordHint}>
-                {seedPathActive
-                  ? 'Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can\'t rebuild you from nothing.'
-                  : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
-              </p>
+              {isV4Vault && !seedPathActive ? (
+                <div style={{ ...s.safeWordHint, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <p style={{ margin: 0 }}>
+                    Password + backup file → everything (identity, contacts, and trust).
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    Recovery code + backup file → your identity only (no contacts; reconnect those).
+                  </p>
+                  <p style={{ margin: '4px 0 0', opacity: 0.85 }}>
+                    Alternatives — never both. Password alone opens a v4 backup fully.
+                  </p>
+                </div>
+              ) : (
+                <p style={s.safeWordHint}>
+                  {seedPathActive
+                    ? 'Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can\'t rebuild you from nothing.'
+                    : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
+                </p>
+              )}
             </div>
           )}
 
@@ -1313,6 +1332,9 @@ export function SoverentityFrontend({
                   )}
                 </button>
               </div>
+              {isV4Vault && (
+                <p style={s.hint}>Unlocks the backup file — identity, contacts, and trust.</p>
+              )}
             </div>
           )}
 
@@ -1427,7 +1449,9 @@ export function SoverentityFrontend({
                     <Spinner /> Decrypting vault...
                   </span>
                 ) : (
-                  <span style={s.btnInner}>Open Vault</span>
+                  <span style={s.btnInner}>
+                    {isBinaryVault ? 'Restore identity' : 'Open Vault'}
+                  </span>
                 )}
               </button>
 
@@ -1460,7 +1484,7 @@ export function SoverentityFrontend({
                     This backup was created before passphrase-free recovery. It can be restored only with your passphrase.
                   </p>
                   <p style={{ margin: 0 }}>
-                    Re-export your identity to enable seed-phrase recovery.
+                    Re-export your identity to enable recovery-code restore if you lose your passphrase.
                   </p>
                 </div>
               )}
@@ -1787,7 +1811,7 @@ export function SoverentityFrontend({
                   Update your backup to enable passphrase-free recovery
                 </p>
                 <p style={{ margin: '0 0 12px', color: SE.muted, fontSize: 12, lineHeight: 1.5 }}>
-                  This identity was opened from a v3 backup. Re-export a new .svrnty file so seed-phrase recovery works if you lose your passphrase.
+                  This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
                 </p>
                 <button
                   type="button"
