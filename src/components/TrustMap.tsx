@@ -630,10 +630,10 @@ export function TrustMap({
           }}
         />
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.28)} style={iconBtnStyle()}>
+          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
           </button>
-          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.28)} style={iconBtnStyle()}>
+          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1.12)} style={iconBtnStyle()}>
             <ZoomIn className="h-3.5 w-3.5" />
           </button>
           <button type="button" aria-label="Fit network" onClick={resetVp} style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}>
@@ -1126,7 +1126,18 @@ export function TrustMap({
           data-testid="trust-node-detail"
           onClick={(e) => e.stopPropagation()}
           style={{
-            marginTop: 14,
+            ...(fullscreen
+              ? {
+                  position: 'fixed' as const,
+                  left: 16,
+                  right: 16,
+                  bottom: 16,
+                  zIndex: 90,
+                  maxHeight: '42vh',
+                  overflow: 'auto' as const,
+                  marginTop: 0,
+                }
+              : { marginTop: 14 }),
             padding: 16,
             borderRadius: 14,
             background: E.surfaceSolid,

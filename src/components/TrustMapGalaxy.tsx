@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import type { Camera } from '@/lib/trust/graph-camera';
+import { hitTestNodes } from '@/lib/trust/graph-camera';
 import type { LaidOutNode, TrustLayout } from '@/lib/trust/trust-map-layout';
 import type { FocusConstellation } from '@/lib/trust/constellation';
 import type { WitnessedPeerChord } from '@/lib/trust/peer-trust-chords';
@@ -18,13 +19,6 @@ function worldToScreen(cam: Camera, w: number, h: number, x: number, y: number) 
   return {
     x: ((x - cam.x) / Math.max(cam.w, 1e-6)) * w,
     y: ((y - cam.y) / Math.max(cam.h, 1e-6)) * h,
-  };
-}
-
-function screenToWorld(cam: Camera, w: number, h: number, sx: number, sy: number) {
-  return {
-    x: cam.x + (sx / Math.max(w, 1)) * cam.w,
-    y: cam.y + (sy / Math.max(h, 1)) * cam.h,
   };
 }
 
@@ -227,21 +221,9 @@ export function TrustMapGalaxy({
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const L = layoutRef.current;
-    const C = camRef.current;
-    const w = rect.width;
-    const h = rect.height;
-    const world = screenToWorld(C, w, h, clientX - rect.left, clientY - rect.top);
-    let best: LaidOutNode | null = null;
-    let bestD = Infinity;
-    for (const n of L.nodes) {
-      const d = Math.hypot(n.x - world.x, n.y - world.y);
-      const thresh = Math.max(n.radius + 10, 14);
-      if (d < thresh && d < bestD) {
-        best = n;
-        bestD = d;
-      }
-    }
-    return best;
+    const id = hitTestNodes(L.nodes, camRef.current, rect, clientX, clientY, 24);
+    if (!id) return null;
+    return L.nodes.find((n) => n.id === id) ?? null;
   };
 
   const drag = useRef<{ x: number; y: number } | null>(null);
@@ -260,12 +242,16 @@ export function TrustMapGalaxy({
         cursor: 'grab',
       }}
       onPointerDown={(e) => {
+        if (e.button !== 0) return;
         drag.current = { x: e.clientX, y: e.clientY };
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
       }}
       onPointerUp={(e) => {
         const start = drag.current;
         drag.current = null;
-        if (!start) return;
+        if (!start || e.button !== 0) return;
         if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8) return;
         const n = hit(e.clientX, e.clientY);
         if (n) onNodeClick(n.id, e.shiftKey || e.metaKey || e.ctrlKey);
