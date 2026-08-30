@@ -977,7 +977,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setPendingBookExport('vcard')}>
                   <Download className="h-4 w-4 mr-2" />
-                  Export as vCard (phone book)
+                  Export all as vCard (phone book)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowImportDialog(true)}>
                   <Upload className="h-4 w-4 mr-2" />

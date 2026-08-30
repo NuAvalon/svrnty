@@ -29,15 +29,24 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     test.setTimeout(60_000);
     await genesis(page, 'Circle Owner');
     await page.getByRole('tab', { name: /social graph|trust map/i }).click();
+    // Seed is async behind the button — wait until the graph shows Refresh
+    // (full roster written) before opening Contacts, or classical rows can race.
     await page.getByTestId('trust-map-load-sample').click();
+    await expect(page.getByTestId('trust-map-load-sample')).toHaveText(/Refresh demo circle/i, {
+      timeout: 30_000,
+    });
     await page.getByRole('tab', { name: 'Contacts' }).click();
 
-    const ada = page.getByTestId('contact-row').filter({ hasText: 'Ada Lovelace' });
+    // Scope to master-book rows (not any other contact-row surface).
+    const bookRow = (name: string) =>
+      page.locator('[data-testid="contact-row"][data-master-book-row="1"]').filter({ hasText: name });
+
+    const ada = bookRow('Ada Lovelace');
     await expect(ada).toBeVisible({ timeout: 25_000 });
     await expect(ada).toHaveAttribute('data-svrn', '1');
 
-    const hypatia = page.getByTestId('contact-row').filter({ hasText: 'Hypatia' });
-    await expect(hypatia).toBeVisible();
+    const hypatia = bookRow('Hypatia');
+    await expect(hypatia).toBeVisible({ timeout: 25_000 });
     await expect(hypatia).toHaveAttribute('data-svrn', '0');
 
     await hypatia.click();
