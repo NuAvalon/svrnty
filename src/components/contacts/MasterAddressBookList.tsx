@@ -29,6 +29,11 @@ export type MasterAddressBookListProps = {
   selectionMode: boolean;
   onToggleSelect: (id: string) => void;
   onOpen: (id: string) => void;
+  /**
+   * Contact ids whose latest repaint came from a live peer apply.
+   * Sets data-live="push" — demo-arc beat-4 honesty hinge (reason:'live-apply' only).
+   */
+  liveIds?: Set<string>;
 };
 
 function isTrusted(row: MasterBookRow): boolean {
@@ -57,6 +62,7 @@ export function MasterAddressBookList({
   selectionMode,
   onToggleSelect,
   onOpen,
+  liveIds,
 }: MasterAddressBookListProps) {
   if (rows.length === 0) return null;
 
@@ -65,22 +71,28 @@ export function MasterAddressBookList({
       {rows.map((row) => {
         const svrn = isSvrnNetworkContact(row);
         const selected = selectedIds.has(row.id);
+        const live = liveIds?.has(row.id) === true;
         return (
           <li key={row.id}>
             <button
               type="button"
-              data-testid="master-book-row"
+              data-testid="contact-row"
+              data-master-book-row="1"
               data-svrn={svrn ? '1' : '0'}
+              data-live={live ? 'push' : undefined}
               onClick={() => {
                 if (selectionMode) onToggleSelect(row.id);
                 else onOpen(row.id);
               }}
               style={{
                 ...rowBtn,
-                borderColor: selected ? E.borderLit : E.border,
-                background: selected
+                borderColor: selected || live ? E.borderLit : E.border,
+                background: selected || live
                   ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
                   : E.surfaceSolid,
+                boxShadow: live
+                  ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
+                  : undefined,
               }}
             >
               {selectionMode ? (

@@ -3,7 +3,8 @@
 ## What changed
 - **Share identity** lives on the **Identity** card (not Contacts).
 - **Contacts** is the **Master Address Book** — flat list, **no living/resting** chrome.
-- Filters: **Classical** · **SVRNTY** (Known / Trusted). Blocked is under **⋯** — not a primary tab.
+- Filters: **All** (default) · **Classical** · **SVRNTY** (Known / Trusted). Blocked is under **⋯** — not a primary tab.
+- Rows keep `data-testid="contact-row"` + `data-live="push"` on live-apply (demo-arc beat-4 hinge). Living/resting chrome stays retired.
 - Contact card: Reach / Card tabs + **Actions** menu (trust, edit, give a piece, block, remove).
 - **Groups** button (book + Social Graph) opens a quiet panel to filter / select / rename / remove local tags — not a primary tab.
 - **Select multiple** works on every scope. Bulk Trust / Revoke apply to SVRNTY rows in the selection; Block / Delete / **Add to group** apply to all selected.

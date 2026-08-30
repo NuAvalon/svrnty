@@ -191,8 +191,8 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [vaultExporting, setVaultExporting] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
-  /** Master book scope — Classical vs SVRNTY (not living/resting). */
-  const [bookScope, setBookScope] = useState<'classical' | 'svrn'>('classical');
+  /** Master book scope — All / Classical / SVRNTY (not living/resting). Default All so network peers stay visible (demo-arc beat 3/4). */
+  const [bookScope, setBookScope] = useState<'all' | 'classical' | 'svrn'>('all');
   /** Quiet: view blocked list (⋯ menu — not a primary tab). */
   const [showBlocked, setShowBlocked] = useState(false);
   /** Within SVRNTY: known vs trusted (binary trust, not a score). */
@@ -337,6 +337,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     (c) => selectedIds.has(c.id) && isSvrnNetworkContact(c),
   );
 
+  const allCount = contacts.filter((c) => !isContactBlocked(c)).length;
   const classicalCount = contacts.filter((c) => !isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
   const svrnCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
   const trustedCount = contacts.filter((c) => isSvrnNetworkContact(c) && isTrusted(c) && !isContactBlocked(c)).length;
@@ -1019,9 +1020,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </Button>
         </div>
 
-        {/* Primary tabs: Classical / SVRNTY — Blocked lives in ⋯ */}
+        {/* Primary tabs: All / Classical / SVRNTY — Blocked lives in ⋯ */}
         <div className="flex flex-wrap items-center gap-2 mb-3">
           {([
+            ['all', `All (${allCount})`],
             ['classical', `Classical (${classicalCount})`],
             ['svrn', `SVRNTY (${svrnCount})`],
           ] as const).map(([id, label]) => (
@@ -1588,6 +1590,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 rows={masterRows}
                 selectedIds={selectedIds}
                 selectionMode={selectionMode}
+                liveIds={liveIds}
                 onToggleSelect={toggleSelected}
                 onOpen={(id) => {
                   const contact = contacts.find((c) => c.id === id);
