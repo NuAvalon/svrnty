@@ -23,6 +23,7 @@
 
 import { isDecayed, daysUntilDecay } from './types';
 import type { TrustEdge } from './types';
+import { assignConcentricSlots, radiusForCount } from './graph-forces';
 
 export type TrustState = 'trusted' | 'known' | 'decayed';
 
@@ -147,7 +148,8 @@ export function computeTrustLayout(
     daysLeft: 0,
   };
 
-  // Trusted (live) sit on the inner ring; known + decayed on the outer rim.
+  // Trusted (live) sit closer in; known + decayed farther out.
+  // Adaptive multi-rings keep arc spacing readable as the roster grows.
   const trusted: TrustEdge[] = [];
   const outer: TrustEdge[] = [];
   for (const c of contacts) {
@@ -155,32 +157,57 @@ export function computeTrustLayout(
     else outer.push(c);
   }
 
-  const placeRing = (items: TrustEdge[], radius: number, angleOffset: number): LaidOutNode[] => {
-    const n = items.length;
-    return items.map((edge, i) => {
-      // Deterministic even distribution, starting at the top. No randomness:
-      // the layout is stable across renders (clean crystallization) and testable.
-      const angle = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(n, 1) + angleOffset;
+  const placeBand = (
+    items: TrustEdge[],
+    minR: number,
+    maxR: number,
+    angleJitter: number,
+  ): LaidOutNode[] => {
+    if (items.length === 0) return [];
+    // Cap per ring so seals keep ~30px arc gap; spill to concentric rings.
+    const maxPerRing = Math.max(6, Math.floor((2 * Math.PI * maxR) / 30));
+    const slots = assignConcentricSlots(items.length, maxPerRing);
+    const ringCount = 1 + Math.max(0, ...slots.map((s) => s.ring));
+    const out: LaidOutNode[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const edge = items[i];
+      const slot = slots[i];
+      const bandMin = minR;
+      const bandMax = maxR;
+      const t = ringCount <= 1 ? 0 : slot.ring / (ringCount - 1);
+      const baseR = bandMin + (bandMax - bandMin) * t;
+      const r = radiusForCount(slot.onRing, Math.max(bandMin * 0.85, baseR * 0.9), bandMax);
+      const angle =
+        -Math.PI / 2 +
+        (2 * Math.PI * slot.index) / Math.max(slot.onRing, 1) +
+        angleJitter +
+        slot.ring * 0.11;
       const state = trustStateOf(edge);
-      return {
+      out.push({
         id: edge.peer_fingerprint,
         name: edge.peer_name,
         state,
         isOwner: false,
-        x: cx + Math.cos(angle) * radius,
-        y: cy + Math.sin(angle) * radius,
+        x: cx + Math.cos(angle) * r,
+        y: cy + Math.sin(angle) * r,
         radius: NODE_RADIUS[state],
         opacity: disclosureDepth(edge),
         edgeOpacity: EDGE_OPACITY[state],
         daysLeft: state === 'trusted' ? daysUntilDecay(edge) : 0,
-      };
-    });
+      });
+    }
+    return out;
   };
 
+  // Inner band: trusted. Outer band: known + decayed. Leave a clear gap between.
+  const innerMax = Math.min(ringInner * 1.05, ringOuter * 0.72);
+  const innerMin = Math.max(SELF_RING_RADIUS + 28, innerMax * 0.72);
+  const outerMin = Math.min(ringOuter * 0.82, Math.max(innerMax + 28, ringOuter * 0.78));
+  const outerMax = ringOuter;
+
   const nodes = [
-    ...placeRing(trusted, ringInner, 0),
-    // offset the outer ring half a step so nodes nest between inner spokes
-    ...placeRing(outer, ringOuter, outer.length ? Math.PI / outer.length : 0),
+    ...placeBand(trusted, innerMin, innerMax, 0),
+    ...placeBand(outer, outerMin, outerMax, outer.length ? Math.PI / Math.max(outer.length, 1) : 0),
   ];
 
   return { width, height, cx, cy, self, nodes, ringInner, ringOuter };

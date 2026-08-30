@@ -28,6 +28,7 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
+import { relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -149,40 +150,41 @@ function formatKeyGroups(fp: string): string {
   return groups.slice(0, 6).join('·');
 }
 
-/** Soft pull same-tag nodes toward group centroids (owner-authored clusters). */
+/** Soft spacing + gravity over Orbit seals (owner tags attract; no peer trust inferred). */
 function clusterPull(
   nodes: LaidOutNode[],
   contacts: TrustEdge[],
   width: number,
   height: number,
+  cx: number,
+  cy: number,
 ): LaidOutNode[] {
-  const byId = new Map(nodes.map((n) => [n.id, { ...n }]));
-  const tagMembers = new Map<string, string[]>();
-  for (const c of contacts) {
-    const tags = c.tags || [];
-    for (const t of tags) {
-      if (!t) continue;
-      const list = tagMembers.get(t) || [];
-      list.push(c.peer_fingerprint);
-      tagMembers.set(t, list);
-    }
+  if (nodes.length === 0) return nodes;
+  const preferredRadius = new Map<string, number>();
+  for (const n of nodes) {
+    preferredRadius.set(n.id, Math.hypot(n.x - cx, n.y - cy));
   }
-  const margin = 18;
-  for (const [, fps] of tagMembers) {
-    if (fps.length < 2) continue;
-    const members = fps.map((id) => byId.get(id)).filter(Boolean) as LaidOutNode[];
-    if (members.length < 2) continue;
-    const cx = members.reduce((s, m) => s + m.x, 0) / members.length;
-    const cy = members.reduce((s, m) => s + m.y, 0) / members.length;
-    for (const m of members) {
-      const nx = m.x + (cx - m.x) * 0.42;
-      const ny = m.y + (cy - m.y) * 0.42;
-      m.x = Math.min(width - margin, Math.max(margin, nx));
-      m.y = Math.min(height - margin - 8, Math.max(margin, ny));
-      byId.set(m.id, m);
-    }
-  }
-  return nodes.map((n) => byId.get(n.id) || n);
+  const relaxed = relaxGraphNodes(nodes, {
+    width,
+    height,
+    cx,
+    cy,
+    preferredRadius,
+    tagMembers: tagMembership(contacts),
+    padding: 16,
+    selfClearance: 48,
+    iterations: 56,
+    ringGravity: 0.22,
+    clusterGravity: 0.1,
+    repulsion: 0.62,
+    margin: 24,
+  });
+  // Preserve LaidOutNode fields; only x/y move.
+  const byId = new Map(relaxed.map((n) => [n.id, n]));
+  return nodes.map((n) => {
+    const r = byId.get(n.id);
+    return r ? { ...n, x: r.x, y: r.y } : n;
+  });
 }
 
 /** Owner-authored shared-tag chords (not inferred peer trust). */
@@ -299,7 +301,7 @@ export function TrustMap({
   const layout = useMemo(
     () => ({
       ...baseLayout,
-      nodes: clusterPull(baseLayout.nodes, visibleContacts, VIEW, VIEW),
+      nodes: clusterPull(baseLayout.nodes, visibleContacts, VIEW, VIEW, baseLayout.cx, baseLayout.cy),
     }),
     [baseLayout, visibleContacts],
   );
