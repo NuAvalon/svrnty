@@ -12,6 +12,8 @@ import {
   panCamera,
   zoomCamera,
   cameraCenter,
+  zoomLimits,
+  wheelZoomFactor,
 } from '@/lib/trust/graph-camera';
 
 const DEFAULT: Camera = { x: 0, y: 0, w: 640, h: 640 };
@@ -25,6 +27,8 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
     x: number;
     y: number;
     cam: Camera;
+    pointerId: number;
+    dragging: boolean;
   } | null>(null);
   const elRef = useRef<HTMLDivElement | null>(null);
   const fitRef = useRef<Camera>(initial);
@@ -34,8 +38,9 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
   const applyFit = useCallback((bounds: Bounds, aspect: number) => {
     const fitted = fitCamera(bounds, aspect, 36);
     fitRef.current = fitted;
-    minWRef.current = fitted.w * 0.42;
-    maxWRef.current = fitted.w / 7;
+    const lim = zoomLimits(fitted.w);
+    minWRef.current = lim.minW;
+    maxWRef.current = lim.maxW;
     setCam(fitted);
   }, []);
 
@@ -72,7 +77,7 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const factor = Math.exp(-e.deltaY * 0.0016);
+      const factor = wheelZoomFactor(e.deltaY, e.deltaMode);
       zoomAtClient(factor, e.clientX, e.clientY);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -80,28 +85,37 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
   }, [zoomAtClient]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.button === 1 || e.button === 0) {
-      const el = e.target as HTMLElement;
-      if (el.closest('[data-graph-node]') || el.closest('[data-graph-cluster]')) {
-        if (e.button === 0) return;
-      }
-      panRef.current = {
-        x: e.clientX,
-        y: e.clientY,
-        cam: camRef.current,
-      };
-      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    if (e.button !== 0 && e.button !== 1) return;
+    const el = e.target as HTMLElement;
+    if (e.button === 0 && (el.closest('[data-graph-node]') || el.closest('[data-graph-cluster]'))) {
+      return;
     }
+    if (el.closest('button, a, input, textarea, [data-testid="trust-map-selection-bar"]')) {
+      return;
+    }
+    // Record a possible pan but do NOT capture yet — a tap must reach the canvas.
+    panRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      cam: camRef.current,
+      pointerId: e.pointerId,
+      dragging: false,
+    };
   }, []);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!panRef.current) return;
     const el = elRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
     const start = panRef.current;
     const dxPx = e.clientX - start.x;
     const dyPx = e.clientY - start.y;
+    if (!start.dragging) {
+      if (Math.hypot(dxPx, dyPx) < 7) return;
+      start.dragging = true;
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    }
+    const rect = el.getBoundingClientRect();
     const dxWorld = (dxPx / Math.max(rect.width, 1)) * start.cam.w;
     const dyWorld = (dyPx / Math.max(rect.height, 1)) * start.cam.h;
     setCam(panCamera(start.cam, dxWorld, dyWorld));

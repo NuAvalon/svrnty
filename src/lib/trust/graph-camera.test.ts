@@ -7,6 +7,9 @@ import {
   zoomCamera,
   panCamera,
   cameraCenter,
+  zoomLimits,
+  wheelZoomFactor,
+  hitTestNodes,
 } from './graph-camera';
 
 test('fitCamera matches viewport aspect and contains the bbox', () => {
@@ -55,4 +58,36 @@ test('cameraCenter is the viewBox midpoint', () => {
   const c = cameraCenter({ x: 10, y: 20, w: 40, h: 30 });
   assert.equal(c.x, 30);
   assert.equal(c.y, 35);
+});
+
+test('zoomLimits keep fit between minW and maxW so zoom can step both ways', () => {
+  const fit = 640;
+  const { minW, maxW } = zoomLimits(fit);
+  assert.ok(minW < fit, `minW ${minW} should be < fit`);
+  assert.ok(maxW > fit, `maxW ${maxW} should be > fit`);
+  const cam = { x: 0, y: 0, w: fit, h: fit };
+  const inn = zoomCamera(cam, 1.12, 320, 320, minW, maxW);
+  assert.ok(inn.w < cam.w && inn.w > minW * 0.99);
+  const out = zoomCamera(cam, 1 / 1.12, 320, 320, minW, maxW);
+  assert.ok(out.w > cam.w && out.w < maxW * 1.01);
+});
+
+test('wheelZoomFactor is a small step, not a jump to the stop', () => {
+  const a = wheelZoomFactor(10, 0);
+  const b = wheelZoomFactor(80, 0);
+  assert.ok(a < 1 && a > 0.96, `small trackpad delta should be tiny, got ${a}`);
+  assert.ok(b < 1 && b > 0.78, `clamped wheel tick should be stepwise, got ${b}`);
+  const inn = wheelZoomFactor(-40, 0);
+  assert.ok(inn > 1 && inn < 1.12);
+});
+
+test('hitTestNodes uses a pixel floor so zoomed-out seals stay tappable', () => {
+  const cam = { x: 0, y: 0, w: 800, h: 800 };
+  const rect = { left: 0, top: 0, width: 400, height: 400 };
+  const nodes = [{ id: 'ada', x: 400, y: 400, radius: 10 }];
+  // Center of the view
+  assert.equal(hitTestNodes(nodes, cam, rect, 200, 200), 'ada');
+  // 20px away — still inside minPx=22
+  assert.equal(hitTestNodes(nodes, cam, rect, 218, 200), 'ada');
+  assert.equal(hitTestNodes(nodes, cam, rect, 10, 10), null);
 });
