@@ -1,0 +1,25 @@
+---
+description: svrnty — UNSUPERVISED GAP freeze (fleet away ~4-5 days); crypto/claim surfaces wait for review
+alwaysApply: true
+---
+# ⏸️ GAP FREEZE — the fleet is away (~4-5 days)
+
+You may build **render-glass UI autonomously**. But anything that touches a lock or makes a security claim **waits for agent review on our return** — do NOT expect it to auto-merge while we're dark. A slipped feature beats an unreviewed crypto change shipping unsupervised. Trace the chain: unsupervised + crypto-touch + auto-merge = the one way this launch hurts someone.
+
+## 🚫 DO-NOT-TOUCH — a PR modifying any of these HOLDS for agent review (no auto-merge during the gap):
+- `src/lib/crypto/*` — recovery.ts, kdf.ts, pq.ts, encrypted-backup.ts, sign-envelope, message-signing, did:key
+- `src/lib/sync/vault.ts` — the `.svrnty` FORMAT: packVault / unpackVault / extractRecoveryVault, MAGIC bytes, AAD, BODY_LEN layout, the recovery envelope
+- `src/lib/identity/*` — key generation / storage
+- **Restore-gate CONTROL FLOW** (not copy): `seedPathActive` / path-selection / which-key-decrypts-what / step-up + auth gates / trust-block wire-strip logic
+
+If a UI needs something here, **call** the existing function; if you'd cross the line, STOP and leave a README note. A blocked component is fine; a silently-modified lock is not.
+
+## ⚠️ COPY IS A CRYPTO SURFACE (this launch's core lesson)
+Any copy that makes a **security / recovery / trust CLAIM** — "you need X to recover", "two factors", "protects your Y", "end-to-end", "only you can…" — requires agent review, NOT autonomous. A wrong claim at a recovery or trust moment can lock a user out or mislead them.
+- Ground truth for the recovery model = **ALTERNATIVES**, never "both required": the backup FILE is always needed, plus **one** key — **password + file → everything** (identity, contacts, trust); **OR recovery code + file → identity only** (no contacts; reconnect those), used when the password is lost. Term = **"recovery code"** (8 groups of 8 hex chars).
+- Pure presentational / non-claim copy + layout + styling + non-crypto features (about page, non-crypto settings toggles) = fine autonomously.
+
+## 🔒 Data-privacy invariant (for tag / group features — Apollo §2)
+Tags / blocked-flags / group-cluster-labels are **device-local**; they must NEVER serialize onto any **publish / PSI-sync / export** payload. Assert with a **negative test**. (KB#87571)
+
+See `.cursor/rules/svrnty.mdc` for the standing render-glass boundary + invariants, and `/CURSOR_QUEUE.md` for the gap build priority.

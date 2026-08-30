@@ -117,6 +117,21 @@ Show AFTER a successful seed-only restore — the inline pre-success line is mis
 | CUR-4 | **L4 import/export UI polish + export-behind-auth prompt** (P0.5) | launch-plan L4 | key crypto (Flint) | ☐ [#66](https://github.com/NuAvalon/svrnty/pull/66) |
 | CUR-5 | **L3 trust/untrust/remove/block UI + confirm flows** | launch-plan L3 | relay-auth calls (Flint/Athena) | ✅ [#67](https://github.com/NuAvalon/svrnty/pull/67) |
 
+## ▶ GAP BUILD PRIORITY (fleet away ~4-5 days — build safe UI in this order; crypto/claim FROZEN, see `.cursor/rules/svrnty-gap-freeze.mdc`)
+
+**P0 CORE = DONE** (#59 / #64 / #65 / #67 / #63 / #66 merged; #60 closed as superseded by #65). Recovery-code term-consistency fix landed on main. Build these next, safest render-glass first:
+
+1. **about-page** (#72) — pure render, Hypatia copy. Safest.
+2. **tag-management** (#68) — ⚠️ tags / blocked / group-labels are **device-local**: NEVER serialize on any **publish / PSI-sync / export** payload; assert with a **negative test** (Apollo, KB#87571).
+3. **VCF export** — user's own data → native `.vcf` (non-crypto).
+4. **app-lock screen** (#70).
+5. **biometric unlock** (#69) — WebAuthn UI **flow only**; the PRF crypto seam is fleet-owned (do NOT touch during the gap).
+6. ⛔ **reach-settings** (#71) — **DEFER to fleet-return.** Render toggles are fine, but disclosure-reach LOGIC + DEFAULTS are fleet-owned (Hypatia's contract) — Cursor must NOT decide or ship what's exposed.
+
+Any crypto / recovery / trust-CLAIM change → HOLD for agent review on return (no auto-merge while we're dark).
+
+---
+
 ## 🔵 FAST-FOLLOW (after P0 core lands)
 | # | Task | Keep-in-fleet seam (owner) | PR |
 |---|------|----------------------------|----|
