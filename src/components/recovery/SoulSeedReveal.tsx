@@ -68,7 +68,7 @@ export function SoulSeedReveal({
             textAlign: 'center',
           }}
         >
-          Recovery phrase · shown once
+          Recovery code · shown once
         </p>
         <h1
           style={{
@@ -83,7 +83,7 @@ export function SoulSeedReveal({
           Write this down.
         </h1>
         <p style={{ color: E.muted, fontSize: 13, lineHeight: 1.5, margin: '0 0 16px', textAlign: 'center' }}>
-          Your 12-word recovery phrase. Write it down and keep it somewhere safe you&apos;ll still have if you lose your passphrase. If you lose your passphrase, the phrase unlocks your backup without it. Shown once — this is <strong style={{ color: E.text }}>not</strong> your everyday passphrase.
+          Your recovery code. Write it down and keep it somewhere safe you&apos;ll still have if you lose your passphrase. If you lose your passphrase, the recovery code restores your identity without it. Shown once — this is <strong style={{ color: E.text }}>not</strong> your everyday passphrase.
         </p>
         <p style={{ color: E.dim, fontSize: 12, lineHeight: 1.45, margin: '0 0 16px', textAlign: 'center' }}>
           Social-recovery shards ({threshold}-of-{shardCount}) stay local for the tear ceremony.
@@ -126,7 +126,7 @@ export function SoulSeedReveal({
             cursor: 'pointer',
           }}
         >
-          {copied ? 'Copied' : 'Copy phrase'}
+          {copied ? 'Copied' : 'Copy code'}
         </button>
 
         <label

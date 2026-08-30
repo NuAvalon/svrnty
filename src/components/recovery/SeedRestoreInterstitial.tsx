@@ -64,7 +64,7 @@ export function SeedRestoreInterstitial({
         >
           Your keys and identity are recovered. Your contacts and trust connections
           weren&apos;t restored — they were sealed with the passphrase you lost, and
-          your recovery phrase can&apos;t unlock them. You&apos;ll rebuild your
+          your recovery code can&apos;t unlock them. You&apos;ll rebuild your
           connections as you reconnect with people.
         </p>
 

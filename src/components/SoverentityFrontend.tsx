@@ -537,7 +537,7 @@ export function SoverentityFrontend({
       setRestoreLoading(true);
       setRestoreError(null);
       if (!soulSeedPhrase.trim()) {
-        setRestoreError('Enter your recovery phrase.');
+        setRestoreError('Enter your recovery code.');
         return;
       }
       const arrayBuffer = await vaultFile.arrayBuffer();
@@ -558,7 +558,7 @@ export function SoverentityFrontend({
       // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
       // Hypatia DO-SECOND honest error (seed-only path).
       if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
-        setRestoreError("That recovery phrase doesn't match an identity.");
+        setRestoreError("That recovery code doesn't match this backup.");
       } else {
         setRestoreError(msg || 'Could not recover from this backup.');
       }
@@ -1156,11 +1156,11 @@ export function SoverentityFrontend({
               </svg>
             </div>
             <h2 style={s.heroTitle}>
-              {seedPathActive ? 'Recover with your seed phrase' : 'Open Your Vault'}
+              {seedPathActive ? 'Recover with your recovery code' : 'Open Your Vault'}
             </h2>
             {seedPathActive && (
               <p style={s.heroSub}>
-                Enter your 12-word recovery phrase to unlock this backup — it works without your passphrase.
+                Enter your recovery code to unlock this backup — it works without your passphrase.
               </p>
             )}
           </div>
@@ -1174,7 +1174,7 @@ export function SoverentityFrontend({
               </div>
               <p style={s.safeWordHint}>
                 {seedPathActive
-                  ? 'The phrase decrypts this backup file (replacing your passphrase). You need both the phrase and this file — the phrase alone cannot reconstruct identity from nothing.'
+                  ? 'Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can\'t rebuild you from nothing.'
                   : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
               </p>
             </div>
@@ -1282,12 +1282,12 @@ export function SoverentityFrontend({
             (vaultHeader?.format === 'json-backup' && vaultHeader?._jsonData?.vault)) && (
             <div style={s.field}>
               <label style={{ ...s.label, color: SE.accent }}>
-                {seedPathActive ? 'Recovery phrase (12 words)' : 'RECOVERY PHRASE'}
+                {seedPathActive ? 'Recovery code' : 'RECOVERY PHRASE'}
               </label>
               <textarea
                 placeholder={
                   seedPathActive
-                    ? 'Enter your 12-word recovery phrase'
+                    ? 'Enter your recovery code — 8 groups of 8 characters (64 characters total) that you saved when you created your identity.'
                     : 'Paste the recovery phrase shown at forge (hex groups)'
                 }
                 value={soulSeedPhrase}
@@ -1298,7 +1298,7 @@ export function SoverentityFrontend({
               />
               <p style={s.hint}>
                 {seedPathActive
-                  ? 'Wrong phrase fails closed — no lockout; try again.'
+                  ? 'Wrong code fails closed — no lockout; try again.'
                   : 'Second factor when the backup includes a KeyVault. Required to open sealed recovery material.'}
               </p>
             </div>
@@ -1410,7 +1410,7 @@ export function SoverentityFrontend({
                     textUnderlineOffset: 3,
                   }}
                 >
-                  Lost your passphrase? Recover with your seed phrase
+                  Lost your passphrase? Recover with your recovery code
                 </button>
               )}
               {isV3Vault && (
