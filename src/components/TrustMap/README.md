@@ -6,6 +6,7 @@
 ## What we changed
 - Retinted SVG tokens to Solar Ember (CSS vars → light/dark).
 - Click node → seal + **alive contact sheet** (edit, TRUST/remove **behind confirm**, accept pending intro, introduce stub, **Send update → CUR-1 revise dialog**, **CUR-2 version history panel**, multi-select → group).
+- **CUR-3:** focus-sheet email / phone / url / handle are tap-to-open via I-10a allowlisted `ContactMethodLink` (see `src/components/contacts/README.md`).
 - **CUR-5:** trust / break / remove / block open `TrustActionConfirmDialog` (Solar Ember). Blocked contacts are filtered off the lattice (local owner flag).
 - Sample circle (`sample-circle.ts`): mutual trust self↔Ada/Grace/Margaret; owner-authored tags (`core`, `builders`, `radio`, …) → **cluster chords + centroid pull**; Frank = pending intro from Grace (pending ≠ trust).
 - Known vs trusted visuals sharpened (hollow dashed known · lit fill + halo trusted · double-glow mutual · pulsing dashed pending).
