@@ -17,6 +17,7 @@
 - Real introduce wire (pending both sides until accept) — stubbed locally.
 - Wire broadcast for Send update — Flint (`identity/contact-method-send.ts` stub).
 - CUR-1 Send update → should `appendMethodRevision` on successful queue (hook when wiring).
++ CUR-1 revise dialog now calls `appendMethodRevision` on Save locally / Send update (local drafts).
 
 ## ⛔ Flint seam (CUR-2)
 - Restore/retract = sign next **higher** `ContactUpdateEnvelope.version` with prior field values + per-peer encrypt + deposit.

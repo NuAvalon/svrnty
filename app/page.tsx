@@ -661,6 +661,7 @@ export default function Home() {
             open={mapRevise !== null}
             kind={mapRevise?.kind ?? 'email'}
             initialValue={identity.identity?.email || ''}
+            ownerFingerprint={identity.identity.fingerprint}
             preselectedFingerprints={mapRevise?.preselected}
             contacts={contacts
               .map((c) => {
@@ -675,6 +676,7 @@ export default function Home() {
               })
               .filter((c): c is NonNullable<typeof c> => c != null)}
             onClose={() => setMapRevise(null)}
+            onHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
             onLocalSave={async (kind, value) => {
               const fp = identity.identity.fingerprint as string;
               if (kind === 'email') {

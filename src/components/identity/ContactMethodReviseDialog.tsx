@@ -21,6 +21,7 @@ import {
   type ContactMethodSendFn,
   type ContactMethodSendResult,
 } from './contact-method-send';
+import { appendMethodRevision } from './method-history';
 import { solarEmber as E } from '../recovery/solar-ember';
 
 export type AudienceContact = {
@@ -36,11 +37,15 @@ export type ContactMethodReviseDialogProps = {
   kind: MethodKind;
   initialValue?: string;
   contacts: AudienceContact[];
+  /** Owner fingerprint — used to append CUR-2 local method-history drafts. */
+  ownerFingerprint?: string;
   /** Pre-select these fingerprints (e.g. focused Trust Map peer). */
   preselectedFingerprints?: string[];
   onClose: () => void;
   /** Persist draft locally (email → identity; signal/site → local_methods bag). */
   onLocalSave: (kind: MethodKind, value: string) => void | Promise<void>;
+  /** Fired after a local history row is appended (CUR-2 panel refresh). */
+  onHistoryChange?: () => void;
   sendFn?: ContactMethodSendFn;
 };
 
@@ -49,9 +54,11 @@ export function ContactMethodReviseDialog({
   kind,
   initialValue = '',
   contacts,
+  ownerFingerprint,
   preselectedFingerprints,
   onClose,
   onLocalSave,
+  onHistoryChange,
   sendFn = sendContactMethodUpdate,
 }: ContactMethodReviseDialogProps) {
   const [value, setValue] = useState(initialValue);
@@ -114,11 +121,27 @@ export function ContactMethodReviseDialog({
 
   const clearAll = () => setSelected(new Set());
 
+  const recordHistory = (recipients: string[]) => {
+    if (!ownerFingerprint) return;
+    const next = value.trim();
+    const prev = (initialValue || '').trim();
+    if (!next || next === prev) return;
+    appendMethodRevision(ownerFingerprint, {
+      kind: kind as 'email' | 'signal' | 'site',
+      value: next,
+      previousValue: prev || undefined,
+      recipientFingerprints: recipients,
+      note: recipients.length ? 'Queued notify (send stub)' : 'Saved locally',
+    });
+    onHistoryChange?.();
+  };
+
   const handleSaveLocal = async () => {
     setBusy(true);
     setLocalNote(null);
     try {
       await onLocalSave(kind, value.trim());
+      recordHistory([]);
       setLocalNote('Saved on this device. Peers are not notified until Send update is live.');
     } catch (e) {
       setLocalNote(e instanceof Error ? e.message : 'Could not save locally.');
@@ -133,10 +156,12 @@ export function ContactMethodReviseDialog({
     try {
       // Always persist draft first so the card reflects the revise.
       await onLocalSave(kind, value.trim());
+      const recipients = [...selected];
+      recordHistory(recipients);
       const result = await sendFn({
         kind,
         value: value.trim(),
-        recipientFingerprints: [...selected],
+        recipientFingerprints: recipients,
       });
       setStatus(result);
     } catch (e) {

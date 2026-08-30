@@ -1392,6 +1392,7 @@ export function SoverentityFrontend({
                   ''
                 : identity.identity.email || ''
           }
+          ownerFingerprint={identity.identity.fingerprint}
           contacts={audience}
           onClose={() => setReviseKind(null)}
           onLocalSave={async (kind, value) => {
