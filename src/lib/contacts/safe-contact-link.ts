@@ -8,19 +8,6 @@
 /** Display char budget for imported contact-method strings (I-10a bound). */
 export const CONTACT_METHOD_DISPLAY_MAX = 200;
 
-const ALLOWED_APP_HOSTS = new Set([
-  'wa.me',
-  'api.whatsapp.com',
-  'signal.me',
-  't.me',
-  'telegram.me',
-  'instagram.com',
-  'www.instagram.com',
-  'facebook.com',
-  'www.facebook.com',
-  'm.facebook.com',
-]);
-
 const ALLOWED_SCHEMES = new Set(['https:', 'tel:', 'mailto:', 'sms:']);
 
 export type ContactMethodKind = 'email' | 'phone' | 'url' | 'handle';
@@ -58,14 +45,6 @@ function isSafePhone(digits: string): boolean {
   return /^\+?\d{7,15}$/.test(digits);
 }
 
-function hostAllowed(hostname: string): boolean {
-  const h = hostname.toLowerCase();
-  if (ALLOWED_APP_HOSTS.has(h)) return true;
-  // Allow any https host that is NOT a scheme smuggle — https: alone is on the scheme list.
-  // App deep-link hosts are called out in CURSOR.md; other https sites (personal urls) are fine.
-  return true;
-}
-
 /**
  * Resolve a raw URL / scheme'd string to an allowlisted href, or null.
  * NEVER returns javascript: or data:.
@@ -93,7 +72,10 @@ export function resolveUrlHref(raw: string): string | null {
   if (scheme === 'javascript:' || scheme === 'data:') return null; // belt
 
   if (scheme === 'https:') {
-    if (!url.hostname || !hostAllowed(url.hostname)) return null;
+    // Open by design — contact links resolve to ANY host; safety = scheme-allowlist +
+    // noopener + visible URL (I-10a), NOT a host allowlist (which would false-pass phishing
+    // hosts AND break the open-ended custom contact field). Ref: Archie #124162 / KB#46618.
+    if (!url.hostname) return null;
     return url.toString();
   }
 
