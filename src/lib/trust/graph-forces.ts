@@ -3,7 +3,7 @@
  *
  * Organic lattice — NOT concentric trust rings. Trust is an overlay (glow),
  * never a radius from self. Owner-authored group tags may softly attract;
- * peer↔peer trust is NEVER invented.
+ * peer↔peer trust is never inferred from tags (open-visibility PSI chords are overlay).
  *
  * Forces (each iteration):
  *   1. Soft cloud keep — stay in a wide disk around self (not a ring)

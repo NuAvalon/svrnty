@@ -53,20 +53,40 @@ test('disclosed_circle only includes people already in the book', () => {
   assert.equal(c.members.has('b'), false);
 });
 
-test('they-trust / peer_mutual is witnessed, not transitive invention', () => {
+const openMutual = {
+  trusted: true,
+  open_visibility: true,
+  mutual: { they_trust_me: true as const, last_sync: null, reciprocal: true },
+};
+
+test('they-trust lights only under open-visibility reciprocal + they_trust both ways', () => {
   const contacts = [
-    edge('hub', [], {
-      they_trust: ['a'],
-      peer_mutual: [{ peer_fingerprint: 'b' }],
-    } as TrustEdge),
-    edge('a', []),
-    edge('b', []),
-    edge('c', []),
+    edge('hub', [], { ...openMutual, they_trust: ['a'] }),
+    edge('a', [], { ...openMutual, they_trust: ['hub'] }),
+    edge('b', [], { ...openMutual, they_trust: ['hub'] }),
+    edge('c', [], {
+      trusted: true,
+      they_trust: ['hub'],
+      mutual: { they_trust_me: true, last_sync: null, reciprocal: true },
+    }),
   ];
   const c = focusConstellation('hub', contacts);
   assert.ok(c.members.get('a')?.reasons.includes('they-trust'));
-  assert.ok(c.members.get('b')?.reasons.includes('they-trust'));
-  assert.equal(c.members.has('c'), false);
+  assert.equal(c.members.has('b'), false, 'hub did not list b');
+  assert.equal(c.members.has('c'), false, 'c did not opt into open visibility');
+  const cap = constellationCaption(focusConstellation('hub', contacts), true);
+  assert.ok(cap.includes('open-visibility peer trust'));
+  assert.ok(!/\d+/.test(cap), cap);
+});
+
+test('they-trust is not invented from a shared owner tag', () => {
+  const contacts = [
+    edge('hub', ['crew'], openMutual),
+    edge('a', ['crew'], openMutual),
+  ];
+  const c = focusConstellation('hub', contacts);
+  assert.ok(c.members.get('a')?.reasons.includes('shared-group'));
+  assert.equal(c.members.get('a')?.reasons.includes('they-trust'), false);
 });
 
 test('caption stays qualitative — no mutual-friend score', () => {

@@ -19,7 +19,11 @@ export type ContactShareSettings = {
   share_card: boolean;
   share_trusted_circle: boolean;
   share_groups: boolean;
-  /** Open visibility: peers I trust may learn mutual trust via PSI (fleet). */
+  /**
+   * Open visibility for trusted contacts. When I trust Sally and Joe, they
+   * trust me, and all three opt in, I see that they trust each other (fleet
+   * PSI / they_trust) — consented disclosure, never inferred from tags.
+   */
   open_visibility: boolean;
 };
 

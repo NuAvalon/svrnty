@@ -54,5 +54,8 @@ export function contactRecordToEdge(c: any): TrustEdge {
     blocked: !!(c.blocked ?? c.metadata?.blocked),
     disclosed_circle: c.disclosed_circle || c.metadata?.disclosed_circle || c.metadata?.mutual_contacts,
     they_trust: c.they_trust || c.metadata?.they_trust,
+    open_visibility: !!(
+      c.open_visibility ?? c.metadata?.share_settings?.open_visibility
+    ),
   } as TrustEdge;
 }

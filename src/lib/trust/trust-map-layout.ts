@@ -16,7 +16,8 @@
 //     • position     → I added this contact + optional owner-local tag neighborhood
 //     • radius       → salience of the standing I granted (trusted > known) — overlay
 //     • opacity      → what THEY disclosed to me
-//   No peer↔peer trust edges. Unlit = privacy, never absence.
+//   Peer↔peer trust chords are NOT layout — the renderer overlays witnessed
+  open-visibility filaments. Unlit = privacy, never absence.
 
 import { isDecayed, daysUntilDecay } from './types';
 import type { TrustEdge } from './types';

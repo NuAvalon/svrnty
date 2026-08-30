@@ -8,12 +8,15 @@
  *   - shared-group     owner-local tags you wrote
  *   - disclosed-circle fingerprints they disclosed to you that are also in your book
  *                      (fleet `visible()` ∩ book — never computed here)
- *   - they-trust       people in your book they also trust (fleet PSI)
+ *   - they-trust       open-visibility peer trust (Peter's spec): I trust both,
+ *                      they trust me, we all opted in, and they_trust is witnessed
  *
- * Forbidden: inventing peer↔peer bonds, mutual-friend counts as identity scores.
+ * Forbidden: inventing peer↔peer bonds from tags or friends-of-friends;
+ *            mutual-friend counts as identity scores (I-3).
  */
 
 import type { TrustEdge } from '@/lib/trust/types';
+import { peerTrustNeighbors } from '@/lib/trust/peer-trust-chords';
 
 export type ConstellationReason = 'shared-group' | 'disclosed-circle' | 'they-trust';
 
@@ -32,24 +35,17 @@ export type FocusConstellation = {
 function extra(edge: TrustEdge): {
   mutual_contacts?: string[];
   disclosed_circle?: string[];
-  they_trust?: string[];
-  peer_mutual?: Array<{ peer_fingerprint: string }>;
 } {
   const e = edge as TrustEdge & {
     disclosed_circle?: string[];
-    they_trust?: string[];
-    peer_mutual?: Array<{ peer_fingerprint: string }>;
     metadata?: {
       mutual_contacts?: string[];
       disclosed_circle?: string[];
-      they_trust?: string[];
     };
   };
   return {
     mutual_contacts: e.metadata?.mutual_contacts,
     disclosed_circle: e.disclosed_circle || e.metadata?.disclosed_circle,
-    they_trust: e.they_trust || e.metadata?.they_trust,
-    peer_mutual: e.peer_mutual,
   };
 }
 
@@ -96,14 +92,11 @@ export function focusConstellation(
     add(members, fp, 'disclosed-circle');
   }
 
-  const trusts = [
-    ...(x.they_trust || []),
-    ...((x.peer_mutual || []).map((p) => p.peer_fingerprint)),
-  ];
-  for (const fp of trusts) {
-    if (fp === focusId) continue;
-    if (!inBook.has(fp)) continue;
-    add(members, fp, 'they-trust');
+  const bookByLower = new Map([...inBook].map((id) => [id.toLowerCase(), id]));
+  for (const fp of peerTrustNeighbors(focusId, contacts)) {
+    const bookId = inBook.has(fp) ? fp : bookByLower.get(fp.toLowerCase());
+    if (!bookId || bookId === focusId) continue;
+    add(members, bookId, 'they-trust');
   }
 
   return { focusId, members };
@@ -123,6 +116,6 @@ export function constellationCaption(c: FocusConstellation, focusTrusted: boolea
   const bits: string[] = [];
   if (hasGroup) bits.push('groups you named');
   if (hasCircle) bits.push('circle they showed you');
-  if (hasTrust) bits.push('they trust too (witnessed)');
+  if (hasTrust) bits.push('open-visibility peer trust · witnessed');
   return bits.join(' · ') || 'Your bond';
 }
