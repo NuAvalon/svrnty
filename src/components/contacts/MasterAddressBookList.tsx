@@ -19,6 +19,8 @@ export type MasterBookRow = {
   blocked?: boolean;
   /** Owner-local private tags (groups) — never a wire field. */
   tags?: string[];
+  /** SVRNTY awaiting reciprocal add — no pulse yet. */
+  pending?: boolean;
 };
 
 export type MasterAddressBookListProps = {
@@ -166,6 +168,14 @@ export function MasterAddressBookList({
                 >
                   {svrn ? 'SVRN' : 'Classical'}
                 </span>
+                {svrn && row.pending ? (
+                  <span
+                    data-testid="master-row-pending"
+                    style={{ fontSize: 10, color: E.accent, letterSpacing: '0.04em' }}
+                  >
+                    Pending
+                  </span>
+                ) : null}
                 {svrn ? (
                   <span
                     style={{

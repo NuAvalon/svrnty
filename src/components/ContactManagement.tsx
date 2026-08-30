@@ -27,6 +27,11 @@ import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookLi
 import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import {
+  buildLinkToSvrntyUpdate,
+  isPendingSvrntyContact,
+  type ContactShareSettings,
+} from '@/lib/contacts/contact-lane';
 import { createRelay } from '@/lib/sync/relay';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
@@ -70,6 +75,10 @@ interface Contact {
     connection_method?: 'manual' | 'qr' | 'burner_link' | 'mutual';
     mutual_contacts?: string[];
     blocked?: boolean;
+    connection_status?: string;
+    pending?: boolean;
+    share_settings?: import('@/lib/contacts/contact-lane').ContactShareSettings;
+    classical_extras?: import('@/lib/contacts/contact-lane').ClassicalExtras;
   };
   // Imported contact channels (vCard). Phones parse + persist on the ContactRecord but were never
   // surfaced to the UI (Chaos#40) — carry them so the detail view can render them.
@@ -79,6 +88,7 @@ interface Contact {
     urls?: string[];
     handles?: Record<string, string>;
   };
+  connection_status?: string;
 }
 
 // Map legacy API values to binary trust
@@ -140,6 +150,7 @@ function recordToContact(r: ContactRecord): Contact {
     blocked,
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls (Chaos#40 display fix)
+    connection_status: (r as any).connection_status,
   };
 }
 
@@ -199,7 +210,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [editContactForm, setEditContactForm] = useState({
     id: '', name: '', email: '', fingerprint: '', public_key: '',
     notes: '',
+    phonesText: '',
+    emailsText: '',
+    urlsText: '',
+    handlesText: '',
   });
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [linkFingerprint, setLinkFingerprint] = useState('');
+  const [linkPublicKey, setLinkPublicKey] = useState('');
+  const [linkError, setLinkError] = useState<string | null>(null);
 
   // Share state
   const [importData, setImportData] = useState('');
@@ -294,6 +313,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     trust_level: c.trust_level,
     blocked: isContactBlocked(c),
     tags: c.metadata?.tags || [],
+    pending: isPendingSvrntyContact(c),
   }));
 
   const knownGroupTags = Array.from(
@@ -421,9 +441,32 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       if (!editContactForm.name || !editContactForm.email) {
         throw new Error('Name and email are required');
       }
+      const phones = editContactForm.phonesText.split('\n').map(s => s.trim()).filter(Boolean);
+      const emails = editContactForm.emailsText.split('\n').map(s => s.trim()).filter(Boolean);
+      const urls = editContactForm.urlsText.split('\n').map(s => s.trim()).filter(Boolean);
+      const handles: Record<string, string> = {};
+      for (const line of editContactForm.handlesText.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const idx = trimmed.indexOf(':');
+        if (idx <= 0) continue;
+        const platform = trimmed.slice(0, idx).trim();
+        const handle = trimmed.slice(idx + 1).trim();
+        if (platform && handle) handles[platform] = handle;
+      }
+      // Classical-only edit — refuse to mutate SVRNTY profile fields here.
+      if (selectedContact && isSvrnNetworkContact(selectedContact)) {
+        throw new Error('SVRNTY contacts are key-bound — edit is locked. Change trust, groups, or share settings instead.');
+      }
       await updateContact(editContactForm.id, {
         name: editContactForm.name,
         email: editContactForm.email,
+        contact_info: {
+          phones,
+          emails,
+          urls,
+          handles,
+        },
         metadata: {
           notes: editContactForm.notes,
           ...(selectedContact?.metadata ? {
@@ -751,7 +794,12 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   };
 
   const openEditDialog = (contact: Contact) => {
+    if (isSvrnNetworkContact(contact)) {
+      setError('SVRNTY contacts are key-bound — profile edit is locked.');
+      return;
+    }
     setSelectedContact(contact);
+    const handles = contact.contact_info?.handles || {};
     setEditContactForm({
       id: contact.id,
       name: contact.name,
@@ -759,8 +807,80 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       fingerprint: contact.fingerprint,
       public_key: contact.public_key,
       notes: contact.metadata?.notes || '',
+      phonesText: (contact.contact_info?.phones || []).join('\n'),
+      emailsText: (contact.contact_info?.emails || []).join('\n'),
+      urlsText: (contact.contact_info?.urls || []).join('\n'),
+      handlesText: Object.entries(handles).map(([k, v]) => `${k}: ${v}`).join('\n'),
     });
     setShowEditDialog(true);
+  };
+
+  const handleLinkToSvrnty = async () => {
+    if (!selectedContact || !fingerprint) return;
+    try {
+      setLinkError(null);
+      setLoading(true);
+      const fp = linkFingerprint.trim();
+      const pk = linkPublicKey.trim();
+      if (fp.length < 16 || !pk) {
+        throw new Error('Paste their SVRNTY fingerprint (16+ chars) and public key.');
+      }
+      const patch = buildLinkToSvrntyUpdate({
+        fingerprint: fp,
+        public_key: pk,
+        existing: {
+          name: selectedContact.name,
+          email: selectedContact.email,
+          contact_info: selectedContact.contact_info,
+          metadata: selectedContact.metadata as Record<string, unknown> | null,
+        },
+      });
+      await updateContact(selectedContact.id, {
+        fingerprint: patch.fingerprint,
+        public_key: patch.public_key,
+        connection_status: patch.connection_status,
+        metadata: patch.metadata,
+        // Keep classical channels on the living card as contact_info + classical_extras.
+        contact_info: selectedContact.contact_info,
+        trust_level: 'unverified',
+      } as any);
+      setLinkDialogOpen(false);
+      setLinkFingerprint('');
+      setLinkPublicKey('');
+      setShowDetailDialog(false);
+      await loadContacts();
+      onContactsChange?.();
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : 'Could not link contact');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleGroup = async (tag: string) => {
+    if (!selectedContact || !fingerprint) return;
+    const prev = selectedContact.metadata?.tags || [];
+    const tags = prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag];
+    await updateContact(selectedContact.id, {
+      metadata: { ...selectedContact.metadata, tags },
+    } as any);
+    const next = { ...selectedContact, metadata: { ...selectedContact.metadata, tags } };
+    setSelectedContact(next);
+    await loadContacts();
+    onContactsChange?.();
+  };
+
+  const handleShareSettingsChange = async (next: ContactShareSettings) => {
+    if (!selectedContact || !fingerprint) return;
+    if (!isSvrnNetworkContact(selectedContact)) return;
+    await updateContact(selectedContact.id, {
+      metadata: { ...selectedContact.metadata, share_settings: next },
+    } as any);
+    setSelectedContact({
+      ...selectedContact,
+      metadata: { ...selectedContact.metadata, share_settings: next },
+    });
+    await loadContacts();
   };
 
   // --- Render ---
@@ -1558,6 +1678,23 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 <Textarea id="edit-notes" value={editContactForm.notes} onChange={e => setEditContactForm(p => ({ ...p, notes: e.target.value }))} placeholder="Private notes about this contact..." rows={3} />
               </div>
               <div className="space-y-1.5">
+                <label htmlFor="edit-phones" className="text-sm font-medium">Phones</label>
+                <Textarea id="edit-phones" value={editContactForm.phonesText} onChange={e => setEditContactForm(p => ({ ...p, phonesText: e.target.value }))} placeholder={"One per line\n+1 555 0100"} rows={2} />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="edit-emails" className="text-sm font-medium">More emails</label>
+                <Textarea id="edit-emails" value={editContactForm.emailsText} onChange={e => setEditContactForm(p => ({ ...p, emailsText: e.target.value }))} placeholder="One per line" rows={2} />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="edit-urls" className="text-sm font-medium">Links</label>
+                <Textarea id="edit-urls" value={editContactForm.urlsText} onChange={e => setEditContactForm(p => ({ ...p, urlsText: e.target.value }))} placeholder="https://..." rows={2} />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="edit-handles" className="text-sm font-medium">Handles</label>
+                <Textarea id="edit-handles" value={editContactForm.handlesText} onChange={e => setEditContactForm(p => ({ ...p, handlesText: e.target.value }))} placeholder={"signal: @name\ntelegram: @name"} rows={2} />
+                <p className="text-xs text-muted-foreground">Classical only — numbers &amp; channels you keep locally.</p>
+              </div>
+              <div className="space-y-1.5">
                 <label className="text-sm font-medium">Fingerprint</label>
                 <Input value={editContactForm.fingerprint} readOnly className="font-mono text-xs opacity-60" />
                 <p className="text-xs text-muted-foreground">Fingerprint is immutable</p>
@@ -1582,6 +1719,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           isBlocked={!!selectedContact && isContactBlocked(selectedContact)}
           onTrustToggle={() => {
             if (!selectedContact) return;
+            if (!isSvrnNetworkContact(selectedContact)) {
+              setError('Trust is SVRNTY-only — link this classical contact first.');
+              return;
+            }
             setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust');
           }}
           onEdit={() => {
@@ -1599,6 +1740,13 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           }}
           onRemove={() => setConfirmKind('remove')}
           onInvite={() => setInviteOpen(true)}
+          onLinkToSvrnty={() => {
+            setLinkError(null);
+            setLinkDialogOpen(true);
+          }}
+          availableGroups={Array.from(new Set(contacts.flatMap(c => c.metadata?.tags || []))).sort()}
+          onToggleGroup={(tag) => { void handleToggleGroup(tag); }}
+          onShareSettingsChange={(next) => { void handleShareSettingsChange(next); }}
         />
 
         <TrustActionConfirmDialog
@@ -1628,6 +1776,35 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               <Button variant="outline" onClick={() => setShowImportDialog(false)}>Cancel</Button>
               <Button onClick={handleImportContacts} disabled={loading || !importData}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> : <><Upload className="h-4 w-4 mr-2" />Import</>}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        
+        <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Link to SVRNTY</DialogTitle>
+              <DialogDescription>
+                Paste their living fingerprint and public key. They leave Classical and appear under SVRNTY as pending until they add you back. Classical numbers stay on the card as additional information.
+              </DialogDescription>
+            </DialogHeader>
+            {linkError && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{linkError}</AlertDescription></Alert>}
+            <div className="space-y-3 py-2">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="link-fp">Fingerprint</label>
+                <Input id="link-fp" value={linkFingerprint} onChange={e => setLinkFingerprint(e.target.value)} placeholder="64-hex fingerprint" className="font-mono text-xs" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="link-pk">Public key</label>
+                <Textarea id="link-pk" value={linkPublicKey} onChange={e => setLinkPublicKey(e.target.value)} placeholder="Armored or base64 public key" className="font-mono text-xs" rows={4} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>Cancel</Button>
+              <Button onClick={() => { void handleLinkToSvrnty(); }} disabled={loading || !linkFingerprint.trim() || !linkPublicKey.trim()}>
+                {loading ? 'Linking…' : 'Link & move to SVRNTY'}
               </Button>
             </DialogFooter>
           </DialogContent>

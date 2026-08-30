@@ -3,9 +3,9 @@
 /**
  * Compact contact card — phone + web.
  *
- * A tall single-scroll detail, vertically centered, pushed the Radix X above
- * the viewport on phones (couldn't close). Tabs + max-height keep title / tabs /
- * Close always on screen; only the active panel scrolls if needed.
+ * Classical: edit methods, invite / link → SVRNTY (no trust).
+ * SVRNTY: trust / untrust, groups, share toggles; profile edit locked.
+ * Pending SVRNTY = they haven't added you yet (no pulse).
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
@@ -36,6 +36,8 @@ import {
   ShieldCheck,
   HeartCrack,
   ChevronDown,
+  Link as LinkIcon,
+  Eye,
 } from 'lucide-react';
 import { ContactReachActions } from '@/components/contacts/ContactReachActions';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -47,6 +49,14 @@ import {
 } from '@/lib/contacts/safe-contact-link';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import {
+  defaultShareSettings,
+  isPendingSvrntyContact,
+  readClassicalExtras,
+  readShareSettings,
+  type ContactShareSettings,
+  type ClassicalExtras,
+} from '@/lib/contacts/contact-lane';
 
 export type ContactDetailModel = {
   id: string;
@@ -58,9 +68,14 @@ export type ContactDetailModel = {
   added_at: string;
   verified_at?: string;
   blocked?: boolean;
+  connection_status?: string;
   metadata?: {
     notes?: string;
     tags?: string[];
+    connection_status?: string;
+    pending?: boolean;
+    share_settings?: Partial<ContactShareSettings>;
+    classical_extras?: ClassicalExtras;
   };
   contact_info?: {
     phones?: string[];
@@ -68,6 +83,8 @@ export type ContactDetailModel = {
     urls?: string[];
     handles?: Record<string, string>;
   };
+  /** Fleet PSI may populate later — glass never invents peer↔peer edges. */
+  peer_mutual?: Array<{ peer_name: string; peer_fingerprint: string }>;
 };
 
 export type ContactDetailDialogProps = {
@@ -84,6 +101,10 @@ export type ContactDetailDialogProps = {
   onBlockToggle: () => void;
   onRemove: () => void;
   onInvite: () => void;
+  onLinkToSvrnty?: () => void;
+  availableGroups?: string[];
+  onToggleGroup?: (tag: string) => void;
+  onShareSettingsChange?: (next: ContactShareSettings) => void;
 };
 
 function SectionLabel({ children }: { children: ReactNode }) {
@@ -127,6 +148,10 @@ export function ContactDetailDialog({
   onBlockToggle,
   onRemove,
   onInvite,
+  onLinkToSvrnty,
+  availableGroups = [],
+  onToggleGroup,
+  onShareSettingsChange,
 }: ContactDetailDialogProps) {
   const [tab, setTab] = useState('reach');
 
@@ -135,11 +160,20 @@ export function ContactDetailDialog({
   }, [open, contact?.id]);
 
   const svrn = contact ? isSvrnNetworkContact(contact) : false;
+  const pending = contact ? isPendingSvrntyContact(contact) : false;
   const tags = contact?.metadata?.tags || [];
   const extraEmails = (contact?.contact_info?.emails || []).filter(Boolean);
   const phones = (contact?.contact_info?.phones || []).filter(Boolean);
   const urls = (contact?.contact_info?.urls || []).filter(Boolean);
   const handles = contact?.contact_info?.handles || {};
+  const classicalExtras = contact ? readClassicalExtras(contact) : null;
+  const share = contact ? readShareSettings(contact) : defaultShareSettings();
+  const groupChoices = Array.from(new Set([...availableGroups, ...tags])).sort();
+
+  const patchShare = (patch: Partial<ContactShareSettings>) => {
+    if (!onShareSettingsChange) return;
+    onShareSettingsChange({ ...share, ...patch });
+  };
 
   return (
     <Dialog
@@ -149,8 +183,6 @@ export function ContactDetailDialog({
       }}
     >
       <DialogContent
-        // Clamp height so vertical centering never pushes the X off a phone screen.
-        // Explicit Close footer is the primary exit; the Radix X stays in the safe corner.
         className="gap-0 overflow-hidden p-0 sm:rounded-2xl [&>button]:z-20"
         style={{
           width: 'min(28rem, calc(100vw - 1rem))',
@@ -199,7 +231,11 @@ export function ContactDetailDialog({
                 className="flex flex-wrap items-center gap-2"
                 style={{ color: E.muted }}
               >
-                {trustBadge}
+                {svrn ? (
+                  trustBadge
+                ) : (
+                  <span style={{ fontSize: 11, color: E.dim }}>Classical address</span>
+                )}
                 <span
                   style={{
                     fontSize: 10,
@@ -208,10 +244,29 @@ export function ContactDetailDialog({
                     color: svrn ? E.accent : E.dim,
                   }}
                 >
-                  {svrn ? 'SVRNTY' : 'Classical'}
+                  {svrn ? (pending ? 'SVRNTY · Pending' : 'SVRNTY') : 'Classical'}
                 </span>
               </DialogDescription>
             </DialogHeader>
+
+            {pending ? (
+              <div
+                data-testid="contact-pending-banner"
+                style={{
+                  margin: '10px 16px 0',
+                  padding: '10px 12px',
+                  borderRadius: 10,
+                  border: `1px dashed ${E.borderLit}`,
+                  background: 'color-mix(in srgb, var(--se-accent) 8%, transparent)',
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  color: E.muted,
+                }}
+              >
+                Pending — they haven&apos;t added you yet. No pulse until the connection is
+                mutual. Classical extras stay on the card as additional information.
+              </div>
+            ) : null}
 
             <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
               <TabsList
@@ -243,6 +298,7 @@ export function ContactDetailDialog({
                       handles: contact.contact_info?.handles || {},
                     }}
                   />
+
                   {!svrn ? (
                     <div
                       style={{
@@ -255,21 +311,125 @@ export function ContactDetailDialog({
                       }}
                     >
                       <p style={{ margin: 0, fontSize: 12, color: E.muted, lineHeight: 1.45 }}>
-                        Classical contact — invite them onto SVRNTY with a link or QR.
+                        Classical contact — edit their numbers here, or link them onto SVRNTY
+                        when you have their living card. Trust lives only on SVRNTY.
                       </p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={onInvite}
-                        style={{ alignSelf: 'flex-start' }}
-                      >
-                        Invite to SVRNTY
-                      </Button>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={onInvite}
+                          style={{ alignSelf: 'flex-start' }}
+                        >
+                          Invite to SVRNTY
+                        </Button>
+                        {onLinkToSvrnty ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={onLinkToSvrnty}
+                            data-testid="contact-link-svrnty"
+                            style={{ alignSelf: 'flex-start' }}
+                          >
+                            <LinkIcon className="mr-1.5 h-3.5 w-3.5" />
+                            Link to SVRNTY
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
-                  {tags.length > 0 ? (
+
+                  {svrn && onShareSettingsChange ? (
+                    <div
+                      data-testid="contact-share-settings"
+                      style={{
+                        borderRadius: 12,
+                        border: `1px solid ${E.border}`,
+                        padding: 12,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <SectionLabel>What you share</SectionLabel>
+                      <p style={{ margin: 0, fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
+                        Local intent for this peer. Disclosure-reach / PSI wire stays with the
+                        fleet — these toggles never invent a bond.
+                      </p>
+                      {(
+                        [
+                          ['share_card', 'Show them my card'],
+                          ['share_trusted_circle', 'Share trusted-circle membership'],
+                          ['share_groups', 'Share overlapping groups I name'],
+                          ['open_visibility', 'Open visibility (mutual trust via PSI when ready)'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <label
+                          key={key}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: 12,
+                            color: E.muted,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!share[key]}
+                            onChange={(e) => patchShare({ [key]: e.target.checked })}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {svrn && contact.peer_mutual && contact.peer_mutual.length > 0 ? (
                     <div>
-                      <SectionLabel>Groups</SectionLabel>
+                      <SectionLabel>Mutual among people you trust</SectionLabel>
+                      <p style={{ margin: '6px 0 8px', fontSize: 11, color: E.dim }}>
+                        Witnessed via PSI when visibility is open — not inferred.
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: E.muted }}>
+                        {contact.peer_mutual.map((m) => (
+                          <li key={m.peer_fingerprint}>{m.peer_name}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  <div>
+                    <SectionLabel>Groups</SectionLabel>
+                    {onToggleGroup && groupChoices.length > 0 ? (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+                        {groupChoices.map((tag) => {
+                          const on = tags.includes(tag);
+                          return (
+                            <button
+                              key={tag}
+                              type="button"
+                              onClick={() => onToggleGroup(tag)}
+                              style={{
+                                fontSize: 11,
+                                color: on ? E.accent : E.muted,
+                                border: `1px solid ${on ? E.borderLit : E.border}`,
+                                borderRadius: 6,
+                                padding: '2px 8px',
+                                background: on
+                                  ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
+                                  : 'transparent',
+                                cursor: 'pointer',
+                                fontFamily: E.fontSans,
+                              }}
+                            >
+                              {tag}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : tags.length > 0 ? (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                         {tags.map((tag) => (
                           <span
@@ -286,8 +446,12 @@ export function ContactDetailDialog({
                           </span>
                         ))}
                       </div>
-                    </div>
-                  ) : null}
+                    ) : (
+                      <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim }}>
+                        No groups yet — assign from the book or Social Graph.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </TabsContent>
 
@@ -297,6 +461,13 @@ export function ContactDetailDialog({
                 forceMount
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {svrn ? (
+                    <p style={{ margin: 0, fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
+                      SVRNTY profile is key-bound — edit is locked. Change trust, visibility,
+                      and groups from Actions / Reach.
+                    </p>
+                  ) : null}
+
                   <div>
                     <SectionLabel>Email</SectionLabel>
                     <div style={{ marginTop: 6 }}>
@@ -354,6 +525,43 @@ export function ContactDetailDialog({
                       </div>
                     </div>
                   ) : null}
+
+                  {classicalExtras ? (
+                    <div
+                      data-testid="classical-extras"
+                      style={{
+                        marginTop: 4,
+                        paddingTop: 12,
+                        borderTop: `1px dashed ${E.border}`,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <SectionLabel>Additional information (from classical)</SectionLabel>
+                      {classicalExtras.email && classicalExtras.email !== contact.email ? (
+                        <MethodRow icon={<Mail className="h-3.5 w-3.5" />}>
+                          <ContactMethodLink safe={safeEmailLink(classicalExtras.email)} />
+                        </MethodRow>
+                      ) : null}
+                      {(classicalExtras.phones || []).map((phone, i) => (
+                        <MethodRow key={`cx-p-${i}`} icon={<Phone className="h-3.5 w-3.5" />}>
+                          <ContactMethodLink safe={safePhoneLink(phone)} />
+                        </MethodRow>
+                      ))}
+                      {(classicalExtras.urls || []).map((url, i) => (
+                        <MethodRow key={`cx-u-${i}`} icon={<Link2 className="h-3.5 w-3.5" />}>
+                          <ContactMethodLink safe={safeUrlLink(url)} className="truncate" />
+                        </MethodRow>
+                      ))}
+                      {classicalExtras.notes ? (
+                        <p style={{ margin: 0, fontSize: 12, color: E.muted, whiteSpace: 'pre-wrap' }}>
+                          {classicalExtras.notes}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   <div>
                     <SectionLabel>Fingerprint</SectionLabel>
                     <div
@@ -369,7 +577,9 @@ export function ContactDetailDialog({
                         wordBreak: 'break-all',
                       }}
                     >
-                      {contact.fingerprint.match(/.{1,4}/g)?.join(' ') || '—'}
+                      {contact.fingerprint
+                        ? contact.fingerprint.match(/.{1,4}/g)?.join(' ')
+                        : '—'}
                     </div>
                   </div>
                   {contact.metadata?.notes ? (
@@ -396,7 +606,6 @@ export function ContactDetailDialog({
                   </div>
                 </div>
               </TabsContent>
-
             </Tabs>
 
             <div
@@ -425,7 +634,7 @@ export function ContactDetailDialog({
                     fontFamily: E.fontSans,
                   }}
                 >
-                  {!isBlocked ? (
+                  {svrn && !isBlocked ? (
                     <DropdownMenuItem
                       onClick={onTrustToggle}
                       style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
@@ -441,6 +650,11 @@ export function ContactDetailDialog({
                       )}
                     </DropdownMenuItem>
                   ) : null}
+                  {!svrn ? (
+                    <DropdownMenuItem disabled style={{ fontFamily: E.fontSans }}>
+                      <Eye className="mr-2 h-4 w-4" /> Trust is SVRNTY-only
+                    </DropdownMenuItem>
+                  ) : null}
                   {svrn ? (
                     <DropdownMenuItem disabled style={{ fontFamily: E.fontSans }}>
                       <Edit className="mr-2 h-4 w-4" /> Edit locked
@@ -450,15 +664,17 @@ export function ContactDetailDialog({
                       onClick={onEdit}
                       style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
                     >
-                      <Edit className="mr-2 h-4 w-4" /> Edit
+                      <Edit className="mr-2 h-4 w-4" /> Edit methods
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem
-                    onClick={onGivePiece}
-                    style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
-                  >
-                    <HeartCrack className="mr-2 h-4 w-4" /> Give a piece
-                  </DropdownMenuItem>
+                  {svrn ? (
+                    <DropdownMenuItem
+                      onClick={onGivePiece}
+                      style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                    >
+                      <HeartCrack className="mr-2 h-4 w-4" /> Give a piece
+                    </DropdownMenuItem>
+                  ) : null}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onClick={onBlockToggle}

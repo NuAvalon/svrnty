@@ -6,6 +6,7 @@ import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
+import { SessionAccountMenu } from '@/components/SessionAccountMenu';
 import { Ceremony } from '@/components/Ceremony';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -479,6 +480,23 @@ export default function Home() {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {identity ? (
+            <SessionAccountMenu
+              activeFingerprint={identity.identity.fingerprint}
+              activeName={identity.identity.name}
+              onLocked={() => {
+                lockSession();
+                setLockedIdentity({
+                  name: identity.identity.name || 'Identity',
+                  fingerprint: identity.identity.fingerprint,
+                });
+                setIdentity(null);
+                setAppState('locked');
+                setPassphrase('');
+                setUnlockError('');
+              }}
+            />
+          ) : null}
           <AppearanceToggle />
           <HelpGuide />
         </div>
