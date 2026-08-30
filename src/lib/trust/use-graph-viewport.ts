@@ -20,6 +20,7 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
   vpRef.current = vp;
   const pinchRef = useRef<{ dist: number; scale: number } | null>(null);
   const panRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const elRef = useRef<HTMLDivElement | null>(null);
 
   const reset = useCallback(() => setVp({ scale: 1, tx: 0, ty: 0 }), []);
 
@@ -28,7 +29,6 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
       const nextScale = Math.min(MAX, Math.max(MIN, prev.scale * factor));
       if (nextScale === prev.scale) return prev;
       if (cx == null || cy == null) return { ...prev, scale: nextScale };
-      // Keep point under cursor stable
       const ratio = nextScale / prev.scale;
       return {
         scale: nextScale,
@@ -38,20 +38,23 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
     });
   }, []);
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
+  // Non-passive wheel — React's onWheel is passive and can't preventDefault.
+  useEffect(() => {
+    const el = elRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const rect = el.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
       const factor = e.deltaY > 0 ? 0.92 : 1.08;
       zoomBy(factor, cx, cy);
-    },
-    [zoomBy],
-  );
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [zoomBy]);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    // Pan with middle button, or primary when not on a node (caller may gate).
     if (e.button === 1 || e.button === 0) {
       const el = e.target as HTMLElement;
       if (el.closest('[data-graph-node]') || el.closest('[data-graph-cluster]')) {
@@ -111,7 +114,6 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
   }, []);
 
   useEffect(() => {
-    // Prevent browser pinch-zoom on the graph when attached.
     return () => {
       pinchRef.current = null;
       panRef.current = null;
@@ -123,8 +125,8 @@ export function useGraphViewport(initial: GraphViewport = { scale: 1, tx: 0, ty:
     setVp,
     reset,
     zoomBy,
+    elRef,
     handlers: {
-      onWheel,
       onPointerDown,
       onPointerMove,
       onPointerUp,

@@ -242,7 +242,7 @@ export function TrustMap({
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [editGroupName, setEditGroupName] = useState('');
   const [fullscreen, setFullscreen] = useState(false);
-  const { vp, reset: resetVp, zoomBy, handlers: vpHandlers } = useGraphViewport();
+  const { vp, reset: resetVp, zoomBy, elRef: viewportElRef, handlers: vpHandlers } = useGraphViewport();
   const [selectionPanel, setSelectionPanel] = useState<'view' | 'edit' | 'options' | null>(null);
   const [cardAudience, setCardAudience] = useState<CardAsSeenAudience | null>(null);
   const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
@@ -824,6 +824,7 @@ export function TrustMap({
 
 
       <div
+        ref={viewportElRef}
         data-testid="trust-map"
         style={{
           position: 'relative',
