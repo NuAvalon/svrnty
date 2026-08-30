@@ -10,6 +10,8 @@ import { GrowSheet } from '@/components/GrowSheet';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { JoinByCode } from '@/components/JoinByCode';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
+import { LockNowButton } from '@/components/app-lock/LockNowButton';
+import { useAppLock } from '@/components/app-lock/useAppLock';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
@@ -77,6 +79,8 @@ export default function Home() {
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  // CUR-7: only offer lock when vault keys are encrypted at rest.
+  const [canLock, setCanLock] = useState(false);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -96,10 +100,12 @@ export default function Home() {
                   fingerprint: fp,
                 });
                 setIdentity(null);
+                setCanLock(false);
                 setAppState('locked');
                 return;
               }
               setIdentity(id);
+              setCanLock(encrypted);
               setAppState('unlocked');
               return;
             }
@@ -112,6 +118,34 @@ export default function Home() {
     }
     checkIdentity();
   }, []);
+
+  /** CUR-7 — Signal-model lock: clear fleet session + UI state → passphrase gate. */
+  const handleLockNow = useCallback(() => {
+    const fp =
+      identity?.identity?.fingerprint ||
+      lockedIdentity?.fingerprint ||
+      null;
+    const name =
+      identity?.identity?.name ||
+      lockedIdentity?.name ||
+      'Identity';
+    if (!fp) return;
+    lockSession();
+    setContacts([]);
+    setIdentity(null);
+    setPassphrase('');
+    setUnlockError('');
+    setMapRevise(null);
+    setLockedIdentity({ name, fingerprint: fp });
+    setCanLock(false);
+    setMainTab('identity');
+    setAppState('locked');
+  }, [identity, lockedIdentity]);
+
+  const { prefs: appLockPrefs, setPrefs: setAppLockPrefs } = useAppLock({
+    enabled: appState === 'unlocked' && canLock,
+    onAutoLock: handleLockNow,
+  });
 
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -187,6 +221,7 @@ export default function Home() {
     const id = await loadIdentity(lockedIdentity.fingerprint);
     if (id) {
       setIdentity(id);
+      setCanLock(true);
       setAppState('unlocked');
       setPassphrase('');
       setLockedIdentity(null);
@@ -214,6 +249,11 @@ export default function Home() {
     setAppState('unlocked');
     setLockedIdentity(null);
     setMainTab('identity');
+    // Fresh forge encrypts at rest — enable Lock Now once identity exists.
+    const fp = newIdentity?.identity?.fingerprint;
+    if (fp) {
+      void hasEncryptedKeys(fp).then((enc) => setCanLock(enc)).catch(() => setCanLock(false));
+    }
   };
 
   // Load contacts — extracted as callback so ContactManagement can trigger refresh
@@ -521,6 +561,7 @@ export default function Home() {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {canLock && <LockNowButton onLock={handleLockNow} />}
           <AppearanceToggle />
           {identity ? (
             <>
@@ -627,6 +668,9 @@ export default function Home() {
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
                 onOpenCircle={() => setMainTab('trust-map')}
+                appLockPrefs={canLock ? appLockPrefs : undefined}
+                onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
+                onLockNow={canLock ? handleLockNow : undefined}
               />
             </TabsContent>
 

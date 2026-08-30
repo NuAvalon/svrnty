@@ -23,6 +23,8 @@ import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
+import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
+import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -30,6 +32,10 @@ interface SoverentityFrontendProps {
   onVaultRestore?: (contents: any) => void;
   /** Jump to Trust Map from the card's "Your circle" affordance */
   onOpenCircle?: () => void;
+  /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
+  appLockPrefs?: AppLockPrefs;
+  onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
+  onLockNow?: () => void;
 }
 
 type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
@@ -229,6 +235,9 @@ export function SoverentityFrontend({
   onIdentityUpdate,
   onVaultRestore,
   onOpenCircle,
+  appLockPrefs,
+  onAppLockPrefsChange,
+  onLockNow,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
@@ -1864,6 +1873,15 @@ export function SoverentityFrontend({
               </button>
             </div>
           </div>
+        )}
+
+        {/* CUR-7 — app-lock settings (shell owns lockSession + idle timers) */}
+        {identity && appLockPrefs && onAppLockPrefsChange && (
+          <AppLockSettingsPanel
+            prefs={appLockPrefs}
+            onChange={onAppLockPrefsChange}
+            onLockNow={onLockNow}
+          />
         )}
 
         {/* Set Passphrase button */}
