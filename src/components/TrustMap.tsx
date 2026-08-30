@@ -28,6 +28,13 @@ import {
 } from '@/lib/trust/trust-map-layout';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
+import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
+import {
+  applyTrustAction,
+  isContactBlocked,
+  type TrustActionKind,
+  type TrustActionTarget,
+} from '@/components/trust-actions/trust-actions';
 
 interface PendingIntro {
   introduced_by: string;
@@ -52,6 +59,8 @@ interface TrustMapProps {
   onAssignGroup?: (fingerprints: string[], groupName: string) => void | Promise<void>;
   onTrustToggle?: (edge: TrustEdge) => void | Promise<void>;
   onRemoveContact?: (edge: TrustEdge) => void | Promise<void>;
+  /** Local block / unblock — owner-only flag; relay stays blind (CUR-5). */
+  onBlockContact?: (edge: TrustEdge, blocked: boolean) => void | Promise<void>;
   onAcceptIntro?: (edge: TrustEdge) => void | Promise<void>;
   onUpdateContact?: (
     edge: TrustEdge,
@@ -177,27 +186,38 @@ export function TrustMap({
   onAssignGroup,
   onTrustToggle,
   onRemoveContact,
+  onBlockContact,
   onAcceptIntro,
   onUpdateContact,
   onIntroduce,
 }: TrustMapProps) {
+  // Blocked contacts stay off the lattice (local owner filter — not a disclosure gate).
+  const visibleContacts = useMemo(
+    () => contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })),
+    [contacts],
+  );
+
   const baseLayout = useMemo(
-    () => computeTrustLayout(ownerFingerprint, ownerName, contacts, { width: VIEW, height: VIEW }),
-    [ownerFingerprint, ownerName, contacts],
+    () =>
+      computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
+        width: VIEW,
+        height: VIEW,
+      }),
+    [ownerFingerprint, ownerName, visibleContacts],
   );
   const layout = useMemo(
     () => ({
       ...baseLayout,
-      nodes: clusterPull(baseLayout.nodes, contacts, VIEW, VIEW),
+      nodes: clusterPull(baseLayout.nodes, visibleContacts, VIEW, VIEW),
     }),
-    [baseLayout, contacts],
+    [baseLayout, visibleContacts],
   );
-  const chords = useMemo(() => clusterChords(contacts), [contacts]);
+  const chords = useMemo(() => clusterChords(visibleContacts), [visibleContacts]);
   const edgeByFp = useMemo(() => {
     const m = new Map<string, EdgeExtras>();
-    for (const c of contacts) m.set(c.peer_fingerprint, c as EdgeExtras);
+    for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
     return m;
-  }, [contacts]);
+  }, [visibleContacts]);
 
   const [focusId, setFocusId] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
@@ -214,6 +234,8 @@ export function TrustMap({
   const [introName, setIntroName] = useState('');
   const [showIntro, setShowIntro] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -221,7 +243,7 @@ export function TrustMap({
     [edgeByFp, focusId]
   );
 
-  const isEmpty = contacts.length === 0;
+  const isEmpty = visibleContacts.length === 0;
   const showSampleBtn = !!onLoadSample && (isEmpty || !!sampleRefreshable);
 
   const clearFocus = useCallback(() => {
@@ -230,7 +252,61 @@ export function TrustMap({
     setShowIntro(false);
     setShowHistory(false);
     setActionNote(null);
+    setConfirmKind(null);
   }, []);
+
+  const confirmTarget: TrustActionTarget | null = focusEdge
+    ? {
+        id: focusEdge.id,
+        fingerprint: focusEdge.peer_fingerprint,
+        name: focusEdge.peer_name,
+        trusted: !!focusEdge.trusted,
+        blocked: isContactBlocked(focusEdge as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } }),
+      }
+    : null;
+
+  const runConfirmedAction = useCallback(
+    async (kind: TrustActionKind, opts?: { reason?: string }) => {
+      if (!focusEdge || !confirmTarget) return;
+      setConfirmBusy(true);
+      try {
+        const result = await applyTrustAction(kind, confirmTarget, {
+          applyLocal: async (patch) => {
+            if (patch.kind === 'remove') {
+              await onRemoveContact?.(focusEdge);
+              return;
+            }
+            if (patch.kind === 'trust' || patch.kind === 'break') {
+              // Parent toggles based on current edge; we only call when state matches.
+              if (patch.kind === 'trust' && !focusEdge.trusted) await onTrustToggle?.(focusEdge);
+              if (patch.kind === 'break' && focusEdge.trusted) await onTrustToggle?.(focusEdge);
+              return;
+            }
+            if (patch.kind === 'block') {
+              await onBlockContact?.(focusEdge, true);
+              return;
+            }
+            if (patch.kind === 'unblock') {
+              await onBlockContact?.(focusEdge, false);
+            }
+          },
+        }, opts);
+
+        setConfirmKind(null);
+        if (!result.ok) {
+          setActionNote(result.message);
+          return;
+        }
+        setActionNote(result.message);
+        if (kind === 'remove' || kind === 'block') {
+          clearFocus();
+        }
+      } finally {
+        setConfirmBusy(false);
+      }
+    },
+    [focusEdge, confirmTarget, onRemoveContact, onTrustToggle, onBlockContact, clearFocus]
+  );
 
   const openFocus = useCallback((id: string) => {
     setFocusId(id);
@@ -338,7 +414,7 @@ export function TrustMap({
           height="100%"
           preserveAspectRatio="xMidYMid meet"
           role="img"
-          aria-label={`Trust map: ${contacts.length} connection${contacts.length === 1 ? '' : 's'}`}
+          aria-label={`Trust map: ${visibleContacts.length} connection${visibleContacts.length === 1 ? '' : 's'}`}
           onClick={clearFocus}
           style={{ display: 'block' }}
         >
@@ -861,10 +937,7 @@ export function TrustMap({
                   primary={!focusEdge.trusted}
                   danger={!!focusEdge.trusted}
                   onClick={() =>
-                    void runAction(
-                      () => onTrustToggle(focusEdge),
-                      focusEdge.trusted ? 'Trust removed — still known.' : 'Trusted.'
-                    )
+                    setConfirmKind(focusEdge.trusted ? 'break' : 'trust')
                   }
                 />
               )}
@@ -890,16 +963,18 @@ export function TrustMap({
                   )
                 }
               />
+              {onBlockContact && (
+                <ActionBtn
+                  label="Block"
+                  danger
+                  onClick={() => setConfirmKind('block')}
+                />
+              )}
               {onRemoveContact && (
                 <ActionBtn
                   label="Remove"
                   danger
-                  onClick={() =>
-                    void runAction(async () => {
-                      await onRemoveContact(focusEdge);
-                      clearFocus();
-                    }, 'Removed.')
-                  }
+                  onClick={() => setConfirmKind('remove')}
                 />
               )}
               <ActionBtn
@@ -983,6 +1058,18 @@ export function TrustMap({
           </div>
         </div>
       )}
+
+      <TrustActionConfirmDialog
+        open={!!confirmKind && !!confirmTarget}
+        kind={confirmKind}
+        target={confirmTarget}
+        busy={confirmBusy}
+        onCancel={() => setConfirmKind(null)}
+        onConfirm={(opts) => {
+          if (!confirmKind) return;
+          return runConfirmedAction(confirmKind, opts);
+        }}
+      />
     </div>
   );
 }

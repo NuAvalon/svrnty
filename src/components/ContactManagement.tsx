@@ -35,6 +35,13 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
+import {
+  applyTrustAction,
+  isContactBlocked,
+  type TrustActionKind,
+  type TrustActionTarget,
+} from '@/components/trust-actions/trust-actions';
 
 // --- Types ---
 // Binary trust: known or trusted. No tiers.
@@ -48,11 +55,14 @@ interface Contact {
   trust_level: 'unverified' | 'verified' | 'trusted'; // legacy API format
   added_at: string;
   verified_at?: string;
+  /** Owner-local mute (CUR-5) — never publish. */
+  blocked?: boolean;
   metadata?: {
     notes?: string;
     tags?: string[];
     connection_method?: 'manual' | 'qr' | 'burner_link' | 'mutual';
     mutual_contacts?: string[];
+    blocked?: boolean;
   };
   // Imported contact channels (vCard). Phones parse + persist on the ContactRecord but were never
   // surfaced to the UI (Chaos#40) — carry them so the detail view can render them.
@@ -110,6 +120,7 @@ function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; class
 
 // Convert IndexedDB ContactRecord to component Contact type
 function recordToContact(r: ContactRecord): Contact {
+  const blocked = isContactBlocked(r as { blocked?: boolean; metadata?: { blocked?: boolean } });
   return {
     id: r.id,
     name: r.name || '',
@@ -119,6 +130,7 @@ function recordToContact(r: ContactRecord): Contact {
     trust_level: (r.trust_level as Contact['trust_level']) || 'unverified',
     added_at: r.added_at || new Date().toISOString(),
     verified_at: r.verified_at,
+    blocked,
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls (Chaos#40 display fix)
   };
@@ -146,6 +158,8 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [showVcardImport, setShowVcardImport] = useState(false);
   const [showShardGiveDialog, setShowShardGiveDialog] = useState(false);
   const [vaultExporting, setVaultExporting] = useState(false);
+  const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
   // Form state
   const [newContactForm, setNewContactForm] = useState({
@@ -215,10 +229,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     // object ref is intentionally not a dep (public key stable per fp; private key re-loaded each tick).
   }, [fingerprint]);
 
-  // Filter contacts — binary: all, trusted, known
+  // Filter contacts — binary: all, trusted, known; blocked is a separate local list
   const filteredContacts = contacts.filter(contact => {
-    if (activeTab === 'trusted' && !isTrusted(contact)) return false;
-    if (activeTab === 'known' && isTrusted(contact)) return false;
+    const blocked = isContactBlocked(contact);
+    if (activeTab === 'blocked') {
+      if (!blocked) return false;
+    } else {
+      if (blocked) return false; // blocked stay off the main book tabs
+      if (activeTab === 'trusted' && !isTrusted(contact)) return false;
+      if (activeTab === 'known' && isTrusted(contact)) return false;
+    }
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       return contact.name.toLowerCase().includes(q) ||
@@ -228,7 +248,9 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     return true;
   });
 
-  const trustedCount = contacts.filter(c => isTrusted(c)).length;
+  const activeContacts = contacts.filter(c => !isContactBlocked(c));
+  const trustedCount = activeContacts.filter(c => isTrusted(c)).length;
+  const blockedCount = contacts.filter(c => isContactBlocked(c)).length;
   const bookEdges = filteredContacts.map(contactRecordToEdge);
 
   // --- Handlers ---
@@ -359,8 +381,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       setError(null);
       await updateContact(contact.id, {
         trust_level: newLevel,
+        trusted: newLevel === 'trusted',
+        trusted_since: newLevel === 'trusted' ? new Date().toISOString() : null,
         ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
-      });
+      } as any);
       // Satellite trust commitment (blind — satellite never sees who you're trusting)
       if (contact.fingerprint) {
         const fps = [fingerprint, contact.fingerprint].sort();
@@ -385,13 +409,86 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         } catch { /* satellite offline — local trust still works */ }
       }
       if (selectedContact && selectedContact.id === contact.id) {
-        setSelectedContact({ ...selectedContact, trust_level: newLevel });
+        setSelectedContact({
+          ...selectedContact,
+          trust_level: newLevel,
+          blocked: selectedContact.blocked,
+        });
       }
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trust');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSetBlocked = async (contact: Contact, blocked: boolean) => {
+    if (!fingerprint) return;
+    try {
+      setLoading(true);
+      setError(null);
+      await updateContact(contact.id, {
+        blocked,
+        ...(blocked
+          ? {
+              trusted: false,
+              trust_level: 'unverified',
+              trusted_since: null,
+            }
+          : {}),
+        metadata: {
+          ...(contact.metadata || {}),
+          blocked,
+        },
+      } as any);
+      setShowDetailDialog(false);
+      await loadContacts();
+      onContactsChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update block');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const confirmTarget: TrustActionTarget | null = selectedContact
+    ? {
+        id: selectedContact.id,
+        fingerprint: selectedContact.fingerprint,
+        name: selectedContact.name,
+        trusted: isTrusted(selectedContact),
+        blocked: isContactBlocked(selectedContact),
+      }
+    : null;
+
+  const runConfirmedAction = async (kind: TrustActionKind, opts?: { reason?: string }) => {
+    if (!selectedContact || !confirmTarget) return;
+    setConfirmBusy(true);
+    try {
+      const result = await applyTrustAction(kind, confirmTarget, {
+        applyLocal: async (patch) => {
+          if (patch.kind === 'remove') {
+            await handleDeleteContact(selectedContact.id);
+            return;
+          }
+          if (patch.kind === 'trust' || patch.kind === 'break') {
+            await handleToggleTrust(selectedContact);
+            return;
+          }
+          if (patch.kind === 'block') {
+            await handleSetBlocked(selectedContact, true);
+            return;
+          }
+          if (patch.kind === 'unblock') {
+            await handleSetBlocked(selectedContact, false);
+          }
+        },
+      }, opts);
+      setConfirmKind(null);
+      if (!result.ok) setError(result.message);
+    } finally {
+      setConfirmBusy(false);
     }
   };
 
@@ -757,10 +854,13 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             }}
           >
             <TabsTrigger value="all" style={{ fontFamily: E.fontSans }}>
-              Contacts ({contacts.length})
+              Contacts ({activeContacts.length})
             </TabsTrigger>
             <TabsTrigger value="trusted" style={{ fontFamily: E.fontSans }}>
               Trusted ({trustedCount})
+            </TabsTrigger>
+            <TabsTrigger value="blocked" style={{ fontFamily: E.fontSans }}>
+              Blocked ({blockedCount})
             </TabsTrigger>
           </TabsList>
 
@@ -1001,20 +1101,24 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                     )}
                   </div>
 
-                  {/* Actions */}
+                  {/* Actions — CUR-5: confirm before trust / break / remove / block */}
                   <div className="border-t border-border/40 pt-4 flex flex-col sm:flex-row gap-2 justify-between">
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => { handleToggleTrust(selectedContact); }}
-                        className={isTrusted(selectedContact) ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}
-                      >
-                        {isTrusted(selectedContact)
-                          ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</>
-                          : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>
-                        }
-                      </Button>
+                    <div className="flex gap-2 flex-wrap">
+                      {!isContactBlocked(selectedContact) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust')
+                          }
+                          className={isTrusted(selectedContact) ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}
+                        >
+                          {isTrusted(selectedContact)
+                            ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</>
+                            : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>
+                          }
+                        </Button>
+                      )}
                       <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
                         <Edit className="h-4 w-4 mr-1" /> Edit
                       </Button>
@@ -1026,8 +1130,22 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                       >
                         <HeartCrack className="h-4 w-4 mr-1" /> Give a piece
                       </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block')
+                        }
+                        className="text-amber-400/90 border-amber-500/20"
+                      >
+                        {isContactBlocked(selectedContact) ? 'Unblock' : 'Block'}
+                      </Button>
                     </div>
-                    <Button variant="destructive" size="sm" onClick={() => { handleDeleteContact(selectedContact.id); setShowDetailDialog(false); }}>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setConfirmKind('remove')}
+                    >
                       <Trash2 className="h-4 w-4 mr-1" /> Remove
                     </Button>
                   </div>
@@ -1036,6 +1154,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             )}
           </DialogContent>
         </Dialog>
+
+        <TrustActionConfirmDialog
+          open={!!confirmKind && !!confirmTarget}
+          kind={confirmKind}
+          target={confirmTarget}
+          busy={confirmBusy || loading}
+          onCancel={() => setConfirmKind(null)}
+          onConfirm={(opts) => {
+            if (!confirmKind) return;
+            return runConfirmedAction(confirmKind, opts);
+          }}
+        />
 
         {/* Import */}
         <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
