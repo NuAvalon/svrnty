@@ -1,7 +1,7 @@
 // app/page.tsx
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
@@ -197,9 +197,11 @@ export default function Home() {
   }, [refreshContacts]);
 
   // Demo circle can refresh when the book is empty or sample-only.
-  // Sample-only books behind SAMPLE_CIRCLE_REVISION auto-upgrade on load
-  // (hard refresh alone used to keep the old IndexedDB roster).
+  // Sample-only books behind SAMPLE_CIRCLE_REVISION auto-upgrade once on
+  // identity unlock (hard refresh used to keep the old IndexedDB roster).
+  // Do NOT depend on `contacts` — that re-entered seed after every refresh.
   const [sampleRefreshable, setSampleRefreshable] = useState(false);
+  const sampleAutoUpgradeKey = useRef<string | null>(null);
   const [methodHistoryTick, setMethodHistoryTick] = useState(0);
   const methodHistory = useMemo(() => {
     if (!identity?.identity?.fingerprint) return [];
@@ -215,11 +217,15 @@ export default function Home() {
       }
       const fp = identity.identity.fingerprint;
       try {
-        const ok = await canRefreshSampleCircle(fp);
-        if (!cancelled) setSampleRefreshable(ok);
-        if (!ok || cancelled) return;
         const existing = await getAllContacts(fp);
+        const refreshable = await canRefreshSampleCircle(fp);
+        if (!cancelled) setSampleRefreshable(refreshable);
+        if (!refreshable || cancelled) return;
         if (!sampleCircleNeedsUpgrade(existing)) return;
+        // One auto-upgrade attempt per identity per mount — never loop on contacts churn.
+        const key = `${fp}:upgrade`;
+        if (sampleAutoUpgradeKey.current === key) return;
+        sampleAutoUpgradeKey.current = key;
         const n = await seedSampleCircle(fp);
         if (cancelled || n === 0) return;
         seedDemoMethodHistory(fp);
@@ -232,7 +238,7 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [identity, contacts, refreshContacts]);
+  }, [identity, refreshContacts]);
 
   // Loading state
   if (appState === 'checking') {
