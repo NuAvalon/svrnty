@@ -4,6 +4,8 @@
 - **Share identity** lives on the **Identity** card (not Contacts).
 - **Contacts** is the **Master Address Book** — flat list, **no living/resting** chrome.
 - Filters: All · Classical (VCF/keyless) · **SVRN contacts** (Known / Trusted) + multi-select actions.
+- **Select multiple** works on every scope (not only SVRN). Bulk Trust / Revoke apply to SVRN rows in the selection; Block / Delete / **Add to group** apply to all selected.
+- **Groups** = owner-local private tags (`metadata.tags`), same model as Social Graph — inline label + reuse chips; tags render on list rows. Never published (strip-on-wire).
 - Classical contacts: editable; **SVRN network contacts: edit locked** (key-bound).
 - Detail: Call / Text / WhatsApp / Signal / Email chips (CUR-3 allowlist) + **Invite to SVRNTY** (link or QR).
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).

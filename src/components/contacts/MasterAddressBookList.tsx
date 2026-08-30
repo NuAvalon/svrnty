@@ -17,6 +17,8 @@ export type MasterBookRow = {
   public_key?: string;
   trust_level?: string;
   blocked?: boolean;
+  /** Owner-local private tags (groups) — never a wire field. */
+  tags?: string[];
 };
 
 export type MasterAddressBookListProps = {
@@ -122,6 +124,35 @@ export function MasterAddressBookList({
                 >
                   {row.email || (row.fingerprint ? `${row.fingerprint.slice(0, 12)}…` : 'no key yet')}
                 </span>
+                {row.tags && row.tags.length > 0 ? (
+                  <span
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 4,
+                      marginTop: 6,
+                    }}
+                  >
+                    {row.tags.slice(0, 4).map((tag) => (
+                      <span
+                        key={tag}
+                        style={{
+                          fontSize: 10,
+                          fontFamily: E.fontSans,
+                          color: E.muted,
+                          border: `1px solid ${E.border}`,
+                          borderRadius: 6,
+                          padding: '1px 6px',
+                        }}
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                    {row.tags.length > 4 ? (
+                      <span style={{ fontSize: 10, color: E.dim }}>+{row.tags.length - 4}</span>
+                    ) : null}
+                  </span>
+                ) : null}
               </span>
               <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
                 <span

@@ -142,10 +142,12 @@ export function ContactMethodReviseDialog({
     try {
       await onLocalSave(kind, value.trim());
       recordHistory([]);
-      setLocalNote('Saved on this device. Peers are not notified until Send update is live.');
+      // Persist succeeded — close so the card is the confirmation (a quiet
+      // inline note with the dialog still open reads as "didn't save").
+      setBusy(false);
+      onClose();
     } catch (e) {
       setLocalNote(e instanceof Error ? e.message : 'Could not save locally.');
-    } finally {
       setBusy(false);
     }
   };
@@ -163,14 +165,19 @@ export function ContactMethodReviseDialog({
         value: value.trim(),
         recipientFingerprints: recipients,
       });
+      if (result.ok) {
+        setBusy(false);
+        onClose();
+        return;
+      }
       setStatus(result);
+      setBusy(false);
     } catch (e) {
       setStatus({
         ok: false,
         reason: 'error',
         message: e instanceof Error ? e.message : 'Send failed.',
       });
-    } finally {
       setBusy(false);
     }
   };

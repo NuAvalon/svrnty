@@ -183,6 +183,9 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [svrnFilter, setSvrnFilter] = useState<'all' | 'known' | 'trusted'>('all');
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  /** Inline group label for multi-select (same local-tag model as Social Graph). */
+  const [bulkGroupName, setBulkGroupName] = useState('');
+  const [bulkGroupNote, setBulkGroupNote] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [inviteLoading, setInviteLoading] = useState(false);
@@ -296,7 +299,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     public_key: c.public_key,
     trust_level: c.trust_level,
     blocked: isContactBlocked(c),
+    tags: c.metadata?.tags || [],
   }));
+
+  const knownGroupTags = Array.from(
+    new Set(contacts.flatMap((c) => c.metadata?.tags || []).filter(Boolean)),
+  ).sort((a, b) => a.localeCompare(b));
+
+  const selectedHasSvrn = contacts.some(
+    (c) => selectedIds.has(c.id) && isSvrnNetworkContact(c),
+  );
 
   const classicalCount = contacts.filter((c) => !isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
   const svrnCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
@@ -910,7 +922,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               onClick={() => {
                 setBookScope(id);
                 setSelectedIds(new Set());
-                if (id !== 'svrn') setSelectionMode(false);
               }}
               style={{
                 fontFamily: E.fontSans,
@@ -928,9 +939,9 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           ))}
         </div>
 
-        {bookScope === 'svrn' && (
-          <div className="flex flex-wrap items-center gap-2 mb-3">
-            {([
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          {bookScope === 'svrn' &&
+            ([
               ['all', 'All SVRN'],
               ['known', `Known (${knownCount})`],
               ['trusted', `Trusted (${trustedCount})`],
@@ -953,115 +964,200 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 {label}
               </button>
             ))}
-            <button
-              type="button"
-              onClick={() => {
-                setSelectionMode((v) => !v);
-                setSelectedIds(new Set());
-              }}
-              style={{
-                marginLeft: 'auto',
-                fontFamily: E.fontSans,
-                fontSize: 11,
-                padding: '4px 10px',
-                borderRadius: 8,
-                border: `1px solid ${E.border}`,
-                background: selectionMode ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
-                color: E.accent,
-                cursor: 'pointer',
-              }}
-            >
-              {selectionMode ? 'Done selecting' : 'Select multiple'}
-            </button>
-          </div>
-        )}
+          <button
+            type="button"
+            onClick={() => {
+              setSelectionMode((v) => !v);
+              setSelectedIds(new Set());
+              setBulkGroupName('');
+              setBulkGroupNote(null);
+            }}
+            style={{
+              marginLeft: 'auto',
+              fontFamily: E.fontSans,
+              fontSize: 11,
+              padding: '4px 10px',
+              borderRadius: 8,
+              border: `1px solid ${E.border}`,
+              background: selectionMode ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
+              color: E.accent,
+              cursor: 'pointer',
+            }}
+          >
+            {selectionMode ? 'Done selecting' : 'Select multiple'}
+          </button>
+        </div>
 
-        {selectionMode && selectedIds.size > 0 && (
+        {selectionMode && (
           <div
-            className="flex flex-wrap gap-2 mb-4 p-3 rounded-xl"
+            className="flex flex-col gap-2 mb-4 p-3 rounded-xl"
             style={{ border: `1px solid ${E.border}`, background: E.surfaceSolid }}
           >
-            <span style={{ fontSize: 12, color: E.muted, fontFamily: E.fontSans, alignSelf: 'center' }}>
-              {selectedIds.size} selected
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              style={emberGhostBtn}
-              onClick={() => {
-                const name = window.prompt('Group name (local private tag)');
-                if (!name?.trim()) return;
-                // Local tag assign — same path Trust Map uses via parent; here we patch metadata.tags
-                void (async () => {
-                  for (const id of selectedIds) {
-                    const c = contacts.find((x) => x.id === id);
-                    if (!c || !isSvrnNetworkContact(c)) continue;
-                    const tags = Array.from(new Set([...(c.metadata?.tags || []), name.trim()]));
-                    await updateContact(id, { metadata: { ...c.metadata, tags } } as any);
-                  }
-                  await loadContacts();
-                  onContactsChange?.();
-                  setSelectedIds(new Set());
-                })();
-              }}
-            >
-              Add to group
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              style={emberGhostBtn}
-              onClick={() => {
-                const first = contacts.find((c) => selectedIds.has(c.id));
-                if (!first) return;
-                setSelectedContact(first);
-                setConfirmKind('trust');
-              }}
-            >
-              Trust
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              style={emberGhostBtn}
-              onClick={() => {
-                const first = contacts.find((c) => selectedIds.has(c.id));
-                if (!first) return;
-                setSelectedContact(first);
-                setConfirmKind('break');
-              }}
-            >
-              Revoke trust
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              style={emberGhostBtn}
-              onClick={() => {
-                const first = contacts.find((c) => selectedIds.has(c.id));
-                if (!first) return;
-                setSelectedContact(first);
-                setConfirmKind('block');
-              }}
-            >
-              Block
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              style={emberGhostBtn}
-              onClick={() => {
-                const first = contacts.find((c) => selectedIds.has(c.id));
-                if (!first) return;
-                setSelectedContact(first);
-                setConfirmKind('remove');
-              }}
-            >
-              Delete
-            </Button>
-            <span style={{ fontSize: 11, color: E.dim, fontFamily: E.fontSans, alignSelf: 'center' }}>
-              Introduce / resync / privacy — fleet wire; UI lists them here next.
-            </span>
+            <div className="flex flex-wrap gap-2 items-center">
+              <span style={{ fontSize: 12, color: E.muted, fontFamily: E.fontSans, alignSelf: 'center' }}>
+                {selectedIds.size} selected
+              </span>
+              <input
+                type="text"
+                value={bulkGroupName}
+                onChange={(e) => {
+                  setBulkGroupName(e.target.value);
+                  setBulkGroupNote(null);
+                }}
+                placeholder="Group label (local private tag)"
+                disabled={selectedIds.size === 0 || loading}
+                style={{
+                  flex: 1,
+                  minWidth: 160,
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${E.border}`,
+                  background: E.inputBg,
+                  color: E.text,
+                  outline: 'none',
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                style={emberGhostBtn}
+                disabled={loading || selectedIds.size === 0 || !bulkGroupName.trim()}
+                onClick={() => {
+                  const name = bulkGroupName.trim();
+                  if (!name || selectedIds.size === 0) return;
+                  void (async () => {
+                    setLoading(true);
+                    try {
+                      for (const id of selectedIds) {
+                        const c = contacts.find((x) => x.id === id);
+                        if (!c) continue;
+                        const tags = Array.from(new Set([...(c.metadata?.tags || []), name]));
+                        await updateContact(id, { metadata: { ...c.metadata, tags } } as any);
+                      }
+                      await loadContacts();
+                      onContactsChange?.();
+                      setBulkGroupNote(`Added “${name}” to ${selectedIds.size} contact(s). Local only — never published.`);
+                      setBulkGroupName('');
+                      setSelectedIds(new Set());
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Could not assign group');
+                    } finally {
+                      setLoading(false);
+                    }
+                  })();
+                }}
+              >
+                Add to group
+              </Button>
+              {selectedHasSvrn ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    style={emberGhostBtn}
+                    disabled={loading || selectedIds.size === 0}
+                    onClick={() => {
+                      void (async () => {
+                        const targets = contacts.filter((c) => selectedIds.has(c.id) && isSvrnNetworkContact(c));
+                        for (const c of targets) {
+                          if (!isTrusted(c)) await handleToggleTrust(c);
+                        }
+                        setSelectedIds(new Set());
+                      })();
+                    }}
+                  >
+                    Trust
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    style={emberGhostBtn}
+                    disabled={loading || selectedIds.size === 0}
+                    onClick={() => {
+                      void (async () => {
+                        const targets = contacts.filter(
+                          (c) => selectedIds.has(c.id) && isSvrnNetworkContact(c) && isTrusted(c),
+                        );
+                        for (const c of targets) {
+                          await handleToggleTrust(c);
+                        }
+                        setSelectedIds(new Set());
+                      })();
+                    }}
+                  >
+                    Revoke trust
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                style={emberGhostBtn}
+                disabled={loading || selectedIds.size === 0}
+                onClick={() => {
+                  void (async () => {
+                    const targets = contacts.filter((c) => selectedIds.has(c.id));
+                    for (const c of targets) {
+                      await handleSetBlocked(c, true);
+                    }
+                    setSelectedIds(new Set());
+                  })();
+                }}
+              >
+                Block
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                style={emberGhostBtn}
+                disabled={loading || selectedIds.size === 0}
+                onClick={() => {
+                  if (!window.confirm(`Delete ${selectedIds.size} contact(s)? This cannot be undone.`)) return;
+                  void (async () => {
+                    for (const id of [...selectedIds]) {
+                      await handleDeleteContact(id);
+                    }
+                    setSelectedIds(new Set());
+                    setSelectionMode(false);
+                  })();
+                }}
+              >
+                Delete
+              </Button>
+            </div>
+            {knownGroupTags.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <span style={{ fontSize: 10, color: E.dim, fontFamily: E.fontSans }}>Reuse:</span>
+                {knownGroupTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => setBulkGroupName(tag)}
+                    style={{
+                      fontSize: 10,
+                      fontFamily: E.fontSans,
+                      color: E.muted,
+                      border: `1px solid ${E.border}`,
+                      borderRadius: 6,
+                      padding: '2px 8px',
+                      background: bulkGroupName === tag ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)' : 'transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {bulkGroupNote ? (
+              <p style={{ margin: 0, fontSize: 11, color: E.ok, fontFamily: E.fontSans }}>{bulkGroupNote}</p>
+            ) : (
+              <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans }}>
+                Groups are local private tags (stripped on the wire). Introduce / resync / privacy need fleet.
+              </p>
+            )}
           </div>
         )}
 
@@ -1112,7 +1208,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               <MasterAddressBookList
                 rows={masterRows}
                 selectedIds={selectedIds}
-                selectionMode={selectionMode && bookScope === 'svrn'}
+                selectionMode={selectionMode}
                 onToggleSelect={toggleSelected}
                 onOpen={(id) => {
                   const contact = contacts.find((c) => c.id === id);
