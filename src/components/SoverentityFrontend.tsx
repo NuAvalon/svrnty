@@ -791,7 +791,7 @@ export function SoverentityFrontend({
       setRestoreError(
         looksLikeDecryptFail
           ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
-            ? 'Incorrect passphrase. Try again, or recover with your seed phrase below.'
+            ? 'Incorrect passphrase. Try again, or recover with your recovery code below.'
             : 'Incorrect password. This backup requires your password to restore.'
           : msg || 'Failed to restore'
       );
