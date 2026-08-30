@@ -1043,7 +1043,7 @@ export function SoverentityFrontend({
             />
             <EntropyMeter value={unlockPassphrase} label="Unlock strength" />
             {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
-            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Soul-seed recovery phrase is shown next — a separate second factor.)</p>
+            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Recovery code is shown next — a separate second factor.)</p>
           </div>
 
           <button
@@ -1460,7 +1460,7 @@ export function SoverentityFrontend({
                     This backup was created before passphrase-free recovery. It can be restored only with your passphrase.
                   </p>
                   <p style={{ margin: 0 }}>
-                    Re-export your identity to enable seed-phrase recovery.
+                    Re-export your identity to enable recovery-code restore if you lose your passphrase.
                   </p>
                 </div>
               )}
@@ -1787,7 +1787,7 @@ export function SoverentityFrontend({
                   Update your backup to enable passphrase-free recovery
                 </p>
                 <p style={{ margin: '0 0 12px', color: SE.muted, fontSize: 12, lineHeight: 1.5 }}>
-                  This identity was opened from a v3 backup. Re-export a new .svrnty file so seed-phrase recovery works if you lose your passphrase.
+                  This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
                 </p>
                 <button
                   type="button"

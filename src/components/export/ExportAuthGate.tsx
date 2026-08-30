@@ -156,7 +156,7 @@ export function ExportAuthGate({
             </Button>
           </div>
           <p className="text-xs" style={{ color: E.dim }}>
-            Not your recovery phrase — the passphrase you use to unlock this device.
+            Not your recovery code — the passphrase you use to unlock this device.
           </p>
         </div>
 
