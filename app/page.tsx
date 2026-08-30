@@ -530,8 +530,8 @@ export default function Home() {
                 onLoadSample={async () => {
                   const n = await seedSampleCircle(identity.identity.fingerprint);
                   if (n === 0) {
-                    console.warn(
-                      '[sample-circle] seeded 0 contacts — book may already have non-sample contacts',
+                    throw new Error(
+                      'Sample circle not loaded — this book already has non-sample contacts. Clear them or use a fresh identity.',
                     );
                   }
                   // CUR-2: seed local demo revisions once so history UI is exercisable

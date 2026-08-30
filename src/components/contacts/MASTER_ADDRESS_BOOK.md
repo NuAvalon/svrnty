@@ -9,6 +9,7 @@
 - **Select multiple** works on every scope. Bulk Trust / Revoke apply to SVRNTY rows in the selection; Block / Delete / **Add to group** apply to all selected.
 - Top tab label: **Trust Map → Social Graph** (same `TrustMap` component + CUR-5 actions).
 - Social Graph: **Orbit** (vouch ring) + **Browse** (non-egocentric group clusters with trust / known / mutual visible on nodes); **Select** + floating View / Edit / Options bar; **fullscreen** + zoom / pan / pinch.
+- Sample circle (~20 peers): denser PSI-mutual (reciprocal with you) + overlapping owner groups so Orbit/Browse read as a web — still no inferred peer↔peer trust edges.
 - **My card as they see it** for a peer/group (disclosure preview — not a send receipt).
 - Revise contact method: notify **Trusted** or a **local group** chip.
 
