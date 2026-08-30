@@ -23,6 +23,7 @@ When iterating: **add a new variant** instead of mutating these. Full commit his
 - `IdentitySeal.tsx` — `composePhiSeal`, `composeGrowthSeal`, `composeOrganicSeal`
 - `sacred-geometry.ts` — catalog + `SACRED_DEMOTED`
 - `archive/` — frozen reference looks
+- `method-history.ts` / `MethodHistoryPanel.tsx` — **CUR-2** local revision log + restore-previous chrome (signing = Flint)
 
 ## CUR-1 — Living contact-method SEND
 
@@ -55,3 +56,9 @@ Replace the stub body in `sendContactMethodUpdate` with:
 ### Questions for fleet
 - Confirm default audience = trusted + pubkey (vs all contacts)
 - When signal/urls join the allowlist, drop local-only bag
+
+## CUR-2 notes
+- Restore = append **new** local revision with prior value; never decrease wire version
+- `requestRestorePrevious` returns honest `signing-not-live` until Flint wires sign+deposit
+- Demo seed via `seedDemoMethodHistory` on Trust Map sample load (local-only, labeled)
+- CUR-1 send should call `appendMethodRevision` when queueing (follow-on wire)
