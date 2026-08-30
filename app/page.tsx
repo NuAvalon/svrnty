@@ -528,7 +528,12 @@ export default function Home() {
                 contacts={contacts}
                 sampleRefreshable={sampleRefreshable}
                 onLoadSample={async () => {
-                  await seedSampleCircle(identity.identity.fingerprint);
+                  const n = await seedSampleCircle(identity.identity.fingerprint);
+                  if (n === 0) {
+                    console.warn(
+                      '[sample-circle] seeded 0 contacts — book may already have non-sample contacts',
+                    );
+                  }
                   // CUR-2: seed local demo revisions once so history UI is exercisable
                   seedDemoMethodHistory(identity.identity.fingerprint);
                   setMethodHistoryTick((t) => t + 1);
