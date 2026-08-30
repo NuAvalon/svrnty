@@ -54,7 +54,12 @@ import {
   type OwnerCardSnapshot,
 } from '@/components/identity/CardAsSeenByDialog';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
-import { applyLayoutMemory, loadLayoutMemory, saveLayoutMemory } from '@/lib/trust/layout-memory';
+import {
+  applyLayoutMemory,
+  loadLayoutMemory,
+  mutualTopologySignature,
+  saveLayoutMemory,
+} from '@/lib/trust/layout-memory';
 import { relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import {
   collectGroupTags,
@@ -275,9 +280,15 @@ export function TrustMap({
       width: world,
       height: world,
     });
-    const memory = loadLayoutMemory(ownerFingerprint);
-    // Soft recall, then a short re-relax so memory can't re-stack overlaps.
-    const blended = applyLayoutMemory(raw.nodes, memory, 0.55);
+    const mutualBonds = witnessedPeerTrustChords(visibleContacts).map((c) => ({
+      a: c.a,
+      b: c.b,
+    }));
+    const topo = mutualTopologySignature(mutualBonds);
+    const { nodes: memory, topology: rememberedTopo } = loadLayoutMemory(ownerFingerprint);
+    // Soft recall; soften further when mutual topology changed so springs can rearrange.
+    const topologyChanged = topo !== rememberedTopo;
+    const blended = applyLayoutMemory(raw.nodes, memory, 0.55, topologyChanged);
     const n = blended.length;
     const density = Math.sqrt(Math.max(n, 1));
     const nodes = relaxGraphNodes(blended, {
@@ -286,9 +297,12 @@ export function TrustMap({
       cx: raw.cx,
       cy: raw.cy,
       tagMembers: tagMembership(visibleContacts),
+      mutualBonds,
+      mutualBondGravity: topologyChanged ? 0.22 : 0.14,
+      mutualBondRest: 64,
       padding: Math.min(36, Math.round(18 + density * 1.6)),
       selfClearance: SELF_RING_RADIUS + 18,
-      iterations: Math.min(40, 18 + Math.floor(n / 4)),
+      iterations: Math.min(48, 22 + Math.floor(n / 4)),
       clusterGravity: 0.12,
       centerGravity: 0.003,
       cloudMin: SELF_RING_RADIUS + 40,
@@ -296,7 +310,7 @@ export function TrustMap({
       repulsion: Math.min(1.1, 0.75 + density * 0.03),
       margin: 22,
     });
-    return { ...raw, nodes };
+    return { ...raw, nodes, topology: topo };
   }, [ownerFingerprint, ownerName, visibleContacts, world]);
 
   // Persist neighborhoods so the map feels like yours.
@@ -306,10 +320,11 @@ export function TrustMap({
       saveLayoutMemory(
         ownerFingerprint,
         layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
+        layout.topology,
       );
     }, 800);
     return () => window.clearTimeout(t);
-  }, [ownerFingerprint, layout.nodes]);
+  }, [ownerFingerprint, layout.nodes, layout.topology]);
 
   useEffect(() => {
     const el = viewportElRef.current;

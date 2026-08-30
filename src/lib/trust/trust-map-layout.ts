@@ -16,12 +16,14 @@
 //     • position     → I added this contact + optional owner-local tag neighborhood
 //     • radius       → salience of the standing I granted (trusted > known) — overlay
 //     • opacity      → what THEY disclosed to me
-//   Peer↔peer trust chords are NOT layout — the renderer overlays witnessed
-//   open-visibility filaments. Unlit = privacy, never absence.
+//   Peer↔peer trust chords ARE soft layout springs when witnessed
+//   (open-visibility they_trust) — same fail-closed set as filaments.
+//   Unlit / unwitnessed = privacy, never absence; tags never invent bonds.
 
 import { isDecayed, daysUntilDecay } from './types';
 import type { TrustEdge } from './types';
 import { relaxGraphNodes, seedEgocentric, tagMembership } from './graph-forces';
+import { witnessedPeerTrustChords } from './peer-trust-chords';
 
 export type TrustState = 'trusted' | 'known' | 'decayed';
 
@@ -170,12 +172,19 @@ export function computeTrustLayout(
   // Density-aware spacing: more contacts → more padding / repulsion / iterations.
   const density = Math.sqrt(Math.max(n, 1));
   const pad = Math.min(36, Math.round(18 + density * 1.6));
+  const mutualBonds = witnessedPeerTrustChords(contacts).map((c) => ({
+    a: c.a,
+    b: c.b,
+  }));
   const relaxed = relaxGraphNodes(raw, {
     width,
     height,
     cx,
     cy,
     tagMembers: tagMembership(contacts),
+    mutualBonds,
+    mutualBondGravity: 0.16,
+    mutualBondRest: Math.max(58, NODE_RADIUS.trusted * 6),
     padding: pad,
     selfClearance: SELF_RING_RADIUS + 18,
     iterations: Math.min(96, 48 + Math.floor(n / 3)),

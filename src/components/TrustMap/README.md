@@ -49,6 +49,12 @@ While lamped, unrelated peer filaments hide; nameplate lists witnessed mutuals v
 - Layout memory, decay weather, intro filaments, crystallize toast on new mutual
 - Fleet ask: `src/lib/trust/FLEET_TRUST_RECIPROCITY.md`
 
+### Topology / physics
+- Owner **tags** soft-cluster (group neighborhoods).
+- **Witnessed mutual bonds** (`witnessedPeerTrustChords`) are soft springs — same fail-closed set as ember filaments. People who mutually disclosed peer trust settle nearer each other.
+- Adding someone who completes a mutual chord updates the bond set → layout memory softens and the lattice re-relaxes. Tags alone never invent a spring.
+- Collision + cloud keep still prevent overlap / corner drift.
+
 ### What we will not draw
 - Peer↔peer bonds from co-membership, “we both know them,” or friends-of-friends.
 - Mutual-friend **counts** on identity (I-3).

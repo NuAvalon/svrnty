@@ -189,3 +189,39 @@ test('dense book (200) still fits the world and does not ring-pack trust', () =>
   const kR = layout.nodes.filter((n) => n.state === 'known').map(dist);
   assert.ok(Math.max(...tR) > Math.min(...kR));
 });
+
+test('witnessed mutual springs pull a pair closer than the same graph without they_trust', () => {
+  const base = (fp: string, they: string[] = []) =>
+    trustedEdge({
+      peer_fingerprint: fp,
+      peer_name: fp,
+      open_visibility: true,
+      they_trust: they,
+      mutual: { they_trust_me: true, last_sync: new Date().toISOString(), reciprocal: true },
+      tags: [],
+    });
+  const lonely = [
+    base('sally'),
+    base('joe'),
+    base('other'),
+  ];
+  const bonded = [
+    base('sally', ['joe']),
+    base('joe', ['sally']),
+    base('other'),
+  ];
+  const a = computeTrustLayout('o', 'Me', lonely, { width: 720, height: 720 });
+  const b = computeTrustLayout('o', 'Me', bonded, { width: 720, height: 720 });
+  const by = (layout: typeof a) => Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  const dist = (layout: typeof a) => {
+    const m = by(layout);
+    return Math.hypot(m.sally.x - m.joe.x, m.sally.y - m.joe.y);
+  };
+  const without = dist(a);
+  const withBond = dist(b);
+  assert.ok(
+    withBond < without * 0.75,
+    `mutual spring did not tighten Sally↔Joe: ${without} → ${withBond}`,
+  );
+  assert.ok(withBond < 130, `bonded pair still too far: ${withBond}`);
+});
