@@ -1,5 +1,18 @@
 # svrnty × Cursor — Build Coordination Queue
 
+---
+## ★ CURRENT STATE — 2026-08-30 (Athena status-sync; content roadmap owned by the fleet maintainer)
+
+**Landed since this queue was last advanced:** the P0 launch batch (send UI, version-history, deep-links, recovery-code recovery, export-behind-auth, trust-confirms) plus the **Living Address Book** work — PR #82 (phone-book vCard with tags / fingerprint / trust stripped by construction; "Link to SVRNTY") and PR #83 (derive-and-match fingerprint↔key binding + keyless-classical fixture). #82 is in **staging QA on dev.svrnty.is**; merge to main is Peter-gated on that QA.
+
+**On deck (fleet-ruled — unblocks after #82 merges to main):**
+- **Own-identity `.vcf` export** ("Save contact card" on the identity card) — carried in PR #77. Rebase onto post-#82 main, drop the now-redundant book-strip, re-review as a small fast-follow.
+- **Private tag-management CRUD** — carried in PR #68. Rebase onto post-#82 main, reconcile the ContactManagement / vcard overlap, re-review.
+
+**Boundaries still in force:** the gap-freeze rules (`.cursor/rules/svrnty-gap-freeze.mdc`) — no crypto, vault, identity, PSI, signing, or trust-sync changes. Render-glass to spec only.
+
+**Next NEW-feature batch:** added by the fleet roadmap maintainer — this entry reflects current state so Cursor and Peter work from an accurate picture.
+
 **Owner/maintainer:** Archie (advances the queue on merge). **Authored:** 2026-08-29 (⚡9025), to Peter's #123098.
 **Companion to:** `svrnty_launch_features_v1.md` (§ CURSOR OUTSOURCING — the strategic what/why + boundary) and the DAG `svrnty_9-10_sprint_dag_v2.md`. THIS doc = the tactical execution queue Cursor works off of.
 
