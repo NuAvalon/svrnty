@@ -56,9 +56,9 @@ export default function Home() {
   // state — never persisted as a new cross-identity link (Flint's correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
-  // Archie home: identity card is the first surface; Trust Map via "Your circle".
+  // Archie home: identity card is the first surface; Social Graph via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
-  // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
+  // CUR-1 — revise/send from Social Graph "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
     kind: MethodKind;
     preselected: string[];
@@ -490,7 +490,7 @@ export default function Home() {
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
-                Trust Map
+                Social Graph
               </TabsTrigger>
               <TabsTrigger
                 value="ceremony"

@@ -31,7 +31,7 @@ const steps = [
   {
     title: 'Add People You Know',
     content: [
-      'Click "Share Identity" in the Contacts tab. This creates a signed package with your public key.',
+      'Click "Share identity" on your Identity card. This creates a signed package with your public key.',
       'Copy it and send it to your friend via Signal, email, or any channel you trust.',
       'Your friend opens SVRNTY, clicks "Import Contact", and pastes your package.',
       'The signatures are verified automatically — they know it really came from you.',

@@ -11,6 +11,8 @@ import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 import { SeedRestoreInterstitial } from '@/components/recovery/SeedRestoreInterstitial';
 import { SovereignIdentityCard, type MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { ContactShareDialog } from '@/components/ContactShareDialog';
+import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
@@ -270,6 +272,10 @@ export function SoverentityFrontend({
 
   // CUR-1 — revise contact method + shared-with send (UI; Flint owns wire)
   const [reviseKind, setReviseKind] = useState<MethodKind | null>(null);
+  const [showShareIdentity, setShowShareIdentity] = useState(false);
+  const [sharePackage, setSharePackage] = useState('');
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
   const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
   const [audience, setAudience] = useState<
     { fingerprint: string; name: string; public_key?: string; trusted?: boolean }[]
@@ -1549,6 +1555,25 @@ export function SoverentityFrontend({
   // be in: the identity is complete by construction. The label claims only what the architecture
   // confers — self-certification (SOVEREIGN), never third-party verification.
 
+
+  const handleShareIdentityFromCard = async () => {
+    if (!identity?.identity?.fingerprint) return;
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const fp = identity.identity.fingerprint as string;
+      const key = await loadKey(fp);
+      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      setSharePackage(JSON.stringify(signed, null, 2));
+      setShowShareIdentity(true);
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : 'Could not prepare share package');
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
   if (!identity) return null;
 
   return (
@@ -1567,6 +1592,19 @@ export function SoverentityFrontend({
           hasPqKeys={!!hasPqKeys}
           onRevise={(kind) => setReviseKind(kind)}
           onOpenCircle={onOpenCircle}
+          onShareIdentity={() => { void handleShareIdentityFromCard(); }}
+        />
+        {shareError ? (
+          <p style={{ color: 'var(--se-danger)', fontSize: 12, textAlign: 'center' }}>{shareError}</p>
+        ) : null}
+        {shareBusy ? (
+          <p style={{ color: 'var(--se-muted)', fontSize: 12, textAlign: 'center' }}>Preparing share…</p>
+        ) : null}
+        <ContactShareDialog
+          open={showShareIdentity}
+          onClose={() => setShowShareIdentity(false)}
+          exchangePackage={sharePackage}
+          fingerprint={identity.identity.fingerprint}
         />
 
         <ContactMethodReviseDialog

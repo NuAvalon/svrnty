@@ -24,7 +24,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
-import { TwoSidedBook } from '@/components/TwoSidedBook';
+import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookList';
+import { ContactReachActions } from '@/components/contacts/ContactReachActions';
+import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
+import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import { createRelay } from '@/lib/sync/relay';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -173,6 +177,17 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [vaultExporting, setVaultExporting] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  /** Master book scope — not living/resting. */
+  const [bookScope, setBookScope] = useState<'all' | 'classical' | 'svrn'>('all');
+  /** Within SVRN: known vs trusted (binary trust, not a score). */
+  const [svrnFilter, setSvrnFilter] = useState<'all' | 'known' | 'trusted'>('all');
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
 
   // Form state
   const [newContactForm, setNewContactForm] = useState({
@@ -244,27 +259,80 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 
   // Filter contacts — binary: all, trusted, known; blocked is a separate local list
   const filteredContacts = contacts.filter(contact => {
-    const blocked = isContactBlocked(contact);
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      const hay = `${contact.name} ${contact.email} ${contact.fingerprint}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     if (activeTab === 'blocked') {
-      if (!blocked) return false;
-    } else {
-      if (blocked) return false; // blocked stay off the main book tabs
+      return isContactBlocked(contact);
+    }
+    if (isContactBlocked(contact) && activeTab !== 'blocked') {
+      // Blocked stay on Blocked tab only
+      if (bookScope !== 'svrn') return false;
+    }
+    const svrn = isSvrnNetworkContact(contact);
+    if (bookScope === 'classical' && svrn) return false;
+    if (bookScope === 'svrn' && !svrn) return false;
+    if (bookScope === 'svrn' || (bookScope === 'all' && activeTab === 'trusted')) {
       if (activeTab === 'trusted' && !isTrusted(contact)) return false;
       if (activeTab === 'known' && isTrusted(contact)) return false;
     }
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return contact.name.toLowerCase().includes(q) ||
-        contact.email.toLowerCase().includes(q) ||
-        contact.fingerprint.toLowerCase().includes(q);
+    if (bookScope === 'svrn') {
+      if (svrnFilter === 'trusted' && !isTrusted(contact)) return false;
+      if (svrnFilter === 'known' && isTrusted(contact)) return false;
+      if (svrnFilter !== 'all' && isContactBlocked(contact)) return false;
     }
+    if (activeTab === 'blocked') return isContactBlocked(contact);
+    if (isContactBlocked(contact)) return false;
     return true;
   });
 
-  const activeContacts = contacts.filter(c => !isContactBlocked(c));
-  const trustedCount = activeContacts.filter(c => isTrusted(c)).length;
-  const blockedCount = contacts.filter(c => isContactBlocked(c)).length;
-  const bookEdges = filteredContacts.map(contactRecordToEdge);
+  const masterRows = filteredContacts.map((c) => ({
+    id: c.id,
+    name: c.name,
+    email: c.email,
+    fingerprint: c.fingerprint,
+    public_key: c.public_key,
+    trust_level: c.trust_level,
+    blocked: isContactBlocked(c),
+  }));
+
+  const classicalCount = contacts.filter((c) => !isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
+  const svrnCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
+  const trustedCount = contacts.filter((c) => isSvrnNetworkContact(c) && isTrusted(c) && !isContactBlocked(c)).length;
+  const knownCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isTrusted(c) && !isContactBlocked(c)).length;
+  const blockedCount = contacts.filter((c) => isContactBlocked(c)).length;
+  const activeContacts = contacts.filter((c) => !isContactBlocked(c));
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const prepareInvite = async () => {
+    if (!fingerprint || !identity) return;
+    setInviteLoading(true);
+    setInviteError(null);
+    setInviteUrl(null);
+    try {
+      const key = await loadKey(fingerprint);
+      if (!key) throw new Error('Unlock your identity first to build an invite.');
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      const packed = JSON.stringify(signed);
+      const result = await createRelay(packed);
+      setInviteUrl(result.url);
+    } catch (e) {
+      setInviteError(e instanceof Error ? e.message : 'Could not prepare invite.');
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
 
   // --- Handlers ---
 
@@ -706,6 +774,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         overflow: 'hidden',
       }}
     >
+      
       <div style={{ borderBottom: `1px solid ${E.border}`, padding: '20px 20px 16px' }}>
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
           <div>
@@ -720,7 +789,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 fontWeight: 500,
               }}
             >
-              Living book
+              Address book
             </p>
             <h2
               style={{
@@ -736,7 +805,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               }}
             >
               <Shield className="h-5 w-5" style={{ color: E.accent }} />
-              Your circle
+              Master Address Book
             </h2>
             <p
               style={{
@@ -745,18 +814,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 fontWeight: 300,
                 color: E.muted,
                 fontFamily: E.fontSans,
-                maxWidth: 420,
+                maxWidth: 480,
                 lineHeight: 1.55,
               }}
             >
-              People you hold — living and resting. Local-first, never a global map.
+              Every imported contact (VCF and exchange). Classical entries you can edit;
+              SVRN network peers are key-bound — edit their living methods on their card, not here.
+              Share your own identity from the Identity tab.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={handleShareIdentity} style={emberPrimaryBtn}>
-              <Share2 className="h-4 w-4 mr-2" />
-              Share Identity
-            </Button>
             <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)} style={emberGhostBtn}>
               <Download className="h-4 w-4 mr-2" />
               Import Contact
@@ -808,8 +875,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </Alert>
         )}
 
-        {/* Search + Add */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
           <div className="relative w-full sm:w-72">
             <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
             <Input
@@ -831,7 +897,174 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </Button>
         </div>
 
-        {/* Tabs — contacts (all) and trusted (subset) */}
+        {/* Scope: All / Classical / SVRN */}
+        <div className="flex flex-wrap gap-2 mb-3">
+          {([
+            ['all', `All (${activeContacts.length})`],
+            ['classical', `Classical (${classicalCount})`],
+            ['svrn', `SVRN contacts (${svrnCount})`],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => {
+                setBookScope(id);
+                setSelectedIds(new Set());
+                if (id !== 'svrn') setSelectionMode(false);
+              }}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                padding: '6px 12px',
+                borderRadius: 999,
+                border: `1px solid ${bookScope === id ? E.borderLit : E.border}`,
+                background: bookScope === id ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
+                color: bookScope === id ? E.accent : E.muted,
+                cursor: 'pointer',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {bookScope === 'svrn' && (
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {([
+              ['all', 'All SVRN'],
+              ['known', `Known (${knownCount})`],
+              ['trusted', `Trusted (${trustedCount})`],
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSvrnFilter(id)}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${svrnFilter === id ? E.borderLit : E.border}`,
+                  background: svrnFilter === id ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)' : 'transparent',
+                  color: E.text,
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setSelectionMode((v) => !v);
+                setSelectedIds(new Set());
+              }}
+              style={{
+                marginLeft: 'auto',
+                fontFamily: E.fontSans,
+                fontSize: 11,
+                padding: '4px 10px',
+                borderRadius: 8,
+                border: `1px solid ${E.border}`,
+                background: selectionMode ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
+                color: E.accent,
+                cursor: 'pointer',
+              }}
+            >
+              {selectionMode ? 'Done selecting' : 'Select multiple'}
+            </button>
+          </div>
+        )}
+
+        {selectionMode && selectedIds.size > 0 && (
+          <div
+            className="flex flex-wrap gap-2 mb-4 p-3 rounded-xl"
+            style={{ border: `1px solid ${E.border}`, background: E.surfaceSolid }}
+          >
+            <span style={{ fontSize: 12, color: E.muted, fontFamily: E.fontSans, alignSelf: 'center' }}>
+              {selectedIds.size} selected
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              style={emberGhostBtn}
+              onClick={() => {
+                const name = window.prompt('Group name (local private tag)');
+                if (!name?.trim()) return;
+                // Local tag assign — same path Trust Map uses via parent; here we patch metadata.tags
+                void (async () => {
+                  for (const id of selectedIds) {
+                    const c = contacts.find((x) => x.id === id);
+                    if (!c || !isSvrnNetworkContact(c)) continue;
+                    const tags = Array.from(new Set([...(c.metadata?.tags || []), name.trim()]));
+                    await updateContact(id, { metadata: { ...c.metadata, tags } } as any);
+                  }
+                  await loadContacts();
+                  onContactsChange?.();
+                  setSelectedIds(new Set());
+                })();
+              }}
+            >
+              Add to group
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              style={emberGhostBtn}
+              onClick={() => {
+                const first = contacts.find((c) => selectedIds.has(c.id));
+                if (!first) return;
+                setSelectedContact(first);
+                setConfirmKind('trust');
+              }}
+            >
+              Trust
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              style={emberGhostBtn}
+              onClick={() => {
+                const first = contacts.find((c) => selectedIds.has(c.id));
+                if (!first) return;
+                setSelectedContact(first);
+                setConfirmKind('break');
+              }}
+            >
+              Revoke trust
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              style={emberGhostBtn}
+              onClick={() => {
+                const first = contacts.find((c) => selectedIds.has(c.id));
+                if (!first) return;
+                setSelectedContact(first);
+                setConfirmKind('block');
+              }}
+            >
+              Block
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              style={emberGhostBtn}
+              onClick={() => {
+                const first = contacts.find((c) => selectedIds.has(c.id));
+                if (!first) return;
+                setSelectedContact(first);
+                setConfirmKind('remove');
+              }}
+            >
+              Delete
+            </Button>
+            <span style={{ fontSize: 11, color: E.dim, fontFamily: E.fontSans, alignSelf: 'center' }}>
+              Introduce / resync / privacy — fleet wire; UI lists them here next.
+            </span>
+          </div>
+        )}
+
         <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList
             className="mb-4 w-full sm:w-auto"
@@ -842,10 +1075,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             }}
           >
             <TabsTrigger value="all" style={{ fontFamily: E.fontSans }}>
-              Contacts ({activeContacts.length})
-            </TabsTrigger>
-            <TabsTrigger value="trusted" style={{ fontFamily: E.fontSans }}>
-              Trusted ({trustedCount})
+              List
             </TabsTrigger>
             <TabsTrigger value="blocked" style={{ fontFamily: E.fontSans }}>
               Blocked ({blockedCount})
@@ -875,15 +1105,17 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                   {searchQuery ? 'No matching contacts' : 'No contacts yet'}
                 </p>
                 <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
-                  {searchQuery ? 'Try a different search' : 'Add your first contact to begin building your circle'}
+                  {searchQuery ? 'Try a different search' : 'Import a VCF or add someone to start your master book'}
                 </p>
               </div>
             ) : (
-              <TwoSidedBook
-                edges={bookEdges}
-                liveIds={liveIds}
-                onSelect={(edge) => {
-                  const contact = contacts.find(c => c.id === edge.id);
+              <MasterAddressBookList
+                rows={masterRows}
+                selectedIds={selectedIds}
+                selectionMode={selectionMode && bookScope === 'svrn'}
+                onToggleSelect={toggleSelected}
+                onOpen={(id) => {
+                  const contact = contacts.find((c) => c.id === id);
                   if (!contact) return;
                   setSelectedContact(contact);
                   setShowDetailDialog(true);
@@ -1108,6 +1340,31 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                     )}
                   </div>
 
+
+                  <ContactReachActions
+                    info={{
+                      email: selectedContact.email,
+                      phones: selectedContact.contact_info?.phones || [],
+                      handles: selectedContact.contact_info?.handles || {},
+                    }}
+                  />
+
+                  {!isSvrnNetworkContact(selectedContact) && (
+                    <div className="rounded-lg border border-border/40 p-3 space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        Classical contact — invite them onto SVRNTY with a link or QR.
+                      </p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setInviteOpen(true)}
+                      >
+                        Invite to SVRNTY
+                      </Button>
+                    </div>
+                  )}
+
+
                   {/* Actions — CUR-5: confirm before trust / break / remove / block */}
                   <div className="border-t border-border/40 pt-4 flex flex-col sm:flex-row gap-2 justify-between">
                     <div className="flex gap-2 flex-wrap">
@@ -1126,9 +1383,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                           }
                         </Button>
                       )}
-                      <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
-                        <Edit className="h-4 w-4 mr-1" /> Edit
-                      </Button>
+                      {isSvrnNetworkContact(selectedContact) ? (
+                        <Button variant="outline" size="sm" disabled title="SVRN network contacts are key-bound — classical fields are not editable here">
+                          <Edit className="h-4 w-4 mr-1" /> Edit locked
+                        </Button>
+                      ) : (
+                        <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
+                          <Edit className="h-4 w-4 mr-1" /> Edit
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
@@ -1193,6 +1456,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <InviteToSvrntyDialog
+          open={inviteOpen}
+          contactName={selectedContact?.name || 'contact'}
+          inviteUrl={inviteUrl}
+          loading={inviteLoading}
+          error={inviteError}
+          onClose={() => setInviteOpen(false)}
+          onPrepare={prepareInvite}
+        />
 
         {/* Share Identity — QR, NFC, Short Code, Copy */}
         <ContactShareDialog

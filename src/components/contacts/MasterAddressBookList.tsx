@@ -1,0 +1,155 @@
+'use client';
+
+/**
+ * Flat Master Address Book rows — no living/resting chrome.
+ */
+
+import type { CSSProperties } from 'react';
+import { Check } from 'lucide-react';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+
+export type MasterBookRow = {
+  id: string;
+  name: string;
+  email?: string;
+  fingerprint?: string;
+  public_key?: string;
+  trust_level?: string;
+  blocked?: boolean;
+};
+
+export type MasterAddressBookListProps = {
+  rows: MasterBookRow[];
+  selectedIds: Set<string>;
+  selectionMode: boolean;
+  onToggleSelect: (id: string) => void;
+  onOpen: (id: string) => void;
+};
+
+function isTrusted(row: MasterBookRow): boolean {
+  const t = (row.trust_level || '').toLowerCase();
+  return t === 'trusted' || t === 'verified';
+}
+
+const rowBtn: CSSProperties = {
+  width: '100%',
+  textAlign: 'left',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  borderRadius: 12,
+  border: `1px solid ${E.border}`,
+  padding: '12px 14px',
+  background: E.surfaceSolid,
+  cursor: 'pointer',
+  fontFamily: E.fontSans,
+  color: E.text,
+};
+
+export function MasterAddressBookList({
+  rows,
+  selectedIds,
+  selectionMode,
+  onToggleSelect,
+  onOpen,
+}: MasterAddressBookListProps) {
+  if (rows.length === 0) return null;
+
+  return (
+    <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {rows.map((row) => {
+        const svrn = isSvrnNetworkContact(row);
+        const selected = selectedIds.has(row.id);
+        return (
+          <li key={row.id}>
+            <button
+              type="button"
+              data-testid="master-book-row"
+              data-svrn={svrn ? '1' : '0'}
+              onClick={() => {
+                if (selectionMode) onToggleSelect(row.id);
+                else onOpen(row.id);
+              }}
+              style={{
+                ...rowBtn,
+                borderColor: selected ? E.borderLit : E.border,
+                background: selected
+                  ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                  : E.surfaceSolid,
+              }}
+            >
+              {selectionMode ? (
+                <span
+                  aria-hidden
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: 4,
+                    border: `1px solid ${selected ? E.accent : E.border}`,
+                    background: selected ? E.accent : 'transparent',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  {selected ? <Check className="h-3 w-3" style={{ color: E.bg }} /> : null}
+                </span>
+              ) : null}
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {row.name || 'Unnamed'}
+                </span>
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: 11,
+                    color: E.dim,
+                    fontFamily: E.fontMono,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {row.email || (row.fingerprint ? `${row.fingerprint.slice(0, 12)}…` : 'no key yet')}
+                </span>
+              </span>
+              <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4, flexShrink: 0 }}>
+                <span
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: '0.08em',
+                    textTransform: 'uppercase',
+                    color: svrn ? E.accent : E.dim,
+                    fontFamily: E.fontSans,
+                  }}
+                >
+                  {svrn ? 'SVRN' : 'Classical'}
+                </span>
+                {svrn ? (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: row.blocked ? E.danger : isTrusted(row) ? E.ok : E.muted,
+                    }}
+                  >
+                    {row.blocked ? 'Blocked' : isTrusted(row) ? 'Trusted' : 'Known'}
+                  </span>
+                ) : null}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
