@@ -25,7 +25,11 @@ import {
   listIdentities,
   setActiveFingerprint,
   updateContact,
+  storeIdentity,
 } from '@/lib/identity/client-store';
+import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
+import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -50,6 +54,11 @@ export default function Home() {
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
   // Archie home: identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
+  const [mapRevise, setMapRevise] = useState<{
+    kind: MethodKind;
+    preselected: string[];
+  } | null>(null);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -580,6 +589,12 @@ export default function Home() {
                   } as any);
                   await refreshContacts();
                 }}
+                onSendMethodUpdate={(edge) => {
+                  setMapRevise({
+                    kind: 'email',
+                    preselected: [edge.peer_fingerprint],
+                  });
+                }}
                 onIntroduce={async (fromEdge, introduceeName) => {
                   // UI demo: create a pending contact introduced by the focused peer.
                   // Real dual-pending protocol is team-owned — this is local visualization only.
@@ -624,6 +639,41 @@ export default function Home() {
               <ContactManagement identity={identity} onContactsChange={refreshContacts} />
             </TabsContent>
           </Tabs>
+        )}
+
+        {identity && (
+          <ContactMethodReviseDialog
+            open={mapRevise !== null}
+            kind={mapRevise?.kind ?? 'email'}
+            initialValue={identity.identity?.email || ''}
+            preselectedFingerprints={mapRevise?.preselected}
+            contacts={contacts
+              .map((c) => {
+                const peerFp = String(c.peer_fingerprint || '').trim();
+                if (!peerFp) return null;
+                return {
+                  fingerprint: peerFp,
+                  name: c.peer_name || 'Unnamed',
+                  public_key: c.peer_public_key || undefined,
+                  trusted: !!c.trusted,
+                };
+              })
+              .filter((c): c is NonNullable<typeof c> => c != null)}
+            onClose={() => setMapRevise(null)}
+            onLocalSave={async (kind, value) => {
+              const fp = identity.identity.fingerprint as string;
+              if (kind === 'email') {
+                const next = {
+                  ...identity,
+                  identity: { ...identity.identity, email: value },
+                };
+                await storeIdentity(fp, next);
+                setIdentity(next);
+                return;
+              }
+              saveLocalMethods(fp, { [kind]: value });
+            }}
+          />
         )}
       </main>
 

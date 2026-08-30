@@ -168,20 +168,26 @@ function MethodRow({
       </div>
       <button
         type="button"
-        onClick={() => onRevise?.(kind)}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onRevise?.(kind);
+        }}
+        aria-label={`Revise ${label}`}
         style={{
-          background: 'none',
-          border: 'none',
-          color: E.muted,
+          background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+          border: `1px solid ${E.borderLit}`,
+          color: E.accent,
           fontSize: 11,
           fontFamily: E.fontSans,
           cursor: 'pointer',
-          padding: '4px 2px',
-          opacity: 0.75,
+          padding: '6px 10px',
+          borderRadius: 8,
           flexShrink: 0,
+          letterSpacing: '0.04em',
         }}
       >
-        revise
+        Revise
       </button>
     </div>
   );

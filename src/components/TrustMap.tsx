@@ -57,6 +57,8 @@ interface TrustMapProps {
     edge: TrustEdge,
     patch: { name?: string; email?: string; notes?: string; phones?: string[] }
   ) => void | Promise<void>;
+  /** CUR-1 — open revise/send flow for this peer as notify target */
+  onSendMethodUpdate?: (edge: TrustEdge) => void;
   /** UI stub — introduce a third party (creates pending on both sides in prod) */
   onIntroduce?: (fromEdge: TrustEdge, introduceeName: string) => void | Promise<void>;
 }
@@ -179,6 +181,7 @@ export function TrustMap({
   onRemoveContact,
   onAcceptIntro,
   onUpdateContact,
+  onSendMethodUpdate,
   onIntroduce,
 }: TrustMapProps) {
   const baseLayout = useMemo(
@@ -884,11 +887,15 @@ export function TrustMap({
               />
               <ActionBtn
                 label="Send update"
-                onClick={() =>
+                onClick={() => {
+                  if (onSendMethodUpdate) {
+                    onSendMethodUpdate(focusEdge);
+                    return;
+                  }
                   setActionNote(
-                    'Send updated contact method — UI stub. Wire broadcast is team-owned (L1).'
-                  )
-                }
+                    'Send updated contact method — open from Your Card → revise (CUR-1).'
+                  );
+                }}
               />
               {onRemoveContact && (
                 <ActionBtn

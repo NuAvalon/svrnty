@@ -3,11 +3,13 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts } from '@/lib/identity/client-store';
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
-import { SovereignIdentityCard } from '@/components/identity/SovereignIdentityCard';
+import { SovereignIdentityCard, type MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
+import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
 
 interface SoverentityFrontendProps {
@@ -250,6 +252,13 @@ export function SoverentityFrontend({
   const [fullBackupPassword, setFullBackupPassword] = useState('');
   const [fullBackupConfirm, setFullBackupConfirm] = useState('');
   const [fullBackupLoading, setFullBackupLoading] = useState(false);
+
+  // CUR-1 — revise contact method + shared-with send (UI; Flint owns wire)
+  const [reviseKind, setReviseKind] = useState<MethodKind | null>(null);
+  const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
+  const [audience, setAudience] = useState<
+    { fingerprint: string; name: string; public_key?: string; trusted?: boolean }[]
+  >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
   const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
@@ -279,6 +288,36 @@ export function SoverentityFrontend({
     } else {
       setHasPqKeys(false);
     }
+  }, [identity]);
+
+  // CUR-1 — local Signal/Site drafts + audience list for revise dialog
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) {
+      setLocalMethods({});
+      setAudience([]);
+      return;
+    }
+    setLocalMethods(loadLocalMethods(fp));
+    void getAllContacts(fp).then((rows) => {
+      setAudience(
+        rows
+          .map((c) => {
+            const peerFp = String(c.fingerprint || c.id || '').trim();
+            if (!peerFp) return null;
+            return {
+              fingerprint: peerFp,
+              name: c.name || 'Unnamed',
+              public_key: c.public_key || undefined,
+              trusted:
+                String(c.trust_level || '').toLowerCase() === 'trusted' ||
+                String(c.trust_level || '').toLowerCase() === 'verified' ||
+                c.trusted === true,
+            };
+          })
+          .filter((c): c is NonNullable<typeof c> => c != null)
+      );
+    });
   }, [identity]);
 
   // Restore claimed URL from registration service on identity load
@@ -1331,9 +1370,47 @@ export function SoverentityFrontend({
           fingerprint={identity.identity.fingerprint}
           handle={claimedUrl || undefined}
           email={identity.identity.email}
-          site={claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined}
+          signal={localMethods.signal}
+          site={
+            localMethods.site ||
+            (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined)
+          }
           hasPqKeys={!!hasPqKeys}
+          onRevise={(kind) => setReviseKind(kind)}
           onOpenCircle={onOpenCircle}
+        />
+
+        <ContactMethodReviseDialog
+          open={reviseKind !== null}
+          kind={reviseKind ?? 'email'}
+          initialValue={
+            reviseKind === 'signal'
+              ? localMethods.signal || ''
+              : reviseKind === 'site'
+                ? localMethods.site ||
+                  (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : '') ||
+                  ''
+                : identity.identity.email || ''
+          }
+          contacts={audience}
+          onClose={() => setReviseKind(null)}
+          onLocalSave={async (kind, value) => {
+            const fp = identity.identity.fingerprint as string;
+            if (kind === 'email') {
+              const next = {
+                ...identity,
+                identity: { ...identity.identity, email: value },
+              };
+              await storeIdentity(fp, next);
+              setIdentity(next);
+              onIdentityUpdate?.(next);
+              return;
+            }
+            const nextMethods = saveLocalMethods(fp, {
+              [kind]: value,
+            });
+            setLocalMethods(nextMethods);
+          }}
         />
 
         {/* Export / Backup Section */}
