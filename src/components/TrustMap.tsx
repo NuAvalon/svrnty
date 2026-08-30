@@ -55,6 +55,7 @@ import {
 } from '@/components/identity/CardAsSeenByDialog';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import { applyLayoutMemory, loadLayoutMemory, saveLayoutMemory } from '@/lib/trust/layout-memory';
+import { relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import {
   collectGroupTags,
   computeBrowseClusters,
@@ -63,6 +64,7 @@ import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { loadLocalMethods } from '@/components/identity/local-methods';
 import { hydrateOwnerCard, methodsForLens, methodKindLabel } from '@/components/identity/owner-card';
+import { SELF_RING_RADIUS } from '@/lib/trust/trust-map-layout';
 
 interface PendingIntro {
   introduced_by: string;
@@ -274,7 +276,26 @@ export function TrustMap({
       height: world,
     });
     const memory = loadLayoutMemory(ownerFingerprint);
-    const nodes = applyLayoutMemory(raw.nodes, memory, 0.88);
+    // Soft recall, then a short re-relax so memory can't re-stack overlaps.
+    const blended = applyLayoutMemory(raw.nodes, memory, 0.55);
+    const n = blended.length;
+    const density = Math.sqrt(Math.max(n, 1));
+    const nodes = relaxGraphNodes(blended, {
+      width: raw.width,
+      height: raw.height,
+      cx: raw.cx,
+      cy: raw.cy,
+      tagMembers: tagMembership(visibleContacts),
+      padding: Math.min(36, Math.round(18 + density * 1.6)),
+      selfClearance: SELF_RING_RADIUS + 18,
+      iterations: Math.min(40, 18 + Math.floor(n / 4)),
+      clusterGravity: 0.12,
+      centerGravity: 0.003,
+      cloudMin: SELF_RING_RADIUS + 40,
+      cloudMax: Math.min(raw.cx, raw.cy) * 0.94,
+      repulsion: Math.min(1.1, 0.75 + density * 0.03),
+      margin: 22,
+    });
     return { ...raw, nodes };
   }, [ownerFingerprint, ownerName, visibleContacts, world]);
 
