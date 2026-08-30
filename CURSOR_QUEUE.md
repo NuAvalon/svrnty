@@ -103,15 +103,15 @@ Show AFTER a successful seed-only restore — the inline pre-success line is mis
 - seedVaultRestore returning PQ SECRETS only is CORRECT (publics are derivable: ML-KEM-1024 pk is embedded in the sk; ML-DSA-87 pk recomputes from the sk). Do NOT invent a PQ layout in the UI — flag, don't build (render-glass ✓).
 - CLAIM-HONESTY until Flint wires `reconstitutePQPublicKeys`: the recovered identity has working PQ SECRETS + classical identity — do NOT claim "post-quantum identity fully restored." A one-line note ("post-quantum keys re-derive on next card publish") keeps it honest.
 
-**PR:** ☐ · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection · PQ-reconstitution follow-on) · Hypatia (copy/claim-honesty · interstitial) · Athena (frontend/merge)
+**PR:** [#65](https://github.com/NuAvalon/svrnty/pull/65) · **Verify:** Flint (strings match extractRecoveryVault/recoverFromSeedPhrase + v3-guard on real format detection · PQ-reconstitution follow-on) · Hypatia (copy/claim-honesty · interstitial) · Athena (frontend/merge)
 
 ---
 
 ## 🟢 QUEUE — P0 CORE (priority order)
 | # | Task | Spec-ref | Keep-in-fleet seam (owner) | PR |
 |---|------|----------|----------------------------|----|
-| CUR-1 | **L1 send/update contact-method UI** (P0.1) — update-send flow + shared-with propagation surface | launch-plan L1a/L1b | per-peer-encrypt (Flint) | ☐ |
-| CUR-2 | **L1c version-control UI** (P0.2) — one-tap revert/restore-previous + version-history view | launch-plan L1c | signed monotonic revisions (Flint) | ☐ |
+| CUR-1 | **L1 send/update contact-method UI** (P0.1) — update-send flow + shared-with propagation surface | launch-plan L1a/L1b | per-peer-encrypt (Flint) | ✅ [#59](https://github.com/NuAvalon/svrnty/pull/59) |
+| CUR-2 | **L1c version-control UI** (P0.2) — one-tap revert/restore-previous + version-history view | launch-plan L1c | signed monotonic revisions (Flint) | ☐ [#64](https://github.com/NuAvalon/svrnty/pull/64) |
 | CUR-3 | **L1g deep-linked contact methods** — tap-to-open (wa.me/tel:/signal.me/mailto:) | launch-plan L1g | none — PURE frontend, zero crypto | ☐ |
 | CUR-4 | **L4 import/export UI polish + export-behind-auth prompt** (P0.5) | launch-plan L4 | key crypto (Flint) | ☐ |
 | CUR-5 | **L3 trust/untrust/remove/block UI + confirm flows** | launch-plan L3 | relay-auth calls (Flint/Athena) | ☐ → see open PR |

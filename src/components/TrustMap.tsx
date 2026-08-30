@@ -35,6 +35,12 @@ import {
   type TrustActionKind,
   type TrustActionTarget,
 } from '@/components/trust-actions/trust-actions';
+import { MethodHistoryPanel } from '@/components/identity/MethodHistoryPanel';
+import {
+  loadMethodHistory,
+  revisionsForPeer,
+  type MethodRevision,
+} from '@/components/identity/method-history';
 
 interface PendingIntro {
   introduced_by: string;
@@ -66,8 +72,13 @@ interface TrustMapProps {
     edge: TrustEdge,
     patch: { name?: string; email?: string; notes?: string; phones?: string[] }
   ) => void | Promise<void>;
+  /** CUR-1 — open revise/send flow for this peer as notify target */
+  onSendMethodUpdate?: (edge: TrustEdge) => void;
   /** UI stub — introduce a third party (creates pending on both sides in prod) */
   onIntroduce?: (fromEdge: TrustEdge, introduceeName: string) => void | Promise<void>;
+  /** CUR-2 — owner method-revision log (local). Parent may refresh after restore. */
+  methodHistory?: MethodRevision[];
+  onMethodHistoryChange?: () => void;
 }
 
 const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container width.
@@ -189,7 +200,10 @@ export function TrustMap({
   onBlockContact,
   onAcceptIntro,
   onUpdateContact,
+  onSendMethodUpdate,
   onIntroduce,
+  methodHistory,
+  onMethodHistoryChange,
 }: TrustMapProps) {
   // Blocked contacts stay off the lattice (local owner filter — not a disclosure gate).
   const visibleContacts = useMemo(
@@ -957,11 +971,15 @@ export function TrustMap({
               />
               <ActionBtn
                 label="Send update"
-                onClick={() =>
+                onClick={() => {
+                  if (onSendMethodUpdate) {
+                    onSendMethodUpdate(focusEdge);
+                    return;
+                  }
                   setActionNote(
-                    'Send updated contact method — UI stub. Wire broadcast is team-owned (L1).'
-                  )
-                }
+                    'Send updated contact method — open from Your Card → revise (CUR-1).'
+                  );
+                }}
               />
               {onBlockContact && (
                 <ActionBtn
@@ -983,20 +1001,21 @@ export function TrustMap({
               />
             </div>
 
-            {showHistory && (
-              <div
-                style={{
-                  fontSize: 12,
-                  color: E.muted,
-                  padding: 10,
-                  borderRadius: 8,
-                  border: `1px solid ${E.border}`,
-                  background: 'color-mix(in srgb, var(--se-accent) 5%, transparent)',
-                }}
-              >
-                Version history is in progress (team). You’ll correct/retract method updates here —
-                recipients see the corrected version. Not wired yet.
-              </div>
+            {showHistory && focusEdge && (
+              <MethodHistoryPanel
+                ownerFingerprint={ownerFingerprint}
+                peerFingerprint={focusEdge.peer_fingerprint}
+                revisions={revisionsForPeer(
+                  methodHistory ?? loadMethodHistory(ownerFingerprint),
+                  focusEdge.peer_fingerprint
+                )}
+                peerWireVersion={
+                  typeof (focusEdge as { version?: number }).version === 'number'
+                    ? (focusEdge as { version?: number }).version
+                    : null
+                }
+                onHistoryChange={onMethodHistoryChange}
+              />
             )}
 
             {showIntro && (
