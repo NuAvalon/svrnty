@@ -16,6 +16,7 @@ import {
   loadMethodHistory,
   seedDemoMethodHistory,
 } from '@/components/identity/method-history';
+import { seedSampleCircle, canRefreshSampleCircle } from '@/lib/trust/sample-circle';
 import {
   hasIdentity,
   getActiveFingerprint,
@@ -207,7 +208,6 @@ export default function Home() {
         return;
       }
       try {
-        const { canRefreshSampleCircle } = await import('@/lib/trust/sample-circle');
         const ok = await canRefreshSampleCircle(identity.identity.fingerprint);
         if (!cancelled) setSampleRefreshable(ok);
       } catch {
@@ -528,7 +528,6 @@ export default function Home() {
                 contacts={contacts}
                 sampleRefreshable={sampleRefreshable}
                 onLoadSample={async () => {
-                  const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
                   await seedSampleCircle(identity.identity.fingerprint);
                   // CUR-2: seed local demo revisions once so history UI is exercisable
                   seedDemoMethodHistory(identity.identity.fingerprint);
