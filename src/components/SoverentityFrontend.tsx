@@ -602,7 +602,7 @@ export function SoverentityFrontend({
         if (data.type === 'svrnty-full-backup') {
           // Encrypted full backup — decrypt first, then import
           if (!vaultPassphrase) {
-            setRestoreError('Enter your backup password to decrypt.');
+            setRestoreError('Enter the encryption password you set when exporting this copy.');
             return;
           }
           const fromBase64 = (b64: string) => {
@@ -819,7 +819,7 @@ export function SoverentityFrontend({
         looksLikeDecryptFail
           ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
             ? 'Incorrect passphrase. Try again, or recover with your recovery code below.'
-            : 'Incorrect password. This backup requires your password to restore.'
+            : 'Incorrect encryption password. Use the password you set when you exported this copy.'
           : msg || 'Failed to restore'
       );
     } finally {
@@ -965,10 +965,10 @@ export function SoverentityFrontend({
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>{TRUST_RECIPE_COPY.gateContinue}</span>
+                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Restore from a copy.</span>
                 <span style={s.doorDesc}>
-                  Restore your identity from a vault file.
-                  Pick up where you left off.
+                  Open an exported vault or backup file.
+                  You&apos;ll need the encryption password you set when you exported it.
                 </span>
               </button>
             </div>
@@ -1108,10 +1108,11 @@ export function SoverentityFrontend({
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateContinue}</h2>
+            <h2 style={s.heroTitle}>Restore from a copy</h2>
             <p style={s.heroSub}>
-              Upload your .svrnty vault or .json backup to restore your identity,
-              contacts, and trust network on this device.
+              Upload a .svrnty vault or .json backup you exported earlier.
+              Next you&apos;ll enter the encryption password you chose for that file —
+              not an account login password.
             </p>
           </div>
 
@@ -1188,11 +1189,16 @@ export function SoverentityFrontend({
               </svg>
             </div>
             <h2 style={s.heroTitle}>
-              {seedPathActive ? 'Recover with your recovery code' : TRUST_RECIPE_COPY.gateContinue}
+              {seedPathActive ? 'Recover with your recovery code' : 'Unlock your exported copy'}
             </h2>
-            {seedPathActive && (
+            {seedPathActive ? (
               <p style={s.heroSub}>
                 Enter your recovery code to unlock this backup — it works without your passphrase.
+              </p>
+            ) : (
+              <p style={s.heroSub}>
+                Enter the encryption password you set when you exported this file.
+                This is not a website or account login password.
               </p>
             )}
           </div>
@@ -1238,7 +1244,7 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Encrypted key backup detected.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  Enter the password you used when exporting, then your soul-seed if the backup includes a KeyVault.
+                  Enter the encryption password you set when exporting this copy, then your soul-seed if the backup includes a KeyVault. Not your everyday unlock passphrase.
                 </p>
               </div>
             </div>
@@ -1265,17 +1271,19 @@ export function SoverentityFrontend({
               vaultHeader?.format === 'json-full-encrypted' ||
               vaultHeader?.format === 'svrnty-vault') && (
             <div style={s.field}>
-              <label style={s.label}>
-                {vaultHeader?.format === 'svrnty-vault' ? 'VAULT PASSPHRASE' : 'DECRYPTION PASSWORD'}
-              </label>
+              <label style={s.label}>EXPORT ENCRYPTION PASSWORD</label>
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                The password you chose when you exported this copy. It is not a website login password.
+              </p>
               <div style={{ position: 'relative' }}>
                 <input
                   type={showPassphrase ? 'text' : 'password'}
-                  placeholder={
-                    vaultHeader?.format === 'svrnty-vault'
-                      ? 'Enter your vault passphrase'
-                      : 'Enter your export password'
-                  }
+                  name="svrnty-export-encryption-password"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  placeholder="Encryption password from export"
                   value={vaultPassphrase}
                   onChange={e => setVaultPassphrase(e.target.value)}
                   onKeyDown={e => {

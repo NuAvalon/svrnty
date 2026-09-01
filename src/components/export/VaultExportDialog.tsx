@@ -156,8 +156,8 @@ export function VaultExportDialog({
           </DialogTitle>
           <DialogDescription style={{ color: E.muted }}>
             {step === 'done'
-              ? 'Store the .svrnty file somewhere safe. Restore needs this vault passphrase (and your recovery phrase for passphrase-free recovery on v4).'
-              : 'Choose a vault passphrase (12+ characters). This protects keys, contacts, and trust — it is not your recovery phrase.'}
+              ? 'Store the .svrnty file somewhere safe. Restore needs this encryption password (or your recovery code for password-free recovery on v4).'
+              : 'Choose an encryption password (12+ characters). This protects keys, contacts, and trust — remember it for restore. It is not your recovery code.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -179,13 +179,13 @@ export function VaultExportDialog({
               <ShieldCheck className="h-4 w-4" style={{ color: E.accent }} />
               <AlertDescription className="text-sm" style={{ color: E.text }}>
                 Encryption uses the fleet vault packer (Argon2id · AES-256-GCM · v4).
-                Without this passphrase, the daily body of the file cannot open.
+                Without this encryption password, the daily body of the file cannot open.
               </AlertDescription>
             </Alert>
 
             <div className="space-y-2">
               <Label htmlFor="vault-export-pass" style={{ color: E.muted }}>
-                Vault passphrase (min {MIN_PASSPHRASE_LENGTH})
+                Encryption password (min {MIN_PASSPHRASE_LENGTH})
               </Label>
               <div className="flex gap-2">
                 <Input
@@ -215,14 +215,14 @@ export function VaultExportDialog({
 
             <div className="space-y-2">
               <Label htmlFor="vault-export-confirm" style={{ color: E.muted }}>
-                Confirm passphrase
+                Confirm encryption password
               </Label>
               <Input
                 id="vault-export-confirm"
                 type={show ? 'text' : 'password'}
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
-                placeholder="Confirm passphrase"
+                placeholder="Confirm encryption password"
                 data-testid="vault-export-confirm"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && strongEnough && match) void handleExport();
@@ -235,7 +235,7 @@ export function VaultExportDialog({
               />
               {confirm && !match && (
                 <p className="text-xs" style={{ color: E.danger }}>
-                  Passphrases do not match
+                  Passwords do not match
                 </p>
               )}
             </div>
@@ -251,7 +251,7 @@ export function VaultExportDialog({
           >
             <Download className="h-4 w-4" style={{ color: E.ok }} />
             <AlertDescription style={{ color: E.text }}>
-              Your encrypted vault downloaded. Remember the vault passphrase —
+              Your encrypted vault downloaded. Remember this encryption password —
               and keep your recovery phrase somewhere you&apos;ll still have if you lose it.
             </AlertDescription>
           </Alert>
