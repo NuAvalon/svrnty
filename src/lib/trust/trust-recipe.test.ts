@@ -79,6 +79,15 @@ test('verify poetry is the name couplet', () => {
   assert.equal(TRUST_RECIPE_COPY.helpTitle, 'The Formula');
 });
 
+test('recovery menu is guardians, seed, password, distress', () => {
+  assert.equal(TRUST_RECIPE_COPY.recoveryTitle, 'Recovery');
+  assert.match(TRUST_RECIPE_COPY.recoverySelect, /Select Guardians/);
+  assert.match(TRUST_RECIPE_COPY.recoveryRotate, /Rotate Guardians/);
+  assert.match(TRUST_RECIPE_COPY.recoverySeed, /Change Seed/);
+  assert.match(TRUST_RECIPE_COPY.recoveryPassword, /Change Password/);
+  assert.match(TRUST_RECIPE_COPY.recoveryDistress, /silent cry/i);
+});
+
 test('bottom manifesto is keep / never give away', () => {
   assert.match(TRUST_RECIPE_COPY.manifestoKeep, /never lose it/i);
   assert.match(TRUST_RECIPE_COPY.manifestoKeep, /never give it away/i);

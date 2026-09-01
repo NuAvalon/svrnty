@@ -40,6 +40,13 @@ export const TRUST_RECIPE_COPY = {
   manifestoCloser: 'you are not a product',
   decay:
     "If you don't stay in touch, trust can fade. That's a nudge to re-meet, not a score.",
+  recoveryTitle: 'Recovery',
+  recoverySelect: 'Select Guardians. They each hold a piece of you.',
+  recoveryRotate: 'Rotate Guardians. When a holder changes, you change who holds a piece.',
+  recoverySeed: 'Change Seed. New root. The old one is done.',
+  recoveryPassword: 'Change Password. Unlocks this device. Not a website login.',
+  recoveryDistress:
+    'Distress. A silent cry. Default is all Guardians; you can pick one. Your phone keeps no proof it was sent. The relay understands nothing. They see an ember in your star. The card burns until someone acts in the world.',
 } as const;
 
 export const GROW_INVITE_CAP = 7;

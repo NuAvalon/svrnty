@@ -49,6 +49,16 @@ const steps = [
       TRUST_RECIPE_COPY.decay,
     ],
   },
+  {
+    title: TRUST_RECIPE_COPY.recoveryTitle,
+    content: [
+      TRUST_RECIPE_COPY.recoverySelect,
+      TRUST_RECIPE_COPY.recoveryRotate,
+      TRUST_RECIPE_COPY.recoverySeed,
+      TRUST_RECIPE_COPY.recoveryPassword,
+      TRUST_RECIPE_COPY.recoveryDistress,
+    ],
+  },
 ];
 
 export function HelpGuide() {
