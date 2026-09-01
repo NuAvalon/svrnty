@@ -15,6 +15,8 @@ export type TrustActionTarget = {
   trusted: boolean;
   /** Local-only owner flag — never publish on the wire. */
   blocked?: boolean;
+  /** Owner-local verify prereq — not a public badge. */
+  ownerVerified?: boolean;
 };
 
 export type TrustActionCopy = {
@@ -53,7 +55,7 @@ export function getTrustActionCopy(
       return {
         title: `Trust ${name}?`,
         body:
-          'You are vouching for them. Trust is binary — known or trusted — with no score or rank. On your device they become trusted. Notifying them on the wire is fleet-owned and not sent from this confirm yet.',
+          'Trust only exists if it is mutual. On this device they become trusted when you Trust them — a one-way mark is not a covalent bond until they Trust you too. You already verified this is the person you mean (private to you). Notifying them on the wire is fleet-owned and not sent from this confirm yet.',
         confirmLabel: 'Trust',
         cancelLabel: 'Cancel',
         danger: false,
@@ -74,7 +76,7 @@ export function getTrustActionCopy(
       return {
         title: `Remove ${name}?`,
         body:
-          'Removes them from your local contacts and Trust Map. This does not notify them. You can re-add later if you exchange keys again.',
+          'Removes them from your local contacts and Galaxy. This does not notify them. You can re-add later if you exchange keys again.',
         confirmLabel: 'Remove',
         cancelLabel: 'Cancel',
         danger: true,
@@ -84,7 +86,7 @@ export function getTrustActionCopy(
       return {
         title: `Block ${name}?`,
         body:
-          'Local only: they leave your Trust Map and inbound offers from them stay quiet on this device. The relay stays blind — blocking is not a server ban. Unblock anytime from Contacts.',
+          'Local only: they leave your Galaxy and inbound offers from them stay quiet on this device. The relay stays blind — blocking is not a server ban. Unblock anytime from Contacts.',
         confirmLabel: 'Block',
         cancelLabel: 'Cancel',
         danger: true,
@@ -121,7 +123,7 @@ export type TrustActionLocalPatch =
   | {
       kind: 'block';
       blocked: true;
-      /** Block also clears local vouch — binary trust, no half-states. */
+      /** Block also clears local Trust — binary trust, no half-states. */
       trusted: false;
       trust_level: 'unverified';
       trusted_since: null;
@@ -211,6 +213,14 @@ export async function applyTrustAction(
       ok: false,
       reason: 'already-trusted',
       message: 'Already trusted on this device.',
+    };
+  }
+  if (kind === 'trust' && !target.ownerVerified) {
+    return {
+      ok: false,
+      reason: 'need-verify',
+      message:
+        'Verify this is the person you mean (in person or another channel) before you Trust. That check stays on this device — nobody else sees it.',
     };
   }
   if (kind === 'break' && !target.trusted) {

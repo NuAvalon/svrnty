@@ -2,7 +2,7 @@
 
 // TwoSidedBook — 0.14, the two-sided living address book.
 //
-// Two facing pages: the LIVING side (vouched + fresh) and the RESTING side
+// Two facing pages: the LIVING side (trusted + fresh) and the RESTING side
 // (gray cards you hold + dim contacts that have faded). A contact that ignites
 // — gray/dim -> living — blooms: a brief glow as it crosses to the living page.
 //
@@ -42,7 +42,7 @@ function hintFor(row: BookRow): string {
     case 'dim':
       return d != null ? `Faded ${Math.abs(d)}d ago · re-ignites on contact` : 'Faded · re-ignites on contact';
     case 'gray':
-      return CONTACT_STATE_META.gray.hint; // "Known, not yet vouched"
+      return CONTACT_STATE_META.gray.hint; // "Known, not yet Trusted"
   }
 }
 
@@ -281,12 +281,12 @@ export function TwoSidedBook({ edges, onSelect, className = '', liveIds }: {
       <div className="two-sided-book-row" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <Side
           title="Living"
-          subtitle="Vouched and fresh — the people your trust is currently reaching."
+          subtitle="Trusted and fresh — the people your trust is currently reaching."
           rows={view.living}
           glow={glow}
           liveIds={liveIds}
           onSelect={onSelect}
-          empty="No living contacts yet. Vouch for someone to bring them to life."
+          empty="No living contacts yet. Trust someone to bring them to life."
         />
         <div
           className="two-sided-book-rule"

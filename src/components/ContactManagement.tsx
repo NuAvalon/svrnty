@@ -7,8 +7,8 @@ import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, Mail, UserPlus, Search,
-  Share2, Trash2, Check, Edit, Download, Upload, RefreshCw,
-  FileJson, Eye, Phone, Link2, AtSign, ShieldOff, ShieldCheck, Copy, HeartCrack
+  Share2, Check, Download, Upload, RefreshCw,
+  FileJson, Eye, Phone, Link2, AtSign, ShieldCheck, Copy, ChevronDown
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -46,6 +46,7 @@ import {
   safeUrlLink,
   safeHandleLink,
 } from '@/lib/contacts/safe-contact-link';
+import { ownerHasVerified, ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
   applyTrustAction,
@@ -471,6 +472,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         fingerprint: selectedContact.fingerprint,
         name: selectedContact.name,
         trusted: isTrusted(selectedContact),
+        ownerVerified: ownerHasVerified(selectedContact as any),
         blocked: isContactBlocked(selectedContact),
       }
     : null;
@@ -1108,53 +1110,86 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                     )}
                   </div>
 
-                  {/* Actions — CUR-5: confirm before trust / break / remove / block */}
-                  <div className="border-t border-border/40 pt-4 flex flex-col sm:flex-row gap-2 justify-between">
-                    <div className="flex gap-2 flex-wrap">
-                      {!isContactBlocked(selectedContact) && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() =>
-                            setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust')
-                          }
-                          className={isTrusted(selectedContact) ? 'text-amber-400 border-amber-500/30' : 'text-emerald-400 border-emerald-500/30'}
-                        >
-                          {isTrusted(selectedContact)
-                            ? <><ShieldOff className="h-4 w-4 mr-1" /> Untrust</>
-                            : <><ShieldCheck className="h-4 w-4 mr-1" /> Trust</>
-                          }
+                  {/* Actions — nested under one control */}
+                  <div className="border-t border-border/40 pt-4">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          Actions
+                          <ChevronDown className="h-4 w-4 ml-1" />
                         </Button>
-                      )}
-                      <Button variant="outline" size="sm" onClick={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
-                        <Edit className="h-4 w-4 mr-1" /> Edit
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => { setShowShardGiveDialog(true); setShowDetailDialog(false); }}
-                        className="text-amber-400 border-amber-500/30"
-                      >
-                        <HeartCrack className="h-4 w-4 mr-1" /> Give a piece
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block')
-                        }
-                        className="text-amber-400/90 border-amber-500/20"
-                      >
-                        {isContactBlocked(selectedContact) ? 'Unblock' : 'Block'}
-                      </Button>
-                    </div>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      onClick={() => setConfirmKind('remove')}
-                    >
-                      <Trash2 className="h-4 w-4 mr-1" /> Remove
-                    </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-56">
+                        {!isContactBlocked(selectedContact) && !isTrusted(selectedContact) && !ownerHasVerified(selectedContact as any) && (
+                          <>
+                            <DropdownMenuItem
+                              onSelect={async () => {
+                                const rec = await getContactByFingerprint(fingerprint, selectedContact.fingerprint).catch(() => null);
+                                const patch = ownerVerifyPersistPatch(
+                                  { ...(selectedContact.metadata || {}), ...(rec as any)?.metadata },
+                                  'in_person',
+                                );
+                                await updateContact(selectedContact.id, patch as any);
+                                await loadContacts();
+                                onContactsChange?.();
+                              }}
+                            >
+                              {TRUST_RECIPE_COPY.verifyInPerson}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onSelect={async () => {
+                                const rec = await getContactByFingerprint(fingerprint, selectedContact.fingerprint).catch(() => null);
+                                const patch = ownerVerifyPersistPatch(
+                                  { ...(selectedContact.metadata || {}), ...(rec as any)?.metadata },
+                                  'other_channel',
+                                );
+                                await updateContact(selectedContact.id, patch as any);
+                                await loadContacts();
+                                onContactsChange?.();
+                              }}
+                            >
+                              {TRUST_RECIPE_COPY.verifyOtherChannel}
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        {!isContactBlocked(selectedContact) && (
+                          <DropdownMenuItem
+                            onSelect={() => {
+                              if (isTrusted(selectedContact)) {
+                                setConfirmKind('break');
+                                return;
+                              }
+                              if (!ownerHasVerified(selectedContact as any)) return;
+                              setConfirmKind('trust');
+                            }}
+                          >
+                            {isTrusted(selectedContact)
+                              ? 'Untrust'
+                              : ownerHasVerified(selectedContact as any) ? 'Trust' : 'Verify first, then Trust'}
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem onSelect={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => { setShowShardGiveDialog(true); setShowDetailDialog(false); }}>
+                          Give a piece
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block')
+                          }
+                        >
+                          {isContactBlocked(selectedContact) ? 'Unblock' : 'Block'}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onSelect={() => setConfirmKind('remove')}
+                        >
+                          Remove
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
               </>

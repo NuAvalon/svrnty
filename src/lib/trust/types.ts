@@ -27,11 +27,19 @@ export interface TrustEdge {
   last_interaction: string;             // last meaningful contact — decay clock starts here
   decay_days: number;                   // customizable per-edge, default from graph settings
   trust_history: TrustEvent[];          // full audit trail
-  // Verification
+  // Verification (legacy / channel claims — not a public "verified" badge)
   verification: {
-    method: 'none' | 'email' | 'qr' | 'mutual_vouch' | 'in_person';
+    method: 'none' | 'email' | 'qr' | 'mutual_vouch' | 'in_person' | 'other_channel';
     verified_at: string | null;
     vouchers?: string[];                // fingerprints of people who vouched
+  };
+  /**
+   * Owner-local: you confirmed this key is the person you mean.
+   * Prerequisite for Trust on this device. NEVER publish / PSI-sync (Apollo §2).
+   */
+  owner_verify?: {
+    owner_verified_at: string;
+    method: 'in_person' | 'other_channel';
   };
   // Mutual state
   mutual: {
@@ -157,7 +165,7 @@ export interface IntroductionRecord {
 
 export const PRIVACY_FILTERS = {
   known: ['peer_name', 'peer_fingerprint', 'peer_public_key'],
-  trusted: ['peer_name', 'peer_fingerprint', 'peer_public_key', 'verification', 'connection_channels', 'contact_info'],
+  trusted: ['peer_name', 'peer_fingerprint', 'peer_public_key', 'connection_channels', 'contact_info'],
 } as const;
 
 // --- Migration from v1 (5-level system) ---

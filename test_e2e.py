@@ -44,8 +44,8 @@ def run():
 
         # ── TEST 3: Gate screen ──
         print("[3] Checking gate screen...", flush=True)
-        forge_btn = page.locator("text=Begin anew")
-        record("Gate screen renders", forge_btn.is_visible(), "Begin anew button visible")
+        forge_btn = page.locator("text=Start")
+        record("Gate screen renders", forge_btn.is_visible(), "Start button visible")
 
         # ── TEST 4: Create identity ──
         print("[4] Creating identity...", flush=True)
@@ -64,14 +64,14 @@ def run():
             if confirm_input.is_visible():
                 confirm_input.fill("test-unlock-phrase-12chars")
 
-        page.locator('button:has-text("BEGIN ANEW")').click()
+        page.locator('button:has-text("Start")').last.click()
 
         print("  Waiting for key generation...", flush=True)
         page.wait_for_timeout(8000)
 
         # Check dashboard is visible (any tab)
         tabs_visible = (
-            page.locator('button:has-text("TRUST MAP")').first.is_visible() or
+            page.locator('button:has-text("Galaxy")').first.is_visible() or
             page.locator('text=constellation').first.is_visible()
         )
         record("Identity created", tabs_visible, "Dashboard with tabs visible")
@@ -125,7 +125,7 @@ def run():
 
         # ── TEST 8: Trust map now populated ──
         print("[8] Checking trust map with contact...", flush=True)
-        trust_tab = page.locator('button:has-text("TRUST MAP")')
+        trust_tab = page.locator('button:has-text("Galaxy")')
         trust_populated = False
         if trust_tab.count() > 0:
             trust_tab.first.click()

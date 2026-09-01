@@ -34,6 +34,8 @@ export function contactRecordToEdge(c: any): TrustEdge {
     decay_days: c.decay_days || 730,
     trust_history: c.trust_history || [],
     verification: c.verification || { method: 'none', verified_at: null },
+    // Owner-local verify (trust prereq). Private — never a public badge.
+    owner_verify: c.owner_verify || c.metadata?.owner_verify,
     mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
     tags: c.tags || c.metadata?.tags || [],
     notes: c.notes || c.metadata?.notes || '',

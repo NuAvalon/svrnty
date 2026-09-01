@@ -7,62 +7,46 @@ import {
 import { Button } from '@/components/ui/button';
 import { HelpCircle, ChevronRight } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 const steps = [
   {
-    title: 'Create Your Identity',
+    title: 'The Formula',
     content: [
-      'Enter your name, email, and a strong passphrase.',
-      'This generates your cryptographic keys — ED25519 (classical) and ML-DSA-87 (post-quantum).',
-      'Your passphrase protects your private key. If you lose it, you lose your identity. There is no recovery email. There is no "forgot password."',
-      'Write it down. Store it somewhere safe — not on your phone, not in a note app.',
+      TRUST_RECIPE_COPY.knowLayer,
+      TRUST_RECIPE_COPY.trustLayer,
+      TRUST_RECIPE_COPY.mutualOnly,
     ],
   },
   {
-    title: 'Back Up Your Keys',
+    title: 'Create a card, not an account',
     content: [
-      'Go to Contacts → More → Secure Export to create an encrypted backup of your data.',
-      'Set a strong password for the export. This is separate from your passphrase.',
-      'Save the encrypted file somewhere you control: USB drive, external hard drive, or a cloud service you trust.',
-      'Do this after creating your identity and again whenever you add important contacts.',
-      'If your device is lost, this backup + your passphrase is how you recover.',
+      'On the gate: Start makes a new card. Continue opens a vault you already have.',
+      'Enter your name and a passphrase that unlocks this device.',
+      'This generates your keys. There is no recovery email. A card, not an account.',
+      'Export a vault with an encryption password you set at export — that is not a website login.',
     ],
   },
   {
-    title: 'Add People You Know',
+    title: 'Grow the Galaxy',
     content: [
-      'Click "Share Identity" in the Contacts tab. This creates a signed package with your public key.',
-      'Copy it and send it to your friend via Signal, email, or any channel you trust.',
-      'Your friend opens SVRNTY, clicks "Import Contact", and pastes your package.',
-      'The signatures are verified automatically — they know it really came from you.',
-      'They appear as "Known" in your network. You appear as "Known" in theirs.',
+      'Tap Grow. Show the QR or short link. They join; they become a star you Know.',
+      TRUST_RECIPE_COPY.mycelial,
+      'Name them as you know them. Notes stay on this device.',
     ],
   },
   {
-    title: 'Trust & Vouch',
+    title: 'Verify, then Trust',
     content: [
-      'Known means you have their contact. It doesn\'t mean you trust them.',
-      'Click "Vouch" on a contact to grant trust. This is your word — it means something.',
-      'Trusted contacts are inside the walls. Known contacts are outside.',
-      'If someone loses your trust, click "Break". They\'ll disappear from your trusted circle. Both of you will notice. That\'s the point — it creates the space to talk about it.',
+      TRUST_RECIPE_COPY.verifyWhy,
+      TRUST_RECIPE_COPY.verifyPrivate,
+      'They must verify you on their device too before Trust can be mutual. No one else sees your verify mark.',
     ],
   },
   {
-    title: 'Trust Decay',
+    title: 'Decay',
     content: [
-      'Trust isn\'t permanent. If you don\'t interact with someone for 2 years, trust fades.',
-      'This is like a key that expires — stay in touch, and it stays alive.',
-      'When trust decays, the person drops back to Known. You can reverify to restore it.',
-      'You can customize the decay period per contact if 2 years doesn\'t fit.',
-    ],
-  },
-  {
-    title: 'How It Works',
-    content: [
-      'All your data is encrypted with your keys and stored locally. The server can\'t read it.',
-      'Every signal you send is signed with both classical and post-quantum cryptography.',
-      'No accounts. No passwords stored on a server. No tracking. No ads.',
-      'Your identity is yours. Your trust network is yours. We just built the walls.',
+      TRUST_RECIPE_COPY.decay,
     ],
   },
 ];
@@ -87,7 +71,7 @@ export function HelpGuide() {
         <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto" style={{ fontFamily: E.fontSans }}>
           <DialogHeader>
             <DialogTitle className="text-lg" style={{ color: E.accent, fontFamily: E.fontSans }}>
-              Getting Started
+              {TRUST_RECIPE_COPY.helpTitle}
             </DialogTitle>
           </DialogHeader>
 

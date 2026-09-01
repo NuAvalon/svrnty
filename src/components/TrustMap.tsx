@@ -18,6 +18,7 @@
 "use client";
 
 import React, { useMemo, useState, useCallback } from 'react';
+import { ChevronDown } from 'lucide-react';
 import type { TrustEdge } from '@/lib/trust/types';
 import {
   computeTrustLayout,
@@ -42,6 +43,11 @@ import {
   type TrustActionKind,
   type TrustActionTarget,
 } from '@/components/trust-actions/trust-actions';
+import {
+  ownerHasVerified,
+  formatFingerprintForVerify,
+  TRUST_RECIPE_COPY,
+} from '@/lib/trust/trust-recipe';
 import { MethodHistoryPanel } from '@/components/identity/MethodHistoryPanel';
 import {
   loadMethodHistory,
@@ -79,10 +85,10 @@ interface TrustMapProps {
     edge: TrustEdge,
     patch: { name?: string; email?: string; notes?: string; phones?: string[] }
   ) => void | Promise<void>;
+  /** Owner-local verify (trust prereq). Private — not a badge. */
+  onOwnerVerify?: (edge: TrustEdge, method: 'in_person' | 'other_channel') => void | Promise<void>;
   /** CUR-1 — open revise/send flow for this peer as notify target */
   onSendMethodUpdate?: (edge: TrustEdge) => void;
-  /** UI stub — introduce a third party (creates pending on both sides in prod) */
-  onIntroduce?: (fromEdge: TrustEdge, introduceeName: string) => void | Promise<void>;
   /** CUR-2 — owner method-revision log (local). Parent may refresh after restore. */
   methodHistory?: MethodRevision[];
   onMethodHistoryChange?: () => void;
@@ -122,13 +128,6 @@ function nodeFill(state: TrustState, pending: boolean): string {
   if (state === 'trusted') return 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
   if (state === 'known') return 'transparent';
   return T.dimFill;
-}
-
-function formatKeyGroups(fp: string): string {
-  const hex = fp.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
-  if (!hex) return '····';
-  const groups = hex.match(/.{1,4}/g) || [];
-  return groups.slice(0, 6).join('·');
 }
 
 /** Soft pull same-tag nodes toward group centroids (owner-authored clusters). */
@@ -207,8 +206,8 @@ export function TrustMap({
   onBlockContact,
   onAcceptIntro,
   onUpdateContact,
+  onOwnerVerify,
   onSendMethodUpdate,
-  onIntroduce,
   methodHistory,
   onMethodHistoryChange,
 }: TrustMapProps) {
@@ -252,8 +251,7 @@ export function TrustMap({
   const [editPhone, setEditPhone] = useState('');
   const [actionNote, setActionNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [introName, setIntroName] = useState('');
-  const [showIntro, setShowIntro] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -270,7 +268,7 @@ export function TrustMap({
   const clearFocus = useCallback(() => {
     setFocusId(null);
     setEditing(false);
-    setShowIntro(false);
+    setActionsOpen(false);
     setShowHistory(false);
     setActionNote(null);
     setConfirmKind(null);
@@ -282,6 +280,7 @@ export function TrustMap({
         fingerprint: focusEdge.peer_fingerprint,
         name: focusEdge.peer_name,
         trusted: !!focusEdge.trusted,
+        ownerVerified: ownerHasVerified(focusEdge),
         blocked: isContactBlocked(focusEdge as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } }),
       }
     : null;
@@ -337,10 +336,9 @@ export function TrustMap({
     setEditNotes(edge?.notes || '');
     setEditPhone(edge?.contact_info?.phones?.[0] || '');
     setEditing(false);
-    setShowIntro(false);
+    setActionsOpen(false);
     setShowHistory(false);
     setActionNote(null);
-    setIntroName('');
   }, [edgeByFp]);
 
   const handleNodeClick = useCallback((id: string, multi: boolean) => {
@@ -435,7 +433,7 @@ export function TrustMap({
           height="100%"
           preserveAspectRatio="xMidYMid meet"
           role="img"
-          aria-label={`Trust map: ${visibleContacts.length} connection${visibleContacts.length === 1 ? '' : 's'}`}
+          aria-label={`Galaxy: ${visibleContacts.length} connection${visibleContacts.length === 1 ? '' : 's'}`}
           onClick={clearFocus}
           style={{ display: 'block' }}
         >
@@ -617,10 +615,10 @@ export function TrustMap({
           {!isEmpty && (
             <g data-testid="trust-map-legend">
               <text x={VIEW / 2} y={VIEW - 21} textAnchor="middle" fontSize={8} fill={T.caption}>
-                Groups you named · mutual glow · pending ≠ trust
+                Dashed gold = groups you named — not know, not trust
               </text>
               <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
-                Every visible line consented — none inferred.
+                Know and trust overlays are consented — none inferred.
               </text>
             </g>
           )}
@@ -645,7 +643,7 @@ export function TrustMap({
                 fill={T.caption}
                 style={{ fontFamily: E.fontSans }}
               >
-                Trusted connections crystallize here as you form them.
+                Tap Grow. They join you — a star you Know.
               </text>
               <text
                 x={VIEW / 2}
@@ -655,7 +653,7 @@ export function TrustMap({
                 fill={T.caption}
                 style={{ fontFamily: E.fontSans }}
               >
-                Every line consented — none inferred.
+                Trust is mutual, after you make sure it&apos;s them.
               </text>
             </g>
           )}
@@ -823,6 +821,20 @@ export function TrustMap({
                       />
                     </p>
                   )}
+                  {focusEdge.peer_fingerprint && (
+                    <p
+                      style={{
+                        margin: '10px 0 0',
+                        fontSize: 11,
+                        color: E.dim,
+                        fontFamily: E.fontMono,
+                        letterSpacing: '0.04em',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {formatFingerprintForVerify(focusEdge.peer_fingerprint)}
+                    </p>
+                  )}
                   {focusEdge.notes && (
                     <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, fontStyle: 'italic' }}>
                       {focusEdge.notes}
@@ -880,15 +892,13 @@ export function TrustMap({
 
               <p
                 style={{
-                  margin: '8px 0 0',
+                  margin: '10px 0 0',
                   fontSize: 11,
                   color: E.dim,
-                  fontFamily: E.fontMono,
-                  letterSpacing: '0.04em',
-                  wordBreak: 'break-all',
+                  lineHeight: 1.45,
                 }}
               >
-                key · {formatKeyGroups(focusEdge.peer_fingerprint)}
+                Read the fingerprint aloud. Verify is you making sure it&apos;s them — in the world, not a badge.
               </p>
               {focusEdge.tags?.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
@@ -913,7 +923,7 @@ export function TrustMap({
             </div>
           </div>
 
-          {/* Primary actions — alive contact card */}
+          {/* Actions — nested; the card itself is name, key, notes */}
           <div
             style={{
               marginTop: 14,
@@ -924,102 +934,152 @@ export function TrustMap({
               gap: 10,
             }}
           >
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {isPending(focusEdge) && onAcceptIntro && (
-                <ActionBtn
-                  label={busy ? '…' : 'Accept connection'}
-                  primary
-                  onClick={() =>
-                    void runAction(
-                      () => onAcceptIntro(focusEdge),
-                      'Connection accepted — they are known. Trust is still yours to grant.'
-                    )
-                  }
+            <ActionBtn
+              label="Actions"
+              primary
+              onClick={() => setActionsOpen((v) => !v)}
+              trailing={
+                <ChevronDown
+                  size={14}
+                  style={{
+                    transform: actionsOpen ? 'rotate(180deg)' : undefined,
+                    transition: 'transform 120ms ease',
+                  }}
                 />
-              )}
-              {!editing ? (
-                <ActionBtn label="Edit" onClick={() => setEditing(true)} />
-              ) : (
-                <>
+              }
+            />
+            {actionsOpen && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {isPending(focusEdge) && onAcceptIntro && (
                   <ActionBtn
-                    label={busy ? '…' : 'Save'}
+                    label={busy ? '…' : 'Accept connection'}
                     primary
                     onClick={() =>
-                      void runAction(async () => {
-                        await onUpdateContact?.(focusEdge, {
-                          name: editName.trim(),
-                          email: editEmail.trim(),
-                          notes: editNotes,
-                          phones: editPhone.trim() ? [editPhone.trim()] : undefined,
-                        });
-                        setEditing(false);
-                      }, 'Contact updated.')
+                      void runAction(
+                        () => onAcceptIntro(focusEdge),
+                        'Connection accepted — they are known. Trust is still yours to grant.'
+                      )
                     }
                   />
-                  <ActionBtn label="Cancel" onClick={() => setEditing(false)} />
-                </>
-              )}
-              {!isPending(focusEdge) && onTrustToggle && (
+                )}
+                {!editing && (
+                  <ActionBtn
+                    label="Edit"
+                    onClick={() => {
+                      setEditing(true);
+                      setActionsOpen(false);
+                    }}
+                  />
+                )}
+                {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
+                  <>
+                    <ActionBtn
+                      label={TRUST_RECIPE_COPY.verifyInPerson}
+                      onClick={() =>
+                        void runAction(
+                          () => onOwnerVerify(focusEdge, 'in_person'),
+                          'Saved here only.',
+                        )
+                      }
+                    />
+                    <ActionBtn
+                      label={TRUST_RECIPE_COPY.verifyOtherChannel}
+                      onClick={() =>
+                        void runAction(
+                          () => onOwnerVerify(focusEdge, 'other_channel'),
+                          'Saved here only.',
+                        )
+                      }
+                    />
+                  </>
+                )}
+                {!isPending(focusEdge) && onTrustToggle && (
+                  <ActionBtn
+                    label={
+                      busy
+                        ? '…'
+                        : focusEdge.trusted
+                          ? 'Remove trust'
+                          : ownerHasVerified(focusEdge)
+                            ? 'TRUST'
+                            : 'Verify first, then Trust'
+                    }
+                    primary={!focusEdge.trusted && ownerHasVerified(focusEdge)}
+                    danger={!!focusEdge.trusted}
+                    onClick={() => {
+                      if (focusEdge.trusted) {
+                        setConfirmKind('break');
+                        return;
+                      }
+                      if (!ownerHasVerified(focusEdge)) {
+                        setActionNote(TRUST_RECIPE_COPY.verifyWhy);
+                        return;
+                      }
+                      setConfirmKind('trust');
+                    }}
+                  />
+                )}
                 <ActionBtn
-                  label={
-                    busy
-                      ? '…'
-                      : focusEdge.trusted
-                        ? 'Remove trust'
-                        : 'TRUST'
-                  }
-                  primary={!focusEdge.trusted}
-                  danger={!!focusEdge.trusted}
+                  label="Version history"
+                  onClick={() => setShowHistory((v) => !v)}
+                />
+                <ActionBtn
+                  label="Send update"
+                  onClick={() => {
+                    if (onSendMethodUpdate) {
+                      onSendMethodUpdate(focusEdge);
+                      return;
+                    }
+                    setActionNote(
+                      'Send updated contact method — open from Your Card → revise (CUR-1).'
+                    );
+                  }}
+                />
+                {onBlockContact && (
+                  <ActionBtn
+                    label="Block"
+                    danger
+                    onClick={() => setConfirmKind('block')}
+                  />
+                )}
+                {onRemoveContact && (
+                  <ActionBtn
+                    label="Remove"
+                    danger
+                    onClick={() => setConfirmKind('remove')}
+                  />
+                )}
+                <ActionBtn
+                  label={picked.has(focusEdge.peer_fingerprint) ? 'Selected' : 'Select'}
+                  onClick={() => togglePick(focusEdge.peer_fingerprint)}
+                />
+              </div>
+            )}
+            {editing && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <ActionBtn
+                  label={busy ? '…' : 'Save'}
+                  primary
                   onClick={() =>
-                    setConfirmKind(focusEdge.trusted ? 'break' : 'trust')
+                    void runAction(async () => {
+                      await onUpdateContact?.(focusEdge, {
+                        name: editName.trim(),
+                        email: editEmail.trim(),
+                        notes: editNotes,
+                        phones: editPhone.trim() ? [editPhone.trim()] : undefined,
+                      });
+                      setEditing(false);
+                    }, 'Contact updated.')
                   }
                 />
-              )}
-              <ActionBtn
-                label="Version history"
-                onClick={() => {
-                  setShowHistory((v) => !v);
-                  setShowIntro(false);
-                }}
-              />
-              <ActionBtn
-                label="Introduce…"
-                onClick={() => {
-                  setShowIntro((v) => !v);
-                  setShowHistory(false);
-                }}
-              />
-              <ActionBtn
-                label="Send update"
-                onClick={() => {
-                  if (onSendMethodUpdate) {
-                    onSendMethodUpdate(focusEdge);
-                    return;
-                  }
-                  setActionNote(
-                    'Send updated contact method — open from Your Card → revise (CUR-1).'
-                  );
-                }}
-              />
-              {onBlockContact && (
-                <ActionBtn
-                  label="Block"
-                  danger
-                  onClick={() => setConfirmKind('block')}
-                />
-              )}
-              {onRemoveContact && (
-                <ActionBtn
-                  label="Remove"
-                  danger
-                  onClick={() => setConfirmKind('remove')}
-                />
-              )}
-              <ActionBtn
-                label={picked.has(focusEdge.peer_fingerprint) ? 'Selected' : 'Select'}
-                onClick={() => togglePick(focusEdge.peer_fingerprint)}
-              />
-            </div>
+                <ActionBtn label="Cancel" onClick={() => setEditing(false)} />
+              </div>
+            )}
+            {!isPending(focusEdge) && ownerHasVerified(focusEdge) && !focusEdge.trusted && (
+              <p style={{ margin: 0, fontSize: 11, color: E.dim, lineHeight: 1.45 }}>
+                {TRUST_RECIPE_COPY.verifiedHere}
+              </p>
+            )}
 
             {showHistory && focusEdge && (
               <MethodHistoryPanel
@@ -1038,37 +1098,6 @@ export function TrustMap({
               />
             )}
 
-            {showIntro && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="text"
-                  placeholder="Introduce whom? (name)"
-                  value={introName}
-                  onChange={(e) => setIntroName(e.target.value)}
-                  style={{ ...fieldStyle(), flex: 1, minWidth: 140 }}
-                />
-                <ActionBtn
-                  label={busy ? '…' : 'Send intro'}
-                  primary
-                  onClick={() => {
-                    if (!introName.trim() || !onIntroduce) {
-                      setActionNote(
-                        onIntroduce
-                          ? 'Enter a name.'
-                          : 'Intro UI ready — wire protocol is team-owned (pending both sides).'
-                      );
-                      return;
-                    }
-                    void runAction(
-                      () => onIntroduce(focusEdge, introName.trim()),
-                      `Introduced ${introName.trim()} via ${focusEdge.peer_name}. Both sides stay pending until each accepts.`
-                    );
-                    setIntroName('');
-                    setShowIntro(false);
-                  }}
-                />
-              </div>
-            )}
 
             {picked.size > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -1132,11 +1161,13 @@ function ActionBtn({
   onClick,
   primary,
   danger,
+  trailing,
 }: {
   label: string;
   onClick: () => void;
   primary?: boolean;
   danger?: boolean;
+  trailing?: React.ReactNode;
 }) {
   return (
     <button
@@ -1155,9 +1186,14 @@ function ActionBtn({
         color: danger ? E.danger : E.accent,
         cursor: 'pointer',
         letterSpacing: primary ? '0.06em' : undefined,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
       }}
     >
       {label}
+      {trailing}
     </button>
   );
 }

@@ -26,7 +26,7 @@ import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtur
 // WIRE-STATE (verified on main, 2026-08-18 — see KB #86234):
 //   Beats 1–2 : LIVE — wired here (mirror import.spec.ts / identity.spec.ts). This test PASSES.
 //   Beat 3    : LIVE (2026-08-21, PR#40) — a real two-context handshake through the client-side relay:
-//               Alice's Ceremony join-link (key on the URL fragment) → Bob joins → the edge blooms.
+//               Alice's Grow join-link (key on the URL fragment) → Bob joins → the edge blooms.
 //               Runs+passes in e2e-prod (2.9s), skips clean in dev.
 //   Beat 4    : LIVE (2026-08-19) — Athena's return-channel consume caller (PR#33) + Apollo's live-apply
 //               subscription. RECEIVE side on the wire (a real signed deposit → Alice consumes/verifies/
@@ -50,16 +50,16 @@ async function genesis(page: Page, name: string, email: string) {
   await page.getByPlaceholder('Your name').fill(name);
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /begin anew/i }).click();
+  await page.getByRole('button', { name: /^start$/i }).click();
   await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
   await page.getByRole('button', { name: /i have it/i }).click();
-  await expect(page.getByRole('tab', { name: 'Contacts' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
 }
 
 // Beat 1 — the gray sea: import a multi-contact vCard, see the dedup preview BEFORE any write
 // (confirm-gate, never silent), confirm. Mirrors import.spec.ts (proven assertions only).
 async function importGraySea(page: Page) {
-  await page.getByRole('tab', { name: 'Contacts' }).click();
+  await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
   await page.getByTestId('import-contacts-trigger').click();
   await expect(page.getByTestId('import-contacts-dialog')).toBeVisible();
   await page.getByTestId('vcf-input').setInputFiles(VCF);
@@ -80,7 +80,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 3: the handshake bloom (two devices, one relay) ─────────────────────────────
-  // LIVE (PR#40). Real shape: Alice opens the Ceremony tab → the app auto-creates a
+  // LIVE (PR#40). Real shape: Alice opens Grow → the app auto-creates a
   // one-time relay handshake (QR + short link off one code); Bob, on his own device/context, opens the
   // /c/<code>#<key> link, receives her signed card, and the trust edge goes live in his book.
   // ACTIVATION SATISFIED: extractJoinPath confirmed in CI (the key rides the URL fragment; read off the
@@ -95,8 +95,8 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await genesis(alice, 'Alice E2E', 'alice-e2e@example.test');
     await genesis(bob, 'Bob E2E', 'bob-e2e@example.test'); // the joiner needs an identity first
 
-    // Alice: enter the ceremony → the handshake step auto-creates the relay → grab the full join URL.
-    await alice.getByRole('tab', { name: 'Ceremony' }).click();
+    // Alice: Grow → the handshake auto-creates the relay → grab the full join URL.
+    await alice.getByRole('button', { name: /^Grow$/i }).click();
     const joinPath = await extractJoinPath(aliceCtx, alice);
 
     // Bob: open the link on his device → walk the joiner steps → the edge persists.
@@ -110,7 +110,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.goto('/');
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
-    await bob.getByRole('tab', { name: 'Contacts' }).click();
+    await bob.getByRole('tab', { name: 'Contacts', exact: true }).click();
     await expect(bob.getByText('Alice E2E')).toBeVisible();
 
     await aliceCtx.close();
@@ -129,7 +129,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // deposit must be rejected on consume (negative test below).
   test('beat 4: Bob edits his card → Alice\'s entry self-updates LIVE (no reload)', async ({ page, request }) => {
     await genesis(page, 'Alice E2E', 'alice-e2e@example.test');   // Alice's key is unlocked IN MEMORY, poll running
-    await page.getByRole('tab', { name: 'Contacts' }).click();    // ensure ContactManagement (live subscription) is mounted
+    await page.getByRole('tab', { name: 'Contacts', exact: true }).click();    // ensure ContactManagement (live subscription) is mounted
     // Extract Alice's real pubkey from her genesis identity + seed Bob into her book @ epoch 0 (I-2 whitelist).
     // ⚠ NO RELOAD after this — a refresh would relock her key → the poll no-ops → silent red.
     const { aliceFp, aliceArmoredPub, bob } = await seedAliceWithBob(page);
@@ -156,7 +156,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // relay 200s the deposit (identity-blind by design); Alice's CONSUME decrypt/verify rejects it → no push.
   test('beat 4 (negative): a garbage deposit does not surface as a live update', async ({ page, request }) => {
     await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
-    await page.getByRole('tab', { name: 'Contacts' }).click();
+    await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
     const { aliceFp } = await seedAliceWithBob(page);
     const status = await depositRawBlob(request, { recipientFingerprint: aliceFp, blob: 'garbage-not-a-signed-update' });
     expect(status).toBe(200);            // the blind relay queues it; the only gate is Alice's consume-verify
@@ -211,7 +211,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
 async function extractJoinPath(ctx: BrowserContext, page: Page): Promise<string> {
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
   await expect(page.getByRole('button', { name: /copy link/i })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole('button', { name: /copy link/i }).click();
+  await page.getByRole('button', { name: /copy link/i }).click({ force: true });
   const fullUrl: string = await page.evaluate(() => navigator.clipboard.readText());
   const m = fullUrl.match(/\/c\/[^#\s"']+#[^\s"']+/);
   if (!m) throw new Error(`extractJoinPath: no /c/<code>#<key> found in clipboard: "${fullUrl}"`);

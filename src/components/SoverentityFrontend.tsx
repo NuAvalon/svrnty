@@ -14,6 +14,7 @@ import { SovereignIdentityCard, type MethodKind } from '@/components/identity/So
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -889,7 +890,7 @@ export function SoverentityFrontend({
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
               <p style={s.gateSub}>
-                Your identity. Your key. Your network.
+                A card, not an account. Trust starts in the world.
               </p>
             </div>
 
@@ -898,7 +899,7 @@ export function SoverentityFrontend({
               <button
                 onClick={() => setGateMode('forge')}
                 style={s.doorBtn}
-                aria-label="Begin anew. Generate a new cryptographic identity."
+                aria-label={`${TRUST_RECIPE_COPY.gateStart}. Generate a new cryptographic identity.`}
                 onMouseEnter={e => {
                   const el = e.currentTarget;
                   el.style.borderColor = 'var(--se-border-lit)';
@@ -913,7 +914,7 @@ export function SoverentityFrontend({
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--se-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                 </svg>
-                <span style={s.doorTitle}>Begin anew.</span>
+                <span style={s.doorTitle}>{TRUST_RECIPE_COPY.gateStart}</span>
                 <span style={s.doorDesc}>
                   A living address book and social web. You own it. We don&apos;t want your data.
                 </span>
@@ -922,6 +923,7 @@ export function SoverentityFrontend({
               <button
                 onClick={() => setGateMode('restore')}
                 style={s.doorBtn}
+                aria-label={`${TRUST_RECIPE_COPY.gateContinue}. Restore your identity from a vault file.`}
                 onMouseEnter={e => {
                   const el = e.currentTarget;
                   el.style.borderColor = 'rgba(78, 205, 196, 0.45)';
@@ -937,7 +939,7 @@ export function SoverentityFrontend({
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Open your vault.</span>
+                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>{TRUST_RECIPE_COPY.gateContinue}</span>
                 <span style={s.doorDesc}>
                   Restore your identity from a vault file.
                   Pick up where you left off.
@@ -975,9 +977,9 @@ export function SoverentityFrontend({
                 <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Begin anew.</h2>
+            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateStart}</h2>
             <p style={s.heroSub}>
-              Generate a sovereign keypair. Your keys never leave your device.
+              A card, not an account. Generate a sovereign keypair. Your keys never leave your device.
               Post-quantum encryption. No server can read your data. No tracking.
             </p>
           </div>
@@ -1030,7 +1032,7 @@ export function SoverentityFrontend({
                 <Spinner /> Generating keys...
               </span>
             ) : (
-              <span style={s.btnInner}>Begin anew.</span>
+              <span style={s.btnInner}>{TRUST_RECIPE_COPY.gateStart}</span>
             )}
           </button>
 
@@ -1080,7 +1082,7 @@ export function SoverentityFrontend({
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Open Your Vault</h2>
+            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateContinue}</h2>
             <p style={s.heroSub}>
               Upload your .svrnty vault or .json backup to restore your identity,
               contacts, and trust network on this device.
@@ -1160,7 +1162,7 @@ export function SoverentityFrontend({
               </svg>
             </div>
             <h2 style={s.heroTitle}>
-              {seedPathActive ? 'Recover with your recovery code' : 'Open Your Vault'}
+              {seedPathActive ? 'Recover with your recovery code' : TRUST_RECIPE_COPY.gateContinue}
             </h2>
             {seedPathActive && (
               <p style={s.heroSub}>

@@ -5,9 +5,9 @@
 // TrustEdge trust + decay model. Because it adds no persisted field, it never
 // collides with the format/envelope foundation: it reads TrustEdge as-is.
 //
-//   GRAY   — known but not vouched (!trusted). A card you hold; no live trust yet.
-//   LIVING — vouched and fresh (trusted, within the decay window). Alive.
-//   DIM    — vouched but faded (trusted, past the decay window). Not broken,
+//   GRAY   — known but not trusted (!trusted). A card you hold; no live trust yet.
+//   LIVING — trusted and fresh (trusted, within the decay window). Alive.
+//   DIM    — trusted but faded (trusted, past the decay window). Not broken,
 //            just gone quiet — re-ignites to LIVING on the next interaction.
 
 import type { TrustEdge } from './types';
@@ -40,9 +40,9 @@ export function isBloomTransition(prev: ContactState | undefined, next: ContactS
 
 /** Display language for each state — the two-sided book's visual vocabulary. */
 export const CONTACT_STATE_META: Record<ContactState, { label: string; hint: string }> = {
-  gray:   { label: 'Gray',   hint: 'Known, not yet vouched' },
-  living: { label: 'Living', hint: 'Vouched and fresh' },
-  dim:    { label: 'Dim',    hint: 'Vouched but faded — will re-ignite on contact' },
+  gray:   { label: 'Gray',   hint: 'Known, not yet Trusted' },
+  living: { label: 'Living', hint: 'Trusted and fresh' },
+  dim:    { label: 'Dim',    hint: 'Trusted but faded — will re-ignite on contact' },
 };
 
 /**

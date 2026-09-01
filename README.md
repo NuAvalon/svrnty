@@ -13,8 +13,8 @@ The platforms solved the *convenience* problem. They never solved the *trust* pr
 svrnty is a local-first encrypted trust protocol. It lets you:
 
 - **Own your identity** — cryptographic keypairs generated on your device, stored on your device, controlled by you alone
-- **Build a trust graph** — binary trust (Known / Trusted) with decay, vouching, and full audit trails. No tiers to climb. No popularity contests.
-- **Exchange signed signals** — vouch for someone, break trust visibly, raise a concern privately, make an introduction, rotate a key — all cryptographically signed, all verifiable
+- **Build a trust graph** — binary trust (Known / Trusted) with decay and full audit trails. No tiers to climb. No popularity contests.
+- **Exchange signed signals** — Trust someone, break trust visibly, raise a concern privately, make an introduction, rotate a key — all cryptographically signed, all verifiable
 - **Back up your vault** — encrypted `.svrnty` vault files (AES-256-GCM, PBKDF2 600K iterations). Export to a local file you control. Cloud sync (Google Drive, Dropbox, iCloud, WebDAV) is on the roadmap; when it lands, the file is encrypted before it leaves your device and the cloud sees a binary blob, nothing more.
 - **Back up and recover** — restore from an encrypted backup file you saved (wired today). Social recovery — Shamir secret sharing splits your master key across trusted contacts, and any threshold rebuilds it byte-for-byte (cryptographically proven) — but rebuilding your identity from your circle's shares isn't yet a click in the app. No custodian, no "forgot password" routed through a corporation.
 
@@ -31,15 +31,23 @@ This isn't paranoia. A trust protocol is infrastructure that should measure in d
 
 ## The Trust Model
 
-Trust in svrnty is **binary**, **visible**, and **local**.
+Trust in svrnty is **binary**, **mutual**, and **local** — and it starts in the world, not in the app.
 
-**Binary**: You either know someone or you trust them. Two states. Known means you've exchanged keys. Trusted means you vouch for them. There are no tiers to climb, no levels to unlock, no reputation scores. Inner circles exist by nature of who you share what with — not as a feature toggle.
+**The Formula**: Know → Verify (private) → Trust (mutual).
 
-**Visible**: Trust is mutual or it doesn't exist. You can see someone's trust state for you. They can see yours. Breaking trust is visible to both sides — it forces the conversation. Concerns are shared privately with people you trust, not broadcast.
+- **Start** makes a card, not an account. **Continue** opens a vault you already have.
+- **Know** is easy: they join you (Grow — a QR or short link). They become a star in *your* Galaxy. Their friends joining *them* does not add strangers to your book. The lattice knits; it doesn't recruit.
+- **Verify** is collaboration outside this app — in person or on a channel you already use. Anyone can use my name. They can't forge this key. Only **you** see whom you've verified. It is not a public badge. You only need it if you want to Trust them — and they must do the same on their side.
+- **Trust** only exists if it is mutual. A one-way mark on this device is not a covalent bond until they Trust you too.
 
-**Local**: Trust does not propagate automatically. An introduction from a trusted contact starts the new person as Known. You still have to verify them yourself. There is no transitive trust beyond one hop. No PageRank. No reputation scores. No popularity contests.
+**Reach** (consented overlays — not inferred from tags):
 
-**Decay**: Trust decays over time (2 years by default, customizable per edge). Like a rotating PGP key — if you haven't re-verified someone in two years, the system nudges you. Reverify or let it fade.
+- People I know can see others I know, but only if they know them as well and we all want it to be known.
+- People I trust can see others I trust, but only if they trust them and are trusted by them and we all want it to be known.
+
+Those overlays are the constitution. The glass does not invent know/trust chords from group labels. Dashed gold on the Galaxy is groups **you** named.
+
+**Decay**: Trust decays over time (2 years by default, customizable per edge). If you haven't stayed in touch, that's a nudge to re-meet, not a score.
 
 This is a hard architectural constraint, not a setting you can change. Trust that scales without friction isn't trust — it's social credit.
 
@@ -122,7 +130,7 @@ They share a wire format and can bridge — a cairn agent can hold svrnty keys, 
 At its core, svrnty is a contact manager that respects you. Phone numbers, emails, Signal handles, social profiles — stored encrypted on your device. Not in Google's database. Not in Meta's graph.
 
 - **Add contacts** with whatever details you have — phone, email, handle, public key
-- **Verify them** through email, QR code, mutual vouch, or in-person exchange
+- **Verify them** in person or on a channel you already use — private to you, not a public badge. Email/QR are not that ritual.
 - **Export vCards** to import into your phone's native contacts
 - **Export encrypted backups** to a local file today — your data leaves encrypted, arrives encrypted, stays encrypted (cloud sync to Google Drive, iCloud, Dropbox is on the roadmap)
 - **Stay connected** without a social network. See who your mutuals are, who introduced whom, and how trust flows through your circle

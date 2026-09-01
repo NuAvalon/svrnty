@@ -8,8 +8,8 @@ import { test, expect } from '@playwright/test';
 test('create an identity → land in the unlocked app', async ({ page }) => {
   await page.goto('/');
 
-  // The gate opens on 'choose' (two doors). The "Begin anew." door reveals the create form; match
-  // it by its unique description so it isn't confused with the form's "Begin anew." submit button.
+  // The gate opens on 'choose' (two doors). The Start door reveals the create form; match
+  // it by its unique description so it isn't confused with the form's Start submit button.
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
 
   await page.getByPlaceholder('Your name').fill('Alice E2E');
@@ -17,7 +17,7 @@ test('create an identity → land in the unlocked app', async ({ page }) => {
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
 
-  await page.getByRole('button', { name: /begin anew/i }).click();
+  await page.getByRole('button', { name: /^start$/i }).click();
 
   // After keygen, a one-time recovery-phrase screen appears (the phrase reconstructs the master
   // secret). Acknowledge it — "Continue" stays disabled until the checkbox is ticked. The check()
@@ -27,5 +27,5 @@ test('create an identity → land in the unlocked app', async ({ page }) => {
 
   // Now the unlocked app: the tab strip only renders with an unlocked identity, so a visible
   // Contacts tab is a reliable "we're in" signal.
-  await expect(page.getByRole('tab', { name: 'Contacts' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
 });

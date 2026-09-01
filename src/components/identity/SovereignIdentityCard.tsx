@@ -342,8 +342,8 @@ export function SovereignIdentityCard({
         >
           <CircleGlyph fingerprint={fingerprint} />
           <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: E.muted, fontFamily: E.fontSans }}>
-            <span style={{ color: E.text, fontWeight: 600 }}>Your circle.</span>{' '}
-            The people you&apos;ve bonded with, and who they vouch for —{' '}
+            <span style={{ color: E.text, fontWeight: 600 }}>Your Galaxy.</span>{' '}
+            The people you Know, and the bonds you were meant to see —{' '}
             <span style={{ color: E.text, fontWeight: 600 }}>your view</span>, never a global map.
           </p>
         </button>

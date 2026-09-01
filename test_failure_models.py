@@ -48,7 +48,7 @@ def create_identity(page: Page, name: str, email: str, prefix: str) -> bool:
     if not resp or resp.status != 200:
         return False
 
-    forge_btn = page.locator("text=Begin anew")
+    forge_btn = page.locator("text=Start")
     if not forge_btn.is_visible(timeout=5000):
         return False
     forge_btn.click()
@@ -57,11 +57,11 @@ def create_identity(page: Page, name: str, email: str, prefix: str) -> bool:
     page.locator('input[placeholder="Your name"]').fill(name)
     page.locator('input[placeholder="your@email.com"]').fill(email)
 
-    page.locator('button:has-text("BEGIN ANEW")').click()
+    page.locator('button:has-text("Start")').last.click()
     page.wait_for_timeout(8000)
 
     return (
-        page.locator('button:has-text("TRUST MAP")').first.is_visible() or
+        page.locator('button:has-text("Galaxy")').first.is_visible() or
         page.locator('text=constellation').first.is_visible()
     )
 
@@ -169,10 +169,10 @@ def test_key_loss(browser):
     # Check: app should NOT show a functional dashboard without keys
     # It should show gate screen, error, or recovery prompt
     has_dashboard = (
-        page.locator('button:has-text("TRUST MAP")').first.is_visible() or
+        page.locator('button:has-text("Galaxy")').first.is_visible() or
         page.locator('text=constellation').first.is_visible()
     )
-    has_gate = page.locator("text=Begin anew").is_visible(timeout=2000)
+    has_gate = page.locator("text=Start").is_visible(timeout=2000)
     has_error = page.locator('text=error').first.is_visible(timeout=1000)
 
     # Worst case: dashboard loads without keys = security issue
@@ -228,7 +228,7 @@ def test_corrupt_identity(browser):
     shot(page, "02_after_reload", "fm2")
 
     # App should either show gate (identity invalid) or error — not crash
-    has_gate = page.locator("text=Begin anew").is_visible(timeout=2000)
+    has_gate = page.locator("text=Start").is_visible(timeout=2000)
     has_recover = page.locator("text=Restore").is_visible(timeout=1000)
 
     critical = [e for e in js_errors if "TypeError" in e or "ReferenceError" in e or "Cannot read" in e]
@@ -295,7 +295,7 @@ def test_orphan_contacts(browser):
     page.wait_for_timeout(3000)
     shot(page, "02_after_reload", "fm3")
 
-    has_gate = page.locator("text=Begin anew").is_visible(timeout=2000)
+    has_gate = page.locator("text=Start").is_visible(timeout=2000)
     has_restore = page.locator("text=Restore").is_visible(timeout=1000)
 
     critical = [e for e in js_errors if "TypeError" in e or "ReferenceError" in e]

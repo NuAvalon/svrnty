@@ -50,8 +50,8 @@ def create_identity(page, name, email, context_name):
 
     shot(page, "01_gate", context_name)
 
-    # Click "Begin anew"
-    forge_btn = page.locator("text=Begin anew")
+    # Click Start
+    forge_btn = page.locator("text=Start")
     if not forge_btn.is_visible(timeout=5000):
         return False
     forge_btn.click()
@@ -72,7 +72,7 @@ def create_identity(page, name, email, context_name):
 
     shot(page, "02_form_filled", context_name)
 
-    page.locator('button:has-text("BEGIN ANEW")').click()
+    page.locator('button:has-text("Start")').last.click()
     print(f"    Waiting for {name}'s key generation...", flush=True)
     page.wait_for_timeout(8000)
 
@@ -80,7 +80,7 @@ def create_identity(page, name, email, context_name):
 
     # Verify dashboard loaded
     tabs_visible = (
-        page.locator('button:has-text("TRUST MAP")').first.is_visible() or
+        page.locator('button:has-text("Galaxy")').first.is_visible() or
         page.locator('text=constellation').first.is_visible()
     )
     return tabs_visible

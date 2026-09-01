@@ -6,7 +6,7 @@ import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
-import { Ceremony } from '@/components/Ceremony';
+import { GrowSheet } from '@/components/GrowSheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
@@ -34,6 +34,7 @@ import {
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
+import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -63,6 +64,7 @@ export default function Home() {
     kind: MethodKind;
     preselected: string[];
   } | null>(null);
+  const [growOpen, setGrowOpen] = useState(false);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -459,6 +461,26 @@ export default function Home() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <AppearanceToggle />
+          {identity ? (
+            <button
+              type="button"
+              onClick={() => setGrowOpen(true)}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: E.accent,
+                background: 'transparent',
+                border: `1px solid ${E.borderLit}`,
+                borderRadius: 999,
+                padding: '6px 12px',
+                cursor: 'pointer',
+              }}
+            >
+              Grow
+            </button>
+          ) : null}
           <HelpGuide />
         </div>
       </header>
@@ -490,14 +512,7 @@ export default function Home() {
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
-                Trust Map
-              </TabsTrigger>
-              <TabsTrigger
-                value="ceremony"
-                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
-                style={{ color: E.muted, fontFamily: E.fontSans }}
-              >
-                Ceremony
+                Galaxy
               </TabsTrigger>
               <TabsTrigger
                 value="contacts"
@@ -552,6 +567,13 @@ export default function Home() {
                   }
                   await refreshContacts();
                 }}
+                onOwnerVerify={async (edge, method) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const patch = ownerVerifyPersistPatch((rec as any)?.metadata, method);
+                  await updateContact(edge.id, patch as any);
+                  await refreshContacts();
+                }}
                 onTrustToggle={async (edge) => {
                   const nextTrusted = !edge.trusted;
                   await updateContact(edge.id, {
@@ -572,7 +594,7 @@ export default function Home() {
                   const rec = records.find((r) => r.id === edge.id);
                   await updateContact(edge.id, {
                     blocked,
-                    // Block clears local vouch — no trusted+blocked half-state.
+                    // Block clears local Trust — no trusted+blocked half-state.
                     ...(blocked
                       ? {
                           trusted: false,
@@ -630,44 +652,7 @@ export default function Home() {
                     preselected: [edge.peer_fingerprint],
                   });
                 }}
-                onIntroduce={async (fromEdge, introduceeName) => {
-                  // UI demo: create a pending contact introduced by the focused peer.
-                  // Real dual-pending protocol is team-owned — this is local visualization only.
-                  const { addContact } = await import('@/lib/identity/client-store');
-                  const fp =
-                    Array.from({ length: 40 }, (_, i) =>
-                      ((introduceeName.charCodeAt(i % introduceeName.length) + i * 7) % 16).toString(16)
-                    ).join('');
-                  await addContact(identity.identity.fingerprint, {
-                    name: introduceeName,
-                    email: '',
-                    fingerprint: fp,
-                    public_key: '',
-                    trust_level: 'unverified',
-                    trusted: false,
-                    connection_status: 'pending',
-                    pending_intro: {
-                      introduced_by: fromEdge.peer_name,
-                      introduced_by_fp: fromEdge.peer_fingerprint,
-                      context: `${fromEdge.peer_name} introduced you to ${introduceeName}`,
-                    },
-                    metadata: {
-                      sample: true,
-                      connection_status: 'pending',
-                      pending_intro: {
-                        introduced_by: fromEdge.peer_name,
-                        introduced_by_fp: fromEdge.peer_fingerprint,
-                        context: `${fromEdge.peer_name} introduced you to ${introduceeName}`,
-                      },
-                    },
-                  } as any);
-                  await refreshContacts();
-                }}
               />
-            </TabsContent>
-
-            <TabsContent value="ceremony">
-              <Ceremony identity={identity} contacts={contacts} />
             </TabsContent>
 
             <TabsContent value="contacts">
@@ -714,11 +699,55 @@ export default function Home() {
         )}
       </main>
 
+      {identity && (
+        <GrowSheet open={growOpen} onClose={() => setGrowOpen(false)} identity={identity} />
+      )}
+
       <footer
-        className="mt-16 text-center text-sm"
-        style={{ color: E.dim, fontFamily: E.fontSans, letterSpacing: '0.02em' }}
+        className="mt-16 text-center"
+        style={{ fontFamily: E.fontSans, paddingBottom: 40 }}
       >
-        <p>The card is yours. No account. No server that can read you.</p>
+        <p
+          style={{
+            margin: 0,
+            fontSize: 11,
+            letterSpacing: '0.28em',
+            color: E.accent,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoWord}
+        </p>
+        <p
+          style={{
+            margin: '10px auto 0',
+            maxWidth: 420,
+            fontSize: 14,
+            lineHeight: 1.5,
+            color: E.text,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoKeep}
+        </p>
+        <p
+          style={{
+            margin: '12px 0 0',
+            fontSize: 10,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            color: E.dim,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoAxes}
+        </p>
+        <p
+          style={{
+            margin: '8px 0 0',
+            fontSize: 12,
+            color: E.muted,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoCloser}
+        </p>
       </footer>
     </div>
   );

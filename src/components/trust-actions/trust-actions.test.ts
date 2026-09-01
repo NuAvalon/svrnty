@@ -27,10 +27,10 @@ test('safeDisplayName strips controls and bounds length', () => {
 });
 
 test('trust copy is binary and does not invent scores', () => {
-  const copy = getTrustActionCopy('trust', alice);
-  assert.match(copy.body, /binary/i);
-  assert.match(copy.body, /no score or rank/i);
+  const copy = getTrustActionCopy('trust', { ...alice, ownerVerified: true });
+  assert.match(copy.body, /mutual/i);
   assert.doesNotMatch(copy.body, /percent|tier|reputation/i);
+  assert.doesNotMatch(copy.body, /vouch/i);
   assert.equal(copy.danger, false);
 });
 
@@ -49,7 +49,7 @@ test('block copy asserts relay stays blind', () => {
 
 test('applyTrustAction trust writes local patch', async () => {
   const patches: TrustActionLocalPatch[] = [];
-  const result = await applyTrustAction('trust', alice, {
+  const result = await applyTrustAction('trust', { ...alice, ownerVerified: true }, {
     applyLocal: async (p) => {
       patches.push(p);
     },
@@ -64,6 +64,14 @@ test('applyTrustAction trust writes local patch', async () => {
     assert.equal(patches[0].trusted, true);
     assert.equal(patches[0].trust_level, 'trusted');
   }
+});
+
+test('applyTrustAction trust rejects without owner verify', async () => {
+  const result = await applyTrustAction('trust', alice, {
+    applyLocal: async () => {},
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, 'need-verify');
 });
 
 test('applyTrustAction break rejects when not trusted', async () => {

@@ -13,7 +13,8 @@ Confirm flows for **trust / break (untrust) / remove / block / unblock** — no 
 | `trust-actions.test.ts` | Copy + apply unit tests |
 
 ## Behavior
-- **Trust** — local `trusted: true` after confirm. Binary only (no score/rank in copy).
+- **Trust** — requires **owner-local verify** first (not a public badge). Then local `trusted: true`. Mutual on the wire is fleet.
+- **Break** — local drop to known; optional **local-only** reason (not auto-shared).
 - **Break** — local drop to known; optional **local-only** reason (not auto-shared).
 - **Remove** — local `removeContact` after confirm.
 - **Block** — local `blocked` flag (+ clears vouch). Hidden from Trust Map; listed under Contacts → Blocked. **Relay stays blind** — not a server ban.
