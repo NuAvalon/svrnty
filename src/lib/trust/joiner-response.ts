@@ -17,12 +17,19 @@
 //   (a) SELF-CONSISTENT — joiner_fingerprint === H(joiner_public_key) (Invariant-1, fingerprintMatchesKey)
 //       AND the envelope signature verifies against joiner_public_key. Bob proves possession of the
 //       private key behind the fingerprint+name he claims. (This is TOFU: trust the key on first use.)
-//   (b) SOLICITED — invite_nonce is one of the giver's OWN outstanding relay codes (the caller's
-//       `acceptNonce` oracle) AND single-use. Without this an open mailbox is an unsolicited-contact
-//       (spam) firehose: anyone could deposit "add me". The nonce proves the sender used THIS giver's
-//       invite. KNOWN-tier property (documented, not a flaw): whoever holds a live invite code can
-//       connect as KNOWN — codes are single-use, high-entropy, short-TTL; VERIFIED still requires an
-//       out-of-band human check, TRUSTED requires mutual vouch (see mutual-vouch.ts).
+//   (b) SOLICITED — invite_nonce is one of the giver's OWN OUTSTANDING relay codes (the caller's
+//       `acceptNonce` oracle). Without this an open mailbox is an unsolicited-contact (spam) firehose:
+//       anyone could deposit "add me". The nonce proves the sender used THIS giver's invite.
+//       MULTI-USE, NOT single-use: a Grow link is shared with N people, so ONE code legitimately yields
+//       N joiner-responses. So the code is NEVER "consumed" on first use — the oracle is a MEMBERSHIP
+//       test (code ∈ outstanding-and-unexpired), and anti-replay/anti-spam is per-(code, joinerFp): the
+//       oracle receives BOTH the nonce and the (claimed) joiner fingerprint so the caller's store can
+//       (i) accept each distinct joiner at most once per code and (ii) cap distinct joiners per code
+//       (GROW_INVITE_CAP). Same-joiner replay of a captured blob is dropped by that per-(code,joinerFp)
+//       dedup AND is idempotent at apply (contacts dedup by fingerprint). KNOWN-tier property
+//       (documented, not a flaw): whoever holds a live, uncapped invite code can connect as KNOWN —
+//       codes are high-entropy + expiring; VERIFIED still requires an out-of-band human check, TRUSTED
+//       requires mutual vouch (see mutual-vouch.ts).
 //   (c) NOT REPLAYABLE ACROSS GIVERS — giver_fingerprint is signed and checked === our own fp, so a
 //       copied blob re-deposited to a different giver's mailbox is rejected there.
 //
@@ -274,17 +281,22 @@ async function decryptJoinerBlob(
  * Steps 3–4 read the not-yet-sig-verified envelope as a cheap pre-filter; step 6 then confirms every
  * one of those fields was bound by the signature, so a tampered giver_fingerprint/invite_nonce fails.
  *
- * SINGLE-USE is the caller's to complete: after a NON-null return, mark `result.inviteNonce` consumed
- * in the issued-code store (do the acceptNonce check + mark atomically to close the TOCTOU) so a
- * replayed blob is rejected at step 4 next time.
+ * ANTI-REPLAY / MULTI-USE is the caller's to complete: after a NON-null return, record the pair
+ * (result.inviteNonce, result.fingerprint) as accepted in the issued-code store (do the acceptNonce
+ * check + record atomically to close the TOCTOU). The CODE is NEVER consumed (a Grow link is multi-use);
+ * only the (code, joiner) pair is — so joiners #2..N on a shared link still connect, while a replayed
+ * blob from an already-accepted joiner is dropped at step 4 next time.
  *
- * @param acceptNonce REQUIRED. `(nonce) => boolean`: true iff the nonce is one of OUR outstanding,
- *   not-yet-consumed relay codes. Required (not optional) so the solicited-gate can never be skipped.
+ * @param acceptNonce REQUIRED. `(nonce, joinerFp) => boolean`: true iff `nonce` is one of OUR
+ *   outstanding (issued, unexpired, under GROW_INVITE_CAP) relay codes AND this `joinerFp` has not
+ *   already been accepted on it. Receives the CLAIMED joiner fingerprint (pre-signature — a false claim
+ *   only hurts the claimant, since steps 5/6 then require a self-consistent, validly-signed identity).
+ *   Required (not optional) so the solicited-gate can never be skipped by an eager caller.
  */
 export async function verifyJoinerResponse(
   blob: string,
   giver: { fingerprint: string; privateKeyArmored: string; passphrase: string },
-  acceptNonce: (nonce: string) => boolean,
+  acceptNonce: (nonce: string, joinerFp: string) => boolean,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingJoiner | null> {
   const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase);
@@ -294,10 +306,11 @@ export async function verifyJoinerResponse(
   // 3) Giver-binding — the response must be addressed to US. Case-insensitive like fingerprintMatchesKey.
   if (envelope.giver_fingerprint.toUpperCase() !== giver.fingerprint.toUpperCase()) return null;
 
-  // 4) Solicited-gate — the invite_nonce must be one of our outstanding, unconsumed codes.
+  // 4) Solicited-gate — the invite_nonce must be one of our outstanding codes AND this (claimed) joiner
+  //    must not already be accepted on it (multi-use per code, once per joiner). Cheap pre-filter.
   let nonceOk = false;
   try {
-    nonceOk = acceptNonce(envelope.invite_nonce) === true;
+    nonceOk = acceptNonce(envelope.invite_nonce, envelope.joiner_fingerprint) === true;
   } catch {
     return null; // a throwing oracle is treated as reject (fail-closed)
   }

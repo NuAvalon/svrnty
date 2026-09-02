@@ -138,12 +138,13 @@ test('solicited-gate: a valid signature with an unissued nonce is dropped (accep
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), () => false), null);
 });
 
-test('solicited-gate: acceptNonce is called with the exact invite_nonce', async () => {
+test('solicited-gate: acceptNonce receives the exact invite_nonce AND the claimed joiner fingerprint', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
   const blob = await encryptJoinerResponseTo(signed, alicePub);
-  let seen: string | undefined;
-  await verifyJoinerResponse(blob, aliceGiver(), (n) => { seen = n; return true; });
-  assert.equal(seen, CODE);
+  let seenNonce: string | undefined, seenFp: string | undefined;
+  await verifyJoinerResponse(blob, aliceGiver(), (n, fp) => { seenNonce = n; seenFp = fp; return true; });
+  assert.equal(seenNonce, CODE);
+  assert.equal(seenFp, bobFp);
 });
 
 test('solicited-gate: a throwing acceptNonce oracle fails closed (→ null)', async () => {
@@ -152,16 +153,31 @@ test('solicited-gate: a throwing acceptNonce oracle fails closed (→ null)', as
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), () => { throw new Error('store down'); }), null);
 });
 
-test('single-use pattern: first accept, then (caller marks consumed) a replay is dropped', async () => {
-  const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+test('multi-use + per-(code,joinerFp) dedup: two distinct joiners on ONE code both connect; same-joiner replay dropped', async () => {
   const issued = new Set([CODE]);
-  const consumed = new Set<string>();
-  const oracle = (n: string) => issued.has(n) && !consumed.has(n);
-  const first = await verifyJoinerResponse(blob, aliceGiver(), oracle);
-  assert.ok(first, 'first use accepted');
-  consumed.add(first!.inviteNonce); // caller marks consumed (single-use closure)
-  assert.equal(await verifyJoinerResponse(blob, aliceGiver(), oracle), null, 'replay rejected');
+  const accepted = new Set<string>(); // key = code|joinerFp — the CODE itself is never consumed
+  const key = (n: string, fp: string) => `${n}|${fp}`;
+  const oracle = (n: string, fp: string) => issued.has(n) && !accepted.has(key(n, fp));
+
+  // Joiner #1 = Bob on CODE.
+  const bobBlob = await encryptJoinerResponseTo(await buildJoinerResponse(bobArgs(), bobPriv, pass), alicePub);
+  const first = await verifyJoinerResponse(bobBlob, aliceGiver(), oracle);
+  assert.ok(first, 'joiner #1 accepted');
+  accepted.add(key(first!.inviteNonce, first!.fingerprint));
+
+  // Joiner #2 = Carol on the SAME code (multi-use Grow link) — must ALSO connect.
+  const carolArgs: BuildJoinerResponseArgs = {
+    joinerFp: carolFp, joinerEpoch: 1, joinerPubKeyArmored: carolPub, joinerName: 'Carol',
+    giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z',
+  };
+  const carolBlob = await encryptJoinerResponseTo(await buildJoinerResponse(carolArgs, carolPriv, pass), alicePub);
+  const second = await verifyJoinerResponse(carolBlob, aliceGiver(), oracle);
+  assert.ok(second, 'joiner #2 on the same code also accepted (multi-use preserved)');
+  assert.equal(second!.fingerprint, carolFp);
+  accepted.add(key(second!.inviteNonce, second!.fingerprint));
+
+  // Bob replays his blob → dropped (per-(code,joinerFp) already accepted); the code is still live for others.
+  assert.equal(await verifyJoinerResponse(bobBlob, aliceGiver(), oracle), null, 'same-joiner replay dropped');
 });
 
 // ── Invariant-1: a spoofed fingerprint (real fp + attacker key) is refused ────────
