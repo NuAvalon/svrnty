@@ -30,6 +30,8 @@ import {
   verifyIncomingContactUpdate,
   ContactUpdateRejected,
   CONTACT_UPDATE_ALLOWED_FIELDS,
+  HANDLES_MAX_COUNT,
+  HANDLE_VALUE_MAX_LEN,
   type ContactUpdateRejectReason,
   type KnownContactIdentity,
   type SignedContactUpdate,
@@ -264,5 +266,69 @@ test('anti-downgrade: stripping the PQ half of a hybrid signature fails bad-sign
   await assert.rejects(
     verifyIncomingContactUpdate(s, known({ pqSigningPublicKey: pq.publicKey })),
     rejectsWith('bad-signature'),
+  );
+});
+
+// ── 5b VALUE firewall for the grown structured fields (handles + urls) ──────────
+test('grow: a valid handles map (curated keys, bounded) verifies end-to-end', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { signal: '@alice', telegram: 'alicetg' } } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.delta, { handles: { signal: '@alice', telegram: 'alicetg' } });
+});
+
+test('grow: an empty-string handle value (explicit removal / merge-delete) verifies', async () => {
+  // Removal is the empty string, NOT null — canonicalize forbids null in the signed form.
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { signal: '' } } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.delta, { handles: { signal: '' } });
+});
+
+test('grow: a valid urls list verifies end-to-end', async () => {
+  const env = baseEnv({ changed_fields: ['urls'], delta: { urls: ['https://alice.example'] } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.delta, { urls: ['https://alice.example'] });
+});
+
+// The value firewall (5b) fires PRE-crypto → a dummy signature suffices; this proves the recipient
+// fail-closes on an abusive SIGNED map regardless of whether the signature is "correct".
+test('5b: handles that is not an object is field-value-invalid', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: 'not-a-map' } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: an off-curated handle key is field-value-invalid (I-4 reach-only vocab)', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { myspace: 'tom' } } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: too many handles (> HANDLES_MAX_COUNT) is field-value-invalid (DoS/bloat guard)', async () => {
+  const handles: Record<string, unknown> = {};
+  for (let i = 0; i <= HANDLES_MAX_COUNT; i++) handles[`k${i}`] = 'x';
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: an over-long handle value is field-value-invalid', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { signal: 'x'.repeat(HANDLE_VALUE_MAX_LEN + 1) } } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: urls that is not an array is field-value-invalid', async () => {
+  const env = baseEnv({ changed_fields: ['urls'], delta: { urls: 'not-an-array' } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
   );
 });
