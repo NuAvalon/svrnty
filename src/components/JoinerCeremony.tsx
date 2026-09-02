@@ -24,6 +24,7 @@ import { resolveRelay } from '@/lib/sync/relay';
 import {
   getActiveFingerprint,
   loadIdentity,
+  loadKey,
   addContact,
   updateContact,
   getContactByFingerprint,
@@ -31,6 +32,7 @@ import {
   storeHeldShard,
   SHARD_CUSTODY_TYPE,
 } from '@/lib/identity/client-store';
+import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { TrustMap } from '@/components/TrustMap';
 import { useCeremony } from '@/lib/ceremony/useCeremony';
@@ -74,6 +76,47 @@ interface PeerCard {
   // Authenticated pq (branch 4b) or null; alarm drives the import banner (branch-3 loud / 4c soft-info).
   pq: { pq_kem_public_key: string; pq_sig_public_key: string } | null;
   alarm: 'quiet' | 'loud' | 'soft-info';
+}
+
+// R1 return-channel deposit (Athena, Peter #125331). After the joiner adds the giver, deposit a signed
+// joiner-response to the GIVER's mailbox so the giver learns of us and the edge becomes MUTUAL — closing
+// the one-directional Grow asymmetry (giver polls → verifyJoinerResponse → adds us as KNOWN → the 0.4
+// contact.update wire now flows both ways). Best-effort + FAIL-SOFT: signing requires our unlocked
+// private key; if the identity is locked or the deposit fails, the local edge still stands and the
+// ceremony never blocks — any failure is a local-only diagnostic, NEVER surfaced to a peer/relay (I-1).
+// The giver's mailbox holds the response for ~7d, so a deposit that lands on a later unlocked open still
+// connects. IDENTITY-ONLY: carries our {fp, epoch, key, name}, never contact methods.
+async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: string): Promise<void> {
+  try {
+    if (!peer.fingerprint || !peer.publicKey || !code) return; // nothing to bind the response to
+    const key = await loadKey(ownerFp);
+    if (!key) {
+      // Locked session — cannot sign. The edge is already stored; the return channel simply doesn't fire
+      // this time (a later unlocked open can re-deposit within the giver's ~7d mailbox window).
+      console.warn('[joiner-response] identity locked — return-channel deposit deferred (edge stands locally)');
+      return;
+    }
+    const id = await loadIdentity(ownerFp);
+    const ownPub: string = id?.identity?.public_key || '';
+    if (!ownPub) return; // no own key to present — cannot build a verifiable response
+    const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
+    const res = await sendJoinerResponse(
+      {
+        fingerprint: ownerFp,
+        epoch: 0, // no key-rotation yet — the joiner ships contact.updates at epoch 0 (matches giver floor)
+        publicKeyArmored: ownPub,
+        displayName,
+        privateKeyArmored: key.privateKey,
+        passphrase: key.passphrase,
+      },
+      { fingerprint: peer.fingerprint, publicKeyArmored: peer.publicKey, inviteNonce: code },
+    );
+    if (!res.ok) {
+      console.warn('[joiner-response] deposit not delivered (edge stands locally):', res.status);
+    }
+  } catch (err) {
+    console.warn('[joiner-response] deposit failed (edge stands locally):', err);
+  }
 }
 
 export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragment: string }) {
@@ -203,6 +246,10 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         } as any);
         edgeId = contact.id;
       }
+      // R1: the edge is live locally — now fire the return-channel deposit to the giver (best-effort,
+      // non-blocking) so the connection becomes MUTUAL. The ceremony advances immediately regardless of
+      // whether the deposit lands (fail-soft); a locked identity or relay hiccup never blocks the UI.
+      void depositJoinerResponse(ownerFp, peer, code);
       // Load the constellation for the lattice step (includes the new facet).
       try {
         const raw = await getAllContacts(ownerFp);
@@ -212,7 +259,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
     } catch (err: any) {
       ceremony.fail(err?.message || 'Could not write the edge.');
     }
-  }, [peer, ownerFp, ceremony]);
+  }, [peer, ownerFp, code, ceremony]);
 
   // --- Shard ("the tear") accept ---
   const acceptShard = useCallback(async () => {

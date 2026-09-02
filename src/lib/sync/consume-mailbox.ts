@@ -32,6 +32,7 @@ import {
   ContactUpdateApplyRejected,
   type StoredContact,
 } from '@/lib/contacts/apply-contact-update';
+import type { PendingJoiner } from '@/lib/trust/joiner-response';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -65,10 +66,33 @@ export interface LiveApplyEvent {
   ignited: boolean;
 }
 
+/**
+ * R1 RETURN-CHANNEL (KNOWN tier) — the pending-joiner routing seam (Flint #125392, pinned by
+ * joiner-response.e2e.test.ts). The mailbox is shared by TWO inbound message types encrypted to the
+ * owner with the SAME openpgp envelope: contact.updates AND joiner-responses. They CANNOT be told apart
+ * by "which decrypt returned non-null" — the contact-update decryptor DECRYPTS a joiner-response fine
+ * (returns non-null) and would then drop it on its missing `envelope.fingerprint`, LOSING the joiner.
+ * The only correct discriminator is WHICH VERIFY SUCCEEDS. This optional seam supplies the joiner-side
+ * verify+accept so consumeOne can try it FIRST:
+ *   • verify — try the RAW blob as a joiner-response (it decrypts internally + checks giver-binding,
+ *     the solicited-gate oracle, Invariant-1, and the signature). Returns the KNOWN PendingJoiner, or
+ *     null for anything that is not a solicited, well-signed joiner-response (→ fall through to the
+ *     contact-update path). Injected pre-bound to the owner identity + a per-poll accept-oracle snapshot.
+ *   • accept — surface a VERIFIED joiner as KNOWN (idempotent add) and record the (code, verified-fp)
+ *     accept. Returns {ignited} for a fresh add, or null if the joiner is already in the book (a no-op
+ *     that still acks/records). Kept crypto/IndexedDB-free here — the caller (live-book-poll) wires it.
+ * Optional: a caller with no return channel (unit tests, legacy) omits it and behaves exactly as before.
+ */
+export interface JoinerResponseSeam {
+  verify: (blob: string) => Promise<PendingJoiner | null>;
+  accept: (pj: PendingJoiner) => Promise<{ ignited: boolean } | null>;
+}
+
 export interface ConsumeDeps {
   owner: OwnerIdentity;
   decrypt: EnvelopeDecryptor;
   store: ContactStore;
+  joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   emit?: (event: LiveApplyEvent) => void; // Apollo live-beat seam
@@ -172,6 +196,38 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
+  // R1 RETURN-CHANNEL ROUTING (Flint #125392, pinned by joiner-response.e2e.test.ts SEAM): try the
+  // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
+  // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;
+  // a joiner-response verifies to a PendingJoiner. Routing by decrypt-null would silently LOSE every
+  // joiner-response: it decrypts NON-null via the contact-update decryptor below, then drops on the
+  // missing `envelope.fingerprint`. The two verifies are mutually exclusive (proven E2E 9358104), so
+  // trying joiner-verify first can never eat a contact-update.
+  if (deps.joiner) {
+    let pj: PendingJoiner | null;
+    try {
+      pj = await deps.joiner.verify(blob);
+    } catch {
+      pj = null; // a throwing joiner-verify is treated as not-a-joiner → fall through (fail-safe)
+    }
+    if (pj) {
+      try {
+        const res = await deps.joiner.accept(pj);
+        // accepted a fresh joiner → surface as an apply so the open book repaints (ignited); already in
+        // the book → terminal (still ack + record, no repaint). Either way the envelope is consumed.
+        return res
+          ? { kind: 'applied', event: { id: pj.fingerprint, fingerprint: pj.fingerprint, ignited: res.ignited } }
+          : { kind: 'terminal' };
+      } catch (err) {
+        // A store failure while accepting a VERIFIED joiner → leave for retry (at-least-once). The accept
+        // is idempotent (fingerprint-dedup), so a redelivered blob re-adds harmlessly on a later poll.
+        console.error('[return-channel] joiner accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // pj null → not a solicited joiner-response → fall through to the contact-update consume path.
+  }
+
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
   let signed: SignedContactUpdate | null;
   try {

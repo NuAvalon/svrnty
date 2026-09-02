@@ -33,10 +33,21 @@ import {
   loadKey,
   getContactByFingerprint,
   updateContact,
+  addContact,
+  loadIssuedCodeMap,
+  isCodeOutstanding,
+  codeUnderCap,
+  alreadyAccepted,
+  markAcceptedInMap,
+  recordAcceptedJoiner,
   type ContactRecord,
+  type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
+import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
+import type { JoinerResponseSeam } from './consume-mailbox';
+import { GROW_INVITE_CAP } from '@/lib/trust/trust-recipe';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 
@@ -76,6 +87,75 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
   };
 }
 
+/** Clamp an attacker-typed joiner display name (KNOWN = unverified) for safe storage/render: strip
+ *  C0/C1 control characters (incl. newlines) and bound the length. React escapes text nodes, so this is
+ *  defense-in-depth against layout-breaking / overlong names, not an XSS gate. */
+function clampJoinerName(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  let out = '';
+  for (const ch of raw) {
+    const c = ch.codePointAt(0) ?? 0;
+    // Keep printable only: drop C0 (< 0x20), DEL (0x7F), and C1 (0x80-0x9F).
+    if (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f)) out += ch;
+  }
+  return out.trim().slice(0, 80);
+}
+
+/**
+ * Build the R1 return-channel seam bound to this owner + a per-poll issued-code snapshot (see
+ * consume-mailbox JoinerResponseSeam). Exported for unit tests. The snapshot is loaded ONCE per poll
+ * (loadIssuedCodeMap, expiry-pruned) so the accept-oracle stays SYNCHRONOUS over a stable view;
+ * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
+ * recordAcceptedJoiner persists the accept across polls.
+ */
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): JoinerResponseSeam {
+  const ownFp = owner.fingerprint;
+
+  // The solicited-gate oracle (Flint's acceptNonce): accept iff `nonce` is one of OUR outstanding,
+  // unexpired, under-cap Grow codes AND this (claimed) joiner has not already been accepted on it.
+  // Receives the CLAIMED joiner fp (pre-signature) — a false claim only hurts the claimant, since the
+  // crypto (Invariant-1 + signature) then requires a self-consistent, validly-signed identity.
+  const acceptNonce = (nonce: string, joinerFp: string): boolean =>
+    isCodeOutstanding(codes, ownFp, nonce, Date.now())
+    && codeUnderCap(codes, ownFp, nonce, GROW_INVITE_CAP)
+    && !alreadyAccepted(codes, ownFp, nonce, joinerFp);
+
+  return {
+    verify: (blob: string): Promise<PendingJoiner | null> =>
+      verifyJoinerResponse(
+        blob,
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
+        acceptNonce,
+        { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical (Flint #116410)
+      ),
+    accept: async (pj: PendingJoiner): Promise<{ ignited: boolean } | null> => {
+      // Dedup — addContact is NOT idempotent (it mints a fresh id and re-checks Invariant-1), so an
+      // already-known joiner must not be re-added. A fresh joiner is added as KNOWN (unverified TOFU) at
+      // epoch pj.epoch (the giver's future contact.update replay floor — MUST match the epoch the joiner
+      // ships updates at, currently 0). version 0 = the lowest replay floor; the first verified update
+      // establishes the real one (recordToKnownContact).
+      const existing = await getContactByFingerprint(ownFp, pj.fingerprint);
+      if (!existing) {
+        await addContact(ownFp, {
+          name: clampJoinerName(pj.displayName),
+          fingerprint: pj.fingerprint,
+          public_key: pj.publicKeyArmored,
+          trust_level: 'known',
+          email: '',
+          epoch: pj.epoch,
+          version: 0,
+        } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
+      }
+      // Record the VERIFIED fp (never the pre-check claim) accepted on this code — mutate the snapshot
+      // for same-poll dedup, THEN persist for cross-poll. Ordered AFTER the add so a failed add leaves
+      // the code un-accepted → the joiner is retried on a later poll (at-least-once, idempotent).
+      markAcceptedInMap(codes, ownFp, pj.inviteNonce, pj.fingerprint);
+      await recordAcceptedJoiner(ownFp, pj.inviteNonce, pj.fingerprint);
+      return existing ? null : { ignited: true };
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -93,10 +173,15 @@ export async function buildConsumeDeps(
     privateKeyArmored: key.privateKey,
     passphrase: key.passphrase,
   };
+  // R1 return-channel: load the issued-code snapshot ONCE per poll (this fn is called per poll cycle by
+  // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects
+  // codes minted since the last poll. loadIssuedCodeMap prunes expired entries.
+  const codes: IssuedCodeMap = await loadIssuedCodeMap();
   return {
     owner,
     decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase),
     store: buildContactStore(fingerprint),
+    joiner: buildJoinerSeam(owner, codes),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     fetchImpl: opts.fetchImpl,
   };
