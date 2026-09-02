@@ -703,3 +703,83 @@ export async function clearAll(confirm: 'I understand this deletes all keys'): P
     tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
+
+// ── Issued Grow-code tracking (R1 pending-joiner anti-replay, giver-side) ─────
+// When a giver mints a Grow invite (createRelay), we remember the shortcode until
+// it expires. A joiner's SIGNED response binds this code as its inviteNonce
+// (Flint's verifyJoinerResponse); the giver accepts the response only if the code
+// is one WE issued and still outstanding — invite-INSTANCE anti-replay layered on
+// top of the joiner-sig + giverFp-bind + giver-only-decrypt + mailbox-single-use
+// + joinerFp-dedup defenses. The binding is "which invite," not secrecy, so the
+// PUBLIC shortcode is fine here.
+//
+// Codes are short-lived (relay TTL ~15min) and per-device. Stored in the 'settings'
+// k/v store keyed by owner fingerprint so a multi-identity device never crosses one
+// issuer's codes into another identity's check.
+//
+// NOTE: Grow invites are MULTI-use (GROW_INVITE_CAP) — one code can receive MANY
+// joiner responses — so this is a membership+TTL check, NOT single-use consumption.
+// Per-joiner replay is guarded separately (a joiner already in the book is deduped).
+
+const ISSUED_GROW_CODES_KEY = 'issued_grow_codes';
+
+/** ownerFp -> { shortcode -> expiresAt (ISO string) } */
+export type IssuedCodeMap = Record<string, Record<string, string>>;
+
+/**
+ * Pure: drop expired codes across all owners. An unparseable/missing expiry counts
+ * as expired (fail-closed). Owners with no live codes are removed to keep the blob small.
+ */
+export function pruneIssuedCodes(map: IssuedCodeMap, nowMs: number): IssuedCodeMap {
+  const out: IssuedCodeMap = {};
+  for (const [fp, codes] of Object.entries(map || {})) {
+    const kept: Record<string, string> = {};
+    for (const [code, exp] of Object.entries(codes || {})) {
+      const t = new Date(exp).getTime();
+      if (Number.isFinite(t) && t > nowMs) kept[code] = exp;
+    }
+    if (Object.keys(kept).length > 0) out[fp] = kept;
+  }
+  return out;
+}
+
+/** Pure: did this owner issue this code, and is it still outstanding (present + unexpired)? */
+export function isCodeOutstanding(map: IssuedCodeMap, ownerFp: string, code: string, nowMs: number): boolean {
+  const exp = map?.[ownerFp]?.[code];
+  if (!exp) return false;
+  const t = new Date(exp).getTime();
+  return Number.isFinite(t) && t > nowMs;
+}
+
+async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
+  const setting = await txGet<{ key: string; value: string }>('settings', ISSUED_GROW_CODES_KEY);
+  if (!setting?.value) return {};
+  try {
+    const parsed = JSON.parse(setting.value);
+    return parsed && typeof parsed === 'object' ? (parsed as IssuedCodeMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Remember a Grow shortcode this owner just issued, until it expires. Prunes expired
+ * entries on every write so the store stays bounded.
+ */
+export async function recordIssuedGrowCode(ownerFp: string, code: string, expiresAt: string): Promise<void> {
+  if (!ownerFp || !code || !expiresAt) return;
+  const map = await loadIssuedCodeMap();
+  const pruned = pruneIssuedCodes(map, Date.now());
+  if (!pruned[ownerFp]) pruned[ownerFp] = {};
+  pruned[ownerFp][code] = expiresAt;
+  await txPut('settings', { key: ISSUED_GROW_CODES_KEY, value: JSON.stringify(pruned) });
+}
+
+/**
+ * R1 consume-side check: did THIS owner issue this shortcode, and is it still
+ * outstanding? Used to bind a joiner's response to a real, live invite of ours.
+ */
+export async function isOutstandingIssuedCode(ownerFp: string, code: string): Promise<boolean> {
+  const map = await loadIssuedCodeMap();
+  return isCodeOutstanding(map, ownerFp, code, Date.now());
+}

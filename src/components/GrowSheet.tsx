@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRelay } from '@/lib/sync/relay';
-import { loadKey } from '@/lib/identity/client-store';
+import { loadKey, recordIssuedGrowCode } from '@/lib/identity/client-store';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -37,6 +37,10 @@ export function GrowSheet({ open, onClose, identity }: Props) {
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const result = await createRelay(JSON.stringify(signed));
       setRelay({ url: result.url, code: result.code });
+      // Remember this issued shortcode (giver-side R1 anti-replay) so a joiner's
+      // signed response can be bound to a live invite of ours. Best-effort — a
+      // persistence hiccup must never block sharing the invite.
+      try { await recordIssuedGrowCode(fp, result.code, result.expiresAt); } catch { /* non-fatal */ }
     } catch (e: any) {
       started.current = false;
       setError(e?.message || 'Could not prepare the invite.');
