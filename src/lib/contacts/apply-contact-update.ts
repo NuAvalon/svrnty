@@ -44,6 +44,18 @@
 
 import type { ContactState } from '../trust/contact-state';
 import { getContactState } from '../trust/contact-state';
+// Shared method-field vocabulary (Flint's single-source, method-grow #125128 / #125153): the curated
+// handle keys + value bounds live ONCE in trust/contact-update and are IMPORTED here (and by the
+// send-UI) so verify ≡ apply ≡ send-UI can never drift. These are DATA constants only — apply still
+// declares its own VerifiedContactUpdate and never imports the verify FUNCTION, so the
+// "apply cannot run without verify" decoupling holds.
+import {
+  CONTACT_HANDLE_KEYS,
+  HANDLES_MAX_COUNT,
+  HANDLE_VALUE_MAX_LEN,
+  URLS_MAX_COUNT,
+  URL_VALUE_MAX_LEN,
+} from '../trust/contact-update';
 
 /**
  * The verified delta this module consumes. Structurally identical to
@@ -120,6 +132,9 @@ export class ContactUpdateApplyRejected extends Error {
  */
 export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
   'display_name', 'phones', 'emails', 'note',
+  // method-grow #125128: messaging-app handles map + website urls. Kept IDENTICAL to verify's set
+  // (contact-update.ts) — the divergence-guard test fails on drift. Both earned a FIELD_MAP home below.
+  'handles', 'urls',
 ]);
 
 /**
@@ -171,6 +186,41 @@ const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
     r.phones = list;
     if (list.length > 0) r.phone = list[0];
   },
+  // handles → messaging-app handles map (method-grow #125128). MERGE semantics, NOT replace: an update
+  // revising ONE handle (e.g. signal) carries only that sub-key and must NOT wipe the others (telegram,
+  // …) — replace-whole-map would be silent data-loss (Flint #125132). Delete sentinel is the EMPTY
+  // STRING '' (NOT null — canonicalize forbids null in the signed form, so null could never be signed;
+  // Flint #125153): value '' deletes that key, any other bounded string sets it. Value-guard (curated
+  // keys / ≤count / ≤len) is defence-in-depth here (verify already fail-closed pre-crypto).
+  handles: (r, v) => {
+    const incoming = asHandlesMap(v);
+    // Home is contact_info.handles (nested) — the channel home vCard import writes and contactToEdge
+    // SURFACES (`contact_info: c.contact_info`); a top-level r.handles would store-but-never-show
+    // (the emails/phones "view gap"). Writing here means a revised handle actually reaches the peer's
+    // rendered card. MERGE into the existing map (clone first → pure).
+    const ci: Record<string, unknown> = isPlainObject(r.contact_info)
+      ? { ...(r.contact_info as Record<string, unknown>) }
+      : {};
+    const merged: Record<string, string> = isPlainObject(ci.handles)
+      ? { ...(ci.handles as Record<string, string>) }
+      : {};
+    for (const [k, val] of Object.entries(incoming)) {
+      if (val === '') delete merged[k]; // '' = explicit removal
+      else merged[k] = val; // set / overwrite
+    }
+    ci.handles = merged;
+    r.contact_info = ci;
+  },
+  // urls → website(s), string[] (method-grow #125128). REPLACE semantics (unlike handles): urls is a
+  // small bounded flat list the send-UI always sends whole. Home is contact_info.urls (surfaces via
+  // contactToEdge) — matches the TrustEdge.contact_info type + the vCard channel home.
+  urls: (r, v) => {
+    const ci: Record<string, unknown> = isPlainObject(r.contact_info)
+      ? { ...(r.contact_info as Record<string, unknown>) }
+      : {};
+    ci.urls = asUrls(v);
+    r.contact_info = ci;
+  },
 };
 
 /** The wire fields the apply FIELD_MAP can write onto a ContactRecord. Every allowlisted field MUST
@@ -186,6 +236,46 @@ function asString(v: unknown): string {
 function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v) || !v.every((x) => typeof x === 'string'))
     throw new ContactUpdateApplyRejected('field-not-mappable', 'expected string[]');
+  return v as string[];
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Validate + normalize an inbound `handles` delta (defence-in-depth: verify already fail-closed on an
+ * abusive signed map pre-crypto). Bounds are the SHARED constants from trust/contact-update (single
+ * source, no drift). Empty-string values are ALLOWED here — they are the merge-delete sentinel the
+ * FIELD_MAP setter interprets (Flint #125153); non-string / oversized / off-curated → fail loud.
+ */
+function asHandlesMap(v: unknown): Record<string, string> {
+  if (!isPlainObject(v))
+    throw new ContactUpdateApplyRejected('field-not-mappable', 'handles must be an object');
+  const keys = Object.keys(v);
+  if (keys.length > HANDLES_MAX_COUNT)
+    throw new ContactUpdateApplyRejected('field-not-mappable', `handles count ${keys.length} > ${HANDLES_MAX_COUNT}`);
+  const out: Record<string, string> = {};
+  for (const k of keys) {
+    if (!CONTACT_HANDLE_KEYS.has(k))
+      throw new ContactUpdateApplyRejected('field-not-mappable', `handle key not curated: ${k}`);
+    const val = (v as Record<string, unknown>)[k];
+    if (typeof val !== 'string' || val.length > HANDLE_VALUE_MAX_LEN)
+      throw new ContactUpdateApplyRejected('field-not-mappable', `handle value: ${k}`);
+    out[k] = val;
+  }
+  return out;
+}
+
+/** Validate + normalize an inbound `urls` delta (bounded flat list; shared bounds; replace-semantics). */
+function asUrls(v: unknown): string[] {
+  if (!Array.isArray(v))
+    throw new ContactUpdateApplyRejected('field-not-mappable', 'urls must be an array');
+  if (v.length > URLS_MAX_COUNT)
+    throw new ContactUpdateApplyRejected('field-not-mappable', `urls count ${v.length} > ${URLS_MAX_COUNT}`);
+  for (const u of v)
+    if (typeof u !== 'string' || u.length > URL_VALUE_MAX_LEN)
+      throw new ContactUpdateApplyRejected('field-not-mappable', 'url value invalid/oversized');
   return v as string[];
 }
 

@@ -96,7 +96,12 @@ test('multiple mapped fields apply together', () => {
 // this test fails loud — exactly the mistake the 'field-not-mappable' branch guards.
 for (const field of CONTACT_UPDATE_ALLOWED_FIELDS) {
   test(`allowlisted field '${field}' has a mapping (no silent drop)`, () => {
-    const delta = (field === 'emails' || field === 'phones') ? { [field]: ['x'] } : { [field]: 'x' };
+    const delta =
+      field === 'emails' || field === 'phones' || field === 'urls'
+        ? { [field]: ['x'] }
+        : field === 'handles'
+          ? { [field]: { signal: 'x' } } // handles is a curated map, not a scalar
+          : { [field]: 'x' };
     assert.doesNotThrow(() =>
       applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta }), NOW),
     );
@@ -104,7 +109,7 @@ for (const field of CONTACT_UPDATE_ALLOWED_FIELDS) {
 }
 
 // ── Fields OUTSIDE the spartan allowlist fail-close at the firewall ──────────
-for (const field of ['urls', 'given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
+for (const field of ['given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
   test(`non-allowlisted field '${field}' throws field-not-allowed (defence-in-depth firewall)`, () => {
     assert.throws(
       () => applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta: { [field]: 'x' } }), NOW),
@@ -132,14 +137,14 @@ test('a field outside the allowlist throws field-not-allowed even if it reached 
   );
 });
 
-test('apply allowlist is the canonical set {display_name,phones,emails,note} (0.4-verify aligns on merge)', () => {
+test('apply allowlist is the canonical set (method-grow #125128 added handles + urls)', () => {
   // The canonical contact.update vocabulary (Archie D1 #115574 / Flint #115581; phones
-  // folded in per Fable 9.2 / spec §2 #115738). Flint's 0.4 verify allowlist aligns to
-  // THIS exact set at merge-reconcile; a divergence-guard test over both files asserts
-  // equality once they coexist.
+  // folded in per Fable 9.2 / spec §2 #115738; handles + urls grown together in the
+  // method-grow #125128). Flint's 0.4 verify allowlist is IDENTICAL — the cross-file
+  // divergence-guard test below asserts equality now that they coexist on the branch.
   assert.deepEqual(
     [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
-    ['display_name', 'phones', 'emails', 'note'].sort(),
+    ['display_name', 'phones', 'emails', 'note', 'handles', 'urls'].sort(),
   );
 });
 
@@ -203,4 +208,98 @@ test('the caller record is never mutated (pure function)', () => {
   const snapshot = JSON.stringify(c);
   applyVerifiedContactUpdate(c, update(), NOW);
   assert.equal(JSON.stringify(c), snapshot);
+});
+
+// ── Method-grow #125128: handles (MERGE) + urls (REPLACE) ────────────────────
+// Home is contact_info (nested) — the channel home vCard writes and contactToEdge SURFACES,
+// so a revised handle actually reaches the peer's rendered card (not a store-but-never-show gap).
+
+test('handles: a new handle writes into contact_info.handles (surfaces via contactToEdge)', () => {
+  const { next } = applyVerifiedContactUpdate(
+    contact(),
+    update({ changed_fields: ['handles'], delta: { handles: { signal: '@alice.99' } } }),
+    NOW,
+  );
+  assert.deepEqual((next.contact_info as Record<string, unknown>)?.handles, { signal: '@alice.99' });
+});
+
+test('handles MERGE: revising one handle preserves the others (data-loss guard, Flint #125132)', () => {
+  const c = contact({ contact_info: { handles: { signal: '@old', telegram: '@tg' } } });
+  const { next } = applyVerifiedContactUpdate(
+    c,
+    update({ changed_fields: ['handles'], delta: { handles: { signal: '@new' } } }),
+    NOW,
+  );
+  // signal updated, telegram UNTOUCHED — a replace-whole-map would have wiped it.
+  assert.deepEqual((next.contact_info as Record<string, unknown>).handles, { signal: '@new', telegram: '@tg' });
+});
+
+test("handles removal: value '' deletes that key, preserves the rest (Flint's sentinel, NOT null)", () => {
+  const c = contact({ contact_info: { handles: { signal: '@s', telegram: '@tg' } } });
+  const { next } = applyVerifiedContactUpdate(
+    c,
+    update({ changed_fields: ['handles'], delta: { handles: { signal: '' } } }),
+    NOW,
+  );
+  assert.deepEqual((next.contact_info as Record<string, unknown>).handles, { telegram: '@tg' });
+});
+
+test('handles value-guard: an off-curated key fails loud (field-not-mappable)', () => {
+  assert.throws(
+    () => applyVerifiedContactUpdate(contact(), update({ changed_fields: ['handles'], delta: { handles: { myspace: '@a' } } }), NOW),
+    (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-mappable',
+  );
+});
+
+test('handles value-guard: a non-string value fails loud', () => {
+  assert.throws(
+    () => applyVerifiedContactUpdate(contact(), update({ changed_fields: ['handles'], delta: { handles: { signal: 42 as unknown as string } } }), NOW),
+    (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-mappable',
+  );
+});
+
+test('handles value-guard: too many keys (> HANDLES_MAX_COUNT) fails loud', () => {
+  const many: Record<string, string> = {};
+  for (let i = 0; i < 20; i++) many[`k${i}`] = 'v'; // 20 > 16
+  assert.throws(
+    () => applyVerifiedContactUpdate(contact(), update({ changed_fields: ['handles'], delta: { handles: many } }), NOW),
+    (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-mappable',
+  );
+});
+
+test('urls: REPLACE — the full bounded list writes into contact_info.urls', () => {
+  const c = contact({ contact_info: { urls: ['https://old.example'] } });
+  const { next } = applyVerifiedContactUpdate(
+    c,
+    update({ changed_fields: ['urls'], delta: { urls: ['https://new.example', 'https://blog.example'] } }),
+    NOW,
+  );
+  assert.deepEqual((next.contact_info as Record<string, unknown>).urls, ['https://new.example', 'https://blog.example']);
+});
+
+test('urls value-guard: too many (> URLS_MAX_COUNT) fails loud', () => {
+  const many = Array.from({ length: 12 }, (_, i) => `https://e${i}.example`);
+  assert.throws(
+    () => applyVerifiedContactUpdate(contact(), update({ changed_fields: ['urls'], delta: { urls: many } }), NOW),
+    (e: unknown) => e instanceof ContactUpdateApplyRejected && e.reason === 'field-not-mappable',
+  );
+});
+
+test('handles/urls apply is pure (caller contact_info not mutated)', () => {
+  const c = contact({ contact_info: { handles: { signal: '@old' }, urls: ['https://old'] } });
+  const snapshot = JSON.stringify(c);
+  applyVerifiedContactUpdate(c, update({ changed_fields: ['handles'], delta: { handles: { signal: '@new' } } }), NOW);
+  assert.equal(JSON.stringify(c), snapshot); // current record untouched (MERGE clones first)
+});
+
+// ── LOCKSTEP divergence-guard: apply allowlist ≡ Flint verify allowlist ──────
+// The canonical invariant is verify ≡ apply. Each file declares its OWN Set (apply never imports
+// the verify FUNCTION — only the shared value constants), and THIS test is the guard that they never
+// drift. The method-grow grew BOTH together (#125128); if a future grow touches only one, this fails.
+test('apply allowlist ≡ Flint verify allowlist (no drift — the lockstep guard)', async () => {
+  const verify = await import('../trust/contact-update');
+  assert.deepEqual(
+    [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
+    [...verify.CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
+  );
 });
