@@ -5,7 +5,12 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, readKey } from 'openpgp';
-import { buildContactUpdateDeposits, type ContactUpdateOwner, type ContactUpdateRecipient } from './send-contact-update';
+import {
+  buildContactUpdateDeposits,
+  sendContactUpdate,
+  type ContactUpdateOwner,
+  type ContactUpdateRecipient,
+} from './send-contact-update';
 import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
 import { verifyIncomingContactUpdate, type KnownContactIdentity } from '../trust/contact-update';
 import { deriveMailboxId } from '../relay/mailbox-auth';
@@ -126,4 +131,54 @@ test('unsendable change throws before ANY deposit (field firewall — whole-upda
     buildContactUpdateDeposits({ version: 1, delta: { location: { lat: 1 } } }, owner, [bob]),
     /field-not-allowed/,
   );
+});
+
+// ── sendContactUpdate: the POST-loop (mock fetch) ───────────────────────────────
+function mockFetch(handler: (url: string, body: { mailbox_id: string; blob: string }) => { ok: boolean; status: number }): typeof fetch {
+  return (async (url: unknown, init: { body: string }) => {
+    const r = handler(String(url), JSON.parse(init.body));
+    return { ok: r.ok, status: r.status, json: async () => ({ status: 'queued' }) } as Response;
+  }) as unknown as typeof fetch;
+}
+
+test('sendContactUpdate: all deposits POST OK → deposited=all, POST shape {mailbox_id,blob} to /api/relay/envelope', async () => {
+  const seen: Array<{ url: string; body: { mailbox_id: string; blob: string } }> = [];
+  const fetchImpl = mockFetch((url, body) => { seen.push({ url, body }); return { ok: true, status: 200 }; });
+  const r = await sendContactUpdate({ version: 1, delta: { display_name: 'A' } }, owner, [bob, carol], { fetchImpl });
+  assert.deepEqual(r.deposited.sort(), [deriveMailboxId(bob.fingerprint), deriveMailboxId(carol.fingerprint)].sort());
+  assert.equal(r.failed.length, 0);
+  assert.equal(r.skipped.length, 0);
+  assert.ok(seen.every((s) => s.url.endsWith('/api/relay/envelope')));
+  assert.ok(seen.every((s) => typeof s.body.mailbox_id === 'string' && typeof s.body.blob === 'string'));
+});
+
+test('sendContactUpdate: a relay 429 → that deposit in failed, others still deposited', async () => {
+  const bobMbx = deriveMailboxId(bob.fingerprint);
+  const fetchImpl = mockFetch((_u, body) => (body.mailbox_id === bobMbx ? { ok: false, status: 429 } : { ok: true, status: 200 }));
+  const r = await sendContactUpdate({ version: 1, delta: { display_name: 'A' } }, owner, [bob, carol], { fetchImpl });
+  assert.deepEqual(r.failed, [{ mailbox_id: bobMbx, status: 429 }]);
+  assert.deepEqual(r.deposited, [deriveMailboxId(carol.fingerprint)]);
+});
+
+test('sendContactUpdate: a network throw → network-error in failed, batch continues', async () => {
+  const bobMbx = deriveMailboxId(bob.fingerprint);
+  const fetchImpl = (async (_u: unknown, init: { body: string }) => {
+    if (JSON.parse(init.body).mailbox_id === bobMbx) throw new Error('net down');
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  const r = await sendContactUpdate({ version: 1, delta: { display_name: 'A' } }, owner, [bob, carol], { fetchImpl });
+  assert.deepEqual(r.failed, [{ mailbox_id: bobMbx, status: 'network-error' }]);
+  assert.equal(r.deposited.length, 1);
+});
+
+test('sendContactUpdate: a no-key recipient is skipped (never POSTed), others sent', async () => {
+  const fetchImpl = mockFetch(() => ({ ok: true, status: 200 }));
+  const r = await sendContactUpdate(
+    { version: 1, delta: { display_name: 'A' } },
+    owner,
+    [bob, { fingerprint: 'FPNOKEY', publicKeyArmored: '' }],
+    { fetchImpl },
+  );
+  assert.equal(r.deposited.length, 1);
+  assert.deepEqual(r.skipped, [{ fingerprint: 'FPNOKEY', reason: 'no-public-key' }]);
 });

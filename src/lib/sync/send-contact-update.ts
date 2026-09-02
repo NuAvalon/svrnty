@@ -110,3 +110,50 @@ export async function buildContactUpdateDeposits(
 
   return { deposits, skipped };
 }
+
+/** Outcome of actually POSTing the deposits — honest per-recipient accounting for a "sent to N of M" UI. */
+export interface SendContactUpdateResult {
+  /** mailbox_ids that accepted the deposit (relay 200). */
+  deposited: string[];
+  /** recipients skipped before POST (no/bad key) — carried from buildContactUpdateDeposits. */
+  skipped: ContactUpdateSendPlan['skipped'];
+  /** deposits whose POST failed (relay non-2xx or network error) — retryable, not a crypto failure. */
+  failed: Array<{ mailbox_id: string; status: number | string }>;
+}
+
+/**
+ * The drop-in: sign once, encrypt per-recipient, and POST each deposit to the return-channel mailbox.
+ * The "mailbox deposit" the stub reserves for Flint. Pure of UI concern — the caller (dialog) supplies
+ * change/owner/recipients and maps this result to its own UX. Each POST is independent: one failure is
+ * collected, never aborts the batch (at-least-once; the recipient's version floor makes re-send idempotent).
+ * Throws only if the change itself is unsendable (buildContactUpdateDeposits' firewall) — before any POST.
+ */
+export async function sendContactUpdate(
+  change: ContactUpdateChange,
+  owner: ContactUpdateOwner,
+  recipients: ContactUpdateRecipient[],
+  opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
+): Promise<SendContactUpdateResult> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const relayBase = opts.relayBase ?? '/api/relay';
+
+  const { deposits, skipped } = await buildContactUpdateDeposits(change, owner, recipients);
+
+  const deposited: string[] = [];
+  const failed: SendContactUpdateResult['failed'] = [];
+  for (const d of deposits) {
+    try {
+      const res = await doFetch(`${relayBase}/envelope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mailbox_id: d.mailbox_id, blob: d.blob }),
+      });
+      if (res.ok) deposited.push(d.mailbox_id);
+      else failed.push({ mailbox_id: d.mailbox_id, status: res.status });
+    } catch {
+      failed.push({ mailbox_id: d.mailbox_id, status: 'network-error' });
+    }
+  }
+
+  return { deposited, skipped, failed };
+}
