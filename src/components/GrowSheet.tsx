@@ -40,7 +40,7 @@ export function GrowSheet({ open, onClose, identity }: Props) {
       // Remember this issued shortcode (giver-side R1 anti-replay) so a joiner's
       // signed response can be bound to a live invite of ours. Best-effort — a
       // persistence hiccup must never block sharing the invite.
-      try { await recordIssuedGrowCode(fp, result.code, result.expiresAt); } catch { /* non-fatal */ }
+      try { await recordIssuedGrowCode(fp, result.code); } catch { /* non-fatal */ }
     } catch (e: any) {
       started.current = false;
       setError(e?.message || 'Could not prepare the invite.');

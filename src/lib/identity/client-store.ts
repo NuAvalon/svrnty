@@ -704,54 +704,91 @@ export async function clearAll(confirm: 'I understand this deletes all keys'): P
   });
 }
 
-// ── Issued Grow-code tracking (R1 pending-joiner anti-replay, giver-side) ─────
-// When a giver mints a Grow invite (createRelay), we remember the shortcode until
-// it expires. A joiner's SIGNED response binds this code as its inviteNonce
-// (Flint's verifyJoinerResponse); the giver accepts the response only if the code
-// is one WE issued and still outstanding — invite-INSTANCE anti-replay layered on
-// top of the joiner-sig + giverFp-bind + giver-only-decrypt + mailbox-single-use
-// + joinerFp-dedup defenses. The binding is "which invite," not secrecy, so the
-// PUBLIC shortcode is fine here.
+// ── Issued Grow-code tracking (R1 pending-joiner accept-oracle, giver-side) ───
+// When a giver mints a Grow invite (createRelay), we remember the shortcode. A
+// joiner's SIGNED response binds this code as its inviteNonce (Flint's
+// verifyJoinerResponse); the giver's accept-oracle admits the response only if the
+// code is one WE issued, still within the ACCEPTANCE WINDOW, under the invite cap,
+// and this joiner hasn't already been accepted on it. Layered on the crypto's
+// joiner-sig + giverFp-bind + giver-only-decrypt + Invariant-1 defenses. The binding
+// is "which invite," not secrecy — the PUBLIC shortcode is fine here.
 //
-// Codes are short-lived (relay TTL ~15min) and per-device. Stored in the 'settings'
-// k/v store keyed by owner fingerprint so a multi-identity device never crosses one
-// issuer's codes into another identity's check.
+// MULTI-USE (Flint #125359): a Grow link accepts up to GROW_INVITE_CAP DISTINCT
+// joiners — key the accepted-set by (code, joinerFp), NEVER consume the code.
+// Same-joiner replay is dropped here AND idempotent at addContact (fp-dedup).
 //
-// NOTE: Grow invites are MULTI-use (GROW_INVITE_CAP) — one code can receive MANY
-// joiner responses — so this is a membership+TTL check, NOT single-use consumption.
-// Per-joiner replay is guarded separately (a joiner already in the book is deduped).
+// ACCEPTANCE WINDOW = the mailbox envelope TTL (~7d), NOT the relay's 15-min
+// dead-drop: the giver may be offline and poll days later; a legit response must
+// still be admitted. Aligns to RELAY_ENVELOPE_TTL_MS default (mailbox-config.ts).
+//
+// Flint's acceptNonce predicate is SYNC but IndexedDB is async — so the consume
+// path loads the map ONCE per poll (loadIssuedCodeMap), builds a sync predicate
+// over that snapshot (isCodeOutstanding + codeUnderCap + alreadyAccepted), and
+// records accepts back (markAcceptedInMap on the snapshot so later envelopes in the
+// same poll see it; recordAcceptedJoiner persists). Codes are per-device, stored in
+// the 'settings' k/v store keyed by owner fp so a multi-identity device never crosses
+// one issuer's codes into another identity's oracle.
 
 const ISSUED_GROW_CODES_KEY = 'issued_grow_codes';
+// Acceptance window matches the mailbox envelope TTL (~7d) so a giver polling days
+// after issuing still admits a joiner-response — NOT the 15-min relay dead-drop.
+const R1_ACCEPTANCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** ownerFp -> { shortcode -> expiresAt (ISO string) } */
-export type IssuedCodeMap = Record<string, Record<string, string>>;
+/** One issued code: when it stops accepting (epoch ms), and which joiner fps it has accepted. */
+export interface IssuedCodeEntry { acceptUntil: number; accepted: string[] }
+/** ownerFp -> { shortcode -> entry } */
+export type IssuedCodeMap = Record<string, Record<string, IssuedCodeEntry>>;
 
-/**
- * Pure: drop expired codes across all owners. An unparseable/missing expiry counts
- * as expired (fail-closed). Owners with no live codes are removed to keep the blob small.
- */
+function normalizeEntry(e: unknown): IssuedCodeEntry | null {
+  if (!e || typeof e !== 'object') return null;
+  const r = e as Record<string, unknown>;
+  if (!Number.isFinite(r.acceptUntil as number)) return null;
+  return { acceptUntil: r.acceptUntil as number, accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [] };
+}
+
+/** Pure: drop entries past their acceptance window. Owners left empty are removed. */
 export function pruneIssuedCodes(map: IssuedCodeMap, nowMs: number): IssuedCodeMap {
   const out: IssuedCodeMap = {};
   for (const [fp, codes] of Object.entries(map || {})) {
-    const kept: Record<string, string> = {};
-    for (const [code, exp] of Object.entries(codes || {})) {
-      const t = new Date(exp).getTime();
-      if (Number.isFinite(t) && t > nowMs) kept[code] = exp;
+    const kept: Record<string, IssuedCodeEntry> = {};
+    for (const [code, raw] of Object.entries(codes || {})) {
+      const entry = normalizeEntry(raw);
+      if (entry && entry.acceptUntil > nowMs) kept[code] = entry;
     }
     if (Object.keys(kept).length > 0) out[fp] = kept;
   }
   return out;
 }
 
-/** Pure: did this owner issue this code, and is it still outstanding (present + unexpired)? */
+/** Pure: did this owner issue this code, still within its acceptance window? */
 export function isCodeOutstanding(map: IssuedCodeMap, ownerFp: string, code: string, nowMs: number): boolean {
-  const exp = map?.[ownerFp]?.[code];
-  if (!exp) return false;
-  const t = new Date(exp).getTime();
-  return Number.isFinite(t) && t > nowMs;
+  const e = map?.[ownerFp]?.[code];
+  return !!e && Number.isFinite(e.acceptUntil) && e.acceptUntil > nowMs;
 }
 
-async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
+/** Pure: is this code still under the distinct-joiner invite cap? (caller passes GROW_INVITE_CAP) */
+export function codeUnderCap(map: IssuedCodeMap, ownerFp: string, code: string, cap: number): boolean {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return false;
+  return (Array.isArray(e.accepted) ? e.accepted.length : 0) < cap;
+}
+
+/** Pure: has this exact joiner already been accepted on this code? */
+export function alreadyAccepted(map: IssuedCodeMap, ownerFp: string, code: string, joinerFp: string): boolean {
+  const e = map?.[ownerFp]?.[code];
+  return !!e && Array.isArray(e.accepted) && e.accepted.includes(joinerFp);
+}
+
+/** Pure: record a VERIFIED joiner fp as accepted on a code (idempotent). Mutates + returns map. */
+export function markAcceptedInMap(map: IssuedCodeMap, ownerFp: string, code: string, joinerFp: string): IssuedCodeMap {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return map;
+  if (!Array.isArray(e.accepted)) e.accepted = [];
+  if (!e.accepted.includes(joinerFp)) e.accepted.push(joinerFp);
+  return map;
+}
+
+async function loadRawIssuedCodeMap(): Promise<IssuedCodeMap> {
   const setting = await txGet<{ key: string; value: string }>('settings', ISSUED_GROW_CODES_KEY);
   if (!setting?.value) return {};
   try {
@@ -762,24 +799,44 @@ async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
   }
 }
 
-/**
- * Remember a Grow shortcode this owner just issued, until it expires. Prunes expired
- * entries on every write so the store stays bounded.
- */
-export async function recordIssuedGrowCode(ownerFp: string, code: string, expiresAt: string): Promise<void> {
-  if (!ownerFp || !code || !expiresAt) return;
-  const map = await loadIssuedCodeMap();
-  const pruned = pruneIssuedCodes(map, Date.now());
-  if (!pruned[ownerFp]) pruned[ownerFp] = {};
-  pruned[ownerFp][code] = expiresAt;
-  await txPut('settings', { key: ISSUED_GROW_CODES_KEY, value: JSON.stringify(pruned) });
+async function saveIssuedCodeMap(map: IssuedCodeMap): Promise<void> {
+  await txPut('settings', { key: ISSUED_GROW_CODES_KEY, value: JSON.stringify(map) });
 }
 
 /**
- * R1 consume-side check: did THIS owner issue this shortcode, and is it still
- * outstanding? Used to bind a joiner's response to a real, live invite of ours.
+ * Load the pruned issued-code map for building the SYNC accept-oracle in the consume
+ * path. Load ONCE per poll, then pass the snapshot to the pure helpers above.
+ */
+export async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
+  return pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+}
+
+/** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window. */
+export async function recordIssuedGrowCode(ownerFp: string, code: string): Promise<void> {
+  if (!ownerFp || !code) return;
+  const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+  if (!map[ownerFp]) map[ownerFp] = {};
+  const prior = map[ownerFp][code];
+  // Fresh window on (re)issue; preserve any joiners already accepted on this code.
+  map[ownerFp][code] = { acceptUntil: Date.now() + R1_ACCEPTANCE_WINDOW_MS, accepted: prior?.accepted ?? [] };
+  await saveIssuedCodeMap(map);
+}
+
+/**
+ * Persist a VERIFIED joiner fp as accepted on a code (giver-side, after a non-null
+ * verifyJoinerResponse). Records ONLY the crypto-verified fp — never a pre-check claim.
+ */
+export async function recordAcceptedJoiner(ownerFp: string, code: string, verifiedJoinerFp: string): Promise<void> {
+  if (!ownerFp || !code || !verifiedJoinerFp) return;
+  const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+  markAcceptedInMap(map, ownerFp, code, verifiedJoinerFp);
+  await saveIssuedCodeMap(map);
+}
+
+/**
+ * Async single-code outstanding check (convenience). The consume path prefers
+ * loadIssuedCodeMap + the sync helpers so the accept-oracle stays synchronous.
  */
 export async function isOutstandingIssuedCode(ownerFp: string, code: string): Promise<boolean> {
-  const map = await loadIssuedCodeMap();
-  return isCodeOutstanding(map, ownerFp, code, Date.now());
+  return isCodeOutstanding(await loadIssuedCodeMap(), ownerFp, code, Date.now());
 }
