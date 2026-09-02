@@ -128,7 +128,9 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
     delete next.blocked;
     delete next.notes;
     delete next.tags;
+    delete next.distress_inbound;
     out.metadata = next;
   }
+  delete (out as { distress_inbound?: unknown }).distress_inbound;
   return out;
 }

@@ -27,6 +27,8 @@ interface SampleContact {
     introduced_by_fp: string;
     context: string;
   };
+  /** Sample inbound Distress — paints the vivre on load-sample. */
+  distress?: boolean;
 }
 
 /** Deterministic fake fingerprints (40 hex) — no matching keys; gray/keyless OK. */
@@ -53,6 +55,7 @@ const SAMPLE: SampleContact[] = [
     urls: ['https://analytical.engine/~ada'],
     reciprocal: true,
     notes: 'Mutual trust · analytical engines & poetry.',
+    distress: true,
   },
   {
     name: 'Grace Hopper',
@@ -200,7 +203,9 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         notes: c.notes,
         pending_intro: c.pending_intro || undefined,
         connection_status: c.pending_intro ? 'pending' : 'accepted',
+        distress_inbound: c.distress || undefined,
       },
+      distress_inbound: c.distress || undefined,
     } as any);
     n++;
   }

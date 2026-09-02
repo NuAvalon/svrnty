@@ -54,5 +54,6 @@ export function contactRecordToEdge(c: any): TrustEdge {
     pending_intro: c.pending_intro || c.metadata?.pending_intro,
     // CUR-5 — owner-local block flag (like tags: never publish on the wire).
     blocked: !!(c.blocked ?? c.metadata?.blocked),
+    distress_inbound: !!(c.distress_inbound ?? c.metadata?.distress_inbound),
   } as TrustEdge;
 }

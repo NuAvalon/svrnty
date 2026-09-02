@@ -47,6 +47,8 @@ import {
   safeHandleLink,
 } from '@/lib/contacts/safe-contact-link';
 import { ownerHasVerified, ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { contactHasDistress, DISTRESS_COPY, distressWentPersistPatch } from '@/lib/trust/distress';
+import { VivreBurn, VivreCaution } from '@/components/VivreBurn';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
   applyTrustAction,
@@ -75,6 +77,7 @@ interface Contact {
     connection_method?: 'manual' | 'qr' | 'burner_link' | 'mutual';
     mutual_contacts?: string[];
     blocked?: boolean;
+    distress_inbound?: boolean;
   };
   // Imported contact channels (vCard). Phones parse + persist on the ContactRecord but were never
   // surfaced to the UI (Chaos#40) — carry them so the detail view can render them.
@@ -986,7 +989,8 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 
         {/* Contact Detail */}
         <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-          <DialogContent className="sm:max-w-lg">
+          <DialogContent className="sm:max-w-lg" style={{ position: 'relative', overflow: 'hidden' }}>
+            {selectedContact && contactHasDistress(selectedContact as any) && <VivreBurn />}
             {selectedContact && (
               <>
                 <DialogHeader>
@@ -1000,6 +1004,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                   </DialogTitle>
                   <DialogDescription>Contact details and trust management.</DialogDescription>
                 </DialogHeader>
+                {contactHasDistress(selectedContact as any) && <VivreCaution />}
 
                 <div className="space-y-5">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1174,6 +1179,19 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                         <DropdownMenuItem onSelect={() => { setShowShardGiveDialog(true); setShowDetailDialog(false); }}>
                           Give a piece
                         </DropdownMenuItem>
+                        {contactHasDistress(selectedContact as any) && (
+                          <DropdownMenuItem
+                            onSelect={async () => {
+                              const rec = await getContactByFingerprint(fingerprint, selectedContact.fingerprint).catch(() => null);
+                              const patch = distressWentPersistPatch({ ...(selectedContact.metadata || {}), ...(rec as any)?.metadata });
+                              await updateContact(selectedContact.id, patch as any);
+                              await loadContacts();
+                              onContactsChange?.();
+                            }}
+                          >
+                            {DISTRESS_COPY.went}
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuItem
                           onSelect={() =>
                             setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block')

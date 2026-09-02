@@ -54,6 +54,11 @@ export interface TrustEdge {
   added_at: string;
   /** Owner-local mute (CUR-5). Never publish — strip on wire like tags. */
   blocked?: boolean;
+  /**
+   * Owner-local: you received a Distress packet about them (witnessed receipt).
+   * Paints the vivre. NEVER publish.
+   */
+  distress_inbound?: boolean;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys

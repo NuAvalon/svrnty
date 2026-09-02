@@ -7,6 +7,7 @@ import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
 import { GrowSheet } from '@/components/GrowSheet';
+import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
@@ -35,6 +36,7 @@ import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodRe
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { distressWentPersistPatch } from '@/lib/trust/distress';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -65,6 +67,7 @@ export default function Home() {
     preselected: string[];
   } | null>(null);
   const [growOpen, setGrowOpen] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -480,6 +483,24 @@ export default function Home() {
             >
               Grow
             </button>
+            <button
+              type="button"
+              onClick={() => setRecoveryOpen(true)}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: E.accent,
+                background: 'transparent',
+                border: `1px solid ${E.borderLit}`,
+                borderRadius: 999,
+                padding: '6px 12px',
+                cursor: 'pointer',
+              }}
+            >
+              Recovery
+            </button>
           ) : null}
           <HelpGuide />
         </div>
@@ -571,6 +592,13 @@ export default function Home() {
                   const records = await getAllContacts(identity.identity.fingerprint);
                   const rec = records.find((r) => r.id === edge.id);
                   const patch = ownerVerifyPersistPatch((rec as any)?.metadata, method);
+                  await updateContact(edge.id, patch as any);
+                  await refreshContacts();
+                }}
+                onDistressWent={async (edge) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const patch = distressWentPersistPatch((rec as any)?.metadata);
                   await updateContact(edge.id, patch as any);
                   await refreshContacts();
                 }}
@@ -701,6 +729,12 @@ export default function Home() {
 
       {identity && (
         <GrowSheet open={growOpen} onClose={() => setGrowOpen(false)} identity={identity} />
+        <RecoverySheet
+          open={recoveryOpen}
+          onClose={() => setRecoveryOpen(false)}
+          identity={identity}
+          contacts={contacts}
+        />
       )}
 
       <footer

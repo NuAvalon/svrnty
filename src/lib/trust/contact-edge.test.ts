@@ -39,6 +39,17 @@ test('carries owner_verify from metadata for the trust prereq', () => {
   assert.equal(edge.owner_verify?.method, 'in_person');
 });
 
+test('carries inbound distress as a witnessed receipt', () => {
+  const edge = contactRecordToEdge({
+    id: 'd',
+    fingerprint: 'fp5',
+    name: 'Ada',
+    public_key: 'PK5',
+    metadata: { distress_inbound: true },
+  });
+  assert.equal(edge.distress_inbound, true);
+});
+
 test('a contact with no pq → edge pq is undefined (no crash, classical-only edge)', () => {
   const edge = contactRecordToEdge({ id: 'z', fingerprint: 'fp3', name: 'Cy', public_key: 'PK3' });
   assert.equal(edge.peer_pq_kem_public_key, undefined);

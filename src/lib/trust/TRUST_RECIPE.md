@@ -22,6 +22,7 @@ Header **Grow** (Ceremony tab removed). QR + short link; uses 1–7 (multi-use n
 
 ## Galaxy
 Tab label. Nameplate: fingerprint for compare-aloud + in-person / another-channel verify, then Trust.
+Inbound Distress paints a vivre: ember in the star, burning corner on the card. **I went** clears the mark on this device only. Sender Recovery → Distress is silent (no sent receipt).
 
 ## Bottom
 `TRUST_RECIPE_COPY.manifesto*` — SVRNTY / never lose it / never give it away / post-quantum · local-first · social-recovery / you are not a product. Social-recovery is the stance (Shamir is real); rebuild-from-circle is not a click yet.
