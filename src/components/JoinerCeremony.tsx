@@ -31,6 +31,9 @@ import {
   getAllContacts,
   storeHeldShard,
   SHARD_CUSTODY_TYPE,
+  isSessionUnlocked,
+  initSessionKey,
+  lockSession,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -132,6 +135,14 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [contacts, setContacts] = useState<TrustEdge[]>([]);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
 
+  // Unlock gate (R1): the joiner arrives at /c/ with a LOCKED session (the memory-only session key does
+  // not survive the navigation). Signing the return-channel joiner-response needs the private key, so we
+  // prompt for the passphrase at the "make the edge live" step to complete a MUTUAL connection.
+  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const [unlockPass, setUnlockPass] = useState('');
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [unlockBusy, setUnlockBusy] = useState(false);
+
   // Shard ("the tear") landing on this device.
   const [shardFrom, setShardFrom] = useState<string>('Someone');
   const [shardState, setShardState] = useState<'idle' | 'accepting' | 'accepted' | 'exists'>('idle');
@@ -217,6 +228,15 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
 
   const persistEdge = useCallback(async () => {
     if (!peer || !ownerFp) return;
+    // A MUTUAL connection requires signing a joiner-response with our private key (so the giver learns of
+    // us and the edge is two-way). The session key is memory-only and does NOT survive the /c/ navigation,
+    // so a joiner arriving via a link is locked. Prompt for the passphrase here — unlocking both persists
+    // the edge AND signs the return deposit. Without this, the deposit is skipped and the connect stays
+    // one-directional (the R1 bug). If already unlocked (e.g. same-tab from the main app), proceed directly.
+    if (!isSessionUnlocked()) {
+      setNeedsUnlock(true);
+      return;
+    }
     try {
       // Idempotent: if we already know them, don't double-add — advance with the existing edge.
       const existing = peer.fingerprint
@@ -260,6 +280,27 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       ceremony.fail(err?.message || 'Could not write the edge.');
     }
   }, [peer, ownerFp, code, ceremony]);
+
+  // Unlock the identity to sign the mutual connection, then persist the edge + deposit. initSessionKey
+  // derives the key WITHOUT validating, so a wrong passphrase yields a key that can't decrypt — verify by
+  // a loadKey (which throws on a bad passphrase) and lock again on failure so isSessionUnlocked stays honest.
+  const submitUnlock = useCallback(async () => {
+    if (!ownerFp || !unlockPass || unlockBusy) return;
+    setUnlockBusy(true);
+    setUnlockError(null);
+    try {
+      await initSessionKey(unlockPass);
+      await loadKey(ownerFp); // throws on a wrong passphrase (can't decrypt the stored key)
+      setNeedsUnlock(false);
+      setUnlockPass('');
+      await persistEdge(); // now unlocked → adds the edge + signs & deposits the joiner-response + advances
+    } catch {
+      lockSession(); // clear the bad session key so the gate stays honest
+      setUnlockError('That passphrase didn’t unlock your identity. Please try again.');
+    } finally {
+      setUnlockBusy(false);
+    }
+  }, [ownerFp, unlockPass, unlockBusy, persistEdge]);
 
   // --- Shard ("the tear") accept ---
   const acceptShard = useCallback(async () => {
@@ -425,7 +466,38 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
               Add {peer.name} to your network — a trust edge written to your device, a persisted
               connection between the two of you.
             </p>
-            <button style={primaryBtnStyle} onClick={persistEdge}>Add to my network →</button>
+            {!needsUnlock ? (
+              <button style={primaryBtnStyle} onClick={persistEdge}>Add to my network →</button>
+            ) : (
+              <div style={{ marginTop: 18 }}>
+                {/* Anti-phishing (Flint #4 / Hypatia): a secret is demanded BY and FOR the user's OWN
+                    vault (owner act) — never framed as the price of connecting with the giver. Owner
+                    action, {peer.name} as the object. Shown only AFTER the intentional "Add" click. */}
+                <p style={{ ...subStyle, marginBottom: 12 }}>
+                  Unlock your svrnty to finish adding {peer.name}. This is your own vault — your key
+                  never leaves this device.
+                </p>
+                <input
+                  type="password"
+                  value={unlockPass}
+                  onChange={(e) => setUnlockPass(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void submitUnlock(); }}
+                  placeholder="Your passphrase"
+                  autoFocus
+                  style={unlockInputStyle}
+                />
+                <button
+                  style={{ ...primaryBtnStyle, opacity: !unlockPass || unlockBusy ? 0.5 : 1 }}
+                  disabled={!unlockPass || unlockBusy}
+                  onClick={() => void submitUnlock()}
+                >
+                  {unlockBusy ? 'Unlocking…' : 'Unlock →'}
+                </button>
+                {unlockError && (
+                  <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>{unlockError}</p>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -596,6 +668,21 @@ const cardBoxStyle: React.CSSProperties = {
   padding: '12px 16px',
   margin: '16px auto 4px',
   maxWidth: 360,
+};
+const unlockInputStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  maxWidth: 320,
+  margin: '0 auto 4px',
+  background: 'rgba(6, 10, 8, 0.8)',
+  border: `1px solid ${C.emeraldDim}`,
+  borderRadius: 8,
+  padding: '11px 14px',
+  color: C.ink,
+  fontSize: 14,
+  fontFamily: "'Space Grotesk', sans-serif",
+  textAlign: 'center',
+  outline: 'none',
 };
 const primaryBtnStyle: React.CSSProperties = {
   background: 'rgba(52, 211, 153, 0.12)',
