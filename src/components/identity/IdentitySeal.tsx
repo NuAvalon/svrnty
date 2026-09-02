@@ -113,9 +113,15 @@ export function randomFingerprint(len = 40): string {
 }
 
 export function fnv(fp: string): number {
+  // The seal seed must be a function of the KEY, not its string formatting:
+  // normalize to canonical lowercase hex first (matches hexNibbles / fingerprintHex).
+  // Without this, the same key rendered upper- vs lower-case — e.g. seed-phrase
+  // restore uppercases the fingerprint — yields a DIFFERENT seal, so a recovered
+  // identity appears to change. The identity glyph must be stable across recovery.
+  const s = fp.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   let h = 2166136261;
-  for (let i = 0; i < fp.length; i++) {
-    h ^= fp.charCodeAt(i);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
