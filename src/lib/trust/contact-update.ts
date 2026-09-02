@@ -84,7 +84,27 @@ export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
   'phones', // → ContactRecord phones passthrough (vCard TEL, E.164-normalized); first earned grow (#115747)
   'emails', // → primary to ContactRecord.email; full list on the emails passthrough
   'note', // → ContactRecord.notes (contactToEdge reads c.notes || c.metadata?.notes)
+  'handles', // → messaging-app handles map {signal,whatsapp,telegram,discord,matrix,instagram,facebook}; reach-only, self-asserted. Method-grow #125128. VALUE-guard (≤16 curated keys / ≤128-char values / sanitize-as-claimed) enforced recipient-side on apply + at send-UI (Athena's lane); this firewall gates the KEY.
+  'urls', // → website(s), string[]; reach-only (method-grow #125128).
 ]);
+
+/**
+ * The curated messaging-app handle keys allowed inside a `handles` map — SHARED single-source so verify,
+ * apply, and the send-UI enforce the SAME set (no drift, same reason CONTACT_UPDATE_ALLOWED_FIELDS is one
+ * Set). Reach-only, self-asserted. Grow-later: add a key HERE (all under the already-grown 'handles'
+ * field → no protocol/allowlist re-grow). Method-grow #125128 (Peter's list).
+ */
+export const CONTACT_HANDLE_KEYS: ReadonlySet<string> = new Set([
+  'signal', 'whatsapp', 'telegram', 'discord', 'matrix', 'instagram', 'facebook',
+]);
+
+/** Recipient-side VALUE bounds for the structured method fields — the verify firewall fail-CLOSES on an
+ *  abusive SIGNED handles map / urls list BEFORE apply (a valid signature doesn't make an oversized or
+ *  off-curated map safe). Apply + send-UI additionally enforce these (defense-in-depth). */
+export const HANDLES_MAX_COUNT = 16;
+export const HANDLE_VALUE_MAX_LEN = 128;
+export const URLS_MAX_COUNT = 8;
+export const URL_VALUE_MAX_LEN = 512; // URLs run longer than handle values
 
 /** A contact.update as it arrives off the wire: the envelope plus its detached envelope signature. */
 export interface SignedContactUpdate {
@@ -126,6 +146,7 @@ export type ContactUpdateRejectReason =
   | 'epoch-regression' // envelope.epoch < the epoch we trust
   | 'epoch-ahead-needs-lineage' // envelope.epoch > ours — must run successor-lineage catch-up first
   | 'field-not-allowed' // a changed_field is outside the allowlist firewall (I-4 / I-6)
+  | 'field-value-invalid' // a structured field's VALUE is malformed/abusive (handles: non-map / >16 / off-curated / oversized; urls: non-array / oversized) — fail-closed BEFORE apply
   | 'undeclared-delta-field' // delta carries a key not declared in changed_fields (smuggling)
   | 'declared-field-missing' // changed_fields names a field absent from delta (dishonest manifest)
   | 'pq-required' // caller required the hybrid suite but the signature is classical-only
@@ -237,6 +258,36 @@ export async function verifyIncomingContactUpdate(
   for (const f of envelope.changed_fields)
     if (!Object.prototype.hasOwnProperty.call(envelope.delta, f))
       throw new ContactUpdateRejected('declared-field-missing', f);
+
+  // 5b) VALUE firewall for the structured method fields — a valid signature does NOT make an abusive
+  //     map safe. The recipient fail-CLOSES on a malformed/oversized handles map or urls list BEFORE
+  //     apply (defense-in-depth with apply + send-UI). Pre-crypto (cheap → DoS-resistant). Bounds are
+  //     the shared CONTACT_HANDLE_KEYS + *_MAX constants (verify ≡ apply ≡ send-UI, single source).
+  for (const f of envelope.changed_fields) {
+    const v = envelope.delta[f];
+    if (f === 'handles') {
+      if (!isPlainObject(v)) throw new ContactUpdateRejected('field-value-invalid', 'handles must be an object');
+      const hk = Object.keys(v);
+      if (hk.length > HANDLES_MAX_COUNT)
+        throw new ContactUpdateRejected('field-value-invalid', `handles count ${hk.length} > ${HANDLES_MAX_COUNT}`);
+      for (const k of hk) {
+        if (!CONTACT_HANDLE_KEYS.has(k)) throw new ContactUpdateRejected('field-value-invalid', `handle key: ${k}`);
+        const hv = (v as Record<string, unknown>)[k];
+        // Each handle value is a bounded string. Empty string '' = explicit removal (apply deletes the
+        // key, per merge-semantics). null is NOT allowed — canonicalize forbids null in the signed form,
+        // so a null could never have been legitimately signed; reject it here too.
+        if (typeof hv !== 'string' || hv.length > HANDLE_VALUE_MAX_LEN)
+          throw new ContactUpdateRejected('field-value-invalid', `handle value: ${k}`);
+      }
+    } else if (f === 'urls') {
+      if (!Array.isArray(v)) throw new ContactUpdateRejected('field-value-invalid', 'urls must be an array');
+      if (v.length > URLS_MAX_COUNT)
+        throw new ContactUpdateRejected('field-value-invalid', `urls count ${v.length} > ${URLS_MAX_COUNT}`);
+      for (const u of v)
+        if (typeof u !== 'string' || u.length > URL_VALUE_MAX_LEN)
+          throw new ContactUpdateRejected('field-value-invalid', 'url value');
+    }
+  }
 
   // 6) Optional suite floor for this contact.
   if (opts.requirePq && !signature.pq_signature)
