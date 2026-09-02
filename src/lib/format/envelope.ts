@@ -19,6 +19,11 @@ export const DOMAIN_IDENTITY_CARD = 'svrnty:identity-card:v1';
 // drift is a domain-confusion bug — centralizing eliminates that class).
 export const DOMAIN_KEY_ROTATION = 'svrnty:key-rotation:v1';
 export const DOMAIN_KEY_RECOVERY = 'svrnty:key-recovery:v1';
+// R1 mutual-connect (pending-joiner return channel + remote mutual-vouch). Flint's crypto; the tag
+// STRINGS live here as single-source so a signer/verifier drift can't cause domain confusion — a
+// joiner-response signature can never verify as a contact-update / identity-card, and vice-versa.
+export const DOMAIN_JOINER_RESPONSE = 'svrnty:joiner-response:v1';
+export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
 
 // --- A2: Durable identity + epoch/lineage (formats-cheap: fields only, no rotation UX) ---
 
@@ -56,6 +61,44 @@ export interface ContactUpdateEnvelope {
   updated_at: string;              // ISO-8601 UTC — audit/display only, NOT the ordering key
   changed_fields: string[];        // allowlist subset; unknown field → reject the whole update
   delta: Record<string, unknown>;  // only the changed fields
+}
+
+/**
+ * R1 pending-joiner RETURN-CHANNEL envelope (KNOWN tier). Closes the one-directional Grow asymmetry
+ * (Peter #125331: the joiner adds the giver via a relay/QR invite, but the giver never learns → no
+ * mutual edge → the contact.update wire can't reach the joiner). After the joiner adds the giver, the
+ * joiner SIGNS this self-asserted identity claim and deposits it (per-peer-encrypted) to the giver's
+ * mailbox; the giver verifies and surfaces the joiner as KNOWN (unverified TOFU — the 3-state floor,
+ * Peter #125308). Identity-only BY DESIGN: once the edge is mutual the giver holds the joiner's card,
+ * so the already-live contact.update wire (0.4) carries METHODS both ways — this envelope only needs
+ * to make the edge exist. NOT a monotonic stream (a one-shot handshake) → no `version`; replay is
+ * bounded by the single-use `invite_nonce` (the giver's own relay code), not a version floor.
+ */
+export interface JoinerResponseEnvelope {
+  joiner_fingerprint: string;         // self-asserted; the verifier re-derives H(joiner_public_key) (Invariant-1)
+  joiner_epoch: number;               // the joiner's current key epoch — seeds the giver's future-update floor
+  joiner_public_key: string;          // armored classical (OpenPGP/Ed25519) — the key the signature verifies against (TOFU)
+  joiner_pq_sig_public_key?: string;  // base64(ML-DSA-87 pubkey); present iff hybrid. Bound by the classical sig (anti-swap). OMITTED when absent (canonical rejects null).
+  joiner_display_name: string;        // self-asserted (KNOWN = unverified, so a self-asserted name is the correct trust level)
+  giver_fingerprint: string;          // the giver this response is FOR — binds it so a copied blob can't be replayed to another giver's mailbox
+  invite_nonce: string;               // the giver's relay code the joiner used — proves the joiner used THIS giver's invite (anti-unsolicited); single-use, giver-side
+  ts: string;                         // ISO-8601 UTC — audit/display only
+}
+
+/**
+ * R1 remote mutual-VOUCH envelope (TRUSTED tier). Once a party has VERIFIED a KNOWN contact
+ * out-of-band (KNOWN→VERIFIED is the receiver's LOCAL flag, no crypto — the key is already bound),
+ * they may VOUCH: sign "I, voucher, have verified vouchee" and deposit it (encrypted) to the vouchee's
+ * mailbox. When BOTH sides have vouched, the edge is TRUSTED (VERIFIED + MUTUAL, Peter #125308).
+ * Unlike the joiner-response this is NOT TOFU — the vouchee already holds the voucher's key (a
+ * KNOWN/VERIFIED contact), so the vouch verifies against that HELD key. `vouchee_fingerprint` binds
+ * the vouch to its intended recipient (no replay to a third party). In-person mutual QR/NFC grants
+ * TRUSTED atomically and needs no wire; this is the REMOTE path.
+ */
+export interface MutualVouchEnvelope {
+  voucher_fingerprint: string;   // who is vouching (the sender) — the vouchee already holds this key
+  vouchee_fingerprint: string;   // who is being vouched for (= the recipient's own fp) — binds the recipient
+  ts: string;                    // ISO-8601 UTC — audit/display only
 }
 
 /**
@@ -102,6 +145,16 @@ export function contactUpdateSigningInput(env: ContactUpdateEnvelope): string {
 /** Canonical bytes for an F6 slug-claim signature. */
 export function slugClaimSigningInput(claim: SlugClaim): string {
   return canonicalize(claim, { exclude: ['signature'] });
+}
+
+/** Canonical bytes for a joiner-response signature (excludes any attached `signature`). */
+export function joinerResponseSigningInput(env: JoinerResponseEnvelope): string {
+  return canonicalize(env, { exclude: ['signature'] });
+}
+
+/** Canonical bytes for a mutual-vouch signature (excludes any attached `signature`). */
+export function mutualVouchSigningInput(env: MutualVouchEnvelope): string {
+  return canonicalize(env, { exclude: ['signature'] });
 }
 
 /**
