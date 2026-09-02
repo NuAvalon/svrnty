@@ -62,13 +62,13 @@ function baseDeps(overrides: Partial<ConsumeDeps>): ConsumeDeps {
 test('routes a joiner-response via the joiner seam (verify-first) — no fall-through to contact-update', async () => {
   const pj = pendingJoiner();
   let decryptCalls = 0;
-  let acceptedWith: PendingJoiner | null = null;
+  const acceptedFps: string[] = [];
   const emitted: LiveApplyEvent[] = [];
   const ackLog: string[][] = [];
 
   const joiner: JoinerResponseSeam = {
     verify: async (blob) => (blob === 'JOINER_BLOB' ? pj : null),
-    accept: async (p) => { acceptedWith = p; return { ignited: true }; },
+    accept: async (p) => { acceptedFps.push(p.fingerprint); return { ignited: true }; },
   };
 
   const summary = await consumeInboundContactUpdates(baseDeps({
@@ -78,7 +78,7 @@ test('routes a joiner-response via the joiner seam (verify-first) — no fall-th
     fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'JOINER_BLOB' }], ackLog),
   }));
 
-  assert.equal(acceptedWith?.fingerprint, 'BOBFP', 'the joiner seam accepted the verified joiner');
+  assert.deepEqual(acceptedFps, ['BOBFP'], 'the joiner seam accepted the verified joiner (routed to the joiner path)');
   assert.equal(decryptCalls, 0, 'the contact-update decryptor was NOT invoked — routed by verify, not decrypt');
   assert.equal(summary.applied, 1, 'a fresh joiner surfaces as an apply');
   assert.equal(summary.acked, 1, 'the consumed envelope is acked');
