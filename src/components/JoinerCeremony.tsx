@@ -260,7 +260,13 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           name: peer.name,
           fingerprint: peer.fingerprint,
           public_key: peer.publicKey,
-          trust_level: 'pending',
+          // KNOWN, not 'pending': the joiner added the giver from a CRYPTO-VERIFIED Grow card
+          // (classifyImportedCard verified the signature) — that earns KNOWN immediately per Peter's model
+          // (#125307: KNOWN = add-from-link/qr, no mutuality; mutuality is only for TRUSTED). 'pending'
+          // under-claimed the tier (render-neutral — the faint node keys on connection_status, not
+          // trust_level — but the stored value should honestly match the crypto). Causality-cleared: no
+          // logic-reader keys on trust_level==='pending'.
+          trust_level: 'known',
           email: peer.email,
           ...pqFields, // authenticated pq (branch 4b) only; dropped on 2/3/4a/4c
         } as any);

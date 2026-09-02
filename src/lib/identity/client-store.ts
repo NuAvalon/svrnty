@@ -558,7 +558,21 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   // instead. (Verified in-browser: two ''-fp puts → 2nd errors; two absent-fp puts → both OK.)
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
   if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
-  await txPut('contacts', record);
+  try {
+    await txPut('contacts', record);
+  } catch (e) {
+    // Idempotent-by-fingerprint (Archie #125432 — fix at the source, not per-caller): two concurrent
+    // add-paths for the same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add)
+    // can each pass a getContactByFingerprint pre-check as null, then both insert. The UNIQUE fingerprint
+    // index (contacts store) catches the 2nd → ConstraintError. Rather than surface that caught error,
+    // return the record that WON the race — exactly one contact, no duplicate, no error, every add-path
+    // safe by construction. Fetch runs in a fresh db/transaction (txPut closed its own), so it's clean.
+    if (record.fingerprint && (e as { name?: string } | null)?.name === 'ConstraintError') {
+      const existing = await getContactByFingerprint(ownerFingerprint, record.fingerprint);
+      if (existing) return existing;
+    }
+    throw e; // any other failure (or missing existing) → preserve the fail-closed contract
+  }
   return record;
 }
 
