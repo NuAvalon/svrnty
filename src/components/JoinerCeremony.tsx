@@ -469,8 +469,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           <div>
             <h2 style={headingStyle}>Make the edge live</h2>
             <p style={subStyle}>
-              Add {peer.name} to your network — a trust edge written to your device, a persisted
-              connection between the two of you.
+              Add {peer.name} to your network — a connection saved to your device, between the two of you.
+              (A known contact for now; trust is something you choose to grant later.)
             </p>
             {!needsUnlock ? (
               <button style={primaryBtnStyle} onClick={persistEdge}>Add to my network →</button>
