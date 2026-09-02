@@ -84,6 +84,8 @@ export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
   'phones', // → ContactRecord phones passthrough (vCard TEL, E.164-normalized); first earned grow (#115747)
   'emails', // → primary to ContactRecord.email; full list on the emails passthrough
   'note', // → ContactRecord.notes (contactToEdge reads c.notes || c.metadata?.notes)
+  'handles', // → messaging-app handles map {signal,whatsapp,telegram,discord,matrix,instagram,facebook}; reach-only, self-asserted. Method-grow #125128. VALUE-guard (≤16 curated keys / ≤128-char values / sanitize-as-claimed) enforced recipient-side on apply + at send-UI (Athena's lane); this firewall gates the KEY.
+  'urls', // → website(s), string[]; reach-only (method-grow #125128).
 ]);
 
 /** A contact.update as it arrives off the wire: the envelope plus its detached envelope signature. */

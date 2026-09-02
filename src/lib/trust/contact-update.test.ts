@@ -190,8 +190,11 @@ test('I-4: a device-location field is refused (field-not-allowed), pre-crypto', 
 // cross-checks them post-merge. This test is the verify-side half of that divergence guard. Fields that
 // moved to their own signed object type (public_key→key.rotate, routing→routing.update) or haven't
 // earned a grow yet (rich vCard set) are refused by the firewall pre-crypto.
-test('vocab: the allowlist is EXACTLY {display_name, phones, emails, note}', () => {
-  assert.deepEqual([...CONTACT_UPDATE_ALLOWED_FIELDS].sort(), ['display_name', 'emails', 'note', 'phones']);
+test('vocab: the allowlist is EXACTLY {display_name, phones, emails, note, handles, urls}', () => {
+  assert.deepEqual(
+    [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
+    ['display_name', 'emails', 'handles', 'note', 'phones', 'urls'],
+  );
 });
 
 test('shrink: public_key is refused field-not-allowed (moved to key.rotate — not a card field)', async () => {
