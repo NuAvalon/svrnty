@@ -70,6 +70,25 @@ export interface PrivateKeyBundle {
   pq_kem_secret_key: string;
 }
 
+/**
+ * Social-graph vault — the contacts + trust graph sealed under the SAME master
+ * secret as the KeyVault, so seed-phrase / Shamir recovery restores the graph too
+ * (not just the keys). Additive and optional: a backup without a graph_vault
+ * behaves exactly as before (keys recover, graph does not). This closes the gap
+ * where the graph was protected only by the passphrase and had no recovery path.
+ */
+export interface GraphVault {
+  version: '1.0.0';
+  /** AES-256-GCM encrypted, base64 — serialized graph payload (contacts + trust). */
+  encrypted_graph: string;
+  /** GCM auth tag, base64 (WebCrypto appends it to ciphertext; split for storage). */
+  auth_tag: string;
+  /** Initialization vector, base64. */
+  iv: string;
+  /** SHA-256 of the master secret — lets decrypt fail-closed on the wrong secret. */
+  master_secret_hash: string;
+}
+
 // --- Master Secret ---
 
 /**
@@ -142,6 +161,74 @@ export async function decryptVault(
   const encrypted = fromBase64(vault.encrypted_keys);
 
   // WebCrypto expects ciphertext + tag concatenated
+  const ciphertextWithTag = new Uint8Array(encrypted.length + authTag.length);
+  ciphertextWithTag.set(encrypted);
+  ciphertextWithTag.set(authTag, encrypted.length);
+
+  const key = await crypto.subtle.importKey(
+    'raw', masterSecret, { name: 'AES-GCM' }, false, ['decrypt']
+  );
+
+  const decrypted = new Uint8Array(
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertextWithTag)
+  );
+
+  return JSON.parse(new TextDecoder().decode(decrypted));
+}
+
+// --- Graph Vault (contacts + trust, sealed under the master secret) ---
+
+/**
+ * Encrypt the social graph (contacts + trust edges) under the SAME master secret
+ * that seals the key vault. Mirrors encryptVault (AES-256-GCM). The graph then
+ * inherits the key vault's recovery paths: seed phrase AND Shamir shards.
+ * `graph` is any JSON-serializable payload (e.g. { contacts: [...] }).
+ */
+export async function encryptGraphVault(
+  graph: unknown,
+  masterSecret: Uint8Array
+): Promise<GraphVault> {
+  const iv = new Uint8Array(12);
+  crypto.getRandomValues(iv);
+
+  const key = await crypto.subtle.importKey(
+    'raw', masterSecret, { name: 'AES-GCM' }, false, ['encrypt']
+  );
+
+  const plaintext = new TextEncoder().encode(JSON.stringify(graph));
+  const ciphertextWithTag = new Uint8Array(
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext)
+  );
+
+  const encrypted = ciphertextWithTag.slice(0, ciphertextWithTag.length - 16);
+  const authTag = ciphertextWithTag.slice(ciphertextWithTag.length - 16);
+
+  return {
+    version: '1.0.0',
+    encrypted_graph: toBase64(encrypted),
+    auth_tag: toBase64(authTag),
+    iv: toBase64(iv),
+    master_secret_hash: hashMasterSecret(masterSecret),
+  };
+}
+
+/**
+ * Decrypt the social graph from a GraphVault using the master secret.
+ * Fails closed on the wrong secret (hash check) or tampering (GCM auth).
+ */
+export async function decryptGraphVault<T = unknown>(
+  vault: GraphVault,
+  masterSecret: Uint8Array
+): Promise<T> {
+  const hash = hashMasterSecret(masterSecret);
+  if (hash !== vault.master_secret_hash) {
+    throw new Error('Invalid master secret — graph vault hash mismatch');
+  }
+
+  const iv = fromBase64(vault.iv);
+  const authTag = fromBase64(vault.auth_tag);
+  const encrypted = fromBase64(vault.encrypted_graph);
+
   const ciphertextWithTag = new Uint8Array(encrypted.length + authTag.length);
   ciphertextWithTag.set(encrypted);
   ciphertextWithTag.set(authTag, encrypted.length);
