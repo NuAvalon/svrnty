@@ -37,15 +37,19 @@ export function GrowSheet({ open, onClose, identity }: Props) {
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const result = await createRelay(JSON.stringify(signed));
       setRelay({ url: result.url, code: result.code });
-      // The issued shortcode is recorded (with its per-code cap) by the effect below — which also keeps
-      // the cap in sync when the issuer adjusts the toggle. Kept out of mint so the two paths don't race.
+      // Record the issued code + its cap IMMEDIATELY (belt-and-suspenders, Flint #125780 note 1): if this
+      // is left only to the effect below and the effect ever fails to fire, the code would be
+      // return-channel-DEAD (no joiner could ever be accepted → a silent mutual-connect failure). The
+      // effect below ALSO records — idempotent (recordIssuedGrowCode refreshes the window + preserves
+      // accepted) — and keeps the cap in sync when the issuer adjusts the toggle. Best-effort either way.
+      try { await recordIssuedGrowCode(fp, result.code, uses); } catch { /* non-fatal */ }
     } catch (e: any) {
       started.current = false;
       setError(e?.message || 'Could not prepare the invite.');
     } finally {
       setBusy(false);
     }
-  }, [identity]);
+  }, [identity, uses]);
 
   useEffect(() => {
     if (!open) {
