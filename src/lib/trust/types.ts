@@ -59,6 +59,18 @@ export interface TrustEdge {
    * Paints the vivre. NEVER publish.
    */
   distress_inbound?: boolean;
+  /**
+   * People in your book this peer also trusts (fleet PSI). Not transitive trust.
+   * Drawn as a peer chord only when both sides are open-visibility mutuals
+   * (see witnessedPeerTrustChords) — never inferred from owner tags.
+   */
+  they_trust?: string[];
+  /**
+   * Owner-local intent toward this peer: open visibility for trusted contacts.
+   * Not a wire field. Combined with reciprocal trust + they_trust, this is
+   * how a witnessed peer bond becomes visible on the glass.
+   */
+  open_visibility?: boolean;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys

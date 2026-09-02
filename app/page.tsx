@@ -465,6 +465,7 @@ export default function Home() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <AppearanceToggle />
           {identity ? (
+            <>
             <button
               type="button"
               onClick={() => setGrowOpen(true)}
@@ -501,6 +502,7 @@ export default function Home() {
             >
               Recovery
             </button>
+            </>
           ) : null}
           <HelpGuide />
         </div>
@@ -564,6 +566,11 @@ export default function Home() {
                   // CUR-2: seed local demo revisions once so history UI is exercisable
                   seedDemoMethodHistory(identity.identity.fingerprint);
                   setMethodHistoryTick((t) => t + 1);
+                  await refreshContacts();
+                }}
+                onRefresh={async () => {
+                  const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
+                  await pollLiveBookOnce(identity);
                   await refreshContacts();
                 }}
                 methodHistory={methodHistory}
@@ -728,6 +735,7 @@ export default function Home() {
       </main>
 
       {identity && (
+        <>
         <GrowSheet open={growOpen} onClose={() => setGrowOpen(false)} identity={identity} />
         <RecoverySheet
           open={recoveryOpen}
@@ -735,6 +743,7 @@ export default function Home() {
           identity={identity}
           contacts={contacts}
         />
+        </>
       )}
 
       <footer

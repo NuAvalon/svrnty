@@ -116,6 +116,20 @@ export interface LiveBookPollHandle {
  * The first tick fires immediately so a freshly-opened book catches already-waiting mail without waiting
  * a full interval.
  */
+/**
+ * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
+ * identity is a no-op (the book is still re-read by the caller). Does not invent
+ * a living wire; it only consumes what the mailbox already has.
+ */
+export async function pollLiveBookOnce(
+  identity: unknown,
+  opts: { fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
+  if (!deps) return;
+  await consumeInboundContactUpdates(deps);
+}
+
 export function startLiveBookPolling(
   identity: unknown,
   opts: { intervalMs?: number; fetchImpl?: typeof fetch } = {},

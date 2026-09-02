@@ -45,6 +45,7 @@ const FULL_RECORD = {
     urls: ['REC_url'],
     handles: { signal: 'REC_handle' },
   },
+  they_trust: ['REC_they_trust'],
 };
 
 // Fields intentionally NOT carried verbatim onto the edge — each with a reason.

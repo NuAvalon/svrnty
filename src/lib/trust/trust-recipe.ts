@@ -129,8 +129,15 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
     delete next.notes;
     delete next.tags;
     delete next.distress_inbound;
+    delete next.open_visibility;
+    if (next.share_settings && typeof next.share_settings === 'object') {
+      const share = { ...(next.share_settings as Record<string, unknown>) };
+      delete share.open_visibility;
+      next.share_settings = share;
+    }
     out.metadata = next;
   }
   delete (out as { distress_inbound?: unknown }).distress_inbound;
+  delete (out as { open_visibility?: unknown }).open_visibility;
   return out;
 }

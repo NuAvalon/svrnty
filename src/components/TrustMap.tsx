@@ -1,32 +1,38 @@
 // src/components/TrustMap.tsx
-// The crystalline trust-map — a flat, responsive SVG rendering of the viewer's
-// trust lattice. Replaces the old <canvas> constellation, whose ABSOLUTE pixel
-// radii pushed every node off-screen on a phone ("only the center shows"). This
-// renders inside a fixed viewBox scaled to 100% width, so it fits any device.
+// Egocentric particle-lattice: you at center, contacts in organic neighborhoods
+// (owner-authored tags). Trust is a GLOW overlay — not concentric rings.
+// Camera viewBox handles pan / wheel / pinch zoom (never CSS-scale a tiny SVG).
 //
-// Design reference: docs/design/svrnty-crystalline-lattice-template.svg
-// Tokens + the two constitutional rules (vivre spec §3):
-//   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize in ~1s on entry.
-//   (b) I-6 RENDER PROVENANCE — every visual property decodes to something the
-//       viewer AUTHORED or WITNESSED; nothing inferred; unlit = privacy, not absence.
-// Positions/opacities/radii come from ./lib/trust/trust-map-layout (pure + tested).
-// We render self + my real you→peer edges + real contact nodes.
-// Owner-authored group tags → soft cluster chords + centroid pull (NOT peer↔peer
-// trust inference). Mutual reciprocal is witnessed on the edge. Pending intros
-// are explicit metadata (introduction ≠ trust).
+// Constitutional:
+//   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize on entry.
+//   (b) I-6 RENDER PROVENANCE — authored or witnessed only; none inferred.
+//   Peer filaments: open-visibility reciprocal they_trust, never tags.
+// Layout: trust-map-layout.ts (pure). Camera: graph-camera.ts.
 
 "use client";
 
-import React, { useMemo, useState, useCallback } from 'react';
-import { ChevronDown } from 'lucide-react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { ChevronDown, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import { useGraphViewport } from '@/lib/trust/use-graph-viewport';
+import { boundsOf, hitTestNodes } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
 import {
   computeTrustLayout,
+  worldSizeForCount,
   SELF_CORE_RADIUS,
   SELF_RING_RADIUS,
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
+import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
+import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
+import {
+  applyLayoutMemory,
+  loadLayoutMemory,
+  mutualTopologySignature,
+  saveLayoutMemory,
+} from '@/lib/trust/layout-memory';
+import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
@@ -43,6 +49,7 @@ import {
   type TrustActionKind,
   type TrustActionTarget,
 } from '@/components/trust-actions/trust-actions';
+import { MethodHistoryPanel } from '@/components/identity/MethodHistoryPanel';
 import {
   ownerHasVerified,
   formatFingerprintForVerify,
@@ -95,9 +102,9 @@ interface TrustMapProps {
   onMethodHistoryChange?: () => void;
   /** Recipient: clear the vivre on this device after you acted in the world. */
   onDistressWent?: (edge: TrustEdge) => void | Promise<void>;
+  /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. */
+  onRefresh?: () => void | Promise<void>;
 }
-
-const VIEW = 400; // viewBox is VIEW×VIEW; the SVG scales it to the container width.
 
 // Solar Ember via CSS vars — follows light/dark appearance.
 const T = {
@@ -133,68 +140,20 @@ function nodeFill(state: TrustState, pending: boolean): string {
   return T.dimFill;
 }
 
-/** Soft pull same-tag nodes toward group centroids (owner-authored clusters). */
-function clusterPull(
-  nodes: LaidOutNode[],
-  contacts: TrustEdge[],
-  width: number,
-  height: number,
-): LaidOutNode[] {
-  const byId = new Map(nodes.map((n) => [n.id, { ...n }]));
-  const tagMembers = new Map<string, string[]>();
-  for (const c of contacts) {
-    const tags = c.tags || [];
-    for (const t of tags) {
-      if (!t) continue;
-      const list = tagMembers.get(t) || [];
-      list.push(c.peer_fingerprint);
-      tagMembers.set(t, list);
-    }
-  }
-  const margin = 18;
-  for (const [, fps] of tagMembers) {
-    if (fps.length < 2) continue;
-    const members = fps.map((id) => byId.get(id)).filter(Boolean) as LaidOutNode[];
-    if (members.length < 2) continue;
-    const cx = members.reduce((s, m) => s + m.x, 0) / members.length;
-    const cy = members.reduce((s, m) => s + m.y, 0) / members.length;
-    for (const m of members) {
-      const nx = m.x + (cx - m.x) * 0.42;
-      const ny = m.y + (cy - m.y) * 0.42;
-      m.x = Math.min(width - margin, Math.max(margin, nx));
-      m.y = Math.min(height - margin - 8, Math.max(margin, ny));
-      byId.set(m.id, m);
-    }
-  }
-  return nodes.map((n) => byId.get(n.id) || n);
-}
-
-/** Owner-authored shared-tag chords (not inferred peer trust). */
-function clusterChords(contacts: TrustEdge[]): { a: string; b: string; tag: string }[] {
-  const chords: { a: string; b: string; tag: string }[] = [];
-  const seen = new Set<string>();
-  const byTag = new Map<string, string[]>();
-  for (const c of contacts) {
-    for (const t of c.tags || []) {
-      if (!t) continue;
-      const list = byTag.get(t) || [];
-      list.push(c.peer_fingerprint);
-      byTag.set(t, list);
-    }
-  }
-  for (const [tag, fps] of byTag) {
-    for (let i = 0; i < fps.length; i++) {
-      for (let j = i + 1; j < fps.length; j++) {
-        const a = fps[i];
-        const b = fps[j];
-        const key = [a, b].sort().join('|') + '|' + tag;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        chords.push({ a, b, tag });
-      }
-    }
-  }
-  return chords;
+function iconBtnStyle(): React.CSSProperties {
+  return {
+    fontSize: 11,
+    padding: '6px 8px',
+    borderRadius: 8,
+    border: `1px solid ${E.border}`,
+    background: 'transparent',
+    color: E.muted,
+    cursor: 'pointer',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontFamily: E.fontSans,
+  };
 }
 
 export function TrustMap({
@@ -214,29 +173,133 @@ export function TrustMap({
   methodHistory,
   onMethodHistoryChange,
   onDistressWent,
+  onRefresh,
 }: TrustMapProps) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const {
+    cam,
+    reset: resetVp,
+    zoomBy,
+    applyFit,
+    elRef: viewportElRef,
+    didPan,
+    handlers: vpHandlers,
+  } = useGraphViewport();
+  const fittedOnce = useRef(false);
+  const [vpSize, setVpSize] = useState({ w: 400, h: 400 });
+  const [pullDy, setPullDy] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+  const pullRef = useRef<{ y: number; x: number; armed: boolean; pulling: boolean } | null>(null);
+  const [crystallizeNote, setCrystallizeNote] = useState<string | null>(null);
+  const prevMutualRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [fullscreen]);
+
   // Blocked contacts stay off the lattice (local owner filter — not a disclosure gate).
   const visibleContacts = useMemo(
     () => contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })),
     [contacts],
   );
 
-  const baseLayout = useMemo(
-    () =>
-      computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
-        width: VIEW,
-        height: VIEW,
-      }),
-    [ownerFingerprint, ownerName, visibleContacts],
+  const world = useMemo(() => worldSizeForCount(visibleContacts.length), [visibleContacts.length]);
+
+  const layout = useMemo(() => {
+    const raw = computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
+      width: world,
+      height: world,
+    });
+    const mutualBonds = witnessedPeerTrustChords(visibleContacts).map((c) => ({
+      a: c.a,
+      b: c.b,
+    }));
+    const topo = mutualTopologySignature(mutualBonds);
+    const { nodes: memory, topology: rememberedTopo } = loadLayoutMemory(ownerFingerprint);
+    const topologyChanged = topo !== rememberedTopo;
+    const blended = applyLayoutMemory(raw.nodes, memory, 0.55, topologyChanged);
+    const n = blended.length;
+    const density = Math.sqrt(Math.max(n, 1));
+    const nodes = relaxGraphNodes(blended, {
+      width: raw.width,
+      height: raw.height,
+      cx: raw.cx,
+      cy: raw.cy,
+      tagMembers: tagMembership(visibleContacts),
+      mutualBonds,
+      mutualBondGravity: topologyChanged ? 0.22 : 0.14,
+      mutualBondRest: 64,
+      padding: Math.min(36, Math.round(18 + density * 1.6)),
+      selfClearance: SELF_RING_RADIUS + 18,
+      iterations: Math.min(48, 22 + Math.floor(n / 4)),
+      clusterGravity: 0.12,
+      centerGravity: 0.003,
+      cloudMin: SELF_RING_RADIUS + 40,
+      cloudMax: Math.min(raw.cx, raw.cy) * 0.94,
+      repulsion: Math.min(1.1, 0.75 + density * 0.03),
+      margin: 22,
+    });
+    return { ...raw, nodes, topology: topo };
+  }, [ownerFingerprint, ownerName, visibleContacts, world]);
+
+  useEffect(() => {
+    if (!ownerFingerprint || layout.nodes.length === 0) return;
+    const t = window.setTimeout(() => {
+      saveLayoutMemory(
+        ownerFingerprint,
+        layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
+        layout.topology,
+      );
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [ownerFingerprint, layout.nodes, layout.topology]);
+
+  useEffect(() => {
+    fittedOnce.current = false;
+  }, [fullscreen]);
+
+  useEffect(() => {
+    const el = viewportElRef.current;
+    const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
+    applyFit(boundsOf([layout.self, ...layout.nodes], 28), aspect, fittedOnce.current ? 'limits' : 'reset');
+    fittedOnce.current = true;
+  }, [layout, fullscreen, applyFit, viewportElRef, world]);
+
+  useEffect(() => {
+    const el = viewportElRef.current;
+    if (!el) return;
+    const sync = () => setVpSize({ w: el.clientWidth, h: el.clientHeight });
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [viewportElRef, fullscreen]);
+
+  const posById = useMemo(() => {
+    const m = new Map<string, { x: number; y: number }>();
+    for (const n of layout.nodes) m.set(n.id, n);
+    return m;
+  }, [layout.nodes]);
+
+  const chords = useMemo(
+    () => latticeChords(visibleContacts, posById, 2),
+    [visibleContacts, posById],
   );
-  const layout = useMemo(
-    () => ({
-      ...baseLayout,
-      nodes: clusterPull(baseLayout.nodes, visibleContacts, VIEW, VIEW),
-    }),
-    [baseLayout, visibleContacts],
+  const peerChords = useMemo(
+    () => witnessedPeerTrustChords(visibleContacts),
+    [visibleContacts],
   );
-  const chords = useMemo(() => clusterChords(visibleContacts), [visibleContacts]);
   const edgeByFp = useMemo(() => {
     const m = new Map<string, EdgeExtras>();
     for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
@@ -401,19 +464,230 @@ export function TrustMap({
     }
   };
 
+  useEffect(() => {
+    const now = new Set<string>();
+    for (const c of visibleContacts) {
+      if (c.mutual?.reciprocal) now.add(c.peer_fingerprint);
+    }
+    const prev = prevMutualRef.current;
+    if (prev.size === 0 && now.size > 0) {
+      prevMutualRef.current = now;
+      return;
+    }
+    for (const id of now) {
+      if (!prev.has(id)) {
+        const name = edgeByFp.get(id)?.peer_name || 'Someone';
+        setCrystallizeNote(`Mutual trust crystallised with ${name}`);
+        window.setTimeout(() => setCrystallizeNote(null), 3200);
+        break;
+      }
+    }
+    prevMutualRef.current = now;
+  }, [visibleContacts, edgeByFp]);
+
+  const pxPerWorld = vpSize.w / Math.max(cam.w, 1);
+  const labels = useMemo(() => {
+    const cands: LabelCandidate[] = layout.nodes.map((n) => {
+      const sx = ((n.x - cam.x) / Math.max(cam.w, 1e-6)) * vpSize.w;
+      const sy = ((n.y - cam.y) / Math.max(cam.h, 1e-6)) * vpSize.h;
+      const rPx = Math.max(n.radius * pxPerWorld, 6);
+      return {
+        id: n.id,
+        name: pxPerWorld < 1.3 ? shortDisplayName(n.name) : n.name,
+        x: sx,
+        y: sy,
+        r: rPx,
+        priority: (n.id === focusId ? 'force' : n.state === 'trusted' ? 'trusted' : 'known') as LabelCandidate['priority'],
+      };
+    });
+    return selectLabels(cands, {
+      viewW: vpSize.w,
+      viewH: vpSize.h,
+      pxPerWorld,
+      maxLabels: 48,
+    });
+  }, [layout.nodes, cam, vpSize, pxPerWorld, focusId]);
+
+  const runRefresh = useCallback(async () => {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    setRefreshNote('Checking for updates…');
+    try {
+      await onRefresh();
+      setRefreshNote('Caught up.');
+    } catch {
+      setRefreshNote('Could not check right now.');
+    } finally {
+      setRefreshing(false);
+      setPullDy(0);
+      window.setTimeout(() => setRefreshNote(null), 1800);
+    }
+  }, [onRefresh, refreshing]);
+
+  const onVpPointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      const el = viewportElRef.current;
+      if (onRefresh && el) {
+        const rect = el.getBoundingClientRect();
+        if (e.clientY - rect.top < 64) {
+          pullRef.current = { y: e.clientY, x: e.clientX, armed: true, pulling: false };
+          return;
+        }
+      }
+      pullRef.current = null;
+      vpHandlers.onPointerDown(e);
+    },
+    [onRefresh, vpHandlers, viewportElRef],
+  );
+
+  const onVpPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      const pull = pullRef.current;
+      if (pull?.armed && onRefresh && !pull.pulling) {
+        const dy = e.clientY - pull.y;
+        const dx = Math.abs(e.clientX - pull.x);
+        if (dy > 12 && dy > dx * 1.2) {
+          pull.pulling = true;
+          setPullDy(Math.min(120, dy));
+          return;
+        }
+        if (Math.hypot(dx, dy) > 8) {
+          pullRef.current = null;
+          vpHandlers.onPointerDown(e);
+          vpHandlers.onPointerMove(e);
+          return;
+        }
+        return;
+      }
+      if (pull?.pulling) {
+        e.preventDefault();
+        setPullDy(Math.min(120, Math.max(0, e.clientY - pull.y)));
+        return;
+      }
+      vpHandlers.onPointerMove(e);
+    },
+    [onRefresh, vpHandlers],
+  );
+
+  const onVpPointerUp = useCallback(
+    (e: React.PointerEvent) => {
+      const pull = pullRef.current;
+      const firedPull = !!(pull?.pulling && pullDy > 64);
+      pullRef.current = null;
+      if (firedPull) {
+        void runRefresh();
+        vpHandlers.onPointerUp();
+        return;
+      }
+      setPullDy(0);
+      const panned = didPan();
+      vpHandlers.onPointerUp();
+      if (panned) return;
+      const el = viewportElRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const hit = hitTestNodes(
+        [layout.self, ...layout.nodes],
+        cam,
+        rect,
+        e.clientX,
+        e.clientY,
+      );
+      if (hit && hit !== layout.self.id) openFocus(hit);
+      else if (!hit) clearFocus();
+    },
+    [pullDy, runRefresh, vpHandlers, didPan, viewportElRef, layout, cam, openFocus, clearFocus],
+  );
+
+  const shellStyle: React.CSSProperties = fullscreen
+    ? {
+        position: 'fixed',
+        inset: 0,
+        zIndex: 80,
+        width: '100%',
+        maxWidth: 'none',
+        margin: 0,
+        padding: 12,
+        boxSizing: 'border-box',
+        background: E.bgCss,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }
+    : { width: '100%', maxWidth: 560, margin: '0 auto' };
+
   return (
-    <div style={{ width: '100%', maxWidth: 560, margin: '0 auto' }}>
+    <div style={shellStyle} data-testid="trust-map-shell" data-fullscreen={fullscreen ? '1' : '0'}>
       <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 6,
+          alignItems: 'center',
+          marginBottom: 10,
+          fontFamily: E.fontSans,
+          flexShrink: 0,
+        }}
+      >
+        {onRefresh ? (
+          <button
+            type="button"
+            data-testid="trust-map-refresh"
+            aria-label="Check for updates"
+            onClick={() => void runRefresh()}
+            disabled={refreshing}
+            style={iconBtnStyle()}
+          >
+            <RotateCw className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+        <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <button type="button" data-testid="trust-map-zoom-out" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
+            <ZoomOut className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" data-testid="trust-map-zoom-in" aria-label="Zoom in" onClick={() => zoomBy(1.12)} style={iconBtnStyle()}>
+            <ZoomIn className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" aria-label="Fit network" onClick={resetVp} style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}>
+            Fit
+          </button>
+          <button
+            type="button"
+            data-testid="trust-map-fullscreen"
+            aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
+            onClick={() => {
+              setFullscreen((v) => !v);
+              fittedOnce.current = false;
+            }}
+            style={iconBtnStyle()}
+          >
+            {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={viewportElRef}
         data-testid="trust-map"
         style={{
           position: 'relative',
           width: '100%',
-          aspectRatio: '1 / 1',
-          borderRadius: 16,
+          flex: fullscreen ? 1 : undefined,
+          aspectRatio: fullscreen ? undefined : '1 / 1',
+          minHeight: fullscreen ? 0 : undefined,
+          borderRadius: fullscreen ? 12 : 16,
           overflow: 'hidden',
           border: `1px solid ${E.borderLit}`,
           background: E.bgCss,
+          touchAction: 'none',
         }}
+        onPointerDown={onVpPointerDown}
+        onPointerMove={onVpPointerMove}
+        onPointerUp={onVpPointerUp}
+        onPointerCancel={onVpPointerUp}
+        onTouchStart={vpHandlers.onTouchStart}
+        onTouchMove={vpHandlers.onTouchMove}
+        onTouchEnd={vpHandlers.onTouchEnd}
       >
         <style>{`
           .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
@@ -432,13 +706,12 @@ export function TrustMap({
 
         <svg
           data-testid="trust-map-svg"
-          viewBox={`0 0 ${VIEW} ${VIEW}`}
+          viewBox={`${cam.x} ${cam.y} ${cam.w} ${cam.h}`}
           width="100%"
           height="100%"
-          preserveAspectRatio="xMidYMid meet"
+          preserveAspectRatio="none"
           role="img"
           aria-label={`Galaxy: ${visibleContacts.length} connection${visibleContacts.length === 1 ? '' : 's'}`}
-          onClick={clearFocus}
           style={{ display: 'block' }}
         >
           {/* Owner-authored group cluster chords */}
@@ -464,6 +737,32 @@ export function TrustMap({
                   style={{ ['--tm-o' as string]: 0.9, animationDelay: `${0.05 + i * 0.02}s` }}
                 >
                   <title>{`Group · ${ch.tag}`}</title>
+                </line>
+              );
+            })}
+          </g>
+
+          {/* Witnessed open-visibility peer bonds — not tags */}
+          <g>
+            {peerChords.map((ch, i) => {
+              const a = layout.nodes.find((n) => n.id === ch.a);
+              const b = layout.nodes.find((n) => n.id === ch.b);
+              if (!a || !b) return null;
+              return (
+                <line
+                  key={`peer-${ch.a}-${ch.b}`}
+                  className="tm-cluster"
+                  data-testid="trust-peer-chord"
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                  stroke={T.lit}
+                  strokeOpacity={0.55}
+                  strokeWidth={1.6}
+                  style={{ ['--tm-o' as string]: 0.9, animationDelay: `${0.08 + i * 0.02}s` }}
+                >
+                  <title>Witnessed mutual trust</title>
                 </line>
               );
             })}
@@ -578,91 +877,115 @@ export function TrustMap({
               strokeWidth={1.6}
             />
             <circle cx={layout.self.x} cy={layout.self.y} r={5} fill={T.selfDot} />
-            <text
-              x={layout.self.x}
-              y={layout.self.y + SELF_CORE_RADIUS + 15}
-              textAnchor="middle"
-              fontSize={12}
-              fill={T.label}
-              style={{ fontFamily: E.fontSans }}
-            >
-              You
-            </text>
           </g>
-
-          <g>
-            {layout.nodes.map((n, i) => {
-              const edge = edgeByFp.get(n.id);
-              const pending = isPending(edge);
-              return (
-                <text
-                  key={`l-${n.id}`}
-                  className="tm-label"
-                  x={n.x}
-                  y={n.y + n.radius + 11}
-                  textAnchor="middle"
-                  fontSize={9}
-                  fill={pending ? T.pending : n.state === 'known' ? T.caption : nodeStroke(n.state, false)}
-                  style={{
-                    fontFamily: E.fontSans,
-                    ['--tm-o' as string]: Math.max(n.opacity, 0.5),
-                    animationDelay: `${0.2 + i * 0.03}s`,
-                    pointerEvents: 'none',
-                    fontWeight: n.state === 'trusted' ? 600 : 400,
-                  }}
-                >
-                  {truncate(n.name)}
-                </text>
-              );
-            })}
-          </g>
-
-          {!isEmpty && (
-            <g data-testid="trust-map-legend">
-              <text x={VIEW / 2} y={VIEW - 21} textAnchor="middle" fontSize={8} fill={T.caption}>
-                Dashed gold = groups you named — not know, not trust
-              </text>
-              <text x={VIEW / 2} y={VIEW - 10} textAnchor="middle" fontSize={8} fill={T.caption}>
-                Know and trust overlays are consented — none inferred.
-              </text>
-            </g>
-          )}
-
-          {isEmpty && (
-            <g data-testid="trust-map-empty">
-              <text
-                x={VIEW / 2}
-                y={VIEW / 2 + 58}
-                textAnchor="middle"
-                fontSize={14}
-                fill={T.label}
-                style={{ fontFamily: E.fontSans }}
-              >
-                Your lattice is dark
-              </text>
-              <text
-                x={VIEW / 2}
-                y={VIEW / 2 + 78}
-                textAnchor="middle"
-                fontSize={10}
-                fill={T.caption}
-                style={{ fontFamily: E.fontSans }}
-              >
-                Tap Grow. They join you — a star you Know.
-              </text>
-              <text
-                x={VIEW / 2}
-                y={VIEW / 2 + 94}
-                textAnchor="middle"
-                fontSize={10}
-                fill={T.caption}
-                style={{ fontFamily: E.fontSans }}
-              >
-                Trust is mutual, after you make sure it&apos;s them.
-              </text>
-            </g>
-          )}
         </svg>
+
+        {(pullDy > 8 || refreshing || refreshNote) && (
+          <div
+            data-testid="trust-map-pull"
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: 10,
+              transform: `translate(-50%, ${Math.min(pullDy, 80) * 0.35}px)`,
+              zIndex: 6,
+              padding: '6px 12px',
+              borderRadius: 999,
+              background: 'color-mix(in srgb, var(--se-bg) 82%, transparent)',
+              border: `1px solid ${E.border}`,
+              color: E.muted,
+              fontFamily: E.fontSans,
+              fontSize: 11,
+              pointerEvents: 'none',
+            }}
+          >
+            {refreshing || refreshNote
+              ? refreshNote || 'Checking for updates…'
+              : pullDy > 64
+                ? 'Release to update'
+                : 'Pull for updates'}
+          </div>
+        )}
+
+        {crystallizeNote ? (
+          <div
+            data-testid="trust-map-crystallize"
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: 16,
+              transform: 'translateX(-50%)',
+              zIndex: 5,
+              padding: '10px 16px',
+              borderRadius: 12,
+              background: 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))',
+              border: `1px solid ${E.accent2}`,
+              color: E.text,
+              fontFamily: E.fontSans,
+              fontSize: 13,
+              pointerEvents: 'none',
+            }}
+          >
+            {crystallizeNote}
+          </div>
+        ) : null}
+
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2 }}>
+          {labels.map((l) => (
+            <span
+              key={l.id}
+              style={{
+                position: 'absolute',
+                left: l.x,
+                top: l.textY,
+                transform: 'translate(-50%, 0)',
+                fontFamily: E.fontSans,
+                fontSize: 11,
+                color: l.id === focusId ? E.text : E.muted,
+                fontWeight: l.id === focusId ? 600 : 400,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {l.name}
+            </span>
+          ))}
+          <span
+            style={{
+              position: 'absolute',
+              left: ((layout.self.x - cam.x) / Math.max(cam.w, 1e-6)) * vpSize.w,
+              top: ((layout.self.y - cam.y) / Math.max(cam.h, 1e-6)) * vpSize.h + SELF_CORE_RADIUS * pxPerWorld + 10,
+              transform: 'translate(-50%, 0)',
+              fontFamily: E.fontSans,
+              fontSize: 11,
+              color: E.muted,
+            }}
+          >
+            You
+          </span>
+        </div>
+
+        {isEmpty && (
+          <div
+            data-testid="trust-map-empty"
+            style={{
+              position: 'absolute',
+              left: 16,
+              right: 16,
+              bottom: 72,
+              textAlign: 'center',
+              pointerEvents: 'none',
+              fontFamily: E.fontSans,
+            }}
+          >
+            <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
+            <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
+              Tap Grow. They join you — a star you Know.
+            </p>
+            <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
+              Trust is mutual, after you make sure it&apos;s them.
+            </p>
+          </div>
+        )}
 
         {showSampleBtn && (
           <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
@@ -705,9 +1028,23 @@ export function TrustMap({
           <span>○ known</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
           <span style={{ color: E.accent2 }}>═ mutual</span>
+          <span style={{ color: E.accent2 }}>= peer bond</span>
           <span>- - group</span>
         </div>
       )}
+      <p
+        data-testid="trust-map-legend"
+        style={{
+          margin: '8px 0 0',
+          fontSize: 11,
+          color: E.dim,
+          fontFamily: E.fontSans,
+          lineHeight: 1.45,
+        }}
+      >
+        Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
+        Glow is the trust overlay. Dashed gold is a group you named — not know, not trust.
+      </p>
 
       {/* Contact sheet — alive contacts: seal + info + actions */}
       {focusNode && focusEdge && (
@@ -1242,6 +1579,7 @@ function ContactNode({
   return (
     <g
       className={`tm-node${pending ? ' tm-pending' : ''}`}
+      data-graph-node={node.id}
       style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.04}s`, cursor: 'pointer' }}
       onClick={(e) => {
         e.stopPropagation();
@@ -1295,8 +1633,4 @@ function describeAlive(n: LaidOutNode, edge: EdgeExtras): string {
   const mutual = edge.mutual?.reciprocal ? ' · mutual' : '';
   if (n.daysLeft > 365) return `trusted${mutual} · ${Math.round(n.daysLeft / 365)}y until decay`;
   return `trusted${mutual} · ${n.daysLeft}d until decay`;
-}
-
-function truncate(name: string, max = 14): string {
-  return name.length > max ? name.slice(0, max - 1) + '…' : name;
 }

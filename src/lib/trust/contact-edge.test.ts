@@ -39,6 +39,19 @@ test('carries owner_verify from metadata for the trust prereq', () => {
   assert.equal(edge.owner_verify?.method, 'in_person');
 });
 
+test('carries they_trust and open_visibility for witnessed peer springs', () => {
+  const edge = contactRecordToEdge({
+    id: 't',
+    fingerprint: 'fp-sally',
+    name: 'Sally',
+    public_key: 'PK',
+    they_trust: ['fp-joe'],
+    metadata: { share_settings: { open_visibility: true } },
+  });
+  assert.deepEqual(edge.they_trust, ['fp-joe']);
+  assert.equal(edge.open_visibility, true);
+});
+
 test('carries inbound distress as a witnessed receipt', () => {
   const edge = contactRecordToEdge({
     id: 'd',

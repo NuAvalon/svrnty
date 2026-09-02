@@ -33,9 +33,17 @@ test('inbound distress does not publish', () => {
   const stripped = stripOwnerLocalForPublish({
     fingerprint: 'aa',
     distress_inbound: true,
-    metadata: { distress_inbound: true, notes: 'x' },
+    open_visibility: true,
+    metadata: {
+      distress_inbound: true,
+      notes: 'x',
+      open_visibility: true,
+      share_settings: { open_visibility: true },
+    },
   });
   assert.equal('distress_inbound' in stripped, false);
+  assert.equal('open_visibility' in stripped, false);
   const m = stripped.metadata as Record<string, unknown>;
   assert.equal('distress_inbound' in m, false);
+  assert.equal('open_visibility' in m, false);
 });

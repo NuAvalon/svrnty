@@ -1,7 +1,7 @@
 # TrustMap (L2) — Cursor UI notes
 
 **Brief:** `CURSOR.md` L2 · Aesthetic: Solar Ember  
-**Layout/crypto:** `src/lib/trust/trust-map-layout.ts` — **do not modify** (team-owned invariants + tests). Clustering / group chords are render-only in this component.
+**Layout:** `src/lib/trust/trust-map-layout.ts` — particle lattice + mutual-bond springs (not concentric trust rings). Camera: `graph-camera.ts` / `use-graph-viewport.ts` (wheel, pinch, pan, fullscreen). Pull-to-refresh consumes the living mailbox then re-reads the book.
 
 ## What we changed
 - Retinted SVG tokens to Solar Ember (CSS vars → light/dark).
@@ -14,12 +14,9 @@
 - **CUR-2:** `MethodHistoryPanel` — local method-revision log + one-tap **Restore previous** (appends a new local draft; signing stubbed).
 
 ## Still open (UI)
-- Particle-lattice canvas (dist &lt; ~130 accent lines) — next pass.
 - Reach-settings / “awaken the circle” — need team visibility contracts.
 - Real introduce wire (pending both sides until accept) — stubbed locally.
 - Wire broadcast for Send update — Flint (`identity/contact-method-send.ts` stub).
-- CUR-1 Send update → should `appendMethodRevision` on successful queue (hook when wiring).
-+ CUR-1 revise dialog now calls `appendMethodRevision` on Save locally / Send update (local drafts).
 
 ## ⛔ Flint seam (CUR-2)
 - Restore/retract = sign next **higher** `ContactUpdateEnvelope.version` with prior field values + per-peer encrypt + deposit.

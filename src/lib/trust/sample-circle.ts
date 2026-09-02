@@ -20,6 +20,10 @@ interface SampleContact {
   urls?: string[];
   /** Mutual trust with self (demo — would come from PSI sync in prod) */
   reciprocal?: boolean;
+  /** Owner opted into open visibility toward this peer (demo). */
+  open_visibility?: boolean;
+  /** People in this demo book this peer also trusts (PSI stand-in). */
+  they_trust?: string[];
   notes?: string;
   /** Pending intro — known≠accepted; trust still false */
   pending_intro?: {
@@ -54,6 +58,8 @@ const SAMPLE: SampleContact[] = [
     handles: { signal: '@ada.lovelace' },
     urls: ['https://analytical.engine/~ada'],
     reciprocal: true,
+    open_visibility: true,
+    they_trust: [GRACE, MARGARET],
     notes: 'Mutual trust · analytical engines & poetry.',
     distress: true,
   },
@@ -66,6 +72,8 @@ const SAMPLE: SampleContact[] = [
     phones: ['+1 202 555 0142'],
     handles: { signal: '@amazing.grace' },
     reciprocal: true,
+    open_visibility: true,
+    they_trust: [ADA, MARGARET],
     notes: 'Mutual trust · introduced Frank (pending).',
   },
   {
@@ -114,6 +122,8 @@ const SAMPLE: SampleContact[] = [
     tags: ['builders', 'orbital'],
     phones: ['+1 617 555 0130'],
     reciprocal: true,
+    open_visibility: true,
+    they_trust: [ADA, GRACE],
     notes: 'Mutual · software that flew.',
   },
   {
@@ -197,6 +207,8 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         ? { method: 'in_person', verified_at: now }
         : { method: 'none', verified_at: null },
       connection_status: c.pending_intro ? 'pending' : 'accepted',
+      they_trust: c.they_trust,
+      open_visibility: c.open_visibility,
       metadata: {
         sample: true,
         tags: c.tags,
@@ -204,6 +216,8 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         pending_intro: c.pending_intro || undefined,
         connection_status: c.pending_intro ? 'pending' : 'accepted',
         distress_inbound: c.distress || undefined,
+        they_trust: c.they_trust,
+        share_settings: c.open_visibility ? { open_visibility: true } : undefined,
       },
       distress_inbound: c.distress || undefined,
     } as any);
