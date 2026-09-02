@@ -41,10 +41,18 @@ export const TRUST_RECIPE_COPY = {
   decay:
     "If you don't stay in touch, trust can fade. That's a nudge to re-meet, not a score.",
   recoveryTitle: 'Recovery',
-  recoverySelect: 'Select Guardians. They each hold a piece of you.',
+  // GIVE is live (Shamir M-of-N via ShardGiveDialog) → present-tense honest. The recover round-trip
+  // (collect/rebuild) is NOT mounted yet, so this line claims only the give, not the round-trip.
+  recoverySelect: 'Guardians. Give someone you Trust a piece of your recovery, split so no single piece can rebuild you.',
+  // Roadmap line for beta Help — the unmounted half (Hypatia claim-honesty #125926): rebuild-from-pieces,
+  // rotate-holders, change-seed/password are stubs, so present them as Coming, not present-tense.
+  recoveryComing: 'Coming: rebuild from those pieces, rotate who holds them, and change your seed or password.',
   recoveryRotate: 'Rotate Guardians. When a holder changes, you change who holds a piece.',
   recoverySeed: 'Change Seed. New root. The old one is done.',
   recoveryPassword: 'Change Password. Unlocks this device. Not a website login.',
+  // NOTE: recoveryDistress is DELIBERATELY NOT rendered in beta Help (HelpGuide step 6) — send is a NO-OP
+  // but this copy asserts a working silent-cry (life-safety FALSE claim; Hypatia+Flint #125926, non-
+  // negotiable fail-safe). Kept as a constant only for when Distress actually wires up. Do NOT render.
   recoveryDistress:
     'Distress. A silent cry. Default is all Guardians; you can pick one. Your phone keeps no proof it was sent. The relay understands nothing. They see an ember in your star. The card burns until someone acts in the world.',
 } as const;

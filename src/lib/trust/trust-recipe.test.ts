@@ -79,9 +79,12 @@ test('verify poetry is the name couplet', () => {
   assert.equal(TRUST_RECIPE_COPY.helpTitle, 'The Formula');
 });
 
-test('recovery menu is guardians, seed, password, distress', () => {
+test('recovery copy: give is present-tense honest, round-trip is Coming, constants kept', () => {
   assert.equal(TRUST_RECIPE_COPY.recoveryTitle, 'Recovery');
-  assert.match(TRUST_RECIPE_COPY.recoverySelect, /Select Guardians/);
+  // recoverySelect claims only the LIVE give (Shamir), not the recover round-trip (Hypatia #125926)
+  assert.match(TRUST_RECIPE_COPY.recoverySelect, /Give someone you Trust a piece/);
+  assert.match(TRUST_RECIPE_COPY.recoveryComing, /^Coming:/);
+  // Unmounted-half constants kept (for when the UI wires up); just not rendered in beta Help
   assert.match(TRUST_RECIPE_COPY.recoveryRotate, /Rotate Guardians/);
   assert.match(TRUST_RECIPE_COPY.recoverySeed, /Change Seed/);
   assert.match(TRUST_RECIPE_COPY.recoveryPassword, /Change Password/);

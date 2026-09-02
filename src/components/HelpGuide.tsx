@@ -52,11 +52,12 @@ const steps = [
   {
     title: TRUST_RECIPE_COPY.recoveryTitle,
     content: [
+      // Claim-honesty (Hypatia #125926): render only what's LIVE — the guardian GIVE (mounted, Shamir) —
+      // plus a roadmap "Coming" line. recoveryRotate/Seed/Password are unmounted stubs; recoveryDistress
+      // is a NO-OP send with a life-safety FALSE cry-claim → both GATED OUT of beta Help (constants kept
+      // for when they wire up; do NOT re-add here until then).
       TRUST_RECIPE_COPY.recoverySelect,
-      TRUST_RECIPE_COPY.recoveryRotate,
-      TRUST_RECIPE_COPY.recoverySeed,
-      TRUST_RECIPE_COPY.recoveryPassword,
-      TRUST_RECIPE_COPY.recoveryDistress,
+      TRUST_RECIPE_COPY.recoveryComing,
     ],
   },
 ];
