@@ -101,7 +101,7 @@ import {
   IV_LENGTH,
 } from '../crypto/kdf';
 import type { TrustGraph } from '../trust/types';
-import type { KeyVault } from '../crypto/recovery';
+import type { KeyVault, GraphVault } from '../crypto/recovery';
 
 // --- Magic bytes ---
 const MAGIC_V4 = new Uint8Array([0x53, 0x56, 0x52, 0x4e, 0x54, 0x59, 0x00, 0x04]); // "SVRNTY\0\4"
@@ -304,14 +304,43 @@ function isKeyVaultLike(x: unknown): x is KeyVault {
 }
 
 /**
+ * Defensive shape check for a GraphVault (recovery.ts) — the untrusted parse
+ * surface of extractGraphVault. decryptGraphVault does the real authentication
+ * (GCM + master-secret hash); this only gates "looks like a graph vault".
+ */
+function isGraphVaultLike(x: unknown): x is GraphVault {
+  if (typeof x !== 'object' || x === null) return false;
+  const v = x as Record<string, unknown>;
+  return (
+    typeof v.encrypted_graph === 'string' &&
+    typeof v.iv === 'string' &&
+    typeof v.master_secret_hash === 'string'
+  );
+}
+
+/**
  * Serialize the recovery KeyVault for the v4 recovery envelope. Returns 0 bytes
  * when no recovery vault is configured (recovery === null) — a valid v4 file with
  * no seed/guardian recovery. The KeyVault is ALREADY master-encrypted; we only
  * relocate it outside the passphrase layer, we do not re-encrypt it.
+ *
+ * graph_vault (optional): the social graph, sealed under the SAME master secret.
+ * BACKWARD-COMPAT (Flint format-tier ruling): the envelope stays KeyVault-shaped, so
+ * an OLD extractRecoveryVault (isKeyVaultLike) still finds the KeyVault and simply
+ * ignores the extra field. graph_vault rides as an OPTIONAL sibling at the same
+ * passphrase-free tier — a NEW reader finds it, an OLD one skips it; no MAGIC or
+ * version bump. It only rides when a recovery KeyVault exists, since its master
+ * secret is exactly what seed/Shamir reconstruct to open the graph.
  */
-function serializeRecoveryEnvelope(recovery: unknown | null): Uint8Array {
+function serializeRecoveryEnvelope(
+  recovery: unknown | null,
+  graphVault?: GraphVault | null,
+): Uint8Array {
   if (!isKeyVaultLike(recovery)) return new Uint8Array(0);
-  return new TextEncoder().encode(JSON.stringify(recovery));
+  const envelope = isGraphVaultLike(graphVault)
+    ? { ...(recovery as Record<string, unknown>), graph_vault: graphVault }
+    : recovery;
+  return new TextEncoder().encode(JSON.stringify(envelope));
 }
 
 /**
@@ -339,7 +368,11 @@ function refuseLegacyOrUnknown(bytes: Uint8Array): never {
  * OUTSIDE the passphrase layer so recover-after-loss works (see the v4 note up
  * top). packVault always writes v4; unpackVault still reads v3 for migration.
  */
-export async function packVault(contents: VaultContents, passphrase: string): Promise<ArrayBuffer> {
+export async function packVault(
+  contents: VaultContents,
+  passphrase: string,
+  graphVault?: GraphVault | null,
+): Promise<ArrayBuffer> {
   assertPassphraseStrength(passphrase); // F3 — reject weak passphrases on write
 
   // Update lastModified
@@ -374,7 +407,7 @@ export async function packVault(contents: VaultContents, passphrase: string): Pr
   // ★ v4 recovery envelope: the SAME recovery KeyVault, carried a second time
   // OUTSIDE the passphrase body so it can be extracted with no passphrase. It is
   // already master-encrypted (encryptVault). Empty when no recovery is configured.
-  const recoveryBytes = serializeRecoveryEnvelope(contents.recovery);
+  const recoveryBytes = serializeRecoveryEnvelope(contents.recovery, graphVault);
 
   // Pack: MAGIC(8) + HEADER_LEN(4) + HEADER + BODY_LEN(4) + BODY + RECOVERY(rest)
   const totalLen =
@@ -562,6 +595,48 @@ export function extractRecoveryVault(data: ArrayBuffer): KeyVault {
     throw new Error('The recovery vault in this backup is malformed.');
   }
   return parsed;
+}
+
+/**
+ * Extract the social-graph vault from a .svrnty v4 file WITHOUT the passphrase —
+ * the twin of extractRecoveryVault, at the SAME passphrase-free tier. Returns null
+ * (NEVER throws) whenever a graph_vault is absent or unreadable: an old v3 file, a
+ * v4 file with no recovery envelope, a v4 envelope that predates graph_vault, or a
+ * corrupted section. This is the Do-No-Harm line — a backup without a graph_vault
+ * must restore EXACTLY as before (keys only): no error, no data touched.
+ *
+ * A returned GraphVault is still master-encrypted; decryptGraphVault(gv, masterSecret)
+ * — masterSecret from the seed phrase or Shamir shards — yields the graph. Do NOT
+ * pass a passphrase here; by design this path needs none.
+ */
+export function extractGraphVault(data: ArrayBuffer): GraphVault | null {
+  const bytes = new Uint8Array(data);
+
+  // Only v4 carries a passphrase-free envelope tier. v3/v2/unknown → no graph.
+  if (!magicMatches(bytes, MAGIC_V4)) return null;
+
+  // Bounds-check every step; a truncated/hostile file fails to null, never throws.
+  if (bytes.length < MAGIC_LEN + HEADER_LEN_SIZE) return null;
+  const headerLen = readHeaderLen(bytes);
+  const bodyLenOffset = MAGIC_LEN + HEADER_LEN_SIZE + headerLen;
+  if (bytes.length < bodyLenOffset + BODY_LEN_SIZE) return null;
+  const bodyLen = readUint32BE(bytes, bodyLenOffset);
+  const recoveryStart = bodyLenOffset + BODY_LEN_SIZE + bodyLen;
+  if (bytes.length < recoveryStart) return null;
+
+  const recoveryBytes = bytes.slice(recoveryStart);
+  if (recoveryBytes.length === 0) return null; // no recovery envelope → no graph
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(recoveryBytes));
+  } catch {
+    return null; // unreadable envelope → treat as absent (do-no-harm)
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+
+  const gv = (parsed as Record<string, unknown>).graph_vault;
+  return isGraphVaultLike(gv) ? gv : null; // absent or malformed → null
 }
 
 // --- Vault Download (browser) ---
