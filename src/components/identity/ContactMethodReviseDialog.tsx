@@ -30,6 +30,8 @@ export type AudienceContact = {
   /** Prefer contacts with a pubkey (encrypt targets when Flint wires send). */
   public_key?: string;
   trusted?: boolean;
+  /** Owner-local group labels (never on the wire). */
+  tags?: string[];
 };
 
 export type ContactMethodReviseDialogProps = {
@@ -121,6 +123,25 @@ export function ContactMethodReviseDialog({
 
   const clearAll = () => setSelected(new Set());
 
+  const knownGroups = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of contacts) {
+      for (const t of c.tags || []) {
+        const v = t.trim();
+        if (v) set.add(v);
+      }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [contacts]);
+
+  const selectGroup = (tag: string) => {
+    const next = new Set<string>();
+    for (const c of contacts) {
+      if ((c.tags || []).includes(tag)) next.add(c.fingerprint);
+    }
+    setSelected(next);
+  };
+
   const recordHistory = (recipients: string[]) => {
     if (!ownerFingerprint) return;
     const next = value.trim();
@@ -142,10 +163,12 @@ export function ContactMethodReviseDialog({
     try {
       await onLocalSave(kind, value.trim());
       recordHistory([]);
-      setLocalNote('Saved on this device. Peers are not notified until Send update is live.');
+      // Persist succeeded — close so the card is the confirmation (a quiet
+      // inline note with the dialog still open reads as "didn't save").
+      setBusy(false);
+      onClose();
     } catch (e) {
       setLocalNote(e instanceof Error ? e.message : 'Could not save locally.');
-    } finally {
       setBusy(false);
     }
   };
@@ -163,14 +186,19 @@ export function ContactMethodReviseDialog({
         value: value.trim(),
         recipientFingerprints: recipients,
       });
+      if (result.ok) {
+        setBusy(false);
+        onClose();
+        return;
+      }
       setStatus(result);
+      setBusy(false);
     } catch (e) {
       setStatus({
         ok: false,
         reason: 'error',
         message: e instanceof Error ? e.message : 'Send failed.',
       });
-    } finally {
       setBusy(false);
     }
   };
@@ -262,7 +290,7 @@ export function ContactMethodReviseDialog({
               >
                 Shared with · notify
               </span>
-              <span style={{ display: 'flex', gap: 8 }}>
+              <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 <button
                   type="button"
                   onClick={selectTrusted}
@@ -275,6 +303,36 @@ export function ContactMethodReviseDialog({
                 </button>
               </span>
             </div>
+
+            {knownGroups.length > 0 ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 6,
+                  marginBottom: 8,
+                  alignItems: 'center',
+                }}
+              >
+                <span style={{ fontSize: 10, color: E.dim, fontFamily: E.fontSans }}>Groups:</span>
+                {knownGroups.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => selectGroup(tag)}
+                    title={`Notify everyone tagged “${tag}” (local group)`}
+                    style={{
+                      ...ghostBtn,
+                      padding: '3px 8px',
+                      fontSize: 11,
+                      color: E.muted,
+                    }}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             <div
               style={{

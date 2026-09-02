@@ -21,6 +21,8 @@ export interface SovereignIdentityCardProps {
   hasPqKeys?: boolean;
   onRevise?: (kind: MethodKind) => void;
   onOpenCircle?: () => void;
+  /** Open Share Identity (moved from Contacts). */
+  onShareIdentity?: () => void;
 }
 
 function formatKeyGroups(fp: string): string {
@@ -203,6 +205,7 @@ export function SovereignIdentityCard({
   hasPqKeys = false,
   onRevise,
   onOpenCircle,
+  onShareIdentity,
 }: SovereignIdentityCardProps) {
   const [reviseNote, setReviseNote] = useState<string | null>(null);
   const displayHandle = handle
@@ -347,6 +350,31 @@ export function SovereignIdentityCard({
             <span style={{ color: E.text, fontWeight: 600 }}>your view</span>, never a global map.
           </p>
         </button>
+
+
+        {onShareIdentity ? (
+          <button
+            type="button"
+            onClick={onShareIdentity}
+            data-testid="share-identity-from-card"
+            style={{
+              width: '100%',
+              marginBottom: 14,
+              padding: '12px 16px',
+              borderRadius: 12,
+              border: `1px solid ${E.borderLit}`,
+              background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+              color: E.accent,
+              fontFamily: E.fontSans,
+              fontSize: 13,
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              cursor: 'pointer',
+            }}
+          >
+            Share identity
+          </button>
+        ) : null}
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
           <span

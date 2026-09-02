@@ -6,15 +6,14 @@ import { Input } from '@/components/ui/input';
 import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
-  Shield, Mail, UserPlus, Search,
-  Share2, Check, Download, Upload, RefreshCw,
-  FileJson, Eye, Phone, Link2, AtSign, ShieldCheck, Copy, ChevronDown
+  Shield, UserPlus, Search, Share2,
+  Check, Edit, Download, Upload, RefreshCw, FileJson, Eye,
+  ShieldCheck, Copy, MoreHorizontal, Users
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
   DialogTitle, DialogFooter
 } from '@/components/ui/dialog';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger
@@ -24,7 +23,18 @@ import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
-import { TwoSidedBook } from '@/components/TwoSidedBook';
+import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookList';
+import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
+import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
+import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
+import {
+  buildLinkToSvrntyUpdate,
+  isPendingSvrntyContact,
+  type ContactShareSettings,
+} from '@/lib/contacts/contact-lane';
+import { createRelay } from '@/lib/sync/relay';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -33,22 +43,17 @@ import {
   getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
-import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
-import type { TrustEdge } from '@/lib/trust/types';
-import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
 import {
-  safeEmailLink,
-  safePhoneLink,
-  safeUrlLink,
-  safeHandleLink,
-} from '@/lib/contacts/safe-contact-link';
-import { ownerHasVerified, ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { contactHasDistress, DISTRESS_COPY, distressWentPersistPatch } from '@/lib/trust/distress';
-import { VivreBurn, VivreCaution } from '@/components/VivreBurn';
+  ClassicalFieldsEditor,
+  fieldsFromContactInfo,
+  fieldsToContactInfo,
+  type BookField,
+} from '@/components/contacts/ClassicalFieldsEditor';
+import type { TrustEdge } from '@/lib/trust/types';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
   applyTrustAction,
@@ -77,7 +82,10 @@ interface Contact {
     connection_method?: 'manual' | 'qr' | 'burner_link' | 'mutual';
     mutual_contacts?: string[];
     blocked?: boolean;
-    distress_inbound?: boolean;
+    connection_status?: string;
+    pending?: boolean;
+    share_settings?: import('@/lib/contacts/contact-lane').ContactShareSettings;
+    classical_extras?: import('@/lib/contacts/contact-lane').ClassicalExtras;
   };
   // Imported contact channels (vCard). Phones parse + persist on the ContactRecord but were never
   // surfaced to the UI (Chaos#40) — carry them so the detail view can render them.
@@ -86,7 +94,14 @@ interface Contact {
     emails?: string[];
     urls?: string[];
     handles?: Record<string, string>;
+    org?: string;
+    title?: string;
+    nickname?: string;
+    bday?: string;
+    adr?: string;
+    extras?: Array<{ label: string; value: string }>;
   };
+  connection_status?: string;
 }
 
 // Map legacy API values to binary trust
@@ -148,6 +163,7 @@ function recordToContact(r: ContactRecord): Contact {
     blocked,
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls (Chaos#40 display fix)
+    connection_status: (r as any).connection_status,
   };
 }
 
@@ -159,7 +175,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
 
@@ -177,6 +192,26 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [vaultExporting, setVaultExporting] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  /** Master book scope — All / Classical / SVRNTY (not living/resting). Default All so network peers stay visible (demo-arc beat 3/4). */
+  const [bookScope, setBookScope] = useState<'all' | 'classical' | 'svrn'>('all');
+  /** Quiet: view blocked list (⋯ menu — not a primary tab). */
+  const [showBlocked, setShowBlocked] = useState(false);
+  /** Within SVRNTY: known vs trusted (binary trust, not a score). */
+  const [svrnFilter, setSvrnFilter] = useState<'all' | 'known' | 'trusted'>('all');
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  /** Inline group label for multi-select (same local-tag model as Social Graph). */
+  const [bulkGroupName, setBulkGroupName] = useState('');
+  const [bulkGroupNote, setBulkGroupNote] = useState<string | null>(null);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [editingGroupTag, setEditingGroupTag] = useState<string | null>(null);
+  const [editGroupTagName, setEditGroupTagName] = useState('');
+  const [groupFilterTag, setGroupFilterTag] = useState<string | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
 
   // Form state
   const [newContactForm, setNewContactForm] = useState({
@@ -188,7 +223,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [editContactForm, setEditContactForm] = useState({
     id: '', name: '', email: '', fingerprint: '', public_key: '',
     notes: '',
+    phonesText: '',
+    emailsText: '',
+    urlsText: '',
+    handlesText: '',
   });
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [linkFingerprint, setLinkFingerprint] = useState('');
+  const [linkPublicKey, setLinkPublicKey] = useState('');
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [bookFields, setBookFields] = useState<BookField[]>([]);
 
   // Share state
   const [importData, setImportData] = useState('');
@@ -248,27 +292,94 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 
   // Filter contacts — binary: all, trusted, known; blocked is a separate local list
   const filteredContacts = contacts.filter(contact => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      const hay = `${contact.name} ${contact.email} ${contact.fingerprint}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    const svrn = isSvrnNetworkContact(contact);
     const blocked = isContactBlocked(contact);
-    if (activeTab === 'blocked') {
+
+    if (showBlocked) {
       if (!blocked) return false;
-    } else {
-      if (blocked) return false; // blocked stay off the main book tabs
-      if (activeTab === 'trusted' && !isTrusted(contact)) return false;
-      if (activeTab === 'known' && isTrusted(contact)) return false;
+      if (bookScope === 'classical' && svrn) return false;
+      if (bookScope === 'svrn' && !svrn) return false;
+      return true;
     }
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return contact.name.toLowerCase().includes(q) ||
-        contact.email.toLowerCase().includes(q) ||
-        contact.fingerprint.toLowerCase().includes(q);
+
+    if (blocked) return false;
+    if (bookScope === 'classical' && svrn) return false;
+    if (bookScope === 'svrn' && !svrn) return false;
+    if (bookScope === 'svrn') {
+      if (svrnFilter === 'trusted' && !isTrusted(contact)) return false;
+      if (svrnFilter === 'known' && isTrusted(contact)) return false;
     }
+    if (groupFilterTag && !(contact.metadata?.tags || []).includes(groupFilterTag)) return false;
     return true;
   });
 
-  const activeContacts = contacts.filter(c => !isContactBlocked(c));
-  const trustedCount = activeContacts.filter(c => isTrusted(c)).length;
-  const blockedCount = contacts.filter(c => isContactBlocked(c)).length;
-  const bookEdges = filteredContacts.map(contactRecordToEdge);
+  const masterRows = filteredContacts.map((c) => {
+    const edge = contactRecordToEdge(c);
+    const living = livingEdgeStatus(edge);
+    return {
+      id: c.id,
+      name: c.name,
+      email: c.email,
+      fingerprint: c.fingerprint,
+      public_key: c.public_key,
+      trust_level: c.trust_level,
+      blocked: isContactBlocked(c),
+      tags: c.metadata?.tags || [],
+      pending: isPendingSvrntyContact(c),
+      living,
+      lastMoment: living.lastMoment,
+    };
+  });
+
+  const knownGroupTags = Array.from(
+    new Set(contacts.flatMap((c) => c.metadata?.tags || []).filter(Boolean)),
+  ).sort((a, b) => a.localeCompare(b));
+
+  const selectedHasSvrn = contacts.some(
+    (c) => selectedIds.has(c.id) && isSvrnNetworkContact(c),
+  );
+
+  const allCount = contacts.filter((c) => !isContactBlocked(c)).length;
+  const classicalCount = contacts.filter((c) => !isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
+  const svrnCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isContactBlocked(c)).length;
+  const trustedCount = contacts.filter((c) => isSvrnNetworkContact(c) && isTrusted(c) && !isContactBlocked(c)).length;
+  const knownCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isTrusted(c) && !isContactBlocked(c)).length;
+  const blockedCount = contacts.filter((c) => isContactBlocked(c)).length;
+  const activeContacts = contacts.filter((c) => !isContactBlocked(c));
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const prepareInvite = async () => {
+    if (!fingerprint || !identity) return;
+    setInviteLoading(true);
+    setInviteError(null);
+    setInviteUrl(null);
+    try {
+      const key = await loadKey(fingerprint);
+      if (!key) throw new Error('Unlock your identity first to build an invite.');
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      const packed = JSON.stringify(signed);
+      const result = await createRelay(packed);
+      setInviteUrl(result.url);
+    } catch (e) {
+      setInviteError(e instanceof Error ? e.message : 'Could not prepare invite.');
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
 
   // --- Handlers ---
 
@@ -348,12 +459,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setError(null);
-      if (!editContactForm.name || !editContactForm.email) {
-        throw new Error('Name and email are required');
+      if (!editContactForm.name) {
+        throw new Error('Name is required');
+      }
+      const info = fieldsToContactInfo(bookFields);
+      // Classical-only edit — refuse to mutate SVRNTY profile fields here.
+      if (selectedContact && isSvrnNetworkContact(selectedContact)) {
+        throw new Error('SVRNTY contacts are key-bound — edit is locked. Change trust, groups, or share settings instead.');
       }
       await updateContact(editContactForm.id, {
         name: editContactForm.name,
-        email: editContactForm.email,
+        email: editContactForm.email || '',
+        contact_info: info,
         metadata: {
           notes: editContactForm.notes,
           ...(selectedContact?.metadata ? {
@@ -475,7 +592,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         fingerprint: selectedContact.fingerprint,
         name: selectedContact.name,
         trusted: isTrusted(selectedContact),
-        ownerVerified: ownerHasVerified(selectedContact as any),
         blocked: isContactBlocked(selectedContact),
       }
     : null;
@@ -682,6 +798,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   };
 
   const openEditDialog = (contact: Contact) => {
+    if (isSvrnNetworkContact(contact)) {
+      setError('SVRNTY contacts are key-bound — profile edit is locked.');
+      return;
+    }
     setSelectedContact(contact);
     setEditContactForm({
       id: contact.id,
@@ -690,8 +810,81 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       fingerprint: contact.fingerprint,
       public_key: contact.public_key,
       notes: contact.metadata?.notes || '',
+      phonesText: '',
+      emailsText: '',
+      urlsText: '',
+      handlesText: '',
     });
+    setBookFields(fieldsFromContactInfo(contact.contact_info));
     setShowEditDialog(true);
+  };
+
+  const handleLinkToSvrnty = async () => {
+    if (!selectedContact || !fingerprint) return;
+    try {
+      setLinkError(null);
+      setLoading(true);
+      const fp = linkFingerprint.trim();
+      const pk = linkPublicKey.trim();
+      if (!fp || !pk) {
+        throw new Error('Paste their SVRNTY fingerprint and public key.');
+      }
+      const patch = await buildLinkToSvrntyUpdate({
+        fingerprint: fp,
+        public_key: pk,
+        existing: {
+          name: selectedContact.name,
+          email: selectedContact.email,
+          contact_info: selectedContact.contact_info,
+          metadata: selectedContact.metadata as Record<string, unknown> | null,
+        },
+      });
+      await updateContact(selectedContact.id, {
+        fingerprint: patch.fingerprint,
+        public_key: patch.public_key,
+        connection_status: patch.connection_status,
+        metadata: patch.metadata,
+        // Keep classical channels on the living card as contact_info + classical_extras.
+        contact_info: selectedContact.contact_info,
+        trust_level: 'unverified',
+      } as any);
+      setLinkDialogOpen(false);
+      setLinkFingerprint('');
+      setLinkPublicKey('');
+      setShowDetailDialog(false);
+      await loadContacts();
+      onContactsChange?.();
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : 'Could not link contact');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleGroup = async (tag: string) => {
+    if (!selectedContact || !fingerprint) return;
+    const prev = selectedContact.metadata?.tags || [];
+    const tags = prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag];
+    await updateContact(selectedContact.id, {
+      metadata: { ...selectedContact.metadata, tags },
+    } as any);
+    const next = { ...selectedContact, metadata: { ...selectedContact.metadata, tags } };
+    setSelectedContact(next);
+    await loadContacts();
+    onContactsChange?.();
+  };
+
+  const handleShareSettingsChange = async (next: ContactShareSettings) => {
+    if (!selectedContact || !fingerprint) return;
+    if (!isSvrnNetworkContact(selectedContact)) return;
+    await updateContact(selectedContact.id, {
+      metadata: { ...selectedContact.metadata, share_settings: next },
+    } as any);
+    setSelectedContact({
+      ...selectedContact,
+      metadata: { ...selectedContact.metadata, share_settings: next },
+    });
+    await loadContacts();
   };
 
   // --- Render ---
@@ -711,6 +904,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         overflow: 'hidden',
       }}
     >
+      
       <div style={{ borderBottom: `1px solid ${E.border}`, padding: '20px 20px 16px' }}>
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
           <div>
@@ -725,7 +919,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 fontWeight: 500,
               }}
             >
-              Living book
+              Address book
             </p>
             <h2
               style={{
@@ -741,7 +935,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               }}
             >
               <Shield className="h-5 w-5" style={{ color: E.accent }} />
-              Your circle
+              Living Address Book
             </h2>
             <p
               style={{
@@ -750,18 +944,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 fontWeight: 300,
                 color: E.muted,
                 fontFamily: E.fontSans,
-                maxWidth: 420,
+                maxWidth: 480,
                 lineHeight: 1.55,
               }}
             >
-              People you hold — living and resting. Local-first, never a global map.
+              Every imported contact (VCF and exchange). Classical entries you can edit;
+              SVRNTY peers are key-bound. Share your own identity from the Identity tab.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={handleShareIdentity} style={emberPrimaryBtn}>
-              <Share2 className="h-4 w-4 mr-2" />
-              Share Identity
-            </Button>
             <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)} style={emberGhostBtn}>
               <Download className="h-4 w-4 mr-2" />
               Import Contact
@@ -793,7 +984,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setPendingBookExport('vcard')}>
                   <Download className="h-4 w-4 mr-2" />
-                  Export all as vCard
+                  Export all as vCard (phone book)
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowImportDialog(true)}>
                   <Upload className="h-4 w-4 mr-2" />
@@ -813,8 +1004,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </Alert>
         )}
 
-        {/* Search + Add */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
           <div className="relative w-full sm:w-72">
             <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
             <Input
@@ -836,28 +1026,538 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </Button>
         </div>
 
-        {/* Tabs — contacts (all) and trusted (subset) */}
-        <Tabs defaultValue="all" value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList
-            className="mb-4 w-full sm:w-auto"
+        {/* Primary tabs: All / Classical / SVRNTY — Blocked lives in ⋯ */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          {([
+            ['all', `All (${allCount})`],
+            ['classical', `Classical (${classicalCount})`],
+            ['svrn', `SVRNTY (${svrnCount})`],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => {
+                setBookScope(id);
+                setSelectedIds(new Set());
+                setShowBlocked(false);
+              }}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                padding: '6px 12px',
+                borderRadius: 999,
+                border: `1px solid ${bookScope === id && !showBlocked ? E.borderLit : E.border}`,
+                background:
+                  bookScope === id && !showBlocked
+                    ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+                    : 'transparent',
+                color: bookScope === id && !showBlocked ? E.accent : E.muted,
+                cursor: 'pointer',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Book options"
+                title="Book options"
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 11,
+                  padding: '6px 8px',
+                  borderRadius: 8,
+                  border: `1px solid ${E.border}`,
+                  background: showBlocked
+                    ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                    : 'transparent',
+                  color: E.muted,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                }}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" style={{ fontFamily: E.fontSans }}>
+              <DropdownMenuLabel style={{ fontFamily: E.fontSans }}>Book</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => {
+                  setShowBlocked((v) => !v);
+                  setSelectedIds(new Set());
+                  setSelectionMode(false);
+                }}
+                style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+              >
+                {showBlocked ? 'Hide blocked contacts' : 'View blocked contacts'}
+                {!showBlocked && blockedCount > 0 ? ` (${blockedCount})` : ''}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <button
+            type="button"
+            data-testid="book-groups-btn"
+            onClick={() => setGroupsOpen((v) => !v)}
             style={{
-              background: E.surface,
+              fontFamily: E.fontSans,
+              fontSize: 11,
+              padding: '4px 10px',
+              borderRadius: 8,
+              border: `1px solid ${groupsOpen || groupFilterTag ? E.borderLit : E.border}`,
+              background: groupsOpen
+                ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)'
+                : 'transparent',
+              color: E.accent,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <Users className="h-3.5 w-3.5" />
+            Groups{groupFilterTag ? ` · ${groupFilterTag}` : knownGroupTags.length ? ` (${knownGroupTags.length})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectionMode((v) => !v);
+              setSelectedIds(new Set());
+              setBulkGroupName('');
+              setBulkGroupNote(null);
+            }}
+            style={{
+              marginLeft: 'auto',
+              fontFamily: E.fontSans,
+              fontSize: 11,
+              padding: '4px 10px',
+              borderRadius: 8,
               border: `1px solid ${E.border}`,
+              background: selectionMode ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
+              color: E.accent,
+              cursor: 'pointer',
+            }}
+          >
+            {selectionMode ? 'Done selecting' : 'Select multiple'}
+          </button>
+        </div>
+
+        {groupsOpen ? (
+          <div
+            data-testid="book-groups-panel"
+            className="mb-3 p-3 rounded-xl"
+            style={{ border: `1px solid ${E.border}`, background: E.surfaceSolid, fontFamily: E.fontSans }}
+          >
+            <div className="flex justify-between gap-2 mb-2">
+              <p style={{ margin: 0, fontSize: 12, color: E.muted }}>
+                Local groups · select · rename · remove · never published
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setGroupFilterTag(null);
+                  setGroupsOpen(false);
+                }}
+                style={{
+                  fontSize: 11,
+                  padding: '4px 8px',
+                  borderRadius: 8,
+                  border: `1px solid ${E.border}`,
+                  background: 'transparent',
+                  color: E.muted,
+                  cursor: 'pointer',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              <button
+                type="button"
+                onClick={() => setGroupFilterTag(null)}
+                style={{
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${groupFilterTag === null ? E.borderLit : E.border}`,
+                  background: groupFilterTag === null ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)' : 'transparent',
+                  color: E.muted,
+                  cursor: 'pointer',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                All contacts
+              </button>
+            </div>
+            {knownGroupTags.length === 0 ? (
+              <p style={{ margin: 0, fontSize: 12, color: E.dim }}>
+                No groups yet — Select multiple, then Add to group.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {knownGroupTags.map((tag) => {
+                  const count = contacts.filter((c) => (c.metadata?.tags || []).includes(tag)).length;
+                  const isEditing = editingGroupTag === tag;
+                  return (
+                    <li
+                      key={tag}
+                      className="flex flex-wrap gap-2 items-center"
+                      style={{
+                        padding: '8px 10px',
+                        borderRadius: 10,
+                        border: `1px solid ${groupFilterTag === tag ? E.borderLit : E.border}`,
+                        background:
+                          groupFilterTag === tag
+                            ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                            : 'transparent',
+                      }}
+                    >
+                      {isEditing ? (
+                        <>
+                          <Input
+                            value={editGroupTagName}
+                            onChange={(e) => setEditGroupTagName(e.target.value)}
+                            className="flex-1 min-w-[120px]"
+                            aria-label={`Rename ${tag}`}
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={loading || !editGroupTagName.trim()}
+                            onClick={async () => {
+                              const next = editGroupTagName.trim();
+                              if (!next || next === tag) return;
+                              try {
+                                for (const c of contacts) {
+                                  const prev = c.metadata?.tags || [];
+                                  if (!prev.includes(tag)) continue;
+                                  const tags = Array.from(new Set(prev.map((t) => (t === tag ? next : t))));
+                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                }
+                                if (groupFilterTag === tag) setGroupFilterTag(next);
+                                setEditingGroupTag(null);
+                                setEditGroupTagName('');
+                                setBulkGroupNote(`Renamed “${tag}” → “${next}” (local only).`);
+                                await loadContacts();
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : 'Could not rename group');
+                              }
+                            }}
+                          >
+                            Save
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setEditingGroupTag(null);
+                              setEditGroupTagName('');
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setGroupFilterTag((cur) => (cur === tag ? null : tag))}
+                            style={{
+                              flex: 1,
+                              textAlign: 'left',
+                              background: 'none',
+                              border: 'none',
+                              color: E.text,
+                              cursor: 'pointer',
+                              fontFamily: E.fontSans,
+                              fontSize: 13,
+                              padding: 0,
+                            }}
+                          >
+                            {tag}
+                            <span style={{ color: E.dim, marginLeft: 8, fontSize: 11 }}>{count}</span>
+                          </button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const ids = contacts
+                                .filter((c) => (c.metadata?.tags || []).includes(tag))
+                                .map((c) => c.id);
+                              setSelectedIds(new Set(ids));
+                              setSelectionMode(true);
+                              setGroupFilterTag(tag);
+                              setGroupsOpen(false);
+                            }}
+                          >
+                            Select
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setEditingGroupTag(tag);
+                              setEditGroupTagName(tag);
+                            }}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={loading}
+                            onClick={async () => {
+                              if (!window.confirm(`Remove group “${tag}” from all contacts? Tags are local-only.`)) return;
+                              try {
+                                for (const c of contacts) {
+                                  const prev = c.metadata?.tags || [];
+                                  if (!prev.includes(tag)) continue;
+                                  const tags = prev.filter((t) => t !== tag);
+                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                }
+                                if (groupFilterTag === tag) setGroupFilterTag(null);
+                                setBulkGroupNote(`Removed group “${tag}”.`);
+                                await loadContacts();
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : 'Could not remove group');
+                              }
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        </>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        ) : null}
+
+        {showBlocked ? (
+          <p
+            style={{
+              margin: '0 0 10px',
+              fontSize: 12,
+              color: E.dim,
               fontFamily: E.fontSans,
             }}
           >
-            <TabsTrigger value="all" style={{ fontFamily: E.fontSans }}>
-              Contacts ({activeContacts.length})
-            </TabsTrigger>
-            <TabsTrigger value="trusted" style={{ fontFamily: E.fontSans }}>
-              Trusted ({trustedCount})
-            </TabsTrigger>
-            <TabsTrigger value="blocked" style={{ fontFamily: E.fontSans }}>
-              Blocked ({blockedCount})
-            </TabsTrigger>
-          </TabsList>
+            Showing blocked · turn off via ⋯
+          </p>
+        ) : null}
 
-          <TabsContent value={activeTab} className="mt-0">
+        {!showBlocked && bookScope === 'svrn' ? (
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {([
+              ['all', 'All SVRNTY'],
+              ['known', `Known (${knownCount})`],
+              ['trusted', `Trusted (${trustedCount})`],
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSvrnFilter(id)}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 11,
+                  padding: '4px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${svrnFilter === id ? E.borderLit : E.border}`,
+                  background: svrnFilter === id ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)' : 'transparent',
+                  color: E.text,
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {selectionMode && (
+          <div
+            className="flex flex-col gap-2 mb-4 p-3 rounded-xl"
+            style={{ border: `1px solid ${E.border}`, background: E.surfaceSolid }}
+          >
+            <div className="flex flex-wrap gap-2 items-center">
+              <span style={{ fontSize: 12, color: E.muted, fontFamily: E.fontSans, alignSelf: 'center' }}>
+                {selectedIds.size} selected
+              </span>
+              <input
+                type="text"
+                value={bulkGroupName}
+                onChange={(e) => {
+                  setBulkGroupName(e.target.value);
+                  setBulkGroupNote(null);
+                }}
+                placeholder="Group label (local private tag)"
+                disabled={selectedIds.size === 0 || loading}
+                style={{
+                  flex: 1,
+                  minWidth: 160,
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  padding: '6px 10px',
+                  borderRadius: 8,
+                  border: `1px solid ${E.border}`,
+                  background: E.inputBg,
+                  color: E.text,
+                  outline: 'none',
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                style={emberGhostBtn}
+                disabled={loading || selectedIds.size === 0 || !bulkGroupName.trim()}
+                onClick={() => {
+                  const name = bulkGroupName.trim();
+                  if (!name || selectedIds.size === 0) return;
+                  void (async () => {
+                    setLoading(true);
+                    try {
+                      for (const id of selectedIds) {
+                        const c = contacts.find((x) => x.id === id);
+                        if (!c) continue;
+                        const tags = Array.from(new Set([...(c.metadata?.tags || []), name]));
+                        await updateContact(id, { metadata: { ...c.metadata, tags } } as any);
+                      }
+                      await loadContacts();
+                      onContactsChange?.();
+                      setBulkGroupNote(`Added “${name}” to ${selectedIds.size} contact(s). Local only — never published.`);
+                      setBulkGroupName('');
+                      setSelectedIds(new Set());
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : 'Could not assign group');
+                    } finally {
+                      setLoading(false);
+                    }
+                  })();
+                }}
+              >
+                Add to group
+              </Button>
+              {selectedHasSvrn ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    style={emberGhostBtn}
+                    disabled={loading || selectedIds.size === 0}
+                    onClick={() => {
+                      void (async () => {
+                        const targets = contacts.filter((c) => selectedIds.has(c.id) && isSvrnNetworkContact(c));
+                        for (const c of targets) {
+                          if (!isTrusted(c)) await handleToggleTrust(c);
+                        }
+                        setSelectedIds(new Set());
+                      })();
+                    }}
+                  >
+                    Trust
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    style={emberGhostBtn}
+                    disabled={loading || selectedIds.size === 0}
+                    onClick={() => {
+                      void (async () => {
+                        const targets = contacts.filter(
+                          (c) => selectedIds.has(c.id) && isSvrnNetworkContact(c) && isTrusted(c),
+                        );
+                        for (const c of targets) {
+                          await handleToggleTrust(c);
+                        }
+                        setSelectedIds(new Set());
+                      })();
+                    }}
+                  >
+                    Revoke trust
+                  </Button>
+                </>
+              ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                style={emberGhostBtn}
+                disabled={loading || selectedIds.size === 0}
+                onClick={() => {
+                  void (async () => {
+                    const targets = contacts.filter((c) => selectedIds.has(c.id));
+                    for (const c of targets) {
+                      await handleSetBlocked(c, true);
+                    }
+                    setSelectedIds(new Set());
+                  })();
+                }}
+              >
+                Block
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                style={emberGhostBtn}
+                disabled={loading || selectedIds.size === 0}
+                onClick={() => {
+                  if (!window.confirm(`Delete ${selectedIds.size} contact(s)? This cannot be undone.`)) return;
+                  void (async () => {
+                    for (const id of [...selectedIds]) {
+                      await handleDeleteContact(id);
+                    }
+                    setSelectedIds(new Set());
+                    setSelectionMode(false);
+                  })();
+                }}
+              >
+                Delete
+              </Button>
+            </div>
+            {knownGroupTags.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <span style={{ fontSize: 10, color: E.dim, fontFamily: E.fontSans }}>Reuse:</span>
+                {knownGroupTags.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => setBulkGroupName(tag)}
+                    style={{
+                      fontSize: 10,
+                      fontFamily: E.fontSans,
+                      color: E.muted,
+                      border: `1px solid ${E.border}`,
+                      borderRadius: 6,
+                      padding: '2px 8px',
+                      background: bulkGroupName === tag ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)' : 'transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {tag}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {bulkGroupNote ? (
+              <p style={{ margin: 0, fontSize: 11, color: E.ok, fontFamily: E.fontSans }}>{bulkGroupNote}</p>
+            ) : (
+              <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans }}>
+                Groups are local private tags (stripped on the wire). Introduce / resync / privacy need fleet.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="w-full">
             {loading ? (
               <div className="flex justify-center p-8">
                 <RefreshCw className="h-8 w-8 animate-spin" style={{ color: E.dim }} />
@@ -877,26 +1577,36 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                   {searchQuery ? <Search className="h-8 w-8" style={{ color: E.dim }} /> : <UserPlus className="h-8 w-8" style={{ color: E.dim }} />}
                 </div>
                 <p style={{ fontFamily: E.fontSerif, fontSize: 22, fontWeight: 300, color: E.text, margin: 0 }}>
-                  {searchQuery ? 'No matching contacts' : 'No contacts yet'}
+                  {searchQuery
+                    ? 'No matching contacts'
+                    : showBlocked
+                      ? 'No blocked contacts'
+                      : 'No contacts yet'}
                 </p>
                 <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
-                  {searchQuery ? 'Try a different search' : 'Add your first contact to begin building your circle'}
+                  {searchQuery
+                    ? 'Try a different search'
+                    : showBlocked
+                      ? 'Blocked stays out of the main book — exit via ⋯'
+                      : 'Import a VCF or add someone to start your master book'}
                 </p>
               </div>
             ) : (
-              <TwoSidedBook
-                edges={bookEdges}
+              <MasterAddressBookList
+                rows={masterRows}
+                selectedIds={selectedIds}
+                selectionMode={selectionMode}
                 liveIds={liveIds}
-                onSelect={(edge) => {
-                  const contact = contacts.find(c => c.id === edge.id);
+                onToggleSelect={toggleSelected}
+                onOpen={(id) => {
+                  const contact = contacts.find((c) => c.id === id);
                   if (!contact) return;
                   setSelectedContact(contact);
                   setShowDetailDialog(true);
                 }}
               />
             )}
-          </TabsContent>
-        </Tabs>
+          </div>
 
         {/* === DIALOGS === */}
 
@@ -972,6 +1682,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 <label htmlFor="edit-notes" className="text-sm font-medium">Notes</label>
                 <Textarea id="edit-notes" value={editContactForm.notes} onChange={e => setEditContactForm(p => ({ ...p, notes: e.target.value }))} placeholder="Private notes about this contact..." rows={3} />
               </div>
+              <ClassicalFieldsEditor fields={bookFields} onChange={setBookFields} />
               <div className="space-y-1.5">
                 <label className="text-sm font-medium">Fingerprint</label>
                 <Input value={editContactForm.fingerprint} readOnly className="font-mono text-xs opacity-60" />
@@ -980,240 +1691,52 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
-              <Button onClick={handleUpdateContact} disabled={loading || !editContactForm.name || !editContactForm.email}>
+              <Button onClick={handleUpdateContact} disabled={loading || !editContactForm.name}>
                 {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Saving...</> : <><Check className="h-4 w-4 mr-2" />Save</>}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        {/* Contact Detail */}
-        <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-          <DialogContent className="sm:max-w-lg" style={{ position: 'relative', overflow: 'hidden' }}>
-            {selectedContact && contactHasDistress(selectedContact as any) && <VivreBurn />}
-            {selectedContact && (
-              <>
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
-                    <div className={`flex-shrink-0 rounded-full h-8 w-8 flex items-center justify-center ${
-                      isTrusted(selectedContact) ? 'bg-amber-500/15' : 'bg-gray-500/15'
-                    }`}>
-                      <TrustIcon contact={selectedContact} />
-                    </div>
-                    <span>{selectedContact.name}</span>
-                  </DialogTitle>
-                  <DialogDescription>Contact details and trust management.</DialogDescription>
-                </DialogHeader>
-                {contactHasDistress(selectedContact as any) && <VivreCaution />}
-
-                <div className="space-y-5">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Email</h4>
-                      <div className="flex items-center gap-1 mt-1">
-                        <Mail className="h-4 w-4 text-muted-foreground" />
-                        <ContactMethodLink safe={safeEmailLink(selectedContact.email)} />
-                      </div>
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trust</h4>
-                      <div className="mt-1"><TrustBadge contact={selectedContact} /></div>
-                    </div>
-                  </div>
-
-                  {selectedContact.contact_info?.emails?.some(Boolean) && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        More email{selectedContact.contact_info.emails.filter(Boolean).length > 1 ? 's' : ''}
-                      </h4>
-                      <div className="mt-1 space-y-1">
-                        {selectedContact.contact_info.emails.filter(Boolean).map((email, i) => (
-                          <div key={i} className="flex items-center gap-1">
-                            <Mail className="h-4 w-4 text-muted-foreground" />
-                            <ContactMethodLink safe={safeEmailLink(email)} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedContact.contact_info?.phones?.some(Boolean) && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Phone{selectedContact.contact_info.phones.filter(Boolean).length > 1 ? 's' : ''}
-                      </h4>
-                      <div className="mt-1 space-y-1">
-                        {selectedContact.contact_info.phones.filter(Boolean).map((phone, i) => (
-                          <div key={i} className="flex items-center gap-1">
-                            <Phone className="h-4 w-4 text-muted-foreground" />
-                            <ContactMethodLink safe={safePhoneLink(phone)} />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedContact.contact_info?.urls?.some(Boolean) && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Link{selectedContact.contact_info.urls.filter(Boolean).length > 1 ? 's' : ''}
-                      </h4>
-                      <div className="mt-1 space-y-1">
-                        {selectedContact.contact_info.urls.filter(Boolean).map((url, i) => (
-                          <div key={i} className="flex items-center gap-1 min-w-0">
-                            <Link2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                            <ContactMethodLink safe={safeUrlLink(url)} className="truncate" />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {selectedContact.contact_info?.handles && Object.keys(selectedContact.contact_info.handles).length > 0 && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Handles</h4>
-                      <div className="mt-1 space-y-1">
-                        {Object.entries(selectedContact.contact_info.handles).map(([platform, handle]) => (
-                          <div key={platform} className="flex items-center gap-1 min-w-0">
-                            <AtSign className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                            <span className="truncate">
-                              <span className="text-muted-foreground">{platform}: </span>
-                              <ContactMethodLink safe={safeHandleLink(platform, handle)} />
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div>
-                    <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Fingerprint</h4>
-                    <div className="mt-1 font-mono text-sm bg-muted p-2 rounded border border-border/40">
-                      {selectedContact.fingerprint.match(/.{1,4}/g)?.join(' ')}
-                    </div>
-                  </div>
-
-                  {selectedContact.metadata?.notes && (
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes</h4>
-                      <div className="mt-1 p-3 bg-muted rounded-md">
-                        <p className="text-sm whitespace-pre-wrap">{selectedContact.metadata.notes}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Added</h4>
-                      <p className="mt-1">{new Date(selectedContact.added_at).toLocaleDateString()}</p>
-                    </div>
-                    {selectedContact.verified_at && (
-                      <div>
-                        <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Trusted Since</h4>
-                        <p className="mt-1">{new Date(selectedContact.verified_at).toLocaleDateString()}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Actions — nested under one control */}
-                  <div className="border-t border-border/40 pt-4">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm">
-                          Actions
-                          <ChevronDown className="h-4 w-4 ml-1" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start" className="w-56">
-                        {!isContactBlocked(selectedContact) && !isTrusted(selectedContact) && !ownerHasVerified(selectedContact as any) && (
-                          <>
-                            <DropdownMenuItem
-                              onSelect={async () => {
-                                const rec = await getContactByFingerprint(fingerprint, selectedContact.fingerprint).catch(() => null);
-                                const patch = ownerVerifyPersistPatch(
-                                  { ...(selectedContact.metadata || {}), ...(rec as any)?.metadata },
-                                  'in_person',
-                                );
-                                await updateContact(selectedContact.id, patch as any);
-                                await loadContacts();
-                                onContactsChange?.();
-                              }}
-                            >
-                              {TRUST_RECIPE_COPY.verifyInPerson}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onSelect={async () => {
-                                const rec = await getContactByFingerprint(fingerprint, selectedContact.fingerprint).catch(() => null);
-                                const patch = ownerVerifyPersistPatch(
-                                  { ...(selectedContact.metadata || {}), ...(rec as any)?.metadata },
-                                  'other_channel',
-                                );
-                                await updateContact(selectedContact.id, patch as any);
-                                await loadContacts();
-                                onContactsChange?.();
-                              }}
-                            >
-                              {TRUST_RECIPE_COPY.verifyOtherChannel}
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {!isContactBlocked(selectedContact) && (
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              if (isTrusted(selectedContact)) {
-                                setConfirmKind('break');
-                                return;
-                              }
-                              if (!ownerHasVerified(selectedContact as any)) return;
-                              setConfirmKind('trust');
-                            }}
-                          >
-                            {isTrusted(selectedContact)
-                              ? 'Untrust'
-                              : ownerHasVerified(selectedContact as any) ? 'Trust' : 'Verify first, then Trust'}
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem onSelect={() => { openEditDialog(selectedContact); setShowDetailDialog(false); }}>
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => { setShowShardGiveDialog(true); setShowDetailDialog(false); }}>
-                          Give a piece
-                        </DropdownMenuItem>
-                        {contactHasDistress(selectedContact as any) && (
-                          <DropdownMenuItem
-                            onSelect={async () => {
-                              const rec = await getContactByFingerprint(fingerprint, selectedContact.fingerprint).catch(() => null);
-                              const patch = distressWentPersistPatch({ ...(selectedContact.metadata || {}), ...(rec as any)?.metadata });
-                              await updateContact(selectedContact.id, patch as any);
-                              await loadContacts();
-                              onContactsChange?.();
-                            }}
-                          >
-                            {DISTRESS_COPY.went}
-                          </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem
-                          onSelect={() =>
-                            setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block')
-                          }
-                        >
-                          {isContactBlocked(selectedContact) ? 'Unblock' : 'Block'}
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          className="text-destructive focus:text-destructive"
-                          onSelect={() => setConfirmKind('remove')}
-                        >
-                          Remove
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </div>
-              </>
-            )}
-          </DialogContent>
-        </Dialog>
+        <ContactDetailDialog
+          open={showDetailDialog}
+          contact={selectedContact}
+          onClose={() => setShowDetailDialog(false)}
+          trustBadge={selectedContact ? <TrustBadge contact={selectedContact} /> : null}
+          trustIcon={selectedContact ? <TrustIcon contact={selectedContact} className="h-4 w-4" /> : null}
+          isTrusted={!!selectedContact && isTrusted(selectedContact)}
+          isBlocked={!!selectedContact && isContactBlocked(selectedContact)}
+          onTrustToggle={() => {
+            if (!selectedContact) return;
+            if (!isSvrnNetworkContact(selectedContact)) {
+              setError('Trust is SVRNTY-only — link this classical contact first.');
+              return;
+            }
+            setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust');
+          }}
+          onEdit={() => {
+            if (!selectedContact) return;
+            openEditDialog(selectedContact);
+            setShowDetailDialog(false);
+          }}
+          onGivePiece={() => {
+            setShowShardGiveDialog(true);
+            setShowDetailDialog(false);
+          }}
+          onBlockToggle={() => {
+            if (!selectedContact) return;
+            setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block');
+          }}
+          onRemove={() => setConfirmKind('remove')}
+          onInvite={() => setInviteOpen(true)}
+          onLinkToSvrnty={() => {
+            setLinkError(null);
+            setLinkDialogOpen(true);
+          }}
+          availableGroups={Array.from(new Set(contacts.flatMap(c => c.metadata?.tags || []))).sort()}
+          onToggleGroup={(tag) => { void handleToggleGroup(tag); }}
+          onShareSettingsChange={(next) => { void handleShareSettingsChange(next); }}
+        />
 
         <TrustActionConfirmDialog
           open={!!confirmKind && !!confirmTarget}
@@ -1246,6 +1769,47 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        
+        <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Link to SVRNTY</DialogTitle>
+              <DialogDescription>
+                Paste their living fingerprint and public key once you have them (in person, from their
+                card, or after they join). They leave Classical and appear under SVRNTY as pending until
+                they add you back. Classical numbers stay on the card as additional information.
+              </DialogDescription>
+            </DialogHeader>
+            {linkError && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{linkError}</AlertDescription></Alert>}
+            <div className="space-y-3 py-2">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="link-fp">Fingerprint</label>
+                <Input id="link-fp" value={linkFingerprint} onChange={e => setLinkFingerprint(e.target.value)} placeholder="40-hex fingerprint" className="font-mono text-xs" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium" htmlFor="link-pk">Public key</label>
+                <Textarea id="link-pk" value={linkPublicKey} onChange={e => setLinkPublicKey(e.target.value)} placeholder="Armored or base64 public key" className="font-mono text-xs" rows={4} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setLinkDialogOpen(false)}>Cancel</Button>
+              <Button onClick={() => { void handleLinkToSvrnty(); }} disabled={loading || !linkFingerprint.trim() || !linkPublicKey.trim()}>
+                {loading ? 'Linking…' : 'Link & move to SVRNTY'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <InviteToSvrntyDialog
+          open={inviteOpen}
+          contactName={selectedContact?.name || 'contact'}
+          inviteUrl={inviteUrl}
+          loading={inviteLoading}
+          error={inviteError}
+          onClose={() => setInviteOpen(false)}
+          onPrepare={prepareInvite}
+        />
 
         {/* Share Identity — QR, NFC, Short Code, Copy */}
         <ContactShareDialog
@@ -1330,7 +1894,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
               fingerprint={fingerprint}
               exportLabel={
                 pendingBookExport === 'vcard'
-                  ? 'all contacts as vCard'
+                  ? 'all contacts as a phone-book vCard'
                   : 'contacts as JSON'
               }
               onClose={() => setPendingBookExport(null)}

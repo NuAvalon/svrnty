@@ -15,11 +15,18 @@ export interface TrustEdge {
   peer_public_key: string;
   // Contact details (encrypted, never shared without consent)
   contact_info?: {
-    phones?: string[];                  // phone numbers (E.164 where known); multiple per §9.2 now-set
-    emails?: string[];                  // additional emails beyond peer_email
-    handles?: Record<string, string>;   // 'signal' -> '@handle', 'telegram' -> '@handle', etc.
-    urls?: string[];                    // personal sites, profiles
-    verified_claims?: VerifiedClaim[];  // what has been proved
+    phones?: string[];
+    emails?: string[];
+    handles?: Record<string, string>;
+    urls?: string[];
+    verified_claims?: VerifiedClaim[];
+    /** Local classical book — round-trip through vCard, never a living-wire field. */
+    org?: string;
+    title?: string;
+    nickname?: string;
+    bday?: string;
+    adr?: string;
+    extras?: Array<{ label: string; value: string }>;
   };
   // Trust — binary
   trusted: boolean;                     // vouched or not
@@ -59,6 +66,10 @@ export interface TrustEdge {
    * Paints the vivre. NEVER publish.
    */
   distress_inbound?: boolean;
+   * Fingerprints in YOUR book that this peer disclosed to you
+   * (fleet `visible()` ∩ book). Absent until Apollo fills it — glass never infers.
+   */
+  disclosed_circle?: string[];
   /**
    * People in your book this peer also trusts (fleet PSI). Not transitive trust.
    * Drawn as a peer chord only when both sides are open-visibility mutuals
@@ -69,6 +80,7 @@ export interface TrustEdge {
    * Owner-local intent toward this peer: open visibility for trusted contacts.
    * Not a wire field. Combined with reciprocal trust + they_trust, this is
    * how a witnessed peer bond becomes visible on the glass.
+   * how Sally↔Joe becomes visible on the glass (Peter's spec).
    */
   open_visibility?: boolean;
   // Cairn bridge

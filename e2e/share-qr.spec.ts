@@ -16,15 +16,16 @@ async function genesis(page: Page, name: string) {
   if (await email.count()) await email.fill('qr-coverage@example.test'); // present only pre-email-drop
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /^start$/i }).click();
+  await page.getByRole('button', { name: /begin anew/i }).click();
   await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
   await page.getByRole('button', { name: /i have it/i }).click();
-  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('tab', { name: 'Contacts' })).toBeVisible({ timeout: 15_000 });
 }
 
 async function openShareQrTab(page: Page) {
-  await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
-  await page.getByRole('button', { name: /share identity/i }).click();
+  // Share identity lives on the Identity card (Living Address Book pass) — not Contacts.
+  await page.getByRole('tab', { name: 'Identity' }).click();
+  await page.getByTestId('share-identity-from-card').click();
   const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   await dialog.getByRole('tab', { name: /qr/i }).click();
