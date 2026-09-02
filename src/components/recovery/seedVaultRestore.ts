@@ -69,7 +69,13 @@ export async function restoreIdentityFromSeedVault(
         passphrase: bundle.classical_passphrase,
       });
   const publicKeyObj = unlocked.toPublic();
-  const fingerprint = publicKeyObj.getFingerprint().toUpperCase();
+  // Canonical fingerprint = OpenPGP's native lowercase hex, matching identity
+  // creation (browser-identity.ts / core.ts use bare getFingerprint()). Do NOT
+  // uppercase here: the fingerprint is the IndexedDB storage key + identity field,
+  // and a case mismatch vs the created identity re-seeds the identity seal (glyph)
+  // and can orphan case-sensitive local lookups. Comparisons are case-insensitive
+  // (fingerprint.ts) so this stays interoperable with existing cards.
+  const fingerprint = publicKeyObj.getFingerprint();
   const publicKey = publicKeyObj.armor();
   const primary = await unlocked.getPrimaryUser();
   const name = primary.user?.userID?.name?.trim() || 'Recovered identity';

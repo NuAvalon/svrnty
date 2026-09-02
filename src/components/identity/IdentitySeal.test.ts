@@ -35,6 +35,23 @@ test('different fingerprints ⇒ different crystals', () => {
   assert.notDeepEqual(a.spines, b.spines);
 });
 
+test('seal is case-invariant — same key, upper vs lower fingerprint ⇒ identical seal', () => {
+  // Regression: seed-phrase restore uppercased the fingerprint while creation stores
+  // lowercase; every seal seeds from fnv(fp), which used to be case-sensitive, so a
+  // recovered identity appeared to change its glyph. The seal must be a function of
+  // the KEY, not its string case.
+  const lower = FP_A;
+  const upper = FP_A.toUpperCase();
+  assert.deepEqual(composePhiSeal(upper), composePhiSeal(lower));
+  assert.deepEqual(composeGrowthSeal(upper), composeGrowthSeal(lower));
+  assert.deepEqual(composeSigilSeal(upper), composeSigilSeal(lower));
+  assert.deepEqual(composeOrganicSeal(upper), composeOrganicSeal(lower));
+  assert.equal(foldFromFingerprint(upper), foldFromFingerprint(lower));
+  // and formatting-insensitive (spaced/colon fingerprints render the same seal)
+  const spaced = FP_A.replace(/(....)/g, '$1 ').trim();
+  assert.deepEqual(composePhiSeal(spaced), composePhiSeal(lower));
+});
+
 test('rings follow φ cascade R · φ⁻ⁿ', () => {
   const g = composePhiSeal(FP_A);
   assert.ok(Math.abs(g.r1 / g.R - PHI_INV) < 1e-9);
