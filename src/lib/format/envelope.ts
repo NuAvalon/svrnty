@@ -96,9 +96,10 @@ export interface JoinerResponseEnvelope {
  * TRUSTED atomically and needs no wire; this is the REMOTE path.
  */
 export interface MutualVouchEnvelope {
-  voucher_fingerprint: string;   // who is vouching (the sender) — the vouchee already holds this key
-  vouchee_fingerprint: string;   // who is being vouched for (= the recipient's own fp) — binds the recipient
-  ts: string;                    // ISO-8601 UTC — audit/display only
+  voucher_fingerprint: string;   // who is vouching (the sender) — the vouchee already holds this key (NOT TOFU)
+  voucher_epoch: number;         // the voucher's key epoch — the vouchee verifies against the key it holds at this epoch
+  vouchee_fingerprint: string;   // who is being vouched for (= the recipient's own fp) — binds the recipient (no cross-recipient replay)
+  ts: string;                    // ISO-8601 UTC — audit/display; the vouchee tracks the latest per voucher (freshness), attestation is idempotent
 }
 
 /**
