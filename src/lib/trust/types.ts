@@ -66,6 +66,7 @@ export interface TrustEdge {
    * Paints the vivre. NEVER publish.
    */
   distress_inbound?: boolean;
+  /**
    * Fingerprints in YOUR book that this peer disclosed to you
    * (fleet `visible()` ∩ book). Absent until Apollo fills it — glass never infers.
    */
