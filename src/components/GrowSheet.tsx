@@ -9,7 +9,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRelay } from '@/lib/sync/relay';
 import { loadKey } from '@/lib/identity/client-store';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
-import { shareUrlShort } from '@/lib/config/domain';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { GROW_INVITE_CAP, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
@@ -148,7 +147,7 @@ export function GrowSheet({ open, onClose, identity }: Props) {
             <div style={{ margin: '20px auto', width: 'fit-content' }}>
               <SimpleQRCode value={relay.url} size={180} />
             </div>
-            <p style={{ fontSize: 11, color: E.dim, letterSpacing: '0.12em' }}>SHORT LINK</p>
+            <p style={{ fontSize: 11, color: E.dim, letterSpacing: '0.12em' }}>SHARE LINK</p>
             <code
               style={{
                 display: 'block',
@@ -159,7 +158,7 @@ export function GrowSheet({ open, onClose, identity }: Props) {
                 marginTop: 4,
               }}
             >
-              {shareUrlShort(relay.code)}
+              {relay.url}
             </code>
             <button
               type="button"
