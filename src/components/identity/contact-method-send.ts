@@ -17,6 +17,17 @@ export type ContactMethodSendRequest = {
 
 export type ContactMethodSendResult =
   | { ok: true; status: 'stub-queued'; queued: number; message: string }
+  // Real wire result (method-grow #125128): the frontend sendFn calls Flint's sendContactUpdate
+  // (crypto stays in his module — NOT here) and maps its {deposited,skipped,failed} onto these counts
+  // so the dialog can report "sent to N of M" honestly. status:'sent' ⇒ at least one deposit landed.
+  | {
+      ok: true;
+      status: 'sent';
+      deposited: number; // relay accepted (E2E-encrypted deposit landed)
+      skipped: number; // recipient had no usable key — never sent to in a downgraded form
+      failed: number; // POST failed (retryable — re-send is version-floor idempotent)
+      message: string;
+    }
   | { ok: false; reason: 'empty-value' | 'no-recipients' | 'stub' | string; message: string };
 
 export type ContactMethodSendFn = (

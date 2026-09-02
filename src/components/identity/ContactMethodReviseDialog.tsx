@@ -152,7 +152,7 @@ export function ContactMethodReviseDialog({
       value: next,
       previousValue: prev || undefined,
       recipientFingerprints: recipients,
-      note: recipients.length ? 'Queued notify (send stub)' : 'Saved locally',
+      note: recipients.length ? 'Sent update to selected contacts' : 'Saved locally',
     });
     onHistoryChange?.();
   };
@@ -205,11 +205,7 @@ export function ContactMethodReviseDialog({
 
   const label = methodKindLabel(kind);
   const wireNote =
-    kind === 'email'
-      ? 'Maps to wire field emails when Flint wires send.'
-      : kind === 'signal'
-        ? 'Signal is local-only for now — not in contact.update allowlist yet (fleet grow).'
-        : 'Site/URL is local-only for now — not in contact.update allowlist yet (fleet grow).';
+    'The contacts you pick get an encrypted, signed update — they see the change without you resharing your card.';
 
   return (
     <Dialog
@@ -433,7 +429,7 @@ export function ContactMethodReviseDialog({
             title={
               selected.size === 0
                 ? 'Pick someone to notify, or Save locally'
-                : 'Wire send is stubbed — Flint owns encrypt+deposit'
+                : 'Send an encrypted, signed update to the selected contacts'
             }
             style={{
               ...ghostBtnWide,

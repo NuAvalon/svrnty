@@ -5,7 +5,11 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts } from '@/lib/identity/client-store';
+import { sendContactUpdate } from '@/lib/sync/send-contact-update';
+import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
+import { base64ToUint8 } from '@/lib/crypto/pq';
+import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
@@ -1580,6 +1584,88 @@ export function SoverentityFrontend({
     }
   };
 
+  // ── Method-grow #125128: real SEND of a revised contact method to selected contacts. ──
+  // Wires the dialog to Flint's sendContactUpdate (crypto lives in his module; called from here).
+  // The owner signs from the unlocked vault; card_version is the monotonic replay floor — bumped +
+  // PERSISTED BEFORE the deposit (Flint #125159 crash-safety: a crash after deposit but before persist
+  // must never re-use a version, or the next edit stale-rejects and is silently lost). epoch=0 until
+  // key-rotation. Recipient poll-loop (ContactManagement) applies + repaints live — this closes it.
+  const handleContactMethodSend: ContactMethodSendFn = async (req) => {
+    const value = req.value.trim();
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) return { ok: false, reason: 'error', message: 'No active identity.' };
+    if (req.recipientFingerprints.length === 0)
+      return { ok: false, reason: 'no-recipients', message: 'Pick at least one person who already has your card.' };
+
+    // Owner signing material — requires the vault unlocked (same gate as sharing a signed card).
+    const key = await loadKey(fp);
+    if (!key)
+      return { ok: false, reason: 'locked', message: 'Unlock your identity first to send a signed update.' };
+    let pqSigningSecretKey: Uint8Array | undefined;
+    try {
+      const pq = await loadPQKeys(fp);
+      if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+    } catch {
+      /* classical-only if the PQ half can't be read — never block the send on it */
+    }
+
+    // Monotonic card_version — PERSIST-FIRST (before any deposit). Read the freshly-persisted identity
+    // (loadIdentity, not the possibly-stale React closure) so a just-saved email edit is not clobbered
+    // and the version reflects durable truth.
+    const fresh = (await loadIdentity(fp)) || identity;
+    const nextVersion = (typeof fresh?.card_version === 'number' ? fresh.card_version : 0) + 1;
+    const bumped = { ...fresh, card_version: nextVersion };
+    await storeIdentity(fp, bumped); // persist BEFORE the deposit — crash-safety (Flint #125159)
+    setIdentity(bumped);
+
+    const owner = {
+      fingerprint: fp,
+      epoch: 0, // no key-rotation yet — recipients hold the card at epoch 0 (Flint-confirmed)
+      privateKeyArmored: key.privateKey,
+      passphrase: key.passphrase,
+      pqSigningSecretKey,
+    };
+    // Map chosen recipients → {fingerprint, pubkey}. A missing key is passed as '' so Flint's composer
+    // SKIPS it (reason: no-public-key) — never a downgraded/cleartext send.
+    const byFp = new Map(audience.map((c) => [c.fingerprint, c]));
+    const recipients = req.recipientFingerprints.map((rfp) => ({
+      fingerprint: rfp,
+      publicKeyArmored: byFp.get(rfp)?.public_key ?? '',
+    }));
+
+    try {
+      const result = await sendContactUpdate(
+        { version: nextVersion, delta: buildMethodDelta(req.kind, value) },
+        owner,
+        recipients,
+      );
+      const deposited = result.deposited.length;
+      const skipped = result.skipped.length;
+      const failed = result.failed.length;
+      if (deposited === 0) {
+        return {
+          ok: false,
+          reason: 'not-delivered',
+          message: `Couldn't deliver: ${skipped} had no key, ${failed} failed. Saved locally — try Send again later.`,
+        };
+      }
+      return {
+        ok: true,
+        status: 'sent',
+        deposited,
+        skipped,
+        failed,
+        message:
+          `Sent to ${deposited} contact${deposited === 1 ? '' : 's'}` +
+          (skipped ? `, ${skipped} skipped (no key yet)` : '') +
+          (failed ? `, ${failed} failed (retry)` : '') +
+          '.',
+      };
+    } catch (e) {
+      return { ok: false, reason: 'error', message: e instanceof Error ? e.message : 'Send failed.' };
+    }
+  };
+
   if (!identity) return null;
 
   return (
@@ -1659,6 +1745,7 @@ export function SoverentityFrontend({
             });
             setLocalMethods(nextMethods);
           }}
+          sendFn={handleContactMethodSend}
         />
 
         {/* Export / Backup Section — CUR-4: vault via fleet packVault + export-behind-auth */}
