@@ -11,7 +11,7 @@ import { loadKey, recordIssuedGrowCode } from '@/lib/identity/client-store';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
-import { GROW_INVITE_CAP, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { GROW_INVITE_MAX, clampGrowCap, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 type Props = {
   open: boolean;
@@ -37,10 +37,8 @@ export function GrowSheet({ open, onClose, identity }: Props) {
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const result = await createRelay(JSON.stringify(signed));
       setRelay({ url: result.url, code: result.code });
-      // Remember this issued shortcode (giver-side R1 anti-replay) so a joiner's
-      // signed response can be bound to a live invite of ours. Best-effort — a
-      // persistence hiccup must never block sharing the invite.
-      try { await recordIssuedGrowCode(fp, result.code); } catch { /* non-fatal */ }
+      // The issued shortcode is recorded (with its per-code cap) by the effect below — which also keeps
+      // the cap in sync when the issuer adjusts the toggle. Kept out of mint so the two paths don't race.
     } catch (e: any) {
       started.current = false;
       setError(e?.message || 'Could not prepare the invite.');
@@ -60,6 +58,16 @@ export function GrowSheet({ open, onClose, identity }: Props) {
     started.current = true;
     void mint();
   }, [open, mint]);
+
+  // Record the issued code with its per-code cap (giver-side R1 anti-replay + the distinct-joiner
+  // ceiling). Fires when the code is minted (relay.code set) and whenever the issuer adjusts the cap —
+  // the link/code never changes, only its stored cap (recordIssuedGrowCode preserves already-accepted
+  // joiners). Best-effort: a persistence hiccup must never block sharing the invite.
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint;
+    if (!fp || !relay?.code) return;
+    void recordIssuedGrowCode(fp, relay.code, uses).catch(() => { /* non-fatal */ });
+  }, [uses, relay?.code, identity]);
 
   if (!open) return null;
 
@@ -115,12 +123,16 @@ export function GrowSheet({ open, onClose, identity }: Props) {
           {TRUST_RECIPE_COPY.mycelial}
         </p>
 
-        <label style={{ display: 'block', marginTop: 18, fontSize: 11, color: E.dim, letterSpacing: '0.08em' }}>
-          USES (ONCE IS THE TABLE)
+        <label style={{ display: 'block', marginTop: 18, fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
+          How many people can join with this link?
         </label>
-        <select
+        <input
+          type="number"
+          min={1}
+          max={GROW_INVITE_MAX}
           value={uses}
-          onChange={(e) => setUses(Number(e.target.value))}
+          onChange={(e) => setUses(clampGrowCap(e.target.value))}
+          aria-label="Number of people who can join with this link"
           style={{
             marginTop: 6,
             width: '100%',
@@ -131,18 +143,16 @@ export function GrowSheet({ open, onClose, identity }: Props) {
             padding: '10px 12px',
             fontFamily: E.fontSans,
           }}
-        >
-          {Array.from({ length: GROW_INVITE_CAP }, (_, i) => i + 1).map((n) => (
-            <option key={n} value={n}>
-              {n === 1 ? 'Once' : `Up to ${n}`}
-            </option>
-          ))}
-        </select>
-        {uses > 1 && (
-          <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim }}>
-            Relay is still single-use on the wire. Multi-use is intended (cap {GROW_INVITE_CAP}) — not live yet.
-          </p>
-        )}
+        />
+        <p style={{ margin: '6px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.5 }}>
+          Default is 1 (single-use). Turn it up to share one link with a group, up to {GROW_INVITE_MAX}.
+        </p>
+        <p style={{ margin: '8px 0 0', fontSize: 12, color: E.muted }}>
+          {uses === 1
+            ? 'Single-use: one person can join with this link.'
+            : `Up to ${uses} people can join with this link.`}{' '}
+          This link works for 7 days.
+        </p>
 
         {busy && <p style={{ color: E.dim, marginTop: 20 }}>Preparing…</p>}
         {error && <p style={{ color: E.danger, marginTop: 16, fontSize: 13 }}>{error}</p>}

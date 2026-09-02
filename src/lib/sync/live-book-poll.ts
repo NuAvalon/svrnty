@@ -47,7 +47,6 @@ import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import type { JoinerResponseSeam } from './consume-mailbox';
-import { GROW_INVITE_CAP } from '@/lib/trust/trust-recipe';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 
@@ -117,7 +116,7 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
   // crypto (Invariant-1 + signature) then requires a self-consistent, validly-signed identity.
   const acceptNonce = (nonce: string, joinerFp: string): boolean =>
     isCodeOutstanding(codes, ownFp, nonce, Date.now())
-    && codeUnderCap(codes, ownFp, nonce, GROW_INVITE_CAP)
+    && codeUnderCap(codes, ownFp, nonce) // per-code cap (issuer-chosen at generation; default 1)
     && !alreadyAccepted(codes, ownFp, nonce, joinerFp);
 
   return {

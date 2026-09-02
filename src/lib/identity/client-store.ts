@@ -748,8 +748,18 @@ const ISSUED_GROW_CODES_KEY = 'issued_grow_codes';
 // after issuing still admits a joiner-response — NOT the 15-min relay dead-drop.
 const R1_ACCEPTANCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** One issued code: when it stops accepting (epoch ms), and which joiner fps it has accepted. */
-export interface IssuedCodeEntry { acceptUntil: number; accepted: string[] }
+/** Ceiling for a per-link distinct-joiner cap (Peter #125734). */
+const ISSUED_CODE_CAP_MAX = 1000;
+/** Clamp a per-link cap to an integer in [1, ISSUED_CODE_CAP_MAX]; junk → 1 (single-use, the safe default). */
+function clampCodeCap(n: unknown): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v)) return 1;
+  return Math.max(1, Math.min(ISSUED_CODE_CAP_MAX, v));
+}
+
+/** One issued code: when it stops accepting (epoch ms), which joiner fps it has accepted, and the
+ *  per-code distinct-joiner cap (issuer-chosen at generation; default 1 = single-use). */
+export interface IssuedCodeEntry { acceptUntil: number; accepted: string[]; cap: number }
 /** ownerFp -> { shortcode -> entry } */
 export type IssuedCodeMap = Record<string, Record<string, IssuedCodeEntry>>;
 
@@ -757,7 +767,10 @@ function normalizeEntry(e: unknown): IssuedCodeEntry | null {
   if (!e || typeof e !== 'object') return null;
   const r = e as Record<string, unknown>;
   if (!Number.isFinite(r.acceptUntil as number)) return null;
-  return { acceptUntil: r.acceptUntil as number, accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [] };
+  // cap: a legacy entry (pre-cap) defaults to 1 (single-use) — it must NOT retroactively become
+  // multi-use. A present cap is clamped to [1, MAX].
+  const cap = r.cap === undefined ? 1 : clampCodeCap(r.cap);
+  return { acceptUntil: r.acceptUntil as number, accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [], cap };
 }
 
 /** Pure: drop entries past their acceptance window. Owners left empty are removed. */
@@ -780,10 +793,12 @@ export function isCodeOutstanding(map: IssuedCodeMap, ownerFp: string, code: str
   return !!e && Number.isFinite(e.acceptUntil) && e.acceptUntil > nowMs;
 }
 
-/** Pure: is this code still under the distinct-joiner invite cap? (caller passes GROW_INVITE_CAP) */
-export function codeUnderCap(map: IssuedCodeMap, ownerFp: string, code: string, cap: number): boolean {
+/** Pure: is this code still under its PER-CODE distinct-joiner cap (stored in the entry, issuer-chosen
+ *  at generation; default 1 = single-use)? */
+export function codeUnderCap(map: IssuedCodeMap, ownerFp: string, code: string): boolean {
   const e = map?.[ownerFp]?.[code];
   if (!e) return false;
+  const cap = Number.isFinite(e.cap) ? e.cap : 1;
   return (Array.isArray(e.accepted) ? e.accepted.length : 0) < cap;
 }
 
@@ -825,14 +840,20 @@ export async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
   return pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
 }
 
-/** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window. */
-export async function recordIssuedGrowCode(ownerFp: string, code: string): Promise<void> {
+/** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window with a per-code
+ *  distinct-joiner cap (issuer-chosen at generation; default 1 = single-use, max 1000). */
+export async function recordIssuedGrowCode(ownerFp: string, code: string, cap: number = 1): Promise<void> {
   if (!ownerFp || !code) return;
   const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
   if (!map[ownerFp]) map[ownerFp] = {};
   const prior = map[ownerFp][code];
-  // Fresh window on (re)issue; preserve any joiners already accepted on this code.
-  map[ownerFp][code] = { acceptUntil: Date.now() + R1_ACCEPTANCE_WINDOW_MS, accepted: prior?.accepted ?? [] };
+  // Fresh window on (re)issue; preserve any joiners already accepted on this code. The cap is set from
+  // the issuer's choice at generation, clamped to [1, 1000].
+  map[ownerFp][code] = {
+    acceptUntil: Date.now() + R1_ACCEPTANCE_WINDOW_MS,
+    accepted: prior?.accepted ?? [],
+    cap: clampCodeCap(cap),
+  };
   await saveIssuedCodeMap(map);
 }
 

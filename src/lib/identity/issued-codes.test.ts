@@ -21,7 +21,7 @@ import {
 const NOW = 1_000_000_000_000; // fixed "now" in ms
 const future = NOW + 60_000;
 const past = NOW - 60_000;
-const entry = (acceptUntil: number, accepted: string[] = []) => ({ acceptUntil, accepted });
+const entry = (acceptUntil: number, accepted: string[] = [], cap = 1) => ({ acceptUntil, accepted, cap });
 
 test('pruneIssuedCodes keeps in-window entries, drops expired', () => {
   const map: IssuedCodeMap = { alice: { live: entry(future, ['j1']), dead: entry(past) } };
@@ -51,11 +51,25 @@ test('isCodeOutstanding: in-window true; expired / missing code / wrong owner fa
   assert.equal(isCodeOutstanding(map, 'bob', 'c', NOW), false);
 });
 
-test('codeUnderCap: under cap true, at cap false, missing false', () => {
-  const map: IssuedCodeMap = { alice: { c: entry(future, ['j1', 'j2']) } };
-  assert.equal(codeUnderCap(map, 'alice', 'c', 7), true);
-  assert.equal(codeUnderCap(map, 'alice', 'c', 2), false); // 2 accepted, cap 2 → not under
-  assert.equal(codeUnderCap(map, 'alice', 'zzz', 7), false);
+test('codeUnderCap: reads the PER-CODE cap — under true, at cap false, missing false', () => {
+  const map: IssuedCodeMap = {
+    alice: {
+      big: entry(future, ['j1', 'j2'], 7),   // 2 of 7 → under
+      tight: entry(future, ['j1', 'j2'], 2),  // 2 of 2 → at cap
+      solo: entry(future, [], 1),             // 0 of 1 → under (fresh single-use)
+    },
+  };
+  assert.equal(codeUnderCap(map, 'alice', 'big'), true);
+  assert.equal(codeUnderCap(map, 'alice', 'tight'), false);
+  assert.equal(codeUnderCap(map, 'alice', 'solo'), true);
+  assert.equal(codeUnderCap(map, 'alice', 'zzz'), false); // missing code
+});
+
+test('codeUnderCap: a legacy entry with no cap fails safe to 1 (single-use)', () => {
+  const fresh = { alice: { c: { acceptUntil: future, accepted: [] } as any } } as IssuedCodeMap;
+  assert.equal(codeUnderCap(fresh, 'alice', 'c'), true); // 0 < default 1
+  const used = { alice: { c: { acceptUntil: future, accepted: ['j1'] } as any } } as IssuedCodeMap;
+  assert.equal(codeUnderCap(used, 'alice', 'c'), false); // 1 of default-1 → at cap (no retroactive multi-use)
 });
 
 test('alreadyAccepted: present joiner true, absent false', () => {
@@ -75,26 +89,36 @@ test('markAcceptedInMap: adds new joiner, idempotent, no-op on missing code', ()
   assert.equal(map.alice.zzz, undefined);
 });
 
-test('multi-use accept flow: distinct joiners accumulate, cap enforced, replay blocked', () => {
-  const map: IssuedCodeMap = { alice: { link: entry(future, []) } };
-  const cap = 3;
+test('multi-use accept flow: distinct joiners accumulate up to the PER-CODE cap, replay blocked', () => {
+  const map: IssuedCodeMap = { alice: { link: entry(future, [], 3) } }; // per-code cap = 3
   const canAccept = (joiner: string) =>
     isCodeOutstanding(map, 'alice', 'link', NOW) &&
-    codeUnderCap(map, 'alice', 'link', cap) &&
+    codeUnderCap(map, 'alice', 'link') &&
     !alreadyAccepted(map, 'alice', 'link', joiner);
   for (const j of ['j1', 'j2', 'j3']) {
     assert.equal(canAccept(j), true);
     markAcceptedInMap(map, 'alice', 'link', j);
   }
-  assert.equal(canAccept('j4'), false); // cap reached → 4th distinct joiner refused
+  assert.equal(canAccept('j4'), false); // per-code cap 3 reached → 4th distinct joiner refused
   assert.equal(canAccept('j1'), false); // replay of an already-accepted joiner
 });
 
-test('expired code refuses accepts even under cap', () => {
-  const map: IssuedCodeMap = { alice: { link: entry(past, []) } };
+test('default cap 1 = single-use: 2nd distinct joiner refused', () => {
+  const map: IssuedCodeMap = { alice: { link: entry(future, [], 1) } }; // default single-use
   const canAccept = (joiner: string) =>
     isCodeOutstanding(map, 'alice', 'link', NOW) &&
-    codeUnderCap(map, 'alice', 'link', 7) &&
+    codeUnderCap(map, 'alice', 'link') &&
+    !alreadyAccepted(map, 'alice', 'link', joiner);
+  assert.equal(canAccept('j1'), true);
+  markAcceptedInMap(map, 'alice', 'link', 'j1');
+  assert.equal(canAccept('j2'), false); // cap 1 reached → single-use
+});
+
+test('expired code refuses accepts even under cap', () => {
+  const map: IssuedCodeMap = { alice: { link: entry(past, [], 7) } };
+  const canAccept = (joiner: string) =>
+    isCodeOutstanding(map, 'alice', 'link', NOW) &&
+    codeUnderCap(map, 'alice', 'link') &&
     !alreadyAccepted(map, 'alice', 'link', joiner);
   assert.equal(canAccept('j1'), false);
 });

@@ -50,6 +50,18 @@ export const TRUST_RECIPE_COPY = {
 } as const;
 
 export const GROW_INVITE_CAP = 7;
+// Per-link cap config (Peter #125734): a Grow link's distinct-joiner cap is chosen by the issuer AT
+// GENERATION (opt-in viral). Default 1 = single-use (the safe, honest default — a plain link stays
+// single-use); max 1000. The cap is stored PER-CODE in the issued-code store and enforced at the
+// accept-oracle (codeUnderCap reads the per-code cap), NOT globally.
+export const GROW_INVITE_DEFAULT = 1;
+export const GROW_INVITE_MAX = 1000;
+/** Clamp a user-chosen per-link cap to an integer in [1, GROW_INVITE_MAX]; junk → the default. */
+export function clampGrowCap(n: unknown): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v)) return GROW_INVITE_DEFAULT;
+  return Math.max(1, Math.min(GROW_INVITE_MAX, v));
+}
 
 export type OwnerLocalVerify = {
   /** You confirmed this key is the person you mean. Private to this device. */
