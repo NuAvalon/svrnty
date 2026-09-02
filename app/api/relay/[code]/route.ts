@@ -1,5 +1,8 @@
 // app/api/relay/[code]/route.ts
-// Retrieve and destroy a relay entry. Single-use: the blob is deleted on read.
+// Retrieve a relay entry (the giver's opaque, key-fragment-encrypted identity card). Served for the
+// code's TTL — MULTI-USE, not consume-on-view. One Grow link → N joiners up to GROW_INVITE_CAP (Peter's
+// viral model #124894/#124916; Archie arch-ruling #125681). The entry is cleaned up by the POST's TTL
+// timer at expiry, not on read.
 
 import { NextResponse } from 'next/server';
 
@@ -54,11 +57,14 @@ export async function GET(
       );
     }
 
-    // Single use: read and destroy
+    // Serve the card for the code's LIFETIME — do NOT consume-on-view. The anti-replay/anti-abuse is
+    // enforced DOWNSTREAM at the joiner-response accept-oracle (isCodeOutstanding + codeUnderCap +
+    // !alreadyAccepted per-(code,joinerFp)), so the relay's old single-use delete-on-read was REDUNDANT
+    // with that AND was the bug: a 2nd opener — or the SPA double-fetching/re-mounting — got "expired" on
+    // their FIRST open, breaking multi-person viral Grow (#125670/#125684/#125681). The card is the
+    // giver's OWN identity (deliberately shared, key-fragment-gated), so serving it N times within the
+    // TTL adds no exposure. The POST's setTimeout still deletes the entry at expiry.
     const { encrypted } = entry;
-    clearTimeout(entry.timer);
-    store.delete(code);
-
     return NextResponse.json({ encrypted });
   } catch (error) {
     console.error('Relay GET error:', error);
