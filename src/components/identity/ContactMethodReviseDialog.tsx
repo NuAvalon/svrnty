@@ -2,7 +2,7 @@
 
 /**
  * CUR-1 — revise a contact method + pick shared-with recipients + Send update.
- * Solar Ember UI only. Wire broadcast is Flint's seam (see contact-method-send.ts).
+ * Solar Ember UI only. Wire broadcast is the seam (see contact-method-send.ts).
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
@@ -27,7 +27,7 @@ import { solarEmber as E } from '../recovery/solar-ember';
 export type AudienceContact = {
   fingerprint: string;
   name: string;
-  /** Prefer contacts with a pubkey (encrypt targets when Flint wires send). */
+  /** Prefer contacts with a pubkey (encrypt targets when send is wired). */
   public_key?: string;
   trusted?: boolean;
   /** Owner-local group labels (never on the wire). */

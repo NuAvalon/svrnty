@@ -8,7 +8,7 @@ import { livingWinsMerge } from './dedup';
 import type { TrustEdge } from '../trust/types';
 
 // Default edge is KNOWN-living (trusted:false, has fingerprint = rank 1) so the plain auto-merge
-// tests don't trip the chaos#32 trusted-target guard; the chaos#32 tests set trusted:true explicitly.
+// tests don't trip the trusted-target guard; the tests set trusted:true explicitly.
 const edge = (over: Partial<TrustEdge> = {}): TrustEdge => ({
   id: 'e', peer_fingerprint: 'FP', peer_name: 'Existing', peer_email: '', peer_public_key: '',
   contact_info: { phones: [], emails: [] }, trusted: false, trusted_since: null,
@@ -76,14 +76,14 @@ test('idempotent: re-importing the merged survivor yields no new fresh row', () 
   assert.equal(second.autoMerge.length, 1);          // re-matches its own channel
 });
 
-// ─── chaos#32: trusted-target channel-injection guard (Archie fix A + Flint co-verify #116149) ───
+// ─── trusted-target channel-injection guard ───
 // A gray import that shares ONE channel with a TRUSTED edge (→ single match) but carries an EXTRA
 // reachability channel would, on silent auto-merge, UNION that channel onto the trusted edge. Guard:
 // an add into a trusted target → review (never silent). The unnormalizable cases are the regression a
 // normalized-key guard would MISS (bare national phone / custom-platform handle raw-unioned by livingWinsMerge).
 const trusted = (over: Partial<TrustEdge> = {}): TrustEdge => edge({ trusted: true, ...over });
 
-test('chaos#32: net-new channel into a TRUSTED target → review (reason trusted-net-new), not silent auto-merge', () => {
+test('net-new channel into a TRUSTED target → review (reason trusted-net-new), not silent auto-merge', () => {
   const existing = [trusted({ id: 'v', contact_info: { phones: ['+13015550100'], emails: [] } })];
   const incoming: Partial<TrustEdge>[] = [
     { contact_info: { phones: ['+13015550100'], emails: ['added@x.com'] } }, // shares phone, ADDS an email
@@ -95,7 +95,7 @@ test('chaos#32: net-new channel into a TRUSTED target → review (reason trusted
   assert.deepEqual(plan.review[0].candidates.map((c) => c.id), ['v']);
 });
 
-test('chaos#32 REGRESSION: a bare national phone (UNNORMALIZABLE) injected into a trusted target → review', () => {
+test('REGRESSION: a bare national phone (UNNORMALIZABLE) injected into a trusted target → review', () => {
   // The vuln a normalized-key guard misses: '555-1234' has no E.164 form → no dedup key → dropped from a
   // normalized-key net-new check, yet livingWinsMerge raw-UNIONs it onto the trusted edge. Must route to review.
   const existing = [trusted({ id: 'v', peer_email: 'grace@navy.mil', contact_info: { phones: [], emails: [] } })];
@@ -108,7 +108,7 @@ test('chaos#32 REGRESSION: a bare national phone (UNNORMALIZABLE) injected into 
   assert.equal(plan.review[0].reason, 'trusted-net-new');
 });
 
-test('chaos#32 REGRESSION: a custom-platform handle (UNNORMALIZABLE) injected into a trusted target → review', () => {
+test('REGRESSION: a custom-platform handle (UNNORMALIZABLE) injected into a trusted target → review', () => {
   const existing = [trusted({ id: 'v', contact_info: { phones: ['+13015550100'], emails: [] } })];
   const incoming: Partial<TrustEdge>[] = [
     { contact_info: { phones: ['+13015550100'], handles: { myapp: '@attacker' } } }, // shares phone, injects custom handle
@@ -119,7 +119,7 @@ test('chaos#32 REGRESSION: a custom-platform handle (UNNORMALIZABLE) injected in
   assert.equal(plan.review[0].reason, 'trusted-net-new');
 });
 
-test('chaos#32: idempotent re-import into a TRUSTED target adds nothing → auto-merge (guard does not over-trigger)', () => {
+test('idempotent re-import into a TRUSTED target adds nothing → auto-merge (guard does not over-trigger)', () => {
   const existing = [trusted({ id: 'v', peer_email: 'x@y.com', contact_info: { phones: ['+13015550100'], emails: [] } })];
   const incoming: Partial<TrustEdge>[] = [
     { peer_email: 'x@y.com', contact_info: { phones: ['+13015550100'], emails: [] } }, // same channels, nothing new
@@ -129,7 +129,7 @@ test('chaos#32: idempotent re-import into a TRUSTED target adds nothing → auto
   assert.equal(plan.autoMerge.length, 1);
 });
 
-test('chaos#32: net-new channel into a NON-trusted (known-living) target → auto-merge (convenience preserved)', () => {
+test('net-new channel into a NON-trusted (known-living) target → auto-merge (convenience preserved)', () => {
   const existing = [edge({ id: 'k', contact_info: { phones: ['+13015550100'], emails: [] } })]; // edge() = trusted:false
   const incoming: Partial<TrustEdge>[] = [
     { contact_info: { phones: ['+13015550100'], emails: ['added@x.com'] } }, // adds an email

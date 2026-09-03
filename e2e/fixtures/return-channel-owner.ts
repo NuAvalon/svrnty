@@ -1,5 +1,5 @@
 // e2e/fixtures/return-channel-owner.ts
-// A-half owner-auth fixture for the return-channel gate (Flint's spec, joint §4.1). Generates ONE real
+// A-half owner-auth fixture for the return-channel gate. Generates ONE real
 // openpgp identity and derives its mailbox_id, so the owner-dependent functional tests (A1–A4) can
 // prove deposit → owner-poll → ack-delete against real owner-auth. Two distinct getters because poll
 // and ack are domain-separated: an ack MUST be signed with signMailboxAckRequest (it binds the exact

@@ -1,9 +1,9 @@
 // src/lib/contacts/dedup.ts
-// Contact dedup for the living address book (Queue B lane 0.13 — Archie).
+// Contact dedup for the living address book (Queue B lane 0.13).
 // Operates on the LIVE model: TrustEdge + contact_info (NOT the dead legacy Contact type).
 // E.164 phone + conservative email normalization → dedup keys → living-wins survivor selection.
 // Wires into src/lib/sync/merge.ts. Merge itself stays confirm-gated (NEVER silent — invariant B2).
-// Spec: shared/outbox/archie/svrnty_queueB_0.13_dedup_and_0.1_0.2_format_v1.md Part B
+// Spec Part B
 
 import type { TrustEdge } from '@/lib/trust/types';
 
@@ -101,14 +101,14 @@ function countChannels(e: TrustEdge): number {
   return edgeChannels(e).filter((c) => !c.unnormalizable).length;
 }
 
-// ─── Cluster detection (9.1 engine — Archie #115797 rulings + Fable §9.1) ─────────────
+// ─── Cluster detection (9.1 engine) ─────────────
 // The step between normalize (above) and the field-union merge (confirm-gated in sync/merge.ts):
 // group the address book into dup-clusters so the merge has something to operate on.
 
 /**
  * A group of edges that resolve to the same person, with the survivor pre-selected.
  *  - `exact`: members share ≥1 NORMALIZED channel (phone/email/handle). High-confidence dup →
- *    auto-applied-but-SHOWN (Archie #115797: satisfies B2's "never HIDDEN loss" without a
+ *    auto-applied-but-SHOWN (satisfies B2's "never HIDDEN loss" without a
  *    per-merge confirm). `fuzzy` (name-similarity, no shared channel) is a later pass and is
  *    proposed-awaiting-confirm — not produced here.
  * Carries ALL `members` so the downstream field-union merge stays lossless (B3), and `sharedKeys`
@@ -182,8 +182,8 @@ export function clusterByExactChannel(edges: TrustEdge[]): DedupCluster[] {
 }
 
 // ─── Field-union merge primitive (9.1 — moved here from import-dedup.ts in the re-route) ──────
-// livingWinsMerge is the shared field-union: BOTH the import path (Apollo, pairwise) and the cluster
-// path (multi-member, via foldLivingWins) fold IDENTICALLY (Hypatia build-once #115891). Living/attested
+// livingWinsMerge is the shared field-union: BOTH the import path (pairwise) and the cluster
+// path (multi-member, via foldLivingWins) fold IDENTICALLY. Living/attested
 // scalars are never overwritten; multi-value fields (phones/emails/urls/tags/channels) are UNIONed
 // (lossless, B3). Now a dedup PRIMITIVE living with livingWinsSurvivor/foldLivingWins — import-dedup
 // imports it one-directionally, resolving the former dedup↔import-dedup circular import.
@@ -221,7 +221,7 @@ function unionArr(a: string[] | undefined, b: string[] | undefined): string[] {
   return out;
 }
 
-// ─── chaos#32 channel-injection guard surface (Archie fix A + Flint co-verify #116149) ────────
+// ─── channel-injection guard surface ────────
 // The import guard must measure the SAME channel surface livingWinsMerge WRITES. livingWinsMerge
 // raw-UNIONs the import's channels onto the living edge (unionArr, by raw value), so it carries in
 // UNNORMALIZABLE channels too — a bare national phone ('555-1234') or a custom-platform handle that
@@ -259,7 +259,7 @@ export function rawChannelValues(
  * True iff `after` (a livingWinsMerge SURVIVOR) carries ≥1 raw reachability channel `before` lacks —
  * i.e. the merge ADDED a channel. Deriving `after` from the actual merge output makes this exact: it
  * respects living-wins (per-platform handles win, scalars fill only when empty) AND catches raw-unioned
- * unnormalizables. The chaos#32 predicate: an ADD into a TRUSTED-living target → route to review.
+ * unnormalizables. The predicate: an ADD into a TRUSTED-living target → route to review.
  */
 export function addsRawChannel(before: TrustEdge, after: TrustEdge): boolean {
   const have = rawChannelValues(before);
@@ -268,7 +268,7 @@ export function addsRawChannel(before: TrustEdge, after: TrustEdge): boolean {
 }
 
 /**
- * Fold same-person edges into ONE merged edge. Composition ORDER matters (Archie #115913):
+ * Fold same-person edges into ONE merged edge. Composition ORDER matters:
  * rank-SELECT the base FIRST, THEN union the others into it — NOT a naive reduce(livingWinsMerge),
  * which would let reduce-order pick the scalar base instead of the rank-winner (the subtle bug).
  *   (1) livingWinsSurvivor selects the base by rank (trusted>known>gray, then channels/fp/id).

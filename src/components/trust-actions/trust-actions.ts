@@ -1,7 +1,7 @@
 /**
  * CUR-5 — L3 trust / untrust / remove / block seam (UI → fleet).
  *
- * ⛔ FLINT / ATHENA own relay-auth + signal deposit (vouch / break / block mute).
+ * ⛔ Relay-auth + signal deposit (vouch / break / block mute) are owned outside this module.
  * This module is the UI contract + local apply helpers only.
  * Do NOT invent crypto, visibility gates, or wire formats here.
  */
@@ -41,7 +41,7 @@ export function safeDisplayName(raw: string, max = 64): string {
 }
 
 /**
- * Claim-honest confirm copy (Hypatia lane — review wording before treating as final).
+ * Claim-honest confirm copy (review wording before treating as final).
  * Says only what this UI does today: local book mutation. Wire notify = fleet stub.
  */
 export function getTrustActionCopy(
@@ -192,7 +192,7 @@ function buildLocalPatch(
 }
 
 /**
- * Apply a confirmed trust action locally. Wire notify stays stubbed (Flint).
+ * Apply a confirmed trust action locally. Wire notify stays stubbed.
  */
 export async function applyTrustAction(
   kind: TrustActionKind,

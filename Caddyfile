@@ -10,7 +10,7 @@
 {$SVRNTY_DOMAIN} {
 	encode zstd gzip
 
-	# Security headers (Flint advisory, PR #26). svrnty is an identity app: the headline risk is
+	# Security headers. svrnty is an identity app: the headline risk is
 	# clickjacking — a hostile page iframing svrnty to UI-redress a user into an identity action
 	# (claim slug / share identity / verify contact). Co-verified: no iframe/postMessage/embed use
 	# anywhere in src, so locking framing breaks nothing. A full CSP (script-src/style-src) is a

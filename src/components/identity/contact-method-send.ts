@@ -1,8 +1,8 @@
 /**
  * CUR-1 — L1 contact-method SEND seam (UI → fleet).
  *
- * ⛔ FLINT owns per-peer encrypt + mailbox deposit (`encryptContactUpdateTo`,
- * sign ContactUpdateEnvelope, relay deposit). This module is the UI contract only.
+ * ⛔ Per-peer encrypt + mailbox deposit (`encryptContactUpdateTo`,
+ * sign ContactUpdateEnvelope, relay deposit) live in the crypto layer. This module is the UI contract only.
  * Do NOT implement crypto here.
  */
 
@@ -17,8 +17,8 @@ export type ContactMethodSendRequest = {
 
 export type ContactMethodSendResult =
   | { ok: true; status: 'stub-queued'; queued: number; message: string }
-  // Real wire result (method-grow #125128): the frontend sendFn calls Flint's sendContactUpdate
-  // (crypto stays in his module — NOT here) and maps its {deposited,skipped,failed} onto these counts
+  // Real wire result (method-grow): the frontend sendFn calls the crypto layer's sendContactUpdate
+  // (crypto stays in that module — NOT here) and maps its {deposited,skipped,failed} onto these counts
   // so the dialog can report "sent to N of M" honestly. status:'sent' ⇒ at least one deposit landed.
   | {
       ok: true;
@@ -36,7 +36,7 @@ export type ContactMethodSendFn = (
 
 /**
  * Stub send — validates UI inputs and reports honestly that the wire is not live.
- * Replace body with Flint's encrypt+deposit when the seam is ready.
+ * Replace body with the crypto encrypt+deposit when the seam is ready.
  */
 export const sendContactMethodUpdate: ContactMethodSendFn = async (req) => {
   const value = req.value.trim();
@@ -57,12 +57,11 @@ export const sendContactMethodUpdate: ContactMethodSendFn = async (req) => {
 
   // Fleet seam placeholder — do not encrypt, sign, or deposit from UI code.
   // When live: write per-peer method_delivery awaiting-ack, then acked / undelivered.
-  // See src/lib/trust/FLEET_TRUST_RECIPROCITY.md
   return {
     ok: true,
     status: 'stub-queued',
     queued: req.recipientFingerprints.length,
-    message: `Prepared update for ${req.recipientFingerprints.length} peer(s) — wire send is not live yet (Flint: per-peer encrypt + mailbox + ack receipts). Local draft can still be saved.`,
+    message: `Prepared update for ${req.recipientFingerprints.length} peer(s) — wire send is not live yet. Local draft can still be saved.`,
   };
 };
 

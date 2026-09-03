@@ -5,8 +5,8 @@ import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtur
 // ─────────────────────────────────────────────────────────────────────────────────────
 // svrnty 9/10 DEMO ARC (§9.7) — the whole story as one end-to-end journey.
 //
-// Fable's §9.7 named deliverable. The arc is Hypatia's demo-script v1
-// (shared/outbox/hypatia/svrnty_015_demo_script_v1.md, KB #85999): five beats, each bound to
+// The §9.7 named deliverable. The arc is the demo-script v1:
+// five beats, each bound to
 // its HONEST wired-state — the demo shows only what ships (a false demo is a false claim).
 //
 //   Beat 1 · the gray sea    — your relationships live in someone else's DB → real vCard import.
@@ -15,20 +15,19 @@ import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtur
 //   Beat 4 · the living edge  — Bob edits his card → Alice's entry self-updates.
 //   Beat 5 · the candle       — what survives the fire: export the whole self (no second Alexandria).
 //
-// OWNERSHIP / DIVISION (Archie #116268):
-//   • Hypatia — this arc skeleton (owns the arc).
-//   • Athena  — ceremony/export testids (beats 3 & 5) + un-stubs beat 4 when her consume→apply
-//               caller lands (return_channel_caller_build_plan.md).
-//   • Archie  — return-channel relay-semantics (the mailbox/poll/ack HOW).
-//   • Apollo  — the BroadcastChannel repaint / last_interaction-reset that makes beat 4 LIVE.
-//   • Coexists with e2e/return-channel.spec.ts (Flint's gate; self-skips until endpoints land).
+// MOVING PARTS:
+//   • ceremony/export testids (beats 3 & 5) + un-stubs beat 4 when the consume→apply
+//     caller lands.
+//   • return-channel relay-semantics (the mailbox/poll/ack HOW).
+//   • the BroadcastChannel repaint / last_interaction-reset that makes beat 4 LIVE.
+//   • Coexists with e2e/return-channel.spec.ts (self-skips until endpoints land).
 //
-// WIRE-STATE (verified on main, 2026-08-18 — see KB #86234):
+// WIRE-STATE (verified on main, 2026-08-18):
 //   Beats 1–2 : LIVE — wired here (mirror import.spec.ts / identity.spec.ts). This test PASSES.
-//   Beat 3    : LIVE (2026-08-21, PR#40) — a real two-context handshake through the client-side relay:
+//   Beat 3    : LIVE (2026-08-21) — a real two-context handshake through the client-side relay:
 //               Alice's Grow join-link (key on the URL fragment) → Bob joins → the edge blooms.
 //               Runs+passes in e2e-prod (2.9s), skips clean in dev.
-//   Beat 4    : LIVE (2026-08-19) — Athena's return-channel consume caller (PR#33) + Apollo's live-apply
+//   Beat 4    : LIVE (2026-08-19) — the return-channel consume caller + the live-apply
 //               subscription. RECEIVE side on the wire (a real signed deposit → Alice consumes/verifies/
 //               applies → data-live="push"); SEND-from-UI still simulated (Bob's client caller unbuilt).
 //   Beat 5    : PENDING TESTIDS — SecureExportDialog exists; test.fixme until export testids land.
@@ -45,7 +44,7 @@ const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 grays: Grace 
 async function genesis(page: Page, name: string, email: string) {
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-  // §1 / Peter #117506: genesis is name + passphrase ONLY — no email field, no verification.
+  // §1: genesis is name + passphrase ONLY — no email field, no verification.
   await expect(page.getByPlaceholder('your@email.com')).toHaveCount(0);
   await page.getByPlaceholder('Your name').fill(name);
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
@@ -80,7 +79,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 3: the handshake bloom (two devices, one relay) ─────────────────────────────
-  // LIVE (PR#40). Real shape: Alice opens Grow → the app auto-creates a
+  // LIVE. Real shape: Alice opens Grow → the app auto-creates a
   // one-time relay handshake (QR + short link off one code); Bob, on his own device/context, opens the
   // /c/<code>#<key> link, receives her signed card, and the trust edge goes live in his book.
   // ACTIVATION SATISFIED: extractJoinPath confirmed in CI (the key rides the URL fragment; read off the
@@ -118,8 +117,8 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 4: the living edge — Bob edits → Alice's entry self-updates LIVE ─────────────
-  // WIRED (2026-08-19): Athena's return-channel consume caller (poll→decrypt→verify→apply→persist→ack, PR#33)
-  // + Apollo's ContactManagement live-apply subscription (data-live="push" on reason:'live-apply'). THREE
+  // WIRED (2026-08-19): the return-channel consume caller (poll→decrypt→verify→apply→persist→ack)
+  // + the ContactManagement live-apply subscription (data-live="push" on reason:'live-apply'). THREE
   // honesty hinges are baked in: (1) LIVE-not-reload — data-live="push" fires ONLY on a real incoming apply,
   // so asserting it IS the proof the update arrived live (a reload or local edit can never set it). (2)
   // SEND-from-UI is NOT wired yet (Bob's client caller doesn't exist — only the endpoint); we SIMULATE his
@@ -165,7 +164,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 5: the candle — export the whole self ───────────────────────────────────────
-  // The exit right made visible (Fable §9.3). "What survives the fire" has two halves:
+  // The exit right made visible (§9.3). "What survives the fire" has two halves:
   //   • encrypted-vault export — CUR-4: auth gate → vault passphrase → fleet packVault (v4).
   //   • vCard-all export — Contacts → More → Export all as vCard (auth-gated).
   // Honesty gate: we test only what SHIPS. A green here means an encrypted .svrnty vault really leaves the

@@ -3,7 +3,7 @@
 /**
  * Invite to SVRNTY — asks how to send (link vs QR).
  *
- * ★ TEAM ASK (Peter): when they join FROM THIS invite, this classical row
+ * When they join FROM THIS invite, this classical row
  * should become their living SVRNTY contact (same person, now keyed).
  * Glass only sends the owner's signed share short-link today — we do not
  * bind the join back onto this row. Fleet owns invite→join correlation

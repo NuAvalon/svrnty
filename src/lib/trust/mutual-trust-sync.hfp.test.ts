@@ -1,10 +1,10 @@
 // src/lib/trust/mutual-trust-sync.hfp.test.ts
-// PSI hash-to-point regression guard (B-3) — the TS twin of Apollo's Python vector assert.
+// PSI hash-to-point regression guard (B-3) — the TS twin of the Python vector assert.
 // Locks hashFingerprintToPoint() to the ONE canonical H(fp) so the TS phone client and the
 // Python client-kit can never silently re-diverge (the B-3 bug: divergent H(fp) → cross-impl
 // PSI intersection ALWAYS empty, silently). A permanent CI assert beats a one-time re-derivation.
 //
-// Single source of truth for the vector: autobots shared/outbox/apollo/svrnty_psi_hfp_testvector.py
+// Single source of truth for the vector: svrnty_psi_hfp_testvector.py
 // (+ its Python-side twin infra/satellite/client-kit/test_psi_hfp_vector.py). Constants hard-coded
 // here per that file's VECTOR export ("import or hard-code these") — TS repo can't import the .py.
 //
@@ -20,14 +20,14 @@ const FP_PINNED      = 'd7f541228e72b7e7214d37560bba52c426707122ec09f6e82bcd491a
 const EXPECTED_H_HEX = '593f2af22eddc0c20cd83e8b14f406f66933bade3b0a176fdb7528756bcb7aa9'; // canonical H(fp)
 const OLD_BROKEN_HEX = 'bad4e078c0d3c166bdb3f950b3503d9763985ad9235cb59dc83d9e5f41430e40'; // pre-fix B-3 (must NOT recur)
 
-// FLINT CONDITION 1 (vector file): H(fp) MUST equal the canonical constant, byte-for-byte.
+// CONDITION 1 (vector file): H(fp) MUST equal the canonical constant, byte-for-byte.
 test('B-3 guard: hashFingerprintToPoint(FP_PINNED) == canonical (byte-matches Python client-kit)', () => {
   const got = bytesToHex(hashFingerprintToPoint(FP_PINNED));
   assert.equal(got, EXPECTED_H_HEX, 'H(fp) DRIFT — TS diverged from the locked canonical vector');
   assert.notEqual(got, OLD_BROKEN_HEX, 'REGRESSED to the old-broken B-3 H(fp)');
 });
 
-// FLINT CONDITION 2 (vector file): dropping the point-clamp is safe ONLY because getSharedSecret
+// CONDITION 2 (vector file): dropping the point-clamp is safe ONLY because getSharedSecret
 // rejects an all-zero (low-order) result — the orchestrator must treat that as "no match", never
 // return 32 zero bytes silently. Assert x25519.getSharedSecret REJECTS each known low-order u.
 const LOW_ORDER_U = [

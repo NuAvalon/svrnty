@@ -1,6 +1,6 @@
 // R1 KNOWN handshake — END-TO-END through the REAL mailbox transport (not mocks). Proves the joiner-
 // response crypto composes with depositEnvelope/pollMailbox/deriveMailboxId, AND documents the consume
-// ROUTING requirement for Athena's wiring: a joiner-response blob is E2E-encrypted to the giver with
+// ROUTING requirement for the wiring: a joiner-response blob is E2E-encrypted to the giver with
 // the SAME openpgp the contact-update path uses, so the contact-update decryptor DECRYPTS it (returns
 // NON-null) — the discriminator between the two return-channel message types therefore CANNOT be "which
 // decrypt returns null"; it MUST be "which VERIFY succeeds". This test pins that so the wiring routes
@@ -73,7 +73,7 @@ test('E2E: a joiner-response blob is well under the mailbox payload cap', async 
   ackDelete(mailboxId, pollMailbox(mailboxId, NOW).map((e) => e.envelope_id), NOW);
 });
 
-// ── THE ROUTING SEAM (for Athena's consume wiring) ─────────────────────────────────
+// ── THE ROUTING SEAM (for the consume wiring) ─────────────────────────────────
 test('SEAM: the contact-update decryptor DECRYPTS a joiner-response (non-null) — so route by VERIFY, not by decrypt', async () => {
   const { mailboxId, blob } = await bobDepositsToAlice();
   const polled = pollMailbox(mailboxId, NOW);

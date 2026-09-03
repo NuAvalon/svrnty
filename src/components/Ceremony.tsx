@@ -1,7 +1,7 @@
 // src/components/Ceremony.tsx
 'use client';
 //
-// The 9/10 connection ceremony — one guided flow over the five canon steps (task #482).
+// The 9/10 connection ceremony — one guided flow over the five canon steps.
 // This is the sequencer the feasibility gap-map named as the missing piece: the five
 // primitives already exist but were scattered across four surfaces. Here they become one
 // walk-through, driven by the proven ceremony state machine (src/lib/ceremony/machine.ts).
@@ -12,11 +12,11 @@
 // device (the existing /c/[code] receive route); the initiator guides the other person
 // through them, so they advance manually with clear "on their device" framing.
 //
-// Honored here — Peter's #113925 "QR code and short link": step 1 offers BOTH entry modes
+// Honored here — "QR code and short link": step 1 offers BOTH entry modes
 // off a single relay handshake (scan the QR, or open/enter the short link — same code).
-// Deferred (tracked): the in-app camera SCANNER (#485; short-link is the can't-fail floor),
+// Deferred (tracked): the in-app camera SCANNER (short-link is the can't-fail floor),
 // full live 2-device auto-advance (needs a live relay channel back — the current relay is a
-// single-use dead-drop), and real-device e2e (#486). Nothing here touches prod.
+// single-use dead-drop), and real-device e2e. Nothing here touches prod.
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createRelay } from '@/lib/sync/relay';
@@ -222,7 +222,7 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
           </div>
         )}
 
-        {/* STEP 1 — handshake: QR + short link (Peter's #113925) */}
+        {/* STEP 1 — handshake: QR + short link */}
         {state.step === 'handshake' && (
           <div>
             <h2 style={headingStyle}>Show them your card</h2>

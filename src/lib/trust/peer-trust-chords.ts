@@ -1,5 +1,5 @@
 /**
- * Witnessed peer↔peer trust chords — Peter's open-visibility spec.
+ * Witnessed peer↔peer trust chords — the open-visibility spec.
  *
  * If I trust Sally and Joe, they trust me, and we all have open visibility
  * for trusted contacts, I see that they trust each other (and they see that

@@ -1,16 +1,16 @@
 // src/lib/trust/joiner-response.ts
 // R1 pending-joiner RETURN-CHANNEL crypto — the KNOWN-tier handshake that closes the one-directional
-// Grow asymmetry (Peter #125331). This is Flint's crypto standalone; Athena wires the deposit
+// Grow asymmetry. This is the crypto standalone; the caller wires the deposit
 // (JoinerCeremony persistEdge), the consume (live-book-poll), and the 3-state machine around it.
 //
 // THE BUG THIS FIXES. Alice (giver) shares a Grow card via a relay code / QR. Bob (joiner) imports it
 // and adds Alice — but the flow is ONE-DIRECTIONAL: Alice never learns Bob added her, so the edge is
 // not mutual, so the already-live contact.update wire (0.4) has no Bob-edge to propagate along ("no
-// connect → no send", Peter #125331). This module is the RETURN CHANNEL: after Bob adds Alice, Bob
+// connect → no send"). This module is the RETURN CHANNEL: after Bob adds Alice, Bob
 // signs a self-asserted identity claim and deposits it (per-peer-encrypted) to Alice's mailbox; Alice
 // verifies it and surfaces Bob as KNOWN. Now the edge is mutual and methods flow both ways over 0.4.
 //
-// THE TRUST TIER — KNOWN (Peter #125308, the authoritative 3-state model KNOWN→VERIFIED→TRUSTED).
+// THE TRUST TIER — KNOWN (the authoritative 3-state model KNOWN→VERIFIED→TRUSTED).
 // A joiner-response yields KNOWN: added-but-UNVERIFIED, self-asserted TOFU. We do NOT — and cannot —
 // authenticate WHO Bob is against anything we already hold (we've never met Bob). What we CAN and DO
 // enforce is that the claim is SELF-CONSISTENT and SOLICITED:

@@ -1,5 +1,5 @@
 // e2e/fixtures/deposit-contact-update.ts
-// Beat-4 SEND simulation for the demo-arc e2e (Athena). Constructs a GENUINE SignedContactUpdate
+// Beat-4 SEND simulation for the demo-arc e2e. Constructs a GENUINE SignedContactUpdate
 // (Ed25519 over contactUpdateSigningInput, sender-signed) and E2E-encrypts it to the recipient (openpgp),
 // then deposits the opaque blob to the return-channel mailbox. This drives the recipient's consume caller
 // through the SAME decrypt → verify → whitelist(I-2) → apply it runs in production — so beat-4 honestly

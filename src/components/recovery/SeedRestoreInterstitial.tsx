@@ -1,7 +1,6 @@
 'use client';
 
 // Post-success contacts-honesty interstitial after v4 seed-only restore.
-// Spec: CURSOR_QUEUE.md DO-SECOND — team-FINAL (Flint crypto-GREEN + Hypatia claim-honesty).
 // DEFINITIVE no-CTA: Continue only. No "restore from another backup" link.
 
 import { solarEmber as E, solarGlass } from './solar-ember';

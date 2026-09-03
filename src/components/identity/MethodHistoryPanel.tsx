@@ -1,7 +1,7 @@
 'use client';
 
 // CUR-2 — version-history + one-tap restore-previous chrome (Solar Ember).
-// Signing / deposit stay stubbed (Flint).
+// Signing / deposit stay stubbed.
 
 import React, { useMemo, useState } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';

@@ -2,7 +2,7 @@
 // Client-side IndexedDB storage for sovereign identity
 // Replaces server-side fs operations — all data stays in the user's browser
 
-// C2 / Invariant-1 (Flint KB#85781): the ONE crypto import this storage layer takes —
+// C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
@@ -152,21 +152,21 @@ export interface ContactRecord {
   // ── Post-quantum keys (0.12 pq-carry) ───────────────────────────────────────
   // Stored ONLY from a card whose signature verified against the fp-bound classical key
   // (fail-closed §4 branch 4). A card with no/invalid signature drops these (branches 2/3) —
-  // an unauthenticated pq_kem is NEVER stored. Apollo projects both → TrustEdge.peer_pq_*.
+  // an unauthenticated pq_kem is NEVER stored. Both are projected → TrustEdge.peer_pq_*.
   pq_sig_public_key?: string;   // ML-DSA base64
   pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
   trust_level: string;
   added_at: string;
   metadata?: any;
 
-  // ── 0.14 verify bookkeeping (Archie D3 #115574 §6) ──────────────────────────
+  // ── 0.14 verify bookkeeping ──────────────────────────
   // epoch/version mirror the wire identity_epoch/revision a verified contact.update
   // carried (written by applyVerifiedContactUpdate). Peer-authored wire data — the
   // monotonic/replay floors read them; safe to carry.
   epoch?: number;
   version?: number;
 
-  // ── LOCAL-ONLY decay clock (guardrail A — Flint #115581) ────────────────────
+  // ── LOCAL-ONLY decay clock (guardrail A) ────────────────────
   // last_interaction is DERIVED LOCALLY (the receiver's own witnessed-receipt: apply
   // sets it = now on a VerifiedContactUpdate). It is NEVER signed and MUST NEVER enter
   // an outbound payload to a peer or the relay — leaking it would turn a private decay
@@ -543,7 +543,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   if (!pk) {
     contact = { ...contact, fingerprint: '', public_key: '' };
   } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk))) {
-    // C2 / Invariant-1 (Flint KB#85781): fail-closed when a key is present —
+    // C2 / Invariant-1: fail-closed when a key is present —
     // refuse mismatched attacker-key + victim-fingerprint pairs.
     throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
@@ -563,7 +563,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   try {
     await txPut('contacts', record);
   } catch (e) {
-    // Idempotent-by-fingerprint (Archie #125432 — fix at the source, not per-caller): two concurrent
+    // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent
     // add-paths for the same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add)
     // can each pass a getContactByFingerprint pre-check as null, then both insert. The UNIQUE fingerprint
     // index (contacts store) catches the 2nd → ConstraintError. Rather than surface that caught error,
@@ -695,10 +695,10 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
  * restore-onto-this-device / daily passphrase-unlock path. Converges to the SAME
  * at-rest state as genesis (browser-identity.ts) and the recovery-code path
  * (restoreIdentityFromSeedVault), so a passphrase restore STICKS across reload
- * instead of only hydrating in-memory state (the #125944 data-safety launch-blocker:
+ * instead of only hydrating in-memory state (the data-safety launch-blocker:
  * before this, "Open Vault" set React state but wrote nothing → reload = identity lost).
  *
- * SECURITY (Flint #126103 — persist SAFELY, not just persist):
+ * SECURITY (persist SAFELY, not just persist):
  *  • Self-guarding like addContact: the identity's public_key MUST bind to `fingerprint`
  *    (fingerprintMatchesKey) — a .svrnty file is untrusted-importable, so refuse to
  *    persist a forged identity whose fingerprint does not match its key.
@@ -794,14 +794,14 @@ export async function clearAll(confirm: 'I understand this deletes all keys'): P
 
 // ── Issued Grow-code tracking (R1 pending-joiner accept-oracle, giver-side) ───
 // When a giver mints a Grow invite (createRelay), we remember the shortcode. A
-// joiner's SIGNED response binds this code as its inviteNonce (Flint's
+// joiner's SIGNED response binds this code as its inviteNonce (the
 // verifyJoinerResponse); the giver's accept-oracle admits the response only if the
 // code is one WE issued, still within the ACCEPTANCE WINDOW, under the invite cap,
 // and this joiner hasn't already been accepted on it. Layered on the crypto's
 // joiner-sig + giverFp-bind + giver-only-decrypt + Invariant-1 defenses. The binding
 // is "which invite," not secrecy — the PUBLIC shortcode is fine here.
 //
-// MULTI-USE (Flint #125359): a Grow link accepts up to GROW_INVITE_CAP DISTINCT
+// MULTI-USE: a Grow link accepts up to GROW_INVITE_CAP DISTINCT
 // joiners — key the accepted-set by (code, joinerFp), NEVER consume the code.
 // Same-joiner replay is dropped here AND idempotent at addContact (fp-dedup).
 //
@@ -809,7 +809,7 @@ export async function clearAll(confirm: 'I understand this deletes all keys'): P
 // dead-drop: the giver may be offline and poll days later; a legit response must
 // still be admitted. Aligns to RELAY_ENVELOPE_TTL_MS default (mailbox-config.ts).
 //
-// Flint's acceptNonce predicate is SYNC but IndexedDB is async — so the consume
+// The acceptNonce predicate is SYNC but IndexedDB is async — so the consume
 // path loads the map ONCE per poll (loadIssuedCodeMap), builds a sync predicate
 // over that snapshot (isCodeOutstanding + codeUnderCap + alreadyAccepted), and
 // records accepts back (markAcceptedInMap on the snapshot so later envelopes in the
@@ -822,7 +822,7 @@ const ISSUED_GROW_CODES_KEY = 'issued_grow_codes';
 // after issuing still admits a joiner-response — NOT the 15-min relay dead-drop.
 const R1_ACCEPTANCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Ceiling for a per-link distinct-joiner cap (Peter #125734). */
+/** Ceiling for a per-link distinct-joiner cap. */
 const ISSUED_CODE_CAP_MAX = 1000;
 /** Clamp a per-link cap to an integer in [1, ISSUED_CODE_CAP_MAX]; junk → 1 (single-use, the safe default). */
 function clampCodeCap(n: unknown): number {

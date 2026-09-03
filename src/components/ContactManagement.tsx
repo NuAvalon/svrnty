@@ -88,7 +88,7 @@ interface Contact {
     classical_extras?: import('@/lib/contacts/contact-lane').ClassicalExtras;
   };
   // Imported contact channels (vCard). Phones parse + persist on the ContactRecord but were never
-  // surfaced to the UI (Chaos#40) — carry them so the detail view can render them.
+  // surfaced to the UI — carry them so the detail view can render them.
   contact_info?: {
     phones?: string[];
     emails?: string[];
@@ -162,7 +162,7 @@ function recordToContact(r: ContactRecord): Contact {
     verified_at: r.verified_at,
     blocked,
     metadata: r.metadata,
-    contact_info: r.contact_info, // vCard-imported phones/emails/urls (Chaos#40 display fix)
+    contact_info: r.contact_info, // vCard-imported phones/emails/urls
     connection_status: (r as any).connection_status,
   };
 }
@@ -264,7 +264,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     if (fingerprint) loadContacts();
   }, [fingerprint, loadContacts]);
 
-  // Live-beat (Apollo): a peer's edit → the return-channel caller applies it IN Alice's page → emits reason:'live-apply'.
+  // Live-beat: a peer's edit → the return-channel caller applies it IN Alice's page → emits reason:'live-apply'.
   // We re-project the book IN-PLACE (no reload / no navigation — the honest hinge) and mark the ignited rows
   // data-live="push" so beat-4 can prove Alice self-updated LIVE, not via pull-to-refresh. `source:'broadcast'`
   // (cross-tab) is a separate uninstantiable invariant; the single-Alice-page demo rides source:'local' + reason:'live-apply'.
@@ -277,7 +277,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     });
   }, [loadContacts]);
 
-  // Live-beat poll (Athena): the runtime call-site that drives the return-channel consume on an interval,
+  // Live-beat poll: the runtime call-site that drives the return-channel consume on an interval,
   // so a peer's verified contact.update self-applies IN this page → the caller emits reason:'live-apply' →
   // the subscription above repaints the row data-live="push" (beat-4). startLiveBookPolling re-reads the
   // unlocked key each tick and no-ops while the session is locked, so this effect keys only on the stable
@@ -661,7 +661,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       }
 
       // Fail-closed disposition — copy/paste is an untrusted carrier, so it re-verifies the card
-      // exactly like the relay/QR path (Flint spec §4/§5; the ONE shared decision, no drift).
+      // exactly like the relay/QR path (spec §4/§5; the ONE shared decision, no drift).
       const d = await classifyImportedCard(card);
       if (!d.importClassical) {
         // Branch 1 — fp↔key mismatch / malformed: refuse the card entirely.
@@ -676,7 +676,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
 
       const existing = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
       if (existing) {
-        // Upgrade-on-re-exchange (Flint §7#5): a known contact re-sharing a VALID pq card back-fills
+        // Upgrade-on-re-exchange (§7#5): a known contact re-sharing a VALID pq card back-fills
         // pq on the existing edge — no duplicate; NEVER silently replaces a different stored pq
         // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
         if (d.alarm === 'loud') {
@@ -1826,7 +1826,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           ownerFingerprint={fingerprint || ''}
           ownerName={identity?.identity?.name || identity?.identity?.display_name || 'a keeper'}
           contact={selectedContact}
-          onGiven={() => { /* custody recorded in IndexedDB; lattice/custody badges are #484 */ }}
+          onGiven={() => { /* custody recorded in IndexedDB; lattice/custody badges are a follow-up */ }}
         />
 
         {/* Import Contact from Exchange Package */}

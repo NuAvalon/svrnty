@@ -3,7 +3,7 @@
 // ContactRecord → the verify seam's KnownContactIdentity). buildContactStore / startLiveBookPolling
 // are runtime glue over IndexedDB + timers, covered end-to-end by the beat-4 e2e (demo-arc.spec.ts).
 //
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test src/lib/sync/live-book-poll.test.ts
+// Run: npx tsx --test src/lib/sync/live-book-poll.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

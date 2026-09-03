@@ -7,8 +7,7 @@
 // - Satellite sees hashes, never learns who trusts whom
 // - Revocation is silent (remove commitment, other party can't distinguish)
 //
-// Spec: outpost/flint/zkp_mutual_trust_spec.md
-// Author: Flint (session 112)
+// Spec: zkp_mutual_trust_spec.md
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hmac } from '@noble/hashes/hmac.js';

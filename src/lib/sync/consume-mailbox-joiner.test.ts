@@ -1,11 +1,11 @@
 // src/lib/sync/consume-mailbox-joiner.test.ts
-// R1 RETURN-CHANNEL ROUTING (Flint #125392, pinned by joiner-response.e2e.test.ts). Proves consumeOne
+// R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts). Proves consumeOne
 // routes each polled blob by WHICH VERIFY SUCCEEDS — trying the joiner-response verify FIRST — and never
 // by decrypt-null. Uses an INJECTED joiner seam (the real crypto round-trip is covered by
 // send-joiner-response.test.ts + joiner-response.test.ts + the e2e SEAM test); here we prove the control
 // flow: joiner-verify wins → accept + apply (no fall-through to contact-update); joiner-verify null →
 // fall through to the contact-update path; and the accept outcome → ack/retry mapping.
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test consume-mailbox-joiner.test.ts
+// Run: npx tsx --test consume-mailbox-joiner.test.ts
 
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';

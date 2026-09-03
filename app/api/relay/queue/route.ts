@@ -4,7 +4,7 @@
 // I-4 ANTI-EXISTENCE-ORACLE (the load-bearing gate): owner-auth is verified FIRST, before any store
 // access, so a non-owner never reaches the store and the response cannot depend on the mailbox's
 // existence/occupancy. owner-auth-fail ≡ no-mailbox ≡ empty — one code path, identical bytes+status
-// +latency (joint §5 §C; Flint D2 — no 404-vs-expired two-latency split reproduced here).
+// +latency (joint §5 §C; no 404-vs-expired two-latency split reproduced here).
 
 import { NextResponse } from 'next/server';
 import { pollMailbox } from '@/lib/relay/mailbox-store';

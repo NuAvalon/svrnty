@@ -11,13 +11,11 @@
 // legacy-READ-only path (no new file is ever written with PBKDF2).
 //
 // Memory-hard Argon2id is the right defense for a human passphrase against
-// offline GPU/ASIC brute force. Parameters per Flint spec v0.1.3.
-//
-// Co-review: Flint (crypto). Design: Athena's G3 `.svrnty` v3 (co-verified).
+// offline GPU/ASIC brute force. Parameters per spec v0.1.3.
 
 import { argon2id } from '@noble/hashes/argon2.js';
 
-// ── KDF parameters (Flint spec v0.1.3) ───────────────────────────────
+// ── KDF parameters (spec v0.1.3) ───────────────────────────────
 export const ARGON2_TIME_COST = 3; // iterations
 export const ARGON2_MEMORY_COST = 65536; // 64 MiB, in KiB
 export const ARGON2_PARALLELISM = 1;
@@ -42,7 +40,7 @@ export const ARGON2_MAX_PARALLELISM = 4;
 // offline brute-force cost. Enforced on encrypt only; decrypt never rejects a
 // passphrase for being short (old files must still open). 12 aligns with the
 // audit floor for the identity-unlock passphrase — the vault protects the same
-// private keys, so it uses the same bar (Flint rec #3, PR #2).
+// private keys, so it uses the same bar.
 export const MIN_PASSPHRASE_LENGTH = 12;
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -145,7 +143,7 @@ export function deriveKeyArgon2id(
   // argon2id with unclamped, attacker-supplied params (the param-bomb is exactly
   // the class a future caller could reintroduce). Decode paths SHOULD still call
   // assertParamsWithinLimits early for a clear error, but this is the guarantee
-  // it can never be skipped (Flint rec #1, PR #2). No-op on the write paths,
+  // it can never be skipped. No-op on the write paths,
   // whose params are the fixed in-range constants.
   assertParamsWithinLimits(params);
   const passphraseBytes = new TextEncoder().encode(passphrase);

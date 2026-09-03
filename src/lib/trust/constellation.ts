@@ -8,7 +8,7 @@
  *   - shared-group     owner-local tags you wrote
  *   - disclosed-circle fingerprints they disclosed to you that are also in your book
  *                      (fleet `visible()` ∩ book — never computed here)
- *   - they-trust       open-visibility peer trust (Peter's spec): I trust both,
+ *   - they-trust       open-visibility peer trust: I trust both,
  *                      they trust me, we all opted in, and they_trust is witnessed
  *
  * Forbidden: inventing peer↔peer bonds from tags or friends-of-friends;

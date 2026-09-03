@@ -1,25 +1,25 @@
 // src/lib/format/envelope.ts
-// Signed-envelope FIELD DEFINITIONS + canonical signing-input for svrnty Tier-0 (Queue B 0.1/0.2 — Archie).
+// Signed-envelope FIELD DEFINITIONS + canonical signing-input for svrnty Tier-0 (Queue B 0.1/0.2).
 // FORMAT half: what fields exist + their canonical bytes. CRYPTO half (domain-sep prefix, suite_id,
-// sign/verify) = Flint's 0.1 signing layer. Signing structure (Flint #115344):
+// sign/verify) = the 0.1 signing layer. Signing structure:
 //   sign( LP(domain_tag) ‖ LP(suite_id) ‖ signingInput(...) )        LP = length-prefixed
 // The DOMAIN_* tags live here as the SINGLE SOURCE OF TRUTH so the tag strings never drift between
-// the format layer (me) and the signing layer (Flint imports these).
-// Spec: shared/outbox/archie/svrnty_queueB_0.13_dedup_and_0.1_0.2_format_v1.md §A2/A3
+// the format layer and the signing layer (which imports these).
+// Spec §A2/A3
 
 import { canonicalize } from './canonical';
 
-// --- Domain-separation tags (shared vocab; Flint length-prefixes these before signing) ---
+// --- Domain-separation tags (shared vocab; the signing layer length-prefixes these before signing) ---
 export const DOMAIN_TRUST_SIGNAL = 'svrnty:trust-signal:v1';
 export const DOMAIN_CONTACT_UPDATE = 'svrnty:contact-update:v1';
 export const DOMAIN_SLUG_CLAIM = 'svrnty:slug-claim:v1';
 export const DOMAIN_IDENTITY_CARD = 'svrnty:identity-card:v1';
-// Key-lineage sub-domains for Flint's rotation/recovery signing (#115350). Crypto is his; the tag
+// Key-lineage sub-domains for the rotation/recovery signing. Crypto lives in the signing layer; the tag
 // STRINGS live here so the domain-separation vocabulary stays single-source (a signer/verifier tag
 // drift is a domain-confusion bug — centralizing eliminates that class).
 export const DOMAIN_KEY_ROTATION = 'svrnty:key-rotation:v1';
 export const DOMAIN_KEY_RECOVERY = 'svrnty:key-recovery:v1';
-// R1 mutual-connect (pending-joiner return channel + remote mutual-vouch). Flint's crypto; the tag
+// R1 mutual-connect (pending-joiner return channel + remote mutual-vouch). The crypto lives in the signing layer; the tag
 // STRINGS live here as single-source so a signer/verifier drift can't cause domain confusion — a
 // joiner-response signature can never verify as a contact-update / identity-card, and vice-versa.
 export const DOMAIN_JOINER_RESPONSE = 'svrnty:joiner-response:v1';
@@ -27,7 +27,7 @@ export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
 
 // --- A2: Durable identity + epoch/lineage (formats-cheap: fields only, no rotation UX) ---
 
-/** Successor authorization. Format defines the SHAPE; the signatures/quorum crypto are Flint's. */
+/** Successor authorization. Format defines the SHAPE; the signatures/quorum crypto live in the signing layer. */
 export type SuccessorAuth =
   | { kind: 'rotation'; sig_by_prior_epoch: string }                 // normal: prior key signs successor
   | { kind: 'recovery'; quorum_sigs: string[]; threshold: number };  // recovery: prior key LOST → quorum signs
@@ -44,11 +44,11 @@ export interface DurableIdentity {
     new_fingerprint: string;
     new_public_key: string;
     epoch: number;          // = this.epoch + 1
-    auth: SuccessorAuth;    // Flint's crypto
+    auth: SuccessorAuth;    // signing-layer crypto
   };
 }
 
-// --- A3: Envelopes (the field sets Flint signs) ---
+// --- A3: Envelopes (the field sets the signing layer signs) ---
 
 /**
  * contact.update delta envelope. Ordering key = `version` (monotonic), NOT `updated_at`
@@ -65,11 +65,11 @@ export interface ContactUpdateEnvelope {
 
 /**
  * R1 pending-joiner RETURN-CHANNEL envelope (KNOWN tier). Closes the one-directional Grow asymmetry
- * (Peter #125331: the joiner adds the giver via a relay/QR invite, but the giver never learns → no
+ * (the joiner adds the giver via a relay/QR invite, but the giver never learns → no
  * mutual edge → the contact.update wire can't reach the joiner). After the joiner adds the giver, the
  * joiner SIGNS this self-asserted identity claim and deposits it (per-peer-encrypted) to the giver's
- * mailbox; the giver verifies and surfaces the joiner as KNOWN (unverified TOFU — the 3-state floor,
- * Peter #125308). Identity-only BY DESIGN: once the edge is mutual the giver holds the joiner's card,
+ * mailbox; the giver verifies and surfaces the joiner as KNOWN (unverified TOFU — the 3-state floor)
+ * Identity-only BY DESIGN: once the edge is mutual the giver holds the joiner's card,
  * so the already-live contact.update wire (0.4) carries METHODS both ways — this envelope only needs
  * to make the edge exist. NOT a monotonic stream (a one-shot handshake) → no `version`; replay is
  * bounded by the single-use `invite_nonce` (the giver's own relay code), not a version floor.
@@ -89,7 +89,7 @@ export interface JoinerResponseEnvelope {
  * R1 remote mutual-VOUCH envelope (TRUSTED tier). Once a party has VERIFIED a KNOWN contact
  * out-of-band (KNOWN→VERIFIED is the receiver's LOCAL flag, no crypto — the key is already bound),
  * they may VOUCH: sign "I, voucher, have verified vouchee" and deposit it (encrypted) to the vouchee's
- * mailbox. When BOTH sides have vouched, the edge is TRUSTED (VERIFIED + MUTUAL, Peter #125308).
+ * mailbox. When BOTH sides have vouched, the edge is TRUSTED (VERIFIED + MUTUAL).
  * Unlike the joiner-response this is NOT TOFU — the vouchee already holds the voucher's key (a
  * KNOWN/VERIFIED contact), so the vouch verifies against that HELD key. `vouchee_fingerprint` binds
  * the vouch to its intended recipient (no replay to a third party). In-person mutual QR/NFC grants
@@ -117,7 +117,7 @@ export interface SlugClaim {
  * Identity-exchange card (the QR/relay/copy-link payload). SIGNED so a receiver can re-verify
  * the pq keys were not swapped on an untrusted carrier — the signature binds `pq_kem_public_key`
  * (+ `pq_sig_public_key`) to the classical key that hashes to `identity.fingerprint` (Invariant-1).
- * Shape is byte-exact per the (A) crypto spec (svrnty_identity_card_signing_spec_flint.md §3);
+ * Shape is byte-exact per the (A) crypto spec (§3);
  * `signature`/`pq_signature` attach TOP-LEVEL (canonical exclude is top-level-only) and live on
  * SignedIdentityCard in identity-card-sign.ts, NOT here.
  */
@@ -135,7 +135,7 @@ export interface IdentityCard {
   };
 }
 
-// --- Canonical signing inputs (Flint prefixes LP(domain)‖LP(suite_id) then signs) ---
+// --- Canonical signing inputs (the signing layer prefixes LP(domain)‖LP(suite_id) then signs) ---
 
 /** Canonical bytes for a contact.update signature (excludes any attached `signature`). */
 export function contactUpdateSigningInput(env: ContactUpdateEnvelope): string {

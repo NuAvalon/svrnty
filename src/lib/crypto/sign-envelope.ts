@@ -1,8 +1,8 @@
 // src/lib/crypto/sign-envelope.ts
 // 0.1 canonical sign-envelope — the domain-separated, suite-bound signing wrapper for svrnty
-// Tier-0 signed objects (trust signals, slug claims, and — later — key-lineage). This is Flint's
-// signing layer over Archie's canonical bytes (src/lib/format/canonical.ts) and domain-tag
-// vocabulary (src/lib/format/envelope.ts). Design: KB#85978.
+// Tier-0 signed objects (trust signals, slug claims, and — later — key-lineage). This is the
+// signing layer over the canonical bytes (src/lib/format/canonical.ts) and domain-tag
+// vocabulary (src/lib/format/envelope.ts).
 //
 // WHAT THIS FIXES. The pre-0.1 signer used raw JSON.stringify({...}) as the signed bytes
 // (src/lib/trust/signals.ts canonicalSignPayload). That is key-order dependent, NFC-blind, and has

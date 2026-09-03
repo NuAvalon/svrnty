@@ -1,6 +1,6 @@
 'use client';
 
-// Archie's Sovereign Identity card — Solar Ember home surface.
+// Sovereign Identity card — Solar Ember home surface.
 // UI-only: renders existing identity fields. "Revise" is an L1 stub (no broadcast crypto).
 
 import { useMemo, useState } from 'react';
@@ -13,7 +13,7 @@ export type MethodKind = 'email' | 'signal' | 'site';
 export interface SovereignIdentityCardProps {
   name: string;
   fingerprint: string;
-  /** Display slug like peter.svrnty.is or claimed URL short form */
+  /** Display slug like alice.svrnty.is or claimed URL short form */
   handle?: string;
   email?: string;
   signal?: string;

@@ -1,16 +1,15 @@
 // src/lib/sync/live-book-poll.ts
-// The RUNTIME poll call-site for the living address book (demo-spine beat-4 — Athena).
+// The RUNTIME poll call-site for the living address book (demo-spine beat-4).
 //
-// consumeInboundContactUpdates (PR#33) is deliberately seam-injected so it stays IndexedDB-free and
+// consumeInboundContactUpdates is deliberately seam-injected so it stays IndexedDB-free and
 // crypto-agnostic. This module is the one place those seams are bound to the real client runtime, and
 // the poll loop that actually drives them:
 //   • owner   — the unlocked local identity: fingerprint + armored public key (from `identity`) + the
 //               private key + passphrase (from loadKey; null while the session is locked).
 //   • decrypt — openpgpEnvelopeDecryptor bound to the owner's private key (the classical envelope;
-//               the hybrid-PQ decryptor is a named upgrade that swaps here with zero caller change,
-//               Flint #116410).
+//               the hybrid-PQ decryptor is a named upgrade that swaps here with zero caller change).
 //   • store   — a client-store adapter: getContactByFingerprint → {known, current}; updateContact = persist.
-//   • emit    — Apollo's live-beat seam: after a verified apply, emitContactChange({ids:[id],reason:'live-apply'})
+//   • emit    — the live-beat seam: after a verified apply, emitContactChange({ids:[id],reason:'live-apply'})
 //               so ContactManagement repaints the row data-live="push" — the honest beat-4 signal, which
 //               can ONLY fire on an incoming apply (a local ui-edit uses reason:'ui-edit').
 //
@@ -63,7 +62,7 @@ export function recordToKnownContact(rec: ContactRecord): KnownContactIdentity {
     epoch: rec.epoch ?? 0,
     version: rec.version ?? 0,
     classicalPublicKeyArmored: rec.public_key,
-    // pqSigningPublicKey omitted by design: the wire envelope + signature are classical (Flint #116410 —
+    // pqSigningPublicKey omitted by design: the wire envelope + signature are classical (
     // the hybrid decryptor/verify path is a named upgrade, not yet on the wire). When hybrid lands, map
     // rec.pq_sig_public_key (base64) → Uint8Array here in lockstep with a hybrid decryptor swap.
   };
@@ -110,7 +109,7 @@ function clampJoinerName(raw: unknown): string {
 export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
 
-  // The solicited-gate oracle (Flint's acceptNonce): accept iff `nonce` is one of OUR outstanding,
+  // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
   // unexpired, under-cap Grow codes AND this (claimed) joiner has not already been accepted on it.
   // Receives the CLAIMED joiner fp (pre-signature) — a false claim only hurts the claimant, since the
   // crypto (Invariant-1 + signature) then requires a self-consistent, validly-signed identity.
@@ -125,7 +124,7 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
         blob,
         { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
         acceptNonce,
-        { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical (Flint #116410)
+        { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical
       ),
     accept: async (pj: PendingJoiner): Promise<{ ignited: boolean } | null> => {
       // Dedup — addContact is NOT idempotent (it mints a fresh id and re-checks Invariant-1), so an

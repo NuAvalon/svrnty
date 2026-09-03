@@ -15,11 +15,9 @@
 // Crypto: X25519 point hashing + ECDH blinding (DH commutativity).
 // Both parties end up with doubly-blinded sets — intersection = mutual contacts.
 //
-// Spec: outpost/flint/zkp_mutual_trust_spec.md
+// Spec: zkp_mutual_trust_spec.md
 // Satellite endpoints: /trust/psi/* (infra/satellite/satellite.py)
 // Crypto primitives: infra/satellite/crypto_utils.py (reference impl)
-//
-// Author: Athena (session 2819), design review: Flint; ZK browser-wire refactor: Flint (deps injection)
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
@@ -105,8 +103,8 @@ export function generatePSIKeypair(): PSIKeypair {
  * Hash a fingerprint to an X25519 u-coordinate (canonical H(fp)).
  * H(fp) = HKDF-SHA256(ikm=utf8(fp), salt=PSI_SALT, info=PSI_POINT_INFO, 32) → raw 32B u-coord, NO clamp.
  * MUST match client-kit/crypto_utils.py _hash_fingerprint_to_point() byte-for-byte, or cross-impl
- * PSI intersections are silently empty (the B3 bug). Locked vector:
- * shared/outbox/apollo/svrnty_psi_hfp_testvector.py (FP_PINNED d7f54122… → 593f2af2…).
+ * PSI intersections are silently empty (the B3 bug). Locked vector
+ * (FP_PINNED d7f54122… → 593f2af2…).
  * Clamp removed: it was a SCALAR op misapplied to a point; the ephemeral PSI scalar is clamped by
  * X25519 (RFC 7748), which annihilates the cofactor. getSharedSecret rejects all-zero (low-order u).
  */
