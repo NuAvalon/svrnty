@@ -1,7 +1,7 @@
 // src/components/JoinerCeremony.tsx
 'use client';
 //
-// The joiner's side of the 9/10 connection ceremony (task #482). Mirror of the initiator
+// The joiner's side of the 9/10 connection ceremony. Mirror of the initiator
 // component (src/components/Ceremony.tsx): the SAME proven state machine
 // (src/lib/ceremony/machine.ts) drives both devices — role affects rendering, not the
 // transition graph ("one impl, not two").
@@ -81,7 +81,7 @@ interface PeerCard {
   alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
-// R1 return-channel deposit (Athena, Peter #125331). After the joiner adds the giver, deposit a signed
+// R1 return-channel deposit. After the joiner adds the giver, deposit a signed
 // joiner-response to the GIVER's mailbox so the giver learns of us and the edge becomes MUTUAL — closing
 // the one-directional Grow asymmetry (giver polls → verifyJoinerResponse → adds us as KNOWN → the 0.4
 // contact.update wire now flows both ways). Best-effort + FAIL-SOFT: signing requires our unlocked
@@ -189,7 +189,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           // box or persisting anything. Branch 1 (fp↔key fail / malformed) refuses the card — otherwise
           // the out-of-band "is this your fingerprint?" ritual would falsely pass while the stored key
           // is an attacker's. Branches 2/3/4 import the classical contact; the pq sub-disposition
-          // decides whether the authenticated pq_kem/pq_sig is stored (Flint spec §4).
+          // decides whether the authenticated pq_kem/pq_sig is stored (spec §4).
           const d = await classifyImportedCard(parsed);
           if (cancelled) return;
           if (!d.importClassical) {
@@ -247,7 +247,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
         : {};
       if (existing) {
-        // Upgrade-on-re-exchange (Flint §7#5): back-fill authenticated pq onto a known edge that has
+        // Upgrade-on-re-exchange (§7#5): back-fill authenticated pq onto a known edge that has
         // none — no duplicate; never silently replace a different stored pq (rotation is a separate,
         // deliberate, lineage-tracked path, not a re-import side effect).
         if (peer.pq && !existing.pq_kem_public_key) {
@@ -261,8 +261,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           fingerprint: peer.fingerprint,
           public_key: peer.publicKey,
           // KNOWN, not 'pending': the joiner added the giver from a CRYPTO-VERIFIED Grow card
-          // (classifyImportedCard verified the signature) — that earns KNOWN immediately per Peter's model
-          // (#125307: KNOWN = add-from-link/qr, no mutuality; mutuality is only for TRUSTED). 'pending'
+          // (classifyImportedCard verified the signature) — that earns KNOWN immediately
+          // (KNOWN = add-from-link/qr, no mutuality; mutuality is only for TRUSTED). 'pending'
           // under-claimed the tier (render-neutral — the faint node keys on connection_status, not
           // trust_level — but the stored value should honestly match the crypto). Causality-cleared: no
           // logic-reader keys on trust_level==='pending'.
@@ -443,7 +443,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
                 {peer.fingerprint || '—'}
               </code>
             </div>
-            {/* PQ disposition (Flint spec §4 cry-wolf: loud only on an invalid signature) */}
+            {/* PQ disposition (spec §4 cry-wolf: loud only on an invalid signature) */}
             {peer.alarm === 'loud' && (
               <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>
                 ⚠ Could not verify this card&apos;s key material — possible tampering. It imports as a
@@ -476,7 +476,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
               <button style={primaryBtnStyle} onClick={persistEdge}>Add to my network →</button>
             ) : (
               <div style={{ marginTop: 18 }}>
-                {/* Anti-phishing (Flint #4 / Hypatia): a secret is demanded BY and FOR the user's OWN
+                {/* Anti-phishing: a secret is demanded BY and FOR the user's OWN
                     vault (owner act) — never framed as the price of connecting with the giver. Owner
                     action, {peer.name} as the object. Shown only AFTER the intentional "Add" click. */}
                 <p style={{ ...subStyle, marginBottom: 12 }}>

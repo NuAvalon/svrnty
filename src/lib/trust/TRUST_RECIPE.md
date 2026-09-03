@@ -6,7 +6,7 @@ Verify is collaboration in the real world or another channel. The app only store
 ## Onboarding doors
 **Start** (new card) · **Continue** (open a vault). Join/Know stays easy. Trust is not a badge.
 
-## Constitution (reach) — Hypatia to freeze
+## Constitution (reach)
 See `src/lib/trust/trust-recipe.ts` `TRUST_RECIPE_COPY`.
 
 PSI / `visible()` still fleet. Glass does not invent know-layer or trust-layer chords from tags. Dashed gold on the Galaxy = groups you named.

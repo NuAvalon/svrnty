@@ -109,7 +109,7 @@ export async function restoreIdentityFromSeedVault(
   await setActiveFingerprint(fingerprint);
 
   // PQ: PrivateKeyBundle returns secrets only; serializeKeypairBundle needs public halves.
-  // Do not invent a PQ layout here — fleet seam (Flint). Flagged in recovery README.
+  // Do not invent a PQ layout here — fleet seam. Flagged in recovery README.
   const pqSecretsRecovered = !!(
     bundle.pq_signing_secret_key && bundle.pq_kem_secret_key
   );

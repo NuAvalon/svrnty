@@ -1,6 +1,6 @@
 name: ci
-# svrnty CI status check — git-infra memo §1. The machine-checkable half of the
-# merge-gate's "green" condition (docs/MERGE_GATE.md). Blocking: `next build` must pass
+# svrnty CI status check. The machine-checkable half of the
+# merge-gate's "green" condition. Blocking: `next build` must pass
 # (catches real import/build breakage = merge-unsafe). Informational: typecheck, until the
 # 16-error baseline is drained. NOT YET a REQUIRED check — that needs branch protection,
 # which needs repo admin (palberts22 is push+triage only). Org owner enables it; the
@@ -9,7 +9,7 @@ name: ci
 # FOLLOW-UP (this week, tracked): add the cross-file divergence-guard test (verify-allowlist
 # ≡ apply-allowlist — the lockstep pattern) once BOTH allowlist files land on main via the
 # current drain, plus a unified test runner once the extensionless-vs-.ts convention is
-# settled with Archie. Kept out of the initial check on purpose — a flaky gate is worse than
+# settled. Kept out of the initial check on purpose — a flaky gate is worse than
 # a narrow one.
 
 on:
@@ -39,7 +39,7 @@ jobs:
 
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
   # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
-  # (Peter's ask; T11 demo-arc). BLOCKING once specs mature — starts with the harness smoke test.
+  # (T11 demo-arc). BLOCKING once specs mature — starts with the harness smoke test.
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -61,7 +61,7 @@ jobs:
   # `next dev`, so beat-3 is skip-guarded out of the dev `e2e` job above (test.skip(!E2E_PROD)) and
   # exercised HERE instead. ⚠ Because beat-3 runs ONLY here, this job MUST become a REQUIRED check
   # when branch protection lands — a skip in the dev job is not a pass, so without this gating, a
-  # beat-3 regression would sail through green (coverage != correctness). (Athena; walkthrough QA.)
+  # beat-3 regression would sail through green (coverage != correctness).
   e2e-prod:
     runs-on: ubuntu-latest
     timeout-minutes: 20

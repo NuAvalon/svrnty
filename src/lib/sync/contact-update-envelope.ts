@@ -4,15 +4,15 @@
 // OPAQUELY (it cannot read it — custody §4 / I-1); only the recipient's private key decrypts. Reuses
 // the existing openpgp identity keys — no new key material.
 //
-// ⚠ CRYPTO CHOICE — BLESSED BY FLINT for 9/10 (#116409): classical openpgp E2E — simplest, reuses the
+// ⚠ CRYPTO CHOICE: classical openpgp E2E — simplest, reuses the
 // identity keys, and honestly "the relay can't read your contacts" (opaque blob, recipient-only decrypt;
 // authenticity is the inner SignedContactUpdate). The NAMED UPGRADE is a hybrid-PQ envelope for "PQ on
 // the wire". The swap is zero-caller-change AT THE CALLER (the EnvelopeDecryptor is injected) — but the
-// hybrid decryptor IMPL must still be WRITTEN (Flint #116410): crypto/hybrid.ts has the KEM primitives
+// hybrid decryptor IMPL must still be WRITTEN: crypto/hybrid.ts has the KEM primitives
 // (hybridEncapsulate / hybridDecapsulate / deriveHybridSecret) + signing, NOT an encrypt-to-recipient
 // wrapper — so the upgrade = write [encapsulate → derive → AES-GCM the payload → package] + the matching
 // decryptor, then swap the injection. Not a one-line flag-flip; that's the artifact for the separate
-// "PQ on the wire" claim graduation (Flint's envelope-invariant-gate lane).
+// "PQ on the wire" claim graduation.
 
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import type { SignedContactUpdate } from '@/lib/trust/contact-update';

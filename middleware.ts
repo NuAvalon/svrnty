@@ -11,7 +11,7 @@ const RESERVED = new Set([
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // Only handle single-segment paths like /peter (not /api/foo or /c/abc)
+  // Only handle single-segment paths like /alice (not /api/foo or /c/abc)
   const segments = pathname.split('/').filter(Boolean);
   if (segments.length !== 1) return NextResponse.next();
 

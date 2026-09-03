@@ -57,10 +57,10 @@ export default function Home() {
   const [unlockError, setUnlockError] = useState('');
   const [unlocking, setUnlocking] = useState(false);
   // Phase-1 identity switcher (UI-only): other on-device vaults, loaded EPHEMERALLY into component
-  // state — never persisted as a new cross-identity link (Flint's correlation-surface line). Empty in
+  // state — never persisted as a new cross-identity link (the correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
-  // Archie home: identity card is the first surface; Trust Map via "Your circle".
+  // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
@@ -162,7 +162,7 @@ export default function Home() {
 
   // Phase-1 swap: choose another EXISTING vault to unlock instead of the current one. We are already
   // locked (no keys in memory); lockSession() first is defensive so no key material bleeds across the
-  // swap (Flint #4). Then repoint the active pointer + unlock form at the chosen vault. Existing
+  // swap. Then repoint the active pointer + unlock form at the chosen vault. Existing
   // primitives only — no new vault schema, no derivation (that is Phase 2).
   const handleSwitchIdentity = async (fingerprint: string, name: string) => {
     lockSession();

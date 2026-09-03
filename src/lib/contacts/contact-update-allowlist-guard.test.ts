@@ -1,5 +1,5 @@
 // src/lib/contacts/contact-update-allowlist-guard.test.ts
-// Cross-file divergence guard (the lockstep pattern — Flint + Athena). The contact.update field
+// Cross-file divergence guard (the lockstep pattern). The contact.update field
 // allowlist is declared in TWO files: the VERIFY side (trust/contact-update.ts) rejects any wire
 // update touching a non-allowlisted field; the APPLY side (contacts/apply-contact-update.ts) writes
 // each allowlisted field onto the stored record via FIELD_MAP. They MUST stay identical —
@@ -27,7 +27,7 @@ test('contact.update verify-side and apply-side allowlists are IDENTICAL (lockst
   );
 });
 
-// The adjacent link (Flint's strengthening, #116041): the allowlist ≡ the FIELD_MAP domain. Every
+// The adjacent link: the allowlist ≡ the FIELD_MAP domain. Every
 // allowlisted field must have a FIELD_MAP entry — otherwise apply throws 'field-not-mappable' at
 // runtime; this moves that catch to CI. And no FIELD_MAP entry should exist for a non-allowlisted
 // field (dead/latent mapper). Combined with the test above (verify ≡ apply), this closes the full

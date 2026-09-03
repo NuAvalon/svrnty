@@ -3,7 +3,7 @@
 // + the user's review choices → concrete storage operations (adds/updates).
 // TrustEdge-level; the UI converts each op to a ContactRecord at the addContact/updateContact call.
 //
-// CONFIRM-GATE (Archie #115904, invariant B2): this applies a CONFIRMED plan. It runs ONLY after
+// CONFIRM-GATE (invariant B2): this applies a CONFIRMED plan. It runs ONLY after
 // the user has SEEN the autoMerge set + resolved the review card-stack. A review row with no explicit
 // 'merge' choice FALLS BACK to a fresh contact — never a silent merge of an ambiguous row.
 

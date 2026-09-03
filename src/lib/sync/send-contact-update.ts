@@ -123,7 +123,7 @@ export interface SendContactUpdateResult {
 
 /**
  * The drop-in: sign once, encrypt per-recipient, and POST each deposit to the return-channel mailbox.
- * The "mailbox deposit" the stub reserves for Flint. Pure of UI concern — the caller (dialog) supplies
+ * The "mailbox deposit" the stub reserves. Pure of UI concern — the caller (dialog) supplies
  * change/owner/recipients and maps this result to its own UX. Each POST is independent: one failure is
  * collected, never aborts the batch (at-least-once; the recipient's version floor makes re-send idempotent).
  * Throws only if the change itself is unsendable (buildContactUpdateDeposits' firewall) — before any POST.

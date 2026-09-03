@@ -5,14 +5,14 @@
 // adapter then, mirroring the recovery-code path's derive-don't-trust discipline:
 //   (a) binds the vault's PRIVATE key to its claimed fingerprint so an untrusted .svrnty
 //       ("import this vault file") can't poison the identity/keys stores with a key that
-//       doesn't match its identity (Flint #126103),
+//       doesn't match its identity,
 //   (b) initialises the session key from the passphrase so persisted keys are encrypted
-//       at rest exactly as genesis stores them (at-rest equivalence, Flint #126103 /
-//       Archie "restore ≡ genesis at rest"), then
+//       at rest exactly as genesis stores them (at-rest equivalence,
+//       "restore ≡ genesis at rest"), then
 //   (c) persists the whole vault via client-store.importVaultContents (which enforces the
 //       public-key↔fingerprint binding and routes contacts through addContact).
 //
-// Fixes the #125944 data-safety launch-blocker: before this, the passphrase restore only
+// Fixes the data-safety launch-blocker: before this, the passphrase restore only
 // hydrated in-memory React state and the identity was LOST on reload.
 
 import { readPrivateKey, decryptKey } from 'openpgp';

@@ -28,7 +28,7 @@
 //    tamper — safe-word forge, version rollback, KDF downgrade, salt/iv swap —
 //    fails decryption instead of being silently trusted.
 //
-// ── CLEAN-BREAK on v2 (Flint compat ruling #115328) ──────────────────
+// ── CLEAN-BREAK on v2 ──────────────────
 // We drop the v2 PBKDF2 read AND write entirely. This is safe ONLY because
 // svrnty is PRE-LAUNCH:
 //   • Vault export is local-download-only (no cloud upload is wired), so there

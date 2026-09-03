@@ -1,6 +1,6 @@
 // svrnty Service Worker — offline-first, local-first
 //
-// v2 (2026-08-11, Athena): fixes the "stuck on RESOLVING…" trap.
+// v2 (2026-08-11): fixes the "stuck on RESOLVING…" trap.
 // The old v1 served the HTML document and build chunks CACHE-FIRST, so after a
 // redeploy (new /_next chunk hashes) a returning browser kept serving the old
 // cached shell, which then requested chunk hashes that no longer exist → the

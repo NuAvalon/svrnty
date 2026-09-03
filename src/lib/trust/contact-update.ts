@@ -1,26 +1,25 @@
 // src/lib/trust/contact-update.ts
 // 0.4 contact.update CONSUME-VERIFY floor — the client-side gate every inbound contact-card delta
-// must pass before it is allowed to touch the stored address book. This is Flint's Queue-B 0.4 lane
-// (protocol half). Design: AGENT_HANDOFF.md "Flint (protocol) 0.4"; Archie #115561 (ratify-proof
-// construction); invariant canon shared/outbox/flint/svrnty_master_spec_security_invariants.md §S1.
+// must pass before it is allowed to touch the stored address book. This is the Queue-B 0.4 lane
+// (protocol half). Invariant canon §S1.
 //
 // WHY THIS EXISTS. 0.4 is the "living address book": a contact whose card changes (new phone, new
 // key epoch, new relay routing) signs a delta and it propagates to everyone who holds their card.
 // That is a *write path into the user's device from the network* — exactly the surface that, done
 // naively, becomes contact-poisoning / routing-hijack / a liveness oracle
-// (shared/outbox/flint/svrnty_build_priority_v3_dissent_flint.md §D4). So the consume path is a hard
+// (§D4). So the consume path is a hard
 // gate, not a best-effort check.
 //
-// THE FLOOR (Archie #115561, the E2E-invariant): "every consume-path verifies; once-signed-
+// THE FLOOR (the E2E-invariant): "every consume-path verifies; once-signed-
 // never-unsigned; a consume-path that skips verify must fail LOUDLY." This module has exactly ONE
 // way to obtain a VerifiedContactUpdate — {@link verifyIncomingContactUpdate} — and it either returns
 // a fully-verified value or THROWS {@link ContactUpdateRejected}. There is no boolean an eager caller
 // can ignore and no silent-skip branch. The caller APPLIES the delta to storage only with a value
-// this function returned; the apply step (which needs Athena's 0.14 three-state Contact type) lives
+// this function returned; the apply step (which needs the 0.14 three-state Contact type) lives
 // elsewhere in contacts/ and is deliberately NOT in this file — verify (trust/) and apply (contacts/)
 // are separated precisely so apply cannot run without verify.
 //
-// RATIFY-PROOF ON BOTH AXES (Archie #115561):
+// RATIFY-PROOF ON BOTH AXES:
 //   1) Crypto model (A/B): we DELEGATE all signature checking to the 0.1 envelope primitive
 //      (verifyWithEnvelope). We never re-implement verification, so a ratify that changes the crypto
 //      model changes the primitive's internals, not this file. We inherit domain-separation (a
@@ -48,8 +47,7 @@ import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envel
  * naming ANY field outside this set is rejected WHOLE (never partially applied), so the update
  * channel cannot be used to smuggle a field the address-book model never intended to accept.
  *
- * NOW-VOCAB {display_name, phones, emails, note} (Archie ruled the shrink #115574, then the phones GROW
- * #115747 after Fable's 9.2 vocab correction). The canonical invariant is `ALLOWED_FIELDS ≡ {fields the
+ * NOW-VOCAB {display_name, phones, emails, note}. The canonical invariant is `ALLOWED_FIELDS ≡ {fields the
  * 0.14 ContactRecord homes + contactToEdge surfaces}`, enforced IDENTICALLY in verify (here) and apply —
  * a divergence is a bug the merge-guard test catches. The set started as the minimal spartan floor
  * {display_name, note, emails}; `phones` is the FIRST EARNED GROW (producer = the vCard import; the dedup
@@ -65,7 +63,7 @@ import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envel
  *   - `public_key`  → `key.rotate`: a key rotation, not a field-set. Riding the plain field path would
  *     swap the active key while keeping the genesis fingerprint (bypassing the fingerprint↔key binding)
  *     and skip epoch-lineage verification (`epoch-ahead-needs-lineage` below). Rotation gets its own
- *     lineage-gated path. (Athena #115570 catch; Archie #115574.)
+ *     lineage-gated path.
  *   - `routing`     → `routing.update`: relay hints resolve to relays only (I-4), its own format freeze.
  *
  * Deliberately absent — and this absence is load-bearing, not an oversight:
@@ -74,25 +72,25 @@ import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envel
  *   - `last_seen` / `presence` / `online` / `liveness`                      → I-6 (render provenance):
  *     nothing renders presence; a contact cannot push a "last seen" attribute into your view. The
  *     living/dim ignition is driven by the receiver's LOCAL witnessed-receipt clock (apply's
- *     last_interaction refresh), never a pushed field — confirmed I-6-safe (KB #86068).
+ *     last_interaction refresh), never a pushed field — confirmed I-6-safe.
  *
  * The PROPERTY — allowlist-firewall, no presence / no geolocation, verify≡apply — is invariant
  * regardless of the exact names; the names are the reconciliation seam.
  */
 export const CONTACT_UPDATE_ALLOWED_FIELDS: ReadonlySet<string> = new Set([
   'display_name', // → typed ContactRecord.name (contactToEdge: peer_name)
-  'phones', // → ContactRecord phones passthrough (vCard TEL, E.164-normalized); first earned grow (#115747)
+  'phones', // → ContactRecord phones passthrough (vCard TEL, E.164-normalized); first earned grow
   'emails', // → primary to ContactRecord.email; full list on the emails passthrough
   'note', // → ContactRecord.notes (contactToEdge reads c.notes || c.metadata?.notes)
-  'handles', // → messaging-app handles map {signal,whatsapp,telegram,discord,matrix,instagram,facebook}; reach-only, self-asserted. Method-grow #125128. VALUE-guard (≤16 curated keys / ≤128-char values / sanitize-as-claimed) enforced recipient-side on apply + at send-UI (Athena's lane); this firewall gates the KEY.
-  'urls', // → website(s), string[]; reach-only (method-grow #125128).
+  'handles', // → messaging-app handles map {signal,whatsapp,telegram,discord,matrix,instagram,facebook}; reach-only, self-asserted. Method-grow. VALUE-guard (≤16 curated keys / ≤128-char values / sanitize-as-claimed) enforced recipient-side on apply + at send-UI; this firewall gates the KEY.
+  'urls', // → website(s), string[]; reach-only (method-grow).
 ]);
 
 /**
  * The curated messaging-app handle keys allowed inside a `handles` map — SHARED single-source so verify,
  * apply, and the send-UI enforce the SAME set (no drift, same reason CONTACT_UPDATE_ALLOWED_FIELDS is one
  * Set). Reach-only, self-asserted. Grow-later: add a key HERE (all under the already-grown 'handles'
- * field → no protocol/allowlist re-grow). Method-grow #125128 (Peter's list).
+ * field → no protocol/allowlist re-grow). Method-grow.
  */
 export const CONTACT_HANDLE_KEYS: ReadonlySet<string> = new Set([
   'signal', 'whatsapp', 'telegram', 'discord', 'matrix', 'instagram', 'facebook',
@@ -114,7 +112,7 @@ export interface SignedContactUpdate {
 
 /**
  * The receiver's last-VERIFIED state for the contact this update claims to be from. This narrow
- * interface is the seam that keeps 0.4-verify decoupled from Athena's 0.14 Contact type: the full
+ * interface is the seam that keeps 0.4-verify decoupled from the 0.14 Contact type: the full
  * Contact will satisfy it, but this module never imports it.
  */
 export interface KnownContactIdentity {

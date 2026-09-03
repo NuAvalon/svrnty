@@ -74,7 +74,7 @@ export function resolveUrlHref(raw: string): string | null {
   if (scheme === 'https:') {
     // Open by design — contact links resolve to ANY host; safety = scheme-allowlist +
     // noopener + visible URL (I-10a), NOT a host allowlist (which would false-pass phishing
-    // hosts AND break the open-ended custom contact field). Ref: Archie #124162 / KB#46618.
+    // hosts AND break the open-ended custom contact field).
     if (!url.hostname) return null;
     return url.toString();
   }

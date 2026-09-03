@@ -121,7 +121,7 @@ export function SecureExportDialog({
       // Encrypt with AES-256-GCM via password
       // NOTE (CUR-4 README): this dialog still uses the legacy PBKDF2 path that
       // lived here before polish. Fleet preferred path for identity is packVault
-      // (Argon2id). Contacts-only Argon2id seam = Flint follow-up — do not invent
+      // (Argon2id). Contacts-only Argon2id seam = follow-up — do not invent
       // a parallel KDF in the UI.
       const salt = new Uint8Array(16);
       crypto.getRandomValues(salt);

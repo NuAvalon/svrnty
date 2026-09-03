@@ -7,7 +7,7 @@
  * another channel, then you mark it here.
  *
  * ⛔ Does not implement PSI / visible() / wire vouch. Overlay disclosure is fleet.
- * Owner-local fields must never serialize on publish / PSI-sync (Apollo §2).
+ * Owner-local fields must never serialize on publish / PSI-sync.
  */
 
 export const TRUST_RECIPE_COPY = {
@@ -44,21 +44,21 @@ export const TRUST_RECIPE_COPY = {
   // GIVE is live (Shamir M-of-N via ShardGiveDialog) → present-tense honest. The recover round-trip
   // (collect/rebuild) is NOT mounted yet, so this line claims only the give, not the round-trip.
   recoverySelect: 'Guardians. Give someone you Trust a piece of your recovery, split so no single piece can rebuild you.',
-  // Roadmap line for beta Help — the unmounted half (Hypatia claim-honesty #125926): rebuild-from-pieces,
+  // Roadmap line for beta Help — the unmounted half (claim-honesty): rebuild-from-pieces,
   // rotate-holders, change-seed/password are stubs, so present them as Coming, not present-tense.
   recoveryComing: 'Coming: rebuild from those pieces, rotate who holds them, and change your seed or password.',
   recoveryRotate: 'Rotate Guardians. When a holder changes, you change who holds a piece.',
   recoverySeed: 'Change Seed. New root. The old one is done.',
   recoveryPassword: 'Change Password. Unlocks this device. Not a website login.',
   // NOTE: recoveryDistress is DELIBERATELY NOT rendered in beta Help (HelpGuide step 6) — send is a NO-OP
-  // but this copy asserts a working silent-cry (life-safety FALSE claim; Hypatia+Flint #125926, non-
+  // but this copy asserts a working silent-cry (life-safety FALSE claim; non-
   // negotiable fail-safe). Kept as a constant only for when Distress actually wires up. Do NOT render.
   recoveryDistress:
     'Distress. A silent cry. Default is all Guardians; you can pick one. Your phone keeps no proof it was sent. The relay understands nothing. They see an ember in your star. The card burns until someone acts in the world.',
 } as const;
 
 export const GROW_INVITE_CAP = 7;
-// Per-link cap config (Peter #125734): a Grow link's distinct-joiner cap is chosen by the issuer AT
+// Per-link cap config: a Grow link's distinct-joiner cap is chosen by the issuer AT
 // GENERATION (opt-in viral). Default 1 = single-use (the safe, honest default — a plain link stays
 // single-use); max 1000. The cap is stored PER-CODE in the issued-code store and enforced at the
 // accept-oracle (codeUnderCap reads the per-code cap), NOT globally.

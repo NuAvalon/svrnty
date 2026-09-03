@@ -3,7 +3,7 @@
 // injected transport + decrypt + store — so the whole verify→apply→persist→ack→emit path is proven,
 // plus the custody behaviours: whitelist-on-fetch drop, silent rejection, terminal-vs-retryable ack.
 //
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test consume-mailbox.test.ts
+// Run: npx tsx --test consume-mailbox.test.ts
 
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';

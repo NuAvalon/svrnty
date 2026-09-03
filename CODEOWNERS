@@ -14,5 +14,5 @@
 # Trust-layer crypto: PSI core (mutual-trust-sync.ts), §C publish firewall
 # (trust-recipe.ts / stripOwnerLocalForPublish), signing (contact-update-sign.ts),
 # owner-local projection (contact-edge.ts). The .mdc names these DO-NOT-TOUCH by
-# description; this binds them by path so the freeze is enforceable. (Flint #126578)
+# description; this binds them by path so the freeze is enforceable.
 /src/lib/trust/           @palberts22

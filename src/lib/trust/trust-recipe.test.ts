@@ -81,7 +81,7 @@ test('verify poetry is the name couplet', () => {
 
 test('recovery copy: give is present-tense honest, round-trip is Coming, constants kept', () => {
   assert.equal(TRUST_RECIPE_COPY.recoveryTitle, 'Recovery');
-  // recoverySelect claims only the LIVE give (Shamir), not the recover round-trip (Hypatia #125926)
+  // recoverySelect claims only the LIVE give (Shamir), not the recover round-trip
   assert.match(TRUST_RECIPE_COPY.recoverySelect, /Give someone you Trust a piece/);
   assert.match(TRUST_RECIPE_COPY.recoveryComing, /^Coming:/);
   // Unmounted-half constants kept (for when the UI wires up); just not rendered in beta Help

@@ -1,5 +1,5 @@
 // src/lib/trust/contact-edge.test.ts
-// The projection carries pq to the edge — the end-to-end half of Peter's "PQ-keys-dropped-on-every-edge".
+// The projection carries pq to the edge — the end-to-end half of the "PQ-keys-dropped-on-every-edge".
 // Run: npx tsx --test src/lib/trust/contact-edge.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

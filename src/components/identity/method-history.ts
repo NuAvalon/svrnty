@@ -1,5 +1,5 @@
 // CUR-2 / L1c — owner method-revision log + restore-previous seam (UI glass).
-// ⛔ Flint owns signed monotonic ContactUpdateEnvelope + per-peer encrypt.
+// ⛔ Signed monotonic ContactUpdateEnvelope + per-peer encrypt live in the crypto layer.
 // Cursor may append local drafts and render history; never invent signatures
 // or roll version backward on the wire (receivers reject stale-version).
 
@@ -9,7 +9,7 @@ export type MethodRevisionStatus = 'local-only' | 'queued-stub';
 
 export interface MethodRevision {
   id: string;
-  /** Local monotonic counter for this owner's log (UI). Wire version is Flint's. */
+  /** Local monotonic counter for this owner's log (UI). Wire version is set by the crypto layer. */
   localVersion: number;
   created_at: string;
   kind: MethodKind;
@@ -121,7 +121,7 @@ export function revisionsForPeer(
 
 /**
  * One-tap restore-previous: append a NEW local revision that re-applies the
- * prior value. Does NOT sign or deposit — Flint replaces the stub body.
+ * prior value. Does NOT sign or deposit — the crypto layer replaces the stub body.
  *
  * Constitutional: never decreases wire version; restore = next higher revision
  * with prior field values (receivers reject rollback).
@@ -171,12 +171,12 @@ export async function requestRestorePrevious(args: {
     note: `Restore previous (from local v${target.localVersion})`,
   });
 
-  // ⛔ Flint: sign ContactUpdateEnvelope at wire version+1 + encrypt-to-audience.
+  // ⛔ Crypto layer: sign ContactUpdateEnvelope at wire version+1 + encrypt-to-audience.
   return {
     ok: false,
     reason: 'signing-not-live',
     message:
-      'Restored locally as a draft. Signed broadcast is not live yet — Flint owns monotonic sign + deposit.',
+      'Restored locally as a draft. Signed broadcast is not live yet.',
   };
 }
 

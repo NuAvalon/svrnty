@@ -12,7 +12,7 @@ export type SampleSvrntyPeer = {
   email: string;
   public_key: string;
   fingerprint: string;
-  /** Open-visibility clique used for Peter’s peer-trust demo. */
+  /** Open-visibility clique used for the peer-trust demo. */
   clique: boolean;
 };
 

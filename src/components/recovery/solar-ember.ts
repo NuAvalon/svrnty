@@ -1,4 +1,4 @@
-// Solar Ember tokens — CURSOR.md (Peter-approved). UI-only; no security logic.
+// Solar Ember tokens. UI-only; no security logic.
 // Colors are CSS variables so light/dark (and later custom UI prefs) swap without
 // rewriting every component. Literals live in app/globals.css.
 

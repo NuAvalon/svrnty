@@ -1,8 +1,8 @@
 // src/lib/identity/issued-codes.test.ts
 // Run: npx tsx --test src/lib/identity/issued-codes.test.ts
 //
-// Giver-side issued Grow-code accept-oracle (R1 pending-joiner, MULTI-USE per
-// Flint #125359). Pure logic only — the async wrappers (recordIssuedGrowCode /
+// Giver-side issued Grow-code accept-oracle (R1 pending-joiner, MULTI-USE).
+// Pure logic only — the async wrappers (recordIssuedGrowCode /
 // recordAcceptedJoiner / loadIssuedCodeMap) are thin over the proven 'settings'
 // store, so the risk lives in the pruning + acceptance-window + cap + accepted-set
 // math, which is what this pins.

@@ -14,7 +14,6 @@
 // Together they bind pq_kem to the fingerprint via the classical key — the signature COMPLETES
 // Invariant-1 to cover the pq key it doesn't today.
 //
-// AUTHORITATIVE spec: shared/outbox/flint/svrnty_identity_card_signing_spec_flint.md (Flint, s904).
 // The byte-exact envelope lives in crypto/sign-envelope.ts; the canonical bytes in format/canonical.ts;
 // the domain tag + signing-input in format/envelope.ts (single-source, so sign≡verify can't drift).
 
@@ -26,7 +25,7 @@ import { fingerprintMatchesKey } from './fingerprint';
 // ── §6 Suite-length validation: the ek length IS the suite discriminant ──────────
 // ML-KEM ek (public-key) sizes are bijective with the parameter set, so a valid card needs no
 // separate suite_id field — the length names the suite under the signature. This is the SINGLE
-// SOURCE of suite-truth (Flint spec §6). Two load-bearing conditions:
+// SOURCE of suite-truth. Two load-bearing conditions:
 //   1. DOWNGRADE-FLOOR: the map holds ONLY svrnty-sanctioned suites. ML-KEM-512 (800 B) is BELOW
 //      the security floor and is deliberately absent → a 512 key derives `undefined` → 4c (dropped).
 //   2. ENCAP MUST DERIVE IDENTICALLY: when `hybridEncapsulate` gets its first caller it MUST pick
@@ -163,7 +162,7 @@ export async function buildSignedIdentityCard(
 
 // ── RECEIVE side: the fail-closed 4-branch import disposition (both receive-paths share this) ──
 // JoinerCeremony (relay/QR) and ContactManagement.handleImportExchange (copy/paste) BOTH call this
-// so the security decision can't drift between carriers (Flint spec §4/§5: every carrier ends at
+// so the security decision can't drift between carriers (every carrier ends at
 // verifySignedIdentityCard). Pure decision — it stores nothing; the caller applies `pq` + `alarm`.
 export interface ImportDisposition {
   /** Import the classical contact at all? false ONLY for branch 1 (fp-fail / malformed card). */
@@ -179,7 +178,7 @@ export interface ImportDisposition {
 }
 
 /**
- * Classify a parsed identity-exchange card into its fail-closed import disposition (Flint spec §4).
+ * Classify a parsed identity-exchange card into its fail-closed import disposition.
  *   1  fp↔key FAILS / malformed        → REJECT the whole card (classical identity unverifiable).
  *   2  fp↔key OK, no `signature`        → classical-only, DROP pq, QUIET (benign pre-PQ peer).
  *   3  signature PRESENT but INVALID    → classical-only, DROP pq, LOUD (possible tampering).

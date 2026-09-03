@@ -37,7 +37,7 @@ export function GrowSheet({ open, onClose, identity }: Props) {
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const result = await createRelay(JSON.stringify(signed));
       setRelay({ url: result.url, code: result.code });
-      // Record the issued code + its cap IMMEDIATELY (belt-and-suspenders, Flint #125780 note 1): if this
+      // Record the issued code + its cap IMMEDIATELY (belt-and-suspenders): if this
       // is left only to the effect below and the effect ever fails to fire, the code would be
       // return-channel-DEAD (no joiner could ever be accepted → a silent mutual-connect failure). The
       // effect below ALSO records — idempotent (recordIssuedGrowCode refreshes the window + preserves

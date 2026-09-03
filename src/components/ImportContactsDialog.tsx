@@ -1,12 +1,12 @@
 "use client";
 
-// ImportContactsDialog — the 0.12 "import the gray sea" flow (Apollo; Athena wires the entry trigger).
-// vCard (.vcf) → gray contacts → dedup preview → CONFIRM-GATE (never silent, Archie #115904/B2) →
+// ImportContactsDialog — the 0.12 "import the gray sea" flow.
+// vCard (.vcf) → gray contacts → dedup preview → CONFIRM-GATE (never silent, B2) →
 // applyImportPlan → addContact/updateContact → onImported(). LOCAL-only: the file is read in-browser,
 // nothing is uploaded. Grays are keyless (addContact's fp↔key check is skipped when no key present).
 //
-// Contract (Athena #116015): props below; she renders <ImportContactsDialog .../> in the contacts view
-// with a trigger + showVcardImport state, onImported → her loadContacts() refreshes the book.
+// Contract: props below; the parent renders <ImportContactsDialog .../> in the contacts view
+// with a trigger + showVcardImport state, onImported → the parent's loadContacts() refreshes the book.
 
 import React, { useRef, useState } from 'react';
 import {
@@ -32,8 +32,8 @@ interface ImportContactsDialogProps {
 
 // Project a stored ContactRecord → TrustEdge for dedup's `existing`. Minimal: only the fields
 // dedup reads (peer_email + contact_info channels) + identity/name for the merge.
-// TODO(#21): replace with contactRecordToEdge from '@/lib/trust/contact-edge' when it lands
-// (adds pq carry — moot for grays; transparent upgrade per Athena #116012).
+// TODO: replace with contactRecordToEdge from '@/lib/trust/contact-edge' when it lands
+// (adds pq carry — moot for grays; transparent upgrade).
 function recordToEdge(c: any): TrustEdge {
   const contact_info = c.contact_info ?? {
     phones: c.phones ?? (c.phone ? [c.phone] : []),
@@ -46,7 +46,7 @@ function recordToEdge(c: any): TrustEdge {
     peer_email: c.peer_email || c.email || '',
     peer_public_key: c.public_key || '',
     contact_info,
-    // chaos#32: project the REAL trust state (was hardcoded false, discarding trust_level) so a merge
+    // Project the REAL trust state (was hardcoded false, discarding trust_level) so a merge
     // INTO a trusted contact can be flagged — the precondition for (A)'s review-routing + the diff warning.
     trusted: migrateTrustLevel(c.trust_level), trusted_since: null, last_interaction: c.added_at || '',
     decay_days: 730, trust_history: [],
@@ -57,9 +57,9 @@ function recordToEdge(c: any): TrustEdge {
 }
 
 // Edge → the ContactRecord fields to persist for a gray (keyless) contact.
-// NOTE: mirrors Athena's 0.14 FIELD_MAP — primary phone/email + phones/emails lists + contact_info
-// (verified no drift, #116019). A gray has no fingerprint/public_key → lands keyless (store keeps an
-// empty fingerprint ABSENT, not '', so multi-gray import doesn't collide the UNIQUE index — Athena 8bb8eef).
+// NOTE: mirrors the 0.14 FIELD_MAP — primary phone/email + phones/emails lists + contact_info
+// (verified no drift). A gray has no fingerprint/public_key → lands keyless (store keeps an
+// empty fingerprint ABSENT, not '', so multi-gray import doesn't collide the UNIQUE index).
 // trust_level:'unverified' → projects trusted:false → the book renders it GRAY (getContactState,
 // contact-state.ts:27). The absent fingerprint is NOT the gray trigger; `trusted` is.
 function edgeToRecordFields(e: Partial<TrustEdge>) {
@@ -166,7 +166,7 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
                 <GitMerge className="h-4 w-4 text-amber-400" />
                 <span data-testid="merge-count">{plan.autoMerge.length}</span>&nbsp;merge into existing (living data wins)
               </div>
-              {/* chaos#32 (B): a per-field DIFF, not a bare count — show what each merge ADDS + why it
+              {/* A per-field DIFF, not a bare count — show what each merge ADDS + why it
                   matched. A channel injected onto a TRUSTED contact renders amber with a warning icon. */}
               {plan.autoMerge.length > 0 && (
                 <ul className="pl-6 space-y-1" data-testid="merge-details">
@@ -202,7 +202,7 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
                   <AlertTriangle className="h-4 w-4 text-amber-400" />
                   <span data-testid="review-count">{plan.review.length}</span>&nbsp;need a closer look
                 </div>
-                {/* chaos#32 (B): the review card is a DIFF, not a count. Apollo's (A) routes a
+                {/* The review card is a DIFF, not a count. (A) routes a
                     trusted-target + net-new-channel merge here (candidates:[target]); the ambiguous
                     (>1 match) case also lands here. Both show matched-on + what WOULD be added. */}
                 <div className="pl-6 space-y-2" data-testid="review-details">

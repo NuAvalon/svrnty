@@ -150,7 +150,7 @@ test('mergeCluster: wraps foldLivingWins over cluster.members', () => {
 
 test('build-once: foldLivingWins([existing,incoming]) ≡ livingWinsMerge(existing,incoming) for the import case', () => {
   // when existing outranks incoming (import path: existing=living, incoming=gray), the 2-step
-  // reduces to Apollo's pairwise merge exactly → import ≡ cluster (Hypatia build-once #115891).
+  // reduces to the pairwise merge exactly → import ≡ cluster.
   const existing = mkEdge({ id: 'e', peer_fingerprint: 'FE', trusted: true, peer_name: 'Existing',
     contact_info: { phones: ['+15550006000'], emails: ['e@x.com'] } });
   const incoming = mkEdge({ id: 'i', peer_name: 'Imported', contact_info: { phones: ['+15550006001'] } });

@@ -3,7 +3,7 @@
 // consume-mailbox). After the joiner adds the giver (JoinerCeremony persistEdge), this signs the joiner's
 // self-asserted identity claim ONCE and deposits it — E2E-encrypted to the giver — into the giver's
 // return-channel mailbox. The giver polls, runs verifyJoinerResponse, and surfaces the joiner as KNOWN.
-// That closes the one-directional Grow asymmetry (R1, Peter #125331): the edge becomes MUTUAL, so the
+// That closes the one-directional Grow asymmetry (R1): the edge becomes MUTUAL, so the
 // already-live 0.4 contact.update wire has a Bob-edge to propagate along ("connect → send").
 //
 // SECURITY SHAPE (mirror send-contact-update.ts — same E2E envelope, no new key material):
@@ -22,7 +22,7 @@
 //    the caller (the ceremony) is fail-soft and never blocks on the return channel (I-1: any failure is
 //    a local-only diagnostic, never surfaced to a peer/relay).
 //
-// CLASSICAL FOR LAUNCH — the 0.4 wire is classical (Flint #116410); the hybrid-PQ suite is a named
+// CLASSICAL FOR LAUNCH — the 0.4 wire is classical; the hybrid-PQ suite is a named
 // upgrade that swaps here (pass a pq secret to buildJoinerResponse + carry joinerPqSigPublicKey) with no
 // consume-side change. Kept fetch-free/pure (buildJoinerResponseDeposit) so it is unit-testable and the
 // component injects the identities.

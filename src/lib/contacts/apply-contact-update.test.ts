@@ -66,7 +66,7 @@ test('emails maps primary→email and preserves the full list', () => {
   assert.deepEqual(next.emails, ['a@new.example', 'a@alt.example']);
 });
 
-test('phones maps primary→phone and preserves the full list (Fable 9.2: dedup keys on phone)', () => {
+test('phones maps primary→phone and preserves the full list (dedup keys on phone)', () => {
   const { next } = applyVerifiedContactUpdate(
     contact(),
     update({ changed_fields: ['phones'], delta: { phones: ['+15551234567', '+15559876543'] } }),
@@ -137,10 +137,10 @@ test('a field outside the allowlist throws field-not-allowed even if it reached 
   );
 });
 
-test('apply allowlist is the canonical set (method-grow #125128 added handles + urls)', () => {
-  // The canonical contact.update vocabulary (Archie D1 #115574 / Flint #115581; phones
-  // folded in per Fable 9.2 / spec §2 #115738; handles + urls grown together in the
-  // method-grow #125128). Flint's 0.4 verify allowlist is IDENTICAL — the cross-file
+test('apply allowlist is the canonical set (method-grow added handles + urls)', () => {
+  // The canonical contact.update vocabulary (phones
+  // folded in per spec §2; handles + urls grown together in the
+  // method-grow). The 0.4 verify allowlist is IDENTICAL — the cross-file
   // divergence-guard test below asserts equality now that they coexist on the branch.
   assert.deepEqual(
     [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
@@ -210,7 +210,7 @@ test('the caller record is never mutated (pure function)', () => {
   assert.equal(JSON.stringify(c), snapshot);
 });
 
-// ── Method-grow #125128: handles (MERGE) + urls (REPLACE) ────────────────────
+// ── Method-grow: handles (MERGE) + urls (REPLACE) ────────────────────
 // Home is contact_info (nested) — the channel home vCard writes and contactToEdge SURFACES,
 // so a revised handle actually reaches the peer's rendered card (not a store-but-never-show gap).
 
@@ -223,7 +223,7 @@ test('handles: a new handle writes into contact_info.handles (surfaces via conta
   assert.deepEqual((next.contact_info as Record<string, unknown>)?.handles, { signal: '@alice.99' });
 });
 
-test('handles MERGE: revising one handle preserves the others (data-loss guard, Flint #125132)', () => {
+test('handles MERGE: revising one handle preserves the others (data-loss guard)', () => {
   const c = contact({ contact_info: { handles: { signal: '@old', telegram: '@tg' } } });
   const { next } = applyVerifiedContactUpdate(
     c,
@@ -234,7 +234,7 @@ test('handles MERGE: revising one handle preserves the others (data-loss guard, 
   assert.deepEqual((next.contact_info as Record<string, unknown>).handles, { signal: '@new', telegram: '@tg' });
 });
 
-test("handles removal: value '' deletes that key, preserves the rest (Flint's sentinel, NOT null)", () => {
+test("handles removal: value '' deletes that key, preserves the rest (sentinel, NOT null)", () => {
   const c = contact({ contact_info: { handles: { signal: '@s', telegram: '@tg' } } });
   const { next } = applyVerifiedContactUpdate(
     c,
@@ -292,11 +292,11 @@ test('handles/urls apply is pure (caller contact_info not mutated)', () => {
   assert.equal(JSON.stringify(c), snapshot); // current record untouched (MERGE clones first)
 });
 
-// ── LOCKSTEP divergence-guard: apply allowlist ≡ Flint verify allowlist ──────
+// ── LOCKSTEP divergence-guard: apply allowlist ≡ verify allowlist ──────
 // The canonical invariant is verify ≡ apply. Each file declares its OWN Set (apply never imports
 // the verify FUNCTION — only the shared value constants), and THIS test is the guard that they never
-// drift. The method-grow grew BOTH together (#125128); if a future grow touches only one, this fails.
-test('apply allowlist ≡ Flint verify allowlist (no drift — the lockstep guard)', async () => {
+// drift. The method-grow grew BOTH together; if a future grow touches only one, this fails.
+test('apply allowlist ≡ verify allowlist (no drift — the lockstep guard)', async () => {
   const verify = await import('../trust/contact-update');
   assert.deepEqual(
     [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),

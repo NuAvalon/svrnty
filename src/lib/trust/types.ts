@@ -42,7 +42,7 @@ export interface TrustEdge {
   };
   /**
    * Owner-local: you confirmed this key is the person you mean.
-   * Prerequisite for Trust on this device. NEVER publish / PSI-sync (Apollo §2).
+   * Prerequisite for Trust on this device. NEVER publish / PSI-sync.
    */
   owner_verify?: {
     owner_verified_at: string;
@@ -68,7 +68,7 @@ export interface TrustEdge {
   distress_inbound?: boolean;
   /**
    * Fingerprints in YOUR book that this peer disclosed to you
-   * (fleet `visible()` ∩ book). Absent until Apollo fills it — glass never infers.
+   * (fleet `visible()` ∩ book). Absent until the fleet fills it — glass never infers.
    */
   disclosed_circle?: string[];
   /**
@@ -81,7 +81,7 @@ export interface TrustEdge {
    * Owner-local intent toward this peer: open visibility for trusted contacts.
    * Not a wire field. Combined with reciprocal trust + they_trust, this is
    * how a witnessed peer bond becomes visible on the glass.
-   * how Sally↔Joe becomes visible on the glass (Peter's spec).
+   * how Sally↔Joe becomes visible on the glass.
    */
   open_visibility?: boolean;
   // Cairn bridge

@@ -4,7 +4,7 @@ import path from 'path';
 // The 0.12 "import the gray sea" demo-arc flow (T11). Drives the REAL app end-to-end:
 // create identity → import a multi-contact vCard → dedup preview → confirm-gate → re-import merges.
 // This is the standing verification for ImportContactsDialog (React not checkable in-container).
-// Multi-contact fixture is deliberate: it exercises Athena's keyless-fingerprint fix (8bb8eef) —
+// Multi-contact fixture is deliberate: it exercises the keyless-fingerprint fix —
 // with the old fingerprint='' the 2nd gray would ConstraintError on the UNIQUE index.
 
 const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 distinct grays (name/phone/email)
@@ -41,7 +41,7 @@ test('import the gray sea: vCard → grays → dedup preview → confirm; re-imp
   await page.getByRole('button', { name: /^Done$/ }).click();
 
   // Re-import the SAME .vcf → the dedup engine catches all 3 as merges (idempotent), 0 new.
-  // Proves: multi-gray stored without collision (Athena's fix) + exact-key dedup end-to-end.
+  // Proves: multi-gray stored without collision + exact-key dedup end-to-end.
   await page.getByTestId('import-contacts-trigger').click();
   await page.getByTestId('vcf-input').setInputFiles(VCF);
   await expect(page.getByTestId('merge-count')).toHaveText('3');

@@ -35,7 +35,7 @@ const ALPHABET = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const CODE_LENGTH = 6;
 const TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — the Grow card's share window. Aligns with the
 // code's ~7d acceptance window (client-store R1_ACCEPTANCE_WINDOW_MS) so a friend opening a shared link
-// hours/days later still retrieves the card (multi-use viral Grow; Peter #125734). The card is opaque
+// hours/days later still retrieves the card (multi-use viral Grow). The card is opaque
 // (AES-GCM, #key in the URL fragment), so a longer window adds no server-readable exposure.
 const MAX_PAYLOAD_BYTES = 64 * 1024; // 64KB
 

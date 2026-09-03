@@ -5,7 +5,7 @@
 // Exits non-zero on the first failed assertion. Pure logic — no browser, no DOM
 // (WebCrypto + Argon2id + Shamir run fine under Node 22).
 //
-// Covers, per Athena's G3 harness spec + Flint's co-review crux:
+// Covers, per the G3 harness spec + co-review crux:
 //   1. pack → unpack roundtrip (contents incl. safe word survive); export is v4
 //   2. cleartext header is crypto-params ONLY (no name / fingerprint / safe word)
 //   3. tamper-evidence: a flipped header byte AND a flipped body byte both fail

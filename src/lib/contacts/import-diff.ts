@@ -1,8 +1,8 @@
 // src/lib/contacts/import-diff.ts
-// Per-field provenance for the 0.12 import merge preview (chaos#32 fix B — Athena, Archie #116148).
+// Per-field provenance for the 0.12 import merge preview.
 // Turns "N merge into existing" into a real DIFF: what channel MATCHED (why the two clustered) and
 // what channels the merge would ADD to the target — so a channel injected onto a TRUSTED contact is
-// VISIBLE, not hidden behind a count (Flint chaos#32 MEDIUM trust-injection).
+// VISIBLE, not hidden behind a count (MEDIUM trust-injection).
 //
 // Truthfulness is the whole point. `added` is computed as (survivor − target) on RAW channel values,
 // off livingWinsMerge's OWN output — because livingWinsMerge unions channels by raw value (unionArr),
@@ -13,7 +13,7 @@
 //
 // Pure + read-only. Reused by BOTH the auto-merge rows and the review-candidate rows in
 // ImportContactsDialog, and independent of the DedupPlan item shape (it operates on edges), so it does
-// not collide with Apollo's (A) routing changes in import-dedup.ts.
+// not collide with the (A) routing changes in import-dedup.ts.
 
 import type { TrustEdge } from '@/lib/trust/types';
 import { edgeChannels, dedupKey, livingWinsMerge } from './dedup';

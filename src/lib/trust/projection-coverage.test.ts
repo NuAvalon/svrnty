@@ -1,10 +1,10 @@
 // src/lib/trust/projection-coverage.test.ts
 // Run: npx tsx --test src/lib/trust/projection-coverage.test.ts
 //
-// CLASS-KILLER (Peter's rider, #118456). A "view gap" is a field the store PERSISTS
+// CLASS-KILLER. A "view gap" is a field the store PERSISTS
 // but the record→edge projection silently DROPS — invisible in the UI, no error, no
 // crash. This class bit us twice: pq_* keys (the HNDL hole) and contact_info phones
-// (Chaos#40). Both were "a field vanishes at the record→edge boundary."
+// Both were "a field vanishes at the record→edge boundary."
 //
 // This test makes that gap IMPOSSIBLE to introduce silently: it asserts every field a
 // fully-populated ContactRecord carries either (a) surfaces in the projected TrustEdge,

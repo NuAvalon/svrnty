@@ -276,7 +276,7 @@ export function SoverentityFrontend({
   const [fullBackupConfirm, setFullBackupConfirm] = useState('');
   const [fullBackupLoading, setFullBackupLoading] = useState(false);
 
-  // CUR-1 — revise contact method + shared-with send (UI; Flint owns wire)
+  // CUR-1 — revise contact method + shared-with send (UI)
   const [reviseKind, setReviseKind] = useState<MethodKind | null>(null);
   const [showShareIdentity, setShowShareIdentity] = useState(false);
   const [sharePackage, setSharePackage] = useState('');
@@ -470,7 +470,7 @@ export function SoverentityFrontend({
     setRecoveryAcked(false);
   };
 
-  // (§1, Peter #116236) Email-verification + OTP handlers removed. There is no server account to
+  // Email-verification + OTP handlers removed. There is no server account to
   // verify against, and any email→identity path is a custodian backdoor (email-verify today implies
   // email-recovery tomorrow → whoever controls the inbox controls the identity). Recovery is SOCIAL
   // (Shamir guardians + veto window), never inbox-based; the identity is self-certifying (key possession).
@@ -575,7 +575,7 @@ export function SoverentityFrontend({
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
-      // Hypatia DO-SECOND honest error (seed-only path).
+      // DO-SECOND honest error (seed-only path).
       if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
         setRestoreError("That recovery code doesn't match this backup.");
       } else {
@@ -630,7 +630,7 @@ export function SoverentityFrontend({
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
 
-          // L8: when a KeyVault is present, soul-seed is the second factor (CURSOR.md).
+          // L8: when a KeyVault is present, soul-seed is the second factor.
           if (backup.vault) {
             if (!soulSeedPhrase.trim()) {
               setRestoreError('Enter your soul-seed recovery phrase (second factor).');
@@ -792,7 +792,7 @@ export function SoverentityFrontend({
         // PERSIST to IndexedDB so the restored identity survives a reload. Before this,
         // "Open Vault" only hydrated the in-memory React state below and the identity was
         // LOST on the next load — a silent data-safety bug contradicting "restore … on
-        // THIS DEVICE / pick up where you left off" (Apollo #125944, fleet-confirmed
+        // THIS DEVICE / pick up where you left off" (fleet-confirmed
         // launch-blocker). The adapter binds the private key to the fingerprint + inits
         // the session key for at-rest equivalence, mirroring genesis + the recovery-code
         // path (restoreIdentityFromSeedVault). Runs BEFORE setIdentity so a vault that
@@ -828,7 +828,7 @@ export function SoverentityFrontend({
   };
 
   // --- Gate: Seed-restore contacts-honesty interstitial (UNMISSABLE, no CTA) ---
-  // Spec: CURSOR_QUEUE.md DO-SECOND POST-SUCCESS INTERSTITIAL (d892bfa definitive no-CTA).
+  // Spec DO-SECOND POST-SUCCESS INTERSTITIAL (d892bfa definitive no-CTA).
   if (seedRestoreInterstitial) {
     return (
       <SeedRestoreInterstitial
@@ -1571,7 +1571,7 @@ export function SoverentityFrontend({
   }
 
   // --- Identity View ---
-  // (§1, Peter #116236; badge copy ruled by Hypatia #116414) A sovereign identity is SELF-CERTIFYING:
+  // A sovereign identity is SELF-CERTIFYING:
   // the vault (device + Argon2id passphrase) and the local keys ARE the identity — the fingerprint
   // binds the key, the key IS the proof, attested by no one. There is no verified/unverified model to
   // be in: the identity is complete by construction. The label claims only what the architecture
@@ -1596,10 +1596,10 @@ export function SoverentityFrontend({
     }
   };
 
-  // ── Method-grow #125128: real SEND of a revised contact method to selected contacts. ──
-  // Wires the dialog to Flint's sendContactUpdate (crypto lives in his module; called from here).
+  // ── Method-grow: real SEND of a revised contact method to selected contacts. ──
+  // Wires the dialog to sendContactUpdate (crypto lives in that module; called from here).
   // The owner signs from the unlocked vault; card_version is the monotonic replay floor — bumped +
-  // PERSISTED BEFORE the deposit (Flint #125159 crash-safety: a crash after deposit but before persist
+  // PERSISTED BEFORE the deposit (crash-safety: a crash after deposit but before persist
   // must never re-use a version, or the next edit stale-rejects and is silently lost). epoch=0 until
   // key-rotation. Recipient poll-loop (ContactManagement) applies + repaints live — this closes it.
   const handleContactMethodSend: ContactMethodSendFn = async (req) => {
@@ -1627,17 +1627,17 @@ export function SoverentityFrontend({
     const fresh = (await loadIdentity(fp)) || identity;
     const nextVersion = (typeof fresh?.card_version === 'number' ? fresh.card_version : 0) + 1;
     const bumped = { ...fresh, card_version: nextVersion };
-    await storeIdentity(fp, bumped); // persist BEFORE the deposit — crash-safety (Flint #125159)
+    await storeIdentity(fp, bumped); // persist BEFORE the deposit — crash-safety
     setIdentity(bumped);
 
     const owner = {
       fingerprint: fp,
-      epoch: 0, // no key-rotation yet — recipients hold the card at epoch 0 (Flint-confirmed)
+      epoch: 0, // no key-rotation yet — recipients hold the card at epoch 0
       privateKeyArmored: key.privateKey,
       passphrase: key.passphrase,
       pqSigningSecretKey,
     };
-    // Map chosen recipients → {fingerprint, pubkey}. A missing key is passed as '' so Flint's composer
+    // Map chosen recipients → {fingerprint, pubkey}. A missing key is passed as '' so the composer
     // SKIPS it (reason: no-public-key) — never a downgraded/cleartext send.
     const byFp = new Map(audience.map((c) => [c.fingerprint, c]));
     const recipients = req.recipientFingerprints.map((rfp) => ({

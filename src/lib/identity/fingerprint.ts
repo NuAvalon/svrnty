@@ -1,6 +1,6 @@
 // src/lib/identity/fingerprint.ts
 //
-// Shared fingerprint↔key binding verification — C2 / Canon Invariant-1 (Flint KB#85781).
+// Shared fingerprint↔key binding verification — C2 / Canon Invariant-1.
 //
 // A fingerprint is a *commitment* to a public key: it is minted as
 // getFingerprint(public_key) (see browser-identity.ts / core.ts). Any path that imports a

@@ -1,14 +1,14 @@
 // src/lib/contacts/method-send-delta.ts
-// Method-grow #125128 — the SEND-side delta builder: map ONE revised contact method (kind, value)
-// onto the contact.update `delta` the owner signs + sends (Flint's sendContactUpdate). Lives here (not
+// Method-grow — the SEND-side delta builder: map ONE revised contact method (kind, value)
+// onto the contact.update `delta` the owner signs + sends (sendContactUpdate). Lives here (not
 // in the crypto) because it is UI-shaped: the dialog revises one method and we translate that edit into
-// the wire delta. Flint's boundary (#125143): "buildDelta stays in the dialog — it needs the card."
+// the wire delta. buildDelta stays in the dialog — it needs the card.
 //
 // TWO delta shapes, matching the apply-side (apply-contact-update.ts FIELD_MAP):
 //   • MERGE fields — the messaging-app handles map. A revise carries ONLY the changed sub-key so apply
-//     merges it in without wiping the others (data-loss guard, Flint #125132). Clearing a handle sends
+//     merges it in without wiping the others (data-loss guard). Clearing a handle sends
 //     the EMPTY STRING '' as the delete sentinel — NOT null (canonicalize forbids null in the signed
-//     form, so a null could never be signed; Flint #125153).
+//     form, so a null could never be signed).
 //   • REPLACE fields — email / phone / website(url) are flat lists the send-UI always sends whole.
 //
 // The curated handle-key set is the SHARED CONTACT_HANDLE_KEYS (single source with verify + apply —

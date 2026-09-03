@@ -1,14 +1,14 @@
 'use client';
 
 /**
- * Join by link — Component A of the in-page join (Apollo camera_join_spec.md, Peter #126016).
+ * Join by link — Component A of the in-page join.
  *
  * Paste an invite link someone shared → parse it through the ONE security boundary
  * (parseInviteUrl, INV-4) → mount the SAME <JoinerCeremony> INLINE (no router nav → also
  * sidesteps the /c/ post-join session-lock T2.6). This is the manual-entry counterpart to
  * opening a /c/ link, and the permanent fallback for when a camera scan isn't available.
  *
- * INVARIANTS (Archie ⚡ / Apollo ☀ / Flint 🔒):
+ * INVARIANTS:
  *  INV-1  one join path — we ONLY mount JoinerCeremony; zero parallel join/verify/trust logic.
  *  INV-2  perception ≠ trust — parsing confers no trust; the human COMMIT inside the ceremony
  *         is the sole trust-conferring act. We never auto-commit.

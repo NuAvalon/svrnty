@@ -3,7 +3,7 @@
 // Next.js plumbing only: it reads its OWN URL and hands off to the joiner ceremony. The
 // parse goes through the SHARED parseInviteUrl boundary (INV-4) — the same one the in-page
 // paste field (JoinByCode) and the QR camera use — so route/button/camera never diverge
-// (one parser, Flint gate-3 as code). The fragment (key) never reaches the server: the
+// (one parser, gate-3 as code). The fragment (key) never reaches the server: the
 // whole exchange decrypts locally. All ceremony/import logic lives in JoinerCeremony.
 "use client";
 

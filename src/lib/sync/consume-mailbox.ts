@@ -7,12 +7,12 @@
 // consume side (joint design §3). Nothing here is smart about the social graph — the relay never was.
 //
 // SEAMS (deliberately injected, not hardcoded):
-//   • decrypt — the E2E crypto is Flint's lane. The relay stores an OPAQUE blob; only the recipient
+//   • decrypt — the E2E crypto is its own lane. The relay stores an OPAQUE blob; only the recipient
 //     decrypts it to a SignedContactUpdate. Injected so the pipeline is crypto-agnostic + testable,
 //     and so the classical↔hybrid-PQ choice swaps with ZERO caller change (see contact-update-envelope.ts).
 //   • store — lookup(fingerprint) + persist(id, updates). Injected so the pipeline is IndexedDB-free
 //     and unit-testable; the demo passes a client-store adapter.
-//   • emit — Apollo's live-beat seam (PR#32 contact-events.ts, not yet on main). Called after a
+//   • emit — the live-beat seam (contact-events.ts). Called after a
 //     successful apply so the open book repaints live (source:'broadcast' honesty). Injected so this
 //     module never hard-depends on the (unmerged) emitter.
 //
@@ -59,7 +59,7 @@ export interface ContactStore {
   persist(id: string, next: StoredContact): Promise<void>;
 }
 
-/** Emitted after a successful apply so the live book repaints (Apollo's reason:'live-apply' seam). */
+/** Emitted after a successful apply so the live book repaints (reason:'live-apply' seam). */
 export interface LiveApplyEvent {
   id: string;
   fingerprint: string;
@@ -67,7 +67,7 @@ export interface LiveApplyEvent {
 }
 
 /**
- * R1 RETURN-CHANNEL (KNOWN tier) — the pending-joiner routing seam (Flint #125392, pinned by
+ * R1 RETURN-CHANNEL (KNOWN tier) — the pending-joiner routing seam (pinned by
  * joiner-response.e2e.test.ts). The mailbox is shared by TWO inbound message types encrypted to the
  * owner with the SAME openpgp envelope: contact.updates AND joiner-responses. They CANNOT be told apart
  * by "which decrypt returned non-null" — the contact-update decryptor DECRYPTS a joiner-response fine
@@ -95,7 +95,7 @@ export interface ConsumeDeps {
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
-  emit?: (event: LiveApplyEvent) => void; // Apollo live-beat seam
+  emit?: (event: LiveApplyEvent) => void; // live-beat seam
   now?: () => string; // ISO timestamp source (inject for determinism)
 }
 
@@ -196,12 +196,12 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
-  // R1 RETURN-CHANNEL ROUTING (Flint #125392, pinned by joiner-response.e2e.test.ts SEAM): try the
+  // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
   // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
   // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;
   // a joiner-response verifies to a PendingJoiner. Routing by decrypt-null would silently LOSE every
   // joiner-response: it decrypts NON-null via the contact-update decryptor below, then drops on the
-  // missing `envelope.fingerprint`. The two verifies are mutually exclusive (proven E2E 9358104), so
+  // missing `envelope.fingerprint`. The two verifies are mutually exclusive (proven E2E), so
   // trying joiner-verify first can never eat a contact-update.
   if (deps.joiner) {
     let pj: PendingJoiner | null;

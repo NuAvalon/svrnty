@@ -1,20 +1,20 @@
 // src/lib/contacts/contact-events.ts
-// Live-beat reactivity primitive (svrnty demo-spine beat-4 — Apollo).
+// Live-beat reactivity primitive (svrnty demo-spine beat-4).
 //
 // Publishes contact-change events to same-page subscribers AND across tabs/contexts via BroadcastChannel.
 // The book (ContactManagement) subscribes → re-project the changed edge(s); the return-channel consume→apply
 // caller emits reason:'live-apply' so the render layer resets the last_interaction indicator on the incoming update.
 //
-// HONESTY GATE (Archie #116323 + Hypatia #116326, converged #116278): `source` distinguishes a TRUE live-push
+// HONESTY GATE: `source` distinguishes a TRUE live-push
 // ('broadcast' = arrived from ANOTHER tab/context via BroadcastChannel — same page instance, NO reload) from a
 // 'local' write in this page. Beat-4 asserts LIVE only on a 'broadcast'-sourced repaint, so the demo can never
 // claim "Alice self-updated live" when it actually pulled-to-refresh. BroadcastChannel does NOT echo to its own
 // sender, so a context only ever sees OTHER contexts' events as 'broadcast' — the live signal can't be faked locally.
 //
-// SEAM (gated on Athena's caller + testid): (1) call emitContactChange() at the contacts-store write points in
-// @/lib/identity/client-store (addContact/updateContact/removeContact) so every writer — UI, import, and her
+// SEAM (gated on the caller + testid): (1) call emitContactChange() at the contacts-store write points in
+// @/lib/identity/client-store (addContact/updateContact/removeContact) so every writer — UI, import, and the
 // caller — drives reactivity; (2) ContactManagement subscribes and re-reads/re-projects; (3) the caller emits
-// reason:'live-apply' after its foldLivingWins apply. Athena owns the beat-4 live-signal testid keyed off `source`.
+// reason:'live-apply' after its foldLivingWins apply. The beat-4 live-signal testid keys off `source`.
 
 export type ContactChangeReason = 'ui-edit' | 'import' | 'live-apply' | 'delete';
 

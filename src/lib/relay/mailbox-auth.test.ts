@@ -3,7 +3,7 @@
 // wrong-owner, stale-replay, tampered signature/fingerprint/key, poll-auth replayed as ack, and a
 // tampered ack id-list. Uses REAL openpgp identities (same keygen as core.ts).
 //
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test mailbox-auth.test.ts
+// Run: npx tsx --test mailbox-auth.test.ts
 
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
