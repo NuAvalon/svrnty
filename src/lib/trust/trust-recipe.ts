@@ -36,7 +36,7 @@ export const TRUST_RECIPE_COPY = {
   /** Site-bottom manifesto (the thing we must never lose). */
   manifestoWord: 'SVRNTY',
   manifestoKeep: 'We must never lose it, and we must never give it away.',
-  manifestoAxes: 'post-quantum · local-first · social-recovery',
+  manifestoAxes: 'post-quantum-ready · local-first · social-recovery-coming',
   manifestoCloser: 'you are not a product',
   decay:
     "If you don't stay in touch, trust can fade. That's a nudge to re-meet, not a score.",
