@@ -8,7 +8,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { DISTRESS_COPY, sendDistress } from '@/lib/trust/distress';
 import type { TrustEdge } from '@/lib/trust/types';
 import { loadShards } from '@/lib/identity/client-store';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
@@ -127,7 +126,7 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
                   ['rotate', TRUST_RECIPE_COPY.recoveryRotate],
                   ['seed', TRUST_RECIPE_COPY.recoverySeed],
                   ['password', TRUST_RECIPE_COPY.recoveryPassword],
-                  ['distress', 'Distress'],
+                  ['distress', 'Distress — coming'],
                 ] as const
               ).map(([id, label]) => (
                 <button
@@ -258,10 +257,10 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
         {panel === 'distress' && (
           <>
             <h2 style={{ margin: '8px 0 12px', fontSize: 20, fontWeight: 400, color: E.text }}>
-              Distress
+              Distress signal — coming
             </h2>
             <p style={{ margin: 0, fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-              {DISTRESS_COPY.pickHint} {DISTRESS_COPY.silent}
+              {"This will let you quietly reach the people you trust to come to you — in person, offline — when you can't safely say why. It isn't live yet, so we've turned it off rather than let it fail silently. Pressing it now would do nothing, and we won't pretend otherwise."}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 16 }}>
               {guardians.length === 0 && (
@@ -288,15 +287,11 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
             </div>
             <button
               type="button"
-              disabled={picked.size === 0}
-              onClick={() => {
-                const fps = Array.from(picked);
-                onClose();
-                void sendDistress({ recipientFingerprints: fps });
-              }}
-              style={{ ...itemBtn(true), marginTop: 18, opacity: picked.size ? 1 : 0.4 }}
+              disabled={true}
+              aria-disabled={true}
+              style={{ ...itemBtn(true), marginTop: 18, opacity: 0.4, cursor: 'not-allowed' }}
             >
-              Distress
+              Coming
             </button>
           </>
         )}
