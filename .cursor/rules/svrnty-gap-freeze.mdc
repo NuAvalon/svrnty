@@ -1,12 +1,12 @@
 ---
-description: svrnty — UNSUPERVISED GAP freeze (fleet away ~4-5 days); crypto/claim surfaces wait for review
+description: svrnty — build boundaries; crypto/claim surfaces require agent review before merge
 alwaysApply: true
 ---
-# ⏸️ GAP FREEZE — the fleet is away (~4-5 days)
+# 🚧 BUILD BOUNDARIES — what needs agent review
 
-You may build **render-glass UI autonomously**. But anything that touches a lock or makes a security claim **waits for agent review on our return** — do NOT expect it to auto-merge while we're dark. A slipped feature beats an unreviewed crypto change shipping unsupervised. Trace the chain: unsupervised + crypto-touch + auto-merge = the one way this launch hurts someone.
+You may build **render-glass UI autonomously**. But anything that touches a lock or makes a security claim **requires agent review before merge** — open a PR for the team; do not merge it yourself. A slipped feature beats an unreviewed crypto change. Trace the chain: crypto-touch + unreviewed-merge = the one way this hurts someone.
 
-## 🚫 DO-NOT-TOUCH — a PR modifying any of these HOLDS for agent review (no auto-merge during the gap):
+## 🚫 DO-NOT-TOUCH — a PR modifying any of these requires agent review before merge:
 - `src/lib/crypto/*` — recovery.ts, kdf.ts, pq.ts, encrypted-backup.ts, sign-envelope, message-signing, did:key
 - `src/lib/sync/vault.ts` — the `.svrnty` FORMAT: packVault / unpackVault / extractRecoveryVault, MAGIC bytes, AAD, BODY_LEN layout, the recovery envelope
 - `src/lib/identity/*` — key generation / storage
@@ -23,4 +23,4 @@ Any copy that makes a **security / recovery / trust CLAIM** — "you need X to r
 ## 🔒 Data-privacy invariant (for tag / group features — Apollo §2)
 Tags / blocked-flags / group-cluster-labels are **device-local**; they must NEVER serialize onto any **publish / PSI-sync / export** payload. Assert with a **negative test**. (KB#87571)
 
-See `.cursor/rules/svrnty.mdc` for the standing render-glass boundary + invariants, and `/CURSOR_QUEUE.md` for the gap build priority.
+See `.cursor/rules/svrnty.mdc` for the standing render-glass boundary + invariants, and `/CURSOR_QUEUE.md` for the build priority.
