@@ -434,8 +434,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           <div>
             <h2 style={headingStyle}>{peer.name} shared their card</h2>
             <p style={subStyle}>
-              An identity card reached your device through the one-time relay. Nothing was
-              sent to a server.
+              An identity card reached your device through the relay, encrypted — no server could read it.
             </p>
             <div style={cardBoxStyle}>
               <div style={{ fontSize: 10, color: C.faint, letterSpacing: 1, marginBottom: 4 }}>FINGERPRINT</div>

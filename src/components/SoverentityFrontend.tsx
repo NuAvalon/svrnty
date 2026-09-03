@@ -974,8 +974,8 @@ export function SoverentityFrontend({
             </div>
 
             <p style={s.footer}>
-              ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
-              <br />Post-quantum. Local-first. Sovereign.
+              Ed25519 signing · Curve25519 encryption · post-quantum-ready (ML-DSA-87 + ML-KEM-1024).
+              <br />Local-first. Sovereign.
             </p>
           </div>
         </div>
@@ -1006,7 +1006,7 @@ export function SoverentityFrontend({
             <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateStart}</h2>
             <p style={s.heroSub}>
               A card, not an account. Generate a sovereign keypair. Your keys never leave your device.
-              Post-quantum encryption. No server can read your data. No tracking.
+              Post-quantum-ready encryption. No server can read your data. No tracking.
             </p>
           </div>
 
@@ -1063,7 +1063,7 @@ export function SoverentityFrontend({
           </button>
 
           <p style={s.footer}>
-            ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
+            Ed25519 signing · Curve25519 encryption · post-quantum-ready (ML-DSA-87 + ML-KEM-1024).
             <br />Your keys. Your data. Your sovereignty.
           </p>
         </div>

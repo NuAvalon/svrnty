@@ -258,7 +258,7 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
         {state.step === 'card' && (
           <StepNarration
             heading="They receive your card"
-            body="On their device your card appears — name, fingerprint, public key. Nothing is sent to a server; it travels through the one-time relay you just created."
+            body="On their device, your card appears — name, fingerprint, public key. It reached them through the relay, encrypted; no server could read it."
             cta="They've opened it →"
             onAdvance={advanceMiddle}
           />
