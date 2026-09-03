@@ -5,6 +5,8 @@
 // C2 / Invariant-1 (Flint KB#85781): the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+// Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
+import type { VaultContents } from '../sync/vault';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -686,6 +688,78 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
 
   await setActiveFingerprint(fingerprint);
   return fingerprint;
+}
+
+/**
+ * Persist an already-decrypted .svrnty VaultContents to IndexedDB — the
+ * restore-onto-this-device / daily passphrase-unlock path. Converges to the SAME
+ * at-rest state as genesis (browser-identity.ts) and the recovery-code path
+ * (restoreIdentityFromSeedVault), so a passphrase restore STICKS across reload
+ * instead of only hydrating in-memory state (the #125944 data-safety launch-blocker:
+ * before this, "Open Vault" set React state but wrote nothing → reload = identity lost).
+ *
+ * SECURITY (Flint #126103 — persist SAFELY, not just persist):
+ *  • Self-guarding like addContact: the identity's public_key MUST bind to `fingerprint`
+ *    (fingerprintMatchesKey) — a .svrnty file is untrusted-importable, so refuse to
+ *    persist a forged identity whose fingerprint does not match its key.
+ *  • Contacts go through addContact, inheriting its fail-closed fingerprint↔key binding
+ *    (never persist a forged contact) + keyless handling + fingerprint-idempotency.
+ *  • AT-REST EQUIVALENCE: the caller MUST initSessionKey() first so keys/pq_keys/vault
+ *    are encrypted at rest exactly as genesis stores them (else the plaintext fallback
+ *    would be a weaker at-rest form on the restore path).
+ * The caller (vaultPassphraseRestore adapter) additionally binds the PRIVATE key to the
+ * fingerprint and passes the DERIVED (not merely claimed) fingerprint as `fingerprint`.
+ */
+export async function importVaultContents(
+  contents: VaultContents,
+  fingerprint: string,
+): Promise<string> {
+  const fp = (fingerprint || contents.identity?.identity?.fingerprint || '').trim();
+  if (!fp) throw new Error('Invalid vault: no fingerprint');
+
+  // Fail-closed identity binding (mirrors addContact): refuse a forged identity before
+  // any write, so a rejected vault leaves NO partial state.
+  const identityPub = contents.identity?.identity?.public_key || '';
+  if (!(await fingerprintMatchesKey(fp, identityPub))) {
+    throw new Error(
+      'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
+    );
+  }
+
+  await storeIdentity(fp, contents.identity);
+
+  const classical = contents.keys?.classical;
+  if (classical?.privateKey) {
+    await storeKey(fp, classical.privateKey, classical.passphrase);
+  }
+  if (contents.keys?.pq) {
+    await storePQKeys(fp, contents.keys.pq);
+  }
+  // v4 dual-envelope recovery KeyVault (Shamir metadata) — the same store genesis and
+  // the recovery-code path write via storeVault. Absent on v3 → skipped.
+  if (contents.recovery) {
+    await storeVault(fp, contents.recovery);
+  }
+
+  // Contacts / trust network ride the encrypted body as a raw ContactRecord[]
+  // (VaultExportDialog stashes the exportAll contacts on trustGraph.contacts). Persist
+  // each via addContact so it inherits the fail-closed binding check; the spread carries
+  // the security-relevant epoch/version/pq fields — only the local id/added_at re-mint.
+  // A single unbindable/malformed contact is skipped (fail-closed) rather than aborting
+  // the whole restore: the identity + keys are the launch-blocker, not one bad contact.
+  const contacts = (contents.trustGraph as unknown as { contacts?: any[] } | null)?.contacts;
+  if (Array.isArray(contacts)) {
+    for (const contact of contacts) {
+      try {
+        await addContact(fp, contact);
+      } catch (e) {
+        console.warn('[restore] skipped a contact that failed to persist:', (e as Error)?.message);
+      }
+    }
+  }
+
+  await setActiveFingerprint(fp);
+  return fp;
 }
 
 // ── Check if identity exists (for UI flow) ──────────────────────

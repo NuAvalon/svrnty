@@ -788,6 +788,18 @@ export function SoverentityFrontend({
         // may be shown here as a post-decrypt confirmation — the honest place for
         // the recognition ritual, unforgeable because it required the key. (Pre-
         // passphrase display was removed in v3; a cleartext safe word is fakeable.)
+
+        // PERSIST to IndexedDB so the restored identity survives a reload. Before this,
+        // "Open Vault" only hydrated the in-memory React state below and the identity was
+        // LOST on the next load — a silent data-safety bug contradicting "restore … on
+        // THIS DEVICE / pick up where you left off" (Apollo #125944, fleet-confirmed
+        // launch-blocker). The adapter binds the private key to the fingerprint + inits
+        // the session key for at-rest equivalence, mirroring genesis + the recovery-code
+        // path (restoreIdentityFromSeedVault). Runs BEFORE setIdentity so a vault that
+        // fails its integrity check throws here and never reaches the main surface.
+        const { restoreIdentityFromVault } = await import('@/components/recovery/vaultPassphraseRestore');
+        await restoreIdentityFromVault(contents, vaultPassphrase);
+
         setIdentity(contents.identity);
         onIdentityUpdate?.(contents.identity);
         onVaultRestore?.(contents);
