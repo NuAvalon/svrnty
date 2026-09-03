@@ -1,34 +1,29 @@
 // app/c/[code]/page.tsx
 // Landing route for shortcode relay links (svrnty.is/c/{code}#{key}).
-// Next.js plumbing only: read the code from the path and the AES key from the URL
-// fragment, then hand off to the joiner ceremony. The fragment (key) never reaches the
-// server — the whole exchange decrypts locally. All the ceremony/import logic lives in
-// JoinerCeremony (mirror of the initiator's Ceremony component — one impl, not two).
+// Next.js plumbing only: it reads its OWN URL and hands off to the joiner ceremony. The
+// parse goes through the SHARED parseInviteUrl boundary (INV-4) — the same one the in-page
+// paste field (JoinByCode) and the QR camera use — so route/button/camera never diverge
+// (one parser, Flint gate-3 as code). The fragment (key) never reaches the server: the
+// whole exchange decrypts locally. All ceremony/import logic lives in JoinerCeremony.
 "use client";
 
 import { useEffect, useState } from 'react';
 import { JoinerCeremony } from '@/components/JoinerCeremony';
+import { parseInviteUrl, type ParsedInvite } from '@/lib/invite/parseInviteUrl';
 
 export default function RelayCeremonyPage({ params }: { params: Promise<{ code: string }> }) {
-  const [code, setCode] = useState<string>('');
-  const [keyFragment, setKeyFragment] = useState<string | null>(null);
+  const [invite, setInvite] = useState<ParsedInvite | null>(null);
   const [ready, setReady] = useState(false);
-  const [missingKey, setMissingKey] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { code: resolved } = await params;
+      // Resolve the route promise (Next async params) before touching window.
+      await params;
       if (cancelled) return;
-      setCode(resolved);
-      // The key lives only in the URL fragment — never sent to the server.
-      const hash = window.location.hash;
-      if (!hash || hash.length < 2) {
-        setMissingKey(true);
-        setReady(true);
-        return;
-      }
-      setKeyFragment(hash.slice(1));
+      // ONE parser: the route validates its own full URL through the shared boundary.
+      // The key lives only in the URL fragment — parseInviteUrl reads it, never logs it.
+      setInvite(parseInviteUrl(window.location.href));
       setReady(true);
     })();
     return () => {
@@ -40,7 +35,7 @@ export default function RelayCeremonyPage({ params }: { params: Promise<{ code: 
     return <Centered>Opening the link…</Centered>;
   }
 
-  if (missingKey || !keyFragment) {
+  if (!invite) {
     return (
       <Centered>
         <span style={{ color: '#ef4444' }}>Missing decryption key.</span> The link may be
@@ -50,7 +45,7 @@ export default function RelayCeremonyPage({ params }: { params: Promise<{ code: 
     );
   }
 
-  return <JoinerCeremony code={code} keyFragment={keyFragment} />;
+  return <JoinerCeremony code={invite.code} keyFragment={invite.keyFragment} />;
 }
 
 function Centered({ children }: { children: React.ReactNode }) {

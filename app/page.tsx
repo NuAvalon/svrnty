@@ -8,6 +8,7 @@ import { TrustMap } from '@/components/TrustMap';
 import { HelpGuide } from '@/components/HelpGuide';
 import { GrowSheet } from '@/components/GrowSheet';
 import { RecoverySheet } from '@/components/RecoverySheet';
+import { JoinByCode } from '@/components/JoinByCode';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
@@ -68,6 +69,7 @@ export default function Home() {
   } | null>(null);
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [joinOpen, setJoinOpen] = useState(false);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -486,6 +488,24 @@ export default function Home() {
             </button>
             <button
               type="button"
+              onClick={() => setJoinOpen(true)}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: E.accent,
+                background: 'transparent',
+                border: `1px solid ${E.borderLit}`,
+                borderRadius: 999,
+                padding: '6px 12px',
+                cursor: 'pointer',
+              }}
+            >
+              Join
+            </button>
+            <button
+              type="button"
               onClick={() => setRecoveryOpen(true)}
               style={{
                 fontFamily: E.fontSans,
@@ -737,6 +757,13 @@ export default function Home() {
       {identity && (
         <>
         <GrowSheet open={growOpen} onClose={() => setGrowOpen(false)} identity={identity} />
+        <JoinByCode
+          open={joinOpen}
+          onClose={() => {
+            setJoinOpen(false);
+            void refreshContacts();
+          }}
+        />
         <RecoverySheet
           open={recoveryOpen}
           onClose={() => setRecoveryOpen(false)}
