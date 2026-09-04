@@ -3,10 +3,10 @@
 /**
  * Join by link — Component A of the in-page join.
  *
- * Paste an invite link someone shared → parse it through the ONE security boundary
- * (parseInviteUrl, INV-4) → mount the SAME <JoinerCeremony> INLINE (no router nav → also
- * sidesteps the /c/ post-join session-lock T2.6). This is the manual-entry counterpart to
- * opening a /c/ link, and the permanent fallback for when a camera scan isn't available.
+ * Scan an invite QR (ScanToJoin) or paste an invite link → parse it through the ONE
+ * security boundary (parseInviteUrl, INV-4) → mount the SAME <JoinerCeremony> INLINE
+ * (no router nav → also sidesteps the /c/ post-join session-lock T2.6). Paste is the
+ * permanent fallback for when a camera scan isn't available.
  *
  * INVARIANTS:
  *  INV-1  one join path — we ONLY mount JoinerCeremony; zero parallel join/verify/trust logic.
@@ -15,12 +15,13 @@
  *  INV-4  parseInviteUrl is the security boundary — total + host-pinned; rejects BEFORE mount.
  *  INV-5  keyFragment is key material — this component NEVER logs / echoes the raw input or the
  *         parsed keyFragment. The error text is a FIXED string (no interpolation of user input),
- *         so a pasted full URL can never leak its #fragment into the DOM, a toast, or telemetry.
+ *         so a pasted or scanned full URL can never leak its #fragment into the DOM, a toast, or telemetry.
  *  INV-6  no silent loss — an unparseable paste surfaces an explicit, honest inline error.
  */
 
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { JoinerCeremony } from '@/components/JoinerCeremony';
+import { ScanToJoin } from '@/components/ScanToJoin';
 import { parseInviteUrl, type ParsedInvite } from '@/lib/invite/parseInviteUrl';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -34,17 +35,25 @@ export function JoinByCode({ open, onClose }: Props) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [invite, setInvite] = useState<ParsedInvite | null>(null);
+  const [scanning, setScanning] = useState(false);
 
   const reset = () => {
     setInput('');
     setError(null);
     setInvite(null);
+    setScanning(false);
   };
 
   const handleClose = () => {
     reset();
     onClose();
   };
+
+  const handleScannedInvite = useCallback((parsed: ParsedInvite) => {
+    setError(null);
+    setScanning(false);
+    setInvite(parsed); // INV-2: this only MOUNTS the ceremony; the human still commits inside it.
+  }, []);
 
   const handleJoin = () => {
     // INV-4: the untrusted paste crosses the trust boundary here and only here.
@@ -100,7 +109,7 @@ export function JoinByCode({ open, onClose }: Props) {
     );
   }
 
-  // Paste view.
+  // Paste view (ScanToJoin replaces the body while the camera is live).
   return (
     <div
       role="dialog"
@@ -132,6 +141,10 @@ export function JoinByCode({ open, onClose }: Props) {
           fontFamily: E.fontSans,
         }}
       >
+        {scanning ? (
+          <ScanToJoin onInvite={handleScannedInvite} onClose={() => setScanning(false)} />
+        ) : (
+          <>
         <p
           style={{
             margin: 0,
@@ -147,8 +160,47 @@ export function JoinByCode({ open, onClose }: Props) {
           Join by link
         </h2>
         <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-          Paste an invite link someone shared with you. It opens the same connection ceremony as
+          Scan their invite QR, or paste the link. It opens the same connection ceremony as
           tapping the link — right here, without leaving the page.
+        </p>
+
+        <button
+          type="button"
+          data-testid="scan-invite-button"
+          onClick={() => {
+            setError(null);
+            setScanning(true);
+          }}
+          style={{
+            marginTop: 18,
+            width: '100%',
+            padding: '12px 14px',
+            borderRadius: 8,
+            border: `1px solid ${E.borderLit}`,
+            background: 'rgba(249,168,37,0.14)',
+            color: E.accent,
+            cursor: 'pointer',
+            fontFamily: E.fontSans,
+            fontSize: 12,
+            fontWeight: 500,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+          }}
+        >
+          Scan
+        </button>
+
+        <p
+          style={{
+            margin: '16px 0 0',
+            fontSize: 11,
+            letterSpacing: '0.18em',
+            textTransform: 'uppercase',
+            color: E.dim,
+            textAlign: 'center',
+          }}
+        >
+          or paste
         </p>
 
         <label
@@ -234,6 +286,8 @@ export function JoinByCode({ open, onClose }: Props) {
         >
           Cancel
         </button>
+          </>
+        )}
       </div>
     </div>
   );

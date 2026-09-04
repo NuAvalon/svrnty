@@ -38,6 +38,8 @@ jobs:
         run: npx --no-install tsx --test src/lib/contacts/contact-update-allowlist-guard.test.ts
       - name: Contract guards — own-identity vCard never emits tags/blocked — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/own-vcard.test.ts
+      - name: Contract guards — QR-scan invite leak-site (INV-5) — BLOCKING
+        run: npx --no-install tsx --test src/lib/invite/scanInvite.test.ts src/lib/invite/decodeQrFrame.test.ts src/lib/invite/parseInviteUrl.test.ts
 
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
   # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
