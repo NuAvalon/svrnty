@@ -102,6 +102,10 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.goto(joinPath);
     await bob.getByRole('button', { name: /receive their card/i }).click();
     await bob.getByRole('button', { name: /add to my network/i }).click();
+    // Joiner /c/ navigation drops the in-memory session key — persistEdge prompts
+    // to unlock so the return-channel deposit can be signed (R1). Then lattice.
+    await bob.getByPlaceholder('Your passphrase').fill('e2e-passphrase-1234');
+    await bob.getByRole('button', { name: /^unlock/i }).click();
     await bob.getByRole('button', { name: /the facet is lit/i }).click();
 
     // The bloom: Alice now appears in Bob's constellation. The joiner is a standalone /c/<code> page with no

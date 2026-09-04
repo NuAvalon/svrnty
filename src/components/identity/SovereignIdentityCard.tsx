@@ -7,6 +7,7 @@ import { useMemo, useState } from 'react';
 import { IdentitySeal } from './IdentitySeal';
 import { solarEmber as E, solarGlass } from '../recovery/solar-ember';
 import { SVRNTY_DOMAIN } from '@/lib/config/domain';
+import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
 
 export type MethodKind = 'email' | 'signal' | 'site';
 
@@ -23,6 +24,8 @@ export interface SovereignIdentityCardProps {
   onOpenCircle?: () => void;
   /** Open Share Identity (moved from Contacts). */
   onShareIdentity?: () => void;
+  /** Optional override — default downloads name + methods as native .vcf */
+  onExportVcf?: () => void;
 }
 
 function formatKeyGroups(fp: string): string {
@@ -206,6 +209,7 @@ export function SovereignIdentityCard({
   onRevise,
   onOpenCircle,
   onShareIdentity,
+  onExportVcf,
 }: SovereignIdentityCardProps) {
   const [reviseNote, setReviseNote] = useState<string | null>(null);
   const displayHandle = handle
@@ -225,6 +229,14 @@ export function SovereignIdentityCard({
           ? 'Revise Signal — living method SEND is L1 (UI stub; team owns broadcast).'
           : 'Revise site — living method SEND is L1 (UI stub; team owns broadcast).'
     );
+  };
+
+  const handleExportVcf = () => {
+    if (onExportVcf) {
+      onExportVcf();
+      return;
+    }
+    downloadOwnVCard({ name, fingerprint, email, signal, site });
   };
 
   return (
@@ -359,7 +371,7 @@ export function SovereignIdentityCard({
             data-testid="share-identity-from-card"
             style={{
               width: '100%',
-              marginBottom: 14,
+              marginBottom: 10,
               padding: '12px 16px',
               borderRadius: 12,
               border: `1px solid ${E.borderLit}`,
@@ -375,6 +387,40 @@ export function SovereignIdentityCard({
             Share identity
           </button>
         ) : null}
+
+        <button
+          type="button"
+          data-testid="export-own-vcf"
+          onClick={handleExportVcf}
+          style={{
+            width: '100%',
+            marginBottom: 8,
+            padding: '12px 16px',
+            borderRadius: 12,
+            border: `1px solid ${E.border}`,
+            background: E.inputBg,
+            color: E.text,
+            fontFamily: E.fontSans,
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: '0.04em',
+            cursor: 'pointer',
+          }}
+        >
+          Save contact card (.vcf)
+        </button>
+        <p
+          style={{
+            margin: '0 0 14px',
+            textAlign: 'center',
+            fontSize: 11,
+            lineHeight: 1.45,
+            color: E.dim,
+            fontFamily: E.fontSans,
+          }}
+        >
+          Your name and contact methods for your phone — stays on this device until you share the file.
+        </p>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
           <span
