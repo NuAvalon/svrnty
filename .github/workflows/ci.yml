@@ -81,3 +81,18 @@ jobs:
         env:
           E2E_PROD: '1'
         run: npx playwright test --config=playwright.beat3.config.ts
+
+  # Credential / personal-data scanner over the PR diff — fails only on real credentials
+  # or personal data introduced in added lines (test/fixture values and already-public
+  # internal naming ride). Fast, no build. NOT YET a REQUIRED check — like the others, that
+  # needs branch protection (org-owner enables it); until then it runs + reports red/green
+  # on every PR so a risky diff is visible before merge, and can be flipped to required later.
+  leak-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so the merge-base diff resolves
+      - name: Scan PR diff for credentials / personal data
+        run: bash .github/scripts/leak-gate.sh "origin/${{ github.base_ref || 'main' }}"
