@@ -47,6 +47,7 @@ import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
+import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -730,11 +731,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       setError(null);
       const records = await getAllContacts(fingerprint);
       if (kind === 'json') {
-        const exportData = JSON.stringify(
-          { contacts: records, exported_at: new Date().toISOString() },
-          null,
-          2,
-        );
+        // Firewall: project each record through the safe-field allowlist (book-export.ts) so
+        // device-local metadata (tags/blocked/notes/last_interaction) never lands in the plaintext
+        // downloadable file. Full-fidelity backup is the ENCRYPTED vault export, not this. KB#88313.
+        const exportData = toContactBookJson(records, new Date().toISOString());
         const blob = new Blob([exportData], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
