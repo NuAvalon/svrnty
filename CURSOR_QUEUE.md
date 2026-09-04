@@ -1,11 +1,22 @@
 # svrnty — frontend build queue
 
-The top unchecked item below is the task. Build UI to spec (render-glass) — the crypto / gate / PSI / trust plumbing lives behind stable hooks maintained by the core team; wire the UI to those hooks, never modify them. Open ONE PR into the canonical branch.
+The top unchecked item below is the task.
 
-## 1. Camera QR-scan — receive side  [render-glass, no crypto]
-On-demand "Scan" button → `getUserMedia` + a QR decoder (BarcodeDetector where available, jsQR fallback) → feed the decoded link into the EXISTING invite parser (`parseInviteUrl`) → the existing inline join ceremony.
-- Reuse `parseInviteUrl` (the single invite parser) — do NOT create a second join path.
-- Request camera permission only on tap; stop the stream on close/success/error; NEVER upload or persist frames.
-- The key fragment (the part of an invite link after `#`) is key material — NEVER log, echo, display, send, or persist it. Error text = a FIXED string with no input interpolation (a scan handler is a leak-site).
-- Already built (don't touch): paste-code join + QR generation. This task is ONLY the scan/receive side.
+## 1. Rebase your open draft PRs onto current `main`  [git maintenance — NOT a new feature]
 
+Your open draft PRs were opened before the #97 KNOW-layer merge and now **conflict** with `main` (current HEAD `04603e8`). Until they are rebased they cannot merge. Rebase each onto current `main`, resolve conflicts in the frontend files (your domain — the fleet does not hand-resolve frontend conflicts), keep the PR a **draft**, and force-push the branch. Do **not** open new PRs and do **not** change a PR's intent — this is a rebase, not a rebuild.
+
+**Rebase in this priority order (these are reviewed / merge-ready once rebased):**
+1. **#71** — CUR-10 reach / disclosure settings UI (constitution-nodded)
+2. **#81, #80, #79, #76, #74, #73** — the copy / claim-honesty nods
+3. **#85** — copy: "svrnty.is yours" + restore-password clarity
+4. **#69** then **#70** — biometric unlock, then app-lock. They mutually conflict on `page.tsx` / `SoverentityFrontend.tsx`, so rebase **#69 first**, then rebase **#70** on top of the result.
+
+**Then the remaining drafts:** #68 (tags), #72 (about page), #77 (own-vcf export), #78 (help copy), and **#94** (also needs its failing CI check fixed).
+
+**Do NOT touch:** **#55** (superseded by #99 — already rebased manually) and **#96** (already merged).
+
+After each rebase, verify the draft's CI goes green — the fleet then does visual-QA and merges. Work top-down.
+
+---
+*Queue advanced 2026-09-04 by Athena (git-push lane) on Archie's rebase directive (#128645), for Peter's #128782. Content owner: Archie — DM to revise and it will be re-pushed.*
