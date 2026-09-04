@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { readPrivateKey } from 'openpgp';
 import {
   getActiveFingerprint,
   getAllContacts,
@@ -141,11 +142,19 @@ export default function NotesPage() {
     try {
       const key = await loadKey(fingerprint);
       if (!key) throw new Error('Session locked');
+      // Sender authentication (Flint #55): sendNoteToPeer signs the note so the recipient can verify
+      // WHO sent it, not just decrypt it. Derive the owner's public key from the unlocked private key
+      // — its fingerprint equals `fingerprint` by construction, so the recipient's fingerprintMatchesKey
+      // binds the carried key to the claimed sender.
+      const senderPublicKeyArmored = (await readPrivateKey({ armoredKey: key.privateKey })).toPublic().armor();
       const thread = threads.find(
         (t) => t.kind === 'direct' && t.participants.some((p) => p.fingerprint === peerFp),
       );
       const result = await sendNoteToPeer({
         sender: { fingerprint, participant_kind: 'human' },
+        senderPublicKeyArmored,
+        senderPrivateKeyArmored: key.privateKey,
+        passphrase: key.passphrase,
         peerFingerprint: peerFp,
         peerPublicKeyArmored: contact.public_key,
         body: draft.trim(),

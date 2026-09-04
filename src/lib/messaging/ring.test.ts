@@ -35,7 +35,7 @@ test('noteSigningInput is stable and excludes signature', () => {
     participant_kind: 'human',
   };
   const a = noteSigningInput(note);
-  const b = noteSigningInput({ ...note, /* @ts-expect-error probe */ signature: 'NOPE' } as NoteWireV0);
+  const b = noteSigningInput({ ...note, signature: { classical: 'NOPE' } });
   // canonicalize exclude should strip signature if present on a wider object
   assert.equal(typeof a, 'string');
   assert.ok(a.includes('hello'));

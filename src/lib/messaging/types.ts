@@ -3,6 +3,7 @@
 // never mixed into the living-book TrustEdge schema.
 
 import { NOTE_WIRE_TYPE } from './domains';
+import type { EnvelopeSignature } from '@/lib/crypto/sign-envelope';
 
 /** Who is speaking — humans and human-trusted agents share the admit-to-speak rule. */
 export type ParticipantKind = 'human' | 'agent';
@@ -64,6 +65,15 @@ export interface NoteWireV0 {
   participant_kind: ParticipantKind;
   /** Optional; omitted on direct threads */
   ring_channel_id?: string;
+  // ── Sender authentication (Apollo — Flint #55 forgeable-sender merge-gate) ──────────────────
+  // Without these a note is only ENCRYPTED, not SIGNED: from_fingerprint would be attacker-set and
+  // any admitted contact's fingerprint could be forged. `public_key` is the sender's openpgp key;
+  // `signature` is signWithEnvelope(DOMAIN_NOTE, noteSigningInput(wire)). acceptInboundNote binds
+  // public_key↔from_fingerprint (fingerprintMatchesKey) then verifies BEFORE admit. Optional on the
+  // TYPE (a local outbound copy / older record may lack them), but acceptInboundNote REJECTS an
+  // inbound wire that is missing or fails them. Both are EXCLUDED from noteSigningInput.
+  public_key?: string;
+  signature?: EnvelopeSignature;
 }
 
 /** Local ring-channel state — NEVER uploaded as a roster table. */
