@@ -250,7 +250,7 @@ async function psiInitiate(
   peerFingerprint: string,
   blindedSet: string[],
   signFn: (data: Uint8Array) => Uint8Array,
-  layer: 'know' | 'trust' = 'trust'
+  layer: 'know' | 'trust'
 ): Promise<{ sessionId: string } | { error: string }> {
   const body = {
     initiator_fingerprint: myFingerprint,
@@ -375,7 +375,7 @@ export async function initiateTrustSync(
   deps: OrchestratorDeps,
   peerFingerprint: string,
   options: PSISyncOptions,
-  layer: 'know' | 'trust' = 'trust'
+  layer: 'know' | 'trust'
 ): Promise<{ sessionId: string; keypair: PSIKeypair; fpOrder: string[] } | { error: string }> {
   // Load the layer's fingerprint set. KNOW = the open-visible (consented) subset (Flint D2).
   const fps = await getLayerFingerprints(deps, layer);
@@ -427,7 +427,7 @@ export async function completeTrustSync(
   keypair: PSIKeypair,
   options: PSISyncOptions,
   fpOrder: string[],
-  layer: 'know' | 'trust' = 'trust'
+  layer: 'know' | 'trust'
 ): Promise<PSISyncResult | { error: string }> {
   // Fetch result
   const result = await psiGetResult(
@@ -495,7 +495,7 @@ export async function completeTrustSync(
 export async function respondToTrustSync(
   deps: OrchestratorDeps,
   options: PSISyncOptions,
-  layer: 'know' | 'trust' = 'trust'
+  layer: 'know' | 'trust'
 ): Promise<PSISyncResult[]> {
   const results: PSISyncResult[] = [];
 
@@ -579,7 +579,7 @@ export async function respondToTrustSync(
 export async function syncMutualTrust(
   deps: OrchestratorDeps,
   options: PSISyncOptions,
-  layer: 'know' | 'trust' = 'trust'
+  layer: 'know' | 'trust'
 ): Promise<{
   responded: PSISyncResult[];
   initiated: Array<{ peerFingerprint: string; sessionId: string; keypair: PSIKeypair; fpOrder: string[] }>;
