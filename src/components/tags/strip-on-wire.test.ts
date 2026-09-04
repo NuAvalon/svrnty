@@ -70,7 +70,9 @@ describe('NEGATIVE: book export strips device-local tags/blocked', () => {
     const vcf = toVCard(poisonedEdge());
     assertNoLocalOnlyLeak(vcf, 'toVCard');
     assert.ok(vcf.includes('FN:Grace Hopper'));
-    assert.ok(vcf.includes('svrnty fingerprint:'));
+    // Phone-book export also omits fingerprint / public key (not a living-wire card).
+    assert.ok(!/aabbccddeeff00112233445566778899/i.test(vcf));
+    assert.ok(!vcf.includes('svrnty fingerprint:'));
   });
 
   it('toVCardFile strips across every card', () => {
