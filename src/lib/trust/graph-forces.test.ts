@@ -65,6 +65,64 @@ test('relaxGraphNodes separates overlapping seals', () => {
   }
 });
 
+test('mutual-bond springs pull witnessed peers closer', () => {
+  const nodes = [
+    { id: 'a', x: 60, y: 200, radius: 8 },
+    { id: 'b', x: 340, y: 200, radius: 8 },
+    { id: 'c', x: 200, y: 60, radius: 8 },
+  ];
+  const before = Math.hypot(nodes[1].x - nodes[0].x, nodes[1].y - nodes[0].y);
+  const out = relaxGraphNodes(nodes, {
+    width: 400,
+    height: 400,
+    cx: 200,
+    cy: 200,
+    mutualBonds: [{ a: 'a', b: 'b' }],
+    mutualBondGravity: 0.35,
+    mutualBondRest: 70,
+    padding: 10,
+    selfClearance: 0,
+    iterations: 50,
+    clusterGravity: 0,
+    centerGravity: 0,
+    repulsion: 0.15,
+  });
+  const after = Math.hypot(out[1].x - out[0].x, out[1].y - out[0].y);
+  assert.ok(after < before * 0.55, `mutual pair did not converge: ${before} → ${after}`);
+  const midX = (out[0].x + out[1].x) / 2;
+  const midY = (out[0].y + out[1].y) / 2;
+  const cDist = Math.hypot(out[2].x - midX, out[2].y - midY);
+  assert.ok(cDist > 50, 'unbonded node collapsed into mutual pair');
+});
+
+test('mutual bonds are not invented from tags — only explicit springs move pairs', () => {
+  const nodes = [
+    { id: 'a', x: 80, y: 200, radius: 6 },
+    { id: 'b', x: 320, y: 200, radius: 6 },
+  ];
+  const before = Math.hypot(nodes[1].x - nodes[0].x, nodes[1].y - nodes[0].y);
+  // Same tags alone via cluster gravity — separate concern; here NO mutualBonds, NO tagMembers
+  const out = relaxGraphNodes(nodes, {
+    width: 400,
+    height: 400,
+    cx: 200,
+    cy: 200,
+    mutualBonds: [],
+    mutualBondGravity: 0.4,
+    padding: 10,
+    selfClearance: 0,
+    iterations: 40,
+    clusterGravity: 0,
+    centerGravity: 0,
+    repulsion: 0.1,
+  });
+  const after = Math.hypot(out[1].x - out[0].x, out[1].y - out[0].y);
+  assert.ok(
+    Math.abs(after - before) < 8,
+    `empty mutualBonds moved the pair: ${before} → ${after}`,
+  );
+});
+
 test('cluster gravity pulls same-tag members together', () => {
   const nodes = [
     { id: 'a', x: 80, y: 200, radius: 6 },

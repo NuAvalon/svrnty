@@ -27,6 +27,8 @@ import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookLi
 import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import {
   buildLinkToSvrntyUpdate,
   isPendingSvrntyContact,
@@ -41,7 +43,6 @@ import {
   getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
-import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -317,17 +318,23 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     return true;
   });
 
-  const masterRows = filteredContacts.map((c) => ({
-    id: c.id,
-    name: c.name,
-    email: c.email,
-    fingerprint: c.fingerprint,
-    public_key: c.public_key,
-    trust_level: c.trust_level,
-    blocked: isContactBlocked(c),
-    tags: c.metadata?.tags || [],
-    pending: isPendingSvrntyContact(c),
-  }));
+  const masterRows = filteredContacts.map((c) => {
+    const edge = contactRecordToEdge(c);
+    const living = livingEdgeStatus(edge);
+    return {
+      id: c.id,
+      name: c.name,
+      email: c.email,
+      fingerprint: c.fingerprint,
+      public_key: c.public_key,
+      trust_level: c.trust_level,
+      blocked: isContactBlocked(c),
+      tags: c.metadata?.tags || [],
+      pending: isPendingSvrntyContact(c),
+      living,
+      lastMoment: living.lastMoment,
+    };
+  });
 
   const knownGroupTags = Array.from(
     new Set(contacts.flatMap((c) => c.metadata?.tags || []).filter(Boolean)),

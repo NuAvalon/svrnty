@@ -53,7 +53,7 @@ export function getTrustActionCopy(
       return {
         title: `Trust ${name}?`,
         body:
-          'You are vouching for them. Trust is binary — known or trusted — with no score or rank. On your device they become trusted. Notifying them on the wire is fleet-owned and not sent from this confirm yet.',
+          'You are vouching for them on this device — that is trust sent (outbound), not mutual yet. Mutual trust appears only when reciprocity is confirmed. Notifying their relay / probing for reciprocity is fleet-owned and not completed from this confirm.',
         confirmLabel: 'Trust',
         cancelLabel: 'Cancel',
         danger: false,

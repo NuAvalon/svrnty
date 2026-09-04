@@ -1,13 +1,19 @@
 'use client';
 
 /**
- * Flat Living Address Book rows — no living/resting chrome.
+ * Flat Living Address Book rows — status grammar matches Trust Map.
  */
 
 import type { CSSProperties } from 'react';
 import { Check } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import {
+  livingEdgeStatus,
+  livingStatusChip,
+  type LivingEdgeStatus,
+} from '@/lib/trust/living-edge-status';
+import type { TrustEdge } from '@/lib/trust/types';
 
 export type MasterBookRow = {
   id: string;
@@ -21,6 +27,9 @@ export type MasterBookRow = {
   tags?: string[];
   /** SVRNTY awaiting reciprocal add — no pulse yet. */
   pending?: boolean;
+  /** Precomputed living status (from contactRecordToEdge projection). */
+  living?: LivingEdgeStatus;
+  lastMoment?: string | null;
 };
 
 export type MasterAddressBookListProps = {
@@ -29,16 +38,32 @@ export type MasterAddressBookListProps = {
   selectionMode: boolean;
   onToggleSelect: (id: string) => void;
   onOpen: (id: string) => void;
-  /**
-   * Contact ids whose latest repaint came from a live peer apply.
-   * Sets data-live="push" — demo-arc beat-4 honesty hinge (reason:'live-apply' only).
-   */
   liveIds?: Set<string>;
 };
 
-function isTrusted(row: MasterBookRow): boolean {
-  const t = (row.trust_level || '').toLowerCase();
-  return t === 'trusted' || t === 'verified';
+function statusForRow(row: MasterBookRow): LivingEdgeStatus {
+  if (row.living) return row.living;
+  // Fallback projection when parent did not pass living status.
+  const edge = {
+    id: row.id,
+    peer_fingerprint: row.fingerprint || row.id,
+    peer_name: row.name,
+    peer_email: row.email || '',
+    peer_public_key: row.public_key || '',
+    trusted: (row.trust_level || '').toLowerCase() === 'verified' || (row.trust_level || '').toLowerCase() === 'trusted',
+    trusted_since: null,
+    last_interaction: new Date().toISOString(),
+    decay_days: 730,
+    trust_history: [],
+    verification: { method: 'none', verified_at: null },
+    mutual: { they_trust_me: null, last_sync: null, reciprocal: false },
+    tags: row.tags || [],
+    notes: '',
+    connection_channels: [],
+    added_at: new Date().toISOString(),
+    connection_status: row.pending ? 'pending' : 'accepted',
+  } as TrustEdge;
+  return livingEdgeStatus(edge);
 }
 
 const rowBtn: CSSProperties = {
@@ -56,6 +81,15 @@ const rowBtn: CSSProperties = {
   color: E.text,
 };
 
+function chipColor(status: LivingEdgeStatus): string {
+  if (status.trust === 'mutual') return E.accent2;
+  if (status.trust === 'outbound') return E.accent;
+  if (status.connection === 'pending') return E.accent;
+  if (status.methodDelivery === 'undelivered') return E.danger || '#c45c4a';
+  if (status.canCommunicate) return E.ok || E.accent;
+  return E.muted;
+}
+
 export function MasterAddressBookList({
   rows,
   selectedIds,
@@ -72,6 +106,8 @@ export function MasterAddressBookList({
         const svrn = isSvrnNetworkContact(row);
         const selected = selectedIds.has(row.id);
         const live = liveIds?.has(row.id) === true;
+        const status = statusForRow(row);
+        const chip = livingStatusChip(status);
         return (
           <li key={row.id}>
             <button
@@ -80,6 +116,8 @@ export function MasterAddressBookList({
               data-master-book-row="1"
               data-svrn={svrn ? '1' : '0'}
               data-live={live ? 'push' : undefined}
+              data-living-trust={status.trust}
+              data-can-communicate={status.canCommunicate ? '1' : '0'}
               onClick={() => {
                 if (selectionMode) onToggleSelect(row.id);
                 else onOpen(row.id);
@@ -92,7 +130,9 @@ export function MasterAddressBookList({
                   : E.surfaceSolid,
                 boxShadow: live
                   ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
-                  : undefined,
+                  : status.trust === 'mutual'
+                    ? '0 0 12px color-mix(in srgb, var(--se-accent2) 16%, transparent)'
+                    : undefined,
               }}
             >
               {selectionMode ? (
@@ -127,22 +167,39 @@ export function MasterAddressBookList({
                   {row.name || 'Unnamed'}
                 </span>
                 <span
+                  data-testid="master-row-status"
                   style={{
                     display: 'block',
                     fontSize: 11,
-                    color: E.dim,
-                    fontFamily: E.fontMono,
+                    color: E.muted,
+                    marginTop: 2,
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
                   }}
                 >
-                  {row.email ||
-                    (svrn && row.fingerprint
-                      ? `${row.fingerprint.slice(0, 12)}…`
-                      : svrn
-                        ? 'SVRNTY · no name yet'
-                        : 'classical book')}
+                  {status.statusLine}
+                  {status.lastMoment ? ` · ${status.lastMoment}` : ''}
                 </span>
+                {status.detailLine ? (
+                  <span
+                    data-testid="master-row-detail"
+                    style={{
+                      display: 'block',
+                      fontSize: 10,
+                      color:
+                        status.methodDelivery === 'undelivered' || status.methodDelivery === 'awaiting-ack'
+                          ? E.accent
+                          : E.dim,
+                      marginTop: 2,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {status.detailLine}
+                  </span>
+                ) : null}
                 {row.tags && row.tags.length > 0 ? (
                   <span
                     style={{
@@ -185,23 +242,19 @@ export function MasterAddressBookList({
                 >
                   {svrn ? 'SVRN' : 'Classical'}
                 </span>
-                {svrn && row.pending ? (
-                  <span
-                    data-testid="master-row-pending"
-                    style={{ fontSize: 10, color: E.accent, letterSpacing: '0.04em' }}
-                  >
-                    Pending
-                  </span>
-                ) : null}
-                {svrn ? (
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: row.blocked ? E.danger : isTrusted(row) ? E.ok : E.muted,
-                    }}
-                  >
-                    {row.blocked ? 'Blocked' : isTrusted(row) ? 'Trusted' : 'Known'}
-                  </span>
+                <span
+                  data-testid="master-row-chip"
+                  style={{
+                    fontSize: 10,
+                    letterSpacing: '0.04em',
+                    color: chipColor(status),
+                    fontWeight: status.trust === 'mutual' || status.trust === 'outbound' ? 600 : 400,
+                  }}
+                >
+                  {chip}
+                </span>
+                {row.blocked ? (
+                  <span style={{ fontSize: 10, color: E.danger }}>Blocked</span>
                 ) : null}
               </span>
             </button>

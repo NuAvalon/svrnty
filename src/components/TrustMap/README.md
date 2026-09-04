@@ -29,6 +29,32 @@ Fail closed if any piece is missing. **Owner tags never create a peer chord.** T
 
 We did **not** port Three.js. The Cathedral 3D universe is a global knowledge graph; svrnty’s graph is **egocentric + your book**. 2D canvas + camera is the particle-lattice CURSOR.md asks for. Tilt/3D is a later aesthetic pass if Peter wants it — not a new data model.
 
+### Labels at density (LOD)
+- Screen-space names (fixed ~12px), not world-scaled stickers.
+- Far zoom: force-only (lamp / hover / search). Mid: trusted + collision-capped. Near: denser neighborhood labels.
+- Corner **nameplate** always shows who you’re hovering or lamped.
+- Search → Enter/Go flies the camera and pulses the match.
+
+### Lamp a person (click)
+Shows their constellation with **two visual states** (never inferred trust from tags):
+- **Ember solid + double ring** — witnessed open-visibility peer mutual trust (`they_trust`)
+- **Dashed gold + dashed halo** — groups *you* named (co-membership ≠ trust)
+- Disclosed circle they showed you — solid gold (consent, not tag inference)
+While lamped, unrelated peer filaments hide; nameplate lists witnessed mutuals vs group-only.
+
+### Living phases (glass)
+- **Linked / can communicate** — both known (accepted); pending = not yet
+- **Trust sent (outbound)** ≠ **mutual** — dashed outbound ring vs mutual breathe
+- **Method ack** — awaiting / acked / undelivered (demo metadata; wire = Flint)
+- Layout memory, decay weather, intro filaments, crystallize toast on new mutual
+- Fleet ask: `src/lib/trust/FLEET_TRUST_RECIPROCITY.md`
+
+### Topology / physics
+- Owner **tags** soft-cluster (group neighborhoods).
+- **Witnessed mutual bonds** (`witnessedPeerTrustChords`) are soft springs — same fail-closed set as ember filaments. People who mutually disclosed peer trust settle nearer each other.
+- Adding someone who completes a mutual chord updates the bond set → layout memory softens and the lattice re-relaxes. Tags alone never invent a spring.
+- Collision + cloud keep still prevent overlap / corner drift.
+
 ### What we will not draw
 - Peer↔peer bonds from co-membership, “we both know them,” or friends-of-friends.
 - Mutual-friend **counts** on identity (I-3).

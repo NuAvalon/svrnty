@@ -45,11 +45,13 @@ export const sendContactMethodUpdate: ContactMethodSendFn = async (req) => {
   }
 
   // Fleet seam placeholder — do not encrypt, sign, or deposit from UI code.
+  // When live: write per-peer method_delivery awaiting-ack, then acked / undelivered.
+  // See src/lib/trust/FLEET_TRUST_RECIPROCITY.md
   return {
     ok: true,
     status: 'stub-queued',
     queued: req.recipientFingerprints.length,
-    message: `Prepared update for ${req.recipientFingerprints.length} peer(s) — wire send is not live yet (Flint: per-peer encrypt + mailbox). Local draft can still be saved.`,
+    message: `Prepared update for ${req.recipientFingerprints.length} peer(s) — wire send is not live yet (Flint: per-peer encrypt + mailbox + ack receipts). Local draft can still be saved.`,
   };
 };
 

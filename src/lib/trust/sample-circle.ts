@@ -1,15 +1,15 @@
-// Demo sample circle for Trust Map / Contacts — keyless peers (no MITM risk).
+// Demo sample circle for Trust Map / Contacts — dense living book for label LOD QA.
 // UI-only seed; not production identity data.
 //
 // Designed to show a denser “web of trust” that stays constitutional:
 //   • Many YOU↔peer edges you trusted (Orbit spokes).
 //   • mutual.reciprocal = PSI-witnessed they-trust-you-too (glow).
-//   • Open-visibility clique: Ada/Grace/… they_trust each other so the galaxy
+//   • Open-visibility cliques: they_trust each other so the galaxy
 //     draws witnessed Sally↔Joe filaments (Peter’s spec) — NOT inferred from tags.
 //   • Owner-authored overlapping group tags → cluster chords / Browse hulls
 //     (co-membership ≠ trust).
 //   • SVRNTY demo peers carry a frozen public_key (fingerprint ≡ H(key)).
-//   • Classical book rows are keyless — no fingerprint (Invariant-1: fp only exists with a key).
+//   • A few classical book rows stay keyless — no fingerprint (Invariant-1).
 
 import { addContact, getAllContacts, removeContact } from '@/lib/identity/client-store';
 import { SAMPLE_SVRNTY_FPS, SAMPLE_SVRNTY_PEERS } from '@/lib/trust/sample-svrnty-keys';
@@ -49,52 +49,145 @@ interface SampleContact {
 }
 
 /** Historical fake fingerprints — recognize older sample seeds so revision auto-upgrades. Not stored on new classical rows. */
-const ADA = 'a11a10e1ace00000000000000000000000000001';
-const ALAN = 'a1a2011216000000000000000000000000000002';
-const GRACE = '61ace00000000000000000000000000000000003';
-const CLAUDE = 'c1a00e0000000000000000000000000000000004';
-const HEDY = '4ed1000000000000000000000000000000000005';
-const KATHERINE = 'ca1e000000000000000000000000000000000006';
-const FRANK = 'f1a2000000000000000000000000000000000007';
-const NIKOLA = '7e51a00000000000000000000000000000000008';
-const HYPATIA = 'b7a71a0000000000000000000000000000000009';
-const MARGARET = 'ba111a000000000000000000000000000000000a';
-const BARBARA = 'ba1ba1a00000000000000000000000000000000b';
-const DOROTHY = 'd0107a000000000000000000000000000000000c';
-const JOAN = '10a700000000000000000000000000000000000d';
-const JEAN = '1ea700000000000000000000000000000000000e';
-const ROSALIND = '105a11d00000000000000000000000000000000f';
-const SOPHIE = '5011e00000000000000000000000000000000010';
-const EMILIE = 'e1111e0000000000000000000000000000000011';
-const MARIE = 'a11e000000000000000000000000000000000012';
-const LYNN = '1777000000000000000000000000000000000013';
-const RADIA = '1ad1a00000000000000000000000000000000014';
+const LEGACY_FPS = [
+  'a11a10e1ace00000000000000000000000000001',
+  'a1a2011216000000000000000000000000000002',
+  '61ace00000000000000000000000000000000003',
+  'c1a00e0000000000000000000000000000000004',
+  '4ed1000000000000000000000000000000000005',
+  'ca1e000000000000000000000000000000000006',
+  'f1a2000000000000000000000000000000000007',
+  '7e51a00000000000000000000000000000000008',
+  'b7a71a0000000000000000000000000000000009',
+  'ba111a000000000000000000000000000000000a',
+  'ba1ba1a00000000000000000000000000000000b',
+  'd0107a000000000000000000000000000000000c',
+  '10a700000000000000000000000000000000000d',
+  '1ea700000000000000000000000000000000000e',
+  '105a11d00000000000000000000000000000000f',
+  '5011e00000000000000000000000000000000010',
+  'e1111e0000000000000000000000000000000011',
+  'a11e000000000000000000000000000000000012',
+  '1777000000000000000000000000000000000013',
+  '1ad1a00000000000000000000000000000000014',
+];
 
 /** All demo fingerprints — used to recognize older seeds that lack metadata.sample. */
-const SAMPLE_FPS = new Set([
-  ADA, ALAN, GRACE, CLAUDE, HEDY, KATHERINE, FRANK, NIKOLA, HYPATIA, MARGARET,
-  BARBARA, DOROTHY, JOAN, JEAN, ROSALIND, SOPHIE, EMILIE, MARIE, LYNN, RADIA,
-  ...SAMPLE_SVRNTY_FPS,
-]);
+const SAMPLE_FPS = new Set([...LEGACY_FPS, ...SAMPLE_SVRNTY_FPS]);
 
 /**
  * Bump when the demo roster changes. Sample-only books with a lower (or missing)
  * revision auto-upgrade on load so a hard refresh picks up the denser circle
  * without a manual “Refresh demo circle” click. Never touches non-sample books.
  */
-export const SAMPLE_CIRCLE_REVISION = 6;
+export const SAMPLE_CIRCLE_REVISION = 8;
 
-/**
- * Reciprocal + open-visibility clique among living (SVRNTY) demo peers.
- */
-const CLIQUE_IDS = new Set(['ada', 'grace', 'margaret', 'barbara', 'radia', 'joan', 'jean', 'sophie']);
-const OPEN_VIS_CLIQUE = SAMPLE_SVRNTY_PEERS.filter((p) => CLIQUE_IDS.has(p.id)).map((p) => p.fingerprint);
-const OPEN_VIS_SET = new Set(OPEN_VIS_CLIQUE);
+/** Open-visibility clique among living (SVRNTY) demo peers — Peter's filament demo. */
+const CORE_CLIQUE_IDS = new Set([
+  'ada',
+  'grace',
+  'margaret',
+  'barbara',
+  'radia',
+  'joan',
+  'jean',
+  'sophie',
+]);
+
+/** Second open-vis ring — crypto researchers (peer filaments within ring). */
+const CRYPTO_CLIQUE_IDS = new Set([
+  'shafi',
+  'silvio',
+  'whitfield',
+  'martin',
+  'ralph',
+  'ron',
+  'adi',
+  'leonard',
+  'feistel',
+  'susan',
+]);
+
+const TAG_BY_ID: Record<string, string[]> = {
+  ada: ['core', 'builders', 'math'],
+  grace: ['core', 'builders', 'compilers'],
+  margaret: ['core', 'builders', 'orbital'],
+  barbara: ['core', 'builders', 'compilers'],
+  radia: ['core', 'radio', 'builders'],
+  joan: ['bletchley', 'math', 'core'],
+  jean: ['builders', 'compilers', 'math'],
+  sophie: ['math', 'bletchley'],
+  alan: ['builders', 'bletchley', 'math'],
+  dorothy: ['orbital', 'builders', 'math'],
+  claude: ['radio', 'bletchley', 'math'],
+  hedy: ['radio'],
+  katherine: ['radio', 'orbital', 'math'],
+  rosalind: ['math'],
+  marie: ['orbital', 'math'],
+  lynn: ['builders', 'compilers'],
+  tim: ['builders', 'radio'],
+  vint: ['radio', 'builders'],
+  bob: ['radio', 'builders'],
+  dennis: ['builders', 'compilers'],
+  ken: ['builders', 'compilers'],
+  brian: ['builders', 'compilers'],
+  donald: ['math', 'builders'],
+  edsger: ['math', 'builders'],
+  tony: ['builders', 'compilers'],
+  frances: ['compilers', 'builders'],
+  betty: ['builders', 'compilers'],
+  shafi: ['crypto', 'math'],
+  silvio: ['crypto', 'math'],
+  whitfield: ['crypto', 'radio'],
+  martin: ['crypto', 'radio'],
+  ralph: ['crypto'],
+  ron: ['crypto', 'math'],
+  adi: ['crypto', 'math'],
+  leonard: ['crypto', 'math'],
+  feistel: ['crypto'],
+  susan: ['crypto', 'math'],
+  linus: ['builders'],
+  guido: ['builders', 'compilers'],
+  leslie: ['builders', 'math'],
+  nancy: ['math', 'builders'],
+};
+
+function tagsFor(id: string): string[] {
+  if (TAG_BY_ID[id]) return TAG_BY_ID[id];
+  if (CRYPTO_CLIQUE_IDS.has(id)) return ['crypto'];
+  if (CORE_CLIQUE_IDS.has(id)) return ['core'];
+  // Stable hash → a couple of overlapping neighborhoods
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  const pools = [
+    ['builders'],
+    ['math'],
+    ['radio'],
+    ['orbital'],
+    ['compilers'],
+    ['bletchley'],
+    ['builders', 'math'],
+    ['radio', 'builders'],
+    ['orbital', 'math'],
+    ['compilers', 'builders'],
+  ];
+  return pools[h % pools.length];
+}
+
 const LIVING_BY_NAME = new Map(SAMPLE_SVRNTY_PEERS.map((p) => [p.name, p]));
+const LIVING_BY_ID = new Map(SAMPLE_SVRNTY_PEERS.map((p) => [p.id, p]));
 
-function demoTheyTrust(fp: string): string[] | undefined {
-  if (!OPEN_VIS_SET.has(fp)) return undefined;
-  return OPEN_VIS_CLIQUE.filter((other) => other !== fp);
+const CORE_FPS = SAMPLE_SVRNTY_PEERS.filter((p) => CORE_CLIQUE_IDS.has(p.id)).map(
+  (p) => p.fingerprint,
+);
+const CRYPTO_FPS = SAMPLE_SVRNTY_PEERS.filter((p) => CRYPTO_CLIQUE_IDS.has(p.id)).map(
+  (p) => p.fingerprint,
+);
+
+function theyTrustFor(id: string, fp: string): string[] | undefined {
+  if (CORE_CLIQUE_IDS.has(id)) return CORE_FPS.filter((other) => other !== fp);
+  if (CRYPTO_CLIQUE_IDS.has(id)) return CRYPTO_FPS.filter((other) => other !== fp);
+  return undefined;
 }
 
 function isSampleContact(c: {
@@ -106,211 +199,204 @@ function isSampleContact(c: {
   return !!fp && SAMPLE_FPS.has(fp);
 }
 
-const SAMPLE: SampleContact[] = [
-  // ── Core mutual ring (PSI reciprocal with you) ───────────────────────────
-  {
-    name: 'Ada Lovelace',
-    email: 'ada@analytical.engine',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['core', 'builders', 'math'],
-    phones: ['+44 20 7946 0001'],
-    handles: { signal: '@ada.lovelace' },
-    urls: ['https://analytical.engine/~ada'],
-    reciprocal: true,
-    notes: 'Mutual (PSI) · analytical engines & poetry.',
-  },
-  {
-    name: 'Grace Hopper',
-    email: 'grace@cobol.dev',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['core', 'builders', 'compilers'],
-    phones: ['+1 202 555 0142'],
-    handles: { signal: '@amazing.grace' },
-    reciprocal: true,
-    notes: 'Mutual (PSI) · introduced Frank (pending).',
-  },
-  {
-    name: 'Margaret Hamilton',
-    email: 'margaret@apollo.mit',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['core', 'builders', 'orbital'],
-    phones: ['+1 617 555 0130'],
-    reciprocal: true,
-    notes: 'Mutual (PSI) · software that flew.',
-  },
-  {
-    name: 'Barbara Liskov',
-    email: 'barbara@mit.edu',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['core', 'builders', 'compilers'],
-    handles: { signal: '@b.liskov' },
-    reciprocal: true,
-    notes: 'Mutual (PSI) · abstraction & CLU.',
-  },
-  {
-    name: 'Radia Perlman',
-    email: 'radia@routing.net',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['core', 'radio', 'builders'],
-    phones: ['+1 650 555 0199'],
-    reciprocal: true,
-    notes: 'Mutual (PSI) · spanning trees & routing.',
-  },
+/**
+ * Build the dense living roster from frozen keys, plus a few classical hollows.
+ * Trust mix (~80 living):
+ *  - ~18 mutual+trusted (core + extras)
+ *  - ~22 trusted one-way
+ *  - ~35 known living (glow hollow / keyed)
+ *  - ~3 pending
+ *  - ~8 classical keyless
+ */
+function buildSampleRoster(): SampleContact[] {
+  const ordered = [...SAMPLE_SVRNTY_PEERS];
+  // Stable order: clique first, then by id
+  ordered.sort((a, b) => {
+    const ac = CORE_CLIQUE_IDS.has(a.id) ? 0 : CRYPTO_CLIQUE_IDS.has(a.id) ? 1 : 2;
+    const bc = CORE_CLIQUE_IDS.has(b.id) ? 0 : CRYPTO_CLIQUE_IDS.has(b.id) ? 1 : 2;
+    return ac - bc || a.id.localeCompare(b.id);
+  });
 
-  // ── Trusted, mutual sync pending (you trust them; PSI not yet reciprocal) ─
-  {
-    name: 'Alan Turing',
-    email: 'alan@bletchley.uk',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['builders', 'bletchley', 'math'],
-    phones: ['+44 1625 555 019'],
-    handles: { telegram: '@a_turing' },
-    reciprocal: false,
-    notes: 'Trusted — PSI mutual not yet confirmed.',
-  },
-  {
-    name: 'Dorothy Vaughan',
-    email: 'dorothy@langley.nasa',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['orbital', 'builders', 'math'],
-    reciprocal: false,
-    notes: 'Trusted · FORTRAN cohort — awaiting mutual.',
-  },
-  {
-    name: 'Lynn Conway',
-    email: 'lynn@vlsi.edu',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['builders', 'compilers'],
-    handles: { signal: '@lynn.conway' },
-    reciprocal: false,
-    notes: 'Classical book · VLSI & Mead–Conway.',
-  },
+  const mutualIds = new Set<string>([
+    ...CORE_CLIQUE_IDS,
+    'alan', // wait alan is trusted one-way historically — keep one-way
+    'shafi',
+    'silvio',
+    'whitfield',
+    'martin',
+    'ron',
+    'adi',
+    'frances',
+    'lynn',
+    'tim',
+    'vint',
+    'leslie',
+    'nancy',
+  ]);
+  mutualIds.delete('alan');
 
-  // ── More mutuals in overlapping clusters (dense group chords) ────────────
-  {
-    name: 'Joan Clarke',
-    email: 'joan@bletchley.uk',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['bletchley', 'math', 'core'],
-    reciprocal: true,
-    notes: 'Mutual (PSI) · Banburismus & Hut 8.',
-  },
-  {
-    name: 'Jean Bartik',
-    email: 'jean@eniac.org',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['builders', 'compilers', 'math'],
-    phones: ['+1 215 555 0160'],
-    reciprocal: true,
-    notes: 'Mutual (PSI) · ENIAC programmer.',
-  },
-  {
-    name: 'Sophie Germain',
-    email: 'sophie@primes.fr',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['math', 'bletchley'],
-    reciprocal: true,
-    notes: 'Mutual (PSI) · primes under a pen name.',
-  },
-  {
-    name: 'Émilie du Châtelet',
-    email: 'emilie@newton.fr',
-    fingerprint: '',
-    trust_level: 'verified',
-    tags: ['math', 'orbital'],
-    reciprocal: true,
-    open_visibility: true,
-    notes: 'Classical book · living force & Newton — no key yet.',
-  },
+  const trustedOneWay = new Set<string>([
+    'alan',
+    'dorothy',
+    'leonard',
+    'ralph',
+    'feistel',
+    'susan',
+    'dennis',
+    'ken',
+    'brian',
+    'donald',
+    'edsger',
+    'tony',
+    'betty',
+    'kay',
+    'guido',
+    'bjarne',
+    'linus',
+    'wing',
+    'jackson',
+    'darden',
+    'widom',
+    'wilkes',
+  ]);
 
-  // ── Known (not trusted) — fills outer ring / cluster hulls ───────────────
-  {
-    name: 'Claude Shannon',
-    email: 'claude@bell.labs',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: ['radio', 'bletchley', 'math'],
-    handles: { email_alt: 'shannon@theory.info' },
-    notes: 'Known · information theory circle.',
-  },
-  {
-    name: 'Hedy Lamarr',
-    email: 'hedy@fhss.radio',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: ['radio'],
-    phones: ['+1 310 555 0188'],
-    urls: ['https://fhss.radio'],
-    notes: 'Known · frequency hopping.',
-  },
-  {
-    name: 'Katherine Johnson',
-    email: 'katherine@nasa.gov',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: ['radio', 'orbital', 'math'],
-    notes: 'Known · orbital mechanics.',
-  },
-  {
-    name: 'Rosalind Franklin',
-    email: 'rosalind@kings.ac.uk',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: ['math'],
-    notes: 'Known · Photo 51 — not yet vouched.',
-  },
-  {
-    name: 'Marie Curie',
-    email: 'marie@radium.fr',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: ['orbital', 'math'],
-    notes: 'Known · two Nobels — introduction pending trust.',
-  },
-  {
-    name: 'Nikola Tesla',
-    email: '',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: ['orbital', 'radio'],
-    notes: 'Known · keyless / gray.',
-  },
-  {
-    name: 'Hypatia',
-    email: '',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: [],
-    notes: 'Known · no channels shared yet.',
-  },
+  const pendingIds = new Set(['frank', 'jamie', 'brendan']);
 
-  // ── Pending intro (not trust) ────────────────────────────────────────────
-  {
-    name: 'Frank Garcia',
-    email: 'frank@pending.intro',
-    fingerprint: '',
-    trust_level: 'unverified',
-    tags: [],
-    phones: ['+1 415 555 0177'],
-    pending_intro: {
-      introduced_by: 'Grace Hopper',
-      introduced_by_fp: LIVING_BY_NAME.get('Grace Hopper')?.fingerprint || '',
-      context: 'Grace introduced you at the compiler salon',
+  const out: SampleContact[] = [];
+  for (const p of ordered) {
+    // Keep classical "Hypatia" as the hollow book row (e2e + Invariant-1 contrast).
+    if (p.id === 'hypatia') continue;
+    const tags = tagsFor(p.id);
+    if (pendingIds.has(p.id)) {
+      const grace = LIVING_BY_ID.get('grace');
+      out.push({
+        name: p.name,
+        email: p.email.replace('@example.invalid', '@pending.intro'),
+        fingerprint: '',
+        trust_level: 'unverified',
+        tags: [],
+        pending_intro: {
+          introduced_by: grace?.name || 'Grace Hopper',
+          introduced_by_fp: grace?.fingerprint || '',
+          context: 'Introduced at the compiler salon — accept to know; trust is separate.',
+        },
+        notes: 'Pending connection — accept to know; trust is separate.',
+      });
+      continue;
+    }
+    if (mutualIds.has(p.id) || CORE_CLIQUE_IDS.has(p.id)) {
+      out.push({
+        name: p.name,
+        email: p.email.replace('@example.invalid', '@circle.demo'),
+        fingerprint: '',
+        trust_level: 'verified',
+        tags,
+        reciprocal: true,
+        open_visibility: CORE_CLIQUE_IDS.has(p.id) || CRYPTO_CLIQUE_IDS.has(p.id),
+        notes: CORE_CLIQUE_IDS.has(p.id)
+          ? 'Mutual (PSI) · open-visibility core clique.'
+          : 'Mutual (PSI) · trusted circle.',
+      });
+      continue;
+    }
+    if (trustedOneWay.has(p.id) || CRYPTO_CLIQUE_IDS.has(p.id)) {
+      out.push({
+        name: p.name,
+        email: p.email.replace('@example.invalid', '@circle.demo'),
+        fingerprint: '',
+        trust_level: 'verified',
+        tags,
+        reciprocal: false,
+        open_visibility: CRYPTO_CLIQUE_IDS.has(p.id),
+        notes: CRYPTO_CLIQUE_IDS.has(p.id)
+          ? 'Trusted · crypto ring — PSI mutual not yet confirmed.'
+          : 'Trusted — PSI mutual not yet confirmed.',
+      });
+      continue;
+    }
+    out.push({
+      name: p.name,
+      email: p.email.replace('@example.invalid', '@circle.demo'),
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags,
+      notes: 'Known living · keyed — not yet trusted.',
+    });
+  }
+
+  // Classical hollows — keyless contrast (Invariant-1: no fingerprint).
+  const classical: SampleContact[] = [
+    {
+      name: 'Hypatia',
+      email: '',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: [],
+      notes: 'Classical book · no channels shared yet.',
     },
-    notes: 'Pending connection — accept to know; trust is separate.',
-  },
-];
+    {
+      name: 'Analog Alice',
+      email: 'alice@paper.mail',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: ['radio'],
+      notes: 'Classical book · keyless / gray.',
+    },
+    {
+      name: 'Postcard Pat',
+      email: '',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: [],
+      notes: 'Classical book · no channels shared yet.',
+    },
+    {
+      name: 'Rolodex Remy',
+      email: 'remy@office.local',
+      fingerprint: '',
+      trust_level: 'verified',
+      tags: ['builders'],
+      phones: ['+1 555 0100'],
+      notes: 'Classical book · local trust only — no key.',
+    },
+    {
+      name: 'Vellum Vera',
+      email: 'vera@archive.org',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: ['math'],
+      notes: 'Classical book · archival contact.',
+    },
+    {
+      name: 'Ink Indira',
+      email: '',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: ['orbital'],
+      notes: 'Classical book · keyless.',
+    },
+    {
+      name: 'Carbon Carl',
+      email: 'carl@copy.room',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: ['compilers'],
+      notes: 'Classical book · keyless.',
+    },
+    {
+      name: 'Stencil Sam',
+      email: '',
+      fingerprint: '',
+      trust_level: 'unverified',
+      tags: [],
+      notes: 'Classical book · empty channels.',
+    },
+  ];
+
+  return [...out, ...classical];
+}
+
+const SAMPLE: SampleContact[] = buildSampleRoster();
 
 /** True when the living book is demo-only and behind SAMPLE_CIRCLE_REVISION. */
 export function sampleCircleNeedsUpgrade(
@@ -346,9 +432,14 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
     const living = LIVING_BY_NAME.get(c.name);
     const fingerprint = living?.fingerprint;
     const public_key = living?.public_key;
+    const peerId = living?.id;
     const trusted = !!living && c.trust_level === 'verified';
-    const theyTrust = fingerprint ? demoTheyTrust(fingerprint) : undefined;
-    const openVis = fingerprint ? (c.open_visibility ?? OPEN_VIS_SET.has(fingerprint)) : false;
+    const theyTrust =
+      fingerprint && peerId ? theyTrustFor(peerId, fingerprint) ?? (c.they_trust || undefined) : undefined;
+    const openVis = fingerprint
+      ? (c.open_visibility ??
+        (peerId ? CORE_CLIQUE_IDS.has(peerId) || CRYPTO_CLIQUE_IDS.has(peerId) : false))
+      : false;
     await addContact(ownerFingerprint, {
       name: c.name,
       email: c.email,
@@ -390,6 +481,31 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         connection_status: c.pending_intro ? 'pending' : 'accepted',
         psi_mutual: !!(living && c.reciprocal),
         they_trust: theyTrust,
+        // Living phases for glass QA (fleet will own real probe/acks).
+        trust_outbound: !!(living && trusted && !c.reciprocal),
+        trust_probe:
+          living && trusted && !c.reciprocal
+            ? peerId && ['alan', 'dorothy', 'dennis'].includes(peerId)
+              ? 'no-ack'
+              : 'pending'
+            : living && c.reciprocal
+              ? 'reciprocal'
+              : undefined,
+        method_delivery: living
+          ? peerId && ['tim', 'vint', 'guido'].includes(peerId)
+            ? 'undelivered'
+            : peerId && ['grace', 'ada', 'margaret'].includes(peerId)
+              ? 'acked'
+              : peerId && ['barbara', 'radia', 'lynn'].includes(peerId)
+                ? 'awaiting-ack'
+                : undefined
+          : undefined,
+        last_moment_at: c.reciprocal ? now : trusted ? now : undefined,
+        last_moment: c.reciprocal
+          ? 'Mutual confirmed'
+          : trusted
+            ? 'Trust granted on this device'
+            : undefined,
         share_settings: living
           ? {
               share_card: true,
@@ -411,4 +527,9 @@ export async function canRefreshSampleCircle(ownerFingerprint: string): Promise<
   const existing = await getAllContacts(ownerFingerprint);
   if (existing.length === 0) return true;
   return existing.every((c) => isSampleContact(c as any));
+}
+
+/** Exported for tests — living + classical roster size. */
+export function sampleRosterSize(): number {
+  return SAMPLE.length;
 }

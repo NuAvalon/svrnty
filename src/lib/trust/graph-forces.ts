@@ -8,6 +8,7 @@
  * Forces (each iteration):
  *   1. Soft cloud keep — stay in a wide disk around self (not a ring)
  *   2. Cluster gravity — pull toward shared owner-local tags
+ *   2b. Mutual-bond springs — witnessed open-visibility they_trust only
  *   3. Collision / spacing — push overlapping seals apart
  *   4. Self clearance — keep out of the center seal
  *   5. Bounds clamp — stay inside the world
@@ -28,6 +29,15 @@ export type ForceOptions = {
   cy: number;
   /** Owner-authored tag → member ids (cluster gravity only). */
   tagMembers?: Map<string, string[]>;
+  /**
+   * Witnessed peer↔peer mutual bonds (open-visibility they_trust) — soft springs.
+   * Same fail-closed set as filament drawing; never invent from tags.
+   */
+  mutualBonds?: Array<{ a: string; b: string }>;
+  /** Strength of mutual-bond springs [0..1]. */
+  mutualBondGravity?: number;
+  /** Preferred resting length for a mutual bond (world units). */
+  mutualBondRest?: number;
   /** Min clear gap between seal edges. */
   padding?: number;
   /** Keep nodes outside this radius from center (self seal). */
@@ -148,6 +158,9 @@ export function relaxGraphNodes<T extends ForceNode>(
     cx,
     cy,
     tagMembers,
+    mutualBonds,
+    mutualBondGravity = 0.12,
+    mutualBondRest = 72,
     padding = 14,
     selfClearance = 42,
     iterations = 48,
@@ -161,6 +174,8 @@ export function relaxGraphNodes<T extends ForceNode>(
 
   const nodes = input.map((n) => ({ ...n }));
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  // Fingerprints on edges may differ in case — index lower for bond lookup.
+  const byIdLower = new Map(nodes.map((n) => [n.id.toLowerCase(), n]));
 
   for (let iter = 0; iter < iterations; iter++) {
     const cool = 1 - iter / iterations;
@@ -203,6 +218,32 @@ export function relaxGraphNodes<T extends ForceNode>(
           m.x += (gx - m.x) * clusterGravity * cool;
           m.y += (gy - m.y) * clusterGravity * cool;
         }
+      }
+    }
+
+    // 2b) Witnessed mutual-bond springs — topology from consented they_trust only
+    if (mutualBonds && mutualBonds.length > 0 && mutualBondGravity > 0) {
+      for (const bond of mutualBonds) {
+        const a = byId.get(bond.a) || byIdLower.get(bond.a.toLowerCase());
+        const b = byId.get(bond.b) || byIdLower.get(bond.b.toLowerCase());
+        if (!a || !b) continue;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < 1e-6) {
+          const ang = ((hash32(a.id + b.id) % 360) * Math.PI) / 180;
+          dx = Math.cos(ang);
+          dy = Math.sin(ang);
+          dist = 1e-6;
+        }
+        // Spring toward rest length — pull if far, ease if too close (collision handles crush)
+        const slack = dist - mutualBondRest;
+        if (Math.abs(slack) < 2) continue;
+        const t = (slack / dist) * 0.5 * mutualBondGravity * cool;
+        a.x += dx * t;
+        a.y += dy * t;
+        b.x -= dx * t;
+        b.y -= dy * t;
       }
     }
 

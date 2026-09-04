@@ -22,7 +22,7 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-import { constellationCaption, focusConstellation } from '@/lib/trust/constellation';
+import { constellationCaption, focusConstellation, partitionConstellation } from '@/lib/trust/constellation';
 import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
 import { TrustMapLatticeField } from '@/components/TrustMapLatticeField';
 import { TrustMapGalaxy } from '@/components/TrustMapGalaxy';
@@ -53,13 +53,23 @@ import {
   type CardAsSeenAudience,
   type OwnerCardSnapshot,
 } from '@/components/identity/CardAsSeenByDialog';
+import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
+import {
+  applyLayoutMemory,
+  loadLayoutMemory,
+  mutualTopologySignature,
+  saveLayoutMemory,
+} from '@/lib/trust/layout-memory';
+import { relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import {
   collectGroupTags,
   computeBrowseClusters,
 } from '@/lib/trust/trust-map-browse-layout';
+import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { loadLocalMethods } from '@/components/identity/local-methods';
 import { hydrateOwnerCard, methodsForLens, methodKindLabel } from '@/components/identity/owner-card';
+import { SELF_RING_RADIUS } from '@/lib/trust/trust-map-layout';
 
 interface PendingIntro {
   introduced_by: string;
@@ -178,10 +188,22 @@ export function TrustMap({
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [editGroupName, setEditGroupName] = useState('');
   const [fullscreen, setFullscreen] = useState(false);
-  const { cam, reset: resetVp, zoomBy, applyFit, elRef: viewportElRef, handlers: vpHandlers } = useGraphViewport();
+  const {
+    cam,
+    reset: resetVp,
+    zoomBy,
+    focusOn,
+    applyFit,
+    elRef: viewportElRef,
+    handlers: vpHandlers,
+  } = useGraphViewport();
   const [selectionPanel, setSelectionPanel] = useState<'view' | 'edit' | 'options' | null>(null);
   const [cardAudience, setCardAudience] = useState<CardAsSeenAudience | null>(null);
   const [cardPreviewOpen, setCardPreviewOpen] = useState(false);
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const [pulseId, setPulseId] = useState<string | null>(null);
+  const [crystallizeNote, setCrystallizeNote] = useState<string | null>(null);
+  const prevMutualRef = React.useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -253,14 +275,56 @@ export function TrustMap({
     };
   }, [ownerFingerprint, ownerName, ownerCard]);
 
-  const layout = useMemo(
-    () =>
-      computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
-        width: world,
-        height: world,
-      }),
-    [ownerFingerprint, ownerName, visibleContacts, world],
-  );
+  const layout = useMemo(() => {
+    const raw = computeTrustLayout(ownerFingerprint, ownerName, visibleContacts, {
+      width: world,
+      height: world,
+    });
+    const mutualBonds = witnessedPeerTrustChords(visibleContacts).map((c) => ({
+      a: c.a,
+      b: c.b,
+    }));
+    const topo = mutualTopologySignature(mutualBonds);
+    const { nodes: memory, topology: rememberedTopo } = loadLayoutMemory(ownerFingerprint);
+    // Soft recall; soften further when mutual topology changed so springs can rearrange.
+    const topologyChanged = topo !== rememberedTopo;
+    const blended = applyLayoutMemory(raw.nodes, memory, 0.55, topologyChanged);
+    const n = blended.length;
+    const density = Math.sqrt(Math.max(n, 1));
+    const nodes = relaxGraphNodes(blended, {
+      width: raw.width,
+      height: raw.height,
+      cx: raw.cx,
+      cy: raw.cy,
+      tagMembers: tagMembership(visibleContacts),
+      mutualBonds,
+      mutualBondGravity: topologyChanged ? 0.22 : 0.14,
+      mutualBondRest: 64,
+      padding: Math.min(36, Math.round(18 + density * 1.6)),
+      selfClearance: SELF_RING_RADIUS + 18,
+      iterations: Math.min(48, 22 + Math.floor(n / 4)),
+      clusterGravity: 0.12,
+      centerGravity: 0.003,
+      cloudMin: SELF_RING_RADIUS + 40,
+      cloudMax: Math.min(raw.cx, raw.cy) * 0.94,
+      repulsion: Math.min(1.1, 0.75 + density * 0.03),
+      margin: 22,
+    });
+    return { ...raw, nodes, topology: topo };
+  }, [ownerFingerprint, ownerName, visibleContacts, world]);
+
+  // Persist neighborhoods so the map feels like yours.
+  useEffect(() => {
+    if (!ownerFingerprint || layout.nodes.length === 0) return;
+    const t = window.setTimeout(() => {
+      saveLayoutMemory(
+        ownerFingerprint,
+        layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
+        layout.topology,
+      );
+    }, 800);
+    return () => window.clearTimeout(t);
+  }, [ownerFingerprint, layout.nodes, layout.topology]);
 
   useEffect(() => {
     const el = viewportElRef.current;
@@ -277,6 +341,32 @@ export function TrustMap({
     for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
     return m;
   }, [visibleContacts]);
+
+  // Crystallize when mutual trust newly appears (FACETS GROW). Skip first paint.
+  useEffect(() => {
+    const now = new Set<string>();
+    for (const c of visibleContacts) {
+      if (c.mutual?.reciprocal) now.add(c.peer_fingerprint);
+    }
+    const prev = prevMutualRef.current;
+    if (prev.size === 0 && now.size > 0) {
+      prevMutualRef.current = now;
+      return;
+    }
+    for (const id of now) {
+      if (!prev.has(id)) {
+        const name = edgeByFp.get(id)?.peer_name || 'Someone';
+        setCrystallizeNote(`Mutual trust crystallised with ${name}`);
+        setPulseId(id);
+        window.setTimeout(() => {
+          setCrystallizeNote(null);
+          setPulseId((cur) => (cur === id ? null : cur));
+        }, 3200);
+        break;
+      }
+    }
+    prevMutualRef.current = now;
+  }, [visibleContacts, edgeByFp]);
 
   const [focusId, setFocusId] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
@@ -296,11 +386,102 @@ export function TrustMap({
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
 
+  const flyToNode = useCallback(
+    (id: string) => {
+      const n = layout.nodes.find((node) => node.id === id);
+      if (n) {
+        focusOn(n.x, n.y, 0.28);
+      } else if (viewMode === 'browse') {
+        for (const cl of browseClusters) {
+          const m = cl.members.find((mem) => mem.id === id);
+          if (m) {
+            focusOn(m.x, m.y, 0.32);
+            break;
+          }
+        }
+      }
+      setFocusId(id);
+      setPulseId(id);
+      setSelectionPanel('view');
+      window.setTimeout(() => setPulseId((cur) => (cur === id ? null : cur)), 1100);
+    },
+    [layout.nodes, focusOn, viewMode, browseClusters],
+  );
+
+  const browseMemberLabels = useMemo(() => {
+    const el = viewportElRef.current;
+    const vw = el?.clientWidth ?? 640;
+    const vh = el?.clientHeight ?? 640;
+    const pxPerWorld = vw / Math.max(cam.w, 1);
+    const q = searchQuery.trim().toLowerCase();
+    const cands: LabelCandidate[] = [];
+    for (const cl of browseClusters) {
+      for (const m of cl.members) {
+        const sx = ((m.x - cam.x) / Math.max(cam.w, 1e-6)) * vw;
+        const sy = ((m.y - cam.y) / Math.max(cam.h, 1e-6)) * vh;
+        const rPx = Math.max(8 * pxPerWorld, 6);
+        const force =
+          m.id === focusId ||
+          m.id === hoverId ||
+          (!!q && m.name.toLowerCase().includes(q));
+        cands.push({
+          id: m.id,
+          name: pxPerWorld < 1.3 ? shortDisplayName(m.name) : m.name,
+          x: sx,
+          y: sy,
+          r: rPx,
+          priority: force ? 'force' : m.trusted ? 'trusted' : 'living',
+        });
+      }
+    }
+    const picks = selectLabels(cands, {
+      viewW: vw,
+      viewH: vh,
+      pxPerWorld,
+      maxLabels: 40,
+      boxW: 64,
+      boxH: 12,
+    });
+    return picks.map((p) => {
+      const wx = cam.x + (p.x / Math.max(vw, 1)) * cam.w;
+      const wy = cam.y + (p.textY / Math.max(vh, 1)) * cam.h;
+      return { id: p.id, name: p.name, x: wx, y: wy };
+    });
+  }, [browseClusters, cam, searchQuery, focusId, hoverId, viewportElRef]);
+
+  /** Enter / unique match → fly-to + pulse. */
+  const runSearchFly = useCallback(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return;
+    const hits = visibleContacts.filter((c) => c.peer_name.toLowerCase().includes(q));
+    if (hits.length === 0) return;
+    const exact = hits.find((c) => c.peer_name.toLowerCase() === q);
+    const pick = exact || (hits.length === 1 ? hits[0] : null);
+    if (pick) flyToNode(pick.peer_fingerprint);
+  }, [searchQuery, visibleContacts, flyToNode]);
+
+  const livingById = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof livingEdgeStatus>>();
+    for (const c of visibleContacts) m.set(c.peer_fingerprint, livingEdgeStatus(c));
+    return m;
+  }, [visibleContacts]);
+
+  const introLinks = useMemo(() => {
+    const links: Array<{ from: string; to: string }> = [];
+    for (const c of visibleContacts) {
+      const intro = (c as EdgeExtras).pending_intro;
+      if (intro?.introduced_by_fp) {
+        links.push({ from: c.peer_fingerprint, to: intro.introduced_by_fp });
+      }
+    }
+    return links;
+  }, [visibleContacts]);
 
   const lamped = useMemo(
     () => (focusId ? focusConstellation(focusId, visibleContacts) : null),
     [focusId, visibleContacts],
   );
+  const lampParts = useMemo(() => (lamped ? partitionConstellation(lamped) : null), [lamped]);
   const peerChords = useMemo(
     () => witnessedPeerTrustChords(visibleContacts),
     [visibleContacts],
@@ -648,6 +829,12 @@ export function TrustMap({
           data-testid="trust-map-search"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              runSearchFly();
+            }
+          }}
           placeholder="Find someone…"
           aria-label="Find someone in your lattice"
           style={{
@@ -657,6 +844,15 @@ export function TrustMap({
             fontSize: 11,
           }}
         />
+        <button
+          type="button"
+          data-testid="trust-map-search-go"
+          aria-label="Fly to search match"
+          onClick={() => runSearchFly()}
+          style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}
+        >
+          Go
+        </button>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <button type="button" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
@@ -933,10 +1129,16 @@ export function TrustMap({
                             : 'transparent'
                         }
                         stroke={
-                          picked.has(m.id) ? E.accent : m.trusted ? E.accent2 : E.border
+                          picked.has(m.id) || hoverId === m.id
+                            ? E.accent
+                            : m.trusted
+                              ? E.accent2
+                              : E.border
                         }
-                        strokeWidth={m.trusted || picked.has(m.id) ? 1.7 : 1.1}
+                        strokeWidth={m.trusted || picked.has(m.id) || hoverId === m.id ? 1.7 : 1.1}
                         strokeDasharray={m.trusted ? undefined : '2.5 2'}
+                        onPointerEnter={() => setHoverId(m.id)}
+                        onPointerLeave={() => setHoverId((h) => (h === m.id ? null : h))}
                       />
                       <title>{`${m.name}${m.trusted ? ' · trusted' : ' · known'}${m.mutual ? ' · mutual' : ''}`}</title>
                     </g>
@@ -944,6 +1146,20 @@ export function TrustMap({
                 </g>
                 );
               })}
+              {browseMemberLabels.map((lab) => (
+                <text
+                  key={`lbl-${lab.id}`}
+                  x={lab.x}
+                  y={lab.y}
+                  textAnchor="middle"
+                  fill={E.text}
+                  fontSize={Math.max(8, (12 * cam.w) / Math.max(viewportElRef.current?.clientWidth ?? 640, 1))}
+                  fontFamily={E.fontSans}
+                  style={{ pointerEvents: 'none' }}
+                >
+                  {lab.name}
+                </text>
+              ))}
             </svg>
             <p
               style={{
@@ -961,6 +1177,43 @@ export function TrustMap({
             >
               Neighborhoods you named · glow is trust · not a map
             </p>
+            {(hoverId || focusId) && (
+              <div
+                data-testid="trust-map-nameplate"
+                style={{
+                  position: 'absolute',
+                  left: 12,
+                  top: 12,
+                  zIndex: 3,
+                  pointerEvents: 'none',
+                  maxWidth: 'min(280px, 70%)',
+                  padding: '8px 12px',
+                  borderRadius: 10,
+                  background: 'color-mix(in srgb, var(--se-bg) 82%, transparent)',
+                  border: `1px solid ${E.border}`,
+                  backdropFilter: 'blur(12px)',
+                  fontFamily: E.fontSans,
+                }}
+              >
+                {(() => {
+                  const id = hoverId || focusId;
+                  const edge = id ? edgeByFp.get(id) : null;
+                  const name = edge?.peer_name || 'Someone';
+                  const trusted = !!edge?.trusted;
+                  const living = id ? livingNodeIds.has(id) : false;
+                  const mutual = !!edge?.mutual?.reciprocal;
+                  return (
+                    <>
+                      <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text }}>{name}</p>
+                      <p style={{ margin: '4px 0 0', fontSize: 11, color: E.muted }}>
+                        {trusted ? 'Trusted' : living ? 'Known · SVRNTY' : 'Classical book'}
+                        {mutual ? ' · mutual' : ''}
+                      </p>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
 
         ) : (
@@ -969,14 +1222,141 @@ export function TrustMap({
           layout={layout}
           cam={cam}
           focusId={focusId}
+          hoverId={hoverId}
+          pulseId={pulseId}
           constellation={lamped}
           peerChords={peerChords}
           picked={picked}
           query={searchQuery}
           livingIds={livingNodeIds}
+          livingById={livingById}
+          introLinks={introLinks}
           onNodeClick={handleNodeClick}
           onBackgroundClick={clearFocus}
+          onHoverChange={setHoverId}
         />
+        {crystallizeNote ? (
+          <div
+            data-testid="trust-map-crystallize"
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: 16,
+              transform: 'translateX(-50%)',
+              zIndex: 5,
+              padding: '10px 16px',
+              borderRadius: 12,
+              background: 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))',
+              border: `1px solid ${E.accent2}`,
+              color: E.text,
+              fontFamily: E.fontSans,
+              fontSize: 13,
+              pointerEvents: 'none',
+              boxShadow: '0 0 28px color-mix(in srgb, var(--se-accent2) 28%, transparent)',
+            }}
+          >
+            {crystallizeNote}
+          </div>
+        ) : null}
+        {(hoverId || focusId) && !isEmpty ? (
+          <div
+            data-testid="trust-map-nameplate"
+            style={{
+              position: 'absolute',
+              left: 12,
+              top: 12,
+              zIndex: 3,
+              pointerEvents: 'none',
+              maxWidth: 'min(320px, 72%)',
+              padding: '8px 12px',
+              borderRadius: 10,
+              background: 'color-mix(in srgb, var(--se-bg) 82%, transparent)',
+              border: `1px solid ${E.border}`,
+              backdropFilter: 'blur(12px)',
+              fontFamily: E.fontSans,
+            }}
+          >
+            {(() => {
+              const id = hoverId || focusId;
+              const edge = id ? edgeByFp.get(id) : null;
+              const node = layout.nodes.find((n) => n.id === id);
+              const name = edge?.peer_name || node?.name || 'Someone';
+              const st = id ? livingById.get(id) : null;
+              const nameOf = (fp: string) => edgeByFp.get(fp)?.peer_name || fp.slice(0, 8);
+              const trustNames = (lampParts?.witnessedTrust || []).map(nameOf);
+              const groupNames = (lampParts?.groupOnly || []).map(nameOf);
+              const circleNames = (lampParts?.disclosedCircle || []).map(nameOf);
+              const showLampLists = !!focusId && id === focusId && lampParts;
+              return (
+                <>
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text }}>{name}</p>
+                  <p style={{ margin: '4px 0 0', fontSize: 11, color: E.muted }}>
+                    {st?.statusLine || 'Someone'}
+                    {st?.lastMoment ? ` · ${st.lastMoment}` : ''}
+                    {hoverId && focusId && hoverId !== focusId ? ' · hover' : ''}
+                  </p>
+                  {st?.detailLine ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: E.dim }}>{st.detailLine}</p>
+                  ) : null}
+                  {st?.canCommunicate ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: E.ok }}>Linked · can communicate</p>
+                  ) : st?.connection === 'pending' ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 10, color: E.accent }}>
+                      Not linked yet · communicate waits on reciprocal know
+                    </p>
+                  ) : null}
+                  {showLampLists ? (
+                    <div data-testid="trust-map-lamp-links" style={{ marginTop: 8, fontSize: 11, lineHeight: 1.45 }}>
+                      {trustNames.length > 0 ? (
+                        <p style={{ margin: '0 0 4px', color: E.accent2 }}>
+                          <span style={{ fontWeight: 600 }}>Witnessed mutual trust</span>
+                          {' · '}
+                          {trustNames.slice(0, 8).join(', ')}
+                          {trustNames.length > 8 ? '…' : ''}
+                        </p>
+                      ) : (
+                        <p style={{ margin: '0 0 4px', color: E.dim }}>No witnessed peer mutuals on this device</p>
+                      )}
+                      {circleNames.length > 0 ? (
+                        <p style={{ margin: '0 0 4px', color: E.accent }}>
+                          Circle they showed you · {circleNames.slice(0, 6).join(', ')}
+                          {circleNames.length > 6 ? '…' : ''}
+                        </p>
+                      ) : null}
+                      {groupNames.length > 0 ? (
+                        <p style={{ margin: '0 0 4px', color: E.muted }}>
+                          Groups you named (not trust) · {groupNames.slice(0, 6).join(', ')}
+                          {groupNames.length > 6 ? '…' : ''}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {edge && focusId === id ? (
+                    <button
+                      type="button"
+                      data-testid="trust-map-nameplate-card"
+                      onClick={() => openCardPreviewForPeer(edge)}
+                      style={{
+                        marginTop: 8,
+                        pointerEvents: 'auto',
+                        fontSize: 11,
+                        fontFamily: E.fontSans,
+                        color: E.accent,
+                        background: 'transparent',
+                        border: `1px solid ${E.border}`,
+                        borderRadius: 8,
+                        padding: '4px 8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      My card as they see it
+                    </button>
+                  ) : null}
+                </>
+              );
+            })()}
+          </div>
+        ) : null}
         {!isEmpty ? (
           <p
             data-testid="trust-map-legend"
@@ -1017,6 +1397,9 @@ export function TrustMap({
             <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
             <p style={{ margin: '8px 0 0', fontSize: 11, color: T.caption }}>
               Bonds crystallize here as you form them. Every line consented — none inferred.
+            </p>
+            <p style={{ margin: '10px 0 0', fontSize: 11, color: E.muted, maxWidth: 340, marginLeft: 'auto', marginRight: 'auto' }}>
+              Invite someone from Contacts — when they join from your invite, that classical row should become this living contact (fleet-owned link). Until then, load a demo circle to explore the map.
             </p>
           </div>
         )}
@@ -1144,8 +1527,8 @@ export function TrustMap({
           <span style={{ color: E.accent2 }}>● trusted</span>
           <span>○ known</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
-          <span style={{ color: E.accent2 }}>═ mutual</span>
-          <span>- - group</span>
+          <span style={{ color: E.accent2 }}>═ mutual trust</span>
+          <span>- - group (not trust)</span>
         </div>
       )}
 

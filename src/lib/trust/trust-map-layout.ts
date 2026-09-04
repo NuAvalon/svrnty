@@ -16,12 +16,14 @@
 //     • position     → I added this contact + optional owner-local tag neighborhood
 //     • radius       → salience of the standing I granted (trusted > known) — overlay
 //     • opacity      → what THEY disclosed to me
-//   Peer↔peer trust chords are NOT layout — the renderer overlays witnessed
-//   open-visibility filaments. Unlit = privacy, never absence.
+//   Peer↔peer trust chords ARE soft layout springs when witnessed
+//   (open-visibility they_trust) — same fail-closed set as filaments.
+//   Unlit / unwitnessed = privacy, never absence; tags never invent bonds.
 
 import { isDecayed, daysUntilDecay } from './types';
 import type { TrustEdge } from './types';
 import { relaxGraphNodes, seedEgocentric, tagMembership } from './graph-forces';
+import { witnessedPeerTrustChords } from './peer-trust-chords';
 
 export type TrustState = 'trusted' | 'known' | 'decayed';
 
@@ -49,8 +51,16 @@ export interface TrustLayout {
   cloudRadius: number;
 }
 
+export type LayoutOptions = {
+  width?: number;
+  height?: number;
+  /** Extra margin reserved for labels near the frame edge. */
+  labelMargin?: number;
+};
+
 export function worldSizeForCount(n: number): number {
-  return Math.max(640, Math.round(180 + Math.sqrt(Math.max(n, 1)) * 58));
+  // Grow world with √n so ~80–200 contacts get room to breathe (labels + seals).
+  return Math.max(720, Math.round(220 + Math.sqrt(Math.max(n, 1)) * 72));
 }
 
 /** Salience — visual overlay, not orbital distance. */
@@ -130,8 +140,8 @@ export function computeTrustLayout(
 
   const n = contacts.length;
   const maxExtent = Math.min(cx, cy) - NODE_RADIUS.trusted - labelMargin - 8;
-  const spread = Math.min(maxExtent * 0.88, 48 + Math.sqrt(Math.max(n, 1)) * 38);
-  const minR = SELF_RING_RADIUS + 52;
+  const spread = Math.min(maxExtent * 0.92, 64 + Math.sqrt(Math.max(n, 1)) * 46);
+  const minR = SELF_RING_RADIUS + 64;
 
   const seeds = seedEgocentric(
     contacts.map((c) => ({ id: c.peer_fingerprint, tags: c.tags })),
@@ -159,21 +169,31 @@ export function computeTrustLayout(
     };
   });
 
+  // Density-aware spacing: more contacts → more padding / repulsion / iterations.
+  const density = Math.sqrt(Math.max(n, 1));
+  const pad = Math.min(36, Math.round(18 + density * 1.6));
+  const mutualBonds = witnessedPeerTrustChords(contacts).map((c) => ({
+    a: c.a,
+    b: c.b,
+  }));
   const relaxed = relaxGraphNodes(raw, {
     width,
     height,
     cx,
     cy,
     tagMembers: tagMembership(contacts),
-    padding: 22,
-    selfClearance: SELF_RING_RADIUS + 14,
-    iterations: 56,
-    clusterGravity: 0.2,
-    centerGravity: 0.006,
-    cloudMin: minR * 0.65,
-    cloudMax: maxExtent * 0.94,
-    repulsion: 0.78,
-    margin: 18,
+    mutualBonds,
+    mutualBondGravity: 0.16,
+    mutualBondRest: Math.max(58, NODE_RADIUS.trusted * 6),
+    padding: pad,
+    selfClearance: SELF_RING_RADIUS + 18,
+    iterations: Math.min(96, 48 + Math.floor(n / 3)),
+    clusterGravity: 0.16,
+    centerGravity: 0.004,
+    cloudMin: minR * 0.7,
+    cloudMax: maxExtent * 0.96,
+    repulsion: Math.min(1.15, 0.72 + density * 0.035),
+    margin: 22,
   });
 
   let cloudRadius = SELF_RING_RADIUS;
