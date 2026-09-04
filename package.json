@@ -21,6 +21,7 @@
     "@radix-ui/themes": "^3.2.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jsqr": "^1.4.0",
     "lucide-react": "^0.475.0",
     "next": "^15.5.23",
     "openpgp": "^6.1.0",

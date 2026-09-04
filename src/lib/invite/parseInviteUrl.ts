@@ -2,7 +2,7 @@
 //
 // The ONE untrusted-input boundary for svrnty invite links (INV-4).
 // Every entry point that takes an externally-supplied invite string — the paste field
-// (JoinByCode), a future QR camera (ScanToJoin), the /c/[code] route — parses it HERE and
+// (JoinByCode), the QR camera (ScanToJoin), the /c/[code] route — parses it HERE and
 // only here, so there is a single validated path into the join ceremony (gate-3 as
 // code). TOTAL: never throws; returns null on anything malformed or off-host. Rejection
 // happens BEFORE any JoinerCeremony mount.
