@@ -6,7 +6,7 @@
 **Landed since this queue was last advanced:** the P0 launch batch (send UI, version-history, deep-links, recovery-code recovery, export-behind-auth, trust-confirms) plus the **Living Address Book** work — PR #82 (phone-book vCard with tags / fingerprint / trust stripped by construction; "Link to SVRNTY") and PR #83 (derive-and-match fingerprint↔key binding + keyless-classical fixture). #82 is in **staging QA on dev.svrnty.is**; merge to main is Peter-gated on that QA.
 
 **On deck (fleet-ruled — unblocks after #82 merges to main):**
-- **Own-identity `.vcf` export** ("Save contact card" on the identity card) — this PR (post-#82 fast-follow; book-strip already on main via #82, not repeated). Prior draft #77 can close as superseded.
+- **Own-identity `.vcf` export** ("Save contact card" on the identity card) — this PR [#93](https://github.com/NuAvalon/svrnty/pull/93) (post-#82 fast-follow; book-strip already on main via #82, not repeated). Prior draft #77 can close as superseded.
 - **Private tag-management CRUD** — carried in PR #68. Rebase onto post-#82 main, reconcile the ContactManagement / vcard overlap, re-review.
 
 **Boundaries still in force:** the gap-freeze rules (`.cursor/rules/svrnty-gap-freeze.mdc`) — no crypto, vault, identity, PSI, signing, or trust-sync changes. Render-glass to spec only.
