@@ -150,6 +150,13 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
     delete next.tags;
     delete next.distress_inbound;
     delete next.open_visibility;
+    // §C F1 (Flint privacy co-review 2026-09-03): the visibility-overlay outputs are owner-local —
+    // NEVER on the wire. disclosed_circle = the computed mutual-known circle (Apollo populates it);
+    // they_trust = the reciprocal-trust output (Phase-2). Both ride the same owner-local band as
+    // blocked/distress_inbound (contact-edge.ts:58). Durable fast-follow (Flint rec): invert this
+    // denylist to a wire-safe ALLOWLIST so a new owner-local field fails CLOSED, not leaks by default.
+    delete next.disclosed_circle;
+    delete next.they_trust;
     if (next.share_settings && typeof next.share_settings === 'object') {
       const share = { ...(next.share_settings as Record<string, unknown>) };
       delete share.open_visibility;
@@ -159,5 +166,7 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
   }
   delete (out as { distress_inbound?: unknown }).distress_inbound;
   delete (out as { open_visibility?: unknown }).open_visibility;
+  delete (out as { disclosed_circle?: unknown }).disclosed_circle; // §C F1 — owner-local, never on wire
+  delete (out as { they_trust?: unknown }).they_trust; // §C F1 — owner-local, never on wire
   return out;
 }
