@@ -20,7 +20,7 @@ export const HELP_STEPS: HelpStep[] = [
     title: 'Create Your Identity',
     content: [
       'Enter your name and a strong unlock passphrase (12+ characters).',
-      'Keys are generated on this device — classical and post-quantum. The server never holds them.',
+      'Keys are generated on this device — classical today, with post-quantum keys carried and ready (not yet the live path). The server never holds them.',
       'At forge you also see a recovery code (8 groups of 8 hex characters). Write it down offline — shown once. It is not your everyday unlock passphrase.',
       'There is no recovery email and no “forgot password” on a server. Keep the unlock passphrase and the recovery code somewhere you still have if this device is gone.',
     ],
@@ -64,7 +64,7 @@ export const HELP_STEPS: HelpStep[] = [
   {
     title: 'How It Works',
     content: [
-      'Your keys and contacts stay on your device, encrypted. The relay is designed to stay blind to your graph.',
+      'Your keys stay on your device, encrypted. Your contacts stay on your device too — and the relay is built to stay blind to your graph.',
       'Signals you send are signed. Classical and post-quantum algorithms are in the stack — do not read this as a guarantee that every path is PQ-complete yet.',
       'No server account that can revoke you. No ads. No aggregate reputation score.',
       'The card is yours. Edges you see are ones you authored or witnessed — none inferred.',
