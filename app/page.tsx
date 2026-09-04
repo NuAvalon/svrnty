@@ -441,14 +441,13 @@ export default function Home() {
           <span
             style={{
               fontFamily: E.fontSans,
-              fontSize: 12,
+              fontSize: 13,
               fontWeight: 600,
-              letterSpacing: '0.2em',
-              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
               color: E.accent,
             }}
           >
-            svrnty
+            svrnty.is
           </span>
           <span
             style={{
@@ -461,7 +460,7 @@ export default function Home() {
               textOverflow: 'ellipsis',
             }}
           >
-            reclaim what&apos;s yours
+            yours
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
