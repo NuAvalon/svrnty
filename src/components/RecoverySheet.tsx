@@ -2,11 +2,12 @@
 
 /**
  * Recovery — Guardians, seed, password, Distress.
- * Distress is silent on this phone. Fleet owns the envelope.
+ * Sender Distress is Coming (not live). Fleet owns the envelope.
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { DISTRESS_COMING_COPY } from '@/components/recovery/distress-coming';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import type { TrustEdge } from '@/lib/trust/types';
 import { loadShards } from '@/lib/identity/client-store';
@@ -23,7 +24,6 @@ type Props = {
 
 export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
   const [panel, setPanel] = useState<Panel>('menu');
-  const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [password, setPassword] = useState('');
   const [password2, setPassword2] = useState('');
   const [seedAck, setSeedAck] = useState(false);
@@ -45,10 +45,8 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
       setPassword('');
       setPassword2('');
       setSeedAck(false);
-      return;
     }
-    setPicked(new Set(guardians.map((g) => g.peer_fingerprint)));
-  }, [open, guardians]);
+  }, [open]);
 
   useEffect(() => {
     if (!open || panel !== 'rotate' || !fp) return;
@@ -126,14 +124,15 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
                   ['rotate', TRUST_RECIPE_COPY.recoveryRotate],
                   ['seed', TRUST_RECIPE_COPY.recoverySeed],
                   ['password', TRUST_RECIPE_COPY.recoveryPassword],
-                  ['distress', 'Distress — coming'],
+                  ['distress', DISTRESS_COMING_COPY.menuLabel],
                 ] as const
               ).map(([id, label]) => (
                 <button
                   key={id}
                   type="button"
+                  data-testid={id === 'distress' ? 'distress-coming-menu' : undefined}
                   onClick={() => { setNote(null); setPanel(id); }}
-                  style={itemBtn(id === 'distress')}
+                  style={itemBtn(false)}
                 >
                   {id === 'distress' ? label : label.split('.')[0]}
                 </button>
@@ -257,41 +256,19 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
         {panel === 'distress' && (
           <>
             <h2 style={{ margin: '8px 0 12px', fontSize: 20, fontWeight: 400, color: E.text }}>
-              Distress signal — coming
+              {DISTRESS_COMING_COPY.heading}
             </h2>
             <p style={{ margin: 0, fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-              {"This will let you quietly reach the people you trust to come to you — in person, offline — when you can't safely say why. It isn't live yet, so we've turned it off rather than let it fail silently. Pressing it now would do nothing, and we won't pretend otherwise."}
+              {DISTRESS_COMING_COPY.body}
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 16 }}>
-              {guardians.length === 0 && (
-                <p style={{ color: E.dim, fontSize: 13 }}>Name Guardians first — people you Trust.</p>
-              )}
-              {guardians.map((g) => {
-                const on = picked.has(g.peer_fingerprint);
-                return (
-                  <button
-                    key={g.peer_fingerprint}
-                    type="button"
-                    onClick={() => {
-                      const next = new Set(picked);
-                      if (on) next.delete(g.peer_fingerprint);
-                      else next.add(g.peer_fingerprint);
-                      setPicked(next);
-                    }}
-                    style={itemBtn(on)}
-                  >
-                    {on ? '●' : '○'} {g.peer_name}
-                  </button>
-                );
-              })}
-            </div>
             <button
               type="button"
+              data-testid="distress-coming-control"
               disabled={true}
               aria-disabled={true}
-              style={{ ...itemBtn(true), marginTop: 18, opacity: 0.4, cursor: 'not-allowed' }}
+              style={{ ...itemBtn(false), marginTop: 18, opacity: 0.4, cursor: 'not-allowed' }}
             >
-              Coming
+              {DISTRESS_COMING_COPY.controlLabel}
             </button>
           </>
         )}
