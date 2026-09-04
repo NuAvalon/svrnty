@@ -252,7 +252,7 @@ export function VaultExportDialog({
             <Download className="h-4 w-4" style={{ color: E.ok }} />
             <AlertDescription style={{ color: E.text }}>
               Your encrypted vault downloaded. Remember this encryption password —
-              and keep your recovery phrase somewhere you&apos;ll still have if you lose it.
+              and keep your recovery code somewhere you&apos;ll still have if you lose it.
             </AlertDescription>
           </Alert>
         )}
