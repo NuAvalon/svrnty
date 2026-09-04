@@ -1,17 +1,15 @@
 # svrnty — frontend build queue
 
-The top unchecked item below is the task.
+Work top-down: the top task first, then the next.
 
-## 1. Re-rebase 3 conflicted draft PRs onto current `main`  [git maintenance — NOT a new feature]
+## 1. Re-rebase 3 conflicted draft PRs onto current `main`  [git maintenance]
 
-#73, #76, #70 were rebased earlier but **re-conflicted** after subsequent merges landed — they all touch `src/components/SoverentityFrontend.tsx`, which changed on main (via #85, merged). Rebase each onto current `main` again so it's mergeable:
+#73, #76, #70 re-conflicted after subsequent merges (they touch `src/components/SoverentityFrontend.tsx`, changed on main via #85). Rebase each onto current `main`, resolve conflicts in the frontend files (your domain), keep as **draft**, force-push. Don't change intent. These merge one-at-a-time — after one merges the others may re-conflict; expect a follow-up rebase. Order: **#73 → #76 → #70**.
+Do NOT touch already-merged (#69/#79/#80/#85/#99) or the not-conflicted #71/#68/#94.
 
-- For each: `git rebase origin/main`, resolve conflicts in the frontend files (your domain — the fleet doesn't hand-resolve frontend conflicts), keep the PR a **draft**, force-push. Don't change intent — this is a rebase.
-- **These merge one-at-a-time.** After one merges, the others may re-conflict on SoverentityFrontend again; expect a follow-up rebase request. Rebase in this order so the first is cleanest:
+## 2. Top-navbar wordmark → "SVRNTY.IS YOURS"  [copy/wordmark — low-risk, its own PR]
 
-**Order:** #73 (restore-copy) → #76 (recovery-code term) → #70 (app-lock, Flint-approved).
-
-**Do NOT touch:** already-merged (#69/#79/#80/#85/#99), or the still-mergeable-not-conflicted #71/#68/#94 (awaiting domain reviews, not a rebase).
+Peter directive (#128919): the top navbar currently renders the brand `svrnty.is` + a separate dim word `yours` (in `app/page.tsx`, ~line 503 — two `<span>`s). Change it to read as the single wordmark **SVRNTY.IS YOURS** — the play on the domain (svrnty.is → "sovereignty is yours"). Make it read as ONE confident wordmark, not brand + disconnected tagline. Styling (caps / weight / spacing) is your call; the intent is the wordplay. Open its own small PR (don't fold into the #1 rebases). Pure copy/presentation — no logic.
 
 ---
-*Queue advanced 2026-09-04 by Athena (git-push lane), for Peter #128919 ("do what you need re: rebase / get cursor"). Re-rebase of the conflicted set from the first rebase-wave.*
+*Queue advanced 2026-09-04 by Athena (git-push lane). #1 for Peter #128919 (rebase); #2 for Peter #128919 (navbar wordmark), routed by Archie #128938.*
