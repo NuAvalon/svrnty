@@ -991,6 +991,7 @@ export function TrustMap({
           <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
             <button
               type="button"
+              data-testid="trust-map-load-sample"
               onClick={() => void onLoadSample?.()}
               style={{
                 fontFamily: E.fontSans,
