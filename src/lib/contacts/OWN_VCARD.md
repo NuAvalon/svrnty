@@ -11,7 +11,7 @@
 Book multi-contact export (`vcard.ts`) is unchanged here — #82 already strips tags / fingerprint / trust from the phone-book path.
 
 ## Invariants
-- Device-local tags / blocked / group-labels never appear on this export (Apollo §2 / KB#87571)
+- Device-local tags / blocked / group-labels never appear on this export — device-local data must never serialize onto exported payloads
 - Own `.vcf` carries user-authored methods only — fingerprint as UID/NOTE recognition aid, not a verification claim
 - Site URLs are http(s) only (no `javascript:` / `data:`)
 

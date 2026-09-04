@@ -2,7 +2,7 @@
  * Own-identity → portable vCard 3.0.
  * User-authored contact methods only — non-crypto, phone/email-client friendly.
  *
- * Apollo §2: never serialize device-local tags / blocked / group-labels
+ * Privacy invariant: never serialize device-local tags / blocked / group-labels
  * onto export payloads. OwnVCardSource has no such fields; tests assert
  * extras cannot leak even if a caller spreads a contact record.
  */

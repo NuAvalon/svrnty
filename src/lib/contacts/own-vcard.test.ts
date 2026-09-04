@@ -1,4 +1,4 @@
-// Own-identity vCard + Apollo §2 strip-on-export negative tests (KB#87571).
+// Own-identity vCard strip-on-export negative tests (device-local tags/blocked/keys must never serialize).
 // Run: npx tsx --test src/lib/contacts/own-vcard.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

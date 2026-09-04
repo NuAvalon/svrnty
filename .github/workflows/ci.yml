@@ -36,7 +36,7 @@ jobs:
         run: npx --no-install tsc --noEmit || true
       - name: Contract guards — lockstep divergence (contact.update verify↔apply allowlist ≡) — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/contact-update-allowlist-guard.test.ts
-      - name: Contract guards — own-identity vCard never emits tags/blocked (Apollo §2) — BLOCKING
+      - name: Contract guards — own-identity vCard never emits tags/blocked — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/own-vcard.test.ts
 
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
