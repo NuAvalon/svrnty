@@ -91,6 +91,66 @@ export function lockSession(): void {
   _sessionSalt = null;
 }
 
+// ── Biometric-unlock seam (CUR-6 #69) — the ONLY key-in/key-out boundary ──
+// The session key is normally a non-extractable CryptoKey derived from the passphrase
+// (deriveSessionKey). Biometric-unlock (Flint) needs to (1) wrap that key at enroll and
+// (2) restore it at unlock without the passphrase. These two fns are that boundary — they
+// keep the key material inside this module except for the transient raw bytes the wrap needs.
+
+/**
+ * Derive the raw session-key bytes from a passphrase — for the biometric-unlock WRAP ONLY.
+ * ⚠ SOLE SANCTIONED CALLER = biometric enroll (enrollBiometric). This is the ONLY raw-key-bits
+ * path in the store; it is NOT a general key-extraction util — do not call it elsewhere (Flint co-review).
+ * Same PBKDF2-600K path + SAME stored salt as initSessionKey, exposed as raw 32 bytes (deriveBits)
+ * so biometric-enroll can PRF-wrap them. Requires a prior passphrase unlock (the salt must exist),
+ * which enforces "enroll proves the user can already unlock." Because it uses the stored salt, the
+ * bytes reconstruct the IDENTICAL _sessionKey via unlockSessionFromKeyBits. The caller MUST zeroize
+ * the returned bytes immediately after wrapping.
+ */
+export async function deriveSessionKeyBits(passphrase: string): Promise<Uint8Array> {
+  const setting = await txGet<{ key: string; value: string }>('settings', 'key_encryption_salt');
+  if (!setting?.value) {
+    throw new Error('No session salt — unlock with the passphrase before enrolling biometric');
+  }
+  const salt = fromBase64(setting.value);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    keyMaterial,
+    256, // 256 bits → 32 bytes, matches the AES-256-GCM session key
+  );
+  return new Uint8Array(bits);
+}
+
+/**
+ * Unlock the session from raw key bytes — the biometric-unlock ENTRY (the real
+ * "finishUnlockFromSession"). `bits` are the deriveSessionKeyBits output the caller PRF-unwrapped
+ * from its stored blob. Imported as the SAME non-extractable AES-GCM _sessionKey the passphrase
+ * path yields, so the at-rest key records decrypt identically (a wrong/forged bits value simply
+ * fails the GCM tag on the next decrypt — no wrong key loads, same invariant as a wrong passphrase).
+ * The caller MUST zeroize `bits` after this returns.
+ */
+export async function unlockSessionFromKeyBits(bits: Uint8Array): Promise<void> {
+  if (bits.length !== 32) throw new Error('Invalid session key length (expected 32 bytes)');
+  const setting = await txGet<{ key: string; value: string }>('settings', 'key_encryption_salt');
+  if (!setting?.value) throw new Error('No session salt — cannot restore session state');
+  const key = await crypto.subtle.importKey(
+    'raw',
+    bits,
+    { name: 'AES-GCM' },
+    false, // non-extractable — matches deriveSessionKey
+    ['encrypt', 'decrypt'],
+  );
+  _sessionKey = key;
+  _sessionSalt = fromBase64(setting.value);
+}
+
 async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
   if (!_sessionKey) throw new Error('Session locked — call initSessionKey() first');
   const iv = new Uint8Array(12);
