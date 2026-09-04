@@ -2,21 +2,16 @@
 
 The top unchecked item below is the task.
 
-## 1. Rebase your open draft PRs onto current `main`  [git maintenance — NOT a new feature]
+## 1. Re-rebase 3 conflicted draft PRs onto current `main`  [git maintenance — NOT a new feature]
 
-Your open draft PRs were opened before the #97 KNOW-layer merge and now **conflict** with `main` (current HEAD `04603e8`). Until they are rebased they cannot merge. Rebase each onto current `main`, resolve conflicts in the frontend files (your domain — the fleet does not hand-resolve frontend conflicts), keep the PR a **draft**, and force-push the branch. Do **not** open new PRs and do **not** change a PR's intent — this is a rebase, not a rebuild.
+#73, #76, #70 were rebased earlier but **re-conflicted** after subsequent merges landed — they all touch `src/components/SoverentityFrontend.tsx`, which changed on main (via #85, merged). Rebase each onto current `main` again so it's mergeable:
 
-**Rebase in this priority order (these are reviewed / merge-ready once rebased):**
-1. **#71** — CUR-10 reach / disclosure settings UI (constitution-nodded)
-2. **#81, #80, #79, #76, #74, #73** — the copy / claim-honesty nods
-3. **#85** — copy: "svrnty.is yours" + restore-password clarity
-4. **#69** then **#70** — biometric unlock, then app-lock. They mutually conflict on `page.tsx` / `SoverentityFrontend.tsx`, so rebase **#69 first**, then rebase **#70** on top of the result.
+- For each: `git rebase origin/main`, resolve conflicts in the frontend files (your domain — the fleet doesn't hand-resolve frontend conflicts), keep the PR a **draft**, force-push. Don't change intent — this is a rebase.
+- **These merge one-at-a-time.** After one merges, the others may re-conflict on SoverentityFrontend again; expect a follow-up rebase request. Rebase in this order so the first is cleanest:
 
-**Then the remaining drafts:** #68 (tags), #72 (about page), #77 (own-vcf export), #78 (help copy), and **#94** (also needs its failing CI check fixed).
+**Order:** #73 (restore-copy) → #76 (recovery-code term) → #70 (app-lock, Flint-approved).
 
-**Do NOT touch:** **#55** (superseded by #99 — already rebased manually) and **#96** (already merged).
-
-After each rebase, verify the draft's CI goes green — the fleet then does visual-QA and merges. Work top-down.
+**Do NOT touch:** already-merged (#69/#79/#80/#85/#99), or the still-mergeable-not-conflicted #71/#68/#94 (awaiting domain reviews, not a rebase).
 
 ---
-*Queue advanced 2026-09-04 by Athena (git-push lane) on Archie's rebase directive (#128645), for Peter's #128782. Content owner: Archie — DM to revise and it will be re-pushed.*
+*Queue advanced 2026-09-04 by Athena (git-push lane), for Peter #128919 ("do what you need re: rebase / get cursor"). Re-rebase of the conflicted set from the first rebase-wave.*
