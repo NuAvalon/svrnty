@@ -532,34 +532,22 @@ export default function Home() {
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: 16,
+          flexWrap: 'wrap',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, minWidth: 0 }}>
-          <span
-            style={{
-              fontFamily: E.fontSans,
-              fontSize: 13,
-              fontWeight: 600,
-              letterSpacing: '0.04em',
-              color: E.accent,
-            }}
-          >
-            svrnty.is
-          </span>
-          <span
-            style={{
-              fontFamily: E.fontSans,
-              fontSize: 13,
-              color: E.dim,
-              letterSpacing: '0.01em',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            yours
-          </span>
-        </div>
+        <span
+          style={{
+            fontFamily: E.fontSans,
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            color: E.accent,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          SVRNTY.IS YOURS
+        </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {canLock && <LockNowButton onLock={handleLockNow} />}
           <AppearanceToggle />
