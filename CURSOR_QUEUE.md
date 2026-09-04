@@ -6,7 +6,7 @@
 **Landed since this queue was last advanced:** the P0 launch batch (send UI, version-history, deep-links, recovery-code recovery, export-behind-auth, trust-confirms) plus the **Living Address Book** work — PR #82 (phone-book vCard with tags / fingerprint / trust stripped by construction; "Link to SVRNTY") and PR #83 (derive-and-match fingerprint↔key binding + keyless-classical fixture). #82 is in **staging QA on dev.svrnty.is**; merge to main is Peter-gated on that QA.
 
 **On deck (fleet-ruled — unblocks after #82 merges to main):**
-- **Own-identity `.vcf` export** ("Save contact card" on the identity card) — carried in PR #77. Rebase onto post-#82 main, drop the now-redundant book-strip, re-review as a small fast-follow.
+- **Own-identity `.vcf` export** ("Save contact card" on the identity card) — this PR (post-#82 fast-follow; book-strip already on main via #82, not repeated). Prior draft #77 can close as superseded.
 - **Private tag-management CRUD** — carried in PR #68. Rebase onto post-#82 main, reconcile the ContactManagement / vcard overlap, re-review.
 
 **Boundaries still in force:** the gap-freeze rules (`.cursor/rules/svrnty-gap-freeze.mdc`) — no crypto, vault, identity, PSI, signing, or trust-sync changes. Render-glass to spec only.
@@ -136,7 +136,7 @@ Show AFTER a successful seed-only restore — the inline pre-success line is mis
 
 1. **about-page** (#72) — pure render, Hypatia copy. Safest.
 2. **tag-management** (#68) — ⚠️ tags / blocked / group-labels are **device-local**: NEVER serialize on any **publish / PSI-sync / export** payload; assert with a **negative test** (Apollo, KB#87571).
-3. **VCF export** — user's own data → native `.vcf` (non-crypto).
+3. **VCF export** — user's own data → native `.vcf` (this PR; book phone-book strip already landed in #82).
 4. **app-lock screen** (#70).
 5. **biometric unlock** (#69) — WebAuthn UI **flow only**; the PRF crypto seam is fleet-owned (do NOT touch during the gap).
 6. ⛔ **reach-settings** (#71) — **DEFER to fleet-return.** Render toggles are fine, but disclosure-reach LOGIC + DEFAULTS are fleet-owned (Hypatia's contract) — Cursor must NOT decide or ship what's exposed.
