@@ -254,7 +254,23 @@ export default function Home() {
         padding: '20px',
         position: 'relative' as const,
       }}>
-        <div style={{ position: 'absolute', top: 20, right: 20 }}>
+        <div style={{ position: 'absolute', top: 20, right: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <a
+            href="/about"
+            style={{
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: '0.06em',
+              color: E.muted,
+              textDecoration: 'none',
+              border: `1px solid ${E.border}`,
+              borderRadius: 8,
+              padding: '6px 10px',
+              fontFamily: E.fontSans,
+            }}
+          >
+            About
+          </a>
           <AppearanceToggle />
         </div>
         <div style={{
@@ -465,6 +481,22 @@ export default function Home() {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <a
+            href="/about"
+            style={{
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: '0.06em',
+              color: E.muted,
+              textDecoration: 'none',
+              border: `1px solid ${E.border}`,
+              borderRadius: 8,
+              padding: '6px 10px',
+              fontFamily: E.fontSans,
+            }}
+          >
+            About
+          </a>
           <AppearanceToggle />
           {identity ? (
             <>
