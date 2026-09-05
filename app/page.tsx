@@ -67,7 +67,8 @@ export default function Home() {
   // state — never persisted as a new cross-identity link (the correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
-  // CUR-6 — show device-unlock CTA when platform authenticator is available
+  // CUR-6 — mount device-unlock chrome when a platform authenticator is present.
+  // Pre-tap honesty (coming-soon vs live action) lives in BiometricUnlockButton.
   const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
@@ -186,7 +187,8 @@ export default function Home() {
   }, [appState, lockedIdentity?.fingerprint]);
 
   // CUR-6: probe platform authenticator on the lock screen (feature detect only — no crypto).
-  // Show the device-unlock CTA whenever UVPA is available; stub unlock falls through to passphrase.
+  // Mount chrome when UVPA is available or enrolled; BiometricUnlockButton is honest
+  // pre-tap (coming soon while isBiometricSeamLive() is false).
   useEffect(() => {
     if (appState !== 'locked' || !lockedIdentity?.fingerprint) {
       setBiometricUnlockVisible(false);
@@ -196,7 +198,7 @@ export default function Home() {
     (async () => {
       try {
         const cap = await probeBiometricCapability();
-        // Prefer showing when enrolled; still offer when available so UX is discoverable pre-Flint.
+        // Mount chrome when enrolled or UVPA-available so coming-soon is discoverable.
         const enr = await getBiometricEnrollment(lockedIdentity.fingerprint);
         if (!cancelled) {
           setBiometricUnlockVisible(cap.status === 'available' || enr.enrolled);
@@ -438,7 +440,7 @@ export default function Home() {
             </button>
           </form>
 
-          {/* CUR-6 — device unlock (WebAuthn/PRF = Flint). Stub falls through to passphrase. */}
+          {/* CUR-6 — device unlock chrome. Seam = Flint; glass is honest while stubbed. */}
           <BiometricUnlockButton
             fingerprint={lockedIdentity.fingerprint}
             visible={biometricUnlockVisible}

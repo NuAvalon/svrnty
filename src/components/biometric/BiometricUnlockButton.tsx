@@ -1,13 +1,19 @@
 "use client";
 
 /**
- * CUR-6 — lock-screen "Unlock with device" control.
+ * CUR-6 — lock-screen device-unlock control.
  * Calls fleet `unlockWithBiometric`; never derives keys in the glass.
+ * Pre-tap honesty: while `isBiometricSeamLive()` is false, this is coming-soon
+ * chrome — not an "Unlock with device" action. On-tap stub fallback stays on
+ * the live-action path as a safety net.
  */
 
 import { useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { DeviceUnlockComingSoon } from './DeviceUnlockComingSoon';
+import { lockScreenDeviceUnlockLook } from './device-unlock-presentation';
 import {
+  isBiometricSeamLive,
   unlockWithBiometric,
   type UnlockWithBiometricResult,
 } from './biometric-seam';
@@ -49,7 +55,12 @@ export function BiometricUnlockButton({
 }: BiometricUnlockButtonProps) {
   const [busy, setBusy] = useState(false);
 
-  if (!visible) return null;
+  const look = lockScreenDeviceUnlockLook({
+    visible,
+    seamLive: isBiometricSeamLive(),
+  });
+  if (look === 'hidden') return null;
+  if (look === 'coming-soon') return <DeviceUnlockComingSoon />;
 
   const handleClick = async () => {
     if (busy || disabled) return;

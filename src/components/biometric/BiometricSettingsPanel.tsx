@@ -7,6 +7,8 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { DeviceUnlockComingSoon } from './DeviceUnlockComingSoon';
+import { settingsDeviceUnlockLook } from './device-unlock-presentation';
 import {
   biometricStatusLine,
   disableBiometric,
@@ -76,8 +78,11 @@ export function BiometricSettingsPanel({
       ? 'Checking this device…'
       : biometricStatusLine({ capability, enrollment, seamLive });
 
-  const canOffer =
-    capability?.status === 'available' && (seamLive || !enrollment.enrolled);
+  const look = settingsDeviceUnlockLook({
+    seamLive,
+    enrolled: enrollment.enrolled,
+    capabilityAvailable: capability?.status === 'available',
+  });
 
   const handleEnable = async () => {
     setError(null);
@@ -184,7 +189,7 @@ export function BiometricSettingsPanel({
         Keys stay on this device. Device unlock never sends your passphrase or keys to a server.
       </p>
 
-      {enrollment.enrolled ? (
+      {look === 'disable' ? (
         <button
           type="button"
           data-testid="biometric-disable-btn"
@@ -205,7 +210,9 @@ export function BiometricSettingsPanel({
         >
           Turn off device unlock
         </button>
-      ) : canOffer ? (
+      ) : look === 'coming-soon' ? (
+        <DeviceUnlockComingSoon compact />
+      ) : look === 'enable' ? (
         <>
           {!wantEnable ? (
             <button
