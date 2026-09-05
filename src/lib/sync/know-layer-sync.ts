@@ -22,17 +22,18 @@
 // trigger here passes 'know' EXPLICITLY. See runKnowLayerSyncTick.
 //
 // SEAM-INJECTION (matches consume-mailbox / live-book-poll): the store is injectable (defaults to the
-// real client-store) so the deps are unit-testable IndexedDB-free; PSISyncOptions (satelliteUrl +
-// myFingerprint + signFn) is injected by the caller — the raw-Ed25519 owner signer + satellite URL
-// are the crypto lane's seam (Apollo/Flint), deliberately NOT fabricated here.
-//
-// Author: Athena (#4 deps-impl + trigger). Crypto: Apollo (#1-3). Privacy co-review: Flint.
+// real client-store) so the deps are unit-testable IndexedDB-free. PSISyncOptions is built by
+// buildPsiSyncOptions (scalar-extracted Ed25519 seed, in-memory only) and passed into the trigger.
 
+import { decryptKey, readPrivateKey } from 'openpgp';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import {
   getAllContacts,
+  loadKey,
   updateContact,
   type ContactRecord,
 } from '@/lib/identity/client-store';
+import { extractRawSign, signBind, signPsiAuthWrapped } from '@/lib/identity/raw-sign';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isDecayed, type TrustEdge } from '@/lib/trust/types';
 import {
@@ -177,27 +178,131 @@ function ownerFingerprintOf(identity: unknown): string | null {
   return typeof fp === 'string' && fp.length > 0 ? fp : null;
 }
 
+/** Same-origin proxy prefix — the browser cannot reach the docker-internal satellite host. */
+export const SATELLITE_BROWSER_BASE = '/api/satellite';
+
+export type LoadIdentityKey = (
+  fingerprint: string,
+) => Promise<{ privateKey: string; passphrase: string } | null>;
+
+function bytesToB64(bytes: Uint8Array): string {
+  if (typeof btoa === 'function') {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+  return Buffer.from(bytes).toString('base64');
+}
+
+/**
+ * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth).
+ * Challenge: GET /bind?fingerprint= → { nonce, epoch } or { bound: true }.
+ * Complete: POST /bind { fingerprint, sign_pubkey, nonce, epoch, signature }.
+ * Returns false on any misshape / network miss — caller stays fail-closed (no PSI).
+ */
+export async function runBindCeremony(args: {
+  satelliteUrl: string;
+  fingerprint: string;
+  seed: Uint8Array;
+  signPub: Uint8Array;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const base = args.satelliteUrl.replace(/\/$/, '');
+  try {
+    const challengeRes = await fetchImpl(
+      `${base}/bind?fingerprint=${encodeURIComponent(args.fingerprint)}`,
+    );
+    if (!challengeRes.ok) return false;
+    const challenge = await challengeRes.json();
+    if (challenge && challenge.bound === true) return true;
+    const nonce = challenge?.nonce;
+    const epoch = challenge?.epoch;
+    if (typeof nonce !== 'string' && typeof nonce !== 'number') return false;
+    if (typeof epoch !== 'string' && typeof epoch !== 'number') return false;
+    const signPubHex = bytesToHex(args.signPub);
+    const signature = signBind(args.seed, signPubHex, String(nonce), epoch);
+    const post = await fetchImpl(`${base}/bind`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fingerprint: args.fingerprint,
+        sign_pubkey: signPubHex,
+        nonce: String(nonce),
+        epoch,
+        signature: bytesToB64(signature),
+      }),
+    });
+    return post.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decrypt the vaulted OpenPGP identity (session must be unlocked), scalar-extract the
+ * Ed25519 seed into a closure (in-memory only — never persisted), and return PSI options.
+ * Null if locked / missing key / bind did not complete — fail-closed, no sync.
+ */
+export async function buildPsiSyncOptions(
+  identity: unknown,
+  deps: {
+    loadKey?: LoadIdentityKey;
+    satelliteUrl?: string;
+    fetchImpl?: typeof fetch;
+    skipBind?: boolean;
+  } = {},
+): Promise<PSISyncOptions | null> {
+  const fp = ownerFingerprintOf(identity);
+  if (!fp) return null;
+  const load = deps.loadKey ?? loadKey;
+  const key = await load(fp);
+  if (!key?.privateKey || !key.passphrase) return null;
+
+  let decrypted: any;
+  try {
+    const locked = await readPrivateKey({ armoredKey: key.privateKey });
+    decrypted = locked.isDecrypted()
+      ? locked
+      : await decryptKey({ privateKey: locked, passphrase: key.passphrase });
+  } catch {
+    return null;
+  }
+
+  let seed: Uint8Array;
+  let signPub: Uint8Array;
+  try {
+    ({ seed, signPub } = extractRawSign(decrypted));
+  } catch {
+    return null;
+  }
+
+  const satelliteUrl = (deps.satelliteUrl ?? SATELLITE_BROWSER_BASE).replace(/\/$/, '');
+  if (!deps.skipBind) {
+    const bound = await runBindCeremony({
+      satelliteUrl,
+      fingerprint: fp,
+      seed,
+      signPub,
+      fetchImpl: deps.fetchImpl,
+    });
+    if (!bound) return null;
+  }
+
+  return {
+    satelliteUrl,
+    myFingerprint: fp,
+    signFn: (data: Uint8Array) => signPsiAuthWrapped(seed, data),
+  };
+}
+
 /**
  * Start the app-open + periodic KNOW-layer sync. Mirrors startLiveBookPolling (live-book-poll.ts):
  * immediate first tick, setInterval, FAIL-SOFT (a locked/absent identity or a transient error never
  * throws to React), NON-OVERLAPPING (inFlight guard). Returns a handle whose stop() clears the interval.
  *
- * `options` (PSISyncOptions: satelliteUrl + myFingerprint + signFn) is INJECTED. The raw-Ed25519 owner
- * signer and the satellite URL are the crypto lane's seam (Apollo/Flint) — this module never fabricates
- * them. Until that seam is provided the caller cannot construct `options`, so the trigger simply does not
- * run — fail-closed by construction (no options ⇒ no sync ⇒ nothing disclosed).
- *
- * ACTIVATION SITE (documented, not yet wired — see the "interface gaps" note in the #4 handoff): drop a
- * useEffect beside the existing startLiveBookPolling one in
- * src/components/ContactManagement.tsx (~line 286), keyed on the stable fingerprint:
- *
- *     useEffect(() => {
- *       if (!fingerprint) return;
- *       const options = buildPsiSyncOptions(identity); // <-- Apollo/Flint seam: satelliteUrl + raw-Ed25519 signFn
- *       if (!options) return;                          // fail-closed until the signer/URL exist
- *       const handle = startKnowLayerSync(identity, options);
- *       return () => handle.stop();
- *     }, [fingerprint]);
+ * `options` comes from buildPsiSyncOptions (raw Ed25519 signFn + satellite URL). No options ⇒
+ * the caller must not start this loop — fail-closed (no sync ⇒ nothing disclosed).
  */
 export function startKnowLayerSync(
   identity: unknown,

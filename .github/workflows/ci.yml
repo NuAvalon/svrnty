@@ -38,6 +38,8 @@ jobs:
         run: npx --no-install tsx --test src/lib/contacts/contact-update-allowlist-guard.test.ts
       - name: Contract guards — own-identity vCard never emits tags/blocked — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/own-vcard.test.ts
+      - name: Contract guards — canonical identity fingerprint + PSI auth allowlist — BLOCKING
+        run: npx --no-install tsx --test src/lib/identity/canonical-fingerprint.test.ts src/lib/sync/psi-proxy-body.test.ts src/lib/sync/build-psi-sync-options.test.ts src/lib/sync/know-layer-sync.test.ts
       - name: Contract guards — QR-scan invite leak-site (INV-5) — BLOCKING
         run: npx --no-install tsx --test src/lib/invite/scanInvite.test.ts src/lib/invite/decodeQrFrame.test.ts src/lib/invite/parseInviteUrl.test.ts
 

@@ -542,7 +542,10 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   const pk = (contact.public_key || '').trim();
   if (!pk) {
     contact = { ...contact, fingerprint: '', public_key: '' };
-  } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk))) {
+  } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk, {
+    kem_public_key: contact.pq_kem_public_key,
+    sig_public_key: contact.pq_sig_public_key,
+  }))) {
     // C2 / Invariant-1: fail-closed when a key is present —
     // refuse mismatched attacker-key + victim-fingerprint pairs.
     throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
@@ -587,7 +590,10 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   if (!pk) {
     next.public_key = '';
     delete (next as { fingerprint?: string }).fingerprint;
-  } else if (!(await fingerprintMatchesKey(next.fingerprint, pk))) {
+  } else if (!(await fingerprintMatchesKey(next.fingerprint, pk, {
+    kem_public_key: next.pq_kem_public_key,
+    sig_public_key: next.pq_sig_public_key,
+  }))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
   await txPut('contacts', next);
@@ -720,7 +726,11 @@ export async function importVaultContents(
   // Fail-closed identity binding (mirrors addContact): refuse a forged identity before
   // any write, so a rejected vault leaves NO partial state.
   const identityPub = contents.identity?.identity?.public_key || '';
-  if (!(await fingerprintMatchesKey(fp, identityPub))) {
+  const identityPq = contents.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fp, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
     throw new Error(
       'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
     );

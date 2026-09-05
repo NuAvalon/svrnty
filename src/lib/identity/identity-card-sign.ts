@@ -110,8 +110,12 @@ export async function verifySignedIdentityCard(
   if (!id || typeof id.public_key !== 'string' || typeof id.fingerprint !== 'string') return false;
   if (typeof card.signature !== 'string' || card.signature.length === 0) return false;
 
-  // (1) fingerprint↔classical-key binding — Invariant-1, cheap, checked first.
-  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) return false;
+  // (1) fingerprint↔key binding — cheap, checked first. Pass PQ pubs when present so a
+  // four-key identity id matches; placeholder/short PQ falls through to the OpenPGP 40-hex check.
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
+    kem_public_key: id.pq_kem_public_key,
+    sig_public_key: id.pq_sig_public_key,
+  }))) return false;
 
   // (2) envelope signature over the canonical card. Strip BOTH signature fields before recomputing
   // the signing input — the signer signed the card without them (identityCardSigningInput excludes them).
@@ -202,7 +206,10 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
   }
   // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
   // never calls verify, and this decides classical-import for every branch.
-  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) {
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
+    kem_public_key: id.pq_kem_public_key,
+    sig_public_key: id.pq_sig_public_key,
+  }))) {
     return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
   }
   // fp↔key OK → the classical contact imports for branches 2/3/4.
