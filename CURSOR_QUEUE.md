@@ -1,81 +1,26 @@
 # svrnty — frontend build queue
 
-Work top-down: the top task first, then the next. Build UI to spec (**render-glass**) — the crypto / gate / PSI / trust plumbing lives behind stable hooks maintained by the core team; **wire the UI to those hooks, NEVER modify them**. Open **ONE PR per task** into the canonical branch. Copy that makes a security / recovery / trust **CLAIM** needs review before merge — open the PR, do **not** self-merge crypto/claim surfaces. See `.cursor/rules`.
+Work top-down: the top task first, then the next. Build UI to spec (**render-glass**). Open **ONE PR per task**. Copy that makes a security / recovery / trust **CLAIM** needs review before merge — do **not** self-merge crypto/claim surfaces. See `.cursor/rules`.
 
-> ⚠️ **EXCEPTION for Task #1 (§5) ONLY:** §5 is an **AUTHORIZED crypto-plumbing exception** (architecture + security review), governed by `.cursor/rules/svrnty-section5-exception.mdc`. For §5 you DO modify the named identity/crypto sites — but ONLY by implementing the exact construction inlined below (make **NO** crypto decisions), as **ONE draft PR** reviewed against the acceptance checklist **before** any merge. Everywhere else, the standing render-glass "never touch crypto" boundary is fully in force.
+## 1. §5 FIX — beat-4 live-update repaint (demo-arc.spec.ts:133) — EMPIRICAL-REPRO-FIRST, on the §5 branch (PR #105)
 
-## 1. §5 — Greenfield Identity + Auth: self-certifying fingerprint + raw Ed25519 auth  [AUTHORIZED crypto-plumbing exception — see .cursor/rules/svrnty-section5-exception.mdc]
+The §5 PR (#105, branch `cursor/section5-identity-auth`) has ONE red e2e beat: `demo-arc.spec.ts:133` — "beat 4: Bob edits his card → Alice's entry self-updates LIVE (no reload)". main is GREEN on this beat → §5 introduced the regression. Build passes; only the live-repaint e2e fails.
 
-**Context:** the identity base is greenfield (a clean slate; zero real identities to migrate). The satellite side is done + verified (register re-derives the fp + enforces exact key lengths: 200/200/200 happy-path, all wrong-length → 400). This task builds the CLIENT side to match, byte-for-byte.
+**THE FAILURE (from CI @ the PR head):** assertion at :155 — `getByTestId('contact-row').filter({ hasText: 'Bob (NEW name)' })` → **"element(s) not found"**. Alice's view NEVER renders Bob's NEW name → the legit live-update does NOT propagate/repaint. The beat-4 NEGATIVE (a garbage deposit does not repaint) PASSES — only the legit repaint is broken. The receive chain (decrypt→verify→apply→persist) has been verified correct → the break is the emit→repaint layer (live-book-poll → contact-change emit → ContactManagement subscription → the row's `data-live="push"`).
 
-**What changes — ONLY these sites:**
-- **(a) Identity `sign` key (scalar-extract — NO new key)** → use the EXISTING OpenPGP primary Ed25519 as the raw `sign` key via scalar-extract (see the snippet) — read the seed TRANSIENTLY for signing, NEVER persist a new copy (it IS the vaulted OpenPGP key, already encrypted-at-rest). Do NOT generate or store a new/separate key.
-- **(b) Fingerprint derivation** → replace OpenPGP `getFingerprint()` as the canonical identity ID with the SHA256 bundle below, at ~3 sites: `src/lib/identity/browser-identity.ts`, `src/lib/identity/core.ts`, `src/lib/identity/fingerprint.ts`.
-- **(c) Wire** the raw `tag#3` signFn + the `/bind` ceremony (client path) + the `buildPsiSyncOptions` seam (`know-layer-sync.ts` ~:196) + the PSI trigger.
-- **KEEP** OpenPGP for encryption/cards + the ~10 existing signing paths (exchange / hybrid / sign-envelope / identity-card-sign / seal / contact-update / joiner-response / slug-claim). Do NOT rip out OpenPGP.
+**LOCALIZATION (git-proven, not a hypothesis):** §5 = main + exactly 1 commit. On the ENTIRE beat-4 path, the only change is `src/components/ContactManagement.tsx` **+19/-0** = a new `startKnowLayerSync` useEffect (~L293-311) + its import. live-book-poll / consume-mailbox / contact-events are byte-identical to green-main. So the ONLY new runtime actor on this path is that effect. The mechanism is RUNTIME-only (next-dev/StrictMode) — invisible to static reading; it must be pinned by RUNS, not guessed.
 
-**The canonical fingerprint (BYTE-EXACT — must match the satellite; implement exactly, NO decisions):**
-```
-fp = hex( SHA256( sign_pub ‖ enc_pub ‖ kem_pub ‖ sig_pub ) )   [≥16-char hex prefix]
-exact order:  sign ‖ enc ‖ kem ‖ sig   ·   raw pubkey bytes   ·   EXACT FIPS lengths:
-  Ed25519 sign = 32 · X25519 enc = 32 · ML-KEM-1024 kem = 1568 · ML-DSA-87 sig = 2592
-0x40-STRIP both sign and enc pubkeys (algo-22 native-point prefix) BEFORE hashing / register.
-```
-- `sign_pub` = the scalar-extracted, 0x40-stripped Ed25519 pubkey (snippet: `extractRawSign().signPub`).
-- `enc_pub`  = `strip0x40(encSubkey.keyPacket.publicParams.Q)` — the OpenPGP **encryption subkey's** X25519 pubkey (NOT the primary), canonical 32B.
-- `kem_pub` / `sig_pub` = the ML-KEM / ML-DSA pubkeys already produced today.
-If the client fp doesn't byte-match the satellite's derivation, register returns **400**.
+**DO THIS — empirical-first, DO NOT patch on a guess:**
+1. **CAUSATION TEST (definitive):** comment out the `startKnowLayerSync` useEffect (ContactManagement.tsx ~L293-311) → run beat-4 → does it go GREEN? If yes, the +19 lines are causal (expected).
+2. **MECHANISM CAPTURE (effect enabled):** run beat-4 and capture — console errors / `pageerror` / `unhandledrejection`? Is the next-dev ERROR OVERLAY covering the DOM (would explain "element not found")? Does the poll tick — is the OLD 'Bob' row present (poll runs, no repaint) or NO Bob row at all (poll never runs)? What is the `/api/satellite/bind` network status in the trace? (Note: in e2e there is no satellite → bind returns a clean 502+JSON → buildPsiSyncOptions returns null → startKnowLayerSync never actually starts; so the break is a side-effect of the fail-closed effect itself, not the sync.)
+3. **FIX the pinned mechanism, minimal.** Likely shape (confirm from the capture, don't assume): gate the effect so it doesn't fire the doomed bind in the demo / defer it off the poll's first-tick path — do NOT touch the repaint/poll code or the identity/crypto core.
+4. **PROVE beat-4 e2e GREEN on a real run** before considering it done. Trusted ONLY when the e2e beat passes on a real run — never a static "should-work" patch. Attach the causation-test + capture results to the PR so the core team can byte-confirm the fix.
 
-**Auth preimages (byte-exact — implement exactly):**
-- **/bind** (register the raw `sign` key as the bound sig_pubkey): `Ed25519(sign_seed, "svrnty-bind:{sign_pubkey_hex}:{nonce}:{epoch}")`. Prerequisite for tag#3 (unbound → tag#3 403s).
-- **tag#3 PSI auth:** `Ed25519(sign_seed, "svrnty-psi-auth:{fp}:{unix}")`, wire `"{unix}:{b64sig}"`, ±30s window.
-Both sign with the scalar-extracted Ed25519 seed (snippet: `rawSign`).
+Also fold in this separate hardening: `app/api/satellite/trust/psi/[...path]/route.ts:24` `await request.json()` sits BEFORE its try at :32 → wrap it fail-closed (empty/invalid body → 400, never throw). (bind/register already guard this.)
 
-**PROVEN crypto core — COPY VERBATIM (do NOT re-derive; author NO crypto here):**
-```ts
-import { ed25519 } from '@noble/curves/ed25519.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
-
-// svrnty identity = openpgp generateKey({type:'ecc',curve:'ed25519'}) → algo 22 (eddsaLegacy):
-//   privateParams.seed = raw 32B Ed25519 seed; publicParams.Q = 33B (0x40 native-point prefix).
-// PROVEN: noble.getPublicKey(seed) === strip0x40(Q) AND noble.sign(seed) verifies vs it.
-const strip0x40 = (q: Uint8Array): Uint8Array =>
-  (q.length === 33 && q[0] === 0x40) ? q.slice(1) : q;   // canonical 32B raw point
-
-// key MUST be DECRYPTED first: await openpgp.decryptKey({ privateKey: readPrivateKey({armoredKey}), passphrase })
-export function extractRawSign(decryptedIdentityKey: any): { seed: Uint8Array; signPub: Uint8Array } {
-  const kp = decryptedIdentityKey.keyPacket;
-  const seed: Uint8Array = kp.privateParams.seed;                       // 32B raw private — IN-MEMORY ONLY, never persist (it IS the vaulted openpgp key)
-  const signPub = strip0x40(kp.publicParams.A ?? kp.publicParams.Q);    // 32B canonical Ed25519 pubkey
-  // FAIL-CLOSED invariant — never sign with an inconsistent key:
-  if (bytesToHex(ed25519.getPublicKey(seed)) !== bytesToHex(signPub))
-    throw new Error('scalar-extract invariant failed: seed↔signPub mismatch');
-  return { seed, signPub };
-}
-
-// raw Ed25519 auth-sign for tag#3 + /bind (raw 64B sig over EXACT preimage bytes)
-export const rawSign = (preimage: Uint8Array, seed: Uint8Array): Uint8Array => ed25519.sign(preimage, seed);
-```
-For the fp bundle: `sign_pub = extractRawSign(key).signPub`; `enc_pub = strip0x40(encSubkey.keyPacket.publicParams.Q)`; `fp = SHA256(sign_pub ‖ enc_pub ‖ kem ‖ sig)`.
-
-**Guardrails (non-negotiable — from `.cursor/rules/svrnty-section5-exception.mdc`):**
-1. Scoped to the named §5 sites ONLY — NOT a blanket identity/crypto open.
-2. Build to byte-exact spec, NO crypto DECISIONS. If a value is ambiguous or you'd have to CHOOSE a crypto value → **STOP and flag for review**. Call `@noble`; never hand-roll crypto.
-3. **ONE draft PR. Do NOT self-merge.** Reviewed against the acceptance checklist (below) + the empirical acceptance tests BEFORE any merge.
-4. **Data-privacy invariant:** tags / blocked-flags / group-labels are device-local — NEVER serialize onto any publish / PSI-sync / export payload. §5 touches PSI → assert with a NEGATIVE test.
-5. **KEEP untouched:** OpenPGP encryption/cards + the 10 signing paths; vault unlock/recovery (`initSessionKey` / `verifyPassphrase`); the satellite/server; gate/visibility/consent/trust-semantics; the seal.
-6. The `sign` seed is **IN-MEMORY ONLY** (it IS the vaulted OpenPGP key, already encrypted-at-rest) — read it transiently for signing, NEVER persist a new copy. The key MUST be decrypted (passphrase) before extraction.
-7. **No internal refs in committed output (public repo):** NEVER echo agent names, internal KB/doc references, or internal spec/invariant labels into committed code, comments, or PR text. Neutral product terms only.
-
-**Acceptance checklist (the built PR is reviewed against these — build so they pass):**
-- [ ] fp byte-exactness: client `SHA256(sign‖enc‖kem‖sig)[≥16]` == satellite derivation (exact order, raw bytes, exact lengths).
-- [ ] fp commits to ALL 4 keys (omitting any one changes the fp).
-- [ ] raw-sign vectors: /bind + tag#3 verify server-side; round-trip register→bind→tag#3→200.
-- [ ] scalar-extract correctness: `noble.getPublicKey(seed) == 0x40-stripped Q` AND `noble.sign` verifies vs the committed pubkey (the snippet's fail-closed invariant).
-- [ ] single basis: no residual OpenPGP-`getFingerprint()` in identity/auth/discovery.
-- [ ] reject-wrong-length: a bundle with any key ≠ its FIPS length → register 400.
+Open the fix on this branch (update PR #105) if possible; otherwise a fix PR the core team folds into #105. The standing crypto/identity co-verify still gates merge.
 
 ---
 *Queue updated 2026-09-05.*
-*#1 = §5 Greenfield Identity+Auth refactor — governed by `.cursor/rules/svrnty-section5-exception.mdc` (architecture + security review). Proven scalar-extract snippet inlined. AUTHORIZED crypto-plumbing exception — the exact construction is plumbed with NO crypto decisions; ONE draft PR, no self-merge; the built seam is reviewed against the acceptance checklist before trust.*
-*Prior queue: GROW 2-tab = DONE (merged to main as PR #104). biometric-honesty + top-nav = DONE (PR #101 + #102). All cleared.*
+*#1 = §5 beat-4 repaint fix — EMPIRICAL-REPRO-FIRST. The receive chain is verified; the break is the UI-repaint layer. No fix trusted without beat-4 e2e GREEN on a real run.*
+*Prior: §5 identity refactor built as PR #105 (draft, co-verify in progress).*
