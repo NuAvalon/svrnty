@@ -403,6 +403,43 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
   return { privateKey: record.privateKey, passphrase: record.passphrase };
 }
 
+/**
+ * Non-destructively verify a passphrase against the at-rest key record — WITHOUT touching the
+ * live session key. Derives a candidate key from `passphrase` + the record's stored salt and
+ * attempts to AES-GCM-decrypt the record; a successful GCM auth proves `passphrase` is the real
+ * vault passphrase (the one whose PBKDF2 output encrypted this record).
+ *
+ * Use this to confirm a re-typed passphrase before acting on it (e.g. biometric device-unlock
+ * wraps the typed passphrase for later replay). Do NOT validate by comparing against
+ * loadKey().passphrase: that plaintext field can diverge from the live unlock passphrase
+ * (restore/import paths store '', and a passphrase change re-keys the record without rewriting
+ * the field). Fail-closed: returns false for a missing, legacy-unencrypted, or malformed record,
+ * or on any decrypt failure. Non-destructive: never mutates _sessionKey/_sessionSalt.
+ */
+export async function verifyPassphrase(fingerprint: string, passphrase: string): Promise<boolean> {
+  const record = await txGet<any>('keys', fingerprint);
+  if (
+    !record ||
+    record.enc_version !== ENC_VERSION ||
+    typeof record.salt !== 'string' ||
+    typeof record.iv !== 'string' ||
+    typeof record.ciphertext !== 'string'
+  ) {
+    return false; // no encrypted-at-rest record to verify against (fail-closed)
+  }
+  try {
+    const candidateKey = await deriveSessionKey(passphrase, fromBase64(record.salt));
+    await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64(record.iv) },
+      candidateKey,
+      fromBase64(record.ciphertext),
+    );
+    return true; // GCM auth passed → passphrase is the vault passphrase
+  } catch {
+    return false; // wrong passphrase (GCM auth fail) or any error
+  }
+}
+
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {

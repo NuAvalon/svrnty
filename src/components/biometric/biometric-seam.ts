@@ -36,6 +36,7 @@ import {
   isSessionUnlocked,
   hasEncryptedKeys,
   getKeyEnvelopeFingerprint,
+  verifyPassphrase,
 } from '../../lib/identity/client-store';
 
 export type BiometricCapability =
@@ -195,20 +196,6 @@ function hintFromCredentialId(credentialIdB64: string): string {
 }
 function hintFromFingerprint(fingerprint: string): string {
   return fingerprint.slice(-8);
-}
-
-/**
- * Constant-time-ish string compare for the enroll passphrase confirmation. Reveals only
- * length equality (low-value, local-only), not per-character timing. Used so a wrong
- * confirmation can't be probed by timing.
- */
-function constantTimeEqualStr(a: string, b: string): boolean {
-  const ea = new TextEncoder().encode(a);
-  const eb = new TextEncoder().encode(b);
-  let diff = ea.length ^ eb.length;
-  const n = Math.max(ea.length, eb.length);
-  for (let i = 0; i < n; i++) diff |= (ea[i] ?? 0) ^ (eb[i] ?? 0);
-  return diff === 0;
 }
 
 // ── local blob storage (own IndexedDB; guarded for non-browser / SSR / node:test) ──
@@ -400,15 +387,17 @@ export async function getBiometricEnrollment(
  *
  * Order (design §Flow ENROLL):
  *  1. Cheap capability guard (no prompt) — unsupported env falls back to passphrase.
- *  2. Validate the passphrase FIRST, WITHOUT clobbering the live session: compare it (constant
- *     time) against the passphrase decrypted from the open session via loadKey. Never wrap an
- *     unvalidated passphrase; never call initSessionKey here (that would overwrite the good
- *     session key with a wrong one on a mismatch).
- *  3. Require encrypted-at-rest keys so passphrase_epoch + the fail-closed loadKey check are
- *     cryptographically real (a legacy plaintext vault can't back a device-unlock).
- *  4. credentials.create with PRF; obtain the PRF output (falling back to a follow-up get() on
+ *  2. Session must be OPEN (isSessionUnlocked); never call initSessionKey here (that would
+ *     overwrite the good session key with a wrong one on a mismatch).
+ *  3. Require encrypted-at-rest keys so passphrase_epoch is a real envelope fingerprint AND the
+ *     passphrase has a crypto gate to verify against (a legacy plaintext vault can't back a
+ *     device-unlock).
+ *  4. Verify the TYPED passphrase against the at-rest record's PBKDF2→AES-GCM gate
+ *     (verifyPassphrase, non-destructive) — NOT against the plaintext loadKey().passphrase
+ *     field, which can diverge from the live unlock passphrase. Never wrap an unverified one.
+ *  5. credentials.create with PRF; obtain the PRF output (falling back to a follow-up get() on
  *     authenticators that only surface PRF results on assertion). No PRF ⇒ 'unsupported'.
- *  5. HKDF → AES-GCM wrap the passphrase; persist the blob locally (per fingerprint).
+ *  6. HKDF → AES-GCM wrap the passphrase; persist the blob locally (per fingerprint).
  */
 export async function enrollBiometric(args: {
   fingerprint: string;
@@ -425,7 +414,7 @@ export async function enrollBiometric(args: {
     };
   }
 
-  // 2. Validate the passphrase against the LIVE open session (non-destructive).
+  // 2. Session must be OPEN — device-unlock wraps the live vault passphrase for later replay.
   if (!isSessionUnlocked()) {
     return {
       ok: false,
@@ -433,25 +422,9 @@ export async function enrollBiometric(args: {
       message: 'Unlock your vault first, then enable device unlock.',
     };
   }
-  let storedPassphrase: string | null = null;
-  try {
-    const key = await loadKey(fingerprint); // decrypts with the CURRENT session key
-    storedPassphrase = key?.passphrase ?? null;
-  } catch {
-    storedPassphrase = null;
-  }
-  if (storedPassphrase == null) {
-    return {
-      ok: false,
-      reason: 'error',
-      message: 'Could not read your vault key to confirm the passphrase.',
-    };
-  }
-  if (!constantTimeEqualStr(passphrase, storedPassphrase)) {
-    return { ok: false, reason: 'wrong-passphrase' };
-  }
 
-  // 3. Require encrypted-at-rest keys (F1 norm) → epoch is a real envelope fingerprint.
+  // 3. Require encrypted-at-rest keys (F1 norm): epoch is a real envelope fingerprint AND the
+  //    passphrase can be verified against the at-rest crypto gate in step 4.
   const epoch = (await hasEncryptedKeys(fingerprint))
     ? await getKeyEnvelopeFingerprint(fingerprint)
     : null;
@@ -463,7 +436,17 @@ export async function enrollBiometric(args: {
     };
   }
 
-  // 4. WebAuthn create + PRF output.
+  // 4. Verify the TYPED passphrase against the at-rest key record's crypto gate — the same
+  //    PBKDF2→AES-GCM that guards unlock, run non-destructively (never touches the live session
+  //    key). We wrap the typed passphrase below, so it MUST be the real vault passphrase. We do
+  //    NOT compare against loadKey().passphrase: that plaintext field can diverge from the live
+  //    unlock passphrase (restore/import store '', a passphrase change re-keys the record without
+  //    rewriting the field) — the false 'wrong-passphrase' the enroll smoke caught.
+  if (!(await verifyPassphrase(fingerprint, passphrase))) {
+    return { ok: false, reason: 'wrong-passphrase' };
+  }
+
+  // 5. WebAuthn create + PRF output.
   const prfSalt = crypto.getRandomValues(new Uint8Array(PRF_SALT_BYTES));
   let cred: PublicKeyCredential;
   try {
@@ -496,7 +479,7 @@ export async function enrollBiometric(args: {
     };
   }
 
-  // 5. HKDF → AES-GCM wrap the passphrase, persist locally.
+  // 6. HKDF → AES-GCM wrap the passphrase, persist locally.
   try {
     const wrapKey = await deriveWrapKey(prfOutput, fingerprint);
     const iv = crypto.getRandomValues(new Uint8Array(AES_GCM_IV_BYTES));
