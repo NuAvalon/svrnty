@@ -2,23 +2,18 @@
 
 Work top-down: the top task first, then the next. Build UI to spec (**render-glass**) — the crypto / gate / PSI / trust plumbing lives behind stable hooks maintained by the core team; **wire the UI to those hooks, NEVER modify them**. Open **ONE PR per task** into the canonical branch. Copy that makes a security / recovery / trust **CLAIM** needs agent review before merge — open the PR, do **not** self-merge crypto/claim surfaces. See `.cursor/rules`.
 
-## 1. Biometric device-unlock — make the presentation honest to the seam  [render-glass, honesty fix — THE do-no-harm item]
-The WebAuthn/PRF seam is a **STUB**: `isBiometricSeamLive()` returns `false` and `unlockWithBiometric()` returns `stub-not-live`. Today the lock-screen "Unlock with device" button (`BiometricUnlockButton` in `app/page.tsx`, gated by `biometricUnlockVisible`) is shown whenever a platform authenticator is present — so it *looks available*, then only reveals "not live yet" **after** a tap. Make the **pre-tap** presentation honest.
-- When `isBiometricSeamLive() === false` (today): do **NOT** present device-unlock as an available/working action. Either **omit** the lock-screen button, or render a clearly-inactive **"Device unlock — coming soon"** affordance (non-interactive, visibly not-yet). Passphrase entry stays the primary, obvious path.
-- Mirror the same honesty in `BiometricSettingsPanel` — if it offers *enroll* while the seam is not live, enroll reads "coming soon"/disabled, never "on".
-- Keep the existing on-tap fallback ("Device unlock is not live yet. Enter your passphrase…") as a safety net — this task fixes the pre-tap *look*, not that.
-- **DO NOT TOUCH**: `src/components/biometric/biometric-seam.ts` (the crypto seam — enroll/unlock/probe bodies, owned by the core team), the passphrase unlock path, or any recovery/restore control flow. Presentation only. Flipping to "live" happens later, in a separate PR, when the PRF seam is wired.
-- Goal: a user **never** sees biometric unlock presented as working while the seam is a stub. Honest "coming", never fake-ready.
-
-## 2. Collapsible top-nav for mobile  [render-glass, layout]
-On narrow / phone widths the top header (`app/page.tsx`, the `<header>` around line 527 — wordmark + `AppearanceToggle` + Grow / Join / Recovery buttons) overflows the frame: the user has to scroll **horizontally and vertically**. Collapse the **ACTION buttons** into a compact menu (hamburger / overflow) at phone widths so the header fits with no horizontal scroll and minimal vertical.
-- **KEEP the "SVRNTY.IS YOURS" wordmark visible at all widths** (the brand, shipped #100). Collapse the ACTION buttons, not the wordmark.
-- **Do NOT bury safety-critical actions**: unlock / recovery / Help must stay reachable. A hamburger is fine, but the recovery entry point (`RecoverySheet`) and Help must not be hidden behind ambiguous UI — one obvious tap, clearly labelled.
-- **Presentation/layout only.** Do NOT change unlock/recovery **control flow** (which key decrypts what, path-selection). Wire the collapsed menu to the **same existing handlers** (`setGrowOpen`, `setJoinOpen`, `setRecoveryOpen`, `AppearanceToggle`).
-- Responsive: full button row at desktop widths, collapsed menu at phone widths (breakpoint is your call). No layout shift / reflow of the wordmark when the menu opens.
+## 1. GROW: merge Join into Grow as two tabs — "Show my code" | "Scan / paste"  [render-glass, layout — Peter directive]
+Today GROW (`src/components/GrowSheet.tsx`, opened by the TopNav "Grow" pill) is giver-only, and JOIN (`src/components/JoinByCode.tsx`, opened by the separate "Join" pill) is joiner-only. Peter wants them **unified under GROW as a 2-tab flow** so give + receive live in one surface.
+- Build a **2-tab container** using the app's canonical tabs primitive `src/components/ui/tabs.tsx` (same pattern already used for the 3-tab Identity/Galaxy/Contacts layout in `app/page.tsx` ~541–725 — reuse the Solar-Ember active-state styling).
+- **Tab 1 = "Show my code"** — host the EXISTING `GrowSheet` body (mint relay → viral-cap input + `SimpleQRCode` + full share link `/c/<code>#<key>` + Copy). Pass it the `identity` + unlocked key it needs to mint; keep its "unlock first" path.
+- **Tab 2 = "Scan / paste"** — host the EXISTING `JoinByCode` body (the "Scan" button that mounts `ScanToJoin` camera + the "or paste" textarea → `parseInviteUrl` → `JoinerCeremony`). It already composes both sub-modes; relocate it wholesale.
+- **Collapse the two entry points**: the TopNav "Grow" and "Join" pills → ONE "Grow" surface opening this 2-tab container (default to Tab 1 "Show my code"). Reconcile `app/page.tsx` state (`growOpen`/`joinOpen`) + `TopNav` props accordingly.
+- **Full-screen-takeover reconcile**: when a valid invite is set in Tab 2, `JoinerCeremony` must still take over full-screen (escape the tab chrome) — `JoinByCode` already branches this; PRESERVE it, don't flatten it into the tab.
+- **CONSENT-INVARIANT (must hold, Archie gate):** joining = an INVITE, not instant. NEVER silent/auto-connect on scan or paste; the connection completes only on a mutual handshake. Preserve the explicit consent moment exactly as it is today.
+- **DO NOT TOUCH / RELOCATE-DON'T-REWRITE**: `src/components/JoinerCeremony.tsx` and its consent-flow (the "Found {name}" → Connect-tap → "invite sent · waiting" → "Connected" ceremony is human-built, crypto/consent boundary — NOT Cursor's to modify), `src/lib/invite/parseInviteUrl.ts`, `ScanToJoin`'s camera-stream + error handling, and everything under `src/lib/{crypto,identity,sync,trust}` (CODEOWNERS-gated). Tab 2 must only CALL these unchanged. **INV-5**: `keyFragment` is AES key material — never log/echo the fragment or the raw pasted/scanned input; keep the fixed error strings. Because you relocate the handlers wholesale, these ride along intact — do NOT "clean up" their error handling or add logging.
+- Goal: one "Grow" surface, two honest tabs (give | receive), ZERO change to the crypto/consent behavior — pure UI unification.
 
 ---
-*Queue advanced 2026-09-05 by Athena (git-push lane).*
-*#1 = biometric-honesty label — Archie #129134 ("THE do-no-harm fix"); real PRF wire is a later human-gated PR (Flint seam design: shared/outbox/flint/biometric_prf_seam_design.md).*
-*#2 = top-nav collapse — Peter #129066 live mobile QA; Archie flags: keep wordmark, don't bury unlock/recovery/Help.*
-*Not in this queue: Camera QR-scan receive = DONE (#96, needs QA+deploy not Cursor). Real crypto (biometric PRF wire, PSI satellite) = human-gated morning, not render-glass.*
+*Queue advanced 2026-09-05 by Athena (cursor-push lane).*
+*#1 = GROW 2-tab — Peter #129508/#129510; routed by Archie #129519. Copy from Hypatia #129521 (Tab1 "Show my code", Tab2 "Scan / paste"). Consent-invariant GREEN (Archie #129542): join=invite, mutual-handshake, no auto-connect. The 2-tab SHELL is Cursor-suitable; the JoinerCeremony consent-ceremony is human-built (Apollo boundary #129524) — Cursor wires the shell, calls the ceremony unchanged. Flint crypto-review on the built PR only if the Tab2 diff touches key-exchange — recon says it does NOT (relocates handlers).*
+*Prior queue (#1 biometric-honesty label, #2 top-nav collapse) = DONE — MERGED to main as PR #101 + #102.*
