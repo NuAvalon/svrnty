@@ -62,21 +62,49 @@ const steps = [
   },
 ];
 
-export function HelpGuide() {
-  const [open, setOpen] = useState(false);
+export type HelpGuideProps = {
+  /** When false, parent supplies the opener; the dialog still mounts. */
+  showTrigger?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
+
+export function HelpGuide({
+  showTrigger = true,
+  open: openProp,
+  onOpenChange,
+}: HelpGuideProps = {}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (!controlled) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
+
+  const openHelp = () => {
+    setActiveStep(0);
+    setOpen(true);
+  };
+
+  React.useEffect(() => {
+    if (open) setActiveStep(0);
+  }, [open]);
 
   return (
     <>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => { setOpen(true); setActiveStep(0); }}
-        style={{ color: E.dim, fontFamily: E.fontSans }}
-      >
-        <HelpCircle className="h-5 w-5 mr-1" />
-        Help
-      </Button>
+      {showTrigger ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={openHelp}
+          style={{ color: E.dim, fontFamily: E.fontSans }}
+        >
+          <HelpCircle className="h-5 w-5 mr-1" />
+          Help
+        </Button>
+      ) : null}
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto" style={{ fontFamily: E.fontSans }}>
