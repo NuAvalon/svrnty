@@ -30,7 +30,7 @@ const steps = [
   {
     title: 'Grow the Galaxy',
     content: [
-      'Tap Grow. Show the QR or short link. They join; they become a star you Know.',
+      'Tap Grow. Show my code is your QR or short link. Scan / paste is how you join from theirs.',
       TRUST_RECIPE_COPY.mycelial,
       'Name them as you know them. Notes stay on this device.',
     ],

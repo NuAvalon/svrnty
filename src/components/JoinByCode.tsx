@@ -19,7 +19,8 @@
  *  INV-6  no silent loss — an unparseable paste surfaces an explicit, honest inline error.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { JoinerCeremony } from '@/components/JoinerCeremony';
 import { ScanToJoin } from '@/components/ScanToJoin';
 import { parseInviteUrl, type ParsedInvite } from '@/lib/invite/parseInviteUrl';
@@ -29,9 +30,11 @@ type Props = {
   open: boolean;
   /** Called on close. Parent should refresh contacts here so a just-joined edge appears. */
   onClose: () => void;
+  /** Skip overlay chrome — hosted inside GrowSurface tabs. */
+  embedded?: boolean;
 };
 
-export function JoinByCode({ open, onClose }: Props) {
+export function JoinByCode({ open, onClose, embedded = false }: Props) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [invite, setInvite] = useState<ParsedInvite | null>(null);
@@ -55,6 +58,14 @@ export function JoinByCode({ open, onClose }: Props) {
     setInvite(parsed); // INV-2: this only MOUNTS the ceremony; the human still commits inside it.
   }, []);
 
+  useEffect(() => {
+    if (open) return;
+    setInput('');
+    setError(null);
+    setInvite(null);
+    setScanning(false);
+  }, [open]);
+
   const handleJoin = () => {
     // INV-4: the untrusted paste crosses the trust boundary here and only here.
     const parsed = parseInviteUrl(input);
@@ -72,9 +83,12 @@ export function JoinByCode({ open, onClose }: Props) {
   if (!open) return null;
 
   // Joining: mount the SAME ceremony the /c/ route uses, full-screen, no nav (INV-1).
+  // Portal so the ceremony escapes GrowSurface tab chrome (fixed overlay would
+  // otherwise be clipped/hidden by the tab panel).
   if (invite) {
-    return (
+    const ceremony = (
       <div
+        data-testid="joiner-ceremony-overlay"
         style={{
           position: 'fixed',
           inset: 0,
@@ -107,44 +121,14 @@ export function JoinByCode({ open, onClose }: Props) {
         <JoinerCeremony code={invite.code} keyFragment={invite.keyFragment} />
       </div>
     );
+    return typeof document === 'undefined' ? ceremony : createPortal(ceremony, document.body);
   }
 
   // Paste view (ScanToJoin replaces the body while the camera is live).
-  return (
-    <div
-      role="dialog"
-      aria-label="Join by link"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 80,
-        background: 'rgba(8,5,3,.72)',
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        padding: '72px 16px 24px',
-      }}
-      onClick={handleClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: '100%',
-          maxWidth: 420,
-          maxHeight: 'calc(100vh - 96px)',
-          overflowY: 'auto',
-          background: E.surfaceSolid,
-          border: `1px solid ${E.borderLit}`,
-          borderRadius: 16,
-          padding: 24,
-          boxShadow: '0 0 48px rgba(249,168,37,.08)',
-          fontFamily: E.fontSans,
-        }}
-      >
-        {scanning ? (
-          <ScanToJoin onInvite={handleScannedInvite} onClose={() => setScanning(false)} />
-        ) : (
-          <>
+  const body = scanning ? (
+    <ScanToJoin onInvite={handleScannedInvite} onClose={() => setScanning(false)} />
+  ) : (
+    <>
         <p
           style={{
             margin: 0,
@@ -286,8 +270,43 @@ export function JoinByCode({ open, onClose }: Props) {
         >
           Cancel
         </button>
-          </>
-        )}
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Join by link"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 80,
+        background: 'rgba(8,5,3,.72)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        padding: '72px 16px 24px',
+      }}
+      onClick={handleClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 420,
+          maxHeight: 'calc(100vh - 96px)',
+          overflowY: 'auto',
+          background: E.surfaceSolid,
+          border: `1px solid ${E.borderLit}`,
+          borderRadius: 16,
+          padding: 24,
+          boxShadow: '0 0 48px rgba(249,168,37,.08)',
+          fontFamily: E.fontSans,
+        }}
+      >
+        {body}
       </div>
     </div>
   );

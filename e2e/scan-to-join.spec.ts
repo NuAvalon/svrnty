@@ -23,9 +23,10 @@ async function genesis(page: Page, name: string) {
 }
 
 async function openJoin(page: Page) {
-  await page.getByRole('button', { name: /^join$/i }).click();
-  const dialog = page.getByRole('dialog', { name: /join by link/i });
+  await page.getByTestId('nav-grow').click();
+  const dialog = page.getByTestId('grow-surface');
   await expect(dialog).toBeVisible();
+  await dialog.getByRole('tab', { name: 'Scan / paste' }).click();
   return dialog;
 }
 

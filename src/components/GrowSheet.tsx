@@ -17,9 +17,11 @@ type Props = {
   open: boolean;
   onClose: () => void;
   identity: any;
+  /** Skip overlay chrome — hosted inside GrowSurface tabs. */
+  embedded?: boolean;
 };
 
-export function GrowSheet({ open, onClose, identity }: Props) {
+export function GrowSheet({ open, onClose, identity, embedded = false }: Props) {
   const [relay, setRelay] = useState<{ url: string; code: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -75,37 +77,8 @@ export function GrowSheet({ open, onClose, identity }: Props) {
 
   if (!open) return null;
 
-  return (
-    <div
-      role="dialog"
-      aria-label="Grow your galaxy"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 80,
-        background: 'rgba(8,5,3,.72)',
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'center',
-        padding: '72px 16px 24px',
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: '100%',
-          maxWidth: 420,
-          maxHeight: 'calc(100vh - 96px)',
-          overflowY: 'auto',
-          background: E.surfaceSolid,
-          border: `1px solid ${E.borderLit}`,
-          borderRadius: 16,
-          padding: 24,
-          boxShadow: '0 0 48px rgba(249,168,37,.08)',
-          fontFamily: E.fontSans,
-        }}
-      >
+  const body = (
+    <>
         <p
           style={{
             margin: 0,
@@ -214,6 +187,43 @@ export function GrowSheet({ open, onClose, identity }: Props) {
         >
           Back to Galaxy
         </button>
+    </>
+  );
+
+  if (embedded) return body;
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Grow your galaxy"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 80,
+        background: 'rgba(8,5,3,.72)',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'center',
+        padding: '72px 16px 24px',
+      }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 420,
+          maxHeight: 'calc(100vh - 96px)',
+          overflowY: 'auto',
+          background: E.surfaceSolid,
+          border: `1px solid ${E.borderLit}`,
+          borderRadius: 16,
+          padding: 24,
+          boxShadow: '0 0 48px rgba(249,168,37,.08)',
+          fontFamily: E.fontSans,
+        }}
+      >
+        {body}
       </div>
     </div>
   );

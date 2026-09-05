@@ -70,6 +70,8 @@ test.describe('collapsible top-nav', () => {
     await expect(page.getByTestId('nav-recovery-menu')).toBeVisible();
     await expect(page.getByTestId('nav-recovery-menu')).toHaveText(/Recovery/i);
     await expect(page.getByTestId('nav-help-menu')).toBeVisible();
+    await expect(page.getByTestId('nav-grow-menu')).toBeVisible();
+    await expect(page.getByTestId('nav-join-menu')).toHaveCount(0);
 
     await page.getByTestId('nav-recovery-menu').click();
     await expect(page.getByRole('dialog', { name: 'Recovery' })).toBeVisible();
