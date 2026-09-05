@@ -21,7 +21,12 @@ async function proxy(request: NextRequest, path: string, method: 'GET' | 'POST')
   if (method === 'GET') {
     res = await fetch(url, { headers });
   } else {
-    const raw = await request.json();
+    let raw: unknown;
+    try {
+      raw = await request.json();
+    } catch {
+      return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+    }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
