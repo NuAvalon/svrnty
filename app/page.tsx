@@ -5,13 +5,12 @@ import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'r
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
-import { HelpGuide } from '@/components/HelpGuide';
 import { GrowSheet } from '@/components/GrowSheet';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { JoinByCode } from '@/components/JoinByCode';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
-import { LockNowButton } from '@/components/app-lock/LockNowButton';
 import { useAppLock } from '@/components/app-lock/useAppLock';
+import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
@@ -526,94 +525,14 @@ export default function Home() {
   // Gate (no identity) or main app
   return (
     <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
-      <header
-        style={{
-          maxWidth: 1100,
-          margin: '0 auto 1.75rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 16,
-          flexWrap: 'wrap',
-        }}
-      >
-        <span
-          style={{
-            fontFamily: E.fontSans,
-            fontSize: 13,
-            fontWeight: 600,
-            letterSpacing: '0.12em',
-            textTransform: 'uppercase',
-            color: E.accent,
-            whiteSpace: 'nowrap',
-          }}
-        >
-          SVRNTY.IS YOURS
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {canLock && <LockNowButton onLock={handleLockNow} />}
-          <AppearanceToggle />
-          {identity ? (
-            <>
-            <button
-              type="button"
-              onClick={() => setGrowOpen(true)}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: E.accent,
-                background: 'transparent',
-                border: `1px solid ${E.borderLit}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              Grow
-            </button>
-            <button
-              type="button"
-              onClick={() => setJoinOpen(true)}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: E.accent,
-                background: 'transparent',
-                border: `1px solid ${E.borderLit}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              Join
-            </button>
-            <button
-              type="button"
-              onClick={() => setRecoveryOpen(true)}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: E.accent,
-                background: 'transparent',
-                border: `1px solid ${E.borderLit}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              Recovery
-            </button>
-            </>
-          ) : null}
-          <HelpGuide />
-        </div>
-      </header>
+      <TopNav
+        hasIdentity={Boolean(identity)}
+        canLock={canLock}
+        onLock={handleLockNow}
+        onGrow={() => setGrowOpen(true)}
+        onJoin={() => setJoinOpen(true)}
+        onRecovery={() => setRecoveryOpen(true)}
+      />
 
       <main className="max-w-6xl mx-auto">
         {!identity ? (
