@@ -42,6 +42,7 @@ import { useCeremony } from '@/lib/ceremony/useCeremony';
 import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/ceremony/machine';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { isPQEncapLive } from '@/lib/claim-gates';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -455,9 +456,16 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
               </p>
             )}
             {peer.alarm === 'quiet' && peer.pq && (
-              <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
-                ✓ Post-quantum protected — a signed card carrying a verified encryption key.
-              </p>
+              isPQEncapLive() ? (
+                <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
+                  ✓ Post-quantum protected — a signed card carrying a verified encryption key.
+                </p>
+              ) : (
+                <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
+                  Post-quantum ready — this card carries a verified post-quantum encryption key;
+                  protection activates when the encryption seam is live.
+                </p>
+              )
             )}
             <button style={primaryBtnStyle} onClick={receiveCard}>Receive their card →</button>
           </div>
