@@ -664,10 +664,13 @@ export function biometricStatusLine(args: {
 }
 
 /**
- * STAYS false (invariant 5). The enroll/unlock/disable bodies ARE wired, but going live is
- * gated on a SEPARATE change after Flint's crypto co-verify + Athena's real-device WebAuthn-PRF
- * test. Flip to true only there — never ahead of the verification (claim-honesty).
+ * Default FALSE (invariant 5 — prod stays honest). The enroll/unlock/disable bodies ARE wired;
+ * going live is PER-ENVIRONMENT via NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE (inlined at build time).
+ * Set it to 'true' ONLY in a build that has passed Flint's crypto co-verify + Athena's
+ * real-device WebAuthn-PRF test (e.g. the dev-test build). Unset / anything but 'true' → false,
+ * so prod is honest automatically even post-merge — never decorative-live ahead of verification
+ * (claim-honesty). Strict === 'true' (no truthy coercion).
  */
 export function isBiometricSeamLive(): boolean {
-  return false;
+  return process.env.NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE === 'true';
 }

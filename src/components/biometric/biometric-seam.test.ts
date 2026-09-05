@@ -3,7 +3,7 @@
  *
  * These run under `node:test` (no jsdom / no WebAuthn / no IndexedDB), so they cover the
  * NON-crypto surface + the fail-closed early returns when the platform is unavailable:
- *   - isBiometricSeamLive() stays false (invariant 5 — never decorative-live).
+ *   - isBiometricSeamLive() defaults false when NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE is unset (invariant 5 — never decorative-live); reads true ONLY for a build with the env === 'true'.
  *   - enroll returns 'unsupported' (no WebAuthn/IndexedDB present) — never throws, never wraps.
  *   - unlock returns 'not-enrolled' (no local blob store) — falls through to passphrase.
  *   - getBiometricEnrollment reflects real (absent) blob presence, not the UI preference.
@@ -25,7 +25,17 @@ import {
 } from './biometric-seam';
 
 describe('biometric-seam fail-closed contract (headless)', () => {
-  it('seam is NOT live — wired but gated on Flint co-verify + Athena device test', () => {
+  it('seam is NOT live by default (env unset) — gated on the env flag + Flint co-verify + Athena device test', () => {
+    delete process.env.NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE;
+    assert.equal(isBiometricSeamLive(), false);
+  });
+
+  it('seam reads live ONLY when NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE === "true" (dev-test opt-in; strict, not truthy)', () => {
+    process.env.NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE = 'true';
+    assert.equal(isBiometricSeamLive(), true);
+    process.env.NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE = '1'; // truthy but not exactly 'true' → still false
+    assert.equal(isBiometricSeamLive(), false);
+    delete process.env.NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE;
     assert.equal(isBiometricSeamLive(), false);
   });
 

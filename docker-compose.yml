@@ -21,6 +21,9 @@ services:
         # Client-side, build-time (baked into the browser bundle):
         NEXT_PUBLIC_SVRNTY_DOMAIN: ${NEXT_PUBLIC_SVRNTY_DOMAIN:?set NEXT_PUBLIC_SVRNTY_DOMAIN in .env}
         NEXT_PUBLIC_SVRNTY_BASE_URL: ${NEXT_PUBLIC_SVRNTY_BASE_URL:-}
+        # Biometric device-unlock seam — default OFF (honest "coming soon"). Set true only in a
+        # build verified per src/components/biometric/biometric-seam.ts. Unset → false.
+        NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE: ${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE:-}
     image: svrnty:selfhost
     environment:
       # Server-side only (read at runtime — safe as env, never shipped to the browser):
