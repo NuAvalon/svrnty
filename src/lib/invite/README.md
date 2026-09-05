@@ -11,7 +11,7 @@
 | `JoinByCode.tsx` | Paste fallback + Scan button; mounts the same ceremony |
 
 ## Invariants
-- Camera permission is requested **on Scan tap**, not when the Join dialog opens.
+- Camera permission is requested **on Scan tap**, not when the Grow Scan / paste tab opens.
 - Stream stops on close / success / error / unmount.
 - Frames are never uploaded or persisted (`getImageData` stays in RAM).
 - Key fragment (URL `#` hash) is never logged, echoed, displayed, sent, or persisted by the scan path. Error text is a compile-time constant (INV-5).

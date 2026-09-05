@@ -5,9 +5,8 @@ import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'r
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
-import { GrowSheet } from '@/components/GrowSheet';
+import { GrowSurface } from '@/components/GrowSurface';
 import { RecoverySheet } from '@/components/RecoverySheet';
-import { JoinByCode } from '@/components/JoinByCode';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
 import { TopNav } from '@/components/nav/TopNav';
@@ -78,7 +77,6 @@ export default function Home() {
   } | null>(null);
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
-  const [joinOpen, setJoinOpen] = useState(false);
   // CUR-7: only offer lock when vault keys are encrypted at rest.
   const [canLock, setCanLock] = useState(false);
 
@@ -530,7 +528,6 @@ export default function Home() {
         canLock={canLock}
         onLock={handleLockNow}
         onGrow={() => setGrowOpen(true)}
-        onJoin={() => setJoinOpen(true)}
         onRecovery={() => setRecoveryOpen(true)}
       />
 
@@ -765,13 +762,13 @@ export default function Home() {
 
       {identity && (
         <>
-        <GrowSheet open={growOpen} onClose={() => setGrowOpen(false)} identity={identity} />
-        <JoinByCode
-          open={joinOpen}
+        <GrowSurface
+          open={growOpen}
           onClose={() => {
-            setJoinOpen(false);
+            setGrowOpen(false);
             void refreshContacts();
           }}
+          identity={identity}
         />
         <RecoverySheet
           open={recoveryOpen}

@@ -2,7 +2,7 @@
 
 /**
  * App header — wordmark always visible; action buttons collapse at phone widths.
- * Same handlers as the previous inline header (Grow / Join / Recovery / lock).
+ * Same handlers as the previous inline header (Grow / Recovery / lock).
  * Does not change unlock or recovery control flow.
  */
 
@@ -18,7 +18,6 @@ export type TopNavProps = {
   canLock: boolean;
   onLock: () => void;
   onGrow: () => void;
-  onJoin: () => void;
   onRecovery: () => void;
 };
 
@@ -71,7 +70,6 @@ export function TopNav({
   canLock,
   onLock,
   onGrow,
-  onJoin,
   onRecovery,
 }: TopNavProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -117,7 +115,6 @@ export function TopNav({
         {hasIdentity ? (
           <>
             <NavPill label="Grow" onClick={onGrow} testId="nav-grow" />
-            <NavPill label="Join" onClick={onJoin} testId="nav-join" />
             <NavPill label="Recovery" onClick={onRecovery} testId="nav-recovery" />
           </>
         ) : null}
@@ -218,15 +215,6 @@ export function TopNav({
                   style={menuItemStyle}
                 >
                   Grow
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-testid="nav-join-menu"
-                  onClick={() => openSheet(onJoin)}
-                  style={menuItemStyle}
-                >
-                  Join
                 </button>
               </>
             ) : null}
