@@ -602,6 +602,35 @@ export async function hasEncryptedKeys(fingerprint: string): Promise<boolean> {
   return !!(record && record.enc_version === ENC_VERSION);
 }
 
+/**
+ * Read-only, PRE-UNLOCK-SAFE passphrase-epoch for the biometric device-unlock seam
+ * (biometric-seam.ts). ADD-ONLY: touches no passphrase/recovery control flow — it is a
+ * pure read of the at-rest key envelope (mirrors hasEncryptedKeys: raw txGet, no session
+ * required, never returns plaintext).
+ *
+ * Returns a SHA-256 fingerprint of the ENCRYPTED key envelope (enc_version|salt|iv|
+ * ciphertext) for `fingerprint`. This value changes IFF the key material is re-encrypted —
+ * i.e. on passphrase-change / recovery-restore / vault re-key, all of which re-write the
+ * `keys` record via storeKey — and is STABLE across ordinary lock/unlock cycles (a plain
+ * unlock never rewrites the record). The biometric seam stamps it into the wrapped blob at
+ * enroll and compares at unlock; a mismatch (or null) means the wrapped passphrase is STALE
+ * and the blob MUST be invalidated (force re-enroll). Never leaves the device.
+ *
+ * Returns null when no key record exists OR the record is not encrypted-at-rest (legacy
+ * plaintext): both are treated by the caller as "invalidate / cannot back a device-unlock".
+ * The digest reveals nothing beyond what already sits in IndexedDB (it hashes ciphertext,
+ * not the passphrase) — it is NOT a passphrase oracle.
+ */
+export async function getKeyEnvelopeFingerprint(fingerprint: string): Promise<string | null> {
+  const record = await txGet<any>('keys', fingerprint);
+  if (!record || record.enc_version !== ENC_VERSION) return null;
+  const canonical = `v${record.enc_version}|${record.salt}|${record.iv}|${record.ciphertext}`;
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)),
+  );
+  return toBase64(digest);
+}
+
 export async function removeContact(id: string): Promise<void> {
   await txDelete('contacts', id);
 }

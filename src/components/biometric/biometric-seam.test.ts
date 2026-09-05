@@ -1,5 +1,14 @@
 /**
- * CUR-6 biometric seam — pure helpers + stub honesty (no crypto).
+ * CUR-6 biometric seam — pure helpers + fail-closed contract in a headless env.
+ *
+ * These run under `node:test` (no jsdom / no WebAuthn / no IndexedDB), so they cover the
+ * NON-crypto surface + the fail-closed early returns when the platform is unavailable:
+ *   - isBiometricSeamLive() stays false (invariant 5 — never decorative-live).
+ *   - enroll returns 'unsupported' (no WebAuthn/IndexedDB present) — never throws, never wraps.
+ *   - unlock returns 'not-enrolled' (no local blob store) — falls through to passphrase.
+ *   - getBiometricEnrollment reflects real (absent) blob presence, not the UI preference.
+ * The full PRF→HKDF→AES-GCM enroll→unlock round-trip is verified on a REAL platform
+ * authenticator by Athena (device QA) before isBiometricSeamLive() is ever flipped true.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,26 +24,26 @@ import {
   type BiometricCapability,
 } from './biometric-seam';
 
-describe('biometric-seam stubs', () => {
-  it('seam is not live until Flint wires PRF', () => {
+describe('biometric-seam fail-closed contract (headless)', () => {
+  it('seam is NOT live — wired but gated on Flint co-verify + Athena device test', () => {
     assert.equal(isBiometricSeamLive(), false);
   });
 
-  it('getBiometricEnrollment is never enrolled under stub', async () => {
+  it('getBiometricEnrollment reflects real (absent) blob — not the UI preference', async () => {
     const state = await getBiometricEnrollment('abc123');
     assert.equal(state.enrolled, false);
   });
 
-  it('enrollBiometric returns stub-not-live (no PRF invent)', async () => {
+  it('enrollBiometric fails unsupported with no WebAuthn/IndexedDB (never wraps, never throws)', async () => {
     const r = await enrollBiometric({ fingerprint: 'abc123', passphrase: 'x'.repeat(12) });
     assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.reason, 'stub-not-live');
+    if (!r.ok) assert.equal(r.reason, 'unsupported');
   });
 
-  it('unlockWithBiometric returns stub-not-live', async () => {
+  it('unlockWithBiometric fails closed (not-enrolled) with no local blob store', async () => {
     const r = await unlockWithBiometric('abc123');
     assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.reason, 'stub-not-live');
+    if (!r.ok) assert.equal(r.reason, 'not-enrolled');
   });
 
   it('enroll preference is local UI-only', () => {
