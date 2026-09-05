@@ -6,8 +6,9 @@
 ## What shipped
 - **Lock screen** — `BiometricUnlockButton` on the passphrase gate (`app/page.tsx`) when a platform authenticator is available.
 - **Settings** — `BiometricSettingsPanel` under identity tools (`SoverentityFrontend`) — enable flow asks for passphrase confirm, then calls fleet enroll.
-- **Seam module** — `biometric-seam.ts`: capability probe + typed enroll / unlock / disable hooks. **Stubs return `stub-not-live`** until Flint wires PRF → session unwrap.
-- Unit tests for stub honesty + claim-honest status lines.
+- **Honesty (pre-tap)** — while `isBiometricSeamLive() === false`, lock-screen and settings show inactive **"Device unlock — coming soon"** chrome (not an unlock/enroll action). Passphrase stays the working path. On-tap stub fallback remains on the live-action path as a safety net.
+- **Seam module** — `biometric-seam.ts`: capability probe + typed enroll / unlock / disable hooks. **Stubs return `stub-not-live`** until Flint wires PRF → session unwrap. Glass calls this module; it does not edit stub bodies.
+- Unit tests for stub honesty + claim-honest status lines + presentation look.
 
 ## Hard boundary held
 - No crypto / KDF / PRF / session-key derivation in this folder.
@@ -20,8 +21,10 @@
 |------|------|
 | `biometric-seam.ts` | Hook signatures + stubs + status copy helper |
 | `biometric-seam.test.ts` | Stub + copy tests |
-| `BiometricUnlockButton.tsx` | Lock-screen CTA |
-| `BiometricSettingsPanel.tsx` | Enable / disable chrome |
+| `BiometricUnlockButton.tsx` | Lock-screen chrome (coming-soon or live action) |
+| `BiometricSettingsPanel.tsx` | Enable / disable / coming-soon chrome |
+| `device-unlock-presentation.ts` | Pre-tap look helper (no crypto) |
+| `DeviceUnlockComingSoon.tsx` | Inactive coming-soon affordance |
 | Wired from `app/page.tsx`, `SoverentityFrontend.tsx` | |
 
 ## ⛔ Flint — replace stub bodies (do not invent in UI)
@@ -52,5 +55,5 @@ See PR description — Flint (PRF API), Hypatia (copy), Athena (placement), Arch
 
 ## Verify
 ```bash
-npx tsx --test src/components/biometric/biometric-seam.test.ts
+npx tsx --test src/components/biometric/biometric-seam.test.ts src/components/biometric/device-unlock-presentation.test.ts
 ```
