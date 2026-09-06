@@ -90,6 +90,7 @@ export function SoulSeedReveal({
         </p>
 
         <div
+          data-testid="seed-phrase-display"
           style={{
             background: 'rgba(15,10,6,.85)',
             border: `1px solid ${E.borderLit}`,
