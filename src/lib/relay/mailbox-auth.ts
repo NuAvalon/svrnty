@@ -67,6 +67,12 @@ export interface OwnerAuthBundle {
   ts: number;
   signature: string; // classical (Ed25519 / PGP)
   pq_signature?: string;
+  // §5 canonical-id binding: the identity's PQ PUBLIC keys, so the verifier can recompute the
+  // 64-hex canonical fingerprint = SHA256(sign‖enc‖kem‖sig) and confirm fp↔key. Absent for a
+  // classical (40-hex OpenPGP) identity → fingerprintMatchesKey falls back to the getFingerprint()
+  // path. Public keys only — the wire exposes nothing secret; possession is proved by the signature.
+  kem_public_key?: string; // ML-KEM-1024 public, base64 (1568 bytes)
+  sig_public_key?: string; // ML-DSA-87 public, base64 (2592 bytes)
 }
 
 // --- cross-env base64url (browser client + Node server both run this module) ---
@@ -96,7 +102,9 @@ function decodeBundle(headerValue: string | null): OwnerAuthBundle | null {
       typeof b?.public_key === 'string' &&
       typeof b?.nonce === 'string' &&
       typeof b?.ts === 'number' &&
-      typeof b?.signature === 'string'
+      typeof b?.signature === 'string' &&
+      (b.kem_public_key === undefined || typeof b.kem_public_key === 'string') &&
+      (b.sig_public_key === undefined || typeof b.sig_public_key === 'string')
     ) {
       return b as OwnerAuthBundle;
     }
@@ -122,6 +130,8 @@ export async function signMailboxPollRequest(args: {
   privateKeyArmored: string;
   passphrase: string;
   now: number;
+  kemPublicKey?: string; // §5: identity's ML-KEM-1024 public (base64) — canonical-fp binding
+  sigPublicKey?: string; // §5: identity's ML-DSA-87 public (base64) — canonical-fp binding
 }): Promise<Record<string, string>> {
   const nonce = randomNonce();
   const sig = await signWithEnvelope(
@@ -142,6 +152,8 @@ export async function signMailboxAckRequest(args: {
   privateKeyArmored: string;
   passphrase: string;
   now: number;
+  kemPublicKey?: string; // §5: identity's ML-KEM-1024 public (base64) — canonical-fp binding
+  sigPublicKey?: string; // §5: identity's ML-DSA-87 public (base64) — canonical-fp binding
 }): Promise<Record<string, string>> {
   const nonce = randomNonce();
   const sig = await signWithEnvelope(
@@ -154,7 +166,7 @@ export async function signMailboxAckRequest(args: {
 }
 
 function bundleFrom(
-  args: { fingerprint: string; publicKeyArmored: string; now: number },
+  args: { fingerprint: string; publicKeyArmored: string; now: number; kemPublicKey?: string; sigPublicKey?: string },
   nonce: string,
   sig: EnvelopeSignature,
 ): OwnerAuthBundle {
@@ -166,6 +178,12 @@ function bundleFrom(
     signature: sig.classical,
   };
   if (sig.pq_signature) b.pq_signature = sig.pq_signature;
+  // §5: carry the identity's PQ pubkeys so verifyOwner can recompute the canonical fp. Only when
+  // BOTH are present (a canonical identity); a classical identity omits them → OpenPGP-fp fallback.
+  if (args.kemPublicKey && args.sigPublicKey) {
+    b.kem_public_key = args.kemPublicKey;
+    b.sig_public_key = args.sigPublicKey;
+  }
   return b;
 }
 
@@ -205,7 +223,13 @@ async function verifyOwner(
     // (2) mailbox binding — the presented fingerprint must derive THIS mailbox_id (owner-of-record).
     if (deriveMailboxId(bundle.fingerprint) !== mailboxId) return false;
     // (3) fp↔key binding (Canon Invariant-1) — the key can't be swapped under the fingerprint.
-    if (!(await fingerprintMatchesKey(bundle.fingerprint, bundle.public_key))) return false;
+    //     §5: pass the PQ pubkeys so a 64-hex canonical id recomputes SHA256(sign‖enc‖kem‖sig) and
+    //     matches. fingerprintMatchesKey length-gates them (kem=1568/sig=2592) and falls back to the
+    //     40-hex OpenPGP path for a classical id — so absent/short pq ⇒ a canonical id fails-closed.
+    if (!(await fingerprintMatchesKey(bundle.fingerprint, bundle.public_key, {
+      kem_public_key: bundle.kem_public_key,
+      sig_public_key: bundle.sig_public_key,
+    }))) return false;
     // (4) private-key possession over EXACTLY this request, under the op-specific domain.
     const envSig: EnvelopeSignature = bundle.pq_signature
       ? { classical: bundle.signature, pq_signature: bundle.pq_signature }
