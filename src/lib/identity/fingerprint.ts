@@ -3,8 +3,9 @@
 // Shared fingerprint↔key binding. Canonical identity id is
 // hex(SHA256(sign32 ‖ enc32 ‖ kem1568 ‖ sig2592)) — exact order, raw pubkey
 // bytes, FIPS lengths. OpenPGP getFingerprint() is no longer minted as the
-// identity id (greenfield). Matching still accepts a 40-hex OpenPGP fingerprint
-// so existing cards/tests/restore fixtures keep binding until those paths move.
+// identity id (greenfield). fingerprintMatchesKey (auth binding) is canonical-only
+// (Res#1) — a 40-hex OpenPGP fingerprint no longer binds; only the paste/link helper
+// bindPastedFingerprintToKey still derives a 40-hex fp for manual entry.
 
 import { readKey } from 'openpgp';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -154,8 +155,8 @@ export type PqPublicOverlay = {
  * Returns false (never throws) on a mismatch, an unreadable key, or a missing input —
  * callers decide whether a false result is a hard refusal or a loud UI warning.
  *
- * When kem+sig are present at FIPS length, the canonical four-key hash is tried first.
- * A 40-hex OpenPGP fingerprint still matches so existing cards keep binding.
+ * Canonical-only (Res#1): kem+sig MUST be present at FIPS length and match the
+ * four-key hash. The legacy 40-hex OpenPGP (SHA-1) basis is REMOVED — no pq → false.
  */
 export async function fingerprintMatchesKey(
   claimedFingerprint: string,
@@ -168,25 +169,22 @@ export async function fingerprintMatchesKey(
 
   const kem = b64ToBytes(pq?.kem_public_key || '');
   const sig = b64ToBytes(pq?.sig_public_key || '');
-  if (kem && sig && kem.length === KEM_PUB_LEN && sig.length === SIG_PUB_LEN) {
-    try {
-      const pubs = await canonicalPubsFromArmoredPublicKey(
-        publicKey,
-        pq!.kem_public_key!,
-        pq!.sig_public_key!,
-      );
-      if (canonicalClaimMatches(claimed, pubs.fingerprint)) return true;
-    } catch {
-      // unreadable key / length mismatch → try the OpenPGP 40-hex path below
-    }
+  // GATE (Res#1, greenfield): canonical-only. A valid identity MUST present PQ legs at
+  // FIPS length and match the four-key hash. The legacy OpenPGP 40-hex (SHA-1) basis is
+  // REMOVED — SHA-1 chosen-prefix collision = mint-time equivocation (one fp, two valid
+  // bundles); un-retrofittable once real users mint. Zero real model-A users (Athena #130331).
+  if (!(kem && sig && kem.length === KEM_PUB_LEN && sig.length === SIG_PUB_LEN)) {
+    return false;
   }
-
   try {
-    const key = await readKey({ armoredKey: publicKey });
-    const derived = normalizeFingerprintHex(key.getFingerprint());
-    return derived.length === 40 && claimed === derived;
+    const pubs = await canonicalPubsFromArmoredPublicKey(
+      publicKey,
+      pq!.kem_public_key!,
+      pq!.sig_public_key!,
+    );
+    return canonicalClaimMatches(claimed, pubs.fingerprint);
   } catch {
-    return false; // unreadable key → binding cannot be established → refuse
+    return false; // unreadable key / length mismatch → binding cannot be established → refuse
   }
 }
 

@@ -141,7 +141,7 @@ test('reject-wrong-length: any key not at FIPS length throws (no truncated hash)
   assert.throws(() => deriveCanonicalFingerprintHex(sign, enc, kem, sig.slice(0, 2000)));
 });
 
-test('fingerprintMatchesKey: four-key identity id matches; OpenPGP 40-hex still binds', async () => {
+test('fingerprintMatchesKey: four-key identity id matches; legacy OpenPGP 40-hex is REJECTED (canonical-only)', async () => {
   const minted = await mintCanonicalFingerprint({
     decryptedIdentityKey: unlocked,
     kemPublicKey: pq.kem.publicKey,
@@ -165,7 +165,10 @@ test('fingerprintMatchesKey: four-key identity id matches; OpenPGP 40-hex still 
   );
   const openpgpFp = (await readKey({ armoredKey: publicKey })).getFingerprint();
   assert.equal(openpgpFp.length, 40);
-  assert.equal(await fingerprintMatchesKey(openpgpFp, publicKey), true);
+  // Res#1 gate (BLOCKING): the legacy SHA-1 40-hex basis no longer binds, and a canonical
+  // fp presented WITHOUT the pq overlay is canonical-only-false (fall-through removed).
+  assert.equal(await fingerprintMatchesKey(openpgpFp, publicKey), false); // legacy SHA-1 basis REJECTED
+  assert.equal(await fingerprintMatchesKey(minted.fingerprint, publicKey), false); // canonical fp w/o pq overlay → false
   assert.equal(await fingerprintMatchesKey('deadbeef'.repeat(5), publicKey), false);
 });
 
