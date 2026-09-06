@@ -112,6 +112,11 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         displayName,
         privateKeyArmored: key.privateKey,
         passphrase: key.passphrase,
+        // §5 canonical-fp binding: thread our PQ pubkeys so the giver recomputes our 64-hex canonical id.
+        // Only when BOTH are present (a canonical identity); a classical identity omits them.
+        ...(id?.post_quantum?.kem_public_key && id?.post_quantum?.sig_public_key
+          ? { kemPublicKeyB64: id.post_quantum.kem_public_key, sigPublicKeyB64: id.post_quantum.sig_public_key }
+          : {}),
       },
       { fingerprint: peer.fingerprint, publicKeyArmored: peer.publicKey, inviteNonce: code },
     );

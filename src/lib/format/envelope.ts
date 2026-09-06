@@ -79,6 +79,7 @@ export interface JoinerResponseEnvelope {
   joiner_epoch: number;               // the joiner's current key epoch — seeds the giver's future-update floor
   joiner_public_key: string;          // armored classical (OpenPGP/Ed25519) — the key the signature verifies against (TOFU)
   joiner_pq_sig_public_key?: string;  // base64(ML-DSA-87 pubkey); present iff hybrid. Bound by the classical sig (anti-swap). OMITTED when absent (canonical rejects null).
+  joiner_pq_kem_public_key?: string;  // base64(ML-KEM-1024 pubkey, 1568B); §5 canonical-fp binding — with sign‖enc‖sig the verifier recomputes the 64-hex canonical id. OMITTED when absent (canonical rejects null).
   joiner_display_name: string;        // self-asserted (KNOWN = unverified, so a self-asserted name is the correct trust level)
   giver_fingerprint: string;          // the giver this response is FOR — binds it so a copied blob can't be replayed to another giver's mailbox
   invite_nonce: string;               // the giver's relay code the joiner used — proves the joiner used THIS giver's invite (anti-unsolicited); single-use, giver-side

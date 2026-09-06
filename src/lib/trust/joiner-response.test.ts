@@ -4,7 +4,7 @@
 // Run: npx tsx --test src/lib/trust/joiner-response.test.ts
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
 import {
   buildJoinerResponseEnvelope,
   buildJoinerResponse,
@@ -20,7 +20,8 @@ import {
   joinerResponseSigningInput,
 } from '../format/envelope';
 import { verifyWithEnvelope } from '../crypto/sign-envelope';
-import { generateSigningKeypair, uint8ToBase64, type PQSigningKeypair } from '../crypto/pq';
+import { generateSigningKeypair, generatePQKeypairBundle, uint8ToBase64, type PQSigningKeypair } from '../crypto/pq';
+import { mintCanonicalFingerprint } from '../identity/fingerprint';
 
 const pass = 'test-passphrase-r1';
 const CODE = 'A7K9QX'; // stand-in relay code = invite_nonce
@@ -57,6 +58,54 @@ function bobArgs(o: Partial<BuildJoinerResponseArgs> = {}): BuildJoinerResponseA
 }
 const aliceGiver = () => ({ fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass });
 const yes = (_n: string) => true;   // accept-any nonce oracle (issued-code membership stubbed true)
+
+// A §5 CANONICAL joiner: openpgp (sign+enc) + ML-KEM/ML-DSA pubkeys → a 64-hex SHA256(sign‖enc‖kem‖sig)
+// fingerprint (NOT the 40-hex OpenPGP fp). Mirrors genesis + relay/mailbox-auth.test.ts makeCanonicalIdentity.
+interface CanonicalIdentity {
+  fingerprint: string;
+  publicKey: string;
+  privateKey: string;
+  passphrase: string;
+  kemPublicKeyB64: string;
+  sigPublicKeyB64: string;
+}
+async function makeCanonicalIdentity(name: string): Promise<CanonicalIdentity> {
+  const passphrase = 'pw-' + name;
+  const { privateKey, publicKey } = await generateKey({
+    type: 'ecc',
+    // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime — this is the exact
+    // keygen used in src/lib/identity/core.ts (which carries the same pre-existing tsc wart).
+    curve: 'ed25519',
+    userIDs: [{ name, email: `${name}@x.test` }],
+    passphrase,
+    format: 'armored',
+  });
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: privateKey });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase });
+  const { fingerprint } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked,
+    kemPublicKey: pq.kem.publicKey,
+    sigPublicKey: pq.signing.publicKey,
+  });
+  return {
+    fingerprint,
+    publicKey,
+    privateKey,
+    passphrase,
+    kemPublicKeyB64: uint8ToBase64(pq.kem.publicKey),
+    sigPublicKeyB64: uint8ToBase64(pq.signing.publicKey),
+  };
+}
+
+// A canonical joiner's honest build args: joiner = the canonical id, giver = Alice, PQ pubkeys threaded.
+function canonJoinerArgs(cid: CanonicalIdentity, o: Partial<BuildJoinerResponseArgs> = {}): BuildJoinerResponseArgs {
+  return {
+    joinerFp: cid.fingerprint, joinerEpoch: 1, joinerPubKeyArmored: cid.publicKey, joinerName: 'Canon',
+    giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z',
+    joinerPqKemPublicKey: cid.kemPublicKeyB64, joinerPqSigPublicKey: cid.sigPublicKeyB64, ...o,
+  };
+}
 
 // ── Round-trip: Bob → mailbox → Alice surfaces Bob as KNOWN ──────────────────────
 test('round-trip (classical): Bob signs+encrypts → Alice verifies → PendingJoiner is Bob', async () => {
@@ -241,4 +290,42 @@ test('build: present-but-empty pq key refused (bad-pq-key)', () => {
 test('build: optional pq key is OMITTED (not null) when absent — canonical stays null-free', () => {
   const env = buildJoinerResponseEnvelope(bobArgs());
   assert.equal('joiner_pq_sig_public_key' in env, false);
+  assert.equal('joiner_pq_kem_public_key' in env, false);
+});
+
+// ── §5 CANONICAL-ID joiner-response: thread PQ pubkeys → the 64-hex canonical fp recomputes + matches ──
+
+test('CANONICAL round-trip: a 64-hex canonical joiner verifies WHEN the PQ pubkeys are threaded (the §5 fix)', async () => {
+  const cid = await makeCanonicalIdentity('canon');
+  assert.match(cid.fingerprint, /^[0-9a-f]{64}$/); // 64-hex canonical, NOT a 40-hex OpenPGP fp
+  const signed = await buildJoinerResponse(canonJoinerArgs(cid), cid.privateKey, cid.passphrase);
+  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const joiner = await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE);
+  assert.ok(joiner, 'a canonical joiner with threaded PQ pubkeys must verify');
+  assert.equal(joiner!.fingerprint, cid.fingerprint);
+  assert.equal(joiner!.publicKeyArmored, cid.publicKey);
+});
+
+test('CANONICAL joiner WITHOUT threaded PQ pubkeys → fail-closed (the pre-fix bug; proves the threading is load-bearing)', async () => {
+  const cid = await makeCanonicalIdentity('canon2');
+  // Omit kem+sig — exactly what the OLD send path did. fingerprintMatchesKey then can't recompute the
+  // 64-hex canonical fp → falls to the 40-hex OpenPGP path → 64 !== 40 → refused (→ null).
+  const signed = await buildJoinerResponse(
+    canonJoinerArgs(cid, { joinerPqKemPublicKey: undefined, joinerPqSigPublicKey: undefined }),
+    cid.privateKey, cid.passphrase,
+  );
+  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
+});
+
+test('CANONICAL joiner with a WRONG-LENGTH kem → rejected at the structural boundary (§5 defense-in-depth, isWellFormed)', async () => {
+  const cid = await makeCanonicalIdentity('canon3');
+  // Truncate the kem to 40 base64 chars (~30 bytes, not 1568). isWellFormed's length-guard rejects the
+  // whole blob up front (fail-loud) — before any signature/fp work.
+  const signed = await buildJoinerResponse(
+    canonJoinerArgs(cid, { joinerPqKemPublicKey: cid.kemPublicKeyB64.slice(0, 40) }),
+    cid.privateKey, cid.passphrase,
+  );
+  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
 });
