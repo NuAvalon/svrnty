@@ -12,6 +12,7 @@ import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
 import { signSlugClaim, verifySignedSlugClaim } from './slug-claim';
 import type { SlugClaim } from '../format/envelope';
+import { slugClaimSigningInput } from '../format/envelope';
 
 const NOW = '2026-09-06T00:00:00.000Z';
 
@@ -76,10 +77,13 @@ before(async () => {
 
 // ── Classical (40-hex) baseline — the F6 fix, unchanged by §5 ────────────────────────────────────
 
-test('classical: a slug claim signed by the key holder verifies', async () => {
+test('CANONICAL-ONLY GATE (res1): a classical 40-hex slug claim does NOT verify — the OpenPGP fall-through is removed (the canonical happy-path is the "CANONICAL" test below)', async () => {
+  // alice is a classical (40-hex OpenPGP) identity. Post-res1 fingerprintMatchesKey is canonical-only:
+  // a 40-hex claimed fp with no PQ legs → false. Inverts the pre-res1 "classical binds" assertion
+  // (mirrors canonical-fingerprint.test.ts). The verifying happy-path is now canonical (below).
   const claim: SlugClaim = { slug: 'alice', fingerprint: alice.fingerprint, public_key: alice.publicKey, timestamp: NOW };
   const signed = await signSlugClaim(claim, alice.privateKey, alice.passphrase);
-  assert.equal(await verifySignedSlugClaim(signed), true);
+  assert.equal(await verifySignedSlugClaim(signed), false);
 });
 
 test('classical: a fingerprint that does not hash to the public key is refused (Invariant-1)', async () => {
@@ -146,19 +150,23 @@ test('CANONICAL tamper: tampering the slug after signing is refused (the signatu
   assert.equal(await verifySignedSlugClaim({ ...signed, slug: 'stolen' }), false);
 });
 
-test('SATELLITE-SAFE: the §5 PQ pubkeys are EXCLUDED from the signed bytes — a classical claim signed WITHOUT them still verifies WITH them attached', async () => {
-  // Pin the property the LIVE Python satellite depends on: attaching pq_kem/pq_sig does NOT change the
-  // signed byte-vector. Sign classical (Alice, 40-hex, no pq), then attach FIPS-length PQ pubkeys — the
-  // classical signature must STILL verify. Alice's fp is 40-hex so fingerprintMatchesKey uses the OpenPGP
-  // path (the attached pq recompute won't match a 40-hex claim → falls through), and the sig re-verifies
-  // because slugClaimSigningInput excludes the pq fields.
-  const pq = generatePQKeypairBundle();
-  const claim: SlugClaim = { slug: 'alice2', fingerprint: alice.fingerprint, public_key: alice.publicKey, timestamp: NOW };
-  const signed = await signSlugClaim(claim, alice.privateKey, alice.passphrase);
-  const withPq = {
-    ...signed,
-    pq_kem_public_key: uint8ToBase64(pq.kem.publicKey),
-    pq_sig_public_key: uint8ToBase64(pq.signing.publicKey),
-  };
-  assert.equal(await verifySignedSlugClaim(withPq), true, 'excluded PQ pubkeys must not alter the signed bytes');
+test('SATELLITE-SAFE: the §5 PQ pubkeys are EXCLUDED from slugClaimSigningInput — a canonical claim verifies, and the signed bytes are independent of the attached pq (the LIVE Python satellite verifies the sig without pq)', async () => {
+  // Post-res1 the identity is canonical, but the satellite-safe property is unchanged + load-bearing:
+  // pq_kem/pq_sig are NOT in the signed byte-vector (slugClaimSigningInput). The LIVE Python satellite
+  // verifies the claim signature WITHOUT the pq pubkeys; they're carried only so the client recomputes
+  // the 64-hex canonical fp. Sign a canonical claim, then prove directly that slugClaimSigningInput does
+  // not depend on the pq pubkeys' presence or value.
+  const cid = await makeCanonicalIdentity('sat');
+  const claim: SlugClaim = { slug: 'sat', fingerprint: cid.fingerprint, public_key: cid.publicKey, timestamp: NOW };
+  const signed = await signSlugClaim(claim, cid.privateKey, cid.passphrase, undefined, cid.kemPublicKeyB64, cid.sigPublicKeyB64);
+  assert.equal(await verifySignedSlugClaim(signed), true);
+  const base = slugClaimSigningInput(signed);
+  assert.equal(
+    slugClaimSigningInput({ ...signed, pq_kem_public_key: undefined, pq_sig_public_key: undefined }),
+    base, 'pq pubkeys must be EXCLUDED from slugClaimSigningInput (satellite verifies without them)',
+  );
+  assert.equal(
+    slugClaimSigningInput({ ...signed, pq_kem_public_key: 'ZZZZ', pq_sig_public_key: 'ZZZZ' }),
+    base, 'slugClaimSigningInput must not depend on the pq pubkey values',
+  );
 });

@@ -93,9 +93,12 @@ async function makeCanonicalIdentity(name: string): Promise<CanonicalIdentity> {
 
 // ── the happy path authenticates ───────────────────────────────────────────────────────────────
 
-test('round-trip: a note signed by the fingerprint-owner authenticates', async () => {
+test('CANONICAL-ONLY GATE (res1): a classical 40-hex note does NOT authenticate — the OpenPGP fall-through is removed (the canonical happy-path is the "CANONICAL sender" test below)', async () => {
+  // alice is a classical (40-hex OpenPGP) identity. Post-res1 fingerprintMatchesKey is canonical-only:
+  // a 40-hex claimed fp with no PQ legs → false. This inverts the pre-res1 "classical binds" assertion
+  // (mirrors canonical-fingerprint.test.ts). The authenticating happy-path is now canonical (below).
   const signed = await signNoteWire(unsignedWire(), alicePub, alicePriv, alicePass);
-  assert.equal(await verifyNoteSender(signed), true);
+  assert.equal(await verifyNoteSender(signed), false);
 });
 
 // ── every forgery / tamper is refused ───────────────────────────────────────────────────────────
@@ -195,17 +198,25 @@ test('CANONICAL sender with a WRONG-LENGTH kem → rejected at the boundary (§5
   assert.equal(await verifyNoteSender(tampered), false);
 });
 
-test('note preimage is UNCHANGED by the §5 PQ pubkeys — a classical note signed WITHOUT them still verifies WITH them present (excluded from noteSigningInput)', async () => {
-  // Pin the property the satellite / DOMAIN_NOTE vector depends on: adding pq_kem/pq_sig to the wire does
-  // NOT change the signed bytes. Sign classical (Alice, 40-hex), then attach FIPS-length PQ pubkeys — the
-  // classical signature must STILL verify (they were excluded from the preimage). Alice's own kem/sig so
-  // the length-guard passes; her fp is 40-hex so fingerprintMatchesKey uses the OpenPGP path (pq ignored).
-  const pq = generatePQKeypairBundle();
-  const signed = await signNoteWire(unsignedWire(), alicePub, alicePriv, alicePass);
-  const withPq: NoteWireV0 = {
-    ...signed,
-    pq_kem_public_key: uint8ToBase64(pq.kem.publicKey),
-    pq_sig_public_key: uint8ToBase64(pq.signing.publicKey),
-  };
-  assert.equal(await verifyNoteSender(withPq), true, 'excluded PQ pubkeys must not alter the signed preimage');
+test('SATELLITE-SAFE: PQ pubkeys are EXCLUDED from noteSigningInput — a canonical note verifies, and the signed preimage is independent of the attached pq (so the satellite verifies the sig without pq)', async () => {
+  // Post-res1 the identity is canonical, but the satellite-safe property is unchanged and load-bearing:
+  // pq_kem/pq_sig are NOT part of the signed bytes (noteSigningInput). The satellite verifies the note
+  // signature WITHOUT the pq pubkeys; they're carried only so the RECEIVER can recompute the 64-hex fp.
+  // Sign a canonical note (pq forwarded for the fp-match, NOT for the preimage), then prove directly that
+  // noteSigningInput does not depend on the pq pubkeys' presence or value.
+  const cid = await makeCanonicalIdentity('sat');
+  const signed = await signNoteWire(
+    unsignedWire({ from_fingerprint: cid.fingerprint }),
+    cid.publicKey, cid.privateKey, cid.passphrase, cid.kemPublicKeyB64, cid.sigPublicKeyB64,
+  );
+  assert.equal(await verifyNoteSender(signed), true);
+  const base = noteSigningInput(signed);
+  assert.equal(
+    noteSigningInput({ ...signed, pq_kem_public_key: undefined, pq_sig_public_key: undefined }),
+    base, 'pq pubkeys must be EXCLUDED from noteSigningInput (satellite verifies without them)',
+  );
+  assert.equal(
+    noteSigningInput({ ...signed, pq_kem_public_key: 'ZZZZ', pq_sig_public_key: 'ZZZZ' }),
+    base, 'noteSigningInput must not depend on the pq pubkey values',
+  );
 });

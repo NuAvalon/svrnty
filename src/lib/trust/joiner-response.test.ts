@@ -68,6 +68,8 @@ interface CanonicalIdentity {
   passphrase: string;
   kemPublicKeyB64: string;
   sigPublicKeyB64: string;
+  sigPublicKey: Uint8Array;   // raw ML-DSA pubkey bytes (for the hybrid round-trip assertion)
+  sigSecretKey: Uint8Array;   // raw ML-DSA secret — to make a HYBRID signature under this canonical id
 }
 async function makeCanonicalIdentity(name: string): Promise<CanonicalIdentity> {
   const passphrase = 'pw-' + name;
@@ -95,6 +97,8 @@ async function makeCanonicalIdentity(name: string): Promise<CanonicalIdentity> {
     passphrase,
     kemPublicKeyB64: uint8ToBase64(pq.kem.publicKey),
     sigPublicKeyB64: uint8ToBase64(pq.signing.publicKey),
+    sigPublicKey: pq.signing.publicKey,
+    sigSecretKey: pq.signing.secretKey,
   };
 }
 
@@ -108,29 +112,28 @@ function canonJoinerArgs(cid: CanonicalIdentity, o: Partial<BuildJoinerResponseA
 }
 
 // ── Round-trip: Bob → mailbox → Alice surfaces Bob as KNOWN ──────────────────────
-test('round-trip (classical): Bob signs+encrypts → Alice verifies → PendingJoiner is Bob', async () => {
+test('CANONICAL-ONLY GATE (res1): a classical 40-hex joiner does NOT verify — the OpenPGP fall-through is removed (the canonical handshake is the "CANONICAL round-trip" test below)', async () => {
+  // Bob is a classical (40-hex OpenPGP) identity. Post-res1 verifyJoinerResponse's fingerprintMatchesKey
+  // is canonical-only: a 40-hex joiner_fingerprint with no PQ legs → false → the handshake drops (→ null).
+  // Inverts the pre-res1 "classical binds" assertion; the authenticating handshake is now canonical (below).
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
   const blob = await encryptJoinerResponseTo(signed, alicePub);
-  const joiner = await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE);
-  assert.ok(joiner, 'a valid joiner-response must verify');
-  assert.equal(joiner!.fingerprint, bobFp);
-  assert.equal(joiner!.epoch, 1);
-  assert.equal(joiner!.publicKeyArmored, bobPub);
-  assert.equal(joiner!.displayName, 'Bob');
-  assert.equal(joiner!.inviteNonce, CODE);
-  assert.equal(joiner!.pqSigningPublicKey, undefined, 'classical → no pq key returned');
+  assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
 });
 
 // ── Hybrid PQ round-trip + anti-downgrade ────────────────────────────────────────
-test('round-trip (hybrid): PQ-signed response verifies under requirePq and returns the pq key bytes', async () => {
-  const signed = await buildJoinerResponse(
-    bobArgs({ joinerPqSigPublicKey: uint8ToBase64(bobPq.publicKey) }), bobPriv, pass, bobPq.secretKey,
-  );
+test('round-trip (hybrid): a CANONICAL joiner PQ-signs → verifies under requirePq and returns the pq key bytes', async () => {
+  // Post-res1 the joiner must be canonical (64-hex). Sign HYBRID with the canonical id's OWN ML-DSA key —
+  // the same key committed in its canonical fp AND threaded as joinerPqSigPublicKey — so the fp-match passes
+  // AND the pq signature verifies under requirePq. (The canonical happy-path below signs classically; this
+  // pins the distinct HYBRID ML-DSA-signature path on a canonical joiner.)
+  const cid = await makeCanonicalIdentity('canon-hybrid');
+  const signed = await buildJoinerResponse(canonJoinerArgs(cid), cid.privateKey, cid.passphrase, cid.sigSecretKey);
   assert.ok(signed.signature.pq_signature, 'hybrid signature must carry a pq half');
   const blob = await encryptJoinerResponseTo(signed, alicePub);
   const joiner = await verifyJoinerResponse(blob, aliceGiver(), yes, { requirePq: true });
-  assert.ok(joiner, 'hybrid response must verify');
-  assert.deepEqual(joiner!.pqSigningPublicKey, bobPq.publicKey, 'returned pq key must round-trip exactly');
+  assert.ok(joiner, 'hybrid canonical response must verify');
+  assert.deepEqual(joiner!.pqSigningPublicKey, cid.sigPublicKey, 'returned pq key must round-trip exactly');
 });
 
 test('anti-downgrade: stripping the pq half of a hybrid response fails verification (→ null)', async () => {
@@ -208,25 +211,26 @@ test('multi-use + per-(code,joinerFp) dedup: two distinct joiners on ONE code bo
   const key = (n: string, fp: string) => `${n}|${fp}`;
   const oracle = (n: string, fp: string) => issued.has(n) && !accepted.has(key(n, fp));
 
-  // Joiner #1 = Bob on CODE.
-  const bobBlob = await encryptJoinerResponseTo(await buildJoinerResponse(bobArgs(), bobPriv, pass), alicePub);
-  const first = await verifyJoinerResponse(bobBlob, aliceGiver(), oracle);
+  // Two DISTINCT canonical joiners on the same multi-use code (post-res1: joiners must be canonical).
+  const j1 = await makeCanonicalIdentity('joiner1');
+  const j2 = await makeCanonicalIdentity('joiner2');
+
+  // Joiner #1 on CODE.
+  const j1Blob = await encryptJoinerResponseTo(await buildJoinerResponse(canonJoinerArgs(j1), j1.privateKey, j1.passphrase), alicePub);
+  const first = await verifyJoinerResponse(j1Blob, aliceGiver(), oracle);
   assert.ok(first, 'joiner #1 accepted');
+  assert.equal(first!.fingerprint, j1.fingerprint);
   accepted.add(key(first!.inviteNonce, first!.fingerprint));
 
-  // Joiner #2 = Carol on the SAME code (multi-use Grow link) — must ALSO connect.
-  const carolArgs: BuildJoinerResponseArgs = {
-    joinerFp: carolFp, joinerEpoch: 1, joinerPubKeyArmored: carolPub, joinerName: 'Carol',
-    giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z',
-  };
-  const carolBlob = await encryptJoinerResponseTo(await buildJoinerResponse(carolArgs, carolPriv, pass), alicePub);
-  const second = await verifyJoinerResponse(carolBlob, aliceGiver(), oracle);
+  // Joiner #2 on the SAME code (multi-use Grow link) — must ALSO connect.
+  const j2Blob = await encryptJoinerResponseTo(await buildJoinerResponse(canonJoinerArgs(j2), j2.privateKey, j2.passphrase), alicePub);
+  const second = await verifyJoinerResponse(j2Blob, aliceGiver(), oracle);
   assert.ok(second, 'joiner #2 on the same code also accepted (multi-use preserved)');
-  assert.equal(second!.fingerprint, carolFp);
+  assert.equal(second!.fingerprint, j2.fingerprint);
   accepted.add(key(second!.inviteNonce, second!.fingerprint));
 
-  // Bob replays his blob → dropped (per-(code,joinerFp) already accepted); the code is still live for others.
-  assert.equal(await verifyJoinerResponse(bobBlob, aliceGiver(), oracle), null, 'same-joiner replay dropped');
+  // Joiner #1 replays their blob → dropped (per-(code,joinerFp) already accepted); code still live for others.
+  assert.equal(await verifyJoinerResponse(j1Blob, aliceGiver(), oracle), null, 'same-joiner replay dropped');
 });
 
 // ── Invariant-1: a spoofed fingerprint (real fp + attacker key) is refused ────────

@@ -111,13 +111,16 @@ async function ownerPollHeader(mailboxId: string, now = NOW): Promise<Record<str
   });
 }
 
-test('poll round-trip — the owner can prove ownership of their own mailbox', async () => {
+test('CANONICAL-ONLY GATE (res1): a classical 40-hex owner does NOT prove ownership — the OpenPGP fall-through is removed (the canonical poll happy-path is the "CANONICAL poll round-trip" test below)', async () => {
+  // owner is a classical (40-hex OpenPGP) identity. Post-res1 verifyMailboxPollAuth's fingerprintMatchesKey
+  // is canonical-only: a 40-hex claimed fp with no PQ legs → false. Inverts the pre-res1 "classical binds".
   const mid = deriveMailboxId(owner.fingerprint);
   const h = await ownerPollHeader(mid);
-  assert.equal(await verifyMailboxPollAuth(reqWith(h), mid, NOW), true);
+  assert.equal(await verifyMailboxPollAuth(reqWith(h), mid, NOW), false);
 });
 
-test('ack round-trip — the owner can authorize a delete of specific ids', async () => {
+test('CANONICAL-ONLY GATE (res1): a classical 40-hex owner cannot authorize an ack — canonical-only (the canonical ack happy-path is the "CANONICAL ack round-trip" test below)', async () => {
+  // Same res1 gate: a 40-hex owner → verifyMailboxAckAuth's fingerprintMatchesKey → false.
   const mid = deriveMailboxId(owner.fingerprint);
   const ids = ['env-1', 'env-2'];
   const h = await signMailboxAckRequest({
@@ -129,7 +132,7 @@ test('ack round-trip — the owner can authorize a delete of specific ids', asyn
     passphrase: owner.passphrase,
     now: NOW,
   });
-  assert.equal(await verifyMailboxAckAuth(reqWith(h), mid, ids, NOW), true);
+  assert.equal(await verifyMailboxAckAuth(reqWith(h), mid, ids, NOW), false);
 });
 
 test('no owner-auth header → not the owner (the bare-GET occupancy oracle is closed)', async () => {
