@@ -23,6 +23,11 @@ export async function sendNoteToPeer(args: {
   senderPublicKeyArmored: string;
   senderPrivateKeyArmored: string;
   passphrase: string;
+  /** §5 canonical-fp binding: the sender's PQ pubkeys (base64). Thread BOTH so a CANONICAL (64-hex)
+   *  sender authenticates — verifyNoteSender recomputes SHA256(sign‖enc‖kem‖sig). A classical (40-hex)
+   *  sender omits them → the OpenPGP-fp path. Sourced from the identity's post_quantum. */
+  senderPqKemPublicKey?: string;
+  senderPqSigPublicKey?: string;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
   body: string;
@@ -53,6 +58,8 @@ export async function sendNoteToPeer(args: {
     args.senderPublicKeyArmored,
     args.senderPrivateKeyArmored,
     args.passphrase,
+    args.senderPqKemPublicKey, // §5: canonical-fp binding (both must be present to bind; else classical path)
+    args.senderPqSigPublicKey,
   );
   const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
   const mailbox_id = deriveMailboxId(args.peerFingerprint);

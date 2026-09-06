@@ -74,6 +74,13 @@ export interface NoteWireV0 {
   // inbound wire that is missing or fails them. Both are EXCLUDED from noteSigningInput.
   public_key?: string;
   signature?: EnvelopeSignature;
+  // §5 canonical-fp binding: the sender's PQ PUBLIC keys, so verifyNoteSender can recompute the 64-hex
+  // canonical fingerprint = SHA256(sign‖enc‖kem‖sig) and confirm from_fingerprint↔key for a CANONICAL
+  // identity. Absent for a classical (40-hex OpenPGP) sender → fingerprintMatchesKey falls back to the
+  // getFingerprint() path. Public keys only; possession is proved by the signature. Both are EXCLUDED
+  // from noteSigningInput (the pinned DOMAIN_NOTE preimage is unchanged — they bind via the fp-match).
+  pq_kem_public_key?: string; // base64(ML-KEM-1024 pubkey, 1568B)
+  pq_sig_public_key?: string; // base64(ML-DSA-87 pubkey, 2592B)
 }
 
 /** Local ring-channel state — NEVER uploaded as a roster table. */
