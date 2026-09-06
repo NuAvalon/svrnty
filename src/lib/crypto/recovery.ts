@@ -68,6 +68,18 @@ export interface PrivateKeyBundle {
   pq_signing_secret_key: string;
   /** ML-KEM-1024 secret key, base64 */
   pq_kem_secret_key: string;
+  /** ML-DSA-87 PUBLIC key, base64 — carried so RESTORE can reconstruct the canonical fp
+   *  SHA256(sign‖enc‖kem‖sig) without deriving pub-from-secret (@noble exposes no ML-DSA
+   *  secret→public; ML-DSA's pub is not a substring of its secret). Optional for back-compat:
+   *  pre-fix seed vaults lack it → restore fails gracefully (see recovery-canonical fix). */
+  pq_signing_public_key?: string;
+  /** ML-KEM-1024 PUBLIC key, base64 — carried for canonical-fp reconstruction on restore. */
+  pq_kem_public_key?: string;
+  /** Canonical identity fingerprint (SHA256 of the 4 pubs). Carried so SEED restore has a claim to
+   *  check its recompute against. Lives INSIDE this AES-GCM-encrypted bundle (never the plaintext
+   *  KeyVault outer) so the recovery envelope stays identity-blind. Optional: pre-fix seed vaults
+   *  lack it -> seed restore fails closed (acceptable; those are pre-9/9). */
+  identity_fingerprint?: string;
 }
 
 // --- Master Secret ---

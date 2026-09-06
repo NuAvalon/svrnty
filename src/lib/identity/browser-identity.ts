@@ -181,6 +181,13 @@ export class BrowserIdentity {
       classical_passphrase: passphrase,
       pq_signing_secret_key: uint8ToBase64(pqBundle.signing.secretKey),
       pq_kem_secret_key: uint8ToBase64(pqBundle.kem.secretKey),
+      // Carry the PQ PUBLIC keys too, so seed/vault RESTORE can reconstruct the canonical fp
+      // SHA256(sign‖enc‖kem‖sig) — @noble exposes no ML-DSA secret→public, so the pub must be stored.
+      pq_signing_public_key: uint8ToBase64(pqBundle.signing.publicKey),
+      pq_kem_public_key: uint8ToBase64(pqBundle.kem.publicKey),
+      // Carried INSIDE the encrypted bundle (not the plaintext KeyVault) so SEED restore has a
+      // claim to check its recompute against — the recovery envelope stays identity-blind. (#110)
+      identity_fingerprint: fingerprint,
     };
 
     const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(

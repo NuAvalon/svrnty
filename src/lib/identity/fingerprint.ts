@@ -11,6 +11,7 @@ import { readKey } from 'openpgp';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { extractRawSign, strip0x40 } from './raw-sign';
+import { sign as pqSign, verify as pqVerify, encapsulate as pqEncapsulate, decapsulate as pqDecapsulate } from '../crypto/pq';
 
 export const SIGN_PUB_LEN = 32;
 export const ENC_PUB_LEN = 32;
@@ -143,6 +144,95 @@ export async function mintCanonicalFingerprint(args: {
     args.sigPublicKey,
   );
   return { fingerprint, signPub, encPub };
+}
+
+// A fixed probe for the PQ pub↔secret correspondence round-trip (see reconstructCanonicalIdentityForRestore).
+const RECON_PQ_PROBE = new TextEncoder().encode('svrnty-recovery-pqpub-correspondence-probe-v1');
+
+/**
+ * RESTORE path: reconstruct the CANONICAL identity id from recovered key material, WITHOUT trusting
+ * any carried public fingerprint/key. Both restore adapters (seed-phrase + vault-passphrase) call this.
+ *
+ * Anti-poison (preserves the private-key↔fp bind against an untrusted .svrnty "import this vault" file):
+ *   • sign+enc pubs are derived from the UNLOCKED private key (via mintCanonicalFingerprint), NOT any
+ *     carried public — so a crafted vault can't substitute a foreign classical key.
+ *   • the PQ public keys are proven to CORRESPOND to the recovered PQ secrets via a round-trip
+ *     (ML-DSA sign→verify a probe; ML-KEM encap→decap) — @noble exposes no secret→public, so we
+ *     verify correspondence rather than derive. A vault carrying self-consistent-but-non-matching PQ
+ *     pubs fails the round-trip.
+ * Then the recomputed canonical fp MUST equal the backup's claimed fp, or we refuse.
+ * Throws (never silently downgrades to classical): legacy pre-PQ-pub backup → re-export guidance;
+ * PQ pub↔secret mismatch → integrity error; fp mismatch → integrity error.
+ */
+export async function reconstructCanonicalIdentityForRestore(args: {
+  decryptedIdentityKey: any;
+  pqKemPublicKeyB64?: string;
+  pqSigPublicKeyB64?: string;
+  pqKemSecretKeyB64: string;
+  pqSigSecretKeyB64: string;
+  claimedFingerprint: string;
+}): Promise<{
+  fingerprint: string;
+  post_quantum: { sig_algorithm: 'ML-DSA-87'; sig_public_key: string; kem_algorithm: 'ML-KEM-1024'; kem_public_key: string };
+}> {
+  // (0) Legacy: a pre-format-bump backup carries PQ secrets but NO PQ public keys. ML-DSA's public
+  //     key is not derivable from its secret via @noble, so the canonical fp cannot be reconstructed.
+  if (!args.pqKemPublicKeyB64 || !args.pqSigPublicKeyB64) {
+    throw new Error(
+      "This backup predates post-quantum recovery and can't be fully restored on this version. On a device where your identity is still unlocked, re-export your vault (Settings → Export) to create a current backup, then restore from that.",
+    );
+  }
+  const kemPub = b64ToBytes(args.pqKemPublicKeyB64);
+  const sigPub = b64ToBytes(args.pqSigPublicKeyB64);
+  const kemSec = b64ToBytes(args.pqKemSecretKeyB64);
+  const sigSec = b64ToBytes(args.pqSigSecretKeyB64);
+  if (!kemPub || !sigPub || !kemSec || !sigSec) {
+    throw new Error('This backup failed an integrity check (unreadable post-quantum key material) and was not restored.');
+  }
+  if (kemPub.length !== KEM_PUB_LEN || sigPub.length !== SIG_PUB_LEN) {
+    throw new Error('This backup failed an integrity check (post-quantum key length does not match its identity) and was not restored.');
+  }
+
+  // (1) ANTI-POISON — prove the carried PQ public keys correspond to the recovered PQ secrets.
+  //     ML-DSA: sign a fixed probe with the secret, verify with the claimed public.
+  let sigOk = false;
+  try { sigOk = pqVerify(RECON_PQ_PROBE, pqSign(RECON_PQ_PROBE, sigSec), sigPub); } catch { sigOk = false; }
+  if (!sigOk) {
+    throw new Error('This backup failed an integrity check (its post-quantum signing key does not match its identity) and was not restored.');
+  }
+  //     ML-KEM: encapsulate to the claimed public, decapsulate with the secret; shared secrets must match.
+  let kemOk = false;
+  try {
+    const { ciphertext, sharedSecret } = pqEncapsulate(kemPub);
+    const roundTrip = pqDecapsulate(ciphertext, kemSec);
+    kemOk = sharedSecret.length === roundTrip.length && sharedSecret.every((b, i) => b === roundTrip[i]);
+  } catch { kemOk = false; }
+  if (!kemOk) {
+    throw new Error('This backup failed an integrity check (its post-quantum encryption key does not match its identity) and was not restored.');
+  }
+
+  // (2) Reconstruct the canonical fp — sign+enc derived from the UNLOCKED private key (anti-poison),
+  //     with the verified PQ pubs. Delegates to the vetted mint path.
+  const { fingerprint } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: args.decryptedIdentityKey,
+    kemPublicKey: kemPub,
+    sigPublicKey: sigPub,
+  });
+
+  // (3) The reconstructed canonical id MUST equal the backup's claimed fp, or refuse (never downgrade).
+  if (fingerprint !== normalizeFingerprintHex(args.claimedFingerprint)) {
+    throw new Error('This backup failed an integrity check (its key does not match its identity) and was not restored.');
+  }
+
+  return {
+    fingerprint,
+    post_quantum: {
+      sig_algorithm: 'ML-DSA-87',
+      sig_public_key: args.pqSigPublicKeyB64,
+      kem_algorithm: 'ML-KEM-1024',
+      kem_public_key: args.pqKemPublicKeyB64,
+    },
+  };
 }
 
 export type PqPublicOverlay = {
