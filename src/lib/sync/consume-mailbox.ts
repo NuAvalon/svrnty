@@ -40,6 +40,10 @@ export interface OwnerIdentity {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  // §5 canonical-id: the identity's PQ public keys, threaded into the owner-auth bundle so the relay
+  // can recompute the 64-hex canonical fingerprint. Absent for a classical identity (40-hex fp).
+  kemPublicKey?: string;
+  sigPublicKey?: string;
 }
 
 /** Decrypt an opaque relay blob to a SignedContactUpdate, or null if it isn't for us / is corrupt. */
@@ -132,6 +136,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     publicKeyArmored: deps.owner.publicKeyArmored,
     privateKeyArmored: deps.owner.privateKeyArmored,
     passphrase: deps.owner.passphrase,
+    kemPublicKey: deps.owner.kemPublicKey,
+    sigPublicKey: deps.owner.sigPublicKey,
     now: Date.now(),
   });
   const res = await doFetch(`${relayBase}/queue?mailbox_id=${encodeURIComponent(mailboxId)}`, { headers: pollHeaders });
@@ -182,6 +188,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       publicKeyArmored: deps.owner.publicKeyArmored,
       privateKeyArmored: deps.owner.privateKeyArmored,
       passphrase: deps.owner.passphrase,
+      kemPublicKey: deps.owner.kemPublicKey,
+      sigPublicKey: deps.owner.sigPublicKey,
       now: Date.now(),
     });
     const ackRes = await doFetch(`${relayBase}/ack`, {
