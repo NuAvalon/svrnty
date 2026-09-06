@@ -3,12 +3,45 @@
 // Real keys, generated once in before(). Run: npx tsx --test src/lib/identity/identity-card-sign.test.ts
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
 import {
   signIdentityCard, verifySignedIdentityCard, type SignedIdentityCard,
   suiteFromKemLength, classifyImportedCard,
 } from './identity-card-sign';
 import type { IdentityCard } from '../format/envelope';
+import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
+import { mintCanonicalFingerprint } from './fingerprint';
+
+// A §5 CANONICAL identity + card: openpgp (sign+enc) + REAL ML-KEM-1024 (1568B) / ML-DSA-87 (2592B)
+// pubkeys → a 64-hex SHA256(sign‖enc‖kem‖sig) fp (NOT the 40-hex OpenPGP fp). Post-res1 the card-verify
+// Invariant-1 (fingerprintMatchesKey) is canonical-only, so a card must carry its real FIPS-length pq
+// that hashes to the claimed fp. Mirrors genesis + relay/mailbox-auth.test.ts makeCanonicalIdentity.
+interface CanonId { fingerprint: string; publicKey: string; privateKey: string; passphrase: string; kemB64: string; sigB64: string; }
+async function makeCanonicalId(name: string): Promise<CanonId> {
+  const pass = 'pw-' + name;
+  const { privateKey: priv, publicKey: pub } = await generateKey({
+    type: 'ecc',
+    // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime (same keygen as core.ts).
+    curve: 'ed25519',
+    userIDs: [{ name, email: `${name}@x.test` }], passphrase: pass, format: 'armored',
+  });
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: priv });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase: pass });
+  const { fingerprint } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked, kemPublicKey: pq.kem.publicKey, sigPublicKey: pq.signing.publicKey,
+  });
+  return { fingerprint, publicKey: pub, privateKey: priv, passphrase: pass, kemB64: uint8ToBase64(pq.kem.publicKey), sigB64: uint8ToBase64(pq.signing.publicKey) };
+}
+function canonCard(id: CanonId, over: Partial<IdentityCard['identity']> = {}): IdentityCard {
+  return {
+    version: '1.0', type: 'identity-exchange', created_at: '2026-08-17T00:00:00.000Z',
+    identity: {
+      fingerprint: id.fingerprint, display_name: 'Alice', public_key: id.publicKey, email: 'alice@example.test',
+      pq_sig_public_key: id.sigB64, pq_kem_public_key: id.kemB64, ...over,
+    },
+  };
+}
 
 const passphrase = 'test-passphrase-0';
 const otherPass = 'test-passphrase-1';
@@ -47,8 +80,9 @@ function aliceCard(over: Partial<IdentityCard['identity']> = {}): IdentityCard {
   };
 }
 
-test('round-trip: a card signed by its own key verifies', async () => {
-  const signed = await signIdentityCard(aliceCard(), privateKey, passphrase);
+test('round-trip (CANONICAL): a card signed by its own key verifies', async () => {
+  const id = await makeCanonicalId('rt');
+  const signed = await signIdentityCard(canonCard(id), id.privateKey, id.passphrase);
   assert.equal(await verifySignedIdentityCard(signed), true);
 });
 
@@ -138,15 +172,18 @@ test('classify branch 1: malformed card (no identity) → reject', async () => {
   assert.equal(d.importClassical, false);
   assert.equal(d.pq, null);
 });
-test('classify branch 2: fp OK, no signature → classical-only, quiet, pq dropped', async () => {
-  const d = await classifyImportedCard(aliceCard()); // aliceCard() carries no `signature`
+test('classify branch 2 (CANONICAL): fp OK, no signature → classical-only, quiet, pq dropped', async () => {
+  const id = await makeCanonicalId('br2');
+  const d = await classifyImportedCard(canonCard(id)); // canonCard carries no `signature`
   assert.equal(d.branch, 2);
   assert.equal(d.importClassical, true);
   assert.equal(d.pq, null);
   assert.equal(d.alarm, 'quiet');
 });
-test('classify branch 3: signature present but INVALID (tampered) → classical-only, LOUD, pq dropped', async () => {
-  const signed = await signIdentityCard(aliceCard({ pq_kem_public_key: kemOfBytes(1568) }), privateKey, passphrase);
+test('classify branch 3 (CANONICAL): signature present but INVALID (tampered) → classical-only, LOUD, pq dropped', async () => {
+  const id = await makeCanonicalId('br3');
+  const signed = await signIdentityCard(canonCard(id), id.privateKey, id.passphrase);
+  // fp↔key still passes (canonical fp intact); tampering display_name breaks only the signature → branch 3.
   const tampered = { ...signed, identity: { ...signed.identity, display_name: 'Eve' } };
   const d = await classifyImportedCard(tampered);
   assert.equal(d.branch, 3);
@@ -154,34 +191,40 @@ test('classify branch 3: signature present but INVALID (tampered) → classical-
   assert.equal(d.pq, null);
   assert.equal(d.alarm, 'loud');
 });
-test('classify branch 4a: valid sig, empty pq_kem → quiet, no pq (legit v1/no-PQ signer)', async () => {
-  const signed = await signIdentityCard(
-    aliceCard({ pq_kem_public_key: '', pq_sig_public_key: '' }), privateKey, passphrase,
-  );
+test('CANONICAL-ONLY GATE (res1): a card with EMPTY pq → branch 1 (reject) — no v1/no-PQ signers in greenfield (was branch 4a pre-res1)', async () => {
+  // Pre-res1, an empty-pq card from a "legit v1/no-PQ signer" imported classical-quiet (branch 4a) via the
+  // 40-hex OpenPGP path. Post-res1 classifyImportedCard's fp-gate (fingerprintMatchesKey) is canonical-only:
+  // empty pq → the canonical fp cannot be recomputed → fp↔key FALSE → branch 1 (reject). Greenfield has no
+  // v1/no-PQ signers (Archie #130477 canonical-only), so 4a collapses to branch 1. [Flint: the 4a source
+  // branch is now dead code — prune at your gate-semantics discretion.]
+  const id = await makeCanonicalId('br4a');
+  const signed = await signIdentityCard(canonCard(id, { pq_kem_public_key: '', pq_sig_public_key: '' }), id.privateKey, id.passphrase);
   const d = await classifyImportedCard(signed);
-  assert.equal(d.branch, '4a');
-  assert.equal(d.importClassical, true);
+  assert.equal(d.branch, 1);
+  assert.equal(d.importClassical, false);
   assert.equal(d.pq, null);
-  assert.equal(d.alarm, 'quiet');
+  assert.equal(d.alarm, 'reject');
 });
-test('classify branch 4b: valid sig, supported suite length → STORE authenticated pq (both keys)', async () => {
-  const kem = kemOfBytes(1568), sig = kemOfBytes(1184);
-  const signed = await signIdentityCard(
-    aliceCard({ pq_kem_public_key: kem, pq_sig_public_key: sig }), privateKey, passphrase,
-  );
+test('classify branch 4b (CANONICAL): valid sig, supported suite → STORE authenticated pq (both keys)', async () => {
+  const id = await makeCanonicalId('br4b'); // real ML-KEM-1024 (1568B) + ML-DSA-87 (2592B) pq
+  const signed = await signIdentityCard(canonCard(id), id.privateKey, id.passphrase);
   const d = await classifyImportedCard(signed);
   assert.equal(d.branch, '4b');
   assert.equal(d.suite, 'ML-KEM-1024');
   assert.equal(d.importClassical, true);
   assert.equal(d.alarm, 'quiet');
-  assert.deepEqual(d.pq, { pq_kem_public_key: kem, pq_sig_public_key: sig });
+  assert.deepEqual(d.pq, { pq_kem_public_key: id.kemB64, pq_sig_public_key: id.sigB64 });
 });
-test('classify branch 4c: valid sig, UNSUPPORTED suite length → soft-info, no pq (sender bug, NOT tamper)', async () => {
-  const signed = await signIdentityCard(aliceCard({ pq_kem_public_key: kemOfBytes(999) }), privateKey, passphrase);
+test('CANONICAL-ONLY GATE (res1): a card with a WRONG-LENGTH suite → branch 1 (reject) — the fp-gate needs FIPS-length canonical pq (was branch 4c pre-res1)', async () => {
+  // Pre-res1, an unsupported-suite (wrong-length kem) card imported classical soft-info (branch 4c) via the
+  // 40-hex path. Post-res1 the fp-gate is canonical-only: a non-FIPS-length kem → the canonical fp cannot be
+  // recomputed → fp↔key FALSE → branch 1 (reject). Greenfield canonical-only (Archie #130477); 4c collapses
+  // to branch 1. [Flint: the 4c source branch is now dead code — prune at your gate-semantics discretion.]
+  const id = await makeCanonicalId('br4c');
+  const signed = await signIdentityCard(canonCard(id, { pq_kem_public_key: kemOfBytes(999) }), id.privateKey, id.passphrase);
   const d = await classifyImportedCard(signed);
-  assert.equal(d.branch, '4c');
-  assert.equal(d.alarm, 'soft-info'); // crucial: a valid signature means this is NOT tampering — never cry wolf
-  assert.notEqual(d.alarm, 'loud');
+  assert.equal(d.branch, 1);
+  assert.equal(d.importClassical, false);
   assert.equal(d.pq, null);
-  assert.equal(d.importClassical, true);
+  assert.equal(d.alarm, 'reject');
 });
