@@ -72,6 +72,7 @@ async function mintIdentity(name: string, email: string): Promise<{
   const passphrase = btoa(String.fromCharCode(...passphraseBytes));
   const { privateKey } = await generateKey({
     type: 'ecc',
+    // @ts-expect-error — openpgp's GenerateKeyOptions omits 'ed25519' from EllipticCurveName; the curve is runtime-valid and is exactly what genesis uses (browser-identity.ts). Known upstream type wart — suppress here so this test file stays tsc-clean (keeps the branch's 22-error baseline exact).
     curve: 'ed25519',
     userIDs: [{ name, email }],
     passphrase,
