@@ -68,6 +68,13 @@ export interface PrivateKeyBundle {
   pq_signing_secret_key: string;
   /** ML-KEM-1024 secret key, base64 */
   pq_kem_secret_key: string;
+  /** ML-DSA-87 PUBLIC key, base64 — carried so RESTORE can reconstruct the canonical fp
+   *  SHA256(sign‖enc‖kem‖sig) without deriving pub-from-secret (@noble exposes no ML-DSA
+   *  secret→public; ML-DSA's pub is not a substring of its secret). Optional for back-compat:
+   *  pre-fix seed vaults lack it → restore fails gracefully (see recovery-canonical fix). */
+  pq_signing_public_key?: string;
+  /** ML-KEM-1024 PUBLIC key, base64 — carried for canonical-fp reconstruction on restore. */
+  pq_kem_public_key?: string;
 }
 
 // --- Master Secret ---
