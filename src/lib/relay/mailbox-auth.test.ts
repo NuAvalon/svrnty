@@ -270,3 +270,24 @@ test('CANONICAL ack round-trip — the owner can authorize a delete with the PQ 
   });
   assert.equal(await verifyMailboxAckAuth(reqWith(h), mid, ids, NOW), true);
 });
+
+test('CANONICAL bundle with a WRONG-LENGTH PQ pubkey → rejected at the boundary (§5 defense-in-depth, fail-loud)', async () => {
+  const cid = await makeCanonicalIdentity('canon4');
+  const mid = deriveMailboxId(cid.fingerprint);
+  const h = await signMailboxPollRequest({
+    mailboxId: mid,
+    fingerprint: cid.fingerprint,
+    publicKeyArmored: cid.publicKey,
+    privateKeyArmored: cid.privateKey,
+    passphrase: cid.passphrase,
+    kemPublicKey: cid.kemPublicKeyB64,
+    sigPublicKey: cid.sigPublicKeyB64,
+    now: NOW,
+  });
+  // Truncate the kem pubkey (40 base64 chars → ~30 bytes, not 1568) → decodeBundle rejects the whole
+  // bundle up front (fail-loud) rather than relying on the downstream fingerprintMatchesKey length gate.
+  const tampered = mutateHeader(h, (b) => {
+    b.kem_public_key = (b.kem_public_key as string).slice(0, 40);
+  });
+  assert.equal(await verifyMailboxPollAuth(reqWith(tampered), mid, NOW), false);
+});

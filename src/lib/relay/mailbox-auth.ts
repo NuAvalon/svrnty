@@ -20,7 +20,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { canonicalize } from '@/lib/format/canonical';
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
-import { fingerprintMatchesKey } from '@/lib/identity/fingerprint';
+import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
 
 // Domain-separation tags for the two owner-authenticated mailbox ops. A poll signature can never be
@@ -106,6 +106,20 @@ function decodeBundle(headerValue: string | null): OwnerAuthBundle | null {
       (b.kem_public_key === undefined || typeof b.kem_public_key === 'string') &&
       (b.sig_public_key === undefined || typeof b.sig_public_key === 'string')
     ) {
+      // §5 defense-in-depth (Flint #130212): fail-LOUD on malformed/wrong-length PQ pubkeys at the
+      // boundary, not only via fingerprintMatchesKey's downstream canonical-branch length gate. A
+      // canonical bundle carries BOTH kem+sig at FIPS length; reject a half-present or wrong-length pair.
+      const hasKem = typeof b.kem_public_key === 'string';
+      const hasSig = typeof b.sig_public_key === 'string';
+      if (hasKem !== hasSig) return null; // half-present ⇒ malformed
+      if (hasKem && hasSig) {
+        try {
+          if (atob(b.kem_public_key).length !== KEM_PUB_LEN) return null;
+          if (atob(b.sig_public_key).length !== SIG_PUB_LEN) return null;
+        } catch {
+          return null; // undecodable base64 ⇒ reject
+        }
+      }
       return b as OwnerAuthBundle;
     }
     return null;
