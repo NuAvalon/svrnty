@@ -112,6 +112,12 @@ export interface SlugClaim {
   fingerprint: string;      // MUST equal H(public_key), server-verified
   public_key: string;
   timestamp: string;        // ISO-8601 UTC — replay-bounded by the freshness window
+  // §5 canonical-fp binding: the claimant's PQ PUBLIC keys, so a 64-hex canonical fingerprint recomputes
+  // SHA256(sign‖enc‖kem‖sig) and matches. EXCLUDED from slugClaimSigningInput (below) — they bind via the
+  // fp-match, NOT the signature, so the byte-exact input the LIVE Python satellite verifies is UNCHANGED.
+  // Absent for a classical (40-hex OpenPGP) claim → the OpenPGP-fp path. OMITTED when absent (canonical rejects null).
+  pq_kem_public_key?: string; // base64(ML-KEM-1024 pubkey, 1568B)
+  pq_sig_public_key?: string; // base64(ML-DSA-87 pubkey, 2592B)
 }
 
 /**
@@ -143,9 +149,11 @@ export function contactUpdateSigningInput(env: ContactUpdateEnvelope): string {
   return canonicalize(env, { exclude: ['signature'] });
 }
 
-/** Canonical bytes for an F6 slug-claim signature. */
+/** Canonical bytes for an F6 slug-claim signature. Excludes the §5 PQ pubkeys so the signed byte-vector
+ *  the LIVE Python satellite verifies stays UNCHANGED (they bind via the fp-match, not the signature);
+ *  'signature' is a top-level attachment on SignedSlugClaim. */
 export function slugClaimSigningInput(claim: SlugClaim): string {
-  return canonicalize(claim, { exclude: ['signature'] });
+  return canonicalize(claim, { exclude: ['signature', 'pq_kem_public_key', 'pq_sig_public_key'] });
 }
 
 /** Canonical bytes for a joiner-response signature (excludes any attached `signature`). */
