@@ -9,7 +9,8 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
+import { mintCanonicalFingerprint } from './fingerprint';
 import {
   generatePQKeypairBundle,
   serializeKeypairBundle,
@@ -126,11 +127,19 @@ export class BrowserIdentity {
       format: 'armored'
     });
 
-    const pubKeyObj = await readKey({ armoredKey: publicKey });
-    const fingerprint = pubKeyObj.getFingerprint();
-
-    // Generate post-quantum keys
+    // Generate post-quantum keys BEFORE minting the fingerprint — the identity id
+    // commits to all four public keys (sign ‖ enc ‖ kem ‖ sig).
     const pqBundle = generatePQKeypairBundle();
+
+    const locked = await readPrivateKey({ armoredKey: privateKey });
+    const unlocked = locked.isDecrypted()
+      ? locked
+      : await decryptKey({ privateKey: locked, passphrase });
+    const { fingerprint } = await mintCanonicalFingerprint({
+      decryptedIdentityKey: unlocked,
+      kemPublicKey: pqBundle.kem.publicKey,
+      sigPublicKey: pqBundle.signing.publicKey,
+    });
 
     const identity: IdentityData = {
       version: '0.2.0',

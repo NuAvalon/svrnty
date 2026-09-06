@@ -420,11 +420,25 @@ export function SoverentityFrontend({
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
       const pk = identity?.identity?.public_key || identity?.identity?.publicKey || '';
-      const email = identity?.identity?.email || '';
-      const regRes = await fetch('/register', {
+      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
+      const extra = await buildSatelliteRegisterFields(identity);
+      const regRes = await fetch('/api/satellite/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, display_name: slug, public_key: pk, fingerprint: fp || '', slug }),
+        body: JSON.stringify({
+          display_name: slug,
+          public_key: pk,
+          fingerprint: extra?.fingerprint || fp || '',
+          slug,
+          ...(extra
+            ? {
+                sign_pub: extra.sign_pub,
+                enc_pub: extra.enc_pub,
+                kem_pub: extra.kem_pub,
+                sig_pub: extra.sig_pub,
+              }
+            : {}),
+        }),
       });
       if (regRes.ok || regRes.status === 409) {
         // Claim the slug

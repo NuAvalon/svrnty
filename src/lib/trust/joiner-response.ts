@@ -60,7 +60,7 @@ import {
   type JoinerResponseEnvelope,
 } from '../format/envelope';
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
-import { fingerprintMatchesKey } from '../identity/fingerprint';
+import { fingerprintMatchesKey, KEM_PUB_LEN } from '../identity/fingerprint';
 import { base64ToUint8 } from '../crypto/pq';
 import {
   createMessage,
@@ -122,6 +122,9 @@ export interface BuildJoinerResponseArgs {
   joinerPubKeyArmored: string;
   /** base64(ML-DSA-87 pubkey); pass iff signing hybrid. Bound by the classical signature (anti-swap). */
   joinerPqSigPublicKey?: string;
+  /** base64(ML-KEM-1024 pubkey, 1568B); §5 canonical-fp binding — thread with the sig key so the giver
+   *  recomputes the 64-hex canonical id (SHA256(sign‖enc‖kem‖sig)) and Invariant-1 matches a canonical joiner. */
+  joinerPqKemPublicKey?: string;
   /** The joiner's self-asserted display name (KNOWN = unverified; may be empty). */
   joinerName: string;
   /** The giver's durable fingerprint — binds the response to its intended recipient. */
@@ -155,6 +158,8 @@ export function buildJoinerResponseEnvelope(args: BuildJoinerResponseArgs): Join
   if (!isNonEmptyString(args.inviteNonce)) throw new JoinerResponseSignError('bad-invite-nonce');
   if (args.joinerPqSigPublicKey !== undefined && !isNonEmptyString(args.joinerPqSigPublicKey))
     throw new JoinerResponseSignError('bad-pq-key', 'present but empty');
+  if (args.joinerPqKemPublicKey !== undefined && !isNonEmptyString(args.joinerPqKemPublicKey))
+    throw new JoinerResponseSignError('bad-pq-key', 'kem present but empty');
 
   const env: JoinerResponseEnvelope = {
     joiner_fingerprint: args.joinerFp,
@@ -166,6 +171,7 @@ export function buildJoinerResponseEnvelope(args: BuildJoinerResponseArgs): Join
     ts: args.ts ?? new Date().toISOString(),
   };
   if (args.joinerPqSigPublicKey !== undefined) env.joiner_pq_sig_public_key = args.joinerPqSigPublicKey;
+  if (args.joinerPqKemPublicKey !== undefined) env.joiner_pq_kem_public_key = args.joinerPqKemPublicKey;
   return env;
 }
 
@@ -243,6 +249,17 @@ function isWellFormed(signed: unknown): signed is SignedJoinerResponse {
   if (typeof e.ts !== 'string') return false;
   // Optional PQ key: if present it must be a non-empty string (never null — canonical would reject it).
   if (e.joiner_pq_sig_public_key !== undefined && !isNonEmptyString(e.joiner_pq_sig_public_key)) return false;
+  // §5 canonical-fp binding: optional ML-KEM pubkey. If present it must be a non-empty base64 string at
+  // the FIPS length (1568B) — fail-LOUD on a malformed/wrong-length kem at the structural boundary
+  // (defense-in-depth over fingerprintMatchesKey's downstream length gate).
+  if (e.joiner_pq_kem_public_key !== undefined) {
+    if (!isNonEmptyString(e.joiner_pq_kem_public_key)) return false;
+    try {
+      if (atob(e.joiner_pq_kem_public_key).length !== KEM_PUB_LEN) return false;
+    } catch {
+      return false; // undecodable base64 ⇒ reject
+    }
+  }
   if (!isPlainObject(signature)) return false;
   if (typeof (signature as Record<string, unknown>).classical !== 'string') return false;
   return true;
@@ -316,8 +333,15 @@ export async function verifyJoinerResponse(
   }
   if (!nonceOk) return null;
 
-  // 5) Invariant-1 — the self-asserted fingerprint must actually hash to the presented key.
-  if (!(await fingerprintMatchesKey(envelope.joiner_fingerprint, envelope.joiner_public_key))) return null;
+  // 5) Invariant-1 — the self-asserted fingerprint must actually hash to the presented key. §5: thread
+  //    the joiner's PQ pubkeys so a 64-hex CANONICAL id recomputes SHA256(sign‖enc‖kem‖sig) and matches;
+  //    a classical (40-hex OpenPGP) joiner omits them → fingerprintMatchesKey falls back to the PGP path.
+  //    Runs BEFORE the signature (step 6): the PQ pubkeys are SELF-PROTECTED by this fp-match (they must
+  //    hash to the claimed fp), so signing them is optional and swapping them fails the canonical recompute.
+  if (!(await fingerprintMatchesKey(envelope.joiner_fingerprint, envelope.joiner_public_key, {
+    kem_public_key: envelope.joiner_pq_kem_public_key,
+    sig_public_key: envelope.joiner_pq_sig_public_key,
+  }))) return null;
 
   // 6) Suite floor + signature (TOFU: verified against the key IN the envelope). requirePq rejects a
   //    classical-only response; otherwise classical-only is accepted (transition-era v1 joiners).

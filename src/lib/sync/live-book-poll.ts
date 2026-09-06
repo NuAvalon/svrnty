@@ -159,7 +159,10 @@ export async function buildConsumeDeps(
   identity: unknown,
   opts: { fetchImpl?: typeof fetch } = {},
 ): Promise<ConsumeDeps | null> {
-  const id = identity as { identity?: { fingerprint?: string; public_key?: string } } | null;
+  const id = identity as {
+    identity?: { fingerprint?: string; public_key?: string };
+    post_quantum?: { kem_public_key?: string; sig_public_key?: string };
+  } | null;
   const fingerprint = id?.identity?.fingerprint;
   const publicKeyArmored = id?.identity?.public_key;
   if (!fingerprint || !publicKeyArmored) return null;
@@ -170,6 +173,11 @@ export async function buildConsumeDeps(
     publicKeyArmored,
     privateKeyArmored: key.privateKey,
     passphrase: key.passphrase,
+    // §5 canonical-id: thread the identity's PQ pubkeys so the owner-auth bundle lets the relay
+    // recompute the 64-hex canonical fp. IdentityData.post_quantum is top-level (browser-identity.ts).
+    // Absent (classical identity) → verify falls back to the 40-hex OpenPGP path.
+    kemPublicKey: id?.post_quantum?.kem_public_key,
+    sigPublicKey: id?.post_quantum?.sig_public_key,
   };
   // R1 return-channel: load the issued-code snapshot ONCE per poll (this fn is called per poll cycle by
   // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects

@@ -1,4 +1,5 @@
-import { generateKey, readKey, createMessage, readMessage } from 'openpgp';
+import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
+import { mintCanonicalFingerprint } from './fingerprint';
 import { randomBytes } from 'crypto';
 import { writeFile, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
@@ -109,12 +110,19 @@ export class SoverentityIdentity {
         format: 'armored'
       });
 
-      // Read the generated key for metadata
-      const pubKeyObj = await readKey({ armoredKey: publicKey });
-      const fingerprint = pubKeyObj.getFingerprint();
-
-      // Generate post-quantum keys
+      // Generate post-quantum keys BEFORE minting the fingerprint — the identity id
+      // commits to all four public keys (sign ‖ enc ‖ kem ‖ sig).
       const pqBundle = generatePQKeypairBundle();
+
+      const locked = await readPrivateKey({ armoredKey: privateKey });
+      const unlocked = locked.isDecrypted()
+        ? locked
+        : await decryptKey({ privateKey: locked, passphrase });
+      const { fingerprint } = await mintCanonicalFingerprint({
+        decryptedIdentityKey: unlocked,
+        kemPublicKey: pqBundle.kem.publicKey,
+        sigPublicKey: pqBundle.signing.publicKey,
+      });
 
       // Create identity claim (v0.2.0 with PQ)
       const identity: IdentityData = {

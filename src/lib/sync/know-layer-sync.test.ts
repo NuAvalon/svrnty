@@ -226,3 +226,25 @@ test('getTrustedPeers returns the trusted, non-decayed subset', async () => {
   const trusted = (await deps.getTrustedPeers()).map((p) => p.fingerprint);
   assert.deepEqual(trusted, ['trusted-fresh']);
 });
+
+test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/blocked/group labels', async () => {
+  const contacts = [
+    rec({
+      id: 'p1',
+      fingerprint: 'peer-open-1',
+      open_visibility: true,
+      tags: ['family', 'secret-group'],
+      blocked: true,
+      metadata: { tags: ['family'], blocked: true, notes: 'stay off the wire' },
+    } as Partial<ContactRecord>),
+  ];
+  const { store } = fakeStore(contacts);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  const known = await deps.getKnownPeers();
+  assert.equal(known.length, 1);
+  assert.deepEqual(Object.keys(known[0]).sort(), ['fingerprint', 'lastSync']);
+  assert.equal('tags' in known[0], false);
+  assert.equal('blocked' in known[0], false);
+  assert.equal(JSON.stringify(known).includes('family'), false);
+  assert.equal(JSON.stringify(known).includes('secret-group'), false);
+});

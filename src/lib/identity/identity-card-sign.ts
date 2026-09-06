@@ -110,8 +110,12 @@ export async function verifySignedIdentityCard(
   if (!id || typeof id.public_key !== 'string' || typeof id.fingerprint !== 'string') return false;
   if (typeof card.signature !== 'string' || card.signature.length === 0) return false;
 
-  // (1) fingerprint↔classical-key binding — Invariant-1, cheap, checked first.
-  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) return false;
+  // (1) fingerprint↔key binding — cheap, checked first. Pass PQ pubs when present so a
+  // four-key identity id matches; placeholder/short PQ falls through to the OpenPGP 40-hex check.
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
+    kem_public_key: id.pq_kem_public_key,
+    sig_public_key: id.pq_sig_public_key,
+  }))) return false;
 
   // (2) envelope signature over the canonical card. Strip BOTH signature fields before recomputing
   // the signing input — the signer signed the card without them (identityCardSigningInput excludes them).
@@ -143,7 +147,11 @@ export async function buildSignedIdentityCard(
   if (!idData?.fingerprint || !idData?.public_key) {
     throw new Error('cannot sign identity card — identity is missing fingerprint or public_key');
   }
-  const pq = idData.post_quantum;
+  // post_quantum lives at the identity WRAPPER top-level (genesis: browser-identity.ts:163), a
+  // SIBLING of the nested `.identity` — not on the unwrapped idData. Read both shapes: the flat
+  // identity (post_quantum beside fingerprint) AND the genesis wrapper (post_quantum one level up).
+  // Reading only idData.post_quantum dropped the legs for the wrapper shape → empty-pq cards (beat-3).
+  const pq = idData?.post_quantum ?? identity?.post_quantum;
   const card: IdentityCard = {
     version: '1.0',
     type: 'identity-exchange',
@@ -157,6 +165,19 @@ export async function buildSignedIdentityCard(
       pq_kem_public_key: pq?.kem_public_key || '',
     },
   };
+  // Build-time self-consistency guard (N2 class-killer — Archie ⚡9693 + Hypatia's claim-honesty vote):
+  // a card whose canonical fingerprint claims 4 keys MUST carry all 4. Assert the card binds to its
+  // OWN carried keys BEFORE it can be constructed, so a self-inconsistent card (fp≠carried-keys — e.g.
+  // the empty-pq-legs beat-3 bug) is uninstantiable at the send-side, not caught downstream at a peer.
+  if (!(await fingerprintMatchesKey(
+    card.identity.fingerprint,
+    card.identity.public_key,
+    { kem_public_key: card.identity.pq_kem_public_key, sig_public_key: card.identity.pq_sig_public_key },
+  ))) {
+    throw new Error(
+      'refusing to build a self-inconsistent identity card — fingerprint does not bind to its carried keys (missing/mismatched PQ legs?)',
+    );
+  }
   return signIdentityCard(card, classicalPrivateKeyArmored, classicalPassphrase);
 }
 
@@ -202,7 +223,10 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
   }
   // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
   // never calls verify, and this decides classical-import for every branch.
-  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) {
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
+    kem_public_key: id.pq_kem_public_key,
+    sig_public_key: id.pq_sig_public_key,
+  }))) {
     return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
   }
   // fp↔key OK → the classical contact imports for branches 2/3/4.

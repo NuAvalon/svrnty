@@ -45,6 +45,7 @@ import {
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
@@ -289,6 +290,24 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     return () => handle.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable fingerprint; identity's
     // object ref is intentionally not a dep (public key stable per fp; private key re-loaded each tick).
+  }, [fingerprint]);
+
+  // KNOW-layer PSI: bind the raw sign key, then tick syncMutualTrust with layer "know".
+  // Fail-closed: locked session / failed bind ⇒ no options ⇒ no sync.
+  useEffect(() => {
+    if (!fingerprint) return;
+    let stopped = false;
+    let handle: { stop: () => void } | undefined;
+    void (async () => {
+      const options = await buildPsiSyncOptions(identity);
+      if (stopped || !options) return;
+      handle = startKnowLayerSync(identity, options);
+    })();
+    return () => {
+      stopped = true;
+      handle?.stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable fingerprint
   }, [fingerprint]);
 
   // Filter contacts — binary: all, trusted, known; blocked is a separate local list
