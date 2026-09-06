@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
 import {
   signIdentityCard, verifySignedIdentityCard, type SignedIdentityCard,
-  suiteFromKemLength, classifyImportedCard,
+  suiteFromKemLength, classifyImportedCard, buildSignedIdentityCard,
 } from './identity-card-sign';
 import type { IdentityCard } from '../format/envelope';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
@@ -227,4 +227,45 @@ test('CANONICAL-ONLY GATE (res1): a card with a WRONG-LENGTH suite → branch 1 
   assert.equal(d.importClassical, false);
   assert.equal(d.pq, null);
   assert.equal(d.alarm, 'reject');
+});
+
+// ── SEND-side buildSignedIdentityCard — the REAL Grow/QR/copy path. The tests above build cards via
+// signIdentityCard(canonCard(...)) DIRECTLY, bypassing buildSignedIdentityCard — which is exactly HOW the
+// empty-pq-legs beat-3 bug shipped untested. These lock the wrapper-shape fix + the build-time guard.
+test('buildSignedIdentityCard (WRAPPER shape, genesis): carries REAL pq legs — post_quantum at the wrapper top-level is read (beat-3 regression lock)', async () => {
+  const id = await makeCanonicalId('grow-wrap');
+  // Genesis identity WRAPPER: post_quantum is a SIBLING of nested `.identity` (browser-identity.ts:163),
+  // NOT inside `.identity`. Pre-fix, buildSignedIdentityCard read idData.post_quantum (the unwrapped nested
+  // identity) → undefined → empty legs → the grown card was rejected by every peer (beat-3).
+  const wrapper = {
+    identity: { fingerprint: id.fingerprint, public_key: id.publicKey, display_name: 'Alice' },
+    post_quantum: { sig_public_key: id.sigB64, kem_public_key: id.kemB64 },
+  };
+  const signed = await buildSignedIdentityCard(wrapper, id.privateKey, id.passphrase);
+  assert.equal(signed.identity.pq_kem_public_key, id.kemB64);
+  assert.equal(signed.identity.pq_sig_public_key, id.sigB64);
+  assert.ok(signed.identity.pq_kem_public_key.length > 0 && signed.identity.pq_sig_public_key.length > 0);
+  // …and the card self-binds: a peer's classify does NOT reject it.
+  const d = await classifyImportedCard(signed);
+  assert.notEqual(d.branch, 1);
+});
+test('buildSignedIdentityCard (FLAT shape): reads post_quantum beside fingerprint (both identity shapes supported)', async () => {
+  const id = await makeCanonicalId('grow-flat');
+  const flat = {
+    fingerprint: id.fingerprint, public_key: id.publicKey, display_name: 'Alice',
+    post_quantum: { sig_public_key: id.sigB64, kem_public_key: id.kemB64 },
+  };
+  const signed = await buildSignedIdentityCard(flat, id.privateKey, id.passphrase);
+  assert.equal(signed.identity.pq_kem_public_key, id.kemB64);
+  assert.equal(signed.identity.pq_sig_public_key, id.sigB64);
+});
+test('buildSignedIdentityCard GUARD (N2 class-killer): a canonical fp with ABSENT pq legs is UNINSTANTIABLE — throws at build, not caught downstream at a peer', async () => {
+  const id = await makeCanonicalId('grow-nopq');
+  // Canonical fp (claims 4 keys) but the wrapper carries NO post_quantum → empty legs. This is exactly the
+  // beat-3 shape; the guard MUST refuse to construct it at the send-side.
+  const wrapperNoPq = { identity: { fingerprint: id.fingerprint, public_key: id.publicKey } };
+  await assert.rejects(
+    () => buildSignedIdentityCard(wrapperNoPq, id.privateKey, id.passphrase),
+    /self-inconsistent|does not bind/,
+  );
 });
