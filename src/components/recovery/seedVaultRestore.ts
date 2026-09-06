@@ -93,9 +93,11 @@ export async function restoreIdentityFromSeedVault(
     pqSigPublicKeyB64: bundle.pq_signing_public_key,
     pqKemSecretKeyB64: bundle.pq_kem_secret_key,
     pqSigSecretKeyB64: bundle.pq_signing_secret_key,
-    // extractRecoveryVault's KeyVault type narrows the seam; the runtime object (a recovery.ts
-    // KeyVault) carries identity_fingerprint (the canonical id stored at genesis createKeyVault).
-    claimedFingerprint: (kv as { identity_fingerprint?: string }).identity_fingerprint ?? '',
+    // The claim comes from INSIDE the seed-decrypted bundle (recoverFromSeedPhrase -> decryptVault),
+    // NOT the KeyVault outer — the KeyVault never carried identity_fingerprint (that read was always
+    // '' -> the #110 seed-restore integrity-fail). It rides inside the AES-GCM bundle so the .svrnty
+    // stays identity-blind, and it's authenticated -> a corrupted bundle fails the recompute check below.
+    claimedFingerprint: bundle.identity_fingerprint ?? '',
   });
 
   const identity = {
