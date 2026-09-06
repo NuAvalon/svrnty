@@ -1622,16 +1622,14 @@ function ContactNode({
 
 function describe(n: LaidOutNode): string {
   if (n.state === 'known') return 'known';
-  if (n.state === 'decayed') return 'trust decayed';
-  if (n.daysLeft > 365) return `trusted · ${Math.round(n.daysLeft / 365)}y until decay`;
-  return `trusted · ${n.daysLeft}d until decay`;
+  if (n.state === 'decayed') return 'faded';
+  return 'trusted';
 }
 
 function describeAlive(n: LaidOutNode, edge: EdgeExtras): string {
   if (isPending(edge)) return 'pending connection · not yet known';
   if (n.state === 'known') return 'known · not trusted';
-  if (n.state === 'decayed') return 'trust decayed';
+  if (n.state === 'decayed') return 'faded';
   const mutual = edge.mutual?.reciprocal ? ' · mutual' : '';
-  if (n.daysLeft > 365) return `trusted${mutual} · ${Math.round(n.daysLeft / 365)}y until decay`;
-  return `trusted${mutual} · ${n.daysLeft}d until decay`;
+  return `trusted${mutual}`;
 }
