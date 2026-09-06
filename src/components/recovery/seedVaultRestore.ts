@@ -15,6 +15,7 @@ import {
   storeVault,
   setActiveFingerprint,
 } from '@/lib/identity/client-store';
+import { reconstructCanonicalIdentityForRestore } from '@/lib/identity/fingerprint';
 
 export type SeedVaultRestoreResult = {
   identity: {
@@ -69,17 +70,33 @@ export async function restoreIdentityFromSeedVault(
         passphrase: bundle.classical_passphrase,
       });
   const publicKeyObj = unlocked.toPublic();
-  // Canonical fingerprint = OpenPGP's native lowercase hex, matching identity
-  // creation (browser-identity.ts / core.ts use bare getFingerprint()). Do NOT
-  // uppercase here: the fingerprint is the IndexedDB storage key + identity field,
-  // and a case mismatch vs the created identity re-seeds the identity seal (glyph)
-  // and can orphan case-sensitive local lookups. Comparisons are case-insensitive
-  // (fingerprint.ts) so this stays interoperable with existing cards.
-  const fingerprint = publicKeyObj.getFingerprint();
   const publicKey = publicKeyObj.armor();
   const primary = await unlocked.getPrimaryUser();
   const name = primary.user?.userID?.name?.trim() || 'Recovered identity';
   const email = primary.user?.userID?.email?.trim() || '';
+
+  // Genuinely-classical (pre-canonical) backup — NO post-quantum material at all. Product decision
+  // on classical restorability is pending (⚡9686), so fail honestly without presuming a remedy.
+  if (!bundle.pq_kem_secret_key || !bundle.pq_signing_secret_key) {
+    throw new Error('This backup uses an older identity format from before post-quantum identities and cannot be restored on this version yet.');
+    // TODO(⚡9686): product decision pending on genuinely-classical (40-hex, no-PQ) restore — do NOT add user-facing remediation copy until Peter rules.
+  }
+
+  // Reconstruct the CANONICAL fingerprint from the recovered keys: sign+enc from the UNLOCKED
+  // private key, PQ pubs (stored at genesis) verified against the recovered PQ secrets, and the
+  // result checked against the vault's stored canonical id (kv.identity_fingerprint). A pre-fix
+  // vault (PQ secrets but no stored PQ pubs) throws /re-export/ from the fn. NOT getFingerprint()
+  // (which yields the 40-hex OpenPGP fp — the pre-canonical bug that downgraded restored identities).
+  const { fingerprint, post_quantum } = await reconstructCanonicalIdentityForRestore({
+    decryptedIdentityKey: unlocked,
+    pqKemPublicKeyB64: bundle.pq_kem_public_key,
+    pqSigPublicKeyB64: bundle.pq_signing_public_key,
+    pqKemSecretKeyB64: bundle.pq_kem_secret_key,
+    pqSigSecretKeyB64: bundle.pq_signing_secret_key,
+    // extractRecoveryVault's KeyVault type narrows the seam; the runtime object (a recovery.ts
+    // KeyVault) carries identity_fingerprint (the canonical id stored at genesis createKeyVault).
+    claimedFingerprint: (kv as { identity_fingerprint?: string }).identity_fingerprint ?? '',
+  });
 
   const identity = {
     version: '1.0',
@@ -95,10 +112,11 @@ export async function restoreIdentityFromSeedVault(
       method: null,
       verified_at: null,
     },
+    post_quantum,
     metadata: {
       client_version: '0.2.0',
-      key_type: 'ED25519',
-      key_usage: ['identity', 'signing'],
+      key_type: 'ED25519+ML-DSA-87+ML-KEM-1024',
+      key_usage: ['identity', 'signing', 'key-encapsulation'],
       restored_via: 'seed-phrase-v4' as const,
     },
   };

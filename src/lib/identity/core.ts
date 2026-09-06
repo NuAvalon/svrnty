@@ -167,6 +167,10 @@ export class SoverentityIdentity {
         classical_passphrase: passphrase,
         pq_signing_secret_key: Buffer.from(pqBundle.signing.secretKey).toString('base64'),
         pq_kem_secret_key: Buffer.from(pqBundle.kem.secretKey).toString('base64'),
+        // Carry the PQ PUBLIC keys too, so seed/vault RESTORE can reconstruct the canonical fp
+        // SHA256(sign‖enc‖kem‖sig) — @noble exposes no ML-DSA secret→public, so the pub must be stored.
+        pq_signing_public_key: Buffer.from(pqBundle.signing.publicKey).toString('base64'),
+        pq_kem_public_key: Buffer.from(pqBundle.kem.publicKey).toString('base64'),
       };
 
       const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(
