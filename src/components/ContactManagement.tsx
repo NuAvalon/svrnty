@@ -8,7 +8,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
   Check, Edit, Download, Upload, RefreshCw, FileJson, Eye,
-  ShieldCheck, Copy, MoreHorizontal, Users
+  ShieldCheck, Copy, MoreHorizontal, Users, Tags
 } from 'lucide-react';
 import {
   Dialog, DialogContent, DialogDescription, DialogHeader,
@@ -37,6 +37,7 @@ import {
 import { createRelay } from '@/lib/sync/relay';
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
+import { TagManagementDialog } from '@/components/tags/TagManagementDialog';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact, removeContact,
@@ -77,6 +78,8 @@ interface Contact {
   verified_at?: string;
   /** Owner-local mute (CUR-5) — never publish. */
   blocked?: boolean;
+  /** Local private tags (also mirrored under metadata.tags). Never wire. */
+  tags?: string[];
   metadata?: {
     notes?: string;
     tags?: string[];
@@ -152,6 +155,9 @@ function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; class
 // Convert IndexedDB ContactRecord to component Contact type
 function recordToContact(r: ContactRecord): Contact {
   const blocked = isContactBlocked(r as { blocked?: boolean; metadata?: { blocked?: boolean } });
+  const tags = Array.isArray((r as any).tags)
+    ? (r as any).tags
+    : (r.metadata?.tags || undefined);
   return {
     id: r.id,
     name: r.name || '',
@@ -162,6 +168,7 @@ function recordToContact(r: ContactRecord): Contact {
     added_at: r.added_at || new Date().toISOString(),
     verified_at: r.verified_at,
     blocked,
+    tags,
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls
     connection_status: (r as any).connection_status,
@@ -190,6 +197,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const [showShardGiveDialog, setShowShardGiveDialog] = useState(false);
   const [showVaultExportDialog, setShowVaultExportDialog] = useState(false);
   const [pendingBookExport, setPendingBookExport] = useState<'json' | 'vcard' | null>(null);
+  const [showTagDialog, setShowTagDialog] = useState(false);
   const [vaultExporting, setVaultExporting] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
@@ -960,6 +968,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             <Button variant="outline" size="sm" onClick={() => setShowVcardImport(true)} data-testid="import-contacts-trigger" style={emberGhostBtn}>
               <Upload className="h-4 w-4 mr-2" />
               Import contacts
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowTagDialog(true)}
+              data-testid="manage-tags-trigger"
+              style={emberGhostBtn}
+            >
+              <Tags className="h-4 w-4 mr-2" />
+              Tags
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1738,6 +1756,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           onShareSettingsChange={(next) => { void handleShareSettingsChange(next); }}
         />
 
+
         <TrustActionConfirmDialog
           open={!!confirmKind && !!confirmTarget}
           kind={confirmKind}
@@ -1749,6 +1768,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             return runConfirmedAction(confirmKind, opts);
           }}
         />
+
 
         {/* Import */}
         <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
@@ -1827,6 +1847,19 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           ownerName={identity?.identity?.name || identity?.identity?.display_name || 'a keeper'}
           contact={selectedContact}
           onGiven={() => { /* custody recorded in IndexedDB; lattice/custody badges are a follow-up */ }}
+        />
+
+        <TagManagementDialog
+          open={showTagDialog}
+          contacts={contacts}
+          onClose={() => setShowTagDialog(false)}
+          onPersist={async (contactId, patch) => {
+            await updateContact(contactId, patch as any);
+          }}
+          onDone={async () => {
+            await loadContacts();
+            onContactsChange?.();
+          }}
         />
 
         {/* Import Contact from Exchange Package */}
