@@ -17,7 +17,7 @@
 
 import { readPrivateKey, decryptKey } from 'openpgp';
 import type { VaultContents } from '@/lib/sync/vault';
-import { normalizeFingerprintHex } from '@/lib/identity/fingerprint';
+import { reconstructCanonicalIdentityForRestore } from '@/lib/identity/fingerprint';
 import {
   initSessionKey,
   isSessionUnlocked,
@@ -39,22 +39,38 @@ export async function restoreIdentityFromVault(
     throw new Error('This backup is missing its identity key and cannot be restored.');
   }
 
-  // (a) Bind the PRIVATE key to the identity fingerprint — derive, don't trust.
-  //     (The public-key↔fingerprint binding is enforced inside importVaultContents.)
-  let derivedFp: string;
+  // (a) Reconstruct the CANONICAL fingerprint from recovered key material — derive, don't trust.
+  //     Anti-poison for an untrusted .svrnty ("import this vault"): sign+enc come from the UNLOCKED
+  //     private key (never a carried public), the PQ pubs are verified against the carried PQ secrets,
+  //     and the recomputed canonical fp MUST equal the vault's claimed fp. (public_key↔fingerprint is
+  //     additionally enforced inside importVaultContents.) NOT getFingerprint() (the 40-hex path that
+  //     rejected canonical backups outright — the pre-canonical restore bug).
+  let unlocked;
   try {
     const locked = await readPrivateKey({ armoredKey: classical.privateKey });
-    const unlocked = locked.isDecrypted()
+    unlocked = locked.isDecrypted()
       ? locked
       : await decryptKey({ privateKey: locked, passphrase: classical.passphrase });
-    derivedFp = normalizeFingerprintHex(unlocked.toPublic().getFingerprint());
   } catch {
     throw new Error('This backup could not be verified (unreadable identity key) and was not restored.');
   }
-  const claimedFp = normalizeFingerprintHex(contents.identity?.identity?.fingerprint || '');
-  if (derivedFp.length !== 40 || derivedFp !== claimedFp) {
-    throw new Error('This backup failed an integrity check (its key does not match its identity) and was not restored.');
+  const pqBundle = contents.keys?.pq as
+    | { signing?: { secretKey?: string }; kem?: { secretKey?: string } }
+    | null
+    | undefined;
+  // Genuinely-classical (pre-canonical) backup — NO post-quantum material at all (⚡9686 pending).
+  if (!pqBundle?.signing?.secretKey || !pqBundle?.kem?.secretKey) {
+    throw new Error('This backup uses an older identity format from before post-quantum identities and cannot be restored on this version yet.');
+    // TODO(⚡9686): product decision pending on genuinely-classical (40-hex, no-PQ) restore — do NOT add user-facing remediation copy until Peter rules.
   }
+  const { fingerprint: derivedFp } = await reconstructCanonicalIdentityForRestore({
+    decryptedIdentityKey: unlocked,
+    pqKemPublicKeyB64: contents.identity?.post_quantum?.kem_public_key,
+    pqSigPublicKeyB64: contents.identity?.post_quantum?.sig_public_key,
+    pqKemSecretKeyB64: pqBundle.kem.secretKey,
+    pqSigSecretKeyB64: pqBundle.signing.secretKey,
+    claimedFingerprint: contents.identity?.identity?.fingerprint || '',
+  });
 
   // (b) At-rest equivalence: derive the session key from the passphrase BEFORE persisting
   //     so keys/pq_keys/vault are encrypted at rest. The passphrase IS the daily-unlock
