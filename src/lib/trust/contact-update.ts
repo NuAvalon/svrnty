@@ -38,9 +38,17 @@
 import {
   DOMAIN_CONTACT_UPDATE,
   contactUpdateSigningInput,
+  rotationSigningInput,
   type ContactUpdateEnvelope,
+  type RotationSuccessorAuth,
+  type SuccessorAuth,
 } from '../format/envelope';
 import { verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
+import {
+  authorityCommitmentFromReveal,
+  fingerprintMatchesKey,
+  verifyRotationAuthority,
+} from '../identity/fingerprint';
 
 /**
  * Fields an inbound contact.update is allowed to change — a strict allowlist (firewall). An update
@@ -126,6 +134,8 @@ export interface KnownContactIdentity {
   classicalPublicKeyArmored: string;
   /** Optional ML-DSA public key half, present iff we require/accept the hybrid suite for this contact. */
   pqSigningPublicKey?: Uint8Array;
+  /** Epoch+1 authority pin (64-hex). '' for pre-mint/legacy contacts — rotation then fail-closes. */
+  next_authority_commitment?: string;
 }
 
 /** A contact.update that passed every check. The caller MAY now apply `delta` to storage. */
@@ -148,7 +158,12 @@ export type ContactUpdateRejectReason =
   | 'undeclared-delta-field' // delta carries a key not declared in changed_fields (smuggling)
   | 'declared-field-missing' // changed_fields names a field absent from delta (dishonest manifest)
   | 'pq-required' // caller required the hybrid suite but the signature is classical-only
-  | 'bad-signature'; // the envelope signature did not verify (tamper / attribution / domain / downgrade)
+  | 'bad-signature' // the envelope signature did not verify (tamper / attribution / domain / downgrade)
+  | 'rotation-unknown-kind' // successor kind is not 'rotation' — fail-closed (open discriminant)
+  | 'rotation-commitment-mismatch' // revealed K_auth does not hash to the pre-committed pin
+  | 'rotation-bad-authority-sig' // sig_by_authority does not verify under the revealed K_auth
+  | 'rotation-epoch-not-next' // successor.epoch !== known.epoch + 1
+  | 'rotation-fingerprint-mismatch'; // new_fingerprint does not bind the new operational pubs
 
 /**
  * Thrown for EVERY rejection. Its existence is the "fail loud" floor: the only alternative to a
@@ -236,8 +251,8 @@ export async function verifyIncomingContactUpdate(
   if (envelope.epoch < known.epoch)
     throw new ContactUpdateRejected('epoch-regression', `epoch ${envelope.epoch} < ${known.epoch}`);
   if (envelope.epoch > known.epoch)
-    // A newer epoch is signed by a successor key we do not yet hold. Do NOT accept it blind — the
-    // caller must first run successor-lineage catch-up to obtain+verify the new key, then retry.
+    // A newer epoch is signed by a successor key we do not yet hold. Do NOT accept it blind —
+    // the caller must first run verifyRotationSuccessor to adopt the new epoch, then retry.
     throw new ContactUpdateRejected('epoch-ahead-needs-lineage', `epoch ${envelope.epoch} > ${known.epoch}`);
 
   // 4) Field firewall — the whole update is rejected if it names any field outside the allowlist
@@ -309,5 +324,124 @@ export async function verifyIncomingContactUpdate(
     version: envelope.version,
     changed_fields: [...envelope.changed_fields],
     delta: { ...envelope.delta },
+  };
+}
+
+function isRotationAuth(auth: SuccessorAuth): auth is RotationSuccessorAuth {
+  if (!auth || auth.kind !== 'rotation') return false;
+  const a = auth as RotationSuccessorAuth;
+  return (
+    typeof a.sig_by_authority === 'string' &&
+    !!a.auth_pubkeys &&
+    typeof a.auth_pubkeys.sign === 'string' &&
+    typeof a.auth_pubkeys.pq_sig === 'string'
+  );
+}
+
+/**
+ * Rotation successor as presented to the address-book verifier. Operational keys are
+ * FRESH-RANDOM (not pre-committed); the authority signature authenticates them via
+ * new_fingerprint, and Invariant-1 binds that fingerprint to the carried pubs.
+ */
+export interface RotationSuccessorInput {
+  durable_id: string;
+  prior_epoch: number;
+  successor_epoch: number;
+  new_fingerprint: string;
+  new_public_key: string;
+  new_pq_kem_public_key: string;
+  new_pq_sig_public_key: string;
+  /** Pin for the epoch AFTER this successor (the chain continues). */
+  next_authority_commitment: string;
+  auth: SuccessorAuth;
+}
+
+export interface AdoptedRotationIdentity {
+  fingerprint: string;
+  epoch: number;
+  classicalPublicKeyArmored: string;
+  next_authority_commitment: string;
+}
+
+/**
+ * Verify a kind:'rotation' successor against the pre-committed authority pin.
+ * On success, the caller adopts the returned identity (epoch, fingerprint, operational
+ * key, next pin). Unknown kind FAIL-CLOSES. Field-updates with an ahead epoch still
+ * throw epoch-ahead-needs-lineage from verifyIncomingContactUpdate — this is the
+ * lineage-gated path that replaces that throw once a successor is in hand.
+ */
+export async function verifyRotationSuccessor(
+  successor: RotationSuccessorInput,
+  known: KnownContactIdentity,
+): Promise<AdoptedRotationIdentity> {
+  const auth = successor?.auth;
+  if (!auth || typeof auth.kind !== 'string') {
+    throw new ContactUpdateRejected('rotation-unknown-kind', 'missing successor kind');
+  }
+  // Open discriminant: anything other than the launch rotation kind FAIL-CLOSES.
+  if (auth.kind !== 'rotation' || !isRotationAuth(auth)) {
+    throw new ContactUpdateRejected('rotation-unknown-kind', String(auth.kind));
+  }
+
+  if (successor.durable_id !== known.fingerprint) {
+    throw new ContactUpdateRejected('wrong-origin', `${successor.durable_id} != ${known.fingerprint}`);
+  }
+  if (successor.successor_epoch !== known.epoch + 1) {
+    throw new ContactUpdateRejected(
+      'rotation-epoch-not-next',
+      `epoch ${successor.successor_epoch} !== ${known.epoch} + 1`,
+    );
+  }
+
+  const pin = known.next_authority_commitment || '';
+  let revealHash: string;
+  try {
+    revealHash = authorityCommitmentFromReveal(auth.auth_pubkeys.sign, auth.auth_pubkeys.pq_sig);
+  } catch (e) {
+    throw new ContactUpdateRejected(
+      'rotation-commitment-mismatch',
+      e instanceof Error ? e.message : 'reveal decode failed',
+    );
+  }
+  if (revealHash !== pin) {
+    throw new ContactUpdateRejected('rotation-commitment-mismatch', 'H(reveal) != next_authority_commitment');
+  }
+
+  const signingInput = rotationSigningInput({
+    durable_id: successor.durable_id,
+    prior_epoch: successor.prior_epoch,
+    prior_authority_commitment: pin,
+    successor_epoch: successor.successor_epoch,
+    new_fingerprint: successor.new_fingerprint,
+    next_authority_commitment: successor.next_authority_commitment,
+  });
+  const sigOk = verifyRotationAuthority(
+    signingInput,
+    auth.sig_by_authority,
+    auth.auth_pubkeys.sign,
+    auth.auth_pubkeys.pq_sig,
+  );
+  if (!sigOk) throw new ContactUpdateRejected('rotation-bad-authority-sig');
+
+  const fpOk = await fingerprintMatchesKey(
+    successor.new_fingerprint,
+    successor.new_public_key,
+    {
+      kem_public_key: successor.new_pq_kem_public_key,
+      sig_public_key: successor.new_pq_sig_public_key,
+    },
+  );
+  if (!fpOk) {
+    throw new ContactUpdateRejected(
+      'rotation-fingerprint-mismatch',
+      'new_fingerprint does not bind the new operational pubs',
+    );
+  }
+
+  return {
+    fingerprint: successor.new_fingerprint,
+    epoch: successor.successor_epoch,
+    classicalPublicKeyArmored: successor.new_public_key,
+    next_authority_commitment: successor.next_authority_commitment,
   };
 }

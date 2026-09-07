@@ -152,8 +152,12 @@ export async function buildSignedIdentityCard(
   // identity (post_quantum beside fingerprint) AND the genesis wrapper (post_quantum one level up).
   // Reading only idData.post_quantum dropped the legs for the wrapper shape → empty-pq cards (beat-3).
   const pq = idData?.post_quantum ?? identity?.post_quantum;
+  // Same wrapper-aware read as post_quantum: genesis stores next_authority_commitment on the
+  // wrapper (sibling of post_quantum), not on the nested `.identity` object.
+  const next_authority_commitment =
+    idData?.next_authority_commitment ?? identity?.next_authority_commitment ?? '';
   const card: IdentityCard = {
-    version: '1.0',
+    version: '1.1',
     type: 'identity-exchange',
     created_at: new Date().toISOString(),
     identity: {
@@ -163,6 +167,7 @@ export async function buildSignedIdentityCard(
       email: idData.email || '',
       pq_sig_public_key: pq?.sig_public_key || '',
       pq_kem_public_key: pq?.kem_public_key || '',
+      next_authority_commitment,
     },
   };
   // Build-time self-consistency guard (N2 class-killer — Archie ⚡9693 + Hypatia's claim-honesty vote):

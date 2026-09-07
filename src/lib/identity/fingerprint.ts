@@ -8,10 +8,20 @@
 // bindPastedFingerprintToKey still derives a 40-hex fp for manual entry.
 
 import { readKey } from 'openpgp';
+import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
+import { buildSignedBytes, SUITE_HYBRID } from '../crypto/sign-envelope';
+import { DOMAIN_ROTATION } from '../format/envelope';
 import { extractRawSign, strip0x40 } from './raw-sign';
 import { sign as pqSign, verify as pqVerify, encapsulate as pqEncapsulate, decapsulate as pqDecapsulate } from '../crypto/pq';
+
+/** Raw lengths for the sign-only rotation-authority hybrid (ed25519 + ML-DSA-87). */
+export const AUTH_ED25519_PUB_BYTES = 32;
+export const AUTH_ML_DSA87_PUB_BYTES = 2592;
+export const AUTH_ED25519_SIG_BYTES = 64;
 
 export const SIGN_PUB_LEN = 32;
 export const ENC_PUB_LEN = 32;
@@ -357,5 +367,119 @@ export async function buildSatelliteRegisterFields(identity: {
     };
   } catch {
     return null;
+  }
+}
+
+function rotationAuthorityLeg(masterSecret: Uint8Array, epoch: number, name: string, len: number): Uint8Array {
+  // noble hashes v2 types `info` as Uint8Array; this is the UTF-8 of the domain-separated info string.
+  const info = utf8ToBytes(`svrnty:rotation-authority:v1:epoch-${epoch}:${name}`);
+  return hkdf(sha256, masterSecret, undefined, info, len);
+}
+
+export type NextAuthorityKeypair = {
+  edSecret: Uint8Array;
+  edPublic: Uint8Array;
+  dsaSecret: Uint8Array;
+  dsaPublic: Uint8Array;
+};
+
+/**
+ * Re-derive the NEXT epoch's rotation-AUTHORITY keypair from the cold seed.
+ * SIGN-ONLY (ed25519 + ML-DSA-87). Used at genesis (to hash the pubs) and at rotation (to reveal).
+ */
+export function deriveNextAuthorityKeypair(masterSecret: Uint8Array, epoch: number): NextAuthorityKeypair {
+  const edSecret = rotationAuthorityLeg(masterSecret, epoch, 'ed', 32);
+  const dsaSeed = rotationAuthorityLeg(masterSecret, epoch, 'dsa', 32);
+  const dsa = ml_dsa87.keygen(dsaSeed);
+  return {
+    edSecret,
+    edPublic: ed25519.getPublicKey(edSecret),
+    dsaSecret: dsa.secretKey,
+    dsaPublic: dsa.publicKey,
+  };
+}
+
+/**
+ * Pre-commit the NEXT epoch's rotation-AUTHORITY key: SHA256(authEd ‖ authDsa), both raw sign-only pubs
+ * DERIVED deterministically from masterSecret via domain-separated HKDF. Genesis calls this while
+ * masterSecret is in-hand (before fill(0)). At rotation, the owner re-derives K_auth from the same
+ * cold seed, reveals these two pubs (verifier checks H(reveal)==commitment), and signs the successor
+ * with the matching secrets.
+ */
+export function deriveNextAuthorityCommitment(masterSecret: Uint8Array, epoch: number): string {
+  const authEd = ed25519.getPublicKey(rotationAuthorityLeg(masterSecret, epoch, 'ed', 32));
+  const authDsa = ml_dsa87.keygen(rotationAuthorityLeg(masterSecret, epoch, 'dsa', 32)).publicKey;
+  return bytesToHex(sha256(concatBytes(authEd, authDsa)));
+}
+
+/** Hex-encode raw authority pubs for the rotation reveal (32B ed25519, 2592B ML-DSA-87). */
+export function encodeAuthorityPubkeys(edPublic: Uint8Array, dsaPublic: Uint8Array): { sign: string; pq_sig: string } {
+  if (edPublic.length !== AUTH_ED25519_PUB_BYTES) {
+    throw new Error(`authority ed25519 pub must be ${AUTH_ED25519_PUB_BYTES} bytes`);
+  }
+  if (dsaPublic.length !== AUTH_ML_DSA87_PUB_BYTES) {
+    throw new Error(`authority ML-DSA-87 pub must be ${AUTH_ML_DSA87_PUB_BYTES} bytes`);
+  }
+  return { sign: bytesToHex(edPublic), pq_sig: bytesToHex(dsaPublic) };
+}
+
+/**
+ * Decode-then-hash the revealed authority pubs. Must byte-match deriveNextAuthorityCommitment:
+ * sha256(authEd 32B raw ‖ authDsa 2592B raw) → 64-hex. Throws on length/encoding mismatch (fail-closed).
+ */
+export function authorityCommitmentFromReveal(signHex: string, pqSigHex: string): string {
+  let authEd: Uint8Array;
+  let authDsa: Uint8Array;
+  try {
+    authEd = hexToBytes(signHex);
+    authDsa = hexToBytes(pqSigHex);
+  } catch {
+    throw new Error('authority reveal is not valid hex');
+  }
+  if (authEd.length !== AUTH_ED25519_PUB_BYTES) {
+    throw new Error(`authority ed25519 pub decode must be ${AUTH_ED25519_PUB_BYTES} bytes`);
+  }
+  if (authDsa.length !== AUTH_ML_DSA87_PUB_BYTES) {
+    throw new Error(`authority ML-DSA-87 pub decode must be ${AUTH_ML_DSA87_PUB_BYTES} bytes`);
+  }
+  return bytesToHex(sha256(concatBytes(authEd, authDsa)));
+}
+
+function rotationAuthorityPayload(canonicalInput: string): Uint8Array {
+  return utf8ToBytes(buildSignedBytes(DOMAIN_ROTATION, SUITE_HYBRID, canonicalInput));
+}
+
+/** Hybrid authority signature: hex(ed25519-sig 64B ‖ ML-DSA-87-sig). Dedicated domain svrnty:rotation:v1. */
+export function signRotationAuthority(
+  canonicalInput: string,
+  edSecret: Uint8Array,
+  dsaSecret: Uint8Array,
+): string {
+  const payload = rotationAuthorityPayload(canonicalInput);
+  const edSig = ed25519.sign(payload, edSecret);
+  const dsaSig = ml_dsa87.sign(payload, dsaSecret);
+  return bytesToHex(concatBytes(edSig, dsaSig));
+}
+
+/** Verify BOTH legs of sig_by_authority under the revealed K_auth over the rotation signing-input. */
+export function verifyRotationAuthority(
+  canonicalInput: string,
+  sigHex: string,
+  signHex: string,
+  pqSigHex: string,
+): boolean {
+  try {
+    const sig = hexToBytes(sigHex);
+    const edPub = hexToBytes(signHex);
+    const dsaPub = hexToBytes(pqSigHex);
+    if (edPub.length !== AUTH_ED25519_PUB_BYTES || dsaPub.length !== AUTH_ML_DSA87_PUB_BYTES) return false;
+    if (sig.length <= AUTH_ED25519_SIG_BYTES) return false;
+    const edSig = sig.subarray(0, AUTH_ED25519_SIG_BYTES);
+    const dsaSig = sig.subarray(AUTH_ED25519_SIG_BYTES);
+    const payload = rotationAuthorityPayload(canonicalInput);
+    if (!ed25519.verify(edSig, payload, edPub)) return false;
+    return ml_dsa87.verify(dsaSig, payload, dsaPub);
+  } catch {
+    return false;
   }
 }
