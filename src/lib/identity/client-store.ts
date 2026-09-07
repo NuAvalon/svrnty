@@ -155,6 +155,12 @@ export interface ContactRecord {
   // an unauthenticated pq_kem is NEVER stored. Both are projected → TrustEdge.peer_pq_*.
   pq_sig_public_key?: string;   // ML-DSA base64
   pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
+  // Epoch+1 authority pin: 64-hex sha256 of the peer's next-epoch hybrid authority pubkeys. Stored
+  // ONLY from a signature-verified card (classifyImportedCard branch 4b — same fail-closed gate as
+  // pq_* above; an unauthenticated pin is NEVER stored). Projected → KnownContactIdentity for
+  // verifyRotationSuccessor. '' / absent = legacy → rotation fail-closes. Advanced ONLY by a verified
+  // rotation, never overwritten/cleared on re-import (AC-2 / AC-7).
+  next_authority_commitment?: string;
   trust_level: string;
   added_at: string;
   metadata?: any;

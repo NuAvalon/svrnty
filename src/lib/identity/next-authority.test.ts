@@ -23,7 +23,9 @@ import {
   signRotationAuthority,
   mintCanonicalFingerprint,
 } from './fingerprint';
-import { signIdentityCard, verifySignedIdentityCard, buildSignedIdentityCard } from './identity-card-sign';
+import { signIdentityCard, verifySignedIdentityCard, buildSignedIdentityCard, classifyImportedCard } from './identity-card-sign';
+import { recordToKnownContact } from '../sync/live-book-poll';
+import type { ContactRecord } from './client-store';
 import type { IdentityCard } from '../format/envelope';
 import { rotationSigningInput } from '../format/envelope';
 import {
@@ -182,7 +184,7 @@ async function validRotation(opts?: { kind?: string; flipSig?: boolean; wrongAut
     classicalPublicKeyArmored: genesis.publicKey,
     next_authority_commitment: pin,
   };
-  return { successor, known, nextOp, nextPin };
+  return { successor, known, nextOp, nextPin, pin, genesis };
 }
 
 test('rotation round-trip: mint pin → reveal K_auth → verifier ACCEPTS and advances epoch', async () => {
@@ -192,6 +194,33 @@ test('rotation round-trip: mint pin → reveal K_auth → verifier ACCEPTS and a
   assert.equal(adopted.fingerprint, nextOp.fingerprint);
   assert.equal(adopted.next_authority_commitment, nextPin);
   assert.equal(adopted.classicalPublicKeyArmored, nextOp.publicKey);
+});
+
+// #535 pin-at-import — the AC-8 POSITIVE integration: the pin must survive the IMPORT wiring
+// (classifyImportedCard → ContactRecord → recordToKnownContact) and still verify a legit rotation.
+// Proves green≠working (Archie #131560): without the projection the SAME legit successor fail-closes.
+test('#535 AC-8: pin flows classify→record→project → verifier ACCEPTS a legit rotation; empty-pin REJECTS', async () => {
+  const { successor, pin, genesis, nextPin } = await validRotation();
+  // (1) genesis mints the pin onto its signed card → the importer's classifyImportedCard extracts it (4b).
+  const card = await signIdentityCard(canonCard(genesis, { next_authority_commitment: pin }), genesis.privateKey, genesis.passphrase);
+  const d = await classifyImportedCard(card);
+  assert.equal(d.branch, '4b');
+  assert.equal(d.next_authority_commitment, pin);
+  // (2) stored on the ContactRecord, projected into the verify seam.
+  const rec = {
+    id: 'peer', fingerprint: genesis.fingerprint, name: 'peer', email: '',
+    public_key: genesis.publicKey, trust_level: 'known', added_at: '2026-09-07T00:00:00.000Z',
+    epoch: 0, version: 0, next_authority_commitment: d.next_authority_commitment,
+  } as ContactRecord;
+  const known = recordToKnownContact(rec);
+  assert.equal(known.next_authority_commitment, pin);
+  // (3) a legit successor for that contact VERIFIES against the imported + pinned commitment.
+  const adopted = await verifyRotationSuccessor(successor, known);
+  assert.equal(adopted.epoch, 1);
+  assert.equal(adopted.next_authority_commitment, nextPin);
+  // (4) load-bearing: had the pin NOT been projected ('' / legacy), the SAME successor fail-closes (AC-4).
+  const unpinned = recordToKnownContact({ ...rec, next_authority_commitment: '' } as ContactRecord);
+  await assert.rejects(() => verifyRotationSuccessor(successor, unpinned), ContactUpdateRejected);
 });
 
 test('rotation negative: wrong K_auth (H mismatch) → REJECT', async () => {

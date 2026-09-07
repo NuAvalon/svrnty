@@ -195,6 +195,12 @@ export interface ImportDisposition {
   importClassical: boolean;
   /** Authenticated pq fields to STORE on the record, or null (drop pq). Non-null ONLY for 4b. */
   pq: { pq_kem_public_key: string; pq_sig_public_key: string } | null;
+  /** Authenticated Epoch+1 authority pin (64-hex) to STORE — the pre-rotation trust anchor.
+   *  Non-empty ONLY on branch 4b (valid sig + supported suite; the card signature covers this
+   *  field, so a valid sig authenticates it — the SAME gate as pq). '' on every classical/reject
+   *  branch, exactly like pq:null. Populating it outside the verified branch would be a poisoning
+   *  vector (an attacker-planted pin whose authority secret THEY hold). */
+  next_authority_commitment: string;
   /** UI disposition: reject (no import) · quiet (benign) · loud (possible tampering) · soft-info (unsupported suite). */
   alarm: 'reject' | 'quiet' | 'loud' | 'soft-info';
   /** Which branch fired — for tests, the UI message, and telemetry. */
@@ -216,6 +222,14 @@ export interface ImportDisposition {
  * The core `verifySignedIdentityCard` collapses 2 and 3 into `false`; we split them here on the
  * PRESENCE of a non-empty `signature` field (branch 2 never calls verify).
  */
+/** A next_authority_commitment is exactly 64 lowercase-hex — sha256 of the raw hybrid authority
+ *  pubkeys (identity/fingerprint.ts `deriveNextAuthorityCommitment`). Validate at import and store
+ *  ONLY the canonical form; drop anything else to '' rather than persist garbage (AC-5: normalize
+ *  once at store, compare exact at verify — a loose store risks a false-accept on rotation). */
+function isCanonicalCommitment(v: unknown): v is string {
+  return typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
+}
+
 export async function classifyImportedCard(card: any): Promise<ImportDisposition> {
   const id = card?.identity;
   // Malformed classical identity → branch 1 (nothing to import, nothing to trust).
@@ -224,7 +238,7 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     typeof id.public_key !== 'string' || id.public_key.length === 0 ||
     typeof id.fingerprint !== 'string' || id.fingerprint.length === 0
   ) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
+    return { importClassical: false, pq: null, next_authority_commitment: '', alarm: 'reject', branch: 1 };
   }
   // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
   // never calls verify, and this decides classical-import for every branch.
@@ -232,36 +246,41 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     kem_public_key: id.pq_kem_public_key,
     sig_public_key: id.pq_sig_public_key,
   }))) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
+    return { importClassical: false, pq: null, next_authority_commitment: '', alarm: 'reject', branch: 1 };
   }
   // fp↔key OK → the classical contact imports for branches 2/3/4.
   const hasSig = typeof card.signature === 'string' && card.signature.length > 0;
   // BRANCH 2: no signature → classical-only, quiet. Must NOT alarm (benign transition-era peer).
   if (!hasSig) {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2 };
+    return { importClassical: true, pq: null, next_authority_commitment: '', alarm: 'quiet', branch: 2 };
   }
   // Signature present → verify (re-checks fp↔key internally; keeps verify self-contained).
   const valid = await verifySignedIdentityCard(card as SignedIdentityCard);
   // BRANCH 3: present but invalid → classical-only, LOUD. Reserve the tamper alarm for THIS only.
   if (!valid) {
-    return { importClassical: true, pq: null, alarm: 'loud', branch: 3 };
+    return { importClassical: true, pq: null, next_authority_commitment: '', alarm: 'loud', branch: 3 };
   }
   // BRANCH 4: valid signature → pq sub-disposition.
   const kem = typeof id.pq_kem_public_key === 'string' ? id.pq_kem_public_key : '';
-  // 4a: absent/empty pq_kem under a valid sig → legit v1/no-PQ signer. Quiet, no pq.
+  // 4a: absent/empty pq_kem under a valid sig → legit v1/no-PQ signer. Quiet, no pq (⇒ no authority pin).
   if (kem === '') {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a' };
+    return { importClassical: true, pq: null, next_authority_commitment: '', alarm: 'quiet', branch: '4a' };
   }
   const suite = suiteFromKemLength(kem);
   // 4c: valid sig, unsupported/malformed suite length → sender bug, NOT tampering. Soft-info, no pq.
   if (!suite) {
-    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c' };
+    return { importClassical: true, pq: null, next_authority_commitment: '', alarm: 'soft-info', branch: '4c' };
   }
-  // 4b: valid sig + supported suite → STORE the authenticated pq (both keys, as carried).
+  // 4b: valid sig + supported suite → STORE the authenticated pq (both keys, as carried) AND the
+  // authenticated authority pin. next_authority_commitment is NOT excluded from
+  // identityCardSigningInput, so a VALID signature covers it — the SAME provenance gate as pq (AC-1).
+  // Validate the canonical 64-hex form; a malformed/absent field stores '' (fail-closed, not garbage).
   const sig = typeof id.pq_sig_public_key === 'string' ? id.pq_sig_public_key : '';
+  const pin = isCanonicalCommitment(id.next_authority_commitment) ? id.next_authority_commitment : '';
   return {
     importClassical: true,
     pq: { pq_kem_public_key: kem, pq_sig_public_key: sig },
+    next_authority_commitment: pin,
     alarm: 'quiet',
     branch: '4b',
     suite,
