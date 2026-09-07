@@ -693,19 +693,30 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       const pqFields = d.pq
         ? { pq_kem_public_key: d.pq.pq_kem_public_key, pq_sig_public_key: d.pq.pq_sig_public_key }
         : {};
+      // The authenticated authority pin rides the SAME branch-4b gate as pq (classifyImportedCard).
+      const authorityFields = d.next_authority_commitment
+        ? { next_authority_commitment: d.next_authority_commitment }
+        : {};
 
       const existing = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
       if (existing) {
-        // Upgrade-on-re-exchange (§7#5): a known contact re-sharing a VALID pq card back-fills
-        // pq on the existing edge — no duplicate; NEVER silently replaces a different stored pq
-        // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
+        // Upgrade-on-re-exchange (§7#5): a known contact re-sharing a VALID card back-fills the
+        // authenticated fields the edge LACKS — pq and/or the authority pin — no duplicate. NEVER
+        // silently replaces a stored value (a different pq or pin is a deliberate, lineage-tracked
+        // rotation, not a re-import side effect: AC-2); an ABSENT field never clears a stored one
+        // (AC-7). Decided per field so a pre-#535 edge (has pq, no pin) still back-fills the pin.
         if (d.alarm === 'loud') {
           setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
-        } else if (d.pq && !existing.pq_kem_public_key) {
-          await updateContact(existing.id, pqFields);
-          setExchangeResult({ success: true, message: `Updated "${displayName}" — their post-quantum key is now stored.` });
         } else {
-          setExchangeResult({ success: true, message: `You already have "${displayName}".` });
+          const upgrade: Partial<ContactRecord> = {};
+          if (d.pq && !existing.pq_kem_public_key) Object.assign(upgrade, pqFields);
+          if (d.next_authority_commitment && !existing.next_authority_commitment) Object.assign(upgrade, authorityFields);
+          if (Object.keys(upgrade).length > 0) {
+            await updateContact(existing.id, upgrade);
+            setExchangeResult({ success: true, message: `Updated "${displayName}" — newly verified keys are now stored.` });
+          } else {
+            setExchangeResult({ success: true, message: `You already have "${displayName}".` });
+          }
         }
       } else {
         await addContact(fingerprint, {
@@ -716,6 +727,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           trust_level: 'unverified',
           metadata: { connection_method: 'manual' as const },
           ...pqFields, // present ONLY on branch 4b (authenticated pq); dropped on 2/3/4a/4c
+          ...authorityFields, // authenticated authority pin, same branch-4b gate; absent → omitted
         } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
         // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
         const message =

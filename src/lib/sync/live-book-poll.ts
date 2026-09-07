@@ -62,6 +62,11 @@ export function recordToKnownContact(rec: ContactRecord): KnownContactIdentity {
     epoch: rec.epoch ?? 0,
     version: rec.version ?? 0,
     classicalPublicKeyArmored: rec.public_key,
+    // AC-8 liveness: project the stored authority pin so verifyRotationSuccessor can check a
+    // rotation against it. WITHOUT this line, known.next_authority_commitment is always undefined →
+    // EVERY rotation fails closed (safe but the feature is dead). '' for legacy/unpinned contacts →
+    // verify fail-closes (AC-4), which is correct.
+    next_authority_commitment: rec.next_authority_commitment ?? '',
     // pqSigningPublicKey omitted by design: the wire envelope + signature are classical (
     // the hybrid decryptor/verify path is a named upgrade, not yet on the wire). When hybrid lands, map
     // rec.pq_sig_public_key (base64) → Uint8Array here in lockstep with a hybrid decryptor swap.

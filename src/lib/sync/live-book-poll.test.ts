@@ -41,3 +41,15 @@ test('omits pqSigningPublicKey — the demo path is classical (no hybrid KEM on 
   const known = recordToKnownContact(record({ pq_sig_public_key: 'BASE64PQ' }));
   assert.equal(known.pqSigningPublicKey, undefined);
 });
+
+// #535 pin-at-import — the AC-8 liveness line: project the stored authority pin so
+// verifyRotationSuccessor can check a rotation against it. WITHOUT this projection,
+// known.next_authority_commitment is always undefined → every rotation (incl legit) fails closed =
+// safe-but-dead-feature. '' for legacy/unpinned contacts → verify fail-closes (AC-4), which is correct.
+test('#535: projects next_authority_commitment (AC-8 liveness)', () => {
+  const PIN = '0123456789abcdef'.repeat(4); // 64 lowercase-hex authority pin
+  assert.equal(recordToKnownContact(record({ next_authority_commitment: PIN })).next_authority_commitment, PIN);
+});
+test('#535: unpinned/legacy record → "" (AC-4 — verify then fail-closes, never blind-accepts)', () => {
+  assert.equal(recordToKnownContact(record()).next_authority_commitment, '');
+});

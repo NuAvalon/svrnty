@@ -79,6 +79,8 @@ interface PeerCard {
   email: string;
   // Authenticated pq (branch 4b) or null; alarm drives the import banner (branch-3 loud / 4c soft-info).
   pq: { pq_kem_public_key: string; pq_sig_public_key: string } | null;
+  // Authenticated Epoch+1 authority pin (branch 4b) or '' — same fail-closed gate as pq.
+  next_authority_commitment: string;
   alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
@@ -211,6 +213,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             publicKey: p.public_key || p.publicKey || '',
             email: p.email || '',
             pq: d.pq,
+            next_authority_commitment: d.next_authority_commitment,
             alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
           });
         }
@@ -252,12 +255,20 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       const pqFields = peer.pq
         ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
         : {};
+      // Authenticated authority pin rides the SAME branch-4b gate as pq.
+      const authorityFields = peer.next_authority_commitment
+        ? { next_authority_commitment: peer.next_authority_commitment }
+        : {};
       if (existing) {
-        // Upgrade-on-re-exchange (§7#5): back-fill authenticated pq onto a known edge that has
-        // none — no duplicate; never silently replace a different stored pq (rotation is a separate,
-        // deliberate, lineage-tracked path, not a re-import side effect).
-        if (peer.pq && !existing.pq_kem_public_key) {
-          await updateContact(existing.id, pqFields);
+        // Upgrade-on-re-exchange (§7#5): back-fill authenticated fields a known edge LACKS — pq
+        // and/or the authority pin — no duplicate; NEVER silently replace a stored value (a different
+        // pq or pin is a deliberate, lineage-tracked rotation, not a re-import side effect: AC-2), and
+        // an ABSENT field never clears a stored one (AC-7). Per-field so a pre-#535 edge still pins.
+        const upgrade: { pq_kem_public_key?: string; pq_sig_public_key?: string; next_authority_commitment?: string } = {};
+        if (peer.pq && !existing.pq_kem_public_key) Object.assign(upgrade, pqFields);
+        if (peer.next_authority_commitment && !existing.next_authority_commitment) Object.assign(upgrade, authorityFields);
+        if (Object.keys(upgrade).length > 0) {
+          await updateContact(existing.id, upgrade);
         }
         setAlreadyKnown(true);
         edgeId = existing.id;
@@ -275,6 +286,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           trust_level: 'known',
           email: peer.email,
           ...pqFields, // authenticated pq (branch 4b) only; dropped on 2/3/4a/4c
+          ...authorityFields, // authenticated authority pin, same branch-4b gate; absent → omitted
         } as any);
         edgeId = contact.id;
       }

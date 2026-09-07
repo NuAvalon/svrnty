@@ -230,6 +230,41 @@ test('CANONICAL-ONLY GATE (res1): a card with a WRONG-LENGTH suite → branch 1 
   assert.equal(d.alarm, 'reject');
 });
 
+// ── §4 classifyImportedCard — next_authority_commitment pin (#535 pin-at-import STORE gate) ──
+// The pin rides the branch-4b gate exactly like pq: authenticated-ONLY (AC-1) and canonical-hex-only
+// (AC-5). A pin from a no-sig / invalid-sig card, or a malformed pin, is DROPPED to '' (never stored).
+const PIN_535 = '0123456789abcdef'.repeat(4); // 64 lowercase-hex — a well-formed authority pin
+test('#535 pin: branch 4b, valid sig + canonical 64-hex pin → pin carried (AC-1 provenance)', async () => {
+  const id = await makeCanonicalId('pin4b');
+  const signed = await signIdentityCard(canonCard(id, { next_authority_commitment: PIN_535 }), id.privateKey, id.passphrase);
+  const d = await classifyImportedCard(signed);
+  assert.equal(d.branch, '4b');
+  assert.equal(d.next_authority_commitment, PIN_535);
+});
+test('#535 pin: malformed pin (uppercase / too-short) on a valid 4b card → dropped to "" (AC-5, no loose store)', async () => {
+  const id = await makeCanonicalId('pinbad');
+  // The signature covers the field (sig still valid → branch 4b), but a non-canonical pin fails the
+  // 64-lowercase-hex gate → stored '' rather than garbage that could false-accept a forged rotation.
+  const upper = await signIdentityCard(canonCard(id, { next_authority_commitment: PIN_535.toUpperCase() }), id.privateKey, id.passphrase);
+  assert.equal((await classifyImportedCard(upper)).next_authority_commitment, '');
+  const short = await signIdentityCard(canonCard(id, { next_authority_commitment: 'abc123' }), id.privateKey, id.passphrase);
+  assert.equal((await classifyImportedCard(short)).next_authority_commitment, '');
+});
+test('#535 pin: legacy 4b card with NO pin → "" (AC-4: verify then fail-closes on empty)', async () => {
+  const id = await makeCanonicalId('pinnone');
+  const d = await classifyImportedCard(await signIdentityCard(canonCard(id), id.privateKey, id.passphrase));
+  assert.equal(d.branch, '4b');
+  assert.equal(d.next_authority_commitment, '');
+});
+test('#535 pin: INVALID signature (branch 3) DROPS a present pin → "" (AC-1: never store an unauthenticated pin)', async () => {
+  const id = await makeCanonicalId('pintamper');
+  const signed = await signIdentityCard(canonCard(id, { next_authority_commitment: PIN_535 }), id.privateKey, id.passphrase);
+  const tampered = { ...signed, identity: { ...signed.identity, display_name: 'Eve' } }; // breaks the sig, pin field intact
+  const d = await classifyImportedCard(tampered);
+  assert.equal(d.branch, 3);
+  assert.equal(d.next_authority_commitment, '');
+});
+
 // ── SEND-side buildSignedIdentityCard — the REAL Grow/QR/copy path. The tests above build cards via
 // signIdentityCard(canonCard(...)) DIRECTLY, bypassing buildSignedIdentityCard — which is exactly HOW the
 // empty-pq-legs beat-3 bug shipped untested. These lock the wrapper-shape fix + the build-time guard.
