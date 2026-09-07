@@ -1,5 +1,5 @@
 import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
-import { mintCanonicalFingerprint } from './fingerprint';
+import { deriveNextAuthorityCommitment, mintCanonicalFingerprint } from './fingerprint';
 import { randomBytes } from 'crypto';
 import { writeFile, readFile, mkdir } from 'fs/promises';
 import { join } from 'path';
@@ -53,6 +53,13 @@ interface IdentityData {
     sig_public_key: string;      // base64
     kem_algorithm: 'ML-KEM-1024';
     kem_public_key: string;      // base64
+  };
+  /** Epoch+1 authority-key hash — minted at genesis while masterSecret is in-hand. */
+  next_authority_commitment?: string;
+  durable?: {
+    fingerprint: string;
+    epoch: number;
+    next_authority_commitment: string;
   };
 }
 
@@ -179,6 +186,10 @@ export class SoverentityIdentity {
       const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(
         keyBundle, threshold, totalShares, fingerprint
       );
+      // ORDER INVARIANT: derive the next-epoch authority pin BEFORE masterSecret.fill(0).
+      const next_authority_commitment = deriveNextAuthorityCommitment(masterSecret, 1);
+      identity.next_authority_commitment = next_authority_commitment;
+      identity.durable = { fingerprint, epoch: 0, next_authority_commitment };
 
       // Store vault locally
       await this.storeVault(fingerprint, vault);

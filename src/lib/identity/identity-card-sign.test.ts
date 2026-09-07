@@ -38,7 +38,7 @@ function canonCard(id: CanonId, over: Partial<IdentityCard['identity']> = {}): I
     version: '1.0', type: 'identity-exchange', created_at: '2026-08-17T00:00:00.000Z',
     identity: {
       fingerprint: id.fingerprint, display_name: 'Alice', public_key: id.publicKey, email: 'alice@example.test',
-      pq_sig_public_key: id.sigB64, pq_kem_public_key: id.kemB64, ...over,
+      pq_sig_public_key: id.sigB64, pq_kem_public_key: id.kemB64, next_authority_commitment: '', ...over,
     },
   };
 }
@@ -75,6 +75,7 @@ function aliceCard(over: Partial<IdentityCard['identity']> = {}): IdentityCard {
       email: 'alice@example.test',
       pq_sig_public_key: b64('alice-ml-dsa-pubkey'),
       pq_kem_public_key: b64('alice-ml-kem-pubkey'),
+      next_authority_commitment: '',
       ...over,
     },
   };
@@ -237,11 +238,15 @@ test('buildSignedIdentityCard (WRAPPER shape, genesis): carries REAL pq legs —
   // Genesis identity WRAPPER: post_quantum is a SIBLING of nested `.identity` (browser-identity.ts:163),
   // NOT inside `.identity`. Pre-fix, buildSignedIdentityCard read idData.post_quantum (the unwrapped nested
   // identity) → undefined → empty legs → the grown card was rejected by every peer (beat-3).
+  const pin = 'a'.repeat(64);
   const wrapper = {
     identity: { fingerprint: id.fingerprint, public_key: id.publicKey, display_name: 'Alice' },
     post_quantum: { sig_public_key: id.sigB64, kem_public_key: id.kemB64 },
+    next_authority_commitment: pin,
   };
   const signed = await buildSignedIdentityCard(wrapper, id.privateKey, id.passphrase);
+  assert.equal(signed.version, '1.1');
+  assert.equal(signed.identity.next_authority_commitment, pin);
   assert.equal(signed.identity.pq_kem_public_key, id.kemB64);
   assert.equal(signed.identity.pq_sig_public_key, id.sigB64);
   assert.ok(signed.identity.pq_kem_public_key.length > 0 && signed.identity.pq_sig_public_key.length > 0);

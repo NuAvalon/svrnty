@@ -19,6 +19,10 @@ export const DOMAIN_IDENTITY_CARD = 'svrnty:identity-card:v1';
 // drift is a domain-confusion bug — centralizing eliminates that class).
 export const DOMAIN_KEY_ROTATION = 'svrnty:key-rotation:v1';
 export const DOMAIN_KEY_RECOVERY = 'svrnty:key-recovery:v1';
+// Authority-key pre-rotation (KERI-style). Dedicated tag — must not collide with card-sign,
+// mailbox-auth, note-auth, or DOMAIN_KEY_ROTATION. Both legs of sig_by_authority bind this domain
+// via sign-envelope LP + suite framing.
+export const DOMAIN_ROTATION = 'svrnty:rotation:v1';
 // R1 mutual-connect (pending-joiner return channel + remote mutual-vouch). The crypto lives in the signing layer; the tag
 // STRINGS live here as single-source so a signer/verifier drift can't cause domain confusion — a
 // joiner-response signature can never verify as a contact-update / identity-card, and vice-versa.
@@ -27,23 +31,41 @@ export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
 
 // --- A2: Durable identity + epoch/lineage (formats-cheap: fields only, no rotation UX) ---
 
-/** Successor authorization. Format defines the SHAPE; the signatures/quorum crypto live in the signing layer. */
+/**
+ * Successor authorization. `kind` is an OPEN discriminant — the verifier FAIL-CLOSES (throws) on
+ * any kind it does not implement. Rotation is the launch kind (authority reveal + hybrid
+ * authority signature). Recovery / revocation / authority-transfer kinds slot in later via a
+ * schema version bump; an old verifier must never silently accept them.
+ */
+export type RotationSuccessorAuth = {
+  kind: 'rotation';
+  /** Revealed next-epoch authority pubs (hex of raw 32B ed25519 ‖ 2592B ML-DSA-87). */
+  auth_pubkeys: { sign: string; pq_sig: string };
+  /** Hybrid sig BY those pubs over rotationSigningInput (hex of ed25519-sig ‖ ML-DSA-sig). */
+  sig_by_authority: string;
+};
+
 export type SuccessorAuth =
-  | { kind: 'rotation'; sig_by_prior_epoch: string }                 // normal: prior key signs successor
-  | { kind: 'recovery'; quorum_sigs: string[]; threshold: number };  // recovery: prior key LOST → quorum signs
+  | RotationSuccessorAuth
+  | { kind: 'recovery'; quorum_sigs: string[]; threshold: number }
+  | { kind: string; [key: string]: unknown };
 
 /**
  * Durable identity: `fingerprint` is genesis-derived and NEVER changes across rotation;
  * `epoch` + `successor` carry the lineage so the living address book survives key rotation
  * (epoch-catch-up: accept a newer validly-successored epoch after verifying lineage).
+ * `next_authority_commitment` is the anti-theft pin: SHA256 of the next epoch's raw hybrid
+ * authority pubs, minted at genesis while the cold seed is in hand. '' for pre-mint/legacy cards.
  */
 export interface DurableIdentity {
   fingerprint: string;      // immutable across rotations (= TrustEdge.peer_fingerprint)
   epoch: number;            // monotonic; +1 per rotation/recovery
+  next_authority_commitment: string; // 64-hex SHA256(authEd ‖ authDsa) for epoch+1; '' if legacy
   successor?: {
     new_fingerprint: string;
     new_public_key: string;
     epoch: number;          // = this.epoch + 1
+    next_authority_commitment: string; // the pin for the epoch AFTER this successor
     auth: SuccessorAuth;    // signing-layer crypto
   };
 }
@@ -129,7 +151,7 @@ export interface SlugClaim {
  * SignedIdentityCard in identity-card-sign.ts, NOT here.
  */
 export interface IdentityCard {
-  version: string;                  // e.g. '1.0'
+  version: string;                  // '1.1' once next_authority_commitment is on the card; '1.0' legacy
   type: string;                     // 'identity-exchange'
   created_at: string;               // ISO-8601 UTC
   identity: {
@@ -139,6 +161,7 @@ export interface IdentityCard {
     email: string;
     pq_sig_public_key: string;      // base64(ML-DSA pubkey)
     pq_kem_public_key: string;      // base64(ML-KEM pubkey) — the field the signature protects
+    next_authority_commitment: string; // 64-hex authority pin; '' for pre-mint/legacy cards
   };
 }
 
@@ -174,4 +197,23 @@ export function mutualVouchSigningInput(env: MutualVouchEnvelope): string {
  */
 export function identityCardSigningInput(card: IdentityCard): string {
   return canonicalize(card, { exclude: ['signature', 'pq_signature'] });
+}
+
+/** Fields the rotation-authority hybrid signature covers. Single-source with the verifier. */
+export interface RotationSigningFields {
+  durable_id: string;
+  prior_epoch: number;
+  prior_authority_commitment: string;
+  successor_epoch: number;
+  new_fingerprint: string;
+  next_authority_commitment: string;
+}
+
+/**
+ * Canonical bytes for a rotation-authority signature. identityCardSigningInput is unchanged —
+ * next_authority_commitment on the card is covered by canonicalize (not excluded). This helper is
+ * the GENERIC successor signing-input (authority domain), not the card domain.
+ */
+export function rotationSigningInput(fields: RotationSigningFields): string {
+  return canonicalize(fields);
 }
