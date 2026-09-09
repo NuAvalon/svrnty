@@ -19,6 +19,8 @@ export type TopNavProps = {
   onLock: () => void;
   onGrow: () => void;
   onRecovery: () => void;
+  /** People waiting at the Grow Gate (not Galaxy stars). */
+  gateCount?: number;
 };
 
 const pillStyle: CSSProperties = {
@@ -71,6 +73,7 @@ export function TopNav({
   onLock,
   onGrow,
   onRecovery,
+  gateCount = 0,
 }: TopNavProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -114,7 +117,11 @@ export function TopNav({
         <AppearanceToggle />
         {hasIdentity ? (
           <>
-            <NavPill label="Grow" onClick={onGrow} testId="nav-grow" />
+            <NavPill
+              label={gateCount > 0 ? `Grow · ${gateCount}` : 'Grow'}
+              onClick={onGrow}
+              testId="nav-grow"
+            />
             <NavPill label="Recovery" onClick={onRecovery} testId="nav-recovery" />
           </>
         ) : null}
@@ -214,7 +221,7 @@ export function TopNav({
                   onClick={() => openSheet(onGrow)}
                   style={menuItemStyle}
                 >
-                  Grow
+                  Grow{gateCount > 0 ? ` · ${gateCount}` : ''}
                 </button>
               </>
             ) : null}

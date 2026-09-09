@@ -15,13 +15,20 @@ import {
   codeUnderCap,
   alreadyAccepted,
   markAcceptedInMap,
+  issuedCodeChannel,
+  issuedCodeSpent,
   type IssuedCodeMap,
 } from './client-store';
 
 const NOW = 1_000_000_000_000; // fixed "now" in ms
 const future = NOW + 60_000;
 const past = NOW - 60_000;
-const entry = (acceptUntil: number, accepted: string[] = [], cap = 1) => ({ acceptUntil, accepted, cap });
+const entry = (acceptUntil: number, accepted: string[] = [], cap = 1, channel: 'in_person' | 'remote' = 'remote') => ({
+  acceptUntil,
+  accepted,
+  cap,
+  channel,
+});
 
 test('pruneIssuedCodes keeps in-window entries, drops expired', () => {
   const map: IssuedCodeMap = { alice: { live: entry(future, ['j1']), dead: entry(past) } };
@@ -121,4 +128,23 @@ test('expired code refuses accepts even under cap', () => {
     codeUnderCap(map, 'alice', 'link') &&
     !alreadyAccepted(map, 'alice', 'link', joiner);
   assert.equal(canAccept('j1'), false);
+});
+
+test('issuedCodeChannel: missing / junk is remote; in_person only when stored', () => {
+  const map: IssuedCodeMap = {
+    alice: {
+      table: entry(future, [], 1, 'in_person'),
+      list: entry(future, [], 3, 'remote'),
+    },
+  };
+  assert.equal(issuedCodeChannel(map, 'alice', 'table'), 'in_person');
+  assert.equal(issuedCodeChannel(map, 'alice', 'list'), 'remote');
+  assert.equal(issuedCodeChannel(map, 'alice', 'zzz'), 'remote');
+});
+
+test('issuedCodeSpent: in-person cap 1 is spent after one accept', () => {
+  const map: IssuedCodeMap = { alice: { c: entry(future, [], 1, 'in_person') } };
+  assert.equal(issuedCodeSpent(map, 'alice', 'c'), false);
+  markAcceptedInMap(map, 'alice', 'c', 'j1');
+  assert.equal(issuedCodeSpent(map, 'alice', 'c'), true);
 });

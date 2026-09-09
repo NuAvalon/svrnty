@@ -13,6 +13,8 @@ import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { starsOnly } from '@/lib/trust/grow-gate';
+import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   loadMethodHistory,
@@ -32,6 +34,7 @@ import {
   setActiveFingerprint,
   updateContact,
   storeIdentity,
+  loadGateArrivals,
 } from '@/lib/identity/client-store';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
@@ -77,6 +80,7 @@ export default function Home() {
   } | null>(null);
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [gateCount, setGateCount] = useState(0);
   // CUR-7: only offer lock when vault keys are encrypted at rest.
   const [canLock, setCanLock] = useState(false);
 
@@ -259,11 +263,14 @@ export default function Home() {
   const refreshContacts = useCallback(async () => {
     if (!identity?.identity?.fingerprint) return;
     try {
-      const rawContacts = await getAllContacts(identity.identity.fingerprint);
+      const fp = identity.identity.fingerprint;
+      const rawContacts = await getAllContacts(fp);
       // Single shared projection (carries pq — see contact-edge.ts). Same helper the joiner
       // ceremony uses, so no field (incl. peer_pq_*) is dropped on one path but not the other.
-      const edges: TrustEdge[] = rawContacts.map(contactRecordToEdge);
+      // Gate arrivals are not contacts; starsOnly is belt-and-suspenders if grow_gate leaked onto a row.
+      const edges: TrustEdge[] = starsOnly(rawContacts).map(contactRecordToEdge);
       setContacts(edges);
+      setGateCount((await loadGateArrivals(fp)).length);
     } catch (err: any) {
       console.error('Failed to load contacts:', err);
     }
@@ -272,6 +279,12 @@ export default function Home() {
   // Load contacts when identity is available
   useEffect(() => {
     refreshContacts();
+  }, [refreshContacts]);
+
+  useEffect(() => {
+    return subscribeContactChanges(() => {
+      void refreshContacts();
+    });
   }, [refreshContacts]);
 
   // Demo circle can refresh when the book is empty or sample-only
@@ -529,6 +542,7 @@ export default function Home() {
         onLock={handleLockNow}
         onGrow={() => setGrowOpen(true)}
         onRecovery={() => setRecoveryOpen(true)}
+        gateCount={identity ? gateCount : 0}
       />
 
       <main className="max-w-6xl mx-auto">

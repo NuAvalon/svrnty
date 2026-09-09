@@ -73,6 +73,9 @@ export function contactRecordToEdge(c: any): TrustEdge {
           sample_lane: c.metadata.sample_lane,
           sample: c.metadata.sample,
           sample_revision: c.metadata.sample_revision,
+          grow_gate: c.metadata.grow_gate,
+          grow_invite_nonce: c.metadata.grow_invite_nonce,
+          grow_mint_channel: c.metadata.grow_mint_channel,
         }
       : undefined,
   } as TrustEdge;

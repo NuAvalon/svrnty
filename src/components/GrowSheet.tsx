@@ -3,15 +3,25 @@
 /**
  * Grow — QR + short link over the Galaxy.
  * Handshake is still a single-use dead-drop (fleet). Cap 7 / history = glass intent until relay counts.
+ *
+ * Channel: In person (forced cap 1, regen after use) vs Remote (viral cap 1–1000).
+ * Switching channel remints. Remote arrivals wait at the Gate on the giver's device.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createRelay } from '@/lib/sync/relay';
-import { loadKey, recordIssuedGrowCode } from '@/lib/identity/client-store';
+import {
+  issuedCodeSpent,
+  loadIssuedCodeMap,
+  loadKey,
+  recordIssuedGrowCode,
+  type GrowMintChannel,
+} from '@/lib/identity/client-store';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { GROW_INVITE_MAX, clampGrowCap, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { GATE_COPY } from '@/lib/trust/grow-gate';
 
 type Props = {
   open: boolean;
@@ -21,61 +31,108 @@ type Props = {
   embedded?: boolean;
 };
 
+const channelBtn = (active: boolean): CSSProperties => ({
+  flex: 1,
+  padding: '10px 12px',
+  borderRadius: 8,
+  border: `1px solid ${active ? E.borderLit : E.border}`,
+  background: active ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
+  color: active ? E.text : E.muted,
+  cursor: 'pointer',
+  fontFamily: E.fontSans,
+  fontSize: 13,
+});
+
 export function GrowSheet({ open, onClose, identity, embedded = false }: Props) {
   const [relay, setRelay] = useState<{ url: string; code: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [uses, setUses] = useState(1);
-  const started = useRef(false);
+  const [channel, setChannel] = useState<GrowMintChannel>('remote');
+  const [spent, setSpent] = useState(false);
+  const [mintNonce, setMintNonce] = useState(0);
+  const usesRef = useRef(uses);
+  const channelRef = useRef(channel);
+  usesRef.current = uses;
+  channelRef.current = channel;
 
   const mint = useCallback(async () => {
     if (!identity?.identity?.fingerprint) return;
     setBusy(true);
     setError(null);
+    setSpent(false);
     try {
       const fp = identity.identity.fingerprint;
       const key = await loadKey(fp);
       if (!key) throw new Error('Unlock your identity first.');
       const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
       const result = await createRelay(JSON.stringify(signed));
+      const ch = channelRef.current;
+      const cap = ch === 'in_person' ? 1 : usesRef.current;
       setRelay({ url: result.url, code: result.code });
-      // Record the issued code + its cap IMMEDIATELY (belt-and-suspenders): if this
-      // is left only to the effect below and the effect ever fails to fire, the code would be
-      // return-channel-DEAD (no joiner could ever be accepted → a silent mutual-connect failure). The
-      // effect below ALSO records — idempotent (recordIssuedGrowCode refreshes the window + preserves
-      // accepted) — and keeps the cap in sync when the issuer adjusts the toggle. Best-effort either way.
-      try { await recordIssuedGrowCode(fp, result.code, uses); } catch { /* non-fatal */ }
+      try {
+        await recordIssuedGrowCode(fp, result.code, cap, ch);
+      } catch {
+        /* non-fatal */
+      }
     } catch (e: any) {
-      started.current = false;
       setError(e?.message || 'Could not prepare the invite.');
     } finally {
       setBusy(false);
     }
-  }, [identity, uses]);
+  }, [identity]);
+
+  const mintRef = useRef(mint);
+  mintRef.current = mint;
 
   useEffect(() => {
     if (!open) {
-      started.current = false;
       setRelay(null);
       setError(null);
+      setSpent(false);
       return;
     }
-    if (started.current) return;
-    started.current = true;
-    void mint();
-  }, [open, mint]);
+    void mintRef.current();
+  }, [open, channel, mintNonce]);
 
-  // Record the issued code with its per-code cap (giver-side R1 anti-replay + the distinct-joiner
-  // ceiling). Fires when the code is minted (relay.code set) and whenever the issuer adjusts the cap —
-  // the link/code never changes, only its stored cap (recordIssuedGrowCode preserves already-accepted
-  // joiners). Best-effort: a persistence hiccup must never block sharing the invite.
   useEffect(() => {
     const fp = identity?.identity?.fingerprint;
     if (!fp || !relay?.code) return;
-    void recordIssuedGrowCode(fp, relay.code, uses).catch(() => { /* non-fatal */ });
-  }, [uses, relay?.code, identity]);
+    if (channel === 'in_person') return; // cap locked at mint
+    void recordIssuedGrowCode(fp, relay.code, uses).catch(() => {
+      /* non-fatal — preserves prior channel */
+    });
+  }, [uses, relay?.code, identity, channel]);
+
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint;
+    if (!open || !fp || !relay?.code || channel !== 'in_person') return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const map = await loadIssuedCodeMap();
+        if (!cancelled && issuedCodeSpent(map, fp, relay.code)) setSpent(true);
+      } catch {
+        /* non-fatal */
+      }
+    };
+    void tick();
+    const id = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [open, identity, relay?.code, channel]);
 
   if (!open) return null;
+
+  const pickChannel = (ch: GrowMintChannel) => {
+    if (ch === channel) return;
+    setChannel(ch);
+    if (ch === 'in_person') setUses(1);
+    setRelay(null);
+    setSpent(false);
+  };
 
   const body = (
     <>
@@ -100,40 +157,77 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
           {TRUST_RECIPE_COPY.mycelial}
         </p>
 
-        <label style={{ display: 'block', marginTop: 18, fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-          How many people can join with this link?
-        </label>
-        <input
-          type="number"
-          min={1}
-          max={GROW_INVITE_MAX}
-          value={uses}
-          onChange={(e) => setUses(clampGrowCap(e.target.value))}
-          aria-label="Number of people who can join with this link"
-          style={{
-            marginTop: 6,
-            width: '100%',
-            background: E.inputBg,
-            border: `1px solid ${E.border}`,
-            borderRadius: 8,
-            color: E.text,
-            padding: '10px 12px',
-            fontFamily: E.fontSans,
-          }}
-        />
-        <p style={{ margin: '6px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.5 }}>
-          Default is 1 (single-use). Turn it up to share one link with a group, up to {GROW_INVITE_MAX}.
+        <p style={{ margin: '18px 0 8px', fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: E.dim }}>
+          How are they joining?
         </p>
-        <p style={{ margin: '8px 0 0', fontSize: 12, color: E.muted }}>
-          {uses === 1
-            ? 'Single-use: one person can join with this link.'
-            : `Up to ${uses} people can join with this link.`}{' '}
-          This link works for 7 days.
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            data-testid="grow-channel-in-person"
+            aria-pressed={channel === 'in_person'}
+            onClick={() => pickChannel('in_person')}
+            style={channelBtn(channel === 'in_person')}
+          >
+            {GATE_COPY.inPerson}
+          </button>
+          <button
+            type="button"
+            data-testid="grow-channel-remote"
+            aria-pressed={channel === 'remote'}
+            onClick={() => pickChannel('remote')}
+            style={channelBtn(channel === 'remote')}
+          >
+            {GATE_COPY.remote}
+          </button>
+        </div>
+        <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, lineHeight: 1.5 }}>
+          {channel === 'in_person' ? GATE_COPY.inPersonHint : GATE_COPY.remoteHint}
         </p>
+
+        {channel === 'remote' && (
+          <>
+            <label style={{ display: 'block', marginTop: 18, fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
+              How many people can join with this link?
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={GROW_INVITE_MAX}
+              value={uses}
+              onChange={(e) => setUses(clampGrowCap(e.target.value))}
+              aria-label="Number of people who can join with this link"
+              style={{
+                marginTop: 6,
+                width: '100%',
+                background: E.inputBg,
+                border: `1px solid ${E.border}`,
+                borderRadius: 8,
+                color: E.text,
+                padding: '10px 12px',
+                fontFamily: E.fontSans,
+              }}
+            />
+            <p style={{ margin: '6px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.5 }}>
+              Default is 1 (single-use). Turn it up to share one link with a group, up to {GROW_INVITE_MAX}.
+            </p>
+            <p style={{ margin: '8px 0 0', fontSize: 12, color: E.muted }}>
+              {uses === 1
+                ? 'Single-use: one person can join with this link.'
+                : `Up to ${uses} people can join with this link.`}{' '}
+              This link works for 7 days.
+            </p>
+          </>
+        )}
+
+        {channel === 'in_person' && (
+          <p style={{ margin: '12px 0 0', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
+            This code works for 7 days on the relay — mint it when they are in front of you. Single-use.
+          </p>
+        )}
 
         {busy && <p style={{ color: E.dim, marginTop: 20 }}>Preparing…</p>}
         {error && <p style={{ color: E.danger, marginTop: 16, fontSize: 13 }}>{error}</p>}
-        {relay && (
+        {relay && !spent && (
           <>
             <div style={{ margin: '20px auto', width: 'fit-content' }}>
               <SimpleQRCode value={relay.url} size={180} />
@@ -169,6 +263,31 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
               Copy link
             </button>
           </>
+        )}
+        {spent && channel === 'in_person' && (
+          <div data-testid="grow-in-person-spent" style={{ marginTop: 20 }}>
+            <p style={{ margin: 0, fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
+              {GATE_COPY.spentInPerson}
+            </p>
+            <button
+              type="button"
+              data-testid="grow-regen"
+              onClick={() => setMintNonce((n) => n + 1)}
+              style={{
+                marginTop: 12,
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: 8,
+                border: `1px solid ${E.borderLit}`,
+                background: 'transparent',
+                color: E.text,
+                cursor: 'pointer',
+                fontFamily: E.fontSans,
+              }}
+            >
+              {GATE_COPY.regen}
+            </button>
+          </div>
         )}
 
         <button

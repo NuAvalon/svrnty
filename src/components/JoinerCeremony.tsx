@@ -34,8 +34,10 @@ import {
   isSessionUnlocked,
   initSessionKey,
   lockSession,
+  enqueueGateArrival,
 } from '@/lib/identity/client-store';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
+import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { TrustMap } from '@/components/TrustMap';
 import { useCeremony } from '@/lib/ceremony/useCeremony';
@@ -43,6 +45,8 @@ import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/cerem
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isPQEncapLive } from '@/lib/claim-gates';
+import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { GATE_COPY, clampArrivalName, joinerPersistPlan } from '@/lib/trust/grow-gate';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -140,6 +144,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [ownerName, setOwnerName] = useState<string>('You');
   const [contacts, setContacts] = useState<TrustEdge[]>([]);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
+  const [presence, setPresence] = useState<'in_person' | 'remote' | null>(null);
 
   // Unlock gate (R1): the joiner arrives at /c/ with a LOCKED session (the memory-only session key does
   // not survive the navigation). Signing the return-channel joiner-response needs the private key, so we
@@ -262,21 +267,43 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setAlreadyKnown(true);
         edgeId = existing.id;
       } else {
-        const contact = await addContact(ownerFp, {
-          name: peer.name,
-          fingerprint: peer.fingerprint,
-          public_key: peer.publicKey,
-          // KNOWN, not 'pending': the joiner added the giver from a CRYPTO-VERIFIED Grow card
-          // (classifyImportedCard verified the signature) — that earns KNOWN immediately
-          // (KNOWN = add-from-link/qr, no mutuality; mutuality is only for TRUSTED). 'pending'
-          // under-claimed the tier (render-neutral — the faint node keys on connection_status, not
-          // trust_level — but the stored value should honestly match the crypto). Causality-cleared: no
-          // logic-reader keys on trust_level==='pending'.
-          trust_level: 'known',
-          email: peer.email,
-          ...pqFields, // authenticated pq (branch 4b) only; dropped on 2/3/4a/4c
-        } as any);
-        edgeId = contact.id;
+        const plan = joinerPersistPlan(presence, false);
+        if (plan === 'need-presence') return;
+        if (plan === 'enqueue-gate') {
+          await enqueueGateArrival(ownerFp, {
+            fingerprint: peer.fingerprint,
+            displayName: clampArrivalName(peer.name),
+            publicKeyArmored: peer.publicKey,
+            epoch: 0,
+            inviteNonce: code,
+            mintChannel: 'remote',
+            arrivedAt: new Date().toISOString(),
+            direction: 'scanned_giver',
+            ...(peer.pq
+              ? { pqKemPublicKey: peer.pq.pq_kem_public_key, pqSigPublicKey: peer.pq.pq_sig_public_key }
+              : {}),
+          });
+          emitContactChange({ ids: [], reason: 'ui-edit' });
+          edgeId = peer.fingerprint;
+        } else {
+          const verifyPatch = ownerVerifyPersistPatch(
+            { grow_invite_nonce: code, grow_mint_channel: 'in_person' },
+            'in_person',
+          );
+          const contact = await addContact(ownerFp, {
+            name: peer.name,
+            fingerprint: peer.fingerprint,
+            public_key: peer.publicKey,
+            // In-person confirm: Known + private verify (key belongs to the person you were with).
+            // Not Trust. Not a public badge.
+            trust_level: 'known',
+            email: peer.email,
+            ...pqFields,
+            owner_verify: verifyPatch.owner_verify,
+            metadata: verifyPatch.metadata,
+          } as any);
+          edgeId = contact.id;
+        }
       }
       // R1: the edge is live locally — now fire the return-channel deposit to the giver (best-effort,
       // non-blocking) so the connection becomes MUTUAL. The ceremony advances immediately regardless of
@@ -291,7 +318,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
     } catch (err: any) {
       ceremony.fail(err?.message || 'Could not write the edge.');
     }
-  }, [peer, ownerFp, code, ceremony]);
+  }, [peer, ownerFp, code, ceremony, presence]);
 
   // Unlock the identity to sign the mutual connection, then persist the edge + deposit. initSessionKey
   // derives the key WITHOUT validating, so a wrong passphrase yields a key that can't decrypt — verify by
@@ -481,11 +508,56 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           <div>
             <h2 style={headingStyle}>Make the edge live</h2>
             <p style={subStyle}>
-              Add {peer.name} to your network — a connection saved to your device, between the two of you.
-              (A known contact for now; trust is something you choose to grant later.)
+              {GATE_COPY.joinPresence} {TRUST_RECIPE_COPY.verifyWhy}
+            </p>
+            <p style={{ ...subStyle, marginTop: 10, fontSize: 13 }}>
+              Verify means this fingerprint belongs to the person you mean — not that a name is true in the world.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 18, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto' }}>
+              <button
+                type="button"
+                data-testid="join-presence-in-person"
+                aria-pressed={presence === 'in_person'}
+                onClick={() => setPresence('in_person')}
+                style={{
+                  ...primaryBtnStyle,
+                  marginTop: 0,
+                  opacity: presence === 'in_person' ? 1 : 0.7,
+                  border: presence === 'in_person' ? '1px solid rgba(52, 211, 153, 0.55)' : primaryBtnStyle.border,
+                }}
+              >
+                {GATE_COPY.joinTogether}
+              </button>
+              <button
+                type="button"
+                data-testid="join-presence-remote"
+                aria-pressed={presence === 'remote'}
+                onClick={() => setPresence('remote')}
+                style={{
+                  ...primaryBtnStyle,
+                  marginTop: 0,
+                  opacity: presence === 'remote' ? 1 : 0.7,
+                  border: presence === 'remote' ? '1px solid rgba(52, 211, 153, 0.55)' : primaryBtnStyle.border,
+                }}
+              >
+                {GATE_COPY.joinRemote}
+              </button>
+            </div>
+            <p style={{ ...subStyle, marginTop: 12 }}>
+              {presence === 'in_person'
+                ? GATE_COPY.joinTogetherHint
+                : presence === 'remote'
+                  ? GATE_COPY.joinRemoteHint
+                  : 'Choose one to continue.'}
             </p>
             {!needsUnlock ? (
-              <button style={primaryBtnStyle} onClick={persistEdge}>Add to my network →</button>
+              <button
+                style={{ ...primaryBtnStyle, opacity: presence ? 1 : 0.45 }}
+                disabled={!presence}
+                onClick={persistEdge}
+              >
+                Add to my network →
+              </button>
             ) : (
               <div style={{ marginTop: 18 }}>
                 {/* Anti-phishing: a secret is demanded BY and FOR the user's OWN
@@ -522,16 +594,25 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         {/* lattice — your constellation gains a facet */}
         {state.step === 'lattice' && (
           <div>
-            <h2 style={headingStyle}>A facet lights up</h2>
+            <h2 style={headingStyle}>
+              {presence === 'remote' && !alreadyKnown ? 'At the Gate' : 'A facet lights up'}
+            </h2>
             <p style={subStyle}>
-              {peer?.name ? `${peer.name} now appears in your constellation.` : 'A new facet appears in your constellation.'}
-              {alreadyKnown ? ' You were already connected.' : ''}
+              {alreadyKnown
+                ? `${peer?.name || 'They'} — you were already connected.`
+                : presence === 'remote'
+                  ? GATE_COPY.latticeRemote
+                  : peer?.name
+                    ? GATE_COPY.latticeTogether
+                    : 'A new facet appears in your constellation.'}
             </p>
-            <div style={{ margin: '16px auto', maxWidth: 360 }}>
-              <TrustMap ownerFingerprint={ownerFp || ''} ownerName={ownerName} contacts={contacts} />
-            </div>
+            {presence !== 'remote' && (
+              <div style={{ margin: '16px auto', maxWidth: 360 }}>
+                <TrustMap ownerFingerprint={ownerFp || ''} ownerName={ownerName} contacts={contacts} />
+              </div>
+            )}
             <button style={primaryBtnStyle} onClick={() => ceremony.latticeRendered()}>
-              The facet is lit →
+              {presence === 'remote' && !alreadyKnown ? 'Continue →' : 'The facet is lit →'}
             </button>
           </div>
         )}

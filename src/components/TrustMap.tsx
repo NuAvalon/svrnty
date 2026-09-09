@@ -979,7 +979,7 @@ export function TrustMap({
           >
             <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
             <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              Tap Grow. They join you — a star you Know.
+              Tap Grow. In person they can become a star you Know. Remote, they wait at the Gate.
             </p>
             <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
               Trust is mutual, after you make sure it&apos;s them.

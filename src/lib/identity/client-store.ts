@@ -841,9 +841,17 @@ function clampCodeCap(n: unknown): number {
   return Math.max(1, Math.min(ISSUED_CODE_CAP_MAX, v));
 }
 
+/** How a Grow code was minted. Legacy entries with no field normalize to remote (fail-closed). */
+export type GrowMintChannel = 'in_person' | 'remote';
+
 /** One issued code: when it stops accepting (epoch ms), which joiner fps it has accepted, and the
  *  per-code distinct-joiner cap (issuer-chosen at generation; default 1 = single-use). */
-export interface IssuedCodeEntry { acceptUntil: number; accepted: string[]; cap: number }
+export interface IssuedCodeEntry {
+  acceptUntil: number;
+  accepted: string[];
+  cap: number;
+  channel: GrowMintChannel;
+}
 /** ownerFp -> { shortcode -> entry } */
 export type IssuedCodeMap = Record<string, Record<string, IssuedCodeEntry>>;
 
@@ -854,7 +862,13 @@ function normalizeEntry(e: unknown): IssuedCodeEntry | null {
   // cap: a legacy entry (pre-cap) defaults to 1 (single-use) — it must NOT retroactively become
   // multi-use. A present cap is clamped to [1, MAX].
   const cap = r.cap === undefined ? 1 : clampCodeCap(r.cap);
-  return { acceptUntil: r.acceptUntil as number, accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [], cap };
+  const channel: GrowMintChannel = r.channel === 'in_person' ? 'in_person' : 'remote';
+  return {
+    acceptUntil: r.acceptUntil as number,
+    accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [],
+    cap,
+    channel,
+  };
 }
 
 /** Pure: drop entries past their acceptance window. Owners left empty are removed. */
@@ -892,6 +906,19 @@ export function alreadyAccepted(map: IssuedCodeMap, ownerFp: string, code: strin
   return !!e && Array.isArray(e.accepted) && e.accepted.includes(joinerFp);
 }
 
+/** Pure: mint channel for a code. Missing / junk → remote (never upgrade to in-person). */
+export function issuedCodeChannel(map: IssuedCodeMap, ownerFp: string, code: string): GrowMintChannel {
+  return map?.[ownerFp]?.[code]?.channel === 'in_person' ? 'in_person' : 'remote';
+}
+
+/** Pure: distinct-joiner cap reached (in-person codes should regen after this). */
+export function issuedCodeSpent(map: IssuedCodeMap, ownerFp: string, code: string): boolean {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return false;
+  const cap = Number.isFinite(e.cap) ? e.cap : 1;
+  return (Array.isArray(e.accepted) ? e.accepted.length : 0) >= cap;
+}
+
 /** Pure: record a VERIFIED joiner fp as accepted on a code (idempotent). Mutates + returns map. */
 export function markAcceptedInMap(map: IssuedCodeMap, ownerFp: string, code: string, joinerFp: string): IssuedCodeMap {
   const e = map?.[ownerFp]?.[code];
@@ -925,18 +952,31 @@ export async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
 }
 
 /** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window with a per-code
- *  distinct-joiner cap (issuer-chosen at generation; default 1 = single-use, max 1000). */
-export async function recordIssuedGrowCode(ownerFp: string, code: string, cap: number = 1): Promise<void> {
+ *  distinct-joiner cap (issuer-chosen at generation; default 1 = single-use, max 1000).
+ *  In-person codes are forced cap 1. Omit `channel` to preserve a prior mint channel on cap edits. */
+export async function recordIssuedGrowCode(
+  ownerFp: string,
+  code: string,
+  cap: number = 1,
+  channel?: GrowMintChannel,
+): Promise<void> {
   if (!ownerFp || !code) return;
   const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
   if (!map[ownerFp]) map[ownerFp] = {};
   const prior = map[ownerFp][code];
-  // Fresh window on (re)issue; preserve any joiners already accepted on this code. The cap is set from
-  // the issuer's choice at generation, clamped to [1, 1000].
+  const nextChannel: GrowMintChannel =
+    channel === 'in_person' || channel === 'remote'
+      ? channel
+      : prior?.channel === 'in_person'
+        ? 'in_person'
+        : 'remote';
+  // Fresh window on (re)issue; preserve any joiners already accepted on this code. In-person is
+  // always single-use; remote cap is the issuer's choice, clamped to [1, 1000].
   map[ownerFp][code] = {
     acceptUntil: Date.now() + R1_ACCEPTANCE_WINDOW_MS,
     accepted: prior?.accepted ?? [],
-    cap: clampCodeCap(cap),
+    cap: nextChannel === 'in_person' ? 1 : clampCodeCap(cap),
+    channel: nextChannel,
   };
   await saveIssuedCodeMap(map);
 }
@@ -958,4 +998,119 @@ export async function recordAcceptedJoiner(ownerFp: string, code: string, verifi
  */
 export async function isOutstandingIssuedCode(ownerFp: string, code: string): Promise<boolean> {
   return isCodeOutstanding(await loadIssuedCodeMap(), ownerFp, code, Date.now());
+}
+
+// ── Grow Gate arrivals (glass) ───────────────────────────────────────────────
+// Remote (and in-person) joiners land here until the owner ADMITS them as Known.
+// Not a contact yet — Galaxy / Contacts / PSI must not see them. The return-channel
+// still consumes the mailbox and marks the issued code accepted (cap / single-use).
+// Identity forge/restore "Gate" is a different machine (SoverentityFrontend).
+
+const GROW_GATE_ARRIVALS_KEY = 'grow_gate_arrivals';
+
+/** A solicited arrival waiting at the Gate — not yet a star. Owner-local only. */
+export interface GateArrival {
+  fingerprint: string;
+  displayName: string;
+  publicKeyArmored: string;
+  pqSigPublicKey?: string;
+  pqKemPublicKey?: string;
+  epoch: number;
+  inviteNonce: string;
+  mintChannel: GrowMintChannel;
+  arrivedAt: string;
+  /** inbound_joiner = giver consumed a return-channel; scanned_giver = joiner gated the card they scanned. */
+  direction: 'inbound_joiner' | 'scanned_giver';
+}
+
+/** ownerFp -> { peerFp -> arrival } */
+export type GateArrivalMap = Record<string, Record<string, GateArrival>>;
+
+function isGrowMintChannel(v: unknown): v is GrowMintChannel {
+  return v === 'in_person' || v === 'remote';
+}
+
+function normalizeArrival(raw: unknown): GateArrival | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
+  if (typeof r.publicKeyArmored !== 'string' || !r.publicKeyArmored) return null;
+  if (typeof r.inviteNonce !== 'string' || !r.inviteNonce) return null;
+  const epoch = Number.isSafeInteger(r.epoch) ? (r.epoch as number) : 0;
+  const direction = r.direction === 'scanned_giver' ? 'scanned_giver' : 'inbound_joiner';
+  const arrival: GateArrival = {
+    fingerprint: r.fingerprint,
+    displayName: typeof r.displayName === 'string' ? r.displayName : '',
+    publicKeyArmored: r.publicKeyArmored,
+    epoch,
+    inviteNonce: r.inviteNonce,
+    mintChannel: isGrowMintChannel(r.mintChannel) ? r.mintChannel : 'remote',
+    arrivedAt: typeof r.arrivedAt === 'string' ? r.arrivedAt : new Date().toISOString(),
+    direction,
+  };
+  if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
+  if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  return arrival;
+}
+
+async function loadRawGateMap(): Promise<GateArrivalMap> {
+  const setting = await txGet<{ key: string; value: string }>('settings', GROW_GATE_ARRIVALS_KEY);
+  if (!setting?.value) return {};
+  try {
+    const parsed = JSON.parse(setting.value);
+    return parsed && typeof parsed === 'object' ? (parsed as GateArrivalMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveGateMap(map: GateArrivalMap): Promise<void> {
+  await txPut('settings', { key: GROW_GATE_ARRIVALS_KEY, value: JSON.stringify(map) });
+}
+
+function normalizeGateMap(map: GateArrivalMap): GateArrivalMap {
+  const out: GateArrivalMap = {};
+  for (const [fp, bag] of Object.entries(map || {})) {
+    const kept: Record<string, GateArrival> = {};
+    for (const [peer, raw] of Object.entries(bag || {})) {
+      const arrival = normalizeArrival(raw);
+      if (arrival) kept[arrival.fingerprint || peer] = arrival;
+    }
+    if (Object.keys(kept).length > 0) out[fp] = kept;
+  }
+  return out;
+}
+
+/** Load Gate arrivals for one owner (not contacts — not on Galaxy). */
+export async function loadGateArrivals(ownerFp: string): Promise<GateArrival[]> {
+  if (!ownerFp) return [];
+  const map = normalizeGateMap(await loadRawGateMap());
+  const bag = map[ownerFp] || {};
+  return Object.values(bag).sort((a, b) => (a.arrivedAt < b.arrivedAt ? 1 : -1));
+}
+
+export async function getGateArrival(ownerFp: string, peerFp: string): Promise<GateArrival | null> {
+  if (!ownerFp || !peerFp) return null;
+  const map = normalizeGateMap(await loadRawGateMap());
+  return map[ownerFp]?.[peerFp] ?? null;
+}
+
+/** Idempotent by fingerprint: a retry overwrites the same arrival. */
+export async function enqueueGateArrival(ownerFp: string, arrival: GateArrival): Promise<void> {
+  if (!ownerFp) return;
+  const normalized = normalizeArrival(arrival);
+  if (!normalized) return;
+  const map = normalizeGateMap(await loadRawGateMap());
+  if (!map[ownerFp]) map[ownerFp] = {};
+  map[ownerFp][normalized.fingerprint] = normalized;
+  await saveGateMap(map);
+}
+
+export async function removeGateArrival(ownerFp: string, peerFp: string): Promise<void> {
+  if (!ownerFp || !peerFp) return;
+  const map = normalizeGateMap(await loadRawGateMap());
+  if (!map[ownerFp]?.[peerFp]) return;
+  delete map[ownerFp][peerFp];
+  if (Object.keys(map[ownerFp]).length === 0) delete map[ownerFp];
+  await saveGateMap(map);
 }
