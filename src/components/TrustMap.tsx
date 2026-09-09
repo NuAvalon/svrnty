@@ -1075,7 +1075,7 @@ export function TrustMap({
               position: 'absolute',
               left: 16,
               right: 16,
-              bottom: showSampleBtn ? 140 : 80,
+              bottom: showSampleBtn ? 156 : 92,
               textAlign: 'center',
               pointerEvents: 'none',
               fontFamily: E.fontSans,
@@ -1110,7 +1110,7 @@ export function TrustMap({
         ) : null}
 
         {showSampleBtn && (
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 78, zIndex: 7, display: 'flex', justifyContent: 'center' }}>
+          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 90, zIndex: 7, display: 'flex', justifyContent: 'center' }}>
             <button
               type="button"
               data-testid="trust-map-load-sample"
