@@ -9,6 +9,7 @@ import {
   isGrowGateRecord,
   joinerPersistPlan,
   parseTagList,
+  matchGateQuery,
   starsOnly,
 } from './grow-gate';
 import type { GateArrival } from '@/lib/identity/client-store';
@@ -36,6 +37,13 @@ test('clampArrivalName strips controls and bounds length', () => {
 test('parseTagList splits, trims, dedups, caps', () => {
   assert.deepEqual(parseTagList('core, Core, builders'), ['core', 'builders']);
   assert.equal(parseTagList(Array.from({ length: 20 }, (_, i) => `g${i}`).join(',')).length, 12);
+});
+
+test('matchGateQuery matches name, fingerprint, or invite nonce', () => {
+  assert.equal(matchGateQuery(arrival(), ''), true);
+  assert.equal(matchGateQuery(arrival(), 'bob'), true);
+  assert.equal(matchGateQuery(arrival(), 'CODE1'), true);
+  assert.equal(matchGateQuery(arrival(), 'zzzz'), false);
 });
 
 test('starsOnly drops grow_gate records', () => {
@@ -194,4 +202,6 @@ test('Gate copy does not claim a public verified badge or Trust', () => {
   assert.match(GATE_COPY.joinTogetherHint, /does not prove who they are/i);
   assert.match(GATE_COPY.remoteHint, /Verify stays yours/);
   assert.equal(GATE_COPY.admit, 'Admit as Known');
+  assert.match(GATE_COPY.latticeRemote, /arc on Galaxy/i);
+  assert.match(GATE_COPY.sphereHint, /known sphere/i);
 });

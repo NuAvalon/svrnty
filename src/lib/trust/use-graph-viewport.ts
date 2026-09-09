@@ -112,7 +112,7 @@ export function useGraphViewport(initial: Camera = DEFAULT) {
     if (e.button === 0 && (el.closest('[data-graph-node]') || el.closest('[data-graph-cluster]'))) {
       return;
     }
-    if (el.closest('button, a, input, textarea, [data-testid="trust-map-selection-bar"]')) {
+    if (el.closest('button, a, input, textarea, [data-testid="trust-map-selection-bar"], [data-testid="galaxy-gate-overlay"]')) {
       return;
     }
     // Record a possible pan but do NOT capture yet — a tap must reach the canvas.

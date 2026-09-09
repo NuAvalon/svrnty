@@ -42,4 +42,35 @@ test.describe('Grow Gate chrome', () => {
     await expect(dialog.getByText(/single-use/i).first()).toBeVisible();
     await expect(dialog.getByText(/mint it when they are in front of you/i)).toBeVisible();
   });
+
+  test('Galaxy membrane opens a searchable Gate overlay', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await genesis(page, 'Gate Galaxy');
+
+    await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+    const gate = page.getByTestId('galaxy-gate');
+    await expect(gate).toBeVisible();
+    await expect(gate).toHaveAttribute('data-count', '0');
+    await expect(page.getByTestId('trust-map')).toBeVisible();
+
+    await gate.click();
+    await expect(page.getByTestId('galaxy-gate-overlay')).toBeVisible();
+    await expect(page.getByTestId('galaxy-gate-search')).toBeVisible();
+    await expect(page.getByTestId('galaxy-gate-overlay-close')).toBeVisible();
+    await page.getByTestId('galaxy-gate-overlay-close').click();
+    await expect(page.getByTestId('galaxy-gate-overlay')).toHaveCount(0);
+  });
+
+  test('sample Known stars ignite on first appearance', async ({ page }) => {
+    test.setTimeout(90_000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await genesis(page, 'Gate Ignite');
+
+    await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+    await page.getByTestId('trust-map-load-sample').click();
+    await expect(page.locator('[data-testid="trust-node"][data-ignite="true"]').first()).toBeVisible({
+      timeout: 20_000,
+    });
+  });
 });

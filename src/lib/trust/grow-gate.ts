@@ -48,8 +48,10 @@ export const GATE_COPY = {
   joinTogetherHint:
     'This records that you checked the key together. It does not prove who they are in the world.',
   joinRemoteHint: 'They wait at your Gate. Known comes when you admit them.',
-  latticeRemote: 'They wait at your Gate — not a star yet. Open Grow to admit them.',
+  latticeRemote: 'They wait at your Gate — not a star yet. Open the arc on Galaxy to admit them.',
   latticeTogether: 'They are a star you Know. You marked this key on this device.',
+  search: 'Search the Gate',
+  sphereHint: 'Your known sphere. The arc is the Gate — tap to let them in.',
   spentInPerson: 'This in-person code was used. Generate a new one for the next person.',
   regen: 'Generate a new code',
   groupLabel: 'Group (optional)',
@@ -80,6 +82,16 @@ export function parseTagList(raw: string): string[] {
     if (out.length >= 12) break;
   }
   return out;
+}
+
+/** Search the Gate overlay — name, fingerprint, or invite code. */
+export function matchGateQuery(arrival: GateArrival, query: string): boolean {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const name = (arrival.displayName || '').toLowerCase();
+  const fp = (arrival.fingerprint || '').toLowerCase();
+  const nonce = (arrival.inviteNonce || '').toLowerCase();
+  return name.includes(q) || fp.includes(q) || nonce.includes(q);
 }
 
 /** Belt-and-suspenders: a contact accidentally flagged grow_gate is not a Galaxy star. */
