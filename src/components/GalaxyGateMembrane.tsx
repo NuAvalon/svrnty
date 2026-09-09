@@ -58,7 +58,7 @@ export function GalaxyGateMembrane({ count, onOpen }: Props) {
         />
         <text
           x="110"
-          y="18"
+          y="13"
           textAnchor="middle"
           fill={live ? E.accent : E.muted}
           fontSize="9"
@@ -70,7 +70,7 @@ export function GalaxyGateMembrane({ count, onOpen }: Props) {
         {live ? (
           <text
             x="110"
-            y="30"
+            y="26"
             textAnchor="middle"
             fill={E.text}
             fontSize="11"
@@ -81,7 +81,7 @@ export function GalaxyGateMembrane({ count, onOpen }: Props) {
         ) : null}
         {/* U-bowl = known sphere rim — vertical stems, not a smile */}
         <path
-          d="M 64 20 L 62 44 Q 110 72 158 44 L 156 20"
+          d="M 64 28 L 62 48 Q 110 74 158 48 L 156 28"
           fill="color-mix(in srgb, var(--se-accent) 10%, transparent)"
           stroke={E.accent}
           strokeWidth={1.7}

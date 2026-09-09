@@ -363,7 +363,7 @@ export function TrustMap({
   useEffect(() => {
     const el = viewportElRef.current;
     const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
-    applyFit(boundsOf([layout.self, ...layout.nodes], 28), aspect, fittedOnce.current ? 'limits' : 'reset');
+    applyFit(boundsOf([layout.self, ...layout.nodes], 48), aspect, fittedOnce.current ? 'limits' : 'reset');
     fittedOnce.current = true;
   }, [layout, fullscreen, applyFit, viewportElRef, world]);
 

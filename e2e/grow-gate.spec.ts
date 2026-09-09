@@ -113,7 +113,7 @@ test.describe('Grow Gate chrome', () => {
     await expect(gate).toBeVisible();
     await expect(gate).toHaveAttribute('data-count', '0');
     await expect(page.getByTestId('trust-map')).toBeVisible();
-    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_gate_membrane.png' });
+    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_usphere_empty.png' });
 
     await gate.click();
     await expect(page.getByTestId('galaxy-gate-overlay')).toBeVisible();
@@ -127,12 +127,12 @@ test.describe('Grow Gate chrome', () => {
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
     await expect(page.getByTestId('galaxy-gate')).toHaveAttribute('data-count', '1');
     await expect(page.getByTestId('galaxy-gate')).toHaveAttribute('aria-label', 'Gate, 1 waiting');
-    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_gate_waiting.png' });
+    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_usphere_waiting.png' });
     await page.getByTestId('galaxy-gate').click();
     await expect(page.getByTestId('grow-gate-arrival')).toContainText('River');
     await page.getByTestId('galaxy-gate-search').fill('River');
     await expect(page.getByTestId('grow-gate-arrival')).toBeVisible();
-    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_gate_overlay.png' });
+    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_usphere_overlay.png' });
   });
 
   test('sample Known stars ignite on first appearance', async ({ page }) => {
@@ -145,6 +145,6 @@ test.describe('Grow Gate chrome', () => {
     await expect(page.locator('[data-testid="trust-node"][data-ignite="true"]').first()).toBeVisible({
       timeout: 20_000,
     });
-    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_known_ignite.png' });
+    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_known_stars_ignite.png' });
   });
 });
