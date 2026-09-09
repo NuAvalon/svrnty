@@ -1035,7 +1035,9 @@ export function TrustMap({
         ) : null}
 
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2 }}>
-          {labels.map((l) => (
+          {labels
+            .filter((l) => l.textY > 10 && l.textY < vpSize.h - 88)
+            .map((l) => (
             <span
               key={l.id}
               style={{
@@ -1110,7 +1112,18 @@ export function TrustMap({
         ) : null}
 
         {showSampleBtn && (
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 90, zIndex: 7, display: 'flex', justifyContent: 'center' }}>
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: isEmpty ? 90 : undefined,
+              top: isEmpty ? undefined : 10,
+              zIndex: 7,
+              display: 'flex',
+              justifyContent: 'center',
+            }}
+          >
             <button
               type="button"
               data-testid="trust-map-load-sample"
