@@ -2,13 +2,12 @@ import { expect, type Page } from '@playwright/test';
 
 /** Empty-device genesis: Grow mints the card. Home has no Start door. */
 export async function openGrow(page: Page) {
+  await expect(page.getByTestId('top-nav-wordmark')).toBeVisible();
   const grow = page.getByTestId('nav-grow');
-  const menuBtn = page.getByTestId('top-nav-menu-btn');
-  await expect(grow.or(menuBtn)).toBeVisible();
   if (await grow.isVisible()) {
     await grow.click();
   } else {
-    await menuBtn.click();
+    await page.getByTestId('top-nav-menu-btn').click();
     await page.getByTestId('nav-grow-menu').click();
   }
 }
