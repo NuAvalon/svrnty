@@ -2,11 +2,18 @@
 //
 // Plaintext JSON backup is untrusted. Contacts must go through addContact
 // (fingerprint↔key) and land Known — never Trusted, never owner_verify.
+// Identity must bind before any write. Skipped rows are reported, not hidden.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { contactFromPlaintextBackup, type ContactRecord } from './client-store';
+import {
+  assertPlaintextBackupIdentityBinds,
+  contactFromPlaintextBackup,
+  formatPlaintextImportReport,
+  type ContactRecord,
+  type SovereignBackup,
+} from './client-store';
 
 const crafted = (): ContactRecord =>
   ({
@@ -43,10 +50,53 @@ test('plaintext import strips trust and owner_verify; lands Known', () => {
   assert.equal(out.name, 'Victim');
 });
 
-test('importAll persists contacts via addContact, not a raw contacts txPut', () => {
+test('formatPlaintextImportReport names kept Known and skipped mismatches', () => {
+  assert.equal(formatPlaintextImportReport({ kept: 12, skipped: 0 }), '12 landed Known');
+  assert.equal(
+    formatPlaintextImportReport({ kept: 12, skipped: 1 }),
+    "12 landed Known, 1 skipped (key didn't match)",
+  );
+});
+
+test('assertPlaintextBackupIdentityBinds refuses a forged fingerprint before any write', async () => {
+  const backup = {
+    version: '1.0',
+    exported_at: '2026-01-01T00:00:00.000Z',
+    identity: {
+      identity: {
+        fingerprint: 'aa'.repeat(32),
+        public_key: '-----BEGIN PGP PUBLIC KEY BLOCK-----\nFORGED\n-----END PGP PUBLIC KEY BLOCK-----',
+      },
+    },
+    contacts: [],
+  } as SovereignBackup;
+  await assert.rejects(
+    () => assertPlaintextBackupIdentityBinds(backup),
+    /fingerprint↔key binding failed/,
+  );
+});
+
+test('importAll binds identity, persists via addContact, reports skips, never raw-puts contacts', () => {
   const src = readFileSync(new URL('./client-store.ts', import.meta.url), 'utf8');
-  const importFn = src.slice(src.indexOf('export async function importAll'), src.indexOf('export async function importVaultContents'));
+  const importFn = src.slice(
+    src.indexOf('export async function assertPlaintextBackupIdentityBinds'),
+    src.indexOf('export async function importVaultContents'),
+  );
+  assert.match(importFn, /fingerprintMatchesKey/);
+  assert.match(importFn, /assertPlaintextBackupIdentityBinds/);
+  assert.match(importFn, /importPlaintextContacts/);
   assert.match(importFn, /addContact\(/);
   assert.match(importFn, /contactFromPlaintextBackup/);
+  assert.match(importFn, /kept/);
+  assert.match(importFn, /skipped/);
   assert.doesNotMatch(importFn, /txPut\('contacts'/);
+  assert.doesNotMatch(importFn, /console\.warn/);
+
+  const importAllFn = src.slice(
+    src.indexOf('export async function importAll'),
+    src.indexOf('export async function importVaultContents'),
+  );
+  const bindAt = importAllFn.indexOf('assertPlaintextBackupIdentityBinds');
+  const storeAt = importAllFn.indexOf('storeIdentity');
+  assert.ok(bindAt >= 0 && storeAt > bindAt, 'identity bind must run before storeIdentity');
 });

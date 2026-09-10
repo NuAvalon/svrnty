@@ -695,9 +695,59 @@ export function contactFromPlaintextBackup(
   return next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>;
 }
 
-export async function importAll(backup: SovereignBackup): Promise<string> {
-  const fingerprint = backup.identity?.identity?.fingerprint;
+export type PlaintextImportReport = {
+  fingerprint: string;
+  kept: number;
+  skipped: number;
+};
+
+/** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
+export function formatPlaintextImportReport(report: Pick<PlaintextImportReport, 'kept' | 'skipped'>): string {
+  const known = `${report.kept} landed Known`;
+  if (report.skipped <= 0) return known;
+  return `${known}, ${report.skipped} skipped (key didn't match)`;
+}
+
+/**
+ * Fail-closed identity binding for an untrusted plaintext backup. Refuse before any
+ * IndexedDB write so a forged fingerprint leaves no partial state.
+ */
+export async function assertPlaintextBackupIdentityBinds(backup: SovereignBackup): Promise<string> {
+  const fingerprint = (backup.identity?.identity?.fingerprint || '').trim();
   if (!fingerprint) throw new Error('Invalid backup: no fingerprint');
+  const identityPub = backup.identity?.identity?.public_key || '';
+  const identityPq = backup.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fingerprint, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
+    throw new Error(
+      'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
+    );
+  }
+  return fingerprint;
+}
+
+/** Persist plaintext contacts via addContact. Unbindable rows skip and are counted. */
+export async function importPlaintextContacts(
+  ownerFingerprint: string,
+  contacts: ContactRecord[] | undefined,
+): Promise<{ kept: number; skipped: number }> {
+  let kept = 0;
+  let skipped = 0;
+  for (const contact of contacts || []) {
+    try {
+      await addContact(ownerFingerprint, contactFromPlaintextBackup(contact));
+      kept++;
+    } catch {
+      skipped++;
+    }
+  }
+  return { kept, skipped };
+}
+
+export async function importAll(backup: SovereignBackup): Promise<PlaintextImportReport> {
+  const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
 
   await storeIdentity(fingerprint, backup.identity);
 
@@ -716,16 +766,10 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
 
   // Same persistence gate as importVaultContents: never raw-put a contact from
   // an untrusted file. Unbindable rows skip; the identity import still completes.
-  for (const contact of backup.contacts || []) {
-    try {
-      await addContact(fingerprint, contactFromPlaintextBackup(contact));
-    } catch (e) {
-      console.warn('[import] skipped a contact that failed to persist:', (e as Error)?.message);
-    }
-  }
+  const { kept, skipped } = await importPlaintextContacts(fingerprint, backup.contacts);
 
   await setActiveFingerprint(fingerprint);
-  return fingerprint;
+  return { fingerprint, kept, skipped };
 }
 
 /**

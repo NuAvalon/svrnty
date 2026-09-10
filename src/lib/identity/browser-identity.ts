@@ -330,7 +330,8 @@ export class BrowserIdentity {
   }
 
   async importSovereignBackup(backup: SovereignBackup): Promise<string> {
-    return importAll(backup);
+    const report = await importAll(backup);
+    return report.fingerprint;
   }
 
   // ── Encrypted .svrnty file operations ────────────────────────────
@@ -355,7 +356,8 @@ export class BrowserIdentity {
     passphrase: string,
   ): Promise<string> {
     const backup = await decryptBackup(file, passphrase);
-    return importAll(backup);
+    const report = await importAll(backup);
+    return report.fingerprint;
   }
 
   /**
@@ -372,7 +374,8 @@ export class BrowserIdentity {
     }
 
     // Legacy plaintext backup
-    return importAll(parsed as SovereignBackup);
+    const report = await importAll(parsed as SovereignBackup);
+    return report.fingerprint;
   }
 }
 
