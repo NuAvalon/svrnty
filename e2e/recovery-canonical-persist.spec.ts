@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { openGrow } from './helpers/genesis';
 
 // E2E persistence gate for the recovery-canonical launch-blocker (PR#110).
 //
@@ -70,13 +71,7 @@ function assertCanonical(snap: { idFp: string | null; sigPub: unknown; kemPub: u
 // the one-time recovery code (needed for the seed-restore path).
 async function mint(page: Page): Promise<{ fp: string; recoveryCode: string }> {
   await page.goto(APP);
-  const desktopGrow = page.getByTestId('nav-grow');
-  if (await desktopGrow.isVisible()) {
-    await desktopGrow.click();
-  } else {
-    await page.getByTestId('top-nav-menu-btn').click();
-    await page.getByTestId('nav-grow-menu').click();
-  }
+  await openGrow(page);
   await page.getByPlaceholder('Your name').fill(NAME);
   await page.getByPlaceholder('Encrypts your keys at rest').fill(UNLOCK_PW);
   await page.getByPlaceholder('Confirm passphrase').fill(UNLOCK_PW);
