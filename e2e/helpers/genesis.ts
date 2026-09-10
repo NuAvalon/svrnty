@@ -3,11 +3,13 @@ import { expect, type Page } from '@playwright/test';
 /** Empty-device genesis: Grow mints the card. Home has no Start door. */
 export async function genesis(page: Page, name: string) {
   await page.goto('/');
-  const desktopGrow = page.getByTestId('nav-grow');
-  if (await desktopGrow.isVisible()) {
-    await desktopGrow.click();
+  const grow = page.getByTestId('nav-grow');
+  const menuBtn = page.getByTestId('top-nav-menu-btn');
+  await expect(grow.or(menuBtn)).toBeVisible();
+  if (await grow.isVisible()) {
+    await grow.click();
   } else {
-    await page.getByTestId('top-nav-menu-btn').click();
+    await menuBtn.click();
     await page.getByTestId('nav-grow-menu').click();
   }
   await expect(page.getByPlaceholder('your@email.com')).toHaveCount(0);
