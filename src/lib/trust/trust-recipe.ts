@@ -28,7 +28,7 @@ export const TRUST_RECIPE_COPY = {
   verifiedHere:
     'You verified this key on this device. Nobody else sees that. Trust still needs them to verify you too.',
   growHint:
-    'Show this so they can join you. In person, they can become a star you Know and you can mark this key. Remote, they wait at the Gate until you admit them.',
+    'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
   mycelial:
     'The lattice knits; it doesn\'t recruit. New stars are people who joined you. Lines are ties you were meant to see.',
   gateStart: 'Start',

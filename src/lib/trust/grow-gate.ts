@@ -6,7 +6,9 @@
  *
  * Giver-side: the return-channel still verifies the joiner-response (fleet crypto unchanged)
  * and consumes the issued-code slot. The joiner is NOT addContact'd until Admit.
- * Joiner-side: remote confirm enqueues the giver here; in-person confirm admits+verifies locally.
+ * Joiner-side: remote confirm enqueues the giver here; in-person confirm admits
+ * as Known with in_person provenance. Verify is a later owner tap — scanning a
+ * code is not verify.
  *
  * Identity forge/restore "Gate" (SoverentityFrontend) is a different machine.
  */
@@ -46,10 +48,13 @@ export const GATE_COPY = {
   joinTogether: 'We were together',
   joinRemote: 'I joined remotely',
   joinTogetherHint:
-    'This records that you checked the key together. It does not prove who they are in the world.',
+    'They become Known, with in-person provenance. Scanning a code is not verify — that tap stays yours. This does not prove who they are in the world.',
   joinRemoteHint: 'They wait at your Gate. Known comes when you admit them.',
   latticeRemote: 'They wait at your Gate — not a star yet. Open the arc on Galaxy to admit them.',
-  latticeTogether: 'They are a star you Know. You marked this key on this device.',
+  latticeTogether:
+    'They are a star you Know. Verify when you are sure this key is the person you mean.',
+  joinPresenceHint:
+    'In person they can become Known now. Remote, they wait at your Gate. Verify is a later tap.',
   search: 'Search the Gate',
   sphereHint: 'Your known sphere. The arc is the Gate — tap to let them in.',
   spentInPerson: 'This in-person code was used. Generate a new one for the next person.',
@@ -235,9 +240,9 @@ export async function acceptJoinerAtGate(
 export function joinerPersistPlan(
   presence: 'in_person' | 'remote' | null,
   alreadyInBook: boolean,
-): 'already-known' | 'admit-verified' | 'enqueue-gate' | 'need-presence' {
+): 'already-known' | 'admit-known' | 'enqueue-gate' | 'need-presence' {
   if (alreadyInBook) return 'already-known';
-  if (presence === 'in_person') return 'admit-verified';
+  if (presence === 'in_person') return 'admit-known';
   if (presence === 'remote') return 'enqueue-gate';
   return 'need-presence';
 }

@@ -89,7 +89,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
     setName(a.displayName);
     setTags('');
     setNotes('');
-    setVerify(a.mintChannel === 'in_person' ? 'in_person' : 'none');
+    setVerify('none');
     setError(null);
   };
 

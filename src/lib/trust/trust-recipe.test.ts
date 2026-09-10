@@ -82,6 +82,7 @@ test('verify poetry is the name couplet', () => {
 test('growHint: in-person can be a star; remote waits at the Gate', () => {
   assert.match(TRUST_RECIPE_COPY.growHint, /In person/);
   assert.match(TRUST_RECIPE_COPY.growHint, /Gate/);
+  assert.match(TRUST_RECIPE_COPY.growHint, /later tap/);
 });
 
 test('recovery copy: give is present-tense honest, round-trip is Coming, constants kept', () => {

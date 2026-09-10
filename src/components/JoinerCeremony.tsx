@@ -45,8 +45,8 @@ import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/cerem
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isPQEncapLive } from '@/lib/claim-gates';
-import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { GATE_COPY, clampArrivalName, joinerPersistPlan } from '@/lib/trust/grow-gate';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { GATE_COPY, buildAdmitRecord, clampArrivalName, joinerPersistPlan } from '@/lib/trust/grow-gate';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -286,21 +286,30 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           emitContactChange({ ids: [], reason: 'ui-edit' });
           edgeId = peer.fingerprint;
         } else {
-          const verifyPatch = ownerVerifyPersistPatch(
-            { grow_invite_nonce: code, grow_mint_channel: 'in_person' },
-            'in_person',
+          // admit-known: in-person provenance, no owner_verify. Verify is a later owner tap.
+          const rec = buildAdmitRecord(
+            {
+              fingerprint: peer.fingerprint,
+              displayName: clampArrivalName(peer.name),
+              publicKeyArmored: peer.publicKey,
+              epoch: 0,
+              inviteNonce: code,
+              mintChannel: 'in_person',
+              arrivedAt: new Date().toISOString(),
+              direction: 'scanned_giver',
+              ...(peer.pq
+                ? {
+                    pqKemPublicKey: peer.pq.pq_kem_public_key,
+                    pqSigPublicKey: peer.pq.pq_sig_public_key,
+                  }
+                : {}),
+            },
+            { name: peer.name, verify: null },
           );
           const contact = await addContact(ownerFp, {
-            name: peer.name,
-            fingerprint: peer.fingerprint,
-            public_key: peer.publicKey,
-            // In-person confirm: Known + private verify (key belongs to the person you were with).
-            // Not Trust. Not a public badge.
-            trust_level: 'known',
+            ...rec,
             email: peer.email,
             ...pqFields,
-            owner_verify: verifyPatch.owner_verify,
-            metadata: verifyPatch.metadata,
           } as any);
           edgeId = contact.id;
         }
@@ -507,11 +516,9 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         {state.step === 'edge' && peer && (
           <div>
             <h2 style={headingStyle}>Make the edge live</h2>
-            <p style={subStyle}>
-              {GATE_COPY.joinPresence} {TRUST_RECIPE_COPY.verifyWhy}
-            </p>
+            <p style={subStyle}>{GATE_COPY.joinPresence}</p>
             <p style={{ ...subStyle, marginTop: 10, fontSize: 13 }}>
-              Verify means this fingerprint belongs to the person you mean — not that a name is true in the world.
+              {GATE_COPY.joinPresenceHint} {TRUST_RECIPE_COPY.verifyWhy}
             </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 18, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto' }}>
               <button

@@ -79,11 +79,20 @@ test('buildAdmitRecord without verify does not write owner_verify', () => {
   assert.equal(rec.trust_level, 'known');
 });
 
-test('joinerPersistPlan: in-person admits+verifies; remote gates; missing presence waits', () => {
-  assert.equal(joinerPersistPlan('in_person', false), 'admit-verified');
+test('joinerPersistPlan: in-person admits Known (not verified); remote gates; missing presence waits', () => {
+  assert.equal(joinerPersistPlan('in_person', false), 'admit-known');
   assert.equal(joinerPersistPlan('remote', false), 'enqueue-gate');
   assert.equal(joinerPersistPlan(null, false), 'need-presence');
   assert.equal(joinerPersistPlan('remote', true), 'already-known');
+  assert.equal(joinerPersistPlan('in_person', true), 'already-known');
+});
+
+test('in-person admit-known keeps provenance and does not write owner_verify', () => {
+  const rec = buildAdmitRecord(arrival({ mintChannel: 'in_person' }), { verify: null });
+  assert.equal(rec.trust_level, 'known');
+  assert.equal(rec.owner_verify, undefined);
+  assert.equal((rec.metadata as { grow_mint_channel?: string }).grow_mint_channel, 'in_person');
+  assert.equal((rec.metadata as { owner_verify?: unknown }).owner_verify, undefined);
 });
 
 test('arrivalFromPendingJoiner copies nonce + names and never upgrades channel', () => {
@@ -200,8 +209,11 @@ test('in-person mint channel follows the issued code, not the joiner claim', asy
 
 test('Gate copy does not claim a public verified badge or Trust', () => {
   assert.match(GATE_COPY.joinTogetherHint, /does not prove who they are/i);
+  assert.match(GATE_COPY.joinTogetherHint, /not verify/i);
   assert.match(GATE_COPY.remoteHint, /Verify stays yours/);
   assert.equal(GATE_COPY.admit, 'Admit as Known');
   assert.match(GATE_COPY.latticeRemote, /arc on Galaxy/i);
   assert.match(GATE_COPY.sphereHint, /known sphere/i);
+  assert.match(GATE_COPY.latticeTogether, /Know/);
+  assert.match(GATE_COPY.joinPresenceHint, /later tap/i);
 });
