@@ -993,8 +993,8 @@ export function SoverentityFrontend({
                 style={{
                   background: 'none',
                   border: 'none',
-                  padding: '8px 8px 0',
-                  color: 'rgba(201, 162, 113, 0.55)',
+                  padding: '12px 8px 4px',
+                  color: 'rgba(201, 162, 113, 0.78)',
                   fontSize: '12px',
                   fontFamily: SE.fontSans,
                   lineHeight: 1.5,
@@ -2295,7 +2295,7 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: '12px',
-    marginBottom: '24px',
+    marginBottom: '32px',
   },
   doorBtn: {
     display: 'flex',
