@@ -70,11 +70,17 @@ function assertCanonical(snap: { idFp: string | null; sigPub: unknown; kemPub: u
 // the one-time recovery code (needed for the seed-restore path).
 async function mint(page: Page): Promise<{ fp: string; recoveryCode: string }> {
   await page.goto(APP);
-  await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
+  const desktopGrow = page.getByTestId('nav-grow');
+  if (await desktopGrow.isVisible()) {
+    await desktopGrow.click();
+  } else {
+    await page.getByTestId('top-nav-menu-btn').click();
+    await page.getByTestId('nav-grow-menu').click();
+  }
   await page.getByPlaceholder('Your name').fill(NAME);
   await page.getByPlaceholder('Encrypts your keys at rest').fill(UNLOCK_PW);
   await page.getByPlaceholder('Confirm passphrase').fill(UNLOCK_PW);
-  await page.getByRole('button', { name: /^start$/i }).click();
+  await page.getByTestId('grow-forge-submit').click();
 
   // One-time recovery reveal — real in-browser keygen runs first, so wait generously. Capture the
   // recovery code before acknowledging (it is shown once).

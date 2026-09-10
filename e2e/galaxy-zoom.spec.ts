@@ -1,16 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { genesis } from './helpers/genesis';
 
 test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   test.setTimeout(90_000);
-  await page.goto('/');
-
-  await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-  await page.getByPlaceholder('Your name').fill('Zoomer E2E');
-  await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
-  await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /^start$/i }).click();
-  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
-  await page.getByRole('button', { name: /i have it/i }).click();
+  await genesis(page, 'Zoomer E2E');
 
   const welcome = page.getByRole('heading', { name: /welcome back/i });
   try {

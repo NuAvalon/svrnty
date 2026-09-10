@@ -66,7 +66,7 @@ export default function Home() {
   const [unlocking, setUnlocking] = useState(false);
   // Phase-1 identity switcher (UI-only): other on-device vaults, loaded EPHEMERALLY into component
   // state — never persisted as a new cross-identity link (the correlation-surface line). Empty in
-  // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
+  // the single-identity case. Resume offers unlock + switch, not mint.
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
   // CUR-6 — mount device-unlock chrome when a platform authenticator is present.
   // Pre-tap honesty (coming-soon vs live action) lives in BiometricUnlockButton.
@@ -81,6 +81,7 @@ export default function Home() {
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [gateCount, setGateCount] = useState(0);
+  const [requestGate, setRequestGate] = useState<'forge' | 'restore' | null>(null);
   // CUR-7: only offer lock when vault keys are encrypted at rest.
   const [canLock, setCanLock] = useState(false);
 
@@ -470,48 +471,49 @@ export default function Home() {
             }}
           />
 
-          {/* Phase-1 identity switcher (home screen) — UI only, no vault changes. Single-identity case
-              shows only "New Identity"; the switch list appears solely when 2+ vaults exist on-device. */}
+          {/* Resume: unlock this vault, switch to another on-device vault, or open a copy.
+              Minting a new card is Grow, not this screen. */}
           <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {otherIdentities.length > 0 && (
-              <div data-testid="switch-identity" style={{ marginBottom: '4px' }}>
-                <p style={{
-                  fontFamily: E.fontMono,
-                  fontSize: '10px',
-                  letterSpacing: '1px',
-                  textTransform: 'uppercase' as const,
-                  color: E.dim,
-                  marginBottom: '6px',
-                }}>
-                  Switch identity
-                </p>
-                {otherIdentities.map(o => (
-                  <button
-                    key={o.fingerprint}
-                    data-testid="switch-identity-option"
-                    onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
-                    style={{
-                      width: '100%',
-                      background: 'rgba(255,190,120,0.03)',
-                      border: `1px solid ${E.border}`,
-                      borderRadius: '8px',
-                      padding: '10px 14px',
-                      color: E.text,
-                      fontSize: '13px',
-                      fontFamily: E.fontSans,
-                      textAlign: 'left' as const,
-                      cursor: 'pointer',
-                      marginBottom: '6px',
-                    }}
-                  >
-                    {o.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div data-testid="switch-identity" style={{ marginBottom: '4px' }}>
+              <p style={{
+                fontFamily: E.fontMono,
+                fontSize: '10px',
+                letterSpacing: '1px',
+                textTransform: 'uppercase' as const,
+                color: E.dim,
+                marginBottom: '6px',
+              }}>
+                Switch
+              </p>
+              {otherIdentities.map(o => (
+                <button
+                  key={o.fingerprint}
+                  data-testid="switch-identity-option"
+                  onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
+                  style={{
+                    width: '100%',
+                    background: 'rgba(255,190,120,0.03)',
+                    border: `1px solid ${E.border}`,
+                    borderRadius: '8px',
+                    padding: '10px 14px',
+                    color: E.text,
+                    fontSize: '13px',
+                    fontFamily: E.fontSans,
+                    textAlign: 'left' as const,
+                    cursor: 'pointer',
+                    marginBottom: '6px',
+                  }}
+                >
+                  {o.name}
+                </button>
+              ))}
+            </div>
             <button
-              data-testid="new-identity-btn"
-              onClick={() => setAppState('gate')}
+              data-testid="open-another-vault"
+              onClick={() => {
+                setRequestGate('restore');
+                setAppState('gate');
+              }}
               style={{
                 width: '100%',
                 background: 'none',
@@ -525,7 +527,7 @@ export default function Home() {
                 cursor: 'pointer',
               }}
             >
-              + New Identity
+              Open another vault
             </button>
           </div>
         </div>
@@ -540,14 +542,21 @@ export default function Home() {
         hasIdentity={Boolean(identity)}
         canLock={canLock}
         onLock={handleLockNow}
-        onGrow={() => setGrowOpen(true)}
+        onGrow={() => {
+          if (!identity) setRequestGate('forge');
+          else setGrowOpen(true);
+        }}
         onRecovery={() => setRecoveryOpen(true)}
         gateCount={identity ? gateCount : 0}
       />
 
       <main className="max-w-6xl mx-auto">
         {!identity ? (
-          <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} />
+          <SoverentityFrontend
+            onIdentityUpdate={handleIdentityUpdate}
+            requestGate={requestGate}
+            onRequestGateConsumed={() => setRequestGate(null)}
+          />
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList

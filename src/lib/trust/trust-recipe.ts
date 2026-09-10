@@ -34,7 +34,8 @@ export const TRUST_RECIPE_COPY = {
     'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
   mycelial:
     'The lattice knits; it doesn\'t recruit. New stars are people who joined you. Lines are ties you were meant to see.',
-  gateStart: 'Start',
+  /** Mint lives on Grow, not a Start door. */
+  gateGrow: 'Grow',
   gateContinue: 'Continue',
   /** Site-bottom manifesto (the thing we must never lose). */
   manifestoWord: 'SVRNTY',

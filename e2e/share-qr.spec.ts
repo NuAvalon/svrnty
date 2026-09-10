@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { genesis } from './helpers/genesis';
 
 // Coverage for PR#42 — the Share-Identity QR tab now encodes the relay SHORT-LINK
 // (shareUrl(code,key) = https://…/c/<code>#<key>, ~scannable URL), NOT the 25KB signed card.
@@ -8,20 +9,6 @@ import { test, expect, type Page } from '@playwright/test';
 //
 // Robust genesis: fills the email field ONLY if it's present, so this passes BOTH on PR#42's
 // base (email still required) AND after the merge with the email-drop (PR#41, email field gone).
-async function genesis(page: Page, name: string) {
-  await page.goto('/');
-  await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-  await page.getByPlaceholder('Your name').fill(name);
-  const email = page.getByPlaceholder('your@email.com');
-  if (await email.count()) await email.fill('qr-coverage@example.test'); // present only pre-email-drop
-  await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
-  await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /^start$/i }).click();
-  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
-  await page.getByRole('button', { name: /i have it/i }).click();
-  await expect(page.getByRole('tab', { name: 'Contacts' })).toBeVisible({ timeout: 15_000 });
-}
-
 async function openShareQrTab(page: Page) {
   // Share identity lives on the Identity card (Living Address Book pass) — not Contacts.
   await page.getByRole('tab', { name: 'Identity' }).click();

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { genesis } from './helpers/genesis';
 
 test.describe('collapsible top-nav', () => {
   test('phone: wordmark stays, no horizontal scroll, Help is labelled in Menu', async ({
@@ -26,6 +27,7 @@ test.describe('collapsible top-nav', () => {
     await expect(page.getByTestId('top-nav-menu')).toBeVisible();
     await expect(page.getByTestId('nav-help-menu')).toBeVisible();
     await expect(page.getByTestId('nav-help-menu')).toHaveText(/Help/i);
+    await expect(page.getByTestId('nav-grow-menu')).toBeVisible();
 
     const after = await wordmark.boundingBox();
     expect(after?.x).toBe(before?.x);
@@ -45,6 +47,7 @@ test.describe('collapsible top-nav', () => {
     await expect(page.getByTestId('top-nav-desktop')).toBeVisible();
     await expect(page.getByTestId('top-nav-menu-btn')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Help' })).toBeVisible();
+    await expect(page.getByTestId('nav-grow')).toBeVisible();
   });
 
   test('phone after identity: Recovery is a labelled Menu item and opens the sheet', async ({
@@ -52,18 +55,7 @@ test.describe('collapsible top-nav', () => {
   }) => {
     test.setTimeout(90_000);
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.goto('/');
-
-    await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-    await page.getByPlaceholder('Your name').fill('Nav E2E');
-    await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
-    await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-    await page.getByRole('button', { name: /^start$/i }).click();
-    await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
-    await page.getByRole('button', { name: /i have it/i }).click();
-    await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({
-      timeout: 20_000,
-    });
+    await genesis(page, 'Nav E2E');
 
     await expect(page.getByTestId('nav-recovery')).toBeHidden();
     await page.getByTestId('top-nav-menu-btn').click();

@@ -115,15 +115,13 @@ export function TopNav({
       <div className="svrnty-topnav-desktop" data-testid="top-nav-desktop">
         {canLock && <LockNowButton onLock={onLock} />}
         <AppearanceToggle />
+        <NavPill
+          label={hasIdentity && gateCount > 0 ? `Grow · ${gateCount}` : 'Grow'}
+          onClick={onGrow}
+          testId="nav-grow"
+        />
         {hasIdentity ? (
-          <>
-            <NavPill
-              label={gateCount > 0 ? `Grow · ${gateCount}` : 'Grow'}
-              onClick={onGrow}
-              testId="nav-grow"
-            />
-            <NavPill label="Recovery" onClick={onRecovery} testId="nav-recovery" />
-          </>
+          <NavPill label="Recovery" onClick={onRecovery} testId="nav-recovery" />
         ) : null}
         <HelpGuide />
       </div>
@@ -192,6 +190,15 @@ export function TopNav({
             <button
               type="button"
               role="menuitem"
+              data-testid="nav-grow-menu"
+              onClick={() => openSheet(onGrow)}
+              style={menuItemStyle}
+            >
+              Grow{hasIdentity && gateCount > 0 ? ` · ${gateCount}` : ''}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
               data-testid="nav-help-menu"
               onClick={() => {
                 setMenuOpen(false);
@@ -211,19 +218,6 @@ export function TopNav({
               >
                 Lock
               </button>
-            ) : null}
-            {hasIdentity ? (
-              <>
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-testid="nav-grow-menu"
-                  onClick={() => openSheet(onGrow)}
-                  style={menuItemStyle}
-                >
-                  Grow{gateCount > 0 ? ` · ${gateCount}` : ''}
-                </button>
-              </>
             ) : null}
             <div style={{ padding: '6px 6px 2px' }}>
               <AppearanceToggle />

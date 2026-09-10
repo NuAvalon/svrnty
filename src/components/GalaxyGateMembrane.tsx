@@ -3,7 +3,7 @@
 /**
  * Galaxy membrane: U-bowl = your known sphere, black-hole well = Gate.
  * Fixed to the map viewport (does not pan with the camera). Waiting people
- * are not stars — they live at the event horizon until Admit.
+ * are not stars — they live as sparks on the accretion disk until Admit.
  */
 
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -14,8 +14,25 @@ type Props = {
   onOpen: () => void;
 };
 
+const SPARK_MAX = 12;
+
+function diskSparks(count: number): { x: number; y: number }[] {
+  const n = Math.min(Math.max(0, count), SPARK_MAX);
+  if (n === 0) return [];
+  const out: { x: number; y: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * Math.PI * 2 - Math.PI / 2;
+    out.push({
+      x: 120 + 82 * Math.cos(t),
+      y: 54 + 20 * Math.sin(t),
+    });
+  }
+  return out;
+}
+
 export function GalaxyGateMembrane({ count, onOpen }: Props) {
   const live = count > 0;
+  const sparks = diskSparks(count);
   return (
     <button
       type="button"
@@ -86,6 +103,17 @@ export function GalaxyGateMembrane({ count, onOpen }: Props) {
           strokeLinecap="round"
           style={live ? { animation: 'tm-pulse 1.8s ease-in-out infinite' } : undefined}
         />
+        {sparks.map((p, i) => (
+          <circle
+            key={`spark-${i}`}
+            data-testid="galaxy-gate-spark"
+            cx={p.x}
+            cy={p.y}
+            r={2.2}
+            fill={E.accent}
+            opacity={0.55}
+          />
+        ))}
         <text
           x="120"
           y="18"
@@ -97,18 +125,6 @@ export function GalaxyGateMembrane({ count, onOpen }: Props) {
         >
           GATE
         </text>
-        {live ? (
-          <text
-            x="120"
-            y="58"
-            textAnchor="middle"
-            fill={E.text}
-            fontSize="12"
-            fontFamily="inherit"
-          >
-            {count}
-          </text>
-        ) : null}
       </svg>
     </button>
   );

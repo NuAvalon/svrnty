@@ -21,7 +21,7 @@ const steps = [
   {
     title: 'Create a card, not an account',
     content: [
-      'On the gate: Start makes a new card. Continue opens a vault you already have.',
+      'Continue opens a vault you already have. New cards are minted from Grow — invite only.',
       'Enter your name and a passphrase that unlocks this device.',
       'This generates your keys. There is no recovery email. A card, not an account.',
       'Export a vault with an encryption password you set at export — that is not a website login.',
@@ -30,7 +30,7 @@ const steps = [
   {
     title: 'Grow the Galaxy',
     content: [
-      'Tap Grow. Show my code is your QR or short link. Scan / paste is how you join from theirs.',
+      'Tap Grow. If this device has no card yet, you mint one here. Show my code is how you invite; Scan / paste is how you join from theirs.',
       'In person mints a single-use code. Remote joiners wait at the Gate until you admit them as Known.',
       TRUST_RECIPE_COPY.mycelial,
       'Name them as you know them. Notes stay on this device.',

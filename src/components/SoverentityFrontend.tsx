@@ -36,6 +36,9 @@ interface SoverentityFrontendProps {
   appLockPrefs?: AppLockPrefs;
   onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
   onLockNow?: () => void;
+  /** Empty-device Grow or resume "open another vault" — consume after applying. */
+  requestGate?: 'forge' | 'restore' | null;
+  onRequestGateConsumed?: () => void;
 }
 
 type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
@@ -238,6 +241,8 @@ export function SoverentityFrontend({
   appLockPrefs,
   onAppLockPrefsChange,
   onLockNow,
+  requestGate,
+  onRequestGateConsumed,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
@@ -316,6 +321,12 @@ export function SoverentityFrontend({
       setIdentity(existingIdentity);
     }
   }, [existingIdentity]);
+
+  useEffect(() => {
+    if (!requestGate || identity) return;
+    setGateMode(requestGate);
+    onRequestGateConsumed?.();
+  }, [requestGate, identity, onRequestGateConsumed]);
 
   // Check for PQ keys when identity loads
   useEffect(() => {
@@ -942,37 +953,17 @@ export function SoverentityFrontend({
               <p style={s.gateSub}>
                 A card, not an account. Trust starts in the world.
               </p>
+              <p style={{ ...s.gateSub, marginTop: 10, fontSize: '0.88rem' }}>
+                Returning people Continue. New people arrive by invite — Grow.
+              </p>
             </div>
 
-            {/* Two Doors */}
+            {/* Continue only — mint lives on Grow */}
             <div style={s.doorContainer}>
-              <button
-                onClick={() => setGateMode('forge')}
-                style={s.doorBtn}
-                aria-label={`${TRUST_RECIPE_COPY.gateStart}. Generate a new cryptographic identity.`}
-                onMouseEnter={e => {
-                  const el = e.currentTarget;
-                  el.style.borderColor = 'var(--se-border-lit)';
-                  el.style.background = 'color-mix(in srgb, var(--se-accent) 12%, transparent)';
-                }}
-                onMouseLeave={e => {
-                  const el = e.currentTarget;
-                  el.style.borderColor = 'var(--se-border)';
-                  el.style.background = 'var(--se-surface)';
-                }}
-              >
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--se-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
-                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-                </svg>
-                <span style={s.doorTitle}>{TRUST_RECIPE_COPY.gateStart}</span>
-                <span style={s.doorDesc}>
-                  A living address book and social web. You own it. We don&apos;t want your data.
-                </span>
-              </button>
-
               <button
                 onClick={() => setGateMode('restore')}
                 style={s.doorBtn}
+                data-testid="gate-continue"
                 aria-label={`${TRUST_RECIPE_COPY.gateContinue}. Restore your identity from a vault file.`}
                 onMouseEnter={e => {
                   const el = e.currentTarget;
@@ -989,10 +980,9 @@ export function SoverentityFrontend({
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Restore from a copy.</span>
+                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>{TRUST_RECIPE_COPY.gateContinue}</span>
                 <span style={s.doorDesc}>
-                  Open an exported vault or backup file.
-                  You&apos;ll need the encryption password you set when you exported it.
+                  Open a vault you already have. Invites are Grow — not a second start door.
                 </span>
               </button>
             </div>
@@ -1027,10 +1017,10 @@ export function SoverentityFrontend({
                 <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateStart}</h2>
+            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateGrow}</h2>
             <p style={s.heroSub}>
-              A card, not an account. Generate a sovereign keypair. Your keys never leave your device.
-              Post-quantum-ready encryption. No server can read your data. No tracking.
+              Mint a card on this device. After this, people join only through Grow invites.
+              Your keys never leave your device. No server can read your data.
             </p>
           </div>
 
@@ -1072,6 +1062,7 @@ export function SoverentityFrontend({
           <button
             onClick={handleCreateIdentity}
             disabled={loading || !formData.name || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm}
+            data-testid="grow-forge-submit"
             style={{
               ...s.primaryBtn,
               opacity: loading || !formData.name || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm ? 0.5 : 1,
@@ -1082,7 +1073,7 @@ export function SoverentityFrontend({
                 <Spinner /> Generating keys...
               </span>
             ) : (
-              <span style={s.btnInner}>{TRUST_RECIPE_COPY.gateStart}</span>
+              <span style={s.btnInner}>{TRUST_RECIPE_COPY.gateGrow}</span>
             )}
           </button>
 

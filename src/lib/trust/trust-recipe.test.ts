@@ -69,9 +69,10 @@ test('fingerprint grouping is for compare-aloud, not a score', () => {
   assert.equal(GROW_INVITE_CAP, 7);
 });
 
-test('gate doors are Start and Continue', () => {
-  assert.equal(TRUST_RECIPE_COPY.gateStart, 'Start');
+test('home Continue is the only gate door; Grow mints', () => {
   assert.equal(TRUST_RECIPE_COPY.gateContinue, 'Continue');
+  assert.equal(TRUST_RECIPE_COPY.gateGrow, 'Grow');
+  assert.equal('gateStart' in TRUST_RECIPE_COPY, false);
 });
 
 test('verify poetry is the name couplet', () => {

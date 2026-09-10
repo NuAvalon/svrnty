@@ -1,6 +1,7 @@
 import { test, expect, type Page, type BrowserContext } from '@playwright/test';
 import path from 'path';
 import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtures/deposit-contact-update';
+import { genesis as mintCard } from './helpers/genesis';
 
 // ─────────────────────────────────────────────────────────────────────────────────────
 // svrnty 9/10 DEMO ARC (§9.7) — the whole story as one end-to-end journey.
@@ -41,18 +42,8 @@ const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 grays: Grace 
 
 // Beat 2 — genesis, as a reusable helper (mirrors identity.spec.ts / import.spec.ts). Each call runs
 // in a fresh context ⇒ empty IndexedDB, a real on-device identity built from scratch.
-async function genesis(page: Page, name: string, email: string) {
-  await page.goto('/');
-  await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-  // §1: genesis is name + passphrase ONLY — no email field, no verification.
-  await expect(page.getByPlaceholder('your@email.com')).toHaveCount(0);
-  await page.getByPlaceholder('Your name').fill(name);
-  await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
-  await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /^start$/i }).click();
-  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
-  await page.getByRole('button', { name: /i have it/i }).click();
-  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
+async function genesis(page: Page, name: string, _email?: string) {
+  await mintCard(page, name);
 }
 
 // Beat 1 — the gray sea: import a multi-contact vCard, see the dedup preview BEFORE any write

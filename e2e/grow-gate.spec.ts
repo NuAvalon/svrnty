@@ -1,20 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-
-async function genesis(page: Page, name: string) {
-  await page.goto('/');
-  await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-  await page.getByPlaceholder('Your name').fill(name);
-  const email = page.getByPlaceholder('your@email.com');
-  if (await email.count()) await email.fill('grow-gate@example.test');
-  await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
-  await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /^start$/i }).click();
-  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
-  await page.getByRole('button', { name: /i have it/i }).click();
-  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({
-    timeout: 15_000,
-  });
-}
+import { genesis } from './helpers/genesis';
 
 async function seedWaitingArrival(page: Page, name = 'River') {
   await page.evaluate(async (displayName) => {
@@ -127,6 +112,7 @@ test.describe('Grow Gate chrome', () => {
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
     await expect(page.getByTestId('galaxy-gate')).toHaveAttribute('data-count', '1');
     await expect(page.getByTestId('galaxy-gate')).toHaveAttribute('aria-label', 'Gate, 1 waiting');
+    await expect(page.getByTestId('galaxy-gate-spark')).toHaveCount(1);
     await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_usphere_waiting.png' });
     await page.getByTestId('galaxy-gate').click();
     await expect(page.getByTestId('grow-gate-arrival')).toContainText('River');
@@ -142,7 +128,7 @@ test.describe('Grow Gate chrome', () => {
 
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
     await page.getByTestId('trust-map-load-sample').click();
-    await expect(page.locator('[data-testid="trust-node"][data-ignite="true"]').first()).toBeVisible({
+    await expect(page.locator('[data-testid="trust-node"][data-rise="true"]').first()).toBeVisible({
       timeout: 20_000,
     });
     await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_known_stars_ignite.png' });

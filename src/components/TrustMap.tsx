@@ -150,6 +150,10 @@ function saveIgnited(owner: string, ids: Set<string>) {
   }
 }
 
+function wellWorld(cam: { x: number; y: number; w: number; h: number }) {
+  return { x: cam.x + cam.w / 2, y: cam.y + cam.h * 0.88 };
+}
+
 function forgetIgnited(owner: string, fp: string) {
   const s = loadIgnited(owner);
   if (!s.delete(fp)) return;
@@ -231,6 +235,9 @@ export function TrustMap({
   const [gateCount, setGateCount] = useState(0);
   const [gateOpen, setGateOpen] = useState(false);
   const [igniteIds, setIgniteIds] = useState<Set<string>>(() => new Set());
+  const [risePos, setRisePos] = useState<Map<string, { x: number; y: number }>>(() => new Map());
+  const camRef = useRef(cam);
+  camRef.current = cam;
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -344,6 +351,46 @@ export function TrustMap({
     });
     return { ...raw, nodes, topology: topo };
   }, [ownerFingerprint, ownerName, visibleContacts, world]);
+
+  const layoutNodesRef = useRef(layout.nodes);
+  layoutNodesRef.current = layout.nodes;
+  const igniteKey = [...igniteIds].sort().join('|');
+
+  useEffect(() => {
+    if (!igniteKey) {
+      setRisePos(new Map());
+      return;
+    }
+    const ids = igniteKey.split('|').filter(Boolean);
+    const ready = ids.every((id) => layoutNodesRef.current.some((n) => n.id === id));
+    if (!ready) return;
+    const reduced =
+      typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) {
+      setRisePos(new Map());
+      return;
+    }
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / IGNITE_MS);
+      const e = 1 - (1 - t) ** 3;
+      const well = wellWorld(camRef.current);
+      const next = new Map<string, { x: number; y: number }>();
+      for (const id of ids) {
+        const n = layoutNodesRef.current.find((nd) => nd.id === id);
+        if (!n) continue;
+        next.set(id, {
+          x: well.x + (n.x - well.x) * e,
+          y: well.y + (n.y - well.y) * e,
+        });
+      }
+      setRisePos(next);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [igniteKey, starKey]);
 
   useEffect(() => {
     if (!ownerFingerprint || layout.nodes.length === 0) return;
@@ -793,9 +840,9 @@ export function TrustMap({
           .tm-pending { animation: tm-pulse 1.8s ease-in-out infinite; }
           @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
           @keyframes tm-ignite {
-            0% { opacity: 0; transform: translateY(36px) scale(.2); }
-            42% { opacity: 1; transform: translateY(-10px) scale(1.22); }
-            100% { opacity: var(--tm-o,1); transform: translateY(0) scale(1); }
+            0% { opacity: 0.4; transform: scale(.22); }
+            42% { opacity: 1; transform: scale(1.18); }
+            100% { opacity: var(--tm-o,1); transform: scale(1); }
           }
           @keyframes tm-ignite-halo {
             0% { opacity: 0; stroke-width: 0; }
@@ -959,6 +1006,7 @@ export function TrustMap({
                   mutual={!!edge?.mutual?.reciprocal}
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
+                  draw={risePos.get(n.id)}
                   onSelect={handleNodeClick}
                 />
               );
@@ -1747,6 +1795,7 @@ function ContactNode({
   mutual,
   distress,
   ignite,
+  draw,
   onSelect,
 }: {
   node: LaidOutNode;
@@ -1757,10 +1806,13 @@ function ContactNode({
   mutual: boolean;
   distress: boolean;
   ignite: boolean;
+  draw?: { x: number; y: number };
   onSelect: (id: string, multi: boolean) => void;
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
   const trusted = node.state === 'trusted' && !pending;
+  const x = draw?.x ?? node.x;
+  const y = draw?.y ?? node.y;
   return (
     <g
       className={`tm-node${pending ? ' tm-pending' : ''}${ignite ? ' tm-ignite' : ''}`}
@@ -1774,19 +1826,19 @@ function ContactNode({
       {ignite && (
         <circle
           className="tm-ignite-halo"
-          cx={node.x}
-          cy={node.y}
+          cx={x}
+          cy={y}
           r={r + 10}
           fill="none"
           stroke={T.myEdge}
           strokeOpacity={0.8}
         />
       )}
-      {distress && <StarEmber x={node.x} y={node.y} r={r} />}
+      {distress && <StarEmber x={x} y={y} r={r} />}
       {trusted && (
         <circle
-          cx={node.x}
-          cy={node.y}
+          cx={x}
+          cy={y}
           r={r + (mutual ? 5 : 3.5)}
           fill="none"
           stroke={T.lit}
@@ -1802,8 +1854,9 @@ function ContactNode({
         data-mutual={mutual ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
-        cx={node.x}
-        cy={node.y}
+        data-rise={ignite && draw ? 'true' : 'false'}
+        cx={x}
+        cy={y}
         r={r}
         fill={nodeFill(node.state, pending)}
         stroke={picked ? E.accent : selected ? T.selfDot : nodeStroke(node.state, pending)}

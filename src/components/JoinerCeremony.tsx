@@ -36,6 +36,7 @@ import {
   lockSession,
   enqueueGateArrival,
 } from '@/lib/identity/client-store';
+import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -47,6 +48,8 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { GATE_COPY, buildAdmitRecord, clampArrivalName, joinerPersistPlan } from '@/lib/trust/grow-gate';
+import { EntropyMeter } from '@/components/recovery/EntropyMeter';
+import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -159,22 +162,37 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [shardState, setShardState] = useState<'idle' | 'accepting' | 'accepted' | 'exists'>('idle');
   const [shardMsg, setShardMsg] = useState<string>('');
 
+  const [awaitingGrow, setAwaitingGrow] = useState(false);
+  const [growName, setGrowName] = useState('');
+  const [growPass, setGrowPass] = useState('');
+  const [growConfirm, setGrowConfirm] = useState('');
+  const [growError, setGrowError] = useState('');
+  const [growBusy, setGrowBusy] = useState(false);
+  const [growRecovery, setGrowRecovery] = useState<{
+    seedPhrase: string;
+    identity: any;
+    shardCount: number;
+    threshold: number;
+  } | null>(null);
+  const [growAcked, setGrowAcked] = useState(false);
+  const [sessionFp, setSessionFp] = useState<string | null>(null);
+
   const startedRef = useRef(false);
 
   // --- Mount: get our identity, resolve + decrypt the relay, classify the payload. ---
   useEffect(() => {
     if (startedRef.current) return;
-    startedRef.current = true;
     let cancelled = false;
 
     (async () => {
       try {
-        const fp = await getActiveFingerprint();
+        const fp = sessionFp || (await getActiveFingerprint());
         if (cancelled) return;
         if (!fp) {
-          fail('No active identity found. Set up your identity on the main page first, then revisit this link.');
+          setAwaitingGrow(true);
           return;
         }
+        startedRef.current = true;
         setOwnerFp(fp);
         loadIdentity(fp)
           .then((id) => {
@@ -229,7 +247,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
     return () => {
       cancelled = true;
     };
-  }, [code, keyFragment, handshakeEstablished, fail]);
+  }, [code, keyFragment, handshakeEstablished, fail, sessionFp]);
 
   // --- Card ceremony actions ---
   const receiveCard = useCallback(() => {
@@ -377,6 +395,109 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       setShardState('idle');
     }
   }, [ownerFp]);
+
+  const mintFromInvite = async () => {
+    if (growBusy) return;
+    if (!growName.trim() || growPass.length < 12) {
+      setGrowError('Name and a 12+ character passphrase are required.');
+      return;
+    }
+    if (growPass !== growConfirm) {
+      setGrowError('Passphrases do not match.');
+      return;
+    }
+    setGrowError('');
+    setGrowBusy(true);
+    try {
+      const bi = getBrowserIdentity();
+      const result = await bi.generateIdentity(
+        { name: growName.trim(), email: '' },
+        { unlockPassphrase: growPass },
+      );
+      setGrowRecovery({
+        seedPhrase: result.seedPhrase,
+        identity: result.identity,
+        shardCount: result.shards?.length ?? 0,
+        threshold: result.shards?.[0]?.threshold ?? 3,
+      });
+    } catch (err: any) {
+      setGrowError(err?.message || 'Could not mint a card.');
+    } finally {
+      setGrowBusy(false);
+    }
+  };
+
+  if (awaitingGrow && growRecovery) {
+    const fp = growRecovery.identity?.identity?.fingerprint || '';
+    return (
+      <SoulSeedReveal
+        seedPhrase={growRecovery.seedPhrase}
+        fingerprint={fp}
+        threshold={growRecovery.threshold}
+        shardCount={growRecovery.shardCount}
+        acked={growAcked}
+        onAckChange={setGrowAcked}
+        onContinue={() => {
+          if (!fp || !growAcked) return;
+          setSessionFp(fp);
+          setAwaitingGrow(false);
+          setGrowRecovery(null);
+        }}
+      />
+    );
+  }
+
+  if (awaitingGrow) {
+    return (
+      <Shell>
+        <Badge tone="gold" label="You were invited" />
+        <h2 style={headingStyle}>Grow a card to join</h2>
+        <p style={subStyle}>
+          This link is how people enter. Mint a card on this device, then the invite continues.
+        </p>
+        {growError ? <p style={{ color: C.err, fontSize: 13 }}>{growError}</p> : null}
+        <label style={{ display: 'block', textAlign: 'left', fontSize: 11, letterSpacing: 1, color: C.faint, marginTop: 16 }}>
+          NAME
+        </label>
+        <input
+          type="text"
+          placeholder="Your name"
+          value={growName}
+          onChange={(e) => setGrowName(e.target.value)}
+          style={unlockInputStyle}
+        />
+        <label style={{ display: 'block', textAlign: 'left', fontSize: 11, letterSpacing: 1, color: C.faint, marginTop: 12 }}>
+          UNLOCK PASSPHRASE
+        </label>
+        <input
+          type="password"
+          placeholder="Encrypts your keys at rest"
+          value={growPass}
+          onChange={(e) => setGrowPass(e.target.value)}
+          style={unlockInputStyle}
+        />
+        <input
+          type="password"
+          placeholder="Confirm passphrase"
+          value={growConfirm}
+          onChange={(e) => setGrowConfirm(e.target.value)}
+          style={{ ...unlockInputStyle, marginTop: 8 }}
+        />
+        <div style={{ marginTop: 8, textAlign: 'left' }}>
+          <EntropyMeter value={growPass} label="Unlock strength" />
+        </div>
+        <button
+          type="button"
+          data-testid="grow-forge-submit"
+          disabled={growBusy || !growName.trim() || growPass.length < 12 || growPass !== growConfirm}
+          onClick={() => void mintFromInvite()}
+          style={{ ...primaryBtnStyle, marginTop: 18, opacity: growBusy ? 0.6 : 1 }}
+        >
+          {growBusy ? 'Generating keys…' : TRUST_RECIPE_COPY.gateGrow}
+        </button>
+      </Shell>
+    );
+  }
 
   // ============================ SHARD LINK — focused accept ============================
   if (kind === 'shard') {
