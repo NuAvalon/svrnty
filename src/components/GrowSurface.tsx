@@ -3,13 +3,15 @@
 /**
  * Grow — one surface for give + receive.
  *
- * Tab 1 "Show my code" hosts the existing GrowSheet body (mint + QR + share link).
- * Tab 2 "Scan / paste" hosts the existing JoinByCode body (ScanToJoin + paste).
- * JoinerCeremony still takes over full-screen when a valid invite is set (Tab 2
- * already branches this; we do not flatten it into the tab chrome).
+ * With a card: Tab 1 "Show my code" hosts GrowSheet (mint + QR + share link);
+ * Tab 2 "Scan / paste" hosts JoinByCode (ScanToJoin + paste).
  *
- * Consent: joining remains an invite, not instant — Tab 2 only CALLS JoinByCode /
- * ScanToJoin / JoinerCeremony unchanged.
+ * Without a card: join-only. Grow always links you to someone — paste or scan
+ * their invite. JoinerCeremony still takes over full-screen (and may mint a
+ * card from that invite). There is no disconnected mint on this surface.
+ *
+ * Consent: joining remains an invite, not instant — Scan / paste only CALLS
+ * JoinByCode / ScanToJoin / JoinerCeremony unchanged.
  */
 
 import { useEffect, useState } from 'react';
@@ -18,6 +20,7 @@ import { JoinByCode } from '@/components/JoinByCode';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 const TAB_SHOW = 'show';
 const TAB_SCAN = 'scan';
@@ -32,11 +35,12 @@ type Props = {
 };
 
 export function GrowSurface({ open, onClose, identity }: Props) {
-  const [tab, setTab] = useState(TAB_SHOW);
+  const hasCard = Boolean(identity?.identity?.fingerprint);
+  const [tab, setTab] = useState(hasCard ? TAB_SHOW : TAB_SCAN);
 
   useEffect(() => {
-    if (!open) setTab(TAB_SHOW);
-  }, [open]);
+    if (!open) setTab(hasCard ? TAB_SHOW : TAB_SCAN);
+  }, [open, hasCard]);
 
   if (!open) return null;
 
@@ -72,53 +76,80 @@ export function GrowSurface({ open, onClose, identity }: Props) {
           fontFamily: E.fontSans,
         }}
       >
-        <Tabs value={tab} onValueChange={setTab} className="w-full">
-          <TabsList
-            className="w-full"
-            style={{
-              background: 'rgba(30,20,10,.55)',
-              border: `1px solid ${E.border}`,
-              height: 'auto',
-              padding: 4,
-              fontFamily: E.fontSans,
-            }}
-          >
-            <TabsTrigger
-              value={TAB_SHOW}
-              data-testid="grow-tab-show"
-              className={tabTriggerClass}
-              style={{ color: E.muted, fontFamily: E.fontSans }}
+        {hasCard ? (
+          <Tabs value={tab} onValueChange={setTab} className="w-full">
+            <TabsList
+              className="w-full"
+              style={{
+                background: 'rgba(30,20,10,.55)',
+                border: `1px solid ${E.border}`,
+                height: 'auto',
+                padding: 4,
+                fontFamily: E.fontSans,
+              }}
             >
-              Show my code
-            </TabsTrigger>
-            <TabsTrigger
-              value={TAB_SCAN}
-              data-testid="grow-tab-scan"
-              className={tabTriggerClass}
-              style={{ color: E.muted, fontFamily: E.fontSans }}
-            >
-              Scan / paste
-            </TabsTrigger>
+              <TabsTrigger
+                value={TAB_SHOW}
+                data-testid="grow-tab-show"
+                className={tabTriggerClass}
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Show my code
+              </TabsTrigger>
+              <TabsTrigger
+                value={TAB_SCAN}
+                data-testid="grow-tab-scan"
+                className={tabTriggerClass}
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Scan / paste
+              </TabsTrigger>
             </TabsList>
 
-          {identity?.identity?.fingerprint ? (
-            <div className="mt-4">
-              <GrowGatePanel ownerFp={identity.identity.fingerprint} />
-            </div>
-          ) : null}
+            {identity?.identity?.fingerprint ? (
+              <div className="mt-4">
+                <GrowGatePanel ownerFp={identity.identity.fingerprint} />
+              </div>
+            ) : null}
 
-          {/* forceMount: keep the giver body mounted so switching tabs does not remint. */}
-          <TabsContent
-            value={TAB_SHOW}
-            forceMount
-            className="mt-4 data-[state=inactive]:hidden"
-          >
-            <GrowSheet open={open} onClose={onClose} identity={identity} embedded />
-          </TabsContent>
-          <TabsContent value={TAB_SCAN} className="mt-4">
+            {/* forceMount: keep the giver body mounted so switching tabs does not remint. */}
+            <TabsContent
+              value={TAB_SHOW}
+              forceMount
+              className="mt-4 data-[state=inactive]:hidden"
+            >
+              <GrowSheet open={open} onClose={onClose} identity={identity} embedded />
+            </TabsContent>
+            <TabsContent value={TAB_SCAN} className="mt-4">
+              <JoinByCode open={open} onClose={onClose} embedded />
+            </TabsContent>
+          </Tabs>
+        ) : (
+          <div data-testid="grow-join-only">
+            <p
+              style={{
+                margin: 0,
+                fontSize: 11,
+                letterSpacing: '0.2em',
+                textTransform: 'uppercase',
+                color: E.accent,
+              }}
+            >
+              {TRUST_RECIPE_COPY.gateGrow}
+            </p>
+            <p
+              style={{
+                margin: '10px 0 16px',
+                fontSize: 14,
+                color: E.muted,
+                lineHeight: 1.5,
+              }}
+            >
+              {TRUST_RECIPE_COPY.growAlwaysLinks}
+            </p>
             <JoinByCode open={open} onClose={onClose} embedded />
-          </TabsContent>
-        </Tabs>
+          </div>
+        )}
       </div>
     </div>
   );

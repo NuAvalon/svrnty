@@ -36,12 +36,12 @@ interface SoverentityFrontendProps {
   appLockPrefs?: AppLockPrefs;
   onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
   onLockNow?: () => void;
-  /** Empty-device Grow or resume "open another vault" — consume after applying. */
-  requestGate?: 'forge' | 'restore' | null;
+  /** Quiet new-lattice genesis, or resume "open another vault" — consume after applying. */
+  requestGate?: 'genesis' | 'restore' | null;
   onRequestGateConsumed?: () => void;
 }
 
-type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
+type GateMode = 'choose' | 'genesis' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
 
 // --- Constellation Background ---
 // Generates fixed node positions once (via useMemo) and animates with CSS.
@@ -954,11 +954,11 @@ export function SoverentityFrontend({
                 A card, not an account. Trust starts in the world.
               </p>
               <p style={{ ...s.gateSub, marginTop: 10, fontSize: '0.88rem' }}>
-                Returning people Continue. New people arrive by invite — Grow.
+                Returning people Continue. New people arrive by invite — Grow. Grow always attaches you to someone.
               </p>
             </div>
 
-            {/* Continue only — mint lives on Grow */}
+            {/* Continue is the door. Genesis is quiet — first card / fork, not Grow. */}
             <div style={s.doorContainer}>
               <button
                 onClick={() => setGateMode('restore')}
@@ -982,7 +982,29 @@ export function SoverentityFrontend({
                 </svg>
                 <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>{TRUST_RECIPE_COPY.gateContinue}</span>
                 <span style={s.doorDesc}>
-                  Open a vault you already have. Invites are Grow — not a second start door.
+                  Open a vault you already have. Invites are Grow — they always attach you to someone.
+                </span>
+              </button>
+              <button
+                type="button"
+                data-testid="lattice-genesis"
+                onClick={() => setGateMode('genesis')}
+                aria-label={`${TRUST_RECIPE_COPY.gateGenesis}. ${TRUST_RECIPE_COPY.gateGenesisHint}`}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: '8px 8px 0',
+                  color: 'rgba(201, 162, 113, 0.55)',
+                  fontSize: '12px',
+                  fontFamily: SE.fontSans,
+                  lineHeight: 1.5,
+                  cursor: 'pointer',
+                  textAlign: 'center' as const,
+                }}
+              >
+                {TRUST_RECIPE_COPY.gateGenesis}
+                <span style={{ display: 'block', marginTop: 4 }}>
+                  {TRUST_RECIPE_COPY.gateGenesisHint}
                 </span>
               </button>
             </div>
@@ -997,8 +1019,8 @@ export function SoverentityFrontend({
     );
   }
 
-  // --- Gate: Forge Identity ---
-  if (!identity && gateMode === 'forge') {
+  // --- Gate: genesis (first card / fork). Not Grow — Grow always attaches to someone. ---
+  if (!identity && gateMode === 'genesis') {
     return (
       <div style={s.outerWrap}>
         <div style={s.createPanel}>
@@ -1017,10 +1039,9 @@ export function SoverentityFrontend({
                 <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateGrow}</h2>
+            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateGenesis}</h2>
             <p style={s.heroSub}>
-              Mint a card on this device. After this, people join only through Grow invites.
-              Your keys never leave your device. No server can read your data.
+              {TRUST_RECIPE_COPY.gateGenesisHint} Your keys never leave your device. No server can read your data.
             </p>
           </div>
 
@@ -1062,7 +1083,7 @@ export function SoverentityFrontend({
           <button
             onClick={handleCreateIdentity}
             disabled={loading || !formData.name || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm}
-            data-testid="grow-forge-submit"
+            data-testid="lattice-genesis-submit"
             style={{
               ...s.primaryBtn,
               opacity: loading || !formData.name || unlockPassphrase.length < 12 || unlockPassphrase !== unlockConfirm ? 0.5 : 1,
@@ -1073,7 +1094,7 @@ export function SoverentityFrontend({
                 <Spinner /> Generating keys...
               </span>
             ) : (
-              <span style={s.btnInner}>{TRUST_RECIPE_COPY.gateGrow}</span>
+              <span style={s.btnInner}>{TRUST_RECIPE_COPY.gateGenesis}</span>
             )}
           </button>
 

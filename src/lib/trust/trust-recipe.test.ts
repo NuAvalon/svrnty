@@ -69,9 +69,12 @@ test('fingerprint grouping is for compare-aloud, not a score', () => {
   assert.equal(GROW_INVITE_CAP, 7);
 });
 
-test('home Continue is the only gate door; Grow mints', () => {
+test('home Continue is the only gate door; Grow always links; genesis is not Grow', () => {
   assert.equal(TRUST_RECIPE_COPY.gateContinue, 'Continue');
   assert.equal(TRUST_RECIPE_COPY.gateGrow, 'Grow');
+  assert.equal(TRUST_RECIPE_COPY.gateGenesis, 'New lattice');
+  assert.match(TRUST_RECIPE_COPY.gateGenesisHint, /Not Grow/);
+  assert.match(TRUST_RECIPE_COPY.growAlwaysLinks, /always links you to someone/);
   assert.equal('gateStart' in TRUST_RECIPE_COPY, false);
 });
 

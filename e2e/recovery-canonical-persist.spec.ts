@@ -1,5 +1,4 @@
 import { test, expect, type Page } from '@playwright/test';
-import { openGrow } from './helpers/genesis';
 
 // E2E persistence gate for the recovery-canonical launch-blocker (PR#110).
 //
@@ -71,11 +70,11 @@ function assertCanonical(snap: { idFp: string | null; sigPub: unknown; kemPub: u
 // the one-time recovery code (needed for the seed-restore path).
 async function mint(page: Page): Promise<{ fp: string; recoveryCode: string }> {
   await page.goto(APP);
-  await openGrow(page);
+  await page.getByTestId('lattice-genesis').click();
   await page.getByPlaceholder('Your name').fill(NAME);
   await page.getByPlaceholder('Encrypts your keys at rest').fill(UNLOCK_PW);
   await page.getByPlaceholder('Confirm passphrase').fill(UNLOCK_PW);
-  await page.getByTestId('grow-forge-submit').click();
+  await page.getByTestId('lattice-genesis-submit').click();
 
   // One-time recovery reveal — real in-browser keygen runs first, so wait generously. Capture the
   // recovery code before acknowledging (it is shown once).

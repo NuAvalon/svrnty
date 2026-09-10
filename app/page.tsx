@@ -81,7 +81,7 @@ export default function Home() {
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [gateCount, setGateCount] = useState(0);
-  const [requestGate, setRequestGate] = useState<'forge' | 'restore' | null>(null);
+  const [requestGate, setRequestGate] = useState<'genesis' | 'restore' | null>(null);
   // CUR-7: only offer lock when vault keys are encrypted at rest.
   const [canLock, setCanLock] = useState(false);
 
@@ -472,7 +472,7 @@ export default function Home() {
           />
 
           {/* Resume: unlock this vault, switch to another on-device vault, or open a copy.
-              Minting a new card is Grow, not this screen. */}
+              A disconnected mint is genesis (new lattice / fork), not Grow. */}
           <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             <div data-testid="switch-identity" style={{ marginBottom: '4px' }}>
               <p style={{
@@ -529,6 +529,30 @@ export default function Home() {
             >
               Open another vault
             </button>
+            <button
+              type="button"
+              data-testid="lattice-genesis"
+              onClick={() => {
+                setRequestGate('genesis');
+                setAppState('gate');
+              }}
+              style={{
+                width: '100%',
+                background: 'none',
+                border: 'none',
+                padding: '10px 8px 0',
+                color: E.dim,
+                fontSize: '11px',
+                fontFamily: E.fontSans,
+                lineHeight: 1.5,
+                cursor: 'pointer',
+              }}
+            >
+              {TRUST_RECIPE_COPY.gateGenesis}
+              <span style={{ display: 'block', marginTop: 4, letterSpacing: '0.02em' }}>
+                {TRUST_RECIPE_COPY.gateGenesisHint}
+              </span>
+            </button>
           </div>
         </div>
       </div>
@@ -542,10 +566,7 @@ export default function Home() {
         hasIdentity={Boolean(identity)}
         canLock={canLock}
         onLock={handleLockNow}
-        onGrow={() => {
-          if (!identity) setRequestGate('forge');
-          else setGrowOpen(true);
-        }}
+        onGrow={() => setGrowOpen(true)}
         onRecovery={() => setRecoveryOpen(true)}
         gateCount={identity ? gateCount : 0}
       />
@@ -783,23 +804,21 @@ export default function Home() {
         )}
       </main>
 
+      <GrowSurface
+        open={growOpen}
+        onClose={() => {
+          setGrowOpen(false);
+          void refreshContacts();
+        }}
+        identity={identity}
+      />
       {identity && (
-        <>
-        <GrowSurface
-          open={growOpen}
-          onClose={() => {
-            setGrowOpen(false);
-            void refreshContacts();
-          }}
-          identity={identity}
-        />
         <RecoverySheet
           open={recoveryOpen}
           onClose={() => setRecoveryOpen(false)}
           identity={identity}
           contacts={contacts}
         />
-        </>
       )}
 
       <footer

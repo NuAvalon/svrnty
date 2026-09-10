@@ -453,7 +453,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         <Badge tone="gold" label="You were invited" />
         <h2 style={headingStyle}>Grow a card to join</h2>
         <p style={subStyle}>
-          This link is how people enter. Mint a card on this device, then the invite continues.
+          This invite is the link. Mint a card on this device, then you join them.
         </p>
         {growError ? <p style={{ color: C.err, fontSize: 13 }}>{growError}</p> : null}
         <label style={{ display: 'block', textAlign: 'left', fontSize: 11, letterSpacing: 1, color: C.faint, marginTop: 16 }}>

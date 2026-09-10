@@ -32,11 +32,18 @@ export const TRUST_RECIPE_COPY = {
     'You verified this key on this device. Nobody else sees that. Trust still needs them to verify you too.',
   growHint:
     'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
+  /** Empty-device Grow: paste/scan an invite. There is no Grow without a link to someone. */
+  growAlwaysLinks:
+    'Grow always links you to someone. Paste or scan their invite.',
   mycelial:
     'The lattice knits; it doesn\'t recruit. New stars are people who joined you. Lines are ties you were meant to see.',
-  /** Mint lives on Grow, not a Start door. */
+  /** Invite surface — never a disconnected mint. */
   gateGrow: 'Grow',
   gateContinue: 'Continue',
+  /** First card / fork. Not Grow. The only unconnected card. */
+  gateGenesis: 'New lattice',
+  gateGenesisHint:
+    'First card or a fork. Not Grow — Grow always attaches you to someone.',
   /** Site-bottom manifesto (the thing we must never lose). */
   manifestoWord: 'SVRNTY',
   manifestoKeep: 'We must never lose it, and we must never give it away.',
