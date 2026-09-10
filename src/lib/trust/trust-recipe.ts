@@ -25,6 +25,9 @@ export const TRUST_RECIPE_COPY = {
     'Only you see whom you\'ve verified. Nobody else gets a badge. You only need this step if you want to Trust them — and they must do the same on their side.',
   verifyInPerson: 'In person',
   verifyOtherChannel: 'Another channel',
+  verifyConfirm: "Yes — I scanned this from their phone, it's them",
+  verifyConfirmBody:
+    'A camera scan is provenance. This tap is verify — you are sure this key is the person you mean.',
   verifiedHere:
     'You verified this key on this device. Nobody else sees that. Trust still needs them to verify you too.',
   growHint:

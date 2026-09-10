@@ -40,6 +40,8 @@ export const GATE_COPY = {
   admit: 'Admit as Known',
   dismiss: 'Dismiss',
   inPerson: 'In person',
+  scannedInPerson: 'scanned in person',
+  verifiedMark: 'verified',
   remote: 'Remote',
   inPersonHint:
     'Single-use. Mint this when they are in front of you. After they join, generate a new code.',
@@ -56,12 +58,11 @@ export const GATE_COPY = {
   joinPresenceHint:
     'In person they can become Known now. Remote, they wait at your Gate. Verify is a later tap.',
   search: 'Search the Gate',
-  sphereHint: 'Your known sphere. The arc is the Gate — tap to let them in.',
+  sphereHint: 'Your known sphere. The hole is the Gate — tap to let them in.',
   spentInPerson: 'This in-person code was used. Generate a new one for the next person.',
   regen: 'Generate a new code',
   groupLabel: 'Group (optional)',
   notesLabel: 'Note (optional)',
-  verifyNone: 'Don’t mark verify yet',
   provenance: 'Joined from',
 } as const;
 
@@ -97,6 +98,19 @@ export function matchGateQuery(arrival: GateArrival, query: string): boolean {
   const fp = (arrival.fingerprint || '').toLowerCase();
   const nonce = (arrival.inviteNonce || '').toLowerCase();
   return name.includes(q) || fp.includes(q) || nonce.includes(q);
+}
+
+/**
+ * Owner-local glass mark. Scan provenance is never "verified".
+ * `verified` only after the explicit confirm tap.
+ */
+export function ownerLocalBadge(opts: {
+  mintChannel?: string | null;
+  verified: boolean;
+}): { kind: 'verified' | 'scanned' | null; label: string } {
+  if (opts.verified) return { kind: 'verified', label: GATE_COPY.verifiedMark };
+  if (opts.mintChannel === 'in_person') return { kind: 'scanned', label: GATE_COPY.scannedInPerson };
+  return { kind: null, label: '' };
 }
 
 /** Belt-and-suspenders: a contact accidentally flagged grow_gate is not a Galaxy star. */

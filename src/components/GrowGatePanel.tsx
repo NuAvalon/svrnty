@@ -59,7 +59,6 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
   const [name, setName] = useState('');
   const [tags, setTags] = useState('');
   const [notes, setNotes] = useState('');
-  const [verify, setVerify] = useState<'none' | 'in_person' | 'other_channel'>('none');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,7 +88,6 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
     setName(a.displayName);
     setTags('');
     setNotes('');
-    setVerify('none');
     setError(null);
   };
 
@@ -103,7 +101,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
         name,
         tags: parseTagList(tags),
         notes,
-        verify: verify === 'none' ? null : verify,
+        verify: null,
       });
       setFocus(null);
       await refresh();
@@ -156,7 +154,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       </p>
       <h3 style={{ margin: '8px 0 0', fontSize: 18, fontWeight: 400, color: E.text }}>Admit as Known</h3>
       <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, lineHeight: 1.5 }}>
-        {TRUST_RECIPE_COPY.verifyWhy} Verify is private. Trust is still mutual, later.
+        {TRUST_RECIPE_COPY.verifyWhy} Admit is Known. Verify is a later tap on the star.
       </p>
 
       <label style={{ display: 'block', marginTop: 14, fontSize: 12, color: E.muted }}>Name</label>
@@ -180,7 +178,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
         {GATE_COPY.provenance}
       </p>
       <p style={{ margin: '4px 0 0', fontSize: 12, color: E.muted }}>
-        {focus.mintChannel === 'in_person' ? GATE_COPY.inPerson : GATE_COPY.remote}
+        {focus.mintChannel === 'in_person' ? GATE_COPY.scannedInPerson : GATE_COPY.remote}
         {' · '}
         {focus.inviteNonce}
       </p>
@@ -200,23 +198,6 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
         rows={3}
         style={{ ...fieldStyle, resize: 'vertical' }}
       />
-
-      <p style={{ margin: '14px 0 6px', fontSize: 12, color: E.muted }}>Verify this key? (optional)</p>
-      {(
-        [
-          ['none', GATE_COPY.verifyNone],
-          ['in_person', TRUST_RECIPE_COPY.verifyInPerson],
-          ['other_channel', TRUST_RECIPE_COPY.verifyOtherChannel],
-        ] as const
-      ).map(([v, label]) => (
-        <label
-          key={v}
-          style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, fontSize: 13, color: E.text }}
-        >
-          <input type="radio" name="gate-verify" checked={verify === v} onChange={() => setVerify(v)} />
-          {label}
-        </label>
-      ))}
 
       {error && <p style={{ color: E.danger, fontSize: 13, marginTop: 12 }}>{error}</p>}
 
@@ -285,7 +266,7 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
               >
                 <span style={{ display: 'block', color: E.text }}>{a.displayName || 'Unknown'}</span>
                 <span style={{ display: 'block', marginTop: 4, fontSize: 11, color: E.dim }}>
-                  {a.mintChannel === 'in_person' ? GATE_COPY.inPerson : GATE_COPY.remote}
+                  {a.mintChannel === 'in_person' ? GATE_COPY.scannedInPerson : GATE_COPY.remote}
                   {' · '}
                   {a.inviteNonce}
                 </span>

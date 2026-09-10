@@ -59,6 +59,7 @@ import {
   formatFingerprintForVerify,
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
+import { ownerLocalBadge } from '@/lib/trust/grow-gate';
 import { VivreBurn, StarEmber, VivreCaution } from '@/components/VivreBurn';
 import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
@@ -413,6 +414,7 @@ export function TrustMap({
   const [showHistory, setShowHistory] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [verifyConfirm, setVerifyConfirm] = useState<'in_person' | 'other_channel' | null>(null);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -430,6 +432,7 @@ export function TrustMap({
     setShowHistory(false);
     setActionNote(null);
     setConfirmKind(null);
+    setVerifyConfirm(null);
   }, []);
 
   const confirmTarget: TrustActionTarget | null = focusEdge
@@ -1077,7 +1080,7 @@ export function TrustMap({
               position: 'absolute',
               left: 16,
               right: 16,
-              bottom: showSampleBtn ? 156 : 92,
+              bottom: showSampleBtn ? 168 : 104,
               textAlign: 'center',
               pointerEvents: 'none',
               fontFamily: E.fontSans,
@@ -1117,7 +1120,7 @@ export function TrustMap({
               position: 'absolute',
               left: 0,
               right: 0,
-              bottom: isEmpty ? 90 : undefined,
+              bottom: isEmpty ? 104 : undefined,
               top: isEmpty ? undefined : 10,
               zIndex: 7,
               display: 'flex',
@@ -1163,7 +1166,7 @@ export function TrustMap({
           <span style={{ color: E.accent2 }}>● trusted</span>
           <span>○ known</span>
           <span style={{ color: E.accent }}>∪ known sphere</span>
-          <span style={{ color: E.accent }}>⏜ Gate</span>
+          <span style={{ color: E.accent }}>⊙ Gate</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
           <span style={{ color: E.accent2 }}>═ mutual</span>
           <span style={{ color: E.accent2 }}>= peer bond</span>
@@ -1181,7 +1184,7 @@ export function TrustMap({
         }}
       >
         Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
-        Glow is the trust overlay. The U is your known sphere; the arc above it is the Gate.
+        Glow is the trust overlay. The U is your known sphere; the hole is the Gate.
         Dashed gold is a group you named — not know, not trust.
       </p>
 
@@ -1254,6 +1257,28 @@ export function TrustMap({
                   >
                     {describeAlive(focusNode, focusEdge)}
                   </p>
+                  {(() => {
+                    const mark = ownerLocalBadge({
+                      mintChannel: focusEdge.metadata?.grow_mint_channel as string | undefined,
+                      verified: ownerHasVerified(focusEdge),
+                    });
+                    if (!mark.kind) return null;
+                    return (
+                      <p
+                        data-testid="star-provenance"
+                        data-kind={mark.kind}
+                        style={{
+                          margin: '6px 0 0',
+                          fontSize: 11,
+                          letterSpacing: '0.08em',
+                          textTransform: 'lowercase',
+                          color: mark.kind === 'verified' ? E.accent2 : E.muted,
+                        }}
+                      >
+                        {mark.label}
+                      </p>
+                    );
+                  })()}
                 </div>
                 <button
                   type="button"
@@ -1459,26 +1484,42 @@ export function TrustMap({
                   />
                 )}
                 {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
+                  verifyConfirm ? (
+                    <div data-testid="verify-confirm" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <p style={{ margin: 0, fontSize: 12, color: E.dim, lineHeight: 1.45 }}>
+                        {TRUST_RECIPE_COPY.verifyConfirmBody}
+                      </p>
+                      <ActionBtn
+                        testId="verify-confirm-yes"
+                        label={
+                          verifyConfirm === 'in_person'
+                            ? TRUST_RECIPE_COPY.verifyConfirm
+                            : TRUST_RECIPE_COPY.verifyOtherChannel
+                        }
+                        primary
+                        onClick={() => {
+                          const method = verifyConfirm;
+                          setVerifyConfirm(null);
+                          void runAction(
+                            () => onOwnerVerify(focusEdge, method),
+                            'Saved here only.',
+                          );
+                        }}
+                      />
+                      <ActionBtn label="Not yet" onClick={() => setVerifyConfirm(null)} />
+                    </div>
+                  ) : (
                   <>
                     <ActionBtn
                       label={TRUST_RECIPE_COPY.verifyInPerson}
-                      onClick={() =>
-                        void runAction(
-                          () => onOwnerVerify(focusEdge, 'in_person'),
-                          'Saved here only.',
-                        )
-                      }
+                      onClick={() => setVerifyConfirm('in_person')}
                     />
                     <ActionBtn
                       label={TRUST_RECIPE_COPY.verifyOtherChannel}
-                      onClick={() =>
-                        void runAction(
-                          () => onOwnerVerify(focusEdge, 'other_channel'),
-                          'Saved here only.',
-                        )
-                      }
+                      onClick={() => setVerifyConfirm('other_channel')}
                     />
                   </>
+                  )
                 )}
                 {!isPending(focusEdge) && onTrustToggle && (
                   <ActionBtn
@@ -1658,16 +1699,19 @@ function ActionBtn({
   primary,
   danger,
   trailing,
+  testId,
 }: {
   label: string;
   onClick: () => void;
   primary?: boolean;
   danger?: boolean;
   trailing?: React.ReactNode;
+  testId?: string;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       onClick={onClick}
       style={{
         fontSize: 12,

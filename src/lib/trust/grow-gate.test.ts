@@ -10,6 +10,7 @@ import {
   joinerPersistPlan,
   parseTagList,
   matchGateQuery,
+  ownerLocalBadge,
   starsOnly,
 } from './grow-gate';
 import type { GateArrival } from '@/lib/identity/client-store';
@@ -93,6 +94,25 @@ test('in-person admit-known keeps provenance and does not write owner_verify', (
   assert.equal(rec.owner_verify, undefined);
   assert.equal((rec.metadata as { grow_mint_channel?: string }).grow_mint_channel, 'in_person');
   assert.equal((rec.metadata as { owner_verify?: unknown }).owner_verify, undefined);
+});
+
+test('ownerLocalBadge: scan is provenance; verified only after the explicit tap', () => {
+  assert.deepEqual(ownerLocalBadge({ mintChannel: 'in_person', verified: false }), {
+    kind: 'scanned',
+    label: 'scanned in person',
+  });
+  assert.deepEqual(ownerLocalBadge({ mintChannel: 'in_person', verified: true }), {
+    kind: 'verified',
+    label: 'verified',
+  });
+  assert.deepEqual(ownerLocalBadge({ mintChannel: 'remote', verified: false }), {
+    kind: null,
+    label: '',
+  });
+  assert.deepEqual(ownerLocalBadge({ mintChannel: 'remote', verified: true }), {
+    kind: 'verified',
+    label: 'verified',
+  });
 });
 
 test('arrivalFromPendingJoiner copies nonce + names and never upgrades channel', () => {
@@ -213,7 +233,9 @@ test('Gate copy does not claim a public verified badge or Trust', () => {
   assert.match(GATE_COPY.remoteHint, /Verify stays yours/);
   assert.equal(GATE_COPY.admit, 'Admit as Known');
   assert.match(GATE_COPY.latticeRemote, /arc on Galaxy/i);
-  assert.match(GATE_COPY.sphereHint, /known sphere/i);
+  assert.match(GATE_COPY.sphereHint, /hole is the Gate/i);
+  assert.equal(GATE_COPY.scannedInPerson, 'scanned in person');
+  assert.equal(GATE_COPY.verifiedMark, 'verified');
   assert.match(GATE_COPY.latticeTogether, /Know/);
   assert.match(GATE_COPY.joinPresenceHint, /later tap/i);
 });

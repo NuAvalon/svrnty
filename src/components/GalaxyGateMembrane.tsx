@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Galaxy membrane: U-bowl = your known sphere, arc above = Gate.
+ * Galaxy membrane: U-bowl = your known sphere, black-hole well = Gate.
  * Fixed to the map viewport (does not pan with the camera). Waiting people
- * are not stars — they live behind this arc until Admit.
+ * are not stars — they live at the event horizon until Admit.
  */
 
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -30,64 +30,85 @@ export function GalaxyGateMembrane({ count, onOpen }: Props) {
       style={{
         position: 'absolute',
         left: '50%',
-        bottom: 4,
+        bottom: 2,
         transform: 'translateX(-50%)',
         zIndex: 8,
-        width: 228,
-        height: 78,
+        width: 248,
+        height: 96,
         padding: 0,
         border: 'none',
         background: 'transparent',
         cursor: 'pointer',
       }}
     >
-      <svg viewBox="0 0 220 78" width="220" height="78" aria-hidden="true">
-        {/* Arc = Gate (threshold, not a star) */}
+      <svg viewBox="0 0 240 96" width="248" height="96" aria-hidden="true">
+        <defs>
+          <radialGradient id="galaxy-gate-well" cx="50%" cy="42%" r="70%">
+            <stop offset="0%" stopColor="#000000" />
+            <stop offset="55%" stopColor="#070504" />
+            <stop offset="100%" stopColor="#1a0e06" />
+          </radialGradient>
+          <radialGradient id="galaxy-gate-photon" cx="50%" cy="50%" r="50%">
+            <stop offset="70%" stopColor="transparent" />
+            <stop offset="100%" stopColor={live ? E.accent : E.borderLit} />
+          </radialGradient>
+        </defs>
+        {/* Known-sphere rim — faint U behind the hole */}
         <path
-          d="M 22 32 Q 110 4 198 32"
+          d="M 52 34 L 50 58 Q 120 90 190 58 L 188 34"
+          fill="none"
+          stroke={E.accent}
+          strokeOpacity={0.35}
+          strokeWidth={1.4}
+          strokeLinecap="round"
+        />
+        {/* Event horizon well */}
+        <ellipse cx="120" cy="62" rx="74" ry="28" fill="url(#galaxy-gate-well)" />
+        <ellipse
+          cx="120"
+          cy="62"
+          rx="74"
+          ry="28"
+          fill="url(#galaxy-gate-photon)"
+          opacity={live ? 0.55 : 0.28}
+        />
+        <ellipse cx="120" cy="66" rx="36" ry="12" fill="#000000" />
+        {/* Accretion disk = Gate threshold */}
+        <ellipse
+          cx="120"
+          cy="54"
+          rx="82"
+          ry="20"
           fill="none"
           stroke={live ? E.accent : E.borderLit}
-          strokeWidth={live ? 1.9 : 1.2}
+          strokeWidth={live ? 1.8 : 1.15}
           strokeDasharray={live ? '5 4' : '3 4'}
           strokeLinecap="round"
-          style={
-            live
-              ? { animation: 'tm-pulse 1.8s ease-in-out infinite' }
-              : undefined
-          }
+          style={live ? { animation: 'tm-pulse 1.8s ease-in-out infinite' } : undefined}
         />
         <text
-          x="110"
-          y="13"
+          x="120"
+          y="18"
           textAnchor="middle"
           fill={live ? E.accent : E.muted}
           fontSize="9"
-          letterSpacing="2.6"
+          letterSpacing="2.8"
           fontFamily="inherit"
         >
           GATE
         </text>
         {live ? (
           <text
-            x="110"
-            y="26"
+            x="120"
+            y="58"
             textAnchor="middle"
             fill={E.text}
-            fontSize="11"
+            fontSize="12"
             fontFamily="inherit"
           >
             {count}
           </text>
         ) : null}
-        {/* U-bowl = known sphere rim — vertical stems, not a smile */}
-        <path
-          d="M 64 28 L 62 48 Q 110 74 158 48 L 156 28"
-          fill="color-mix(in srgb, var(--se-accent) 10%, transparent)"
-          stroke={E.accent}
-          strokeWidth={1.7}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
       </svg>
     </button>
   );

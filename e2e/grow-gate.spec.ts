@@ -113,7 +113,7 @@ test.describe('Grow Gate chrome', () => {
     await expect(gate).toBeVisible();
     await expect(gate).toHaveAttribute('data-count', '0');
     await expect(page.getByTestId('trust-map')).toBeVisible();
-    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_usphere_empty.png' });
+    await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_gate_blackhole.png' });
 
     await gate.click();
     await expect(page.getByTestId('galaxy-gate-overlay')).toBeVisible();
