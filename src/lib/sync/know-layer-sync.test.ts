@@ -191,6 +191,22 @@ test('getKnownPeers returns only the open_visibility subset (with real fingerpri
   assert.deepEqual(fps, ['peer-open-1', 'peer-open-2']); // both consent shapes, no closed, no keyless
 });
 
+test('getKnownPeers excludes grow_gate rows even if open_visibility leaked on', async () => {
+  const contacts = [
+    rec({ id: 'p1', fingerprint: 'peer-open', open_visibility: true }),
+    rec({
+      id: 'g1',
+      fingerprint: 'peer-gate',
+      open_visibility: true,
+      metadata: { grow_gate: true },
+    }),
+  ];
+  const { store } = fakeStore(contacts);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint);
+  assert.deepEqual(fps, ['peer-open']);
+});
+
 test('getKnownPeers is empty when no contact is open-visible (fail-closed)', async () => {
   const contacts = [
     rec({ id: 'p1', fingerprint: 'peer-1' }),

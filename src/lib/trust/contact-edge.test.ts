@@ -52,6 +52,19 @@ test('carries they_trust and open_visibility for witnessed peer springs', () => 
   assert.equal(edge.open_visibility, true);
 });
 
+test('carries Gate provenance on metadata without making it a star flag by default', () => {
+  const edge = contactRecordToEdge({
+    id: 'g',
+    fingerprint: 'fp-gate',
+    name: 'Pat',
+    public_key: 'PK',
+    metadata: { grow_invite_nonce: 'CODE1', grow_mint_channel: 'remote' },
+  });
+  assert.equal(edge.metadata?.grow_invite_nonce, 'CODE1');
+  assert.equal(edge.metadata?.grow_mint_channel, 'remote');
+  assert.equal(edge.metadata?.grow_gate, undefined);
+});
+
 test('carries inbound distress as a witnessed receipt', () => {
   const edge = contactRecordToEdge({
     id: 'd',

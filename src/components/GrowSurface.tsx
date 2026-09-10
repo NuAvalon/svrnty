@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { GrowSheet } from '@/components/GrowSheet';
 import { JoinByCode } from '@/components/JoinByCode';
+import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -98,7 +99,13 @@ export function GrowSurface({ open, onClose, identity }: Props) {
             >
               Scan / paste
             </TabsTrigger>
-          </TabsList>
+            </TabsList>
+
+          {identity?.identity?.fingerprint ? (
+            <div className="mt-4">
+              <GrowGatePanel ownerFp={identity.identity.fingerprint} />
+            </div>
+          ) : null}
 
           {/* forceMount: keep the giver body mounted so switching tabs does not remint. */}
           <TabsContent

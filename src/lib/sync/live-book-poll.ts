@@ -32,19 +32,17 @@ import {
   loadKey,
   getContactByFingerprint,
   updateContact,
-  addContact,
   loadIssuedCodeMap,
   isCodeOutstanding,
   codeUnderCap,
   alreadyAccepted,
-  markAcceptedInMap,
-  recordAcceptedJoiner,
   type ContactRecord,
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
+import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam } from './consume-mailbox';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -85,20 +83,6 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
   };
 }
 
-/** Clamp an attacker-typed joiner display name (KNOWN = unverified) for safe storage/render: strip
- *  C0/C1 control characters (incl. newlines) and bound the length. React escapes text nodes, so this is
- *  defense-in-depth against layout-breaking / overlong names, not an XSS gate. */
-function clampJoinerName(raw: unknown): string {
-  if (typeof raw !== 'string') return '';
-  let out = '';
-  for (const ch of raw) {
-    const c = ch.codePointAt(0) ?? 0;
-    // Keep printable only: drop C0 (< 0x20), DEL (0x7F), and C1 (0x80-0x9F).
-    if (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f)) out += ch;
-  }
-  return out.trim().slice(0, 80);
-}
-
 /**
  * Build the R1 return-channel seam bound to this owner + a per-poll issued-code snapshot (see
  * consume-mailbox JoinerResponseSeam). Exported for unit tests. The snapshot is loaded ONCE per poll
@@ -127,29 +111,9 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
         { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical
       ),
     accept: async (pj: PendingJoiner): Promise<{ ignited: boolean } | null> => {
-      // Dedup — addContact is NOT idempotent (it mints a fresh id and re-checks Invariant-1), so an
-      // already-known joiner must not be re-added. A fresh joiner is added as KNOWN (unverified TOFU) at
-      // epoch pj.epoch (the giver's future contact.update replay floor — MUST match the epoch the joiner
-      // ships updates at, currently 0). version 0 = the lowest replay floor; the first verified update
-      // establishes the real one (recordToKnownContact).
-      const existing = await getContactByFingerprint(ownFp, pj.fingerprint);
-      if (!existing) {
-        await addContact(ownFp, {
-          name: clampJoinerName(pj.displayName),
-          fingerprint: pj.fingerprint,
-          public_key: pj.publicKeyArmored,
-          trust_level: 'known',
-          email: '',
-          epoch: pj.epoch,
-          version: 0,
-        } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
-      }
-      // Record the VERIFIED fp (never the pre-check claim) accepted on this code — mutate the snapshot
-      // for same-poll dedup, THEN persist for cross-poll. Ordered AFTER the add so a failed add leaves
-      // the code un-accepted → the joiner is retried on a later poll (at-least-once, idempotent).
-      markAcceptedInMap(codes, ownFp, pj.inviteNonce, pj.fingerprint);
-      await recordAcceptedJoiner(ownFp, pj.inviteNonce, pj.fingerprint);
-      return existing ? null : { ignited: true };
+      // Gate, not Known: consume the return-channel and the issued-code slot, but do not addContact
+      // until the owner admits them. Methods / Galaxy / PSI stay closed until Admit.
+      return acceptJoinerAtGate(ownFp, pj, codes);
     },
   };
 }

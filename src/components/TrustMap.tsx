@@ -26,6 +26,10 @@ import {
 } from '@/lib/trust/trust-map-layout';
 import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
+import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
+import { GrowGatePanel } from '@/components/GrowGatePanel';
+import { loadGateArrivals } from '@/lib/identity/client-store';
+import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import {
   applyLayoutMemory,
   loadLayoutMemory,
@@ -55,6 +59,7 @@ import {
   formatFingerprintForVerify,
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
+import { ownerLocalBadge } from '@/lib/trust/grow-gate';
 import { VivreBurn, StarEmber, VivreCaution } from '@/components/VivreBurn';
 import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
@@ -120,6 +125,36 @@ const T = {
   pending: E.accent,
   cluster: E.muted,
 } as const;
+
+/** Known stars rise from the Gate membrane once per session, then settle. */
+const IGNITE_MS = 1450;
+const IGNITE_STORE = 'svrnty.galaxy.ignited.v1';
+
+function loadIgnited(owner: string): Set<string> {
+  if (typeof sessionStorage === 'undefined' || !owner) return new Set();
+  try {
+    const raw = sessionStorage.getItem(`${IGNITE_STORE}:${owner}`);
+    const arr = JSON.parse(raw || '[]');
+    return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveIgnited(owner: string, ids: Set<string>) {
+  if (typeof sessionStorage === 'undefined' || !owner) return;
+  try {
+    sessionStorage.setItem(`${IGNITE_STORE}:${owner}`, JSON.stringify([...ids]));
+  } catch {
+    /* quota */
+  }
+}
+
+function forgetIgnited(owner: string, fp: string) {
+  const s = loadIgnited(owner);
+  if (!s.delete(fp)) return;
+  saveIgnited(owner, s);
+}
 
 function isPending(edge: EdgeExtras | null | undefined): boolean {
   if (!edge) return false;
@@ -193,6 +228,9 @@ export function TrustMap({
   const pullRef = useRef<{ y: number; x: number; armed: boolean; pulling: boolean } | null>(null);
   const [crystallizeNote, setCrystallizeNote] = useState<string | null>(null);
   const prevMutualRef = useRef<Set<string>>(new Set());
+  const [gateCount, setGateCount] = useState(0);
+  const [gateOpen, setGateOpen] = useState(false);
+  const [igniteIds, setIgniteIds] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -213,6 +251,60 @@ export function TrustMap({
     () => contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })),
     [contacts],
   );
+  const starKey = visibleContacts.map((c) => c.peer_fingerprint).join('\n');
+
+  useEffect(() => {
+    if (!ownerFingerprint) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const list = await loadGateArrivals(ownerFingerprint);
+        if (!cancelled) setGateCount(list.length);
+      } catch {
+        /* non-fatal */
+      }
+    };
+    void refresh();
+    const unsub = subscribeContactChanges(() => {
+      void refresh();
+    });
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, [ownerFingerprint]);
+
+  useEffect(() => {
+    if (!ownerFingerprint) return;
+    const known = loadIgnited(ownerFingerprint);
+    const current = visibleContacts
+      .filter((c) => !isPending(c as EdgeExtras))
+      .map((c) => c.peer_fingerprint)
+      .filter(Boolean);
+    const fresh = current.filter((id) => !known.has(id));
+    if (fresh.length === 0) return;
+    setIgniteIds((prev) => {
+      const next = new Set(prev);
+      for (const id of fresh) next.add(id);
+      return next;
+    });
+    const t = window.setTimeout(() => {
+      const settled = loadIgnited(ownerFingerprint);
+      for (const id of current) settled.add(id);
+      saveIgnited(ownerFingerprint, settled);
+      setIgniteIds(new Set());
+    }, IGNITE_MS);
+    return () => window.clearTimeout(t);
+  }, [ownerFingerprint, starKey]);
+
+  useEffect(() => {
+    if (!gateOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setGateOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [gateOpen]);
 
   const world = useMemo(() => worldSizeForCount(visibleContacts.length), [visibleContacts.length]);
 
@@ -272,7 +364,7 @@ export function TrustMap({
   useEffect(() => {
     const el = viewportElRef.current;
     const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
-    applyFit(boundsOf([layout.self, ...layout.nodes], 28), aspect, fittedOnce.current ? 'limits' : 'reset');
+    applyFit(boundsOf([layout.self, ...layout.nodes], 48), aspect, fittedOnce.current ? 'limits' : 'reset');
     fittedOnce.current = true;
   }, [layout, fullscreen, applyFit, viewportElRef, world]);
 
@@ -322,6 +414,7 @@ export function TrustMap({
   const [showHistory, setShowHistory] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
+  const [verifyConfirm, setVerifyConfirm] = useState<'in_person' | 'other_channel' | null>(null);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -339,6 +432,7 @@ export function TrustMap({
     setShowHistory(false);
     setActionNote(null);
     setConfirmKind(null);
+    setVerifyConfirm(null);
   }, []);
 
   const confirmTarget: TrustActionTarget | null = focusEdge
@@ -692,14 +786,26 @@ export function TrustMap({
         <style>{`
           .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
                      animation: tm-grow 1.05s cubic-bezier(.2,.8,.2,1) both; }
+          .tm-node.tm-ignite { animation: tm-ignite 1.4s cubic-bezier(.16,1,.3,1) both; }
+          .tm-ignite-halo { animation: tm-ignite-halo 1.4s ease-out both; pointer-events: none; }
           .tm-edge, .tm-label, .tm-cluster { opacity: var(--tm-o, 1); animation: tm-fade 1.05s ease-out both; }
           .tm-self { animation: tm-fade .8s ease-out both; }
           .tm-pending { animation: tm-pulse 1.8s ease-in-out infinite; }
           @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
+          @keyframes tm-ignite {
+            0% { opacity: 0; transform: translateY(36px) scale(.2); }
+            42% { opacity: 1; transform: translateY(-10px) scale(1.22); }
+            100% { opacity: var(--tm-o,1); transform: translateY(0) scale(1); }
+          }
+          @keyframes tm-ignite-halo {
+            0% { opacity: 0; stroke-width: 0; }
+            40% { opacity: 0.85; stroke-width: 3.2; }
+            100% { opacity: 0; stroke-width: 0.4; }
+          }
           @keyframes tm-fade { from { opacity: 0; } to { opacity: var(--tm-o,1); } }
           @keyframes tm-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.95; } }
           @media (prefers-reduced-motion: reduce) {
-            .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending { animation: none; }
+            .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending, .tm-ignite, .tm-ignite-halo { animation: none; }
             .tm-node { transform: none; }
           }
         `}</style>
@@ -852,6 +958,7 @@ export function TrustMap({
                   pending={isPending(edge)}
                   mutual={!!edge?.mutual?.reciprocal}
                   distress={contactHasDistress(edge || {})}
+                  ignite={igniteIds.has(n.id)}
                   onSelect={handleNodeClick}
                 />
               );
@@ -931,7 +1038,9 @@ export function TrustMap({
         ) : null}
 
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2 }}>
-          {labels.map((l) => (
+          {labels
+            .filter((l) => l.textY > 10 && l.textY < vpSize.h - 88)
+            .map((l) => (
             <span
               key={l.id}
               style={{
@@ -971,7 +1080,7 @@ export function TrustMap({
               position: 'absolute',
               left: 16,
               right: 16,
-              bottom: 72,
+              bottom: showSampleBtn ? 168 : 104,
               textAlign: 'center',
               pointerEvents: 'none',
               fontFamily: E.fontSans,
@@ -979,7 +1088,7 @@ export function TrustMap({
           >
             <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
             <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              Tap Grow. They join you — a star you Know.
+              Tap Grow. In person they can become a star you Know. Remote, they wait at the Gate.
             </p>
             <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
               Trust is mutual, after you make sure it&apos;s them.
@@ -987,8 +1096,37 @@ export function TrustMap({
           </div>
         )}
 
+        <GalaxyGateMembrane count={gateCount} onOpen={() => setGateOpen(true)} />
+
+        {gateOpen && ownerFingerprint ? (
+          <GrowGatePanel
+            ownerFp={ownerFingerprint}
+            variant="overlay"
+            onClose={() => setGateOpen(false)}
+            onAdmitted={(fp) => {
+              forgetIgnited(ownerFingerprint, fp);
+              setIgniteIds((prev) => {
+                const next = new Set(prev);
+                next.add(fp);
+                return next;
+              });
+            }}
+          />
+        ) : null}
+
         {showSampleBtn && (
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 28, display: 'flex', justifyContent: 'center' }}>
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: isEmpty ? 104 : undefined,
+              top: isEmpty ? undefined : 10,
+              zIndex: 7,
+              display: 'flex',
+              justifyContent: 'center',
+            }}
+          >
             <button
               type="button"
               data-testid="trust-map-load-sample"
@@ -1027,6 +1165,8 @@ export function TrustMap({
         >
           <span style={{ color: E.accent2 }}>● trusted</span>
           <span>○ known</span>
+          <span style={{ color: E.accent }}>∪ known sphere</span>
+          <span style={{ color: E.accent }}>⊙ Gate</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
           <span style={{ color: E.accent2 }}>═ mutual</span>
           <span style={{ color: E.accent2 }}>= peer bond</span>
@@ -1044,7 +1184,8 @@ export function TrustMap({
         }}
       >
         Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
-        Glow is the trust overlay. Dashed gold is a group you named — not know, not trust.
+        Glow is the trust overlay. The U is your known sphere; the hole is the Gate.
+        Dashed gold is a group you named — not know, not trust.
       </p>
 
       {/* Contact sheet — alive contacts: seal + info + actions */}
@@ -1116,6 +1257,28 @@ export function TrustMap({
                   >
                     {describeAlive(focusNode, focusEdge)}
                   </p>
+                  {(() => {
+                    const mark = ownerLocalBadge({
+                      mintChannel: focusEdge.metadata?.grow_mint_channel as string | undefined,
+                      verified: ownerHasVerified(focusEdge),
+                    });
+                    if (!mark.kind) return null;
+                    return (
+                      <p
+                        data-testid="star-provenance"
+                        data-kind={mark.kind}
+                        style={{
+                          margin: '6px 0 0',
+                          fontSize: 11,
+                          letterSpacing: '0.08em',
+                          textTransform: 'lowercase',
+                          color: mark.kind === 'verified' ? E.accent2 : E.muted,
+                        }}
+                      >
+                        {mark.label}
+                      </p>
+                    );
+                  })()}
                 </div>
                 <button
                   type="button"
@@ -1321,26 +1484,42 @@ export function TrustMap({
                   />
                 )}
                 {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
+                  verifyConfirm ? (
+                    <div data-testid="verify-confirm" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <p style={{ margin: 0, fontSize: 12, color: E.dim, lineHeight: 1.45 }}>
+                        {TRUST_RECIPE_COPY.verifyConfirmBody}
+                      </p>
+                      <ActionBtn
+                        testId="verify-confirm-yes"
+                        label={
+                          verifyConfirm === 'in_person'
+                            ? TRUST_RECIPE_COPY.verifyConfirm
+                            : TRUST_RECIPE_COPY.verifyOtherChannel
+                        }
+                        primary
+                        onClick={() => {
+                          const method = verifyConfirm;
+                          setVerifyConfirm(null);
+                          void runAction(
+                            () => onOwnerVerify(focusEdge, method),
+                            'Saved here only.',
+                          );
+                        }}
+                      />
+                      <ActionBtn label="Not yet" onClick={() => setVerifyConfirm(null)} />
+                    </div>
+                  ) : (
                   <>
                     <ActionBtn
                       label={TRUST_RECIPE_COPY.verifyInPerson}
-                      onClick={() =>
-                        void runAction(
-                          () => onOwnerVerify(focusEdge, 'in_person'),
-                          'Saved here only.',
-                        )
-                      }
+                      onClick={() => setVerifyConfirm('in_person')}
                     />
                     <ActionBtn
                       label={TRUST_RECIPE_COPY.verifyOtherChannel}
-                      onClick={() =>
-                        void runAction(
-                          () => onOwnerVerify(focusEdge, 'other_channel'),
-                          'Saved here only.',
-                        )
-                      }
+                      onClick={() => setVerifyConfirm('other_channel')}
                     />
                   </>
+                  )
                 )}
                 {!isPending(focusEdge) && onTrustToggle && (
                   <ActionBtn
@@ -1520,16 +1699,19 @@ function ActionBtn({
   primary,
   danger,
   trailing,
+  testId,
 }: {
   label: string;
   onClick: () => void;
   primary?: boolean;
   danger?: boolean;
   trailing?: React.ReactNode;
+  testId?: string;
 }) {
   return (
     <button
       type="button"
+      data-testid={testId}
       onClick={onClick}
       style={{
         fontSize: 12,
@@ -1564,6 +1746,7 @@ function ContactNode({
   pending,
   mutual,
   distress,
+  ignite,
   onSelect,
 }: {
   node: LaidOutNode;
@@ -1573,13 +1756,14 @@ function ContactNode({
   pending: boolean;
   mutual: boolean;
   distress: boolean;
+  ignite: boolean;
   onSelect: (id: string, multi: boolean) => void;
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
   const trusted = node.state === 'trusted' && !pending;
   return (
     <g
-      className={`tm-node${pending ? ' tm-pending' : ''}`}
+      className={`tm-node${pending ? ' tm-pending' : ''}${ignite ? ' tm-ignite' : ''}`}
       data-graph-node={node.id}
       style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.04}s`, cursor: 'pointer' }}
       onClick={(e) => {
@@ -1587,6 +1771,17 @@ function ContactNode({
         onSelect(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
       }}
     >
+      {ignite && (
+        <circle
+          className="tm-ignite-halo"
+          cx={node.x}
+          cy={node.y}
+          r={r + 10}
+          fill="none"
+          stroke={T.myEdge}
+          strokeOpacity={0.8}
+        />
+      )}
       {distress && <StarEmber x={node.x} y={node.y} r={r} />}
       {trusted && (
         <circle
@@ -1606,6 +1801,7 @@ function ContactNode({
         data-trust-state={pending ? 'pending' : node.state}
         data-mutual={mutual ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
+        data-ignite={ignite ? 'true' : 'false'}
         cx={node.x}
         cy={node.y}
         r={r}

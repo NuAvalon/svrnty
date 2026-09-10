@@ -64,6 +64,7 @@ async function ownerEdges(store: KnowOverlayStore, ownerFingerprint: string): Pr
   const contacts = await store.getAllContacts(ownerFingerprint);
   return contacts
     .filter((c) => typeof c.fingerprint === 'string' && c.fingerprint.length > 0)
+    .filter((c) => c.metadata?.grow_gate !== true) // Gate arrivals must never enter PSI
     .map(contactRecordToEdge);
 }
 

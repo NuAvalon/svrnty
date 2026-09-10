@@ -31,6 +31,7 @@ const steps = [
     title: 'Grow the Galaxy',
     content: [
       'Tap Grow. Show my code is your QR or short link. Scan / paste is how you join from theirs.',
+      'In person mints a single-use code. Remote joiners wait at the Gate until you admit them as Known.',
       TRUST_RECIPE_COPY.mycelial,
       'Name them as you know them. Notes stay on this device.',
     ],

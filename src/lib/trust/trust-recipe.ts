@@ -25,10 +25,13 @@ export const TRUST_RECIPE_COPY = {
     'Only you see whom you\'ve verified. Nobody else gets a badge. You only need this step if you want to Trust them — and they must do the same on their side.',
   verifyInPerson: 'In person',
   verifyOtherChannel: 'Another channel',
+  verifyConfirm: "Yes — I scanned this from their phone, it's them",
+  verifyConfirmBody:
+    'A camera scan is provenance. This tap is verify — you are sure this key is the person you mean.',
   verifiedHere:
     'You verified this key on this device. Nobody else sees that. Trust still needs them to verify you too.',
   growHint:
-    'Show this so they can join your Galaxy. They become a star you Know. Bonds among people you already Know may light later — not new strangers.',
+    'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
   mycelial:
     'The lattice knits; it doesn\'t recruit. New stars are people who joined you. Lines are ties you were meant to see.',
   gateStart: 'Start',
@@ -157,6 +160,9 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
     // denylist to a wire-safe ALLOWLIST so a new owner-local field fails CLOSED, not leaks by default.
     delete next.disclosed_circle;
     delete next.they_trust;
+    delete next.grow_gate;
+    delete next.grow_invite_nonce;
+    delete next.grow_mint_channel;
     if (next.share_settings && typeof next.share_settings === 'object') {
       const share = { ...(next.share_settings as Record<string, unknown>) };
       delete share.open_visibility;
@@ -168,5 +174,8 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
   delete (out as { open_visibility?: unknown }).open_visibility;
   delete (out as { disclosed_circle?: unknown }).disclosed_circle; // §C F1 — owner-local, never on wire
   delete (out as { they_trust?: unknown }).they_trust; // §C F1 — owner-local, never on wire
+  delete (out as { grow_gate?: unknown }).grow_gate;
+  delete (out as { grow_invite_nonce?: unknown }).grow_invite_nonce;
+  delete (out as { grow_mint_channel?: unknown }).grow_mint_channel;
   return out;
 }

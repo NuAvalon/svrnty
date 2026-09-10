@@ -34,3 +34,24 @@ test('stripOwnerLocalForPublish strips disclosed_circle + they_trust (top-level 
   // Sanity: a wire-safe field is preserved (we strip owner-local, not everything).
   assert.equal((stripped as Record<string, unknown>).fingerprint, 'peer-abc');
 });
+
+test('stripOwnerLocalForPublish strips Gate provenance (grow_gate / nonce / channel)', () => {
+  const stripped = stripOwnerLocalForPublish({
+    fingerprint: 'peer-abc',
+    grow_gate: true,
+    grow_invite_nonce: 'CODE1',
+    grow_mint_channel: 'in_person',
+    metadata: {
+      grow_gate: true,
+      grow_invite_nonce: 'CODE1',
+      grow_mint_channel: 'remote',
+    },
+  });
+  assert.equal('grow_gate' in stripped, false);
+  assert.equal('grow_invite_nonce' in stripped, false);
+  assert.equal('grow_mint_channel' in stripped, false);
+  const m = stripped.metadata as Record<string, unknown>;
+  assert.equal('grow_gate' in m, false);
+  assert.equal('grow_invite_nonce' in m, false);
+  assert.equal('grow_mint_channel' in m, false);
+});
