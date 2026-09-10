@@ -669,6 +669,32 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
   return backup;
 }
 
+/**
+ * Plaintext JSON backup is untrusted. Drop claimed trust / owner_verify so a
+ * crafted file cannot land Trusted or a fake verify mark. Persistence still
+ * goes through addContact (fail-closed fingerprint↔key binding).
+ */
+export function contactFromPlaintextBackup(
+  raw: ContactRecord,
+): Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'> {
+  const next: Record<string, unknown> = { ...(raw as unknown as Record<string, unknown>) };
+  delete next.id;
+  delete next.added_at;
+  delete next.owner_fingerprint;
+  delete next.owner_verify;
+  delete next.trusted;
+  delete next.trusted_since;
+  delete next.verified_at;
+  next.trust_level = 'known';
+  next.verification = { method: 'none', verified_at: null };
+  if (next.metadata && typeof next.metadata === 'object') {
+    const meta = { ...(next.metadata as Record<string, unknown>) };
+    delete meta.owner_verify;
+    next.metadata = meta;
+  }
+  return next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>;
+}
+
 export async function importAll(backup: SovereignBackup): Promise<string> {
   const fingerprint = backup.identity?.identity?.fingerprint;
   if (!fingerprint) throw new Error('Invalid backup: no fingerprint');
@@ -688,8 +714,14 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
     await storeShards(fingerprint, backup.shards);
   }
 
-  for (const contact of (backup.contacts || [])) {
-    await txPut('contacts', { ...contact, owner_fingerprint: fingerprint });
+  // Same persistence gate as importVaultContents: never raw-put a contact from
+  // an untrusted file. Unbindable rows skip; the identity import still completes.
+  for (const contact of backup.contacts || []) {
+    try {
+      await addContact(fingerprint, contactFromPlaintextBackup(contact));
+    } catch (e) {
+      console.warn('[import] skipped a contact that failed to persist:', (e as Error)?.message);
+    }
   }
 
   await setActiveFingerprint(fingerprint);
