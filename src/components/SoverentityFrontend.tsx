@@ -260,6 +260,8 @@ export function SoverentityFrontend({
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
   const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
+  /** 3a-pure seed recovery: device passphrase the user sets to protect recovered keys at rest. */
+  const [seedNewPassphrase, setSeedNewPassphrase] = useState('');
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
   /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
@@ -558,6 +560,7 @@ export function SoverentityFrontend({
       setVaultHeader(header);
       setRestorePath('passphrase');
       setSoulSeedPhrase('');
+      setSeedNewPassphrase('');
       setVaultPassphrase('');
       setGateMode('restore-verify');
     } catch (err) {
@@ -585,9 +588,15 @@ export function SoverentityFrontend({
         setRestoreError('Enter your recovery code.');
         return;
       }
+      // 3a-pure (Blocker-C): recovered keys must be encrypted at rest — require a device passphrase
+      // before the (fail-closed) stores run, so there is never a plaintext-at-rest window.
+      if (seedNewPassphrase.length < 12) {
+        setRestoreError('Set a device passphrase (at least 12 characters) to protect your recovered keys at rest.');
+        return;
+      }
       const arrayBuffer = await vaultFile.arrayBuffer();
       const { restoreIdentityFromSeedVault } = await import('@/components/recovery/seedVaultRestore');
-      const result = await restoreIdentityFromSeedVault(arrayBuffer, soulSeedPhrase);
+      const result = await restoreIdentityFromSeedVault(arrayBuffer, soulSeedPhrase, seedNewPassphrase);
       // Keys are persisted; hold identity out of the main surface until the
       // contacts-honesty interstitial is acknowledged (queue: UNMISSABLE, no CTA).
       setSeedRestoreInterstitial({
@@ -596,6 +605,7 @@ export function SoverentityFrontend({
         pqSecretsRecovered: result.pqSecretsRecovered,
       });
       setSoulSeedPhrase('');
+      setSeedNewPassphrase('');
       setVaultPassphrase('');
       setRestorePath('passphrase');
     } catch (err) {
@@ -784,6 +794,12 @@ export function SoverentityFrontend({
           const keyData = JSON.parse(new TextDecoder().decode(decrypted));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
+          // 3a-pure (Blocker-C): keys must be encrypted at rest. Establish the session key from the
+          // export password the user just entered (unless a session is already open — don't clobber
+          // it). storeKey is fail-closed, so this guarantees no plaintext-at-rest window.
+          if (!isSessionUnlocked()) {
+            await initSessionKey(vaultPassphrase);
+          }
           if (keyData.privateKey) {
             await storeKey(fp, keyData.privateKey, keyData.passphrase || '');
           }
@@ -1393,6 +1409,36 @@ export function SoverentityFrontend({
             </div>
           )}
 
+          {seedPathActive && (
+            <div style={s.field}>
+              <label style={s.label}>SET A DEVICE PASSPHRASE</label>
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                Protects your recovered keys on this device — they are encrypted at rest with this
+                passphrase and never written unprotected. You&apos;ll use it to unlock this device from now on.
+              </p>
+              <input
+                type="password"
+                name="svrnty-new-device-passphrase"
+                autoComplete="new-password"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                placeholder="At least 12 characters"
+                value={seedNewPassphrase}
+                onChange={e => setSeedNewPassphrase(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && soulSeedPhrase.trim() && seedNewPassphrase.length >= 12) handleSeedVaultRestore();
+                }}
+                style={s.input}
+              />
+              <p style={s.hint}>
+                {seedNewPassphrase.length > 0 && seedNewPassphrase.length < 12
+                  ? 'At least 12 characters.'
+                  : 'New device passphrase — keeps your recovered keys encrypted at rest.'}
+              </p>
+            </div>
+          )}
+
           {vaultHeader?.format === 'json-backup' && !seedPathActive ? (
             <>
               <button
@@ -1428,10 +1474,10 @@ export function SoverentityFrontend({
               <button
                 type="button"
                 onClick={handleSeedVaultRestore}
-                disabled={restoreLoading || !soulSeedPhrase.trim()}
+                disabled={restoreLoading || !soulSeedPhrase.trim() || seedNewPassphrase.length < 12}
                 style={{
                   ...s.restoreBtn,
-                  opacity: restoreLoading || !soulSeedPhrase.trim() ? 0.5 : 1,
+                  opacity: restoreLoading || !soulSeedPhrase.trim() || seedNewPassphrase.length < 12 ? 0.5 : 1,
                 }}
               >
                 {restoreLoading ? (
@@ -1447,6 +1493,7 @@ export function SoverentityFrontend({
                 onClick={() => {
                   setRestorePath('passphrase');
                   setSoulSeedPhrase('');
+                  setSeedNewPassphrase('');
                   setRestoreError(null);
                 }}
                 style={{ ...s.backBtn, marginTop: 12, alignSelf: 'center' }}
@@ -1487,6 +1534,7 @@ export function SoverentityFrontend({
                   onClick={() => {
                     setRestorePath('seed');
                     setVaultPassphrase('');
+                    setSeedNewPassphrase('');
                     setRestoreError(null);
                   }}
                   style={{
@@ -1529,6 +1577,13 @@ export function SoverentityFrontend({
   // --- Gate: PQ Migration (shown after v1 import) ---
   if (gateMode === 'pq-migrate' && pendingPqMigration) {
     const handlePqUpgrade = async () => {
+      // 3a-pure (Blocker-C): storePQKeys is fail-closed. The identity was just restored with a
+      // device passphrase (session open), but guard explicitly so a locked session gives a clear
+      // message instead of a generic failure — never a plaintext write.
+      if (!isSessionUnlocked()) {
+        setError('Unlock your identity first, then add post-quantum keys from settings.');
+        return;
+      }
       setPqMigrating(true);
       try {
         const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');

@@ -428,14 +428,15 @@ export async function listIdentities(): Promise<IdentityRecord[]> {
 // ── Key operations ──────────────────────────────────────────────
 
 export async function storeKey(fingerprint: string, privateKey: string, passphrase: string): Promise<void> {
-  if (_sessionKey) {
-    // Encrypt before storing
-    const encrypted = await encryptKeyData({ privateKey, passphrase });
-    await txPut('keys', { fingerprint, ...encrypted });
-  } else {
-    // Fallback: store unencrypted (legacy / during initial setup before session key exists)
-    await txPut('keys', { fingerprint, privateKey, passphrase });
+  // Blocker-C fail-closed: never write key material as plaintext at rest. The caller MUST
+  // initSessionKey() first — genesis (passphrase-mandatory) and every recovery/import path
+  // establishes it. Mirrors the contacts fail-closed (addContact); a locked session throws
+  // instead of silently falling back to plaintext.
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey, passphrase });
+  await txPut('keys', { fingerprint, ...encrypted });
 }
 
 export async function loadKey(fingerprint: string): Promise<{ privateKey: string; passphrase: string } | null> {
@@ -461,12 +462,12 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
-    await txPut('pq_keys', { fingerprint, ...encrypted });
-  } else {
-    await txPut('pq_keys', { fingerprint, bundle });
+  // Blocker-C fail-closed: never write PQ key material as plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store PQ key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
+  await txPut('pq_keys', { fingerprint, ...encrypted });
 }
 
 export async function loadPQKeys(fingerprint: string): Promise<any | null> {
@@ -490,12 +491,12 @@ export async function loadPQKeys(fingerprint: string): Promise<any | null> {
 // ── Vault operations ─────────────────────────────────────────────
 
 export async function storeVault(fingerprint: string, vault: any): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
-    await txPut('vaults', { fingerprint, ...encrypted });
-  } else {
-    await txPut('vaults', { fingerprint, vault });
+  // Blocker-C fail-closed: never write vault key material as plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store vault key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
+  await txPut('vaults', { fingerprint, ...encrypted });
 }
 
 export async function loadVault(fingerprint: string): Promise<any | null> {
@@ -517,18 +518,18 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
 }
 
 // ── Shard operations (social recovery — "the tear") ──────────────
-// My own shards are key material → encrypted at rest like the vault
-// when a session key is present (falls back to plaintext pre-unlock,
-// same as keys/vaults).
+// My own shards are key material → encrypted at rest like the vault.
+// Blocker-C fail-closed: refuses rather than writing plaintext pre-unlock
+// (same guarantee as keys/pq_keys/vaults).
 
 /** Persist all shards for one of my identities (stops the create-time discard). */
 export async function storeShards(fingerprint: string, shardsData: ShardsData): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
-    await txPut('shards', { fingerprint, ...encrypted });
-  } else {
-    await txPut('shards', { fingerprint, shards_data: shardsData });
+  // Blocker-C fail-closed: my own shards are key material → never plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store shard key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
+  await txPut('shards', { fingerprint, ...encrypted });
 }
 
 export async function loadShards(fingerprint: string): Promise<ShardsData | null> {
@@ -1031,6 +1032,13 @@ export async function importPlaintextContacts(
 }
 
 export async function importAll(backup: SovereignBackup): Promise<PlaintextImportReport> {
+  // 3a/block (Blocker-C, Archie #133842): a plaintext SovereignBackup carries no secret to derive
+  // an at-rest key from, so refuse to import unless a passphrase session is already established
+  // (the key stores are fail-closed). Block cleanly BEFORE any write — no partial import, no
+  // plaintext-at-rest window.
+  if (!isSessionUnlocked()) {
+    throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
+  }
   const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
 
   await storeIdentity(fingerprint, backup.identity);
@@ -1064,13 +1072,14 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
  * data-safety launch-blocker: before this, "Open Vault" set React state but wrote
  * nothing → reload = identity lost).
  *
- * ⚠ CAVEAT (honest current state, 2026-09-11 — Flint ◆5721): the passphrase-FREE
- * recovery-code path (restoreIdentityFromSeedVault) does NOT yet converge to this
- * encrypted-at-rest state — it has no session key and writes key material PLAINTEXT
- * at rest today. The fix is the fail-closed force-encrypt-before-disk rework (enc-b
- * Blocker-C fast-follow; mechanism = force-passphrase-before-any-key-touches-disk),
- * after which the recovery-code path converges too and this caveat is removed. Until
- * then, ONLY the passphrase paths (genesis + this) are encrypted at rest.
+ * AT-REST MODEL (2026-09-11 — Blocker-C fail-closed, Archie #133842): ALL key-material write
+ * paths now converge to encrypted-at-rest or fail closed. genesis + this (importVaultContents) +
+ * the passphrase-free recovery-code path (restoreIdentityFromSeedVault now requires a device
+ * passphrase + initSessionKey before writing) + the encrypted-key import all establish a session
+ * key first. The stores (storeKey/storePQKeys/storeVault/storeShards) THROW rather than ever
+ * writing plaintext, so there is no plaintext-at-rest window — not even transiently. Plaintext
+ * SovereignBackup import (importAll) blocks unless a session is established (no secret to derive
+ * an at-rest key from).
  *
  * SECURITY (persist SAFELY, not just persist):
  *  • Self-guarding like addContact: the identity's public_key MUST bind to `fingerprint`
