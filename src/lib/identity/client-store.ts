@@ -670,9 +670,10 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
 }
 
 /**
- * Plaintext JSON backup is untrusted. Drop claimed trust / owner_verify so a
- * crafted file cannot land Trusted or a fake verify mark. Persistence still
- * goes through addContact (fail-closed fingerprint↔key binding).
+ * Plaintext JSON backup is untrusted. Drop claimed trust / owner_verify / Gate
+ * provenance so a crafted file cannot land Trusted, a fake verify mark, or a
+ * Grow-Gate holding-room row. Persistence still goes through addContact
+ * (fail-closed fingerprint↔key binding). Encrypted vault restore is unchanged.
  */
 export function contactFromPlaintextBackup(
   raw: ContactRecord,
@@ -685,11 +686,17 @@ export function contactFromPlaintextBackup(
   delete next.trusted;
   delete next.trusted_since;
   delete next.verified_at;
+  delete next.grow_gate;
+  delete next.grow_invite_nonce;
+  delete next.grow_mint_channel;
   next.trust_level = 'known';
   next.verification = { method: 'none', verified_at: null };
   if (next.metadata && typeof next.metadata === 'object') {
     const meta = { ...(next.metadata as Record<string, unknown>) };
     delete meta.owner_verify;
+    delete meta.grow_gate;
+    delete meta.grow_invite_nonce;
+    delete meta.grow_mint_channel;
     next.metadata = meta;
   }
   return next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>;

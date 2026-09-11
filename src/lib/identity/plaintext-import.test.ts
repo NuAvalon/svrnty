@@ -28,21 +28,37 @@ const crafted = (): ContactRecord =>
     verified_at: '2026-01-01T00:00:00.000Z',
     owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z', method: 'in_person' },
     verification: { method: 'in_person', verified_at: '2026-01-01T00:00:00.000Z' },
-    metadata: { owner_verify: { owner_verified_at: 'x', method: 'in_person' }, tags: ['core'] },
+    grow_gate: true,
+    grow_invite_nonce: 'forged-nonce',
+    grow_mint_channel: 'in_person',
+    metadata: {
+      owner_verify: { owner_verified_at: 'x', method: 'in_person' },
+      tags: ['core'],
+      grow_gate: true,
+      grow_invite_nonce: 'forged-nonce',
+      grow_mint_channel: 'in_person',
+    },
     added_at: '2020-01-01T00:00:00.000Z',
     owner_fingerprint: 'attacker-owner',
   }) as ContactRecord;
 
-test('plaintext import strips trust and owner_verify; lands Known', () => {
+test('plaintext import strips trust, owner_verify, and Gate provenance; lands Known', () => {
   const out = contactFromPlaintextBackup(crafted());
   assert.equal(out.trust_level, 'known');
   assert.equal(out.trusted, undefined);
   assert.equal(out.trusted_since, undefined);
   assert.equal(out.verified_at, undefined);
   assert.equal(out.owner_verify, undefined);
+  assert.equal((out as { grow_gate?: unknown }).grow_gate, undefined);
+  assert.equal((out as { grow_invite_nonce?: unknown }).grow_invite_nonce, undefined);
+  assert.equal((out as { grow_mint_channel?: unknown }).grow_mint_channel, undefined);
   assert.deepEqual(out.verification, { method: 'none', verified_at: null });
-  assert.equal((out.metadata as { owner_verify?: unknown })?.owner_verify, undefined);
-  assert.deepEqual((out.metadata as { tags?: string[] }).tags, ['core']);
+  const meta = out.metadata as Record<string, unknown>;
+  assert.equal(meta.owner_verify, undefined);
+  assert.equal(meta.grow_gate, undefined);
+  assert.equal(meta.grow_invite_nonce, undefined);
+  assert.equal(meta.grow_mint_channel, undefined);
+  assert.deepEqual(meta.tags, ['core']);
   assert.equal((out as { id?: string }).id, undefined);
   assert.equal((out as { added_at?: string }).added_at, undefined);
   assert.equal((out as { owner_fingerprint?: string }).owner_fingerprint, undefined);
