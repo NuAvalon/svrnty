@@ -40,7 +40,6 @@ import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodRe
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { distressWentPersistPatch } from '@/lib/trust/distress';
 import { BiometricUnlockButton } from '@/components/biometric/BiometricUnlockButton';
 import {
   getBiometricEnrollment,
@@ -639,13 +638,6 @@ export default function Home() {
                   const records = await getAllContacts(identity.identity.fingerprint);
                   const rec = records.find((r) => r.id === edge.id);
                   const patch = ownerVerifyPersistPatch((rec as any)?.metadata, method);
-                  await updateContact(edge.id, patch as any);
-                  await refreshContacts();
-                }}
-                onDistressWent={async (edge) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const patch = distressWentPersistPatch((rec as any)?.metadata);
                   await updateContact(edge.id, patch as any);
                   await refreshContacts();
                 }}

@@ -60,8 +60,6 @@ import {
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
 import { ownerLocalBadge } from '@/lib/trust/grow-gate';
-import { VivreBurn, StarEmber, VivreCaution } from '@/components/VivreBurn';
-import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
   loadMethodHistory,
   revisionsForPeer,
@@ -105,8 +103,6 @@ interface TrustMapProps {
   /** CUR-2 — owner method-revision log (local). Parent may refresh after restore. */
   methodHistory?: MethodRevision[];
   onMethodHistoryChange?: () => void;
-  /** Recipient: clear the vivre on this device after you acted in the world. */
-  onDistressWent?: (edge: TrustEdge) => void | Promise<void>;
   /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. */
   onRefresh?: () => void | Promise<void>;
 }
@@ -207,7 +203,6 @@ export function TrustMap({
   onSendMethodUpdate,
   methodHistory,
   onMethodHistoryChange,
-  onDistressWent,
   onRefresh,
 }: TrustMapProps) {
   const [fullscreen, setFullscreen] = useState(false);
@@ -957,7 +952,6 @@ export function TrustMap({
                   picked={picked.has(n.id)}
                   pending={isPending(edge)}
                   mutual={!!edge?.mutual?.reciprocal}
-                  distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
                   onSelect={handleNodeClick}
                 />
@@ -1199,13 +1193,11 @@ export function TrustMap({
             borderRadius: 14,
             background: E.surfaceSolid,
             border: `1px solid ${
-              contactHasDistress(focusEdge)
-                ? E.accent2
-                : isPending(focusEdge)
+              isPending(focusEdge)
+                ? E.borderLit
+                : focusNode.state === 'trusted'
                   ? E.borderLit
-                  : focusNode.state === 'trusted'
-                    ? E.borderLit
-                    : E.border
+                  : E.border
             }`,
             boxShadow: 'var(--se-glass-shadow)',
             fontFamily: E.fontSans,
@@ -1213,7 +1205,6 @@ export function TrustMap({
             overflow: 'hidden',
           }}
         >
-          {contactHasDistress(focusEdge) && <VivreBurn />}
           <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
             {focusEdge.peer_fingerprint ? (
               <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
@@ -1346,7 +1337,6 @@ export function TrustMap({
                       {formatFingerprintForVerify(focusEdge.peer_fingerprint)}
                     </p>
                   )}
-                  {contactHasDistress(focusEdge) && <VivreCaution />}
                   {focusEdge.notes && (
                     <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, fontStyle: 'italic' }}>
                       {focusEdge.notes}
@@ -1547,15 +1537,6 @@ export function TrustMap({
                     }}
                   />
                 )}
-                {contactHasDistress(focusEdge) && onDistressWent && (
-                  <ActionBtn
-                    label={DISTRESS_COPY.went}
-                    onClick={() => {
-                      void onDistressWent(focusEdge);
-                      setActionNote(DISTRESS_COPY.wentHint);
-                    }}
-                  />
-                )}
                 <ActionBtn
                   label="Version history"
                   onClick={() => setShowHistory((v) => !v)}
@@ -1745,7 +1726,6 @@ function ContactNode({
   picked,
   pending,
   mutual,
-  distress,
   ignite,
   onSelect,
 }: {
@@ -1755,7 +1735,6 @@ function ContactNode({
   picked: boolean;
   pending: boolean;
   mutual: boolean;
-  distress: boolean;
   ignite: boolean;
   onSelect: (id: string, multi: boolean) => void;
 }) {
@@ -1782,7 +1761,6 @@ function ContactNode({
           strokeOpacity={0.8}
         />
       )}
-      {distress && <StarEmber x={node.x} y={node.y} r={r} />}
       {trusted && (
         <circle
           cx={node.x}
@@ -1800,7 +1778,6 @@ function ContactNode({
         data-fingerprint={node.id}
         data-trust-state={pending ? 'pending' : node.state}
         data-mutual={mutual ? 'true' : 'false'}
-        data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
         cx={node.x}
         cy={node.y}
