@@ -55,7 +55,7 @@ export function ScanToJoin({ onInvite, onClose }: Props) {
       if (video) {
         // BarcodeDetector can read the <video> directly. jsQR needs pixels — only
         // grab a frame once the stream has dimensions (a 0×0 canvas throws).
-        let frame = { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+        let frame: { data: Uint8ClampedArray; width: number; height: number } = { data: new Uint8ClampedArray(4), width: 1, height: 1 };
         if (ctx && video.readyState >= 2 && video.videoWidth && video.videoHeight) {
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;

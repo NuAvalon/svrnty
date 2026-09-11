@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { hasIdentity, loadIdentity } from '@/lib/identity/client-store';
+import { hasIdentity, loadIdentity, getActiveFingerprint } from '@/lib/identity/client-store';
 import { slugUrlShort } from '@/lib/config/domain';
 
 interface ProfileData {
@@ -42,7 +42,8 @@ export default function ProfilePage() {
       // Try local identity from IndexedDB (if viewer is the owner)
       try {
         if (await hasIdentity()) {
-          const identity = await loadIdentity();
+          const fp = await getActiveFingerprint();
+          const identity = fp ? await loadIdentity(fp) : null;
           if (identity?.name?.toLowerCase() === name.toLowerCase()) {
             setProfile({
               display_name: identity.name,

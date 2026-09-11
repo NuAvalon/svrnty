@@ -128,7 +128,7 @@ export class BrowserIdentity {
     // Generate PGP key pair (classical)
     const { privateKey, publicKey } = await generateKey({
       type: 'ecc',
-      curve: 'ed25519',
+      curve: 'ed25519Legacy', // openpgp v6 renamed 'ed25519' → 'ed25519Legacy' (same v4 Ed25519+Curve25519 keys)
       userIDs: [{ name, email }],
       passphrase,
       format: 'armored'

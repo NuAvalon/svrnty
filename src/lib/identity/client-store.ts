@@ -551,11 +551,20 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
     throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
   const id = crypto.randomUUID();
+  // ContactRecord's `[key: string]: any` index signature collapses Omit<> to Record<string, any>
+  // (a known TS limitation), so the spread's inferred type loses the named required fields. Re-list
+  // them explicitly from `contact` (always present at runtime — callers pass a full contact) so the
+  // record literal type-checks on its own, without a blanket cast.
   const record: ContactRecord = {
     ...contact,
     id,
     owner_fingerprint: ownerFingerprint,
     added_at: new Date().toISOString(),
+    fingerprint: contact.fingerprint,
+    name: contact.name,
+    email: contact.email,
+    public_key: contact.public_key,
+    trust_level: contact.trust_level,
   };
   // Keyless/gray contacts (vCard import) have no fingerprint. The `contacts.fingerprint` index is
   // UNIQUE: IndexedDB collides multiple ''-valued keys, but SKIPS records whose key is ABSENT. So a

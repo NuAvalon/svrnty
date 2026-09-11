@@ -272,7 +272,7 @@ export function OwnerCardStudio({
                 onClick={() => {
                   const next = removeOwnerLens(bag, lens.id);
                   persist(next);
-                  setActiveLensId(next.defaultLensId);
+                  setActiveLensId(next.defaultLensId ?? next.lenses[0]?.id ?? activeLensId);
                 }}
                 style={ghostBtn}
               >

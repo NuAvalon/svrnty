@@ -48,6 +48,9 @@ export interface TrustEdge {
     owner_verified_at: string;
     method: 'in_person' | 'other_channel';
   };
+  /** Owner-local metadata bag (grow-gate channel, owner-verify bookkeeping, notes/tags overlay).
+   *  NEVER publish — stripped on the wire (see trust-recipe.stripOwnerLocalForPublish). */
+  metadata?: Record<string, unknown>;
   // Mutual state
   mutual: {
     they_trust_me: boolean | null;      // do THEY trust me? (null = unknown)
