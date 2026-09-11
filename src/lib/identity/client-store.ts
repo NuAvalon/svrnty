@@ -9,7 +9,7 @@ import { fingerprintMatchesKey } from './fingerprint';
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, decryptContactRecord, type ContactCryptoKeys } from './contact-crypto';
+import { deriveContactCryptoKeys, decryptContactRecord, blindFingerprint, type ContactCryptoKeys } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -661,8 +661,13 @@ export async function getContact(id: string): Promise<ContactRecord | null> {
 }
 
 export async function getContactByFingerprint(ownerFingerprint: string, fingerprint: string): Promise<ContactRecord | null> {
-  const contacts = await txGetByIndex<ContactRecord>('contacts', 'owner', ownerFingerprint);
-  return contacts.find(c => c.fingerprint === fingerprint) ?? null;
+  // Blinded index: encrypted records store idx = HMAC(indexKey, fp) in the `fingerprint` field.
+  // Compute the same idx to look them up. Mixed-state during the on-unlock migration: legacy
+  // plaintext records still hold the raw fp, so match either. (idx needs an unlocked session.)
+  const idx = _contactKeys ? await blindFingerprint(_contactKeys.indexKey, fingerprint) : null;
+  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  const found = recs.find(c => (idx !== null && c.fingerprint === idx) || c.fingerprint === fingerprint);
+  return found ? decryptContactIfNeeded(found) : null;
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
