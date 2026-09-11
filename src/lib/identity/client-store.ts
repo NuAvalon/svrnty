@@ -9,7 +9,7 @@ import { fingerprintMatchesKey } from './fingerprint';
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, type ContactCryptoKeys } from './contact-crypto';
+import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -362,6 +362,30 @@ async function txGetByIndex<T>(storeName: string, indexName: string, key: string
   });
 }
 
+// Multi-store atomic write (enc-b B4): put/delete across several stores in ONE IndexedDB transaction,
+// so a contact record and its book-manifest (or a delete and the manifest) commit together or not at
+// all. FOOTGUN (why this helper exists): an IDB txn auto-commits as soon as the microtask queue drains
+// with no pending IDB request — so callers must compute the manifest MAC + gather all entries BEFORE
+// calling this; the body here does synchronous puts/deletes only, never an awaited non-IDB op mid-tx.
+type TxOp = { store: string; value: unknown } | { store: string; delete: string };
+
+async function txPutMany(ops: TxOp[]): Promise<void> {
+  const db = await openDB();
+  const stores = [...new Set(ops.map((o) => o.store))];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, 'readwrite');
+    let firstError: unknown = null;
+    for (const op of ops) {
+      const store = tx.objectStore(op.store);
+      const req = 'delete' in op ? store.delete(op.delete) : store.put(op.value);
+      req.onerror = () => { firstError = req.error; }; // capture (e.g. ConstraintError) before the abort
+    }
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onabort = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction aborted')); };
+    tx.onerror = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction error')); };
+  });
+}
+
 // ── Identity operations ──────────────────────────────────────────
 
 export async function storeIdentity(fingerprint: string, data: any): Promise<void> {
@@ -559,6 +583,35 @@ export async function getHeldShards(holderFingerprint: string): Promise<HeldShar
 
 // ── Contact operations ───────────────────────────────────────────
 
+// ── Contact book-integrity manifest (enc-b B4) ───────────────────
+// A per-owner HMAC over {(id, version)…, count} (contact-crypto.serializeManifest) catches book-level
+// tampering that per-record AES-GCM tags miss: delete, truncation, rollback, insert/reorder. Stored as
+// a keyed record in `settings` under `contact_manifest:${owner}`, written in the SAME tx as every
+// contact mutation (add/update/remove) via txPutMany so the record and its manifest never diverge
+// across a crash. The manifest subkey is per-identity (deriveContactCryptoKeys) and never leaves memory.
+// `version` lives INSIDE the encrypted contact body, so entries are gathered by decrypting the owner's
+// book (getAllContacts) BEFORE the write tx — never mid-tx (the txPutMany auto-commit footgun).
+function contactManifestSettingKey(ownerFingerprint: string): string {
+  return `contact_manifest:${ownerFingerprint}`;
+}
+
+function toManifestEntry(c: ContactRecord): ManifestEntry {
+  return { id: c.id, version: typeof c.version === 'number' ? c.version : 0 };
+}
+
+/**
+ * Build the settings-store write op carrying the book manifest for `ownerFingerprint` over the given
+ * POST-mutation entries. Async (HMAC) — call BEFORE opening the write tx, then hand the returned op to
+ * txPutMany alongside the record put/delete. Fail-closed: needs the unlocked manifest subkey.
+ */
+async function buildContactManifestOp(ownerFingerprint: string, entries: ManifestEntry[]): Promise<TxOp> {
+  if (!_contactKeys) {
+    throw new Error('Session locked — cannot compute contact manifest (enc-b fail-closed)');
+  }
+  const mac = await computeManifestMAC(_contactKeys.manifestKey, entries, entries.length);
+  return { store: 'settings', value: { key: contactManifestSettingKey(ownerFingerprint), value: mac } };
+}
+
 /**
  * Encrypt a logical ContactRecord into its at-rest envelope (fail-closed — throws if locked).
  * Envelope = { id, owner_fingerprint (plaintext: keyPath / 'owner' index / AAD), fingerprint = the
@@ -610,8 +663,16 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
   if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
   const stored = await buildStoredContact(record);
+  // enc-b B4: recompute the book manifest over the POST-insert set (existing owner contacts + this new
+  // record) and write it in the SAME tx as the record. Decrypt-all + MAC happen BEFORE the tx (the
+  // auto-commit footgun). A ConstraintError aborts BOTH puts → the book and manifest stay consistent.
+  const postAddEntries = [
+    ...(await getAllContacts(ownerFingerprint)).map(toManifestEntry),
+    { id: record.id, version: typeof record.version === 'number' ? record.version : 0 },
+  ];
+  const addManifestOp = await buildContactManifestOp(ownerFingerprint, postAddEntries);
   try {
-    await txPut('contacts', stored);
+    await txPutMany([{ store: 'contacts', value: stored }, addManifestOp]);
   } catch (e) {
     // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent add-paths for the
     // same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add) can each pass
@@ -646,7 +707,15 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   }))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
-  await txPut('contacts', await buildStoredContact(next));
+  const stored = await buildStoredContact(next);
+  // enc-b B4: manifest over the post-update set (this id's version replaced) in the SAME tx as the
+  // record. owner_fingerprint is immutable per contact, so the book is `existing.owner_fingerprint`.
+  const owner = existing.owner_fingerprint;
+  const postUpdateEntries = (await getAllContacts(owner)).map((c) =>
+    c.id === id ? { id, version: typeof next.version === 'number' ? next.version : 0 } : toManifestEntry(c),
+  );
+  const updateManifestOp = await buildContactManifestOp(owner, postUpdateEntries);
+  await txPutMany([{ store: 'contacts', value: stored }, updateManifestOp]);
 }
 
 /**
@@ -659,7 +728,19 @@ export async function hasEncryptedKeys(fingerprint: string): Promise<boolean> {
 }
 
 export async function removeContact(id: string): Promise<void> {
-  await txDelete('contacts', id);
+  // enc-b B4: delete the record AND rewrite the book manifest over the post-remove set in ONE tx, so a
+  // removal can't leave a stale manifest that would false-alarm as corruption on the next unlock.
+  const rec = await txGet<{ owner_fingerprint?: string }>('contacts', id);
+  if (!rec) return; // idempotent: nothing to remove
+  if (!_sessionKey || !_contactKeys) {
+    // Removal is a post-unlock user action; recomputing the manifest needs the session. Fail-closed
+    // (consistent with add/update) rather than delete-without-manifest and trip a false corruption flag.
+    throw new Error('Session locked — removeContact needs the session to update the book manifest (enc-b fail-closed)');
+  }
+  const owner = rec.owner_fingerprint ?? '';
+  const postRemoveEntries = (await getAllContacts(owner)).filter((c) => c.id !== id).map(toManifestEntry);
+  const removeManifestOp = await buildContactManifestOp(owner, postRemoveEntries);
+  await txPutMany([{ store: 'contacts', delete: id }, removeManifestOp]);
 }
 
 /**
