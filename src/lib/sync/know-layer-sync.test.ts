@@ -8,11 +8,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ContactRecord } from '@/lib/identity/client-store';
+import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import type { OrchestratorDeps, PSISyncOptions } from '@/lib/trust/mutual-trust-sync';
 import {
   buildKnowOverlayDeps,
+  runKnowLayerCompletionPhase,
   runKnowLayerSyncTick,
   startKnowLayerSync,
+  type CompleteTrustSyncFn,
   type KnowOverlayStore,
   type SyncMutualTrustFn,
 } from './know-layer-sync';
@@ -263,4 +266,51 @@ test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/blocked/g
   assert.equal('blocked' in known[0], false);
   assert.equal(JSON.stringify(known).includes('family'), false);
   assert.equal(JSON.stringify(known).includes('secret-group'), false);
+});
+
+// ── Completion phase — gated off; never call completeTrustSync; never keep keypairs ───────────────
+
+function spyComplete(): { fn: CompleteTrustSyncFn; calls: () => number } {
+  let n = 0;
+  const fn: CompleteTrustSyncFn = async () => {
+    n += 1;
+    return { error: 'spy should not run' };
+  };
+  return { fn, calls: () => n };
+}
+
+test('isPSIDiscoveryLive stays false (do not advertise completion until co-verify)', () => {
+  assert.equal(isPSIDiscoveryLive(), false);
+});
+
+test('completion phase is a no-op while isPSIDiscoveryLive is false — completeTrustSync is not called', async () => {
+  const complete = spyComplete();
+  const deps = buildKnowOverlayDeps(OWNER, fakeStore([]).store);
+  await runKnowLayerCompletionPhase(
+    deps,
+    DUMMY_OPTIONS,
+    [{ peerFingerprint: 'peer-1', sessionId: 'sess-1' }],
+    complete.fn,
+  );
+  assert.equal(complete.calls(), 0);
+});
+
+test('tick with initiated sessions still does not call completeTrustSync (keypairs are dropped)', async () => {
+  const complete = spyComplete();
+  const syncFn = (async () => ({
+    responded: [],
+    initiated: [
+      {
+        peerFingerprint: 'peer-1',
+        sessionId: 'sess-1',
+        keypair: { privateKey: 'MUST-NOT-BE-STORED', publicKey: 'pub' },
+        fpOrder: ['contact-a', 'contact-b'],
+      },
+    ],
+    errors: [],
+  })) as unknown as SyncMutualTrustFn;
+
+  const deps = buildKnowOverlayDeps(OWNER, fakeStore([]).store);
+  await runKnowLayerSyncTick(deps, DUMMY_OPTIONS, syncFn, complete.fn);
+  assert.equal(complete.calls(), 0);
 });

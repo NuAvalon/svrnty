@@ -6,7 +6,13 @@
 // components/biometric/biometric-seam.test.ts ("seam is not live until Flint wires PRF").
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive } from './claim-gates';
+import {
+  isPQEncapLive,
+  isPQSignLive,
+  isPQWireLive,
+  isBiometricSeamLive,
+  isPSIDiscoveryLive,
+} from './claim-gates';
 
 describe('claim-gates — honest until wired (flip WITH the wire, never ahead)', () => {
   it('isPQEncapLive is false until hybridEncapsulate has a real caller (classical seal today)', () => {
@@ -23,5 +29,9 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
 
   it('isBiometricSeamLive is re-exported and false until the WebAuthn/PRF seam is wired', () => {
     assert.equal(isBiometricSeamLive(), false);
+  });
+
+  it('isPSIDiscoveryLive is false until initiator completeTrustSync is wired + co-verified', () => {
+    assert.equal(isPSIDiscoveryLive(), false);
   });
 });

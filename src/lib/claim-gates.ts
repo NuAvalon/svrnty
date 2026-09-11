@@ -48,3 +48,19 @@ export function isPQSignLive(): boolean {
 export function isPQWireLive(): boolean {
   return isPQEncapLive() && isPQSignLive();
 }
+
+/**
+ * Initiator-side PSI mutual-discovery *completion* is wired and verified end-to-end
+ * (`completeTrustSync` actually runs after a peer responds).
+ *
+ * FALSE today: the know-layer tick calls `syncMutualTrust` (initiate + respond) but never
+ * `completeTrustSync`. Completing a session needs the initiator's ephemeral blinding key.
+ * That key is currently random (`generatePSIKeypair`); a team-owned stateless re-derive
+ * helper is not exported, and this gate must stay false until that helper exists and
+ * co-verify passes. Flip to true WITH the first real `completeTrustSync` caller that uses
+ * the team helper (and update claim-gates.test.ts). Do not advertise discovery-complete
+ * while this is false.
+ */
+export function isPSIDiscoveryLive(): boolean {
+  return false;
+}
