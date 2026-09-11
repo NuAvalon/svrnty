@@ -669,9 +669,92 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
   return backup;
 }
 
-export async function importAll(backup: SovereignBackup): Promise<string> {
-  const fingerprint = backup.identity?.identity?.fingerprint;
+/**
+ * Plaintext JSON backup is untrusted. Drop claimed trust / owner_verify / Gate
+ * provenance so a crafted file cannot land Trusted, a fake verify mark, or a
+ * Grow-Gate holding-room row. Persistence still goes through addContact
+ * (fail-closed fingerprint↔key binding). Encrypted vault restore is unchanged.
+ */
+export function contactFromPlaintextBackup(
+  raw: ContactRecord,
+): Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'> {
+  const next: Record<string, unknown> = { ...(raw as unknown as Record<string, unknown>) };
+  delete next.id;
+  delete next.added_at;
+  delete next.owner_fingerprint;
+  delete next.owner_verify;
+  delete next.trusted;
+  delete next.trusted_since;
+  delete next.verified_at;
+  delete next.grow_gate;
+  delete next.grow_invite_nonce;
+  delete next.grow_mint_channel;
+  next.trust_level = 'known';
+  next.verification = { method: 'none', verified_at: null };
+  if (next.metadata && typeof next.metadata === 'object') {
+    const meta = { ...(next.metadata as Record<string, unknown>) };
+    delete meta.owner_verify;
+    delete meta.grow_gate;
+    delete meta.grow_invite_nonce;
+    delete meta.grow_mint_channel;
+    next.metadata = meta;
+  }
+  return next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>;
+}
+
+export type PlaintextImportReport = {
+  fingerprint: string;
+  kept: number;
+  skipped: number;
+};
+
+/** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
+export function formatPlaintextImportReport(report: Pick<PlaintextImportReport, 'kept' | 'skipped'>): string {
+  const known = `${report.kept} landed Known`;
+  if (report.skipped <= 0) return known;
+  return `${known}, ${report.skipped} skipped (key didn't match)`;
+}
+
+/**
+ * Fail-closed identity binding for an untrusted plaintext backup. Refuse before any
+ * IndexedDB write so a forged fingerprint leaves no partial state.
+ */
+export async function assertPlaintextBackupIdentityBinds(backup: SovereignBackup): Promise<string> {
+  const fingerprint = (backup.identity?.identity?.fingerprint || '').trim();
   if (!fingerprint) throw new Error('Invalid backup: no fingerprint');
+  const identityPub = backup.identity?.identity?.public_key || '';
+  const identityPq = backup.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fingerprint, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
+    throw new Error(
+      'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
+    );
+  }
+  return fingerprint;
+}
+
+/** Persist plaintext contacts via addContact. Unbindable rows skip and are counted. */
+export async function importPlaintextContacts(
+  ownerFingerprint: string,
+  contacts: ContactRecord[] | undefined,
+): Promise<{ kept: number; skipped: number }> {
+  let kept = 0;
+  let skipped = 0;
+  for (const contact of contacts || []) {
+    try {
+      await addContact(ownerFingerprint, contactFromPlaintextBackup(contact));
+      kept++;
+    } catch {
+      skipped++;
+    }
+  }
+  return { kept, skipped };
+}
+
+export async function importAll(backup: SovereignBackup): Promise<PlaintextImportReport> {
+  const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
 
   await storeIdentity(fingerprint, backup.identity);
 
@@ -688,12 +771,12 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
     await storeShards(fingerprint, backup.shards);
   }
 
-  for (const contact of (backup.contacts || [])) {
-    await txPut('contacts', { ...contact, owner_fingerprint: fingerprint });
-  }
+  // Same persistence gate as importVaultContents: never raw-put a contact from
+  // an untrusted file. Unbindable rows skip; the identity import still completes.
+  const { kept, skipped } = await importPlaintextContacts(fingerprint, backup.contacts);
 
   await setActiveFingerprint(fingerprint);
-  return fingerprint;
+  return { fingerprint, kept, skipped };
 }
 
 /**

@@ -5,7 +5,7 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { base64ToUint8 } from '@/lib/crypto/pq';
@@ -262,6 +262,8 @@ export function SoverentityFrontend({
   const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
+  /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
+  const [plaintextImportNote, setPlaintextImportNote] = useState<string | null>(null);
   /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
   const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
   /** After successful seed-only restore — unmissable contacts-honesty interstitial (no CTA). */
@@ -620,7 +622,7 @@ export function SoverentityFrontend({
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
-        const { importAll, storeKey, addContact, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
+        const { importAll, storeKey, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
 
         // Detect format and normalize
         if (data.type === 'svrnty-full-backup') {
@@ -680,7 +682,10 @@ export function SoverentityFrontend({
             }
           }
 
-          await importAll(backup);
+          const fullReport = await importAll(backup);
+          if (fullReport.kept + fullReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(fullReport));
+          }
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
           if (!backup.pq_keys) {
@@ -715,7 +720,10 @@ export function SoverentityFrontend({
               return;
             }
           }
-          await importAll(data);
+          const sovereignReport = await importAll(data);
+          if (sovereignReport.kept + sovereignReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(sovereignReport));
+          }
 
           // PQ migration: check for missing PRIVATE PQ keys
           if (!data.pq_keys) {
@@ -730,17 +738,12 @@ export function SoverentityFrontend({
           setIdentity(data.identity);
           onIdentityUpdate?.(data.identity);
         } else if (data.owner_fingerprint && data.contacts) {
-          // SecureExportDialog format — contacts only, no identity
-          // Import contacts into existing identity or create stub
+          // SecureExportDialog format — contacts only, no identity.
+          // Same Known-only plaintext gate as importAll; unbindable rows skip and are reported.
           const fp = data.owner_fingerprint;
-          for (const contact of data.contacts) {
-            await addContact(fp, {
-              fingerprint: contact.fingerprint || '',
-              name: contact.name || '',
-              email: contact.email || '',
-              public_key: contact.public_key || '',
-              trust_level: contact.trust_level || 'unknown',
-            });
+          const contactsReport = await importPlaintextContacts(fp, data.contacts);
+          if (contactsReport.kept + contactsReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(contactsReport));
           }
           await setActiveFingerprint(fp);
           const existingIdentity = await loadIdentity(fp);
@@ -1739,6 +1742,43 @@ export function SoverentityFrontend({
   return (
     <div style={s.outerWrap}>
       <div style={s.identityPanel}>
+        {plaintextImportNote && (
+          <div
+            role="status"
+            data-testid="plaintext-import-note"
+            style={{
+              background: 'rgba(78, 205, 196, 0.08)',
+              border: '1px solid rgba(78, 205, 196, 0.28)',
+              borderRadius: 12,
+              padding: '14px 16px',
+              marginBottom: 16,
+              maxWidth: 440,
+              width: '100%',
+            }}
+          >
+            <p style={{ margin: 0, color: SE.text, fontSize: 13, lineHeight: 1.5 }}>
+              {plaintextImportNote}
+            </p>
+            <button
+              type="button"
+              onClick={() => setPlaintextImportNote(null)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: SE.dim,
+                fontFamily: SE.fontSans,
+                fontSize: 12,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                textUnderlineOffset: 2,
+                padding: 0,
+                marginTop: 8,
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <SovereignIdentityCard
           name={identity.identity.name}
           fingerprint={identity.identity.fingerprint}
