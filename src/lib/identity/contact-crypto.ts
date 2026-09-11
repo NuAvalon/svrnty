@@ -233,8 +233,10 @@ export interface ContactCryptoKeys {
  *
  * `hmacMasterSalt` MUST be distinct from client-store's `key_encryption_salt` (the AES _sessionKey's
  * PBKDF2 salt) — domain separation between the AES key and the HMAC-master, so the two PBKDF2 outputs
- * are independent. The caller owns salt provenance (a dedicated stored random salt, or a deterministic
- * domain-tagged derivation of key_encryption_salt — a co-verify decision for the increment-2 wiring).
+ * are independent. Salt provenance is LOCKED (Flint, option b): the increment-2 client-store caller
+ * derives it as SHA-256('svrnty/enc-b/hmac-master-salt/v1' ‖ key_encryption_salt) — distinct +
+ * domain-separated, inherits key_encryption_salt's per-install randomness, no new loss-prone stored
+ * state. A KDF salt needs uniqueness, not secrecy (passphrase already 600k-stretched).
  */
 export async function deriveContactCryptoKeys(
   passphrase: string,
