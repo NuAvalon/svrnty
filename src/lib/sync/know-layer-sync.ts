@@ -36,6 +36,7 @@ import {
 import { extractRawSign, signBind, signPsiAuthWrapped } from '@/lib/identity/raw-sign';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isDecayed, type TrustEdge } from '@/lib/trust/types';
+import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import {
   syncMutualTrust,
   type OrchestratorDeps,
@@ -148,6 +149,55 @@ export function buildKnowOverlayDeps(
 
 export type SyncMutualTrustFn = typeof syncMutualTrust;
 
+/** Session ids the tick may complete later — never the ephemeral keypair. */
+export type KnowLayerInitiatedSession = {
+  peerFingerprint: string;
+  sessionId: string;
+};
+
+/**
+ * Optional spy for tests: the real completeTrustSync is NOT called until a team-owned
+ * stateless re-derive helper exists AND isPSIDiscoveryLive() is true.
+ */
+export type CompleteTrustSyncFn = (
+  deps: OrchestratorDeps,
+  sessionId: string,
+  peerFingerprint: string,
+  keypair: unknown,
+  options: PSISyncOptions,
+  fpOrder: string[],
+  layer: 'know' | 'trust',
+) => Promise<unknown>;
+
+function initiatedWithoutKeypairs(
+  initiated: Array<{ peerFingerprint: string; sessionId: string }> | undefined,
+): KnowLayerInitiatedSession[] {
+  if (!initiated) return [];
+  return initiated.map(({ peerFingerprint, sessionId }) => ({ peerFingerprint, sessionId }));
+}
+
+/**
+ * Initiator completion phase — the missing caller of completeTrustSync.
+ *
+ * STOPPED (fail-closed): completing needs the initiator's ephemeral blinding key. Today
+ * initiateTrustSync builds that key with generatePSIKeypair() (random bytes). The requested
+ * design is a team-owned stateless re-derive from the unlocked identity secret + sessionId;
+ * that helper is not exported. This function must not write a KDF, must not persist the
+ * keypair, and must not call completeTrustSync until the helper exists.
+ *
+ * Gated by isPSIDiscoveryLive() === false (do not advertise; do not flip in this change).
+ */
+export async function runKnowLayerCompletionPhase(
+  _deps: OrchestratorDeps,
+  _options: PSISyncOptions,
+  _initiated: KnowLayerInitiatedSession[],
+  completeFn?: CompleteTrustSyncFn,
+): Promise<void> {
+  if (!isPSIDiscoveryLive()) return;
+  // Even if the live gate were flipped early: no re-derive helper → do not complete.
+  void completeFn;
+}
+
 /**
  * One KNOW-layer sync tick.
  *
@@ -155,13 +205,23 @@ export type SyncMutualTrustFn = typeof syncMutualTrust;
  * respondToTrustSync's consent gate is `if (layer === 'know' && !consentSet.has(...)) continue` — so
  * an implicit/'trust' layer SKIPS the KNOW consent gate entirely (fail-OPEN). Do NOT rely on the
  * default; this literal 'know' is the tested privacy contract.
+ *
+ * After initiate+respond, the completion phase is invoked. While isPSIDiscoveryLive() is false
+ * it is a no-op (the initiated keypairs are stripped and dropped — never stored).
  */
 export async function runKnowLayerSyncTick(
   deps: OrchestratorDeps,
   options: PSISyncOptions,
   syncFn: SyncMutualTrustFn = syncMutualTrust,
+  completeFn?: CompleteTrustSyncFn,
 ): Promise<void> {
-  await syncFn(deps, options, 'know');
+  const result = await syncFn(deps, options, 'know');
+  await runKnowLayerCompletionPhase(
+    deps,
+    options,
+    initiatedWithoutKeypairs(result?.initiated),
+    completeFn,
+  );
 }
 
 export interface KnowLayerSyncHandle {
