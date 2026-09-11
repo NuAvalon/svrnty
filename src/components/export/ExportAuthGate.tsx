@@ -92,6 +92,7 @@ export function ExportAuthGate({
     >
       <DialogContent
         className="sm:max-w-md"
+        data-testid="export-auth-gate"
         style={{
           background: E.surfaceSolid,
           color: E.text,
