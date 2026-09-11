@@ -7,6 +7,9 @@
 import { fingerprintMatchesKey } from './fingerprint';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
 import type { VaultContents } from '../sync/vault';
+// enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
+// returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
+import { deriveContactCryptoKeys, type ContactCryptoKeys } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -18,6 +21,9 @@ const DB_VERSION = 3;
 
 let _sessionKey: CryptoKey | null = null;
 let _sessionSalt: Uint8Array | null = null;
+// enc-b HMAC subkeys: index = blinded-fp keyed-PRF; manifest = book-integrity MAC. Derived at
+// initSessionKey (from the passphrase + salt-b), cleared on lock. Contact AES reuses _sessionKey.
+let _contactKeys: ContactCryptoKeys | null = null;
 
 const PBKDF2_ITERATIONS = 600_000;
 const ENC_VERSION = 1; // Encrypted record format version
@@ -61,6 +67,19 @@ async function deriveSessionKey(passphrase: string, salt: Uint8Array): Promise<C
 }
 
 /**
+ * enc-b HMAC-master salt = option (b), Flint-locked: SHA-256('svrnty/enc-b/hmac-master-salt/v1' ‖
+ * key_encryption_salt). Distinct from key_encryption_salt (domain separation between the AES
+ * _sessionKey and the HMAC-master), inherits its per-install randomness, no new stored state.
+ */
+async function deriveHmacMasterSalt(keSalt: Uint8Array): Promise<Uint8Array> {
+  const label = new TextEncoder().encode('svrnty/enc-b/hmac-master-salt/v1');
+  const preimage = new Uint8Array(label.length + keSalt.length);
+  preimage.set(label, 0);
+  preimage.set(keSalt, label.length);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+}
+
+/**
  * Initialize the session key from a user passphrase.
  * Call once per session (on identity creation or unlock).
  * The derived CryptoKey is held in memory — lost on tab close.
@@ -78,6 +97,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   }
   _sessionKey = await deriveSessionKey(passphrase, salt);
   _sessionSalt = salt;
+  // enc-b: derive the two HMAC subkeys {index, manifest} from the passphrase via the salt-(b)
+  // HMAC-master. Contact-record AES reuses _sessionKey (◆5701) — no separate AES key derived here.
+  _contactKeys = await deriveContactCryptoKeys(passphrase, await deriveHmacMasterSalt(salt), PBKDF2_ITERATIONS);
 }
 
 /** Check if the session is unlocked (key available in memory). */
@@ -89,6 +111,7 @@ export function isSessionUnlocked(): boolean {
 export function lockSession(): void {
   _sessionKey = null;
   _sessionSalt = null;
+  _contactKeys = null;
 }
 
 async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
