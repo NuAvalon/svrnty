@@ -48,6 +48,11 @@ import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
+import {
+  displayNameWithAlias,
+  readOwnerLocal,
+  type OwnerLocalAnnotations,
+} from '@/lib/contacts/owner-local-annotations';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
   ClassicalFieldsEditor,
@@ -104,6 +109,8 @@ interface Contact {
     extras?: Array<{ label: string; value: string }>;
   };
   connection_status?: string;
+  /** Receiver-local alias/notes — device only. */
+  owner_local?: { alias?: string; notes?: string };
 }
 
 // Map legacy API values to binary trust
@@ -166,6 +173,7 @@ function recordToContact(r: ContactRecord): Contact {
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls
     connection_status: (r as any).connection_status,
+    owner_local: readOwnerLocal(r as { owner_local?: unknown }),
   };
 }
 
@@ -314,7 +322,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const filteredContacts = contacts.filter(contact => {
     const q = searchQuery.trim().toLowerCase();
     if (q) {
-      const hay = `${contact.name} ${contact.email} ${contact.fingerprint}`.toLowerCase();
+      const hay = `${contact.name} ${contact.owner_local?.alias || ''} ${contact.email} ${contact.fingerprint}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     const svrn = isSvrnNetworkContact(contact);
@@ -343,7 +351,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     const living = livingEdgeStatus(edge);
     return {
       id: c.id,
-      name: c.name,
+      name: displayNameWithAlias(c.name, c.owner_local || {}),
       email: c.email,
       fingerprint: c.fingerprint,
       public_key: c.public_key,
@@ -891,6 +899,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     setSelectedContact(next);
     await loadContacts();
     onContactsChange?.();
+  };
+
+  const handleOwnerLocalChange = async (next: OwnerLocalAnnotations) => {
+    if (!selectedContact) return;
+    const patched = { ...selectedContact, owner_local: next };
+    setSelectedContact(patched);
+    setContacts((cs) => cs.map((c) => (c.id === patched.id ? patched : c)));
+    try {
+      await updateContact(selectedContact.id, { owner_local: next } as any);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save notes');
+    }
   };
 
   const handleShareSettingsChange = async (next: ContactShareSettings) => {
@@ -1755,6 +1775,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           availableGroups={Array.from(new Set(contacts.flatMap(c => c.metadata?.tags || []))).sort()}
           onToggleGroup={(tag) => { void handleToggleGroup(tag); }}
           onShareSettingsChange={(next) => { void handleShareSettingsChange(next); }}
+          onOwnerLocalChange={(next) => { void handleOwnerLocalChange(next); }}
         />
 
         <TrustActionConfirmDialog

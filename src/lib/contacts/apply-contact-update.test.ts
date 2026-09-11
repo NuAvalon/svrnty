@@ -292,6 +292,25 @@ test('handles/urls apply is pure (caller contact_info not mutated)', () => {
   assert.equal(JSON.stringify(c), snapshot); // current record untouched (MERGE clones first)
 });
 
+test('receiver-local owner_local + metadata.tags survive a sender display_name+note update', () => {
+  const local = {
+    owner_local: { alias: 'Dock-Al', notes: 'private-receiver-note-xyz' },
+    metadata: { tags: ['family-cluster-label'] },
+  };
+  const { next } = applyVerifiedContactUpdate(
+    contact(local),
+    update({
+      changed_fields: ['display_name', 'note'],
+      delta: { display_name: 'Alice A.', note: 'sender wrote this' },
+    }),
+    NOW,
+  );
+  assert.equal(next.name, 'Alice A.');
+  assert.equal(next.notes, 'sender wrote this');
+  assert.deepEqual(next.owner_local, local.owner_local);
+  assert.deepEqual((next.metadata as { tags?: string[] }).tags, ['family-cluster-label']);
+});
+
 // ── LOCKSTEP divergence-guard: apply allowlist ≡ verify allowlist ──────
 // The canonical invariant is verify ≡ apply. Each file declares its OWN Set (apply never imports
 // the verify FUNCTION — only the shared value constants), and THIS test is the guard that they never

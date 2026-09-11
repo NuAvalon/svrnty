@@ -15,14 +15,23 @@ async function genesis(page: Page, name: string) {
 }
 
 test.describe('Owner lenses + living vs classical sample circle', () => {
-  test('Identity: add a field and a named lens', async ({ page }) => {
+  test('Identity: add a field, preview, named lens, Grow default-lens picker', async ({ page }) => {
+    test.setTimeout(90_000);
     await genesis(page, 'Lens Owner');
     await page.getByRole('tab', { name: 'Identity' }).click();
     await expect(page.getByTestId('owner-card-studio')).toBeVisible();
     await page.getByTestId('owner-card-add-field').click();
+    await expect(page.getByTestId('owner-card-preview')).toBeVisible();
     await page.getByPlaceholder('New lens name — Business, Festival…').fill('Festival');
     await page.getByTestId('owner-card-add-lens').click();
     await expect(page.getByRole('button', { name: /^Festival/ })).toBeVisible();
+
+    await page.getByTestId('nav-grow').click();
+    const grow = page.getByTestId('grow-surface');
+    await expect(grow).toBeVisible();
+    await expect(grow.getByTestId('grow-lens-picker')).toBeVisible();
+    await expect(grow.getByRole('button', { name: /Everyone/ })).toBeVisible();
+    await expect(grow.getByRole('button', { name: /^Festival/ })).toBeVisible();
   });
 
   test('Contacts: sample Hypatia is classical (no fingerprint)', async ({ page }) => {

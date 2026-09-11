@@ -8,38 +8,51 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
+  OWNER_CUSTOM_VALUE_TYPES,
   OWNER_METHOD_KINDS,
   addOwnerLens,
   addOwnerMethod,
   hydrateOwnerCard,
   methodKindLabel,
+  methodRelayHost,
+  methodsForLens,
   patchOwnerLens,
   removeOwnerLens,
   removeOwnerMethod,
   saveOwnerCard,
+  setDefaultLens,
   setLensPreferred,
   toggleLensMethod,
   updateOwnerMethod,
   type OwnerCardBag,
+  type OwnerCustomValueType,
   type OwnerMethodKind,
 } from '@/components/identity/owner-card';
 import { saveLocalMethods } from '@/components/identity/local-methods';
+import { OwnerCardPreview } from '@/components/identity/OwnerCardPreview';
+import { requestMethodRelayMove } from '@/lib/contacts/method-relay';
 
 export function OwnerCardStudio({
   fingerprint,
+  name,
   email,
   onEmailChange,
   onBagChange,
 }: {
   fingerprint: string;
+  name?: string;
   email?: string;
   onEmailChange?: (email: string) => void;
   onBagChange?: (bag: OwnerCardBag) => void;
 }) {
   const [bag, setBag] = useState<OwnerCardBag>(() => hydrateOwnerCard(fingerprint, email));
   const [addKind, setAddKind] = useState<OwnerMethodKind>('phone');
+  const [addCustomType, setAddCustomType] = useState<OwnerCustomValueType>('text');
   const [newLensName, setNewLensName] = useState('');
   const [activeLensId, setActiveLensId] = useState(bag.defaultLensId || bag.lenses[0]?.id);
+  const [saveHint, setSaveHint] = useState<string | null>(null);
+  const [relayDraft, setRelayDraft] = useState<Record<string, string>>({});
+  const [relayHint, setRelayHint] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const next = hydrateOwnerCard(fingerprint, email);
@@ -47,9 +60,18 @@ export function OwnerCardStudio({
     setActiveLensId(next.defaultLensId || next.lenses[0]?.id);
   }, [fingerprint, email]);
 
-  const persist = (next: OwnerCardBag) => {
+  const persist = (next: OwnerCardBag): boolean => {
+    const saved = saveOwnerCard(fingerprint, next);
+    if (!saved.ok) {
+      setSaveHint(
+        saved.reason === 'inlined-binary'
+          ? 'Paste a link, not an inlined file — avatars stay as references.'
+          : 'This card is at the size limit. Remove a field to add another.',
+      );
+      return false;
+    }
+    setSaveHint(null);
     setBag(next);
-    saveOwnerCard(fingerprint, next);
     const emailM = next.methods.find((m) => m.id === 'm-email' || m.kind === 'email');
     const signalM = next.methods.find((m) => m.id === 'm-signal' || m.kind === 'signal');
     const siteM = next.methods.find((m) => m.id === 'm-site' || m.kind === 'site');
@@ -59,6 +81,7 @@ export function OwnerCardStudio({
     });
     if (emailM && onEmailChange && emailM.value !== (email || '')) onEmailChange(emailM.value);
     onBagChange?.(next);
+    return true;
   };
 
   const lens = bag.lenses.find((l) => l.id === activeLensId) || bag.lenses[0];
@@ -94,36 +117,106 @@ export function OwnerCardStudio({
       </div>
 
       {bag.methods.map((m) => (
-        <div key={m.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {m.kind === 'custom' ? (
+        <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {m.kind === 'custom' ? (
+              <input
+                value={m.label || ''}
+                placeholder="Label"
+                onChange={(e) => persist(updateOwnerMethod(bag, m.id, { label: e.target.value }))}
+                style={inp(88)}
+              />
+            ) : (
+              <span style={{ width: 88, fontSize: 11, color: E.dim, fontFamily: E.fontSans, flexShrink: 0 }}>
+                {methodKindLabel(m.kind)}
+              </span>
+            )}
+            {m.kind === 'custom' ? (
+              <select
+                value={m.valueType || 'text'}
+                aria-label="Custom field type"
+                onChange={(e) =>
+                  persist(
+                    updateOwnerMethod(bag, m.id, { valueType: e.target.value as OwnerCustomValueType }),
+                  )
+                }
+                style={{ ...inp(0), width: 92 }}
+              >
+                {OWNER_CUSTOM_VALUE_TYPES.map((t) => (
+                  <option key={t.type} value={t.type}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            ) : null}
             <input
-              value={m.label || ''}
-              placeholder="Label"
-              onChange={(e) => persist(updateOwnerMethod(bag, m.id, { label: e.target.value }))}
-              style={inp(88)}
+              value={m.value}
+              placeholder={methodKindLabel(m.kind)}
+              onChange={(e) => persist(updateOwnerMethod(bag, m.id, { value: e.target.value }))}
+              style={{ ...inp(0), flex: 1 }}
             />
-          ) : (
-            <span style={{ width: 88, fontSize: 11, color: E.dim, fontFamily: E.fontSans, flexShrink: 0 }}>
-              {methodKindLabel(m.kind)}
+            <button
+              type="button"
+              onClick={() => persist(removeOwnerMethod(bag, m.id))}
+              style={ghostBtn}
+            >
+              Remove
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingLeft: 88 }}>
+            <span style={{ fontSize: 10, color: E.dim, fontFamily: E.fontSans, flexShrink: 0 }}>
+              Relay
             </span>
-          )}
-          <input
-            value={m.value}
-            placeholder={methodKindLabel(m.kind)}
-            onChange={(e) => persist(updateOwnerMethod(bag, m.id, { value: e.target.value }))}
-            style={{ ...inp(0), flex: 1 }}
-          />
-          <button
-            type="button"
-            onClick={() => persist(removeOwnerMethod(bag, m.id))}
-            style={ghostBtn}
-          >
-            Remove
-          </button>
+            <input
+              data-testid={`owner-method-relay-${m.id}`}
+              value={relayDraft[m.id] ?? methodRelayHost(m)}
+              placeholder="svrnty.is"
+              aria-label={`Relay for ${m.kind === 'custom' ? m.label || 'custom' : methodKindLabel(m.kind)}`}
+              onChange={(e) => setRelayDraft((d) => ({ ...d, [m.id]: e.target.value }))}
+              style={{ ...inp(0), flex: 1, fontSize: 12 }}
+            />
+            <button
+              type="button"
+              data-testid={`owner-method-switch-relay-${m.id}`}
+              onClick={() => {
+                void (async () => {
+                  const raw = relayDraft[m.id] ?? methodRelayHost(m);
+                  const { result, bag: next } = await requestMethodRelayMove(bag, m.id, raw);
+                  if (!result.ok) {
+                    setRelayHint((h) => ({
+                      ...h,
+                      [m.id]: 'Use an https host — javascript and data URLs are refused.',
+                    }));
+                    return;
+                  }
+                  persist(next);
+                  setRelayDraft((d) => ({ ...d, [m.id]: result.host }));
+                  setRelayHint((h) => ({
+                    ...h,
+                    [m.id]: result.delivered
+                      ? `Recorded ${result.host}.`
+                      : `Saved ${result.host} on this device. Delivery still uses the current relay until routing.update is wired.`,
+                  }));
+                })();
+              }}
+              style={{
+                ...ghostBtn,
+                border: `1px solid ${E.border}`,
+                padding: '4px 8px',
+              }}
+            >
+              Use this relay
+            </button>
+          </div>
+          {relayHint[m.id] ? (
+            <p style={{ margin: 0, paddingLeft: 88, fontSize: 10, color: E.dim, fontFamily: E.fontSans }}>
+              {relayHint[m.id]}
+            </p>
+          ) : null}
         </div>
       ))}
 
-      <div style={{ display: 'flex', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <select
           value={addKind}
           onChange={(e) => setAddKind(e.target.value as OwnerMethodKind)}
@@ -135,10 +228,30 @@ export function OwnerCardStudio({
             </option>
           ))}
         </select>
+        {addKind === 'custom' ? (
+          <select
+            value={addCustomType}
+            onChange={(e) => setAddCustomType(e.target.value as OwnerCustomValueType)}
+            aria-label="Type for new custom field"
+            style={{ ...inp(0), width: 100 }}
+          >
+            {OWNER_CUSTOM_VALUE_TYPES.map((t) => (
+              <option key={t.type} value={t.type}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <button
           type="button"
           data-testid="owner-card-add-field"
-          onClick={() => persist(addOwnerMethod(bag, addKind, ''))}
+          onClick={() =>
+            persist(
+              addOwnerMethod(bag, addKind, '', addKind === 'custom' ? '' : undefined, {
+                valueType: addKind === 'custom' ? addCustomType : undefined,
+              }),
+            )
+          }
           style={{
             ...ghostBtn,
             border: `1px solid ${E.borderLit}`,
@@ -149,6 +262,11 @@ export function OwnerCardStudio({
           Add field
         </button>
       </div>
+      {saveHint ? (
+        <p data-testid="owner-card-save-hint" style={{ margin: 0, fontSize: 11, color: E.danger, fontFamily: E.fontSans }}>
+          {saveHint}
+        </p>
+      ) : null}
 
       <div style={{ height: 1, background: E.border, margin: '4px 0' }} />
 
@@ -261,7 +379,8 @@ export function OwnerCardStudio({
           <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
             <button
               type="button"
-              onClick={() => persist({ ...bag, defaultLensId: lens.id })}
+              data-testid="owner-card-use-default-lens"
+              onClick={() => persist(setDefaultLens(bag, lens.id))}
               style={ghostBtn}
             >
               Use as share default
@@ -272,7 +391,7 @@ export function OwnerCardStudio({
                 onClick={() => {
                   const next = removeOwnerLens(bag, lens.id);
                   persist(next);
-                  setActiveLensId(next.defaultLensId);
+                  setActiveLensId(next.defaultLensId || next.lenses[0]?.id || '');
                 }}
                 style={ghostBtn}
               >
@@ -316,6 +435,14 @@ export function OwnerCardStudio({
         The share link is still you — one key. A lens is the default face you intend to hand them.
         Extra methods stay on this device until the living card schema carries them.
       </p>
+
+      <OwnerCardPreview
+        name={name || ''}
+        fingerprint={fingerprint}
+        methods={methodsForLens(bag, lens?.id).length ? methodsForLens(bag, lens?.id) : bag.methods}
+        preferredId={lens?.preferredMethodId}
+        caption="Preview of this face — not a send receipt. The signed invite still carries your identity key."
+      />
     </div>
   );
 }
