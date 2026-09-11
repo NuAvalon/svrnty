@@ -1059,10 +1059,18 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
 /**
  * Persist an already-decrypted .svrnty VaultContents to IndexedDB — the
  * restore-onto-this-device / daily passphrase-unlock path. Converges to the SAME
- * at-rest state as genesis (browser-identity.ts) and the recovery-code path
- * (restoreIdentityFromSeedVault), so a passphrase restore STICKS across reload
- * instead of only hydrating in-memory state (the data-safety launch-blocker:
- * before this, "Open Vault" set React state but wrote nothing → reload = identity lost).
+ * at-rest state as genesis (browser-identity.ts) — encrypted — so a passphrase
+ * restore STICKS across reload instead of only hydrating in-memory state (the
+ * data-safety launch-blocker: before this, "Open Vault" set React state but wrote
+ * nothing → reload = identity lost).
+ *
+ * ⚠ CAVEAT (honest current state, 2026-09-11 — Flint ◆5721): the passphrase-FREE
+ * recovery-code path (restoreIdentityFromSeedVault) does NOT yet converge to this
+ * encrypted-at-rest state — it has no session key and writes key material PLAINTEXT
+ * at rest today. The fix is the fail-closed force-encrypt-before-disk rework (enc-b
+ * Blocker-C fast-follow; mechanism = force-passphrase-before-any-key-touches-disk),
+ * after which the recovery-code path converges too and this caveat is removed. Until
+ * then, ONLY the passphrase paths (genesis + this) are encrypted at rest.
  *
  * SECURITY (persist SAFELY, not just persist):
  *  • Self-guarding like addContact: the identity's public_key MUST bind to `fingerprint`
