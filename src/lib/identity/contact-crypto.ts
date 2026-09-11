@@ -1,17 +1,22 @@
 // src/lib/identity/contact-crypto.ts
 // Per-contact encryption primitives (encryption-b) for the `contacts` store.
 //
-// Spec: Flint's per-contact-encryption crypto-seam rulings (2026-09-11), as amended by the
-// HKDF-master ruling (◆133623/133632 — supersedes the original "reuse _sessionKey / don't touch
-// the AES path"). These are PURE functions (keys are passed in) so the crypto core can be
-// co-verified and round-trip-tested in isolation. client-store.ts owns the derived keys and wires
-// these into addContact / getContact / the on-unlock migration.
+// Spec: Flint's per-contact-encryption crypto-seam rulings (2026-09-11), as amended by his
+// no-re-key correction ◆5701/◆5702 (KB#89159 — supersedes the original HKDF-master-derives-the-AES-key
+// ruling ◆5699). These are PURE functions (keys are passed in) so the crypto core can be
+// co-verified and round-trip-tested in isolation. client-store.ts owns the keys and wires these into
+// addContact / getContact / the on-unlock migration.
 //
-// Seam (locked):
-//  - KEY DERIVATION: one PBKDF2 stretch → HKDF-Expand → three domain-separated NON-EXTRACTABLE
-//    subkeys {AES-GCM record key, index HMAC key, manifest HMAC key}. One expensive PBKDF2, cheap
-//    subkeys (avoids the 2nd/3rd-PBKDF2 latency of separate derivations). See deriveContactCryptoKeys.
-//  - Per-record AES-GCM (record subkey), random 12-byte IV, enc_version marker, + AAD binding
+// Seam (locked, per ◆5701/◆5702):
+//  - AES: NO new record key. Contact records (and the PSI-A session store) REUSE client-store's
+//    existing `_sessionKey` (direct-PBKDF2 AES-GCM). The identity stores (keys/pq_keys/vaults/shards)
+//    stay under `_sessionKey` UNCHANGED — zero re-key, zero identity-lockout risk by construction.
+//    Cross-store separation is by the AAD domain tag, not a separate key.
+//  - KEY DERIVATION: ONE HKDF-master (a single 2nd PBKDF2 stretch, its own salt distinct from
+//    key_encryption_salt → HKDF-Expand ×2) derives ONLY the two HMAC subkeys {index, manifest}.
+//    Total unlock cost = 2× PBKDF2 (the existing AES-session + this HMAC-master), and STAYS 2×
+//    regardless of how many HMAC subkeys. See deriveContactCryptoKeys.
+//  - Per-record AES-GCM (reused _sessionKey), random 12-byte IV, enc_version marker, + AAD binding
 //    (scheme_version, "contacts", id, owner_fingerprint) so a ciphertext can't be transplanted
 //    across id / owner / store. AAD is an INJECTIVE length-prefixed TLV — never a delimiter-join
 //    (a `|`-join is 2nd-preimage-forgeable under a boundary shift).
@@ -29,7 +34,6 @@ const DEFAULT_PBKDF2_ITERATIONS = 600_000; // matches client-store.ts deriveSess
 // HKDF-Expand domain-separation labels — one per subkey. Frozen: changing a label re-derives that
 // key (a migration event), so treat these as wire-freeze-class.
 const HKDF_INFO = {
-  record: 'svrnty/enc-b/record-key/v1',
   index: 'svrnty/enc-b/index-key/v1',
   manifest: 'svrnty/enc-b/manifest-key/v1',
 } as const;
@@ -82,11 +86,14 @@ export interface EncryptedContactPayload {
 }
 
 /**
- * Encrypt a contact record's plaintext under the record subkey, bound to (id, owner) via AAD.
- * `recordKey` = the HKDF-derived AES-GCM record subkey (see deriveContactCryptoKeys).
+ * Encrypt a contact record's plaintext, bound to (id, owner) via AAD.
+ * `sessionKey` = client-store's existing `_sessionKey` (the direct-PBKDF2 AES-GCM key that also
+ * encrypts the identity stores) — REUSED per ◆5701, not a separate record key. The AAD domain tag
+ * ('svrnty/contacts/v1') gives cross-store separation, so reuse is safe: a contacts ciphertext can't
+ * be transplanted into another store because the recomputed AAD would differ and the GCM tag fails.
  */
 export async function encryptContactRecord(
-  recordKey: CryptoKey,
+  sessionKey: CryptoKey,
   id: string,
   ownerFingerprint: string,
   plaintext: unknown,
@@ -95,7 +102,7 @@ export async function encryptContactRecord(
   const aad = buildContactAAD(CONTACT_ENC_VERSION, id, ownerFingerprint);
   const data = new TextEncoder().encode(JSON.stringify(plaintext));
   const ct = new Uint8Array(
-    await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, recordKey, data),
+    await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, sessionKey, data),
   );
   return { enc_version: CONTACT_ENC_VERSION, iv: toB64(iv), ciphertext: toB64(ct) };
 }
@@ -106,7 +113,7 @@ export async function encryptContactRecord(
  * silently return the wrong record. `enc_version` from the stored payload selects the AAD scheme.
  */
 export async function decryptContactRecord<T = unknown>(
-  recordKey: CryptoKey,
+  sessionKey: CryptoKey,
   id: string,
   ownerFingerprint: string,
   payload: { iv: string; ciphertext: string; enc_version?: number },
@@ -115,7 +122,7 @@ export async function decryptContactRecord<T = unknown>(
   const ct = fromB64(payload.ciphertext);
   const aad = buildContactAAD(payload.enc_version ?? CONTACT_ENC_VERSION, id, ownerFingerprint);
   const pt = new Uint8Array(
-    await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad }, recordKey, ct),
+    await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad }, sessionKey, ct),
   );
   return JSON.parse(new TextDecoder().decode(pt)) as T;
 }
@@ -204,34 +211,37 @@ export async function verifyManifestMAC(
   return crypto.subtle.verify('HMAC', manifestKey, fromB64(storedMAC), serializeManifest(entries, count));
 }
 
-// ── Key derivation: HKDF-master (one PBKDF2 → three subkeys) ──
+// ── Key derivation: HKDF-master (one PBKDF2 → two HMAC subkeys) ──
 
 export interface ContactCryptoKeys {
-  recordKey: CryptoKey;   // AES-GCM 256, ['encrypt','decrypt'] — per-record encryption
-  indexKey: CryptoKey;    // HMAC SHA-256, ['sign']            — blinded fingerprint index
-  manifestKey: CryptoKey; // HMAC SHA-256, ['sign','verify']   — book-integrity manifest
+  // NO AES record key: contact-record AES reuses client-store's _sessionKey (◆5701). These are the
+  // only two subkeys the HKDF-master derives.
+  indexKey: CryptoKey;    // HMAC SHA-256, ['sign']          — blinded fingerprint index
+  manifestKey: CryptoKey; // HMAC SHA-256, ['sign','verify'] — book-integrity manifest
 }
 
 /**
- * Derive the three non-extractable subkeys from the passphrase via ONE PBKDF2 stretch + HKDF-Expand.
+ * Derive the two non-extractable HMAC subkeys {index, manifest} from the passphrase via ONE
+ * HKDF-master: a single PBKDF2 stretch → HKDF-Expand ×2 with distinct `info` labels. One expensive
+ * PBKDF2; the two HKDF expansions are cheap, so this stays 2× total unlock cost (the existing
+ * AES-session PBKDF2 + this one) no matter how many HMAC subkeys we add later.
  *
- * PBKDF2(passphrase, salt, iters) → 256-bit master → import as HKDF → deriveKey ×3 with distinct
- * `info` labels (record / index / manifest). One expensive PBKDF2; the three HKDF expansions are
- * cheap. All subkeys are non-extractable. Domain separation is by the `info` label per Flint's
- * HKDF-master ruling (◆133623 — supersedes the earlier per-key 2nd/3rd-PBKDF2 approach, which would
- * have been 3× unlock latency).
+ * ◆5701/◆5702 (KB#89159): this HKDF-master derives ONLY the HMAC subkeys. It does NOT derive the
+ * AES key — contact records reuse client-store's `_sessionKey`. So wiring this in does NOT re-key
+ * any identity store; the "user can't decrypt their own identity" catastrophe is off the table by
+ * construction. The migration shrinks to: encrypt contacts (new) + Blocker-C plaintext-fallback keys.
  *
- * ⚠ MIGRATION (co-verify): the record subkey ≠ the current direct-PBKDF2 _sessionKey, so wiring this
- * in re-keys ALL existing stores (keys/pq_keys/vaults/shards + contacts) under the new subkey — done
- * once, folded into the Blocker-C on-unlock migration (one book-conversion). Handled in client-store
- * wiring, not here.
+ * `hmacMasterSalt` MUST be distinct from client-store's `key_encryption_salt` (the AES _sessionKey's
+ * PBKDF2 salt) — domain separation between the AES key and the HMAC-master, so the two PBKDF2 outputs
+ * are independent. The caller owns salt provenance (a dedicated stored random salt, or a deterministic
+ * domain-tagged derivation of key_encryption_salt — a co-verify decision for the increment-2 wiring).
  */
 export async function deriveContactCryptoKeys(
   passphrase: string,
-  salt: Uint8Array,
+  hmacMasterSalt: Uint8Array,
   iterations: number = DEFAULT_PBKDF2_ITERATIONS,
 ): Promise<ContactCryptoKeys> {
-  // 1. PBKDF2 stretch (the single expensive step) → 256-bit master.
+  // 1. PBKDF2 stretch (the single expensive step) → 256-bit HMAC-master.
   const pbkdf2Material = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(passphrase),
@@ -240,31 +250,26 @@ export async function deriveContactCryptoKeys(
     ['deriveBits'],
   );
   const masterBits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt: hmacMasterSalt, iterations, hash: 'SHA-256' },
     pbkdf2Material,
     256,
   );
   // 2. Import the master as an HKDF key.
   const master = await crypto.subtle.importKey('raw', masterBits, 'HKDF', false, ['deriveKey']);
-  // 3. HKDF-Expand three domain-separated subkeys (cheap). HKDF salt reuses the PBKDF2 salt;
-  //    domain separation is provided by the distinct `info` labels.
+  // 3. HKDF-Expand two domain-separated HMAC subkeys (cheap). The HKDF salt reuses the master salt;
+  //    domain separation between index and manifest is provided by the distinct `info` labels.
   const enc = new TextEncoder();
-  const expand = (
-    info: string,
-    algo: AesKeyGenParams | HmacKeyGenParams,
-    usages: KeyUsage[],
-  ): Promise<CryptoKey> =>
+  const expand = (info: string, usages: KeyUsage[]): Promise<CryptoKey> =>
     crypto.subtle.deriveKey(
-      { name: 'HKDF', hash: 'SHA-256', salt, info: enc.encode(info) },
+      { name: 'HKDF', hash: 'SHA-256', salt: hmacMasterSalt, info: enc.encode(info) },
       master,
-      algo,
+      { name: 'HMAC', hash: 'SHA-256' },
       false, // non-extractable
       usages,
     );
-  const [recordKey, indexKey, manifestKey] = await Promise.all([
-    expand(HKDF_INFO.record, { name: 'AES-GCM', length: 256 }, ['encrypt', 'decrypt']),
-    expand(HKDF_INFO.index, { name: 'HMAC', hash: 'SHA-256' }, ['sign']),
-    expand(HKDF_INFO.manifest, { name: 'HMAC', hash: 'SHA-256' }, ['sign', 'verify']),
+  const [indexKey, manifestKey] = await Promise.all([
+    expand(HKDF_INFO.index, ['sign']),
+    expand(HKDF_INFO.manifest, ['sign', 'verify']),
   ]);
-  return { recordKey, indexKey, manifestKey };
+  return { indexKey, manifestKey };
 }
