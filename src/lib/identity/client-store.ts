@@ -9,7 +9,7 @@ import { fingerprintMatchesKey } from './fingerprint';
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, decryptContactRecord, blindFingerprint, type ContactCryptoKeys } from './contact-crypto';
+import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, type ContactCryptoKeys } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -559,7 +559,31 @@ export async function getHeldShards(holderFingerprint: string): Promise<HeldShar
 
 // ── Contact operations ───────────────────────────────────────────
 
+/**
+ * Encrypt a logical ContactRecord into its at-rest envelope (fail-closed — throws if locked).
+ * Envelope = { id, owner_fingerprint (plaintext: keyPath / 'owner' index / AAD), fingerprint = the
+ * BLINDED index HMAC(indexKey, realFp) [omitted when keyless — skips the UNIQUE index],
+ * enc_version/iv/ciphertext = AES-GCM(body, AAD id+owner) }. The body is the full record minus the
+ * plaintext envelope keys; the real fingerprint stays inside the ciphertext.
+ */
+async function buildStoredContact(record: ContactRecord): Promise<Record<string, unknown>> {
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — refusing to store a contact unencrypted (enc-b fail-closed)');
+  }
+  const { id, owner_fingerprint, ...body } = record;
+  const payload = await encryptContactRecord(_sessionKey, id, owner_fingerprint, body);
+  const stored: Record<string, unknown> = { id, owner_fingerprint, ...payload };
+  const rawFp = (record.fingerprint || '').trim();
+  if (rawFp) stored.fingerprint = await blindFingerprint(_contactKeys.indexKey, rawFp);
+  return stored;
+}
+
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
+  // enc-b fail-closed (Flint seam Q4): never persist a contact unencrypted. Every add-path must be
+  // post-unlock; if locked, refuse (do NOT fall back to plaintext — that was the Blocker-C mistake).
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — addContact refuses to store plaintext (enc-b fail-closed)');
+  }
   // Invariant-1: a fingerprint exists only with a bound key.
   // Keyless rows MUST NOT carry a fingerprint (even a placeholder).
   const pk = (contact.public_key || '').trim();
@@ -580,21 +604,20 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
     owner_fingerprint: ownerFingerprint,
     added_at: new Date().toISOString(),
   };
-  // Keyless/gray contacts (vCard import) have no fingerprint. The `contacts.fingerprint` index is
-  // UNIQUE: IndexedDB collides multiple ''-valued keys, but SKIPS records whose key is ABSENT. So a
-  // second gray with fingerprint='' throws a ConstraintError — store an empty fingerprint as absent
-  // instead. (Verified in-browser: two ''-fp puts → 2nd errors; two absent-fp puts → both OK.)
+  // Keyless/gray contacts (vCard import) have no fingerprint. buildStoredContact omits the (blinded)
+  // fingerprint field for keyless records → they skip the UNIQUE index (IndexedDB skips ABSENT keys),
+  // so multiple grays coexist. Normalize the logical record the same way (absent fp/pk = keyless).
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
   if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
+  const stored = await buildStoredContact(record);
   try {
-    await txPut('contacts', record);
+    await txPut('contacts', stored);
   } catch (e) {
-    // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent
-    // add-paths for the same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add)
-    // can each pass a getContactByFingerprint pre-check as null, then both insert. The UNIQUE fingerprint
-    // index (contacts store) catches the 2nd → ConstraintError. Rather than surface that caught error,
-    // return the record that WON the race — exactly one contact, no duplicate, no error, every add-path
-    // safe by construction. Fetch runs in a fresh db/transaction (txPut closed its own), so it's clean.
+    // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent add-paths for the
+    // same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add) can each pass
+    // a getContactByFingerprint pre-check as null, then both insert. The UNIQUE (blinded) fingerprint
+    // index catches the 2nd → ConstraintError. Rather than surface it, return the record that WON the
+    // race. getContactByFingerprint takes the RAW fp (it blinds internally). Fresh db/txn → clean.
     if (record.fingerprint && (e as { name?: string } | null)?.name === 'ConstraintError') {
       const existing = await getContactByFingerprint(ownerFingerprint, record.fingerprint);
       if (existing) return existing;
@@ -605,7 +628,11 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
 }
 
 export async function updateContact(id: string, updates: Partial<ContactRecord>): Promise<void> {
-  const existing = await txGet<ContactRecord>('contacts', id);
+  // enc-b fail-closed: re-encrypting an update needs the session; refuse when locked.
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — updateContact refuses to store plaintext (enc-b fail-closed)');
+  }
+  const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
   if (!existing) throw new Error('Contact not found');
   const next = { ...existing, ...updates, id: existing.id };
   const pk = (next.public_key || '').trim();
@@ -619,7 +646,7 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   }))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
-  await txPut('contacts', next);
+  await txPut('contacts', await buildStoredContact(next));
 }
 
 /**
