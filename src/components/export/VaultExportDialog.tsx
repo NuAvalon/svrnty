@@ -28,6 +28,10 @@ export interface VaultExportDialogProps {
   fingerprint: string;
   /** Bounce to lock screen if auth gate locks the session. */
   onSessionLocked?: () => void;
+  /** After a successful pack+download (status chrome; does not change packVault). */
+  onExported?: () => void;
+  /** After pack/download throws (status chrome). */
+  onExportFailed?: () => void;
 }
 
 type Step = 'auth' | 'passphrase' | 'done';
@@ -37,6 +41,8 @@ export function VaultExportDialog({
   onClose,
   fingerprint,
   onSessionLocked,
+  onExported,
+  onExportFailed,
 }: VaultExportDialogProps) {
   const [step, setStep] = useState<Step>('auth');
   const [password, setPassword] = useState('');
@@ -110,8 +116,10 @@ export function VaultExportDialog({
       const packed = await packVault(contents, password);
       downloadVault(packed);
       setStep('done');
+      onExported?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Vault export failed');
+      onExportFailed?.();
     } finally {
       setLoading(false);
     }
