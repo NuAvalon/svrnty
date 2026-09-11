@@ -9,7 +9,7 @@ import { fingerprintMatchesKey } from './fingerprint';
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -100,6 +100,11 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // enc-b: derive the two HMAC subkeys {index, manifest} from the passphrase via the salt-(b)
   // HMAC-master. Contact-record AES reuses _sessionKey (◆5701) — no separate AES key derived here.
   _contactKeys = await deriveContactCryptoKeys(passphrase, await deriveHmacMasterSalt(salt), PBKDF2_ITERATIONS);
+  // enc-b B5: on every unlock, heal any legacy plaintext-at-rest contacts to encrypted, then establish
+  // (first run / post-upgrade) or verify the per-owner book manifest. Best-effort + resumable — it
+  // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
+  // sets a corrupt flag for the recovery UI rather than raising).
+  await migrateAndVerifyContactsOnUnlock();
 }
 
 /** Check if the session is unlocked (key available in memory). */
@@ -781,6 +786,84 @@ export async function getContactByFingerprint(ownerFingerprint: string, fingerpr
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
   const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
   return Promise.all(recs.map(decryptContactIfNeeded));
+}
+
+// ── enc-b B5: on-unlock heal + book-integrity establish/verify ────
+function contactIntegritySettingKey(ownerFingerprint: string): string {
+  return `contact_integrity:${ownerFingerprint}`;
+}
+
+/**
+ * Read the book-integrity status for an owner: 'corrupt' if the last unlock found a manifest mismatch
+ * (→ prompt cloud restore), else 'ok'. This is a UX hint, not a security control — the manifest MAC is
+ * the tamper-evidence; the flag just surfaces it. (Spec point 5: MAC-fail → cloud restore = wiring.)
+ */
+export async function getContactBookIntegrity(ownerFingerprint: string): Promise<'ok' | 'corrupt'> {
+  const flag = await txGet<{ key: string; value: string }>('settings', contactIntegritySettingKey(ownerFingerprint));
+  return flag?.value === 'corrupt' ? 'corrupt' : 'ok';
+}
+
+/**
+ * Heal legacy plaintext contacts to encrypted-at-rest, then establish or verify each owner's book
+ * manifest. Called from initSessionKey once the session + contact subkeys are set.
+ *  - Idempotent: encrypted records (enc_version present) are skipped.
+ *  - Crash-safe/resumable: each record is re-encrypted with txPut OVERWRITE (never delete-then-write),
+ *    so a crash mid-sweep just leaves the remainder for the next unlock.
+ *  - Manifest-neutral migration: encrypting a record changes neither its id nor its version, so the
+ *    {id,version} manifest stays valid across the sweep; we (re)establish/verify once at the end.
+ *  - Best-effort: never throws into the unlock path. A manifest MISMATCH sets a per-owner corrupt flag
+ *    (settings:contact_integrity:${owner}) for the recovery/cloud-restore UI — it does not raise.
+ */
+async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return; // guard; never called locked
+  let stored: Array<Record<string, unknown>>;
+  try {
+    stored = await txGetAll<Record<string, unknown>>('contacts');
+  } catch {
+    return; // store unavailable — nothing to do this unlock
+  }
+  if (stored.length === 0) return; // fresh identity / empty book
+
+  // 1. Migrate plaintext-at-rest contacts (no enc_version) → encrypted envelope, in place.
+  for (const rec of stored) {
+    if (rec && rec.enc_version) continue; // already encrypted — idempotent skip
+    try {
+      await txPut('contacts', await buildStoredContact(rec as unknown as ContactRecord));
+    } catch (e) {
+      console.warn('[enc-b] contact migration skipped a record (retries next unlock)', e);
+    }
+  }
+
+  // 2. Establish (first run / post-upgrade) or verify the per-owner book manifest over the healed book.
+  try {
+    const healed = await txGetAll<Record<string, unknown>>('contacts');
+    const byOwner = new Map<string, ContactRecord[]>();
+    for (const rec of healed) {
+      const c = await decryptContactIfNeeded(rec);
+      const list = byOwner.get(c.owner_fingerprint) ?? [];
+      list.push(c);
+      byOwner.set(c.owner_fingerprint, list);
+    }
+    for (const [owner, contacts] of byOwner) {
+      const entries = contacts.map(toManifestEntry);
+      const existing = await txGet<{ key: string; value: string }>('settings', contactManifestSettingKey(owner));
+      if (!existing) {
+        // No baseline yet (existing user upgrading, or first contact) → establish over current book.
+        await txPutMany([await buildContactManifestOp(owner, entries)]);
+        continue;
+      }
+      const ok = await verifyManifestMAC(_contactKeys.manifestKey, entries, entries.length, existing.value);
+      if (!ok) {
+        await txPut('settings', { key: contactIntegritySettingKey(owner), value: 'corrupt' });
+        console.warn(`[enc-b] contact book manifest MISMATCH for ${owner} — flagged for recovery`);
+      } else {
+        // Book verifies → clear any stale corrupt flag from a prior false-alarm/repair.
+        await txDelete('settings', contactIntegritySettingKey(owner)).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn('[enc-b] contact manifest establish/verify skipped this unlock', e);
+  }
 }
 
 export async function searchContacts(ownerFingerprint: string, query: string): Promise<ContactRecord[]> {
