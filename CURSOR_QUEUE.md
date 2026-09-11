@@ -6,13 +6,7 @@ Work top-down: the top task first, then the next. Build to spec. Open **ONE PR p
 
 *Recently completed: Mint-Build Recipe v2 (KERI authority-key pre-rotation) — merged (#112).*
 
-## 1. Distress button removal — ✅ READY (no spec) · life-safety honesty · M6
-
-BUILD: remove the distress button/feature from the UI entirely; scrub ALL copy referencing distress/panic/emergency-send. No placeholder, no "coming soon" — it must not be implied as working OR imminent (life-safety honesty).
-ACCEPTANCE: distress button gone from every surface; a UI-copy grep shows zero distress/panic-send references; Hypatia claim-checks the copy.
-BOUNDARY: pure UI removal. Send-path deletion (if any handler remains) = team (send-path already deleted per blueprint); Cursor removes the glass.
-
-## 2. Card / lens UI — ✅ READY · spec: card-datamodel-orch · Peter #133587
+## 1. Card / lens UI — ✅ READY · spec: card-datamodel-orch · Peter #133587
 
 BUILD (render-glass):
 - **Custom-fields UI** — add/edit arbitrary typed fields on a card. ADDITIVE: rides the existing ContactRecord open index-sig, NO schema change, no migration.
@@ -25,14 +19,14 @@ SPEC: shared/outbox/archie/svrnty_card_datamodel_orch.md + Athena storage facts 
 ACCEPTANCE: add a custom field + it persists; card studio previews a card; receiver-notes survive a simulated sender update; relay field editable per method; default-lens selectable at Grow.
 BOUNDARY: UI + local storage read/write ONLY. Record encryption = Athena's enc-b seam (fields ride inside the encrypted blob automatically). Lens = consent-by-INCLUSION (a projection you SEND) — NOT client-side hide; never build a "hide locally but still transmit" control. Move-relay resolution/propagation LOGIC = Apollo/Athena; Cursor builds the control that CALLS it.
 
-## 3. Cloud-sync UI shell — ✅ READY · spec: cloud_blob_sync_spec · M9
+## 2. Cloud-sync UI shell — ✅ READY · spec: cloud_blob_sync_spec · M9
 
 BUILD (render-glass): connect-a-target UI (Dropbox/iCloud/Google Drive) + backup-status (last backup time, success/fail) + restore-from-backup flow. MINIMAL backup+restore only.
 SPEC: products/svrnty_cloud_blob_sync_spec.md.
 ACCEPTANCE: connect a target; see backup status; trigger a restore.
 BOUNDARY: UI shell only. Encrypted-blob packaging + sync transport = Athena's store/infra. Copy = "backup", NOT "seamless multi-device sync" (full multi-target auto = fast-follow). No inline crypto.
 
-## 4. PSI mutual-discovery completion tick — ⛔ PARKED (blocked on the team PSI-A session-state store) · DRAFT ONLY · behind `isPSIDiscoveryLive()` = false
+## 3. PSI mutual-discovery completion tick — ⛔ PARKED (blocked on the team PSI-A session-state store) · DRAFT ONLY · behind `isPSIDiscoveryLive()` = false
 
 **STATUS 2026-09-11 (queue owners Athena/Apollo): DO NOT BUILD YET — re-scoped, dependency not landed.**
 The fleet settled on **Option A (persist PSI session-state)**. The previous version of this task
