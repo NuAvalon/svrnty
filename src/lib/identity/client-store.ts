@@ -9,7 +9,7 @@ import { fingerprintMatchesKey } from './fingerprint';
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
-import { deriveContactCryptoKeys, type ContactCryptoKeys } from './contact-crypto';
+import { deriveContactCryptoKeys, decryptContactRecord, type ContactCryptoKeys } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -635,8 +635,29 @@ export async function removeContact(id: string): Promise<void> {
   await txDelete('contacts', id);
 }
 
+/**
+ * Decrypt a stored contact to the full in-memory ContactRecord. Backward-compatible: encrypted
+ * records (enc_version present) are AES-GCM-decrypted under _sessionKey (AAD = id+owner); legacy
+ * plaintext records pass through unchanged. At rest the `fingerprint` field holds the BLINDED index;
+ * the decrypted body carries the real fingerprint, which wins on the merge below.
+ */
+async function decryptContactIfNeeded(rec: any): Promise<ContactRecord> {
+  if (rec && rec.enc_version && rec.ciphertext) {
+    if (!_sessionKey) throw new Error('Session locked — cannot decrypt contact');
+    const body = await decryptContactRecord<ContactRecord>(
+      _sessionKey,
+      rec.id,
+      rec.owner_fingerprint,
+      { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext },
+    );
+    return { ...body, id: rec.id, owner_fingerprint: rec.owner_fingerprint };
+  }
+  return rec as ContactRecord;
+}
+
 export async function getContact(id: string): Promise<ContactRecord | null> {
-  return txGet('contacts', id);
+  const rec = await txGet<any>('contacts', id);
+  return rec ? decryptContactIfNeeded(rec) : null;
 }
 
 export async function getContactByFingerprint(ownerFingerprint: string, fingerprint: string): Promise<ContactRecord | null> {
@@ -645,7 +666,8 @@ export async function getContactByFingerprint(ownerFingerprint: string, fingerpr
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
-  return txGetByIndex('contacts', 'owner', ownerFingerprint);
+  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  return Promise.all(recs.map(decryptContactIfNeeded));
 }
 
 export async function searchContacts(ownerFingerprint: string, query: string): Promise<ContactRecord[]> {
