@@ -8,14 +8,18 @@
 
 import { readPrivateKey, decryptKey } from 'openpgp';
 import { extractRecoveryVault } from '@/lib/sync/vault';
-import { recoverFromSeedPhrase } from '@/lib/crypto/recovery';
+import { recoverFromSeedPhrase, seedPhraseToMasterSecret } from '@/lib/crypto/recovery';
 import {
   storeIdentity,
   storeKey,
   storeVault,
   setActiveFingerprint,
+  initSessionKey,
 } from '@/lib/identity/client-store';
-import { reconstructCanonicalIdentityForRestore } from '@/lib/identity/fingerprint';
+import {
+  reconstructCanonicalIdentityForRestore,
+  deriveNextAuthorityCommitment,
+} from '@/lib/identity/fingerprint';
 
 export type SeedVaultRestoreResult = {
   identity: {
@@ -51,10 +55,17 @@ export type SeedVaultRestoreResult = {
 export async function restoreIdentityFromSeedVault(
   data: ArrayBuffer,
   seedPhrase: string,
+  newPassphrase: string,
 ): Promise<SeedVaultRestoreResult> {
   const phrase = seedPhrase.trim();
   if (!phrase) {
     throw new Error('Enter your recovery code.');
+  }
+  // 3a-pure (Blocker-C): recovery must establish at-rest protection BEFORE keys touch disk.
+  // The client-store writes are fail-closed, so a device passphrase is required here — there is
+  // never a plaintext-at-rest window, not even transiently (Archie invariant #133842).
+  if (!newPassphrase || newPassphrase.length < 12) {
+    throw new Error('Set a device passphrase (at least 12 characters) to protect your recovered keys at rest.');
   }
 
   // Fleet seam — do not reimplement.
@@ -100,6 +111,15 @@ export async function restoreIdentityFromSeedVault(
     claimedFingerprint: bundle.identity_fingerprint ?? '',
   });
 
+  // T2.4 (Apollo's grounded delta): re-derive the pre-rotation authority pin from the recovered
+  // seed so a seed-restored identity can verify its own rotations (mint sets this at genesis; a
+  // restore that omits it = the T2.4 gap). masterSecret isn't exposed by recoverFromSeedPhrase, so
+  // re-derive it from the phrase — deterministic, the same value recoverFromSeedPhrase uses
+  // internally. Mirror mint exactly (browser-identity.ts:204): epoch=1.
+  const _ms = seedPhraseToMasterSecret(phrase);
+  const next_authority_commitment = deriveNextAuthorityCommitment(_ms, 1);
+  _ms.fill(0); // zero immediately (mint's ORDER INVARIANT: derive before zero)
+
   const identity = {
     version: '1.0',
     created_at: new Date().toISOString(),
@@ -115,6 +135,10 @@ export async function restoreIdentityFromSeedVault(
       verified_at: null,
     },
     post_quantum,
+    // T2.4: genesis-equivalent authority pin so rotations verify (see re-derive above).
+    // durable.epoch=0 + commitment epoch=1 is correct for genesis-epoch identities (all alpha).
+    next_authority_commitment,
+    durable: { fingerprint, epoch: 0, next_authority_commitment },
     metadata: {
       client_version: '0.2.0',
       key_type: 'ED25519+ML-DSA-87+ML-KEM-1024',
@@ -122,6 +146,10 @@ export async function restoreIdentityFromSeedVault(
       restored_via: 'seed-phrase-v4' as const,
     },
   };
+
+  // 3a-pure: derive + persist the passphrase-derived session key BEFORE writing any key material,
+  // so storeKey/storeVault encrypt at rest. The stores now fail-closed if this is missing.
+  await initSessionKey(newPassphrase);
 
   await storeKey(fingerprint, bundle.classical_private_key, bundle.classical_passphrase);
   await storeVault(fingerprint, kv);

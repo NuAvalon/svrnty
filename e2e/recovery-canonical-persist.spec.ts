@@ -24,6 +24,10 @@ const NAME = 'Recovery E2E';
 // against a path that wrongly expects the unlock passphrase.
 const UNLOCK_PW = 'unlock-e2e-pass-1234';
 const EXPORT_PW = 'export-e2e-pass-5678';
+// Blocker-C: recovery-code (seed) restore now sets a NEW >=12-char device passphrase so the
+// recovered keys are encrypted at rest (no passphrase-free path). Kept distinct from UNLOCK_PW /
+// EXPORT_PW to guard against a path that confuses the three.
+const RECOVER_PW = 'recover-e2e-pass-9012';
 const HEX64 = /^[0-9a-f]{64}$/;
 
 // Reads the canonical identity straight from IndexedDB for the active fingerprint.
@@ -149,9 +153,13 @@ test.describe('recovery-canonical persistence gate (PR#110)', () => {
     const ctx = await browser.newContext();
     const p = await ctx.newPage();
     await openRestoreWithFile(p, vaultPath);
-    // v4 vault exposes the passphrase-free path.
+    // v4 vault exposes the recovery-code (seed) path. Blocker-C: this path is no longer
+    // passphrase-free — recovered keys must be encrypted at rest, so the user sets a >=12-char
+    // device passphrase up front and "Recover my identity" stays disabled until it is provided
+    // (3a-pure: initSessionKey before the first write, no plaintext window even transiently).
     await p.getByRole('button', { name: /recover with your recovery code/i }).click();
     await p.getByPlaceholder(/enter your recovery code/i).fill(recoveryCode);
+    await p.getByPlaceholder(/at least 12 characters/i).fill(RECOVER_PW);
     await p.getByRole('button', { name: /^recover my identity$/i }).click();
 
     // The seed path lands on the contacts-honesty interstitial (identity is already written to
