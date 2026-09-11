@@ -8,6 +8,7 @@
  */
 
 import { loadLocalMethods } from '@/components/identity/local-methods';
+import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 
 export type OwnerMethodKind =
   | 'email'
@@ -20,12 +21,34 @@ export type OwnerMethodKind =
   | 'url'
   | 'custom';
 
+/** Typed custom fields — additive, no signed-card schema change. */
+export type OwnerCustomValueType = 'text' | 'url' | 'date' | 'phone' | 'email';
+
+export const OWNER_CUSTOM_VALUE_TYPES: Array<{ type: OwnerCustomValueType; label: string }> = [
+  { type: 'text', label: 'Text' },
+  { type: 'url', label: 'Link' },
+  { type: 'date', label: 'Date' },
+  { type: 'phone', label: 'Phone' },
+  { type: 'email', label: 'Email' },
+];
+
 export type OwnerMethod = {
   id: string;
   kind: OwnerMethodKind;
   value: string;
   label?: string;
+  /** For kind === 'custom' — how the value is entered. */
+  valueType?: OwnerCustomValueType;
+  /**
+   * Relay host this method intends to be reached through (local intent).
+   * Default is the deployment domain. Routing.update (fleet) is not wired —
+   * glass records the host; it does not move delivery.
+   */
+  relay?: string;
 };
+
+/** Soft size bound (Athena storage fact): avatars referenced, never inlined. */
+export const OWNER_CARD_SOFT_CAP_BYTES = 16 * 1024;
 
 export type OwnerLens = {
   id: string;
@@ -105,10 +128,23 @@ export function hydrateOwnerCard(
   return bag;
 }
 
-function loadOwnerCardRaw(fingerprint: string): OwnerCardBag | null {
-  if (typeof window === 'undefined') return null;
+function storage(): {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+} | null {
   try {
-    const raw = localStorage.getItem(bagKey(fingerprint));
+    const ls = (globalThis as { localStorage?: Storage }).localStorage;
+    return ls ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function loadOwnerCardRaw(fingerprint: string): OwnerCardBag | null {
+  const ls = storage();
+  if (!ls) return null;
+  try {
+    const raw = ls.getItem(bagKey(fingerprint));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as OwnerCardBag;
     if (!Array.isArray(parsed.methods) || !Array.isArray(parsed.lenses)) return null;
@@ -118,10 +154,32 @@ function loadOwnerCardRaw(fingerprint: string): OwnerCardBag | null {
   }
 }
 
-export function saveOwnerCard(fingerprint: string, bag: OwnerCardBag): OwnerCardBag {
-  if (typeof window === 'undefined') return bag;
-  localStorage.setItem(bagKey(fingerprint), JSON.stringify(bag));
-  return bag;
+export type SaveOwnerCardResult =
+  | { ok: true; bag: OwnerCardBag; bytes: number }
+  | { ok: false; reason: 'over-cap' | 'inlined-binary'; bag: OwnerCardBag; bytes: number };
+
+export function ownerCardBytes(bag: OwnerCardBag): number {
+  return new TextEncoder().encode(JSON.stringify(bag)).length;
+}
+
+/** Reject data:/javascript: values — avatars must be references, never inlined. */
+export function ownerCardHasInlinedBinary(bag: OwnerCardBag): boolean {
+  const bad = (s?: string) => !!s && /^\s*(data|javascript):/i.test(s);
+  return bag.methods.some((m) => bad(m.value) || bad(m.relay));
+}
+
+export function saveOwnerCard(fingerprint: string, bag: OwnerCardBag): SaveOwnerCardResult {
+  const bytes = ownerCardBytes(bag);
+  if (ownerCardHasInlinedBinary(bag)) {
+    return { ok: false, reason: 'inlined-binary', bag, bytes };
+  }
+  if (bytes > OWNER_CARD_SOFT_CAP_BYTES) {
+    return { ok: false, reason: 'over-cap', bag, bytes };
+  }
+  const ls = storage();
+  if (!ls) return { ok: true, bag, bytes };
+  ls.setItem(bagKey(fingerprint), JSON.stringify(bag));
+  return { ok: true, bag, bytes };
 }
 
 export function addOwnerMethod(
@@ -129,8 +187,16 @@ export function addOwnerMethod(
   kind: OwnerMethodKind,
   value = '',
   label?: string,
+  extra?: Pick<OwnerMethod, 'valueType' | 'relay'>,
 ): OwnerCardBag {
-  const method: OwnerMethod = { id: nid('m'), kind, value, label };
+  const method: OwnerMethod = {
+    id: nid('m'),
+    kind,
+    value,
+    label,
+    valueType: kind === 'custom' ? extra?.valueType || 'text' : extra?.valueType,
+    relay: extra?.relay,
+  };
   const methods = [...bag.methods, method];
   const lenses = bag.lenses.map((l) =>
     l.id === bag.defaultLensId ? { ...l, methodIds: [...l.methodIds, method.id] } : l,
@@ -171,6 +237,20 @@ export function removeOwnerLens(bag: OwnerCardBag, id: string): OwnerCardBag {
   const lenses = bag.lenses.filter((l) => l.id !== id);
   const defaultLensId = bag.defaultLensId === id ? lenses[0]?.id : bag.defaultLensId;
   return { ...bag, lenses, defaultLensId };
+}
+
+export function setDefaultLens(bag: OwnerCardBag, lensId: string): OwnerCardBag {
+  if (!bag.lenses.some((l) => l.id === lensId)) return bag;
+  return { ...bag, defaultLensId: lensId };
+}
+
+/** Deployment default relay host — never claimed as the only possible relay. */
+export function defaultMethodRelay(): string {
+  return SVRNTY_DOMAIN;
+}
+
+export function methodRelayHost(method: OwnerMethod): string {
+  return (method.relay || '').trim() || defaultMethodRelay();
 }
 
 export function patchOwnerLens(

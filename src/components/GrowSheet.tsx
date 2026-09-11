@@ -22,6 +22,16 @@ import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { GROW_INVITE_MAX, clampGrowCap, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { GATE_COPY } from '@/lib/trust/grow-gate';
+import {
+  hydrateOwnerCard,
+  methodKindLabel,
+  methodsForLens,
+  preferredMethod,
+  saveOwnerCard,
+  setDefaultLens,
+  type OwnerCardBag,
+} from '@/components/identity/owner-card';
+import { OwnerCardPreview } from '@/components/identity/OwnerCardPreview';
 
 type Props = {
   open: boolean;
@@ -51,6 +61,8 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
   const [channel, setChannel] = useState<GrowMintChannel>('remote');
   const [spent, setSpent] = useState(false);
   const [mintNonce, setMintNonce] = useState(0);
+  const [lensBag, setLensBag] = useState<OwnerCardBag | null>(null);
+  const [lensId, setLensId] = useState<string | undefined>(undefined);
   const usesRef = useRef(uses);
   const channelRef = useRef(channel);
   usesRef.current = uses;
@@ -90,10 +102,21 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
       setRelay(null);
       setError(null);
       setSpent(false);
+      setLensBag(null);
+      setLensId(undefined);
       return;
     }
     void mintRef.current();
   }, [open, channel, mintNonce]);
+
+  useEffect(() => {
+    if (!open) return;
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) return;
+    const bag = hydrateOwnerCard(fp, identity?.identity?.email);
+    setLensBag(bag);
+    setLensId((prev) => prev || bag.defaultLensId || bag.lenses[0]?.id);
+  }, [open, identity]);
 
   useEffect(() => {
     const fp = identity?.identity?.fingerprint;
@@ -156,6 +179,78 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
         <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, lineHeight: 1.5 }}>
           {TRUST_RECIPE_COPY.mycelial}
         </p>
+
+        {lensBag && lensBag.lenses.length > 0 ? (
+          <div data-testid="grow-lens-picker" style={{ marginTop: 18 }}>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 11,
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: E.accent,
+                fontFamily: E.fontSans,
+              }}
+            >
+              Face for this invite
+            </p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+              {lensBag.lenses.map((l) => (
+                <button
+                  key={l.id}
+                  type="button"
+                  data-testid={`grow-lens-${l.id}`}
+                  onClick={() => {
+                    setLensId(l.id);
+                    const fp = identity?.identity?.fingerprint as string | undefined;
+                    if (!fp) return;
+                    const next = setDefaultLens(lensBag, l.id);
+                    const saved = saveOwnerCard(fp, next);
+                    if (saved.ok) setLensBag(next);
+                  }}
+                  style={{
+                    fontSize: 11,
+                    fontFamily: E.fontSans,
+                    padding: '6px 10px',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    border: `1px solid ${l.id === lensId ? E.borderLit : E.border}`,
+                    background:
+                      l.id === lensId ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
+                    color: E.accent,
+                  }}
+                >
+                  {l.name}
+                  {l.id === lensBag.defaultLensId ? ' · default' : ''}
+                </button>
+              ))}
+            </div>
+            <p style={{ margin: '8px 0 10px', fontSize: 12, color: E.dim, fontFamily: E.fontSans, lineHeight: 1.45 }}>
+              This is the face you mean to hand them. Extra methods stay on this device until the living
+              card carries them. The signed invite is still your identity key.
+            </p>
+            <OwnerCardPreview
+              name={identity?.identity?.name || ''}
+              fingerprint={identity?.identity?.fingerprint || ''}
+              methods={
+                methodsForLens(lensBag, lensId).length
+                  ? methodsForLens(lensBag, lensId)
+                  : lensBag.methods
+              }
+              preferredId={preferredMethod(lensBag, lensId)?.id}
+            />
+            {(() => {
+              const pref = preferredMethod(lensBag, lensId);
+              if (!pref) return null;
+              return (
+                <p style={{ margin: '8px 0 0', fontSize: 11, color: E.muted, fontFamily: E.fontSans }}>
+                  Preferred on this face: {methodKindLabel(pref.kind)}
+                  {pref.value ? ` · ${pref.value}` : ''}
+                </p>
+              );
+            })()}
+          </div>
+        ) : null}
 
         <p style={{ margin: '18px 0 8px', fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: E.dim }}>
           How are they joining?

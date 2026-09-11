@@ -51,6 +51,11 @@ import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import {
+  displayNameWithAlias,
+  patchOwnerLocal,
+  readOwnerLocal,
+} from '@/lib/contacts/owner-local-annotations';
+import {
   defaultShareSettings,
   isPendingSvrntyContact,
   readClassicalExtras,
@@ -84,6 +89,8 @@ export type ContactDetailModel = {
     urls?: string[];
     handles?: Record<string, string>;
   };
+  /** Receiver-local alias/notes — this device only; never on the wire. */
+  owner_local?: { alias?: string; notes?: string };
   /** Fleet PSI may populate later — glass never invents peer↔peer from tags. */
   peer_mutual?: Array<{ peer_name: string; peer_fingerprint: string }>;
 };
@@ -106,6 +113,7 @@ export type ContactDetailDialogProps = {
   availableGroups?: string[];
   onToggleGroup?: (tag: string) => void;
   onShareSettingsChange?: (next: ContactShareSettings) => void;
+  onOwnerLocalChange?: (next: { alias?: string; notes?: string }) => void;
 };
 
 function SectionLabel({ children }: { children: ReactNode }) {
@@ -153,6 +161,7 @@ export function ContactDetailDialog({
   availableGroups = [],
   onToggleGroup,
   onShareSettingsChange,
+  onOwnerLocalChange,
 }: ContactDetailDialogProps) {
   const [tab, setTab] = useState('reach');
 
@@ -170,6 +179,8 @@ export function ContactDetailDialog({
   const classicalExtras = contact ? readClassicalExtras(contact) : null;
   const share = contact ? readShareSettings(contact) : defaultShareSettings();
   const groupChoices = Array.from(new Set([...availableGroups, ...tags])).sort();
+  const ownerLocal = contact ? readOwnerLocal(contact) : {};
+  const shownName = contact ? displayNameWithAlias(contact.name, ownerLocal) : '';
 
   const patchShare = (patch: Partial<ContactShareSettings>) => {
     if (!onShareSettingsChange) return;
@@ -229,13 +240,16 @@ export function ContactDetailDialog({
                     fontSize: 17,
                   }}
                 >
-                  {contact.name || 'Unnamed'}
+                  {shownName}
                 </span>
               </DialogTitle>
               <DialogDescription
                 className="flex flex-wrap items-center gap-2"
                 style={{ color: E.muted }}
               >
+                {ownerLocal.alias && contact.name && ownerLocal.alias !== contact.name ? (
+                  <span style={{ fontSize: 12, color: E.dim }}>Card name · {contact.name}</span>
+                ) : null}
                 {svrn ? (
                   trustBadge
                 ) : (
@@ -470,6 +484,72 @@ export function ContactDetailDialog({
                 forceMount
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div data-testid="receiver-local-annotations">
+                    <SectionLabel>On this device</SectionLabel>
+                    <p style={{ margin: '6px 0 8px', fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
+                      Your alias and notes stay here. They are not sent with their card, and a
+                      later card update from them leaves these alone.
+                    </p>
+                    <label style={{ display: 'block', fontSize: 11, color: E.muted, fontFamily: E.fontSans }}>
+                      Alias
+                      <input
+                        data-testid="receiver-local-alias"
+                        value={ownerLocal.alias || ''}
+                        onChange={(e) =>
+                          onOwnerLocalChange?.(patchOwnerLocal(ownerLocal, { alias: e.target.value }))
+                        }
+                        placeholder="What you call them"
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          marginTop: 4,
+                          background: E.inputBg,
+                          border: `1px solid ${E.border}`,
+                          borderRadius: 8,
+                          color: E.text,
+                          padding: '8px 10px',
+                          fontFamily: E.fontSans,
+                          fontSize: 13,
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                    </label>
+                    <label
+                      style={{
+                        display: 'block',
+                        marginTop: 10,
+                        fontSize: 11,
+                        color: E.muted,
+                        fontFamily: E.fontSans,
+                      }}
+                    >
+                      Notes
+                      <textarea
+                        data-testid="receiver-local-notes"
+                        value={ownerLocal.notes || ''}
+                        onChange={(e) =>
+                          onOwnerLocalChange?.(patchOwnerLocal(ownerLocal, { notes: e.target.value }))
+                        }
+                        placeholder="Private to this device"
+                        rows={3}
+                        style={{
+                          display: 'block',
+                          width: '100%',
+                          marginTop: 4,
+                          background: E.inputBg,
+                          border: `1px solid ${E.border}`,
+                          borderRadius: 8,
+                          color: E.text,
+                          padding: '8px 10px',
+                          fontFamily: E.fontSans,
+                          fontSize: 13,
+                          boxSizing: 'border-box',
+                          resize: 'vertical',
+                        }}
+                      />
+                    </label>
+                  </div>
+
                   {svrn ? (
                     <p style={{ margin: 0, fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
                       SVRNTY profile is key-bound — edit is locked. Change trust, visibility,
