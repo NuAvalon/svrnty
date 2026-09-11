@@ -156,3 +156,98 @@ export async function deriveContactIndexKey(
     ['sign'],
   );
 }
+
+// ── Book-integrity manifest (Q5) ──
+// Per-record AES-GCM tags catch single-record corruption (bit-rot / partial write) but MISS
+// book-level attacks: a DELETED record (no tag left to fail), a ROLLED-BACK/replayed old-but-valid
+// ciphertext (its tag still verifies), TRUNCATION, REORDER. An HMAC-authenticated manifest over
+// {(id, version)…, count} catches all four. HMAC — not a checksum (a local attacker with IndexedDB
+// write can recompute a checksum; can't forge an HMAC without the unlocked key) — and not a full
+// signature (non-repudiation buys nothing for local at-rest integrity). Under a derived book-integrity
+// subkey (additive, same pattern as the index key). Manifest-MAC-fail → restore from cloud backup.
+
+export interface ManifestEntry {
+  id: string;
+  version: number;
+}
+
+/**
+ * Injective canonical serialization of the manifest: entries sorted by id (so the MAC is independent
+ * of store iteration order), each field length-prefixed, plus a domain tag and the total count.
+ * A deleted / rolled-back / truncated / tampered book serializes differently → MAC verify fails.
+ */
+export function serializeManifest(entries: ManifestEntry[], count: number): Uint8Array {
+  const sorted = [...entries].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const enc = new TextEncoder();
+  const parts: Uint8Array[] = [];
+  const push = (bytes: Uint8Array) => {
+    const len = new Uint8Array(4);
+    new DataView(len.buffer).setUint32(0, bytes.length, false);
+    parts.push(len, bytes);
+  };
+  push(enc.encode('svrnty/contacts-manifest/v1'));
+  push(enc.encode(String(count)));
+  for (const e of sorted) {
+    push(enc.encode(e.id));
+    push(enc.encode(String(e.version)));
+  }
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+
+/** Compute the book-manifest MAC: HMAC-SHA256(bookKey, serializeManifest(entries, count)). */
+export async function computeManifestMAC(
+  bookKey: CryptoKey,
+  entries: ManifestEntry[],
+  count: number,
+): Promise<string> {
+  const mac = new Uint8Array(
+    await crypto.subtle.sign('HMAC', bookKey, serializeManifest(entries, count)),
+  );
+  return toB64(mac);
+}
+
+/**
+ * Verify a stored manifest MAC (constant-time via crypto.subtle.verify).
+ * Returns true iff the book (its id/version set + count) matches the authenticated manifest.
+ */
+export async function verifyManifestMAC(
+  bookKey: CryptoKey,
+  entries: ManifestEntry[],
+  count: number,
+  storedMAC: string,
+): Promise<boolean> {
+  return crypto.subtle.verify('HMAC', bookKey, fromB64(storedMAC), serializeManifest(entries, count));
+}
+
+/**
+ * Derive the non-extractable HMAC book-integrity key (additive; distinct salt for domain separation —
+ * same pattern and the same second-PBKDF2 co-verify caveat as deriveContactIndexKey).
+ */
+export async function deriveBookIntegrityKey(
+  passphrase: string,
+  salt: Uint8Array,
+  iterations: number = DEFAULT_PBKDF2_ITERATIONS,
+): Promise<CryptoKey> {
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveKey'],
+  );
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false, // non-extractable
+    ['sign', 'verify'],
+  );
+}
