@@ -105,6 +105,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
   // sets a corrupt flag for the recovery UI rather than raising).
   await migrateAndVerifyContactsOnUnlock();
+  // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
+  // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
+  await eagerMigrateIdentityStoresOnUnlock();
 }
 
 /** Check if the session is unlocked (key available in memory). */
@@ -863,6 +866,39 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
     }
   } catch (e) {
     console.warn('[enc-b] contact manifest establish/verify skipped this unlock', e);
+  }
+}
+
+/**
+ * enc-b Blocker-C (eager-migrate half): on unlock, proactively re-encrypt any plaintext-fallback
+ * records in the four identity stores (keys / pq_keys / vaults / shards). loadKey/loadPQKeys/loadVault/
+ * loadShards already lazy-migrate a plaintext record to encrypted-at-rest as a side effect when the
+ * session is unlocked — but only for records that are READ. Recovery material (esp. shards) is read
+ * rarely, so a written-never-read-post-unlock plaintext record would otherwise sit exposed indefinitely.
+ * Eager-calling the loaders once per identity on unlock heals those stragglers. No re-key (same
+ * _sessionKey the lazy path uses). Best-effort: never throws into the unlock path.
+ *
+ * NOTE: this is the SAFE half of Blocker-C. The OTHER half — removing the `else { plaintext }` fallback
+ * branches so storeKey/storePQKeys/storeVault/storeShards are fail-closed — is DEFERRED: a caller audit
+ * found live paths (importAll JSON restore, the passphrase-free seed/recovery-code restore, two vault-
+ * restore branches) that write identity key material while the session is still locked, so fail-closing
+ * as-is would break restore/recovery. That removal needs those paths fixed first + a product decision on
+ * the passphrase-free recovery path. Escalated to Flint (security) + Archie (product).
+ */
+async function eagerMigrateIdentityStoresOnUnlock(): Promise<void> {
+  if (!_sessionKey) return; // guard; never called locked
+  let identities: IdentityRecord[];
+  try {
+    identities = await listIdentities();
+  } catch {
+    return;
+  }
+  for (const idRec of identities) {
+    const fp = idRec.fingerprint;
+    try { await loadKey(fp); } catch (e) { console.warn('[enc-b] eager key migrate skipped', fp, e); }
+    try { await loadPQKeys(fp); } catch (e) { console.warn('[enc-b] eager pq_keys migrate skipped', fp, e); }
+    try { await loadVault(fp); } catch (e) { console.warn('[enc-b] eager vault migrate skipped', fp, e); }
+    try { await loadShards(fp); } catch (e) { console.warn('[enc-b] eager shards migrate skipped', fp, e); }
   }
 }
 
