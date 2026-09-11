@@ -115,6 +115,46 @@ export function generatePSIKeypair(): PSIKeypair {
   };
 }
 
+// --- Stateless PSI blind-key re-derivation (Option B) ---
+// Flint-cleared key-reuse eval (KB#89084 / #89161); co-verify pending on this helper.
+const PSI_BLIND_SALT = 'svrnty-psi-blind-salt-v1';    // Flint: FIXED non-secret domain constant.
+const PSI_BLIND_INFO_PREFIX = 'svrnty-psi-blind-v1:'; // Flint: explicit separator; sessionId length-prefixed below (injective).
+
+/**
+ * Deterministically RE-DERIVE the ephemeral PSI keypair for a session — the stateless alternative
+ * to persisting generatePSIKeypair()'s random key across an app reload. Lets the initiator complete
+ * a PSI session after a reload WITHOUT storing any secret: identitySecret lives in the unlocked vault,
+ * sessionId is a PUBLIC handle (the satellite's secrets.token_hex(16), 128-bit unique per session).
+ *
+ *   sk = HKDF-SHA256(ikm=identitySecret, salt=PSI_BLIND_SALT, info=PSI_BLIND_INFO_PREFIX || len32(sessionId) || sessionId, 32)
+ *
+ * SAFETY (Flint co-verify surface): deterministic-per-session (re-derivable) + unique-across-sessions
+ * (distinct 128-bit sessionId → distinct sk → no key-reuse, PSI unlinkability preserved). The info is
+ * INJECTIVE (fixed prefix + 4-byte big-endian length of sessionId + sessionId bytes) so a future
+ * variable-length sessionId can never map two contexts to the same sk (Flint's domain-sep ruling).
+ * LOAD-BEARING INVARIANT: the satellite MUST issue a fresh unique sessionId per initiate (never reuse) —
+ * if a sessionId ever repeats, sk repeats = key-reuse. Confirmed at co-verify.
+ * Output shape is byte-identical to generatePSIKeypair() → drop-in for the completion tick.
+ */
+export function deriveBlindKeypair(identitySecret: Uint8Array, sessionId: string): PSIKeypair {
+  const sidBytes = new TextEncoder().encode(sessionId);
+  const lenPrefix = new Uint8Array(4);
+  new DataView(lenPrefix.buffer).setUint32(0, sidBytes.length, false); // big-endian length prefix → injective
+  const prefixBytes = new TextEncoder().encode(PSI_BLIND_INFO_PREFIX);
+  const info = new Uint8Array(prefixBytes.length + lenPrefix.length + sidBytes.length);
+  info.set(prefixBytes, 0);
+  info.set(lenPrefix, prefixBytes.length);
+  info.set(sidBytes, prefixBytes.length + lenPrefix.length);
+
+  const salt = new TextEncoder().encode(PSI_BLIND_SALT);
+  const privateKey = hkdf(sha256, identitySecret, salt, info, 32); // 32B X25519 scalar (X25519 clamps per RFC 7748)
+  const publicKey = x25519.getPublicKey(privateKey);
+  return {
+    privateKey: toBase64(privateKey),
+    publicKey: toBase64(publicKey),
+  };
+}
+
 /**
  * Hash a fingerprint to an X25519 u-coordinate (canonical H(fp)).
  * H(fp) = HKDF-SHA256(ikm=utf8(fp), salt=PSI_SALT, info=PSI_POINT_INFO, 32) → raw 32B u-coord, NO clamp.
