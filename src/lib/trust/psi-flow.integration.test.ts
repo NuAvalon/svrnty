@@ -167,6 +167,7 @@ async function runRound(initiator: Client, responder: Client): Promise<string[]>
 const A = 'fp-alice';
 const B = 'fp-bob';
 const C = 'fp-carol';
+const D = 'fp-dave';
 const X = 'fp-xavier';
 const Y = 'fp-yara';
 const Z = 'fp-zed';
@@ -297,5 +298,48 @@ test('UNLINKABILITY: two sessions blind the SAME contact to DIFFERENT values (fr
     assert.equal(sets.length, 2, 'two sessions recorded');
     const overlap = sets[0].filter((v) => sets[1].includes(v));
     assert.equal(overlap.length, 0, 'no blinded value repeats across sessions → unlinkable');
+  });
+});
+
+test('COMPLEX TOPOLOGY: many identities, overlapping know-graph → each pair discovers exactly its consented intersection', async () => {
+  // Peter #134522: "many id's w/ varying know/trust topology". Overlapping web where a MUTUAL PEER
+  // surfaces in a pair's result when BOTH hold it (e.g. Alice & Bob both know Carol → Carol ∈
+  // Alice∩Bob), alongside shared leaf contacts. Each identity is also a contact in others' books.
+  await withRelay(async () => {
+    // Alice must consent-know Dave to initiate with him (D1 is mutual) — Dave isn't in his own book,
+    // so adding D to Alice's set does NOT change any intersection below.
+    const alice = makeClient(A, [B, C, D, X, Y, Z].map((fp) => ({ fp, consented: true })));
+    const bob = makeClient(B, [A, C, X, Y, W].map((fp) => ({ fp, consented: true })));
+    const carol = makeClient(C, [A, B, Y, Z, W].map((fp) => ({ fp, consented: true })));
+    const dave = makeClient(D, [A, C, X, Z].map((fp) => ({ fp, consented: true })));
+
+    // Intersections computed by hand from the consented sets above:
+    assert.deepEqual(await runRound(alice, bob), [C, X, Y].sort(), 'Alice∩Bob = {Carol,X,Y}');
+    assert.deepEqual(await runRound(alice, carol), [B, Y, Z].sort(), 'Alice∩Carol = {Bob,Y,Z}');
+    assert.deepEqual(await runRound(bob, carol), [A, W, Y].sort(), 'Bob∩Carol = {Alice,Y,W}');
+    assert.deepEqual(await runRound(alice, dave), [C, X, Z].sort(), 'Alice∩Dave = {Carol,X,Z}');
+  });
+});
+
+test('ASYMMETRIC TOPOLOGY: one-directional consent reveals nothing to either side (no leak from the graph shape)', async () => {
+  // Eve consents Alice + shares contacts, but Alice has NOT consented Eve. Neither direction leaks:
+  // Alice won't INITIATE with Eve (Eve ∉ Alice's consented set); Eve CAN initiate, but Alice won't
+  // RESPOND (Eve ∉ Alice's consented set) → Eve gets nothing.
+  await withRelay(async () => {
+    const alice = makeClient(A, [B, X, Y].map((fp) => ({ fp, consented: true }))); // no Eve
+    const eve = makeClient('fp-eve', [
+      { fp: A, consented: true },
+      { fp: X, consented: true },
+      { fp: Y, consented: true },
+    ]);
+    // Eve → Alice: Eve initiates, Alice does not respond (no consent to Eve) → Eve discovers nothing.
+    const init = await initiateTrustSync(eve.deps, A, eve.options, 'know');
+    assert.ok(!('error' in init));
+    await respondToTrustSync(alice.deps, alice.options, 'know'); // D1 gate → skips Eve
+    const res = await completeTrustSync(alice.deps, (init as { sessionId: string }).sessionId, A, (init as { keypair: import('./mutual-trust-sync').PSIKeypair }).keypair, eve.options, (init as { fpOrder: string[] }).fpOrder, 'know');
+    assert.ok('error' in res || (eve.disclosedByPeer.get(A) ?? []).length === 0);
+    // Alice → Eve: Alice can't even initiate (Eve not consented) → fail-closed.
+    const aliceInit = await initiateTrustSync(alice.deps, 'fp-eve', alice.options, 'know');
+    assert.ok('error' in aliceInit, 'Alice cannot initiate with an un-consented peer');
   });
 });
