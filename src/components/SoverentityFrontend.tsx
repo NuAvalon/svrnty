@@ -5,6 +5,7 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
+import { enrollCanonicalIdentity, isCanonicalEnrollLive } from '@/lib/identity/canonical-enroll';
 import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
@@ -38,7 +39,7 @@ interface SoverentityFrontendProps {
   onLockNow?: () => void;
 }
 
-type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
+type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal' | 'enrolling';
 
 // --- Constellation Background ---
 // Generates fixed node positions once (via useMemo) and animates with CSS.
@@ -254,6 +255,12 @@ export function SoverentityFrontend({
     threshold: number;
   } | null>(null);
   const [recoveryAcked, setRecoveryAcked] = useState(false);
+  // Canonical mint enroll (track-a): register the minted identity with the authority (POST /verify)
+  // after the seed reveal; success copy gated on satellite_registered. OPEN mint — no gate, no OTP
+  // (sybil-resistance is structural, blueprint §Identity/§PSI); gated client-side by
+  // isCanonicalEnrollLive until the authority's OTP entry-gate is removed (Athena) + e2e-verified.
+  const [enrollState, setEnrollState] = useState<'idle' | 'enrolling' | 'live' | 'pending' | 'error'>('idle');
+  const [enrollError, setEnrollError] = useState('');
 
   // Vault restore state
   const [vaultFile, setVaultFile] = useState<File | null>(null);
@@ -490,12 +497,49 @@ export function SoverentityFrontend({
     }
   };
 
+  // Seed acked. Canonical enroll (dev path) registers the mint with the authority BEFORE entering the
+  // app so success-copy can gate on real propagation; prod (dev-enroll off) enters directly — the
+  // invite-gated prod enroll is track-b (this never ships a stubbed-open front door).
   const confirmRecoveryReveal = () => {
     if (!pendingRecovery || !recoveryAcked) return;
+    if (isCanonicalEnrollLive()) {
+      setGateMode('enrolling');
+      void runCanonicalEnroll();
+    } else {
+      enterApp();
+    }
+  };
+
+  // Commit the minted identity into the app (the original confirm behavior).
+  const enterApp = () => {
+    if (!pendingRecovery) return;
     setIdentity(pendingRecovery.identity);
     onIdentityUpdate?.(pendingRecovery.identity);
     setPendingRecovery(null);
     setRecoveryAcked(false);
+    setEnrollState('idle');
+    setEnrollError('');
+    setGateMode('choose');
+  };
+
+  // Register the minted 4-key identity with the authority (POST /verify via the canonical-enroll lib).
+  // "live" ⟺ satellite_registered:true (full propagation, Hypatia G2) — NOT merely a 200.
+  const runCanonicalEnroll = async () => {
+    if (!pendingRecovery) return;
+    setEnrollState('enrolling');
+    setEnrollError('');
+    try {
+      const res = await enrollCanonicalIdentity(pendingRecovery.identity);
+      if (res.ok && res.satelliteRegistered) setEnrollState('live');
+      else if (res.ok) setEnrollState('pending');
+      else {
+        setEnrollState('error');
+        setEnrollError(res.error || 'enrollment failed');
+      }
+    } catch (e) {
+      setEnrollState('error');
+      setEnrollError(e instanceof Error ? e.message : 'enrollment failed');
+    }
   };
 
   // Email-verification + OTP handlers removed. There is no server account to
@@ -1127,6 +1171,78 @@ export function SoverentityFrontend({
         onAckChange={setRecoveryAcked}
         onContinue={confirmRecoveryReveal}
       />
+    );
+  }
+
+  // --- Gate: canonical mint enroll (register the identity with the authority) ---
+  if (!identity && gateMode === 'enrolling' && pendingRecovery) {
+    const live = enrollState === 'live';
+    return (
+      <div style={s.outerWrap}>
+        <div style={s.createPanel}>
+          <div style={s.hero}>
+            <div style={s.keyIcon}>
+              {live ? (
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              ) : (
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+                </svg>
+              )}
+            </div>
+            <h2 style={s.heroTitle}>
+              {live
+                ? 'Your sovereign identity is live'
+                : enrollState === 'pending'
+                ? 'Finalizing your identity…'
+                : enrollState === 'error'
+                ? 'Minted — registration pending'
+                : 'Minting your sovereign identity…'}
+            </h2>
+            <p style={s.heroSub}>
+              {live
+                ? 'Registered with the authority and its binding has propagated. Your keys never left your device.'
+                : enrollState === 'pending'
+                ? 'Your identity minted; the binding is still finalizing. You can enter now — it completes shortly.'
+                : enrollState === 'error'
+                ? 'Your identity minted locally and is safe. Registering it with the authority didn’t complete — retry, or continue and it will register later.'
+                : 'Registering your keys with the authority and propagating the binding.'}
+            </p>
+          </div>
+
+          {enrollState === 'enrolling' && (
+            <div style={{ ...s.btnInner, justifyContent: 'center', padding: '18px', color: '#c8a84e' }}>
+              <Spinner /> Registering…
+            </div>
+          )}
+
+          {enrollState === 'error' && enrollError && <div style={s.error}>{enrollError}</div>}
+
+          {(live || enrollState === 'pending') && (
+            <button onClick={enterApp} style={s.primaryBtn}>
+              <span style={s.btnInner}>Continue</span>
+            </button>
+          )}
+
+          {enrollState === 'error' && (
+            <>
+              <button onClick={() => void runCanonicalEnroll()} style={s.primaryBtn}>
+                <span style={s.btnInner}>Retry registration</span>
+              </button>
+              <button onClick={enterApp} style={{ ...s.backBtn, marginTop: '12px' }}>
+                Continue anyway
+              </button>
+            </>
+          )}
+
+          <p style={s.footer}>
+            Ed25519 signing · Curve25519 encryption · post-quantum-ready (ML-DSA-87 + ML-KEM-1024).
+            <br />Your keys. Your data. Your sovereignty.
+          </p>
+        </div>
+      </div>
     );
   }
 
