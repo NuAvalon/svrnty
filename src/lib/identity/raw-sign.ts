@@ -59,9 +59,14 @@ export function signPsiAuth(
 }
 
 /**
- * PSI orchestrator currently signs utf8("{fp}:{unix}"). Prefix that wrapped
- * payload so the bytes under the signature are exactly svrnty-psi-auth:{fp}:{unix}.
- * If the orchestrator already passes the full preimage, sign it as-is.
+ * PSI orchestrator signs via buildAuthSignature. Prefix that wrapped payload so the bytes under the
+ * signature are exactly svrnty-psi-auth:{fp}:{unix}. If the orchestrator already passes the full
+ * preimage, sign it as-is.
+ *
+ * ⚠ LOAD-BEARING (Flint co-verify #136969): the `startsWith` guard is NOT cosmetic. buildAuthSignature
+ * now ALSO prefixes `svrnty-psi-auth:`, so the wrapped prod path relies on this guard to AVOID
+ * double-prefixing (`svrnty-psi-auth:svrnty-psi-auth:…` → 403). Keep it conditional — never make it an
+ * unconditional prepend.
  */
 export function signPsiAuthWrapped(seed: Uint8Array, wrappedOrFull: Uint8Array): Uint8Array {
   const text = new TextDecoder().decode(wrappedOrFull);
