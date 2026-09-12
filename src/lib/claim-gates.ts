@@ -61,5 +61,10 @@ export function isPQWireLive(): boolean {
  * mutual-consent; the relay-level mutual-reveal fairness-gate is post-alpha (Archie #134280).
  */
 export function isPSIDiscoveryLive(): boolean {
-  return false;
+  // ⚠⚠ DEV-ONLY FLIP — NEVER MERGE TO MAIN ⚠⚠
+  // Committed main MUST stay `return false` (the Peter-gated prod claim-gate; copy⇔reality). This
+  // branch (apollo/dev-psi-flip) exists ONLY for Athena's DEV deploy of Hypatia's 2-user PSI Gate-A
+  // e2e. claim-gates.test.ts is deliberately LEFT asserting false → CI goes RED here = the hard
+  // merge-guard so this can NEVER silently reach prod. PROD flips only on Peter's deliberate go.
+  return true;
 }
