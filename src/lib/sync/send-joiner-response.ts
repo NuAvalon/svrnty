@@ -28,6 +28,7 @@
 // component injects the identities.
 
 import { deriveMailboxId } from '../relay/mailbox-auth';
+import { resolveRelayBase } from '../relay/relay-config';
 import { buildJoinerResponse, encryptJoinerResponseTo } from '../trust/joiner-response';
 
 /** The joiner's signing identity (from the unlocked vault) + self-asserted claim. Classical for launch. */
@@ -123,7 +124,7 @@ export async function sendJoinerResponse(
   opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
 ): Promise<JoinerResponseSendResult> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const relayBase = opts.relayBase ?? '/api/relay';
+  const relayBase = opts.relayBase ?? resolveRelayBase();
 
   const deposit = await buildJoinerResponseDeposit(sender, target);
   if (!deposit) return { ok: false, status: 'encrypt-failed' };

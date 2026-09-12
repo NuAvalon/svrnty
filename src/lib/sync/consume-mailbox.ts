@@ -21,6 +21,7 @@
 // to the sender or relay — so the return channel can't be turned into a "are you my contact?" oracle.
 
 import { deriveMailboxId, signMailboxPollRequest, signMailboxAckRequest } from '@/lib/relay/mailbox-auth';
+import { resolveRelayBase } from '@/lib/relay/relay-config';
 import {
   verifyIncomingContactUpdate,
   ContactUpdateRejected,
@@ -123,7 +124,7 @@ type Outcome =
  * message cannot wedge the channel.
  */
 export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<ConsumeSummary> {
-  const relayBase = deps.relayBase ?? '/api/relay';
+  const relayBase = deps.relayBase ?? resolveRelayBase();
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);

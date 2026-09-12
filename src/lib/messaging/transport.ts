@@ -3,6 +3,7 @@
 // Discriminator is inside the sealed payload (svrnty-note-v0), not an HTTP path.
 
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
+import { resolveRelayBase } from '@/lib/relay/relay-config';
 import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
@@ -36,7 +37,7 @@ export async function sendNoteToPeer(args: {
   fetchImpl?: typeof fetch;
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
   const fetchImpl = args.fetchImpl ?? fetch;
-  const relayBase = args.relayBase ?? '/api/relay';
+  const relayBase = args.relayBase ?? resolveRelayBase();
   const thread_id = args.threadId ?? newThreadId();
   const note_id = newNoteId();
   const sent_at = new Date().toISOString();

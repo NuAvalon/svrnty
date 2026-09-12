@@ -18,6 +18,7 @@
 //    sent to in a downgraded/cleartext form; and one recipient's key error never aborts the batch.
 
 import { deriveMailboxId } from '../relay/mailbox-auth';
+import { resolveRelayBase } from '../relay/relay-config';
 import { encryptContactUpdateTo } from './contact-update-envelope';
 import { buildAndSignContactUpdate, type BuildContactUpdateArgs } from '../trust/contact-update-sign';
 
@@ -135,7 +136,7 @@ export async function sendContactUpdate(
   opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
 ): Promise<SendContactUpdateResult> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const relayBase = opts.relayBase ?? '/api/relay';
+  const relayBase = opts.relayBase ?? resolveRelayBase();
 
   const { deposits, skipped } = await buildContactUpdateDeposits(change, owner, recipients);
 
