@@ -25,7 +25,17 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isBiometricSeamLive(), false);
   });
 
-  it('isPSIDiscoveryLive is false until the PSI wire-in passes e2e verify + Flint at-rest co-verify (do-not-advertise)', () => {
+  it('isPSIDiscoveryLive is false by default (prod: NEXT_PUBLIC_PSI_DISCOVERY_LIVE unset → dormant/honest until e2e+at-rest verified)', () => {
+    delete process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE;
     assert.equal(isPSIDiscoveryLive(), false);
+  });
+
+  it('isPSIDiscoveryLive reads NEXT_PUBLIC_PSI_DISCOVERY_LIVE (the DEV build enables it for QA; prod leaves it unset)', () => {
+    process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE = 'true';
+    try {
+      assert.equal(isPSIDiscoveryLive(), true);
+    } finally {
+      delete process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE;
+    }
   });
 });

@@ -61,5 +61,11 @@ export function isPQWireLive(): boolean {
  * mutual-consent; the relay-level mutual-reveal fairness-gate is post-alpha (Archie #134280).
  */
 export function isPSIDiscoveryLive(): boolean {
-  return false;
+  // Env-driven so the wired-but-dormant PSI discovery can be exercised for QA on DEV without shipping
+  // it live to prod. NEXT_PUBLIC_* is inlined at build: the DEV build sets
+  // NEXT_PUBLIC_PSI_DISCOVERY_LIVE=true; PROD leaves it unset → false = dormant/honest by construction
+  // (no discovery runs, no "see who you both know" claim). After the full QA-1st (mechanism: Apollo/
+  // Flint · claims: Hypatia) + Flint's at-rest co-verify, this becomes an unconditional true and the
+  // env read retires.
+  return process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE === 'true';
 }
