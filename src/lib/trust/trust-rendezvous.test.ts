@@ -15,6 +15,7 @@ import {
   depositTrustBeacon,
   pollForPeerTrust,
   rehydrateTrustBeacons,
+  httpTrustRelay,
   type TrustRelay,
   type TrustBeacon,
 } from './trust-rendezvous.js';
@@ -181,4 +182,56 @@ test('rehydrate: idempotent re-deposit to a fresh relay still bonds (migrate/reh
   await rehydrateTrustBeacons({ relay: newRelay, myEdPriv: a.edPriv, myDid: a.did, signFn, peers: [{ edPub: b.edPub, did: b.did, mailbox: b.mbPub, mailboxFp: b.mbFp }], epoch: EPOCH });
   const aSees = await pollForPeerTrust({ relay: newRelay, myEdPriv: a.edPriv, myDid: a.did, myMailbox: a.mbSec, myMailboxFp: a.mbFp, peerEdPub: b.edPub, peerDid: b.did, verifyFn, now: EPOCH });
   assert.equal(aSees, true, 'bond survives migration to a new relay via rehydrate');
+});
+
+// ── Track C relay-wire: httpTrustRelay adapter to the satellite /trust/rendezvous/* endpoints (Athena #137166) ──
+/** Mock fetch faithfully simulating the deployed endpoints: an in-memory store keyed by r. */
+function satelliteMockFetch() {
+  const store = new Map<string, string[]>();
+  const seen: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const fetchImpl = (async (url: string, init?: { body?: string }) => {
+    const path = new URL(url).pathname;
+    const body = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
+    seen.push({ path, body });
+    if (path === '/trust/rendezvous/deposit') {
+      const r = body.r as string;
+      const arr = store.get(r) ?? [];
+      arr.push(body.blob as string);
+      store.set(r, arr);
+      return { ok: true, json: async () => ({ deposited: true }) } as Response;
+    }
+    if (path === '/trust/rendezvous/poll') {
+      return { ok: true, json: async () => ({ blobs: store.get(body.r as string) ?? [] }) } as Response;
+    }
+    return { ok: false, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  return { fetchImpl, store, seen };
+}
+
+test('httpTrustRelay: wire shape matches Athena #137166 (POST {r,blob}→{deposited}; POST {r}→{blobs})', async () => {
+  const { fetchImpl, seen } = satelliteMockFetch();
+  const relay = httpTrustRelay('http://sat:8100/', fetchImpl); // trailing slash normalized
+  assert.equal(await relay.deposit('R_b64', 'blob1'), true);
+  assert.deepEqual(await relay.poll('R_b64'), ['blob1']);
+  assert.deepEqual(seen[0], { path: '/trust/rendezvous/deposit', body: { r: 'R_b64', blob: 'blob1' } });
+  assert.deepEqual(seen[1], { path: '/trust/rendezvous/poll', body: { r: 'R_b64' } });
+});
+
+test('httpTrustRelay: full mutual bond through the HTTP adapter (mock-fetch-backed satellite)', async () => {
+  const { fetchImpl } = satelliteMockFetch();
+  const relay = httpTrustRelay('http://sat:8100', fetchImpl);
+  const a = mkPeer('a');
+  const b = mkPeer('b');
+  await depositTrustBeacon({ relay, myEdPriv: a.edPriv, myDid: a.did, peerEdPub: b.edPub, peerDid: b.did, peerMailbox: b.mbPub, peerMailboxFp: b.mbFp, signFn, epoch: EPOCH });
+  await depositTrustBeacon({ relay, myEdPriv: b.edPriv, myDid: b.did, peerEdPub: a.edPub, peerDid: a.did, peerMailbox: a.mbPub, peerMailboxFp: a.mbFp, signFn, epoch: EPOCH });
+  const aSees = await pollForPeerTrust({ relay, myEdPriv: a.edPriv, myDid: a.did, myMailbox: a.mbSec, myMailboxFp: a.mbFp, peerEdPub: b.edPub, peerDid: b.did, verifyFn, now: EPOCH });
+  const bSees = await pollForPeerTrust({ relay, myEdPriv: b.edPriv, myDid: b.did, myMailbox: b.mbSec, myMailboxFp: b.mbFp, peerEdPub: a.edPub, peerDid: a.did, verifyFn, now: EPOCH });
+  assert.ok(aSees && bSees, 'both bond through the HTTP adapter');
+});
+
+test('httpTrustRelay: fail-soft — non-2xx deposit→false, failed poll→[]', async () => {
+  const fetchImpl = (async () => ({ ok: false, json: async () => ({}) }) as Response) as unknown as typeof fetch;
+  const relay = httpTrustRelay('http://sat:8100', fetchImpl);
+  assert.equal(await relay.deposit('R', 'b'), false);
+  assert.deepEqual(await relay.poll('R'), []);
 });

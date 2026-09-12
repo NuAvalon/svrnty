@@ -68,6 +68,49 @@ export interface TrustRelay {
   poll(rTagB64: string): Promise<string[]>;
 }
 
+/**
+ * Concrete TrustRelay over the satellite's rendezvous endpoints (Athena #137166, /trust/rendezvous/*):
+ *   POST {satelliteUrl}/trust/rendezvous/deposit  {r, blob} → {deposited: boolean}
+ *   POST {satelliteUrl}/trust/rendezvous/poll     {r}       → {blobs: string[]}
+ * Both are POST (R rides the JSON body, never the URL/access-log) and UNAUTHENTICATED BY DESIGN —
+ * blindness comes from R-secrecy (only the pair derives R from S_pair) + the sealed+signed beacon,
+ * NOT from endpoint auth (authing would deanonymize the pair → defeats §8.5 sovereignty). Fail-soft:
+ * a non-2xx/throw deposit → false; a failed poll → [] (the caller re-polls next epoch/tick).
+ */
+export function httpTrustRelay(satelliteUrl: string, fetchImpl: typeof fetch = fetch): TrustRelay {
+  const base = satelliteUrl.replace(/\/$/, '');
+  return {
+    async deposit(rTagB64, blob) {
+      try {
+        const res = await fetchImpl(`${base}/trust/rendezvous/deposit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ r: rTagB64, blob }),
+        });
+        if (!res.ok) return false;
+        const j = (await res.json()) as { deposited?: boolean };
+        return j?.deposited === true;
+      } catch {
+        return false;
+      }
+    },
+    async poll(rTagB64) {
+      try {
+        const res = await fetchImpl(`${base}/trust/rendezvous/poll`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ r: rTagB64 }),
+        });
+        if (!res.ok) return [];
+        const j = (await res.json()) as { blobs?: unknown };
+        return Array.isArray(j.blobs) ? (j.blobs as unknown[]).filter((b): b is string => typeof b === 'string') : [];
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
 function sortDids(didA: string, didB: string): [string, string] {
   return didA < didB ? [didA, didB] : [didB, didA];
 }
