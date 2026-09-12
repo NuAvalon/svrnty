@@ -48,3 +48,18 @@ export function isPQSignLive(): boolean {
 export function isPQWireLive(): boolean {
   return isPQEncapLive() && isPQSignLive();
 }
+
+/**
+ * PSI mutual-contact DISCOVERY (the KNOW-layer "trust map") is wired end-to-end and safe to run.
+ *
+ * FALSE today: wired but DO-NOT-ADVERTISE. The client wire-in (per-peer blinder persisted on the
+ * contact record → initiator completes on a later tick → mutual set applied; forward-revocation on
+ * retract) ships gated OFF — startKnowLayerSync is not started while this is false, so prod carries
+ * PSI dormant + honest (no discovery runs, no "see who you both know" claim). Flip to true WITH the
+ * passing e2e verify (determinism / unlinkability / set-change→new-session / stateless-reload) + Flint's
+ * at-rest-blinder co-verify (and update claim-gates.test.ts). Alpha safety baseline is client-side D1
+ * mutual-consent; the relay-level mutual-reveal fairness-gate is post-alpha (Archie #134280).
+ */
+export function isPSIDiscoveryLive(): boolean {
+  return false;
+}

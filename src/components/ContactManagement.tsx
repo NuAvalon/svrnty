@@ -46,6 +46,7 @@ import {
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
+import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
@@ -296,6 +297,11 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   // Fail-closed: locked session / failed bind ⇒ no options ⇒ no sync.
   useEffect(() => {
     if (!fingerprint) return;
+    // Gated OFF for alpha (claim-gates.isPSIDiscoveryLive === false): the PSI discovery wire-in is
+    // present but DO-NOT-ADVERTISE until the e2e verify passes (determinism / unlinkability /
+    // set-change / stateless-reload) + Flint's at-rest-blinder co-verify. Ships dormant + honest —
+    // no discovery runs, no "see who you both know" claim — then this flips WITH the gate.
+    if (!isPSIDiscoveryLive()) return;
     let stopped = false;
     let handle: { stop: () => void } | undefined;
     void (async () => {
