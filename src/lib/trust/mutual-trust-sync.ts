@@ -230,9 +230,17 @@ function computeIntersection(
  * (tag#3, Flint #129264): `svrnty-psi-auth:{fingerprint}:{unixSeconds}`, signed by the bound request
  * key, sent as `{unixSeconds}:{b64sig}` (±30s window). The caller's OWN fingerprint is always bound.
  *
- * ⚠ The bare `{fingerprint}:{unixSeconds}` preimage (what this signed before) 403s on the PSI endpoints —
- * empirically confirmed vs the deployed dev-satellite (bare→403, prefixed→200). That was the live
- * web-client PSI auth bug: the app could never complete discovery. The prefix is the fix.
+ * This signs the FULL prefixed preimage. Bare `{fp}:{ts}` 403s on the PSI endpoints (confirmed vs the
+ * deployed dev-satellite: bare→403, prefixed→200) — so a caller passing a RAW signFn needs this prefix.
+ *
+ * ⚠ LOAD-BEARING COMPOSITION (Flint co-verify #136969): the prod KNOW-layer already wraps signFn with
+ * `signPsiAuthWrapped` (know-layer-sync.ts:397), which is IDEMPOTENT — it prefixes only if not already
+ * prefixed. So the prefix is now applied HERE and by the wrap; it stays correct ONLY because
+ * signPsiAuthWrapped's `startsWith('svrnty-psi-auth:')` guard makes the 2nd application a no-op. Do NOT
+ * make either site an unconditional prepend → wrapped PSI calls would double-prefix
+ * `svrnty-psi-auth:svrnty-psi-auth:…` → 403. NB: because the prod path was already prefixed via that wrap
+ * (since #109), this change is a standalone-correctness fix (fixes any raw-signFn caller), NOT the thing
+ * that makes in-app PSI work — the live proof is the 2-user browser e2e, not CI-green.
  */
 export function buildAuthSignature(myFingerprint: string, signFn: (data: Uint8Array) => Uint8Array): string {
   const ts = Math.floor(Date.now() / 1000);
