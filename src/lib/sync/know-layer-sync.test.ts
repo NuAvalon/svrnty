@@ -343,3 +343,22 @@ test('completion FAIL-CLOSED: session missing its scalar → dropped, never comp
   assert.equal(writes.length, 1);
   assert.equal(writes[0].updates.psi_session_id, undefined); // dropped
 });
+
+// Case 9 (Flint red-team matrix) — LOGIC layer: a throwing/locked store on ONE session must not wedge
+// the pass (the browser/no-plaintext-at-rest half is Flint's on-dev lens). Per-contact try/catch means
+// updateContact throwing (e.g. session locked mid-tick) drops that session + the loop continues.
+test('completion FAIL-SOFT: a locked/throwing session never wedges the pass (Case 9 logic)', async () => {
+  const contacts = [
+    rec({ id: 'c1', fingerprint: 'fp1', open_visibility: true, psi_session_id: 's1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0 }),
+    rec({ id: 'c2', fingerprint: 'fp2', open_visibility: true, psi_session_id: 's2', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['b'], psi_layer: 'know', psi_attempts: 0 }),
+  ];
+  let completeCalls = 0;
+  const lockedStore: KnowOverlayStore = {
+    getAllContacts: async () => contacts,
+    updateContact: async () => { throw new Error('session locked'); }, // simulate locked-at-rest write
+  };
+  const readyEach: CompleteTrustSyncFn = async () => { completeCalls++; return { mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' }; };
+  // Must resolve despite updateContact throwing on EVERY contact — the loop is not wedged.
+  await assert.doesNotReject(runPsiCompletionPass(lockedStore, OWNER, STUB_DEPS, DUMMY_OPTIONS, readyEach));
+  assert.equal(completeCalls, 2, 'both contacts attempted — a throwing (locked) session does not stop the others');
+});
