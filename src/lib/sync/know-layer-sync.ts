@@ -38,8 +38,10 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isDecayed, type TrustEdge } from '@/lib/trust/types';
 import {
   syncMutualTrust,
+  completeTrustSync,
   type OrchestratorDeps,
   type PSISyncOptions,
+  type PSIKeypair,
 } from '@/lib/trust/mutual-trust-sync';
 
 // ── Store seam (injectable for tests; defaults to the real IndexedDB client-store) ───────────────
@@ -147,9 +149,108 @@ export function buildKnowOverlayDeps(
 // ── Trigger ──────────────────────────────────────────────────────────────────────────────────────
 
 export type SyncMutualTrustFn = typeof syncMutualTrust;
+type SyncMutualTrustResult = Awaited<ReturnType<SyncMutualTrustFn>>;
+
+// ── PSI initiator session persistence (Option A — blinder ON the contact record) ──────────────────
+// The PSI initiator starts a session on one tick but the responder answers ASYNC (the satellite is a
+// blind mailbox), so completion runs on a LATER tick — which needs the single-use blind scalar (sk_A)
+// + the blinded fp ORDER carried across the gap. Per Peter's design the blinder lives ON THE PEER'S
+// CONTACT RECORD (not a separate store): the contact body is already AES-GCM encrypted at rest (enc-b),
+// so the scalar inherits at-rest protection, and its lifecycle ties to the contact — retract
+// (go-private / untrust / delete) drops it for free (forward-revocation).
+//
+// DENIABILITY (Hypatia disclosure-model design-of-record): NO wall-clock. Expiry uses an ATTEMPT
+// COUNTER (a logical clock) — psi_attempts bumps per not-ready completion; past MAX we drop the session
+// (≈ the 1h satellite TTL at the 5-min tick). Overwrite-not-append: one in-flight session per peer.
+const MAX_PSI_ATTEMPTS = 12; // ≈ 1h at the 5-min KNOW tick — matches the satellite session TTL
+
+const CLEARED_PSI_SESSION: Partial<ContactRecord> = {
+  psi_session_id: undefined, psi_sk_A: undefined, psi_pub: undefined,
+  psi_fp_order: undefined, psi_layer: undefined, psi_attempts: undefined,
+};
+
+/** Persist the sessions initiated this tick onto each peer's contact record (overwrite any prior — one in-flight per peer). */
+export async function savePsiInitiated(
+  store: KnowOverlayStore,
+  ownerFingerprint: string,
+  initiated: SyncMutualTrustResult['initiated'],
+): Promise<void> {
+  if (!initiated || initiated.length === 0) return;
+  const byFp = new Map((await store.getAllContacts(ownerFingerprint)).map((c) => [c.fingerprint, c]));
+  for (const s of initiated) {
+    const contact = byFp.get(s.peerFingerprint);
+    if (!contact) continue; // only ever store a session against a real book contact
+    await store.updateContact(contact.id, {
+      psi_session_id: s.sessionId,
+      psi_sk_A: s.keypair.privateKey,
+      psi_pub: s.keypair.publicKey,
+      psi_fp_order: s.fpOrder,
+      psi_layer: 'know',
+      psi_attempts: 0,
+    } as Partial<ContactRecord>);
+  }
+}
 
 /**
- * One KNOW-layer sync tick.
+ * Completion pass — finish any sessions saved on prior ticks (the initiator half that was previously
+ * never wired: the tick discarded `initiated` → completeTrustSync had zero callers → no intersection →
+ * no trust map). For every contact:
+ *  - FORWARD-REVOCATION: a de-consented peer (open_visibility !== true) → drop the in-flight session
+ *    AND clear disclosed_circle. They fall out of discovery; nothing corroborates the past.
+ *  - READY: completeTrustSync applies the mutual set (deps.applyMutualResult) → clear the session.
+ *  - NOT-READY: bump psi_attempts (logical clock); past MAX clear it (expiry — responder never answered).
+ * Fail-soft per contact — one bad session never wedges the pass.
+ */
+export type CompleteTrustSyncFn = typeof completeTrustSync;
+
+export async function runPsiCompletionPass(
+  store: KnowOverlayStore,
+  ownerFingerprint: string,
+  deps: OrchestratorDeps,
+  options: PSISyncOptions,
+  completeFn: CompleteTrustSyncFn = completeTrustSync,
+): Promise<void> {
+  const contacts = await store.getAllContacts(ownerFingerprint);
+  for (const c of contacts) {
+    const consented = contactRecordToEdge(c).open_visibility === true;
+    const hasSession = typeof c.psi_session_id === 'string' && c.psi_session_id.length > 0;
+    const hasDisclosed = Array.isArray(c.disclosed_circle) && c.disclosed_circle.length > 0;
+    try {
+      // Forward-revocation: a de-consented peer must not complete or retain a disclosure.
+      if (!consented) {
+        if (hasSession || hasDisclosed) {
+          await store.updateContact(c.id, { ...CLEARED_PSI_SESSION, disclosed_circle: [] } as Partial<ContactRecord>);
+        }
+        continue;
+      }
+      if (!hasSession) continue;
+      // Fail-closed: an incomplete session record (missing scalar/order) can't complete — drop it,
+      // never proceed with a guessed sk_A.
+      if (typeof c.psi_sk_A !== 'string' || !Array.isArray(c.psi_fp_order)) {
+        await store.updateContact(c.id, CLEARED_PSI_SESSION);
+        continue;
+      }
+      const keypair: PSIKeypair = { privateKey: c.psi_sk_A, publicKey: typeof c.psi_pub === 'string' ? c.psi_pub : '' };
+      const layer: 'know' | 'trust' = c.psi_layer === 'trust' ? 'trust' : 'know';
+      const result = await completeFn(deps, c.psi_session_id as string, c.fingerprint, keypair, options, c.psi_fp_order as string[], layer);
+      if (result && !('error' in result)) {
+        await store.updateContact(c.id, CLEARED_PSI_SESSION); // applied → ephemeral delete
+      } else {
+        const attempts = (typeof c.psi_attempts === 'number' ? c.psi_attempts : 0) + 1;
+        await store.updateContact(
+          c.id,
+          attempts > MAX_PSI_ATTEMPTS ? CLEARED_PSI_SESSION : ({ psi_attempts: attempts } as Partial<ContactRecord>),
+        );
+      }
+    } catch {
+      // local-only; never surface. Leave the session for a later tick.
+    }
+  }
+}
+
+/**
+ * One KNOW-layer sync tick. Returns syncMutualTrust's result so the caller can persist the
+ * newly-initiated blinders (the completion loop lives in startKnowLayerSync, which holds owner+store).
  *
  * ★★ C1 (Flint, CRITICAL): pass 'know' EXPLICITLY. syncMutualTrust defaults `layer` to 'trust', and
  * respondToTrustSync's consent gate is `if (layer === 'know' && !consentSet.has(...)) continue` — so
@@ -160,8 +261,8 @@ export async function runKnowLayerSyncTick(
   deps: OrchestratorDeps,
   options: PSISyncOptions,
   syncFn: SyncMutualTrustFn = syncMutualTrust,
-): Promise<void> {
-  await syncFn(deps, options, 'know');
+): Promise<SyncMutualTrustResult> {
+  return syncFn(deps, options, 'know');
 }
 
 export interface KnowLayerSyncHandle {
@@ -321,8 +422,15 @@ export function startKnowLayerSync(
     if (!owner) return; // no unlocked identity — stay inert, retry next tick
     inFlight = true;
     try {
-      const deps = buildKnowOverlayDeps(owner, opts.store);
-      await runKnowLayerSyncTick(deps, options, syncFn); // 'know' passed explicitly inside (C1)
+      const store = opts.store ?? defaultStore;
+      const deps = buildKnowOverlayDeps(owner, store);
+      // 1. Complete initiator sessions saved on prior ticks (responder answers async) + forward-revoke
+      //    de-consented peers. THIS closes the initiator half that was never wired = the trust map.
+      await runPsiCompletionPass(store, owner, deps, options);
+      // 2. Respond to pending + initiate new sessions ('know' explicit — C1).
+      const result = await runKnowLayerSyncTick(deps, options, syncFn);
+      // 3. Persist the newly-initiated blinders so a later tick can complete them.
+      await savePsiInitiated(store, owner, result.initiated);
     } catch (err) {
       // local-only diagnostic; never surfaced to peer/relay. One bad tick must not wedge the loop.
       console.error('[know-layer-sync] tick failed (will retry):', err);

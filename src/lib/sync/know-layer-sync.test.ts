@@ -13,8 +13,11 @@ import {
   buildKnowOverlayDeps,
   runKnowLayerSyncTick,
   startKnowLayerSync,
+  runPsiCompletionPass,
+  savePsiInitiated,
   type KnowOverlayStore,
   type SyncMutualTrustFn,
+  type CompleteTrustSyncFn,
 } from './know-layer-sync';
 
 const OWNER = 'owner-fp';
@@ -263,4 +266,80 @@ test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/blocked/g
   assert.equal('blocked' in known[0], false);
   assert.equal(JSON.stringify(known).includes('family'), false);
   assert.equal(JSON.stringify(known).includes('secret-group'), false);
+});
+
+// ── PSI initiator completion (Option A wire-in): the initiator half that was never wired ──────────
+// (syncMutualTrust returned `initiated` but the tick discarded it → completeTrustSync had zero callers
+//  → no intersection → no trust map). These lock the persist/complete/expire/retract state machine.
+
+const STUB_DEPS: OrchestratorDeps = {
+  getTrustedPeers: async () => [],
+  getKnownPeers: async () => [],
+  applyMutualResult: async () => {},
+};
+const readyFn: CompleteTrustSyncFn = async () => ({ mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' });
+const notReadyFn: CompleteTrustSyncFn = async () => ({ error: 'Session not ready or not found' });
+
+test('savePsiInitiated persists the blinder onto the peer contact record', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true })]);
+  await savePsiInitiated(store, OWNER, [
+    { peerFingerprint: 'peer-fp', sessionId: 'sess-1', keypair: { privateKey: 'sk', publicKey: 'pub' }, fpOrder: ['a', 'b'] },
+  ]);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].id, 'c1');
+  assert.equal(writes[0].updates.psi_session_id, 'sess-1');
+  assert.equal(writes[0].updates.psi_sk_A, 'sk');
+  assert.deepEqual(writes[0].updates.psi_fp_order, ['a', 'b']);
+  assert.equal(writes[0].updates.psi_attempts, 0);
+});
+
+test('savePsiInitiated never stores a session against a non-book fingerprint', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'other', open_visibility: true })]);
+  await savePsiInitiated(store, OWNER, [
+    { peerFingerprint: 'ghost-fp', sessionId: 's', keypair: { privateKey: 'sk', publicKey: 'pub' }, fpOrder: [] },
+  ]);
+  assert.equal(writes.length, 0);
+});
+
+test('completion READY: completeFn returns a result → session cleared (ephemeral delete)', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0 })]);
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, readyFn);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_session_id, undefined); // cleared after apply
+});
+
+test('completion NOT-READY: bumps the attempt counter (logical clock, no wall-clock)', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 2 })]);
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, notReadyFn);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_attempts, 3);
+  assert.equal('psi_session_id' in writes[0].updates, false); // NOT cleared — only the counter bumped
+});
+
+test('completion EXPIRE: attempts past MAX → cleared (logical-clock expiry, no wall-clock)', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 12 })]);
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, notReadyFn);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_session_id, undefined); // cleared — responder never answered within TTL
+});
+
+test('completion FORWARD-RETRACT: de-consented peer → session + disclosed_circle cleared, never completed', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: false, psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_fp_order: ['a'], disclosed_circle: ['x', 'y'] })]);
+  let completeCalled = false;
+  const spyComplete: CompleteTrustSyncFn = async () => { completeCalled = true; return { error: 'x' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, spyComplete);
+  assert.equal(completeCalled, false); // a de-consented peer is never completed
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_session_id, undefined); // session dropped (forward-revocation)
+  assert.deepEqual(writes[0].updates.disclosed_circle, []); // disclosure retracted
+});
+
+test('completion FAIL-CLOSED: session missing its scalar → dropped, never completed with a guessed key', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, psi_session_id: 'sess-1', psi_fp_order: ['a'] })]); // no psi_sk_A
+  let completeCalled = false;
+  const spyComplete: CompleteTrustSyncFn = async () => { completeCalled = true; return { error: 'x' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, spyComplete);
+  assert.equal(completeCalled, false); // never proceeds without the persisted scalar
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_session_id, undefined); // dropped
 });
