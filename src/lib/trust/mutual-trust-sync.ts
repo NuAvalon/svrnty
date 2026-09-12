@@ -226,15 +226,17 @@ function computeIntersection(
 // --- Satellite API Client ---
 
 /**
- * Auth signature in the satellite's scheme (satellite.py verify_request_signature):
- * Ed25519(signFn, "{fingerprint}:{unixSeconds}"), sent as "{unixSeconds}:{b64sig}" (±30s window).
- * The caller's OWN fingerprint is always the one bound. Replaces the old per-action JSON
- * payloads, which the satellite never verified. (Follow-up: bind sig to request body/action —
- * server+client hardening; TLS covers transit for now.)
+ * Auth signature for the PSI endpoints. The deployed satellite verifies a DOMAIN-SEPARATED preimage
+ * (tag#3, Flint #129264): `svrnty-psi-auth:{fingerprint}:{unixSeconds}`, signed by the bound request
+ * key, sent as `{unixSeconds}:{b64sig}` (±30s window). The caller's OWN fingerprint is always bound.
+ *
+ * ⚠ The bare `{fingerprint}:{unixSeconds}` preimage (what this signed before) 403s on the PSI endpoints —
+ * empirically confirmed vs the deployed dev-satellite (bare→403, prefixed→200). That was the live
+ * web-client PSI auth bug: the app could never complete discovery. The prefix is the fix.
  */
-function buildAuthSignature(myFingerprint: string, signFn: (data: Uint8Array) => Uint8Array): string {
+export function buildAuthSignature(myFingerprint: string, signFn: (data: Uint8Array) => Uint8Array): string {
   const ts = Math.floor(Date.now() / 1000);
-  const sig = signFn(new TextEncoder().encode(`${myFingerprint}:${ts}`));
+  const sig = signFn(new TextEncoder().encode(`svrnty-psi-auth:${myFingerprint}:${ts}`));
   return `${ts}:${toBase64(sig)}`;
 }
 
