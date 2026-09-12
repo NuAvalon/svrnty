@@ -283,6 +283,15 @@ function ownerFingerprintOf(identity: unknown): string | null {
 /** Same-origin proxy prefix — the browser cannot reach the docker-internal satellite host. */
 export const SATELLITE_BROWSER_BASE = '/api/satellite';
 
+/**
+ * Registration base — same-origin ROOT ('' → relative /identity, /bind). Caddy routes /identity +
+ * /bind to the registration service (dev + prod), NOT to the satellite. The PSI-auth sig_pubkey bind
+ * MUST go through registration (single-use nonce dedup; it then propagates to the satellite), never
+ * the satellite's own /bind (server↔server sync, no dedup ⇒ replay-exposed). Flint #134651, Athena
+ * #134684/#134707.
+ */
+export const REGISTRATION_BROWSER_BASE = '';
+
 export type LoadIdentityKey = (
   fingerprint: string,
 ) => Promise<{ privateKey: string; passphrase: string } | null>;
@@ -297,42 +306,58 @@ function bytesToB64(bytes: Uint8Array): string {
 }
 
 /**
- * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth).
- * Challenge: GET /bind?fingerprint= → { nonce, epoch } or { bound: true }.
- * Complete: POST /bind { fingerprint, sign_pubkey, nonce, epoch, signature }.
- * Returns false on any misshape / network miss — caller stays fail-closed (no PSI).
+ * Establish the client's PSI-auth binding at the REGISTRATION service (Flint canonical #134651):
+ * /trust/psi/* auth requires the bound sig_pubkey; /register does NOT set it — only POST /bind does.
+ * Bind THROUGH registration (single-use nonce dedup, then it propagates to the satellite), NOT the
+ * satellite's own /bind (server↔server sync, no dedup ⇒ replay-exposed).
+ *
+ * Flow: GET {registrationBase}/identity/{fp} → { epoch, has_sig_pubkey }; already bound ⇒ done. Else
+ * client-CSPRNG nonce + signBind(seed, sig_pubkey, nonce, epoch) → POST {registrationBase}/bind
+ * { fingerprint, sig_pubkey(hex), nonce(hex), epoch(int), binding_sig(base64) }. Returns false on any
+ * misshape / network miss (incl. the pre-register 404 window) — caller stays fail-closed (no PSI),
+ * retries next tick.
+ *
+ * KB#89280 (prod follow-up, non-blocking): the has_sig_pubkey short-circuit trusts REGISTRATION's
+ * view; a failed reg→satellite push (satellite transiently down) leaves the satellite unbound → PSI
+ * 403 with no re-push. Prod hardening = PSI-403→re-bind self-heal, or short-circuit on satellite-side
+ * bound-status. QA-safe on dev (satellite reachable → push succeeds).
  */
 export async function runBindCeremony(args: {
-  satelliteUrl: string;
+  registrationBase: string;
   fingerprint: string;
   seed: Uint8Array;
   signPub: Uint8Array;
   fetchImpl?: typeof fetch;
 }): Promise<boolean> {
   const fetchImpl = args.fetchImpl ?? fetch;
-  const base = args.satelliteUrl.replace(/\/$/, '');
+  const base = args.registrationBase.replace(/\/$/, '');
   try {
-    const challengeRes = await fetchImpl(
-      `${base}/bind?fingerprint=${encodeURIComponent(args.fingerprint)}`,
-    );
-    if (!challengeRes.ok) return false;
-    const challenge = await challengeRes.json();
-    if (challenge && challenge.bound === true) return true;
-    const nonce = challenge?.nonce;
-    const epoch = challenge?.epoch;
-    if (typeof nonce !== 'string' && typeof nonce !== 'number') return false;
-    if (typeof epoch !== 'string' && typeof epoch !== 'number') return false;
-    const signPubHex = bytesToHex(args.signPub);
-    const signature = signBind(args.seed, signPubHex, String(nonce), epoch);
+    // Look up epoch + bound-status (no GET challenge; registration is the source of truth).
+    const idRes = await fetchImpl(`${base}/identity/${encodeURIComponent(args.fingerprint)}`);
+    if (!idRes.ok) return false; // not registered yet (404) or transient — fail-closed, retry next tick
+    const info = await idRes.json();
+    if (info?.has_sig_pubkey === true) return true; // already bound (rotation-correct via lookup)
+    const epoch = info?.epoch;
+    if (typeof epoch !== 'number' && typeof epoch !== 'string') return false;
+
+    // Client-generated single-use nonce (registration dedups it — replay-safe).
+    const nonceBytes = new Uint8Array(32);
+    crypto.getRandomValues(nonceBytes);
+    const nonce = bytesToHex(nonceBytes);
+
+    // tag#2 preimage svrnty-bind:{sig_pubkey}:{nonce}:{epoch} — signBind is byte-exact vs registration+satellite.
+    const sigPubHex = bytesToHex(args.signPub);
+    const bindingSig = signBind(args.seed, sigPubHex, nonce, epoch);
+
     const post = await fetchImpl(`${base}/bind`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fingerprint: args.fingerprint,
-        sign_pubkey: signPubHex,
-        nonce: String(nonce),
-        epoch,
-        signature: bytesToB64(signature),
+        sig_pubkey: sigPubHex,
+        nonce,
+        epoch: typeof epoch === 'string' ? Number(epoch) : epoch,
+        binding_sig: bytesToB64(bindingSig),
       }),
     });
     return post.ok;
@@ -351,6 +376,7 @@ export async function buildPsiSyncOptions(
   deps: {
     loadKey?: LoadIdentityKey;
     satelliteUrl?: string;
+    registrationBase?: string;
     fetchImpl?: typeof fetch;
     skipBind?: boolean;
   } = {},
@@ -380,9 +406,11 @@ export async function buildPsiSyncOptions(
   }
 
   const satelliteUrl = (deps.satelliteUrl ?? SATELLITE_BROWSER_BASE).replace(/\/$/, '');
+  const registrationBase = (deps.registrationBase ?? REGISTRATION_BROWSER_BASE).replace(/\/$/, '');
   if (!deps.skipBind) {
+    // Bind through REGISTRATION (dedup + propagate-to-satellite), not the satellite — Flint #134651.
     const bound = await runBindCeremony({
-      satelliteUrl,
+      registrationBase,
       fingerprint: fp,
       seed,
       signPub,

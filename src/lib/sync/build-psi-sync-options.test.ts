@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { generateKey } from 'openpgp';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { extractRawSign, psiAuthPreimage } from '@/lib/identity/raw-sign';
+import { extractRawSign, psiAuthPreimage, bindPreimage } from '@/lib/identity/raw-sign';
 import { decryptKey, readPrivateKey } from 'openpgp';
 import { buildPsiSyncOptions, runBindCeremony } from './know-layer-sync';
 
@@ -63,7 +63,9 @@ test('buildPsiSyncOptions signFn prefixes svrnty-psi-auth: onto {fp}:{unix}', as
   assert.equal(ed25519.verify(sig, preimage, signPub), true);
 });
 
-test('runBindCeremony GET challenge → POST signed bind body', async () => {
+// Canonical client bind (Flint #134651): GET registration /identity/{fp} for epoch + bound-status,
+// then (if unbound) client-CSPRNG nonce + signBind → POST registration /bind with tag#2 field names.
+test('runBindCeremony: GET /identity (registered, unbound) → POST /bind with canonical tag#2 fields + valid sig', async () => {
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -72,7 +74,7 @@ test('runBindCeremony GET challenge → POST signed bind body', async () => {
     if (init?.body && typeof init.body === 'string') body = JSON.parse(init.body);
     calls.push({ url, method, body });
     if (method === 'GET') {
-      return new Response(JSON.stringify({ nonce: 'n1', epoch: 3 }), {
+      return new Response(JSON.stringify({ epoch: 0, has_sig_pubkey: false }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -81,7 +83,7 @@ test('runBindCeremony GET challenge → POST signed bind body', async () => {
   }) as typeof fetch;
 
   const ok = await runBindCeremony({
-    satelliteUrl: 'https://satellite.test',
+    registrationBase: 'https://reg.test',
     fingerprint,
     seed,
     signPub,
@@ -90,12 +92,38 @@ test('runBindCeremony GET challenge → POST signed bind body', async () => {
   assert.equal(ok, true);
   assert.equal(calls.length, 2);
   assert.equal(calls[0].method, 'GET');
-  assert.match(calls[0].url, /\/bind\?fingerprint=/);
+  assert.match(calls[0].url, new RegExp(`/identity/${fingerprint}$`));
   assert.equal(calls[1].method, 'POST');
+  assert.match(calls[1].url, /\/bind$/);
   const posted = calls[1].body as Record<string, unknown>;
   assert.equal(posted.fingerprint, fingerprint);
-  assert.equal(posted.sign_pubkey, bytesToHex(signPub));
-  assert.equal(posted.nonce, 'n1');
-  assert.equal(posted.epoch, 3);
-  assert.equal(typeof posted.signature, 'string');
+  assert.equal(posted.sig_pubkey, bytesToHex(signPub)); // renamed sign_pubkey → sig_pubkey
+  assert.equal(posted.epoch, 0); // int, from /identity (fresh mint)
+  assert.equal(typeof posted.nonce, 'string');
+  assert.equal((posted.nonce as string).length, 64); // client CSPRNG hex(32B)
+  // binding_sig (renamed from signature) MUST verify against the canonical tag#2 preimage.
+  const sig = Uint8Array.from(atob(posted.binding_sig as string), (c) => c.charCodeAt(0));
+  const preimage = bindPreimage(bytesToHex(signPub), posted.nonce as string, 0);
+  assert.equal(ed25519.verify(sig, preimage, signPub), true);
+});
+
+test('runBindCeremony: already bound (has_sig_pubkey) short-circuits — no POST', async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push((init?.method || 'GET') + ' ' + String(input));
+    return new Response(JSON.stringify({ epoch: 2, has_sig_pubkey: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  const ok = await runBindCeremony({ registrationBase: 'https://reg.test', fingerprint, seed, signPub, fetchImpl });
+  assert.equal(ok, true);
+  assert.equal(calls.length, 1); // GET /identity only; no POST /bind
+  assert.match(calls[0], /^GET .*\/identity\//);
+});
+
+test('runBindCeremony: /identity 404 (not registered yet) → false (fail-closed, retry next tick)', async () => {
+  const fetchImpl = (async () => new Response('nope', { status: 404 })) as typeof fetch;
+  const ok = await runBindCeremony({ registrationBase: 'https://reg.test', fingerprint, seed, signPub, fetchImpl });
+  assert.equal(ok, false);
 });
