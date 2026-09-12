@@ -16,6 +16,11 @@ ARG NEXT_PUBLIC_SVRNTY_DOMAIN=svrnty.is
 ARG NEXT_PUBLIC_SVRNTY_BASE_URL=
 ENV NEXT_PUBLIC_SVRNTY_DOMAIN=${NEXT_PUBLIC_SVRNTY_DOMAIN}
 ENV NEXT_PUBLIC_SVRNTY_BASE_URL=${NEXT_PUBLIC_SVRNTY_BASE_URL}
+# DEV-test PSI discovery flag — inlined into the client bundle at build like the domain above.
+# Default empty so prod (which never passes it) stays false by construction; the dev compose
+# sets it =true for the on-dev #127 QA. isPSIDiscoveryLive() reads it. See claim-gates.ts.
+ARG NEXT_PUBLIC_PSI_DISCOVERY_LIVE=
+ENV NEXT_PUBLIC_PSI_DISCOVERY_LIVE=${NEXT_PUBLIC_PSI_DISCOVERY_LIVE}
 # Build provenance (git commit / branch / build time). Unlike the NEXT_PUBLIC_* vars
 # above, these are NOT inlined into the bundle — /api/version reads them from
 # process.env at runtime (that route is force-dynamic). NuAvalon/svrnty is a PUBLIC
