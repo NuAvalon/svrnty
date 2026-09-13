@@ -26,7 +26,7 @@
 // buildPsiSyncOptions (scalar-extracted Ed25519 seed, in-memory only) and passed into the trigger.
 
 import { decryptKey, readPrivateKey } from 'openpgp';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import {
   getAllContacts,
   loadKey,
@@ -298,9 +298,14 @@ function bytesToB64(bytes: Uint8Array): string {
 
 /**
  * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth).
- * Challenge: GET /bind?fingerprint= → { nonce, epoch } or { bound: true }.
- * Complete: POST /bind { fingerprint, sign_pubkey, nonce, epoch, signature }.
- * Returns false on any misshape / network miss — caller stays fail-closed (no PSI).
+ *
+ * The satellite `/bind` is POST-ONLY (authoritative: satellite_9223f3d3_reconciled.py /
+ * satellite_F1.py `@app.post("/bind")`, Flint's svrnty_registration_bind_additive.patch). There is
+ * NO GET-challenge route — a GET 405s (the old code GET'd first → 405 → fail-closed → PSI never ran,
+ * the Gate-A bind-405). The satellite verifies Ed25519 over `svrnty-bind:{sig_pubkey}:{nonce}:{epoch}`
+ * against the REGISTERED identity key, so the client self-generates the nonce (the satellite does not
+ * issue/track it). Field names are `sig_pubkey` + `binding_sig` (NOT sign_pubkey/signature).
+ * Byte-matches psi_harness.py (proven 200). Returns false on any miss — caller stays fail-closed (no PSI).
  */
 export async function runBindCeremony(args: {
   satelliteUrl: string;
@@ -312,27 +317,19 @@ export async function runBindCeremony(args: {
   const fetchImpl = args.fetchImpl ?? fetch;
   const base = args.satelliteUrl.replace(/\/$/, '');
   try {
-    const challengeRes = await fetchImpl(
-      `${base}/bind?fingerprint=${encodeURIComponent(args.fingerprint)}`,
-    );
-    if (!challengeRes.ok) return false;
-    const challenge = await challengeRes.json();
-    if (challenge && challenge.bound === true) return true;
-    const nonce = challenge?.nonce;
-    const epoch = challenge?.epoch;
-    if (typeof nonce !== 'string' && typeof nonce !== 'number') return false;
-    if (typeof epoch !== 'string' && typeof epoch !== 'number') return false;
     const signPubHex = bytesToHex(args.signPub);
-    const signature = signBind(args.seed, signPubHex, String(nonce), epoch);
+    const nonce = bytesToHex(randomBytes(16)); // client self-gen; satellite verifies the sig, not the nonce source
+    const epoch = 0;
+    const signature = signBind(args.seed, signPubHex, nonce, epoch);
     const post = await fetchImpl(`${base}/bind`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fingerprint: args.fingerprint,
-        sign_pubkey: signPubHex,
-        nonce: String(nonce),
+        sig_pubkey: signPubHex,
+        nonce,
         epoch,
-        signature: bytesToB64(signature),
+        binding_sig: bytesToB64(signature),
       }),
     });
     return post.ok;
