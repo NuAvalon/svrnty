@@ -422,6 +422,36 @@ test('runRegisterCeremony: 409 (already registered) = success', async () => {
   assert.equal(ok, true);
 });
 
+test('runRegisterCeremony: 403 "Key rotation requires signature" (already-registered) = success → proceed to bind', async () => {
+  const mockFetch = (async () => ({
+    ok: false,
+    status: 403,
+    text: async () => JSON.stringify({ detail: 'Key rotation requires signature from existing key' }),
+    json: async () => ({ detail: 'Key rotation requires signature from existing key' }),
+  }) as Response) as unknown as typeof fetch;
+  const ok = await runRegisterCeremony({
+    satelliteUrl: 'https://sat',
+    identity: { identity: { fingerprint: 'fp', public_key: 'pk' } },
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, true); // re-register of an existing fp = already enrolled → proceed (KB#89344)
+});
+
+test('runRegisterCeremony: unrelated 403 → fail-closed (does NOT blanket-accept 403)', async () => {
+  const mockFetch = (async () => ({
+    ok: false,
+    status: 403,
+    text: async () => JSON.stringify({ detail: 'Forbidden: invalid auth token' }),
+    json: async () => ({}),
+  }) as Response) as unknown as typeof fetch;
+  const ok = await runRegisterCeremony({
+    satelliteUrl: 'https://sat',
+    identity: { identity: { fingerprint: 'fp', public_key: 'pk' } },
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, false); // a 403 that is NOT the rotation/already-registered guard must fail-closed
+});
+
 test('runRegisterCeremony: missing public_key → false, no call (fail-closed)', async () => {
   let called = false;
   const mockFetch = (async () => {

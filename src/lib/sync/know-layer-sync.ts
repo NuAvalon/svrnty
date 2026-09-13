@@ -390,7 +390,20 @@ export async function runRegisterCeremony(args: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return res.ok || res.status === 409; // 409 = already registered
+    if (res.ok || res.status === 409) return true; // 2xx, or 409 = already registered
+    // Re-registering an EXISTING fingerprint is treated by the satellite as a key-ROTATION attempt →
+    // 403 {"detail":"Key rotation requires signature from existing key"} (KB#89344; anti-rotation-hijack
+    // guard — the satellite is CORRECT here, do NOT weaken it). For the enroll-before-bind precondition
+    // that 403 means the identity is ALREADY registered → proceed to bind (the real enrollment gate: it
+    // 404s if not actually registered, so proceeding is self-correcting). Any OTHER 403 (or unreadable
+    // body) fail-closes. Without this, every tick after the first re-registers → 403 → the whole PSI sync
+    // aborts (no bind, no PSI) → chord stays 0 (Hypatia #138013 / Athena #138021).
+    if (res.status === 403) {
+      let body = '';
+      try { body = (await res.text()).toLowerCase(); } catch { body = ''; }
+      return body.includes('rotation') || body.includes('already registered');
+    }
+    return false;
   } catch {
     return false;
   }
