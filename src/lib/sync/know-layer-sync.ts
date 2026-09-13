@@ -378,6 +378,7 @@ export async function runRegisterCeremony(args: {
           encryption_pk: canonical.encryption_pk,
           pq_kem_pk: canonical.pq_kem_pk,
           pq_sig_pk: canonical.pq_sig_pk,
+          crypto_version: canonical.crypto_version,
           ...(canonical.name ? { name: canonical.name } : {}),
         };
       }

@@ -400,6 +400,7 @@ export async function buildCanonicalRegisterPayload(identity: {
   encryption_pk: string;
   pq_kem_pk: string;
   pq_sig_pk: string;
+  crypto_version: string;
   name?: string;
 } | null> {
   const fp = identity?.identity?.fingerprint;
@@ -415,6 +416,9 @@ export async function buildCanonicalRegisterPayload(identity: {
       encryption_pk: bytesToB64(pubs.encPub), // RAW 32B X25519
       pq_kem_pk: bytesToB64(pubs.kemPub), // RAW 1568B ML-KEM-1024
       pq_sig_pk: bytesToB64(pubs.sigPub), // RAW 2592B ML-DSA-87
+      // Self-describe the scheme (Hypatia pin / KB#89331). Athena's box-cat #137918 selects hybrid by
+      // key-presence, so this is a harmless superset — the satellite tolerates extra fields.
+      crypto_version: 'hybrid-v1',
       ...(identity.identity?.name ? { name: identity.identity.name } : {}),
     };
   } catch {

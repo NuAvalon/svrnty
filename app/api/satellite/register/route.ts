@@ -21,6 +21,7 @@ const ALLOWED_FIELDS = [
   'encryption_pk',
   'pq_kem_pk',
   'pq_sig_pk',
+  'crypto_version',
 ] as const;
 
 export async function POST(request: NextRequest) {
