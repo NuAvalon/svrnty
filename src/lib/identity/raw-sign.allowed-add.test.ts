@@ -3,7 +3,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { allowedAddPreimage, signAllowedAdd, psiAuthPreimage } from './raw-sign';
+import {
+  allowedAddPreimage,
+  signAllowedAdd,
+  allowedRemovePreimage,
+  signAllowedRemove,
+  psiAuthPreimage,
+} from './raw-sign';
 
 // Deterministic test key (any 32 bytes is a valid Ed25519 seed).
 const seed = new Uint8Array(32);
@@ -37,4 +43,15 @@ test('preimage binds BOTH owner and sender: a swapped-role sig does not verify (
   // reconstructing owner/sender in the other order must reject it.
   assert.equal(ed25519.verify(sig, allowedAddPreimage(sender, owner, unix), pub), false);
   assert.notDeepEqual(signAllowedAdd(seed, owner, sender, unix), signAllowedAdd(seed, sender, owner, unix));
+});
+
+test('signAllowedRemove round-trips AND is a distinct domain from add (Flint Q3 — no cross-replay)', () => {
+  const addSig = signAllowedAdd(seed, owner, sender, unix);
+  const rmSig = signAllowedRemove(seed, owner, sender, unix);
+  // remove round-trips against its own preimage
+  assert.equal(ed25519.verify(rmSig, allowedRemovePreimage(owner, sender, unix), pub), true);
+  // distinct domain-tag: an add-sig must NOT verify as a remove, and vice-versa (no cross-replay)
+  assert.equal(ed25519.verify(addSig, allowedRemovePreimage(owner, sender, unix), pub), false);
+  assert.equal(ed25519.verify(rmSig, allowedAddPreimage(owner, sender, unix), pub), false);
+  assert.notDeepEqual(addSig, rmSig);
 });
