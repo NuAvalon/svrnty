@@ -28,6 +28,7 @@ import {
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import { emitContactChange } from '@/lib/contacts/contact-events';
+import { establishMutualConsent } from './establish-mutual-consent';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 
@@ -173,6 +174,10 @@ export async function admitGateArrival(
   } else {
     record = await addContact(ownerFp, buildAdmitRecord(arrival, opts));
   }
+  // PSI-discovery consent: admitting an arrival makes this peer a Known star → write the owner's OWN
+  // direction into the satellite's allowed_senders (best-effort, fail-soft, NEVER the reverse). The
+  // "who you both know" chord lights only once the peer admits us too. Fingerprint-gated inside.
+  void establishMutualConsent(ownerFp, arrival.fingerprint);
   await removeGateArrival(ownerFp, arrival.fingerprint);
   emitContactChange({ ids: [record.id], reason: 'ui-edit' });
   return record;
