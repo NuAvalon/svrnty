@@ -57,6 +57,14 @@ function b64ToBytes(b64: string): Uint8Array | null {
   }
 }
 
+/** Standard base64 of raw bytes. Node (Buffer) first for test determinism; btoa fallback in the browser. */
+function bytesToB64(bytes: Uint8Array): string {
+  if (typeof Buffer !== 'undefined') return Buffer.from(bytes).toString('base64');
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
 /**
  * SHA256(sign ‖ enc ‖ kem ‖ sig) as lowercase hex (64 chars).
  * Throws if any key is not the required FIPS length — never mint a truncated bundle.
@@ -364,6 +372,50 @@ export async function buildSatelliteRegisterFields(identity: {
       enc_pub: bytesToHex(pubs.encPub),
       kem_pub: bytesToHex(pubs.kemPub),
       sig_pub: bytesToHex(pubs.sigPub),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The payload the DEPLOYED satellite /register (register_identity) actually accepts. Distinct from
+ * buildSatelliteRegisterFields (which emits HEX under sign_pub/enc_pub/… + an ARMORED public_key — the
+ * satellite b64decodes public_key and expects RAW key bytes, so armor/hex → 400 "Invalid public_key
+ * encoding"; ground-truth Athena #137918 / Hypatia #137927, KB#89639).
+ *
+ * Satellite contract (hybrid): b64decode(public_key‖encryption_pk‖pq_kem_pk‖pq_sig_pk) at EXACT FIPS
+ * lengths (32/32/1568/2592), then SHA256(that bundle).startswith(fingerprint). This mirrors
+ * deriveCanonicalFingerprintHex byte-for-byte, so a minted hybrid identity round-trips by construction.
+ *
+ * Returns null when the identity lacks the armored public key or either PQ public key (classical/legacy) —
+ * the caller falls back to the legacy {fingerprint, public_key} shape (unchanged behavior, no regression).
+ */
+export async function buildCanonicalRegisterPayload(identity: {
+  identity?: { fingerprint?: string; public_key?: string; name?: string };
+  post_quantum?: { kem_public_key?: string; sig_public_key?: string };
+}): Promise<{
+  fingerprint: string;
+  public_key: string;
+  encryption_pk: string;
+  pq_kem_pk: string;
+  pq_sig_pk: string;
+  name?: string;
+} | null> {
+  const fp = identity?.identity?.fingerprint;
+  const publicKey = identity?.identity?.public_key;
+  const kem = identity?.post_quantum?.kem_public_key;
+  const sig = identity?.post_quantum?.sig_public_key;
+  if (!fp || !publicKey || !kem || !sig) return null;
+  try {
+    const pubs = await canonicalPubsFromArmoredPublicKey(publicKey, kem, sig);
+    return {
+      fingerprint: pubs.fingerprint,
+      public_key: bytesToB64(pubs.signPub), // RAW 32B Ed25519, base64 — NOT the OpenPGP armor
+      encryption_pk: bytesToB64(pubs.encPub), // RAW 32B X25519
+      pq_kem_pk: bytesToB64(pubs.kemPub), // RAW 1568B ML-KEM-1024
+      pq_sig_pk: bytesToB64(pubs.sigPub), // RAW 2592B ML-DSA-87
+      ...(identity.identity?.name ? { name: identity.identity.name } : {}),
     };
   } catch {
     return null;

@@ -343,8 +343,10 @@ export async function runBindCeremony(args: {
  * The satellite's /bind 404s "Unknown fingerprint" if the identity isn't registered (KB#89329).
  * Mint only registers on slug-claim (SoverentityFrontend) → a minted-but-unslugged identity is never
  * enrolled, so PSI 404s. This co-locates register with bind (same SATELLITE_URL, backend-agnostic),
- * self-healing + idempotent. Sends the SAME payload the proven slug-claim register uses
- * (buildSatelliteRegisterFields + public_key, which the satellite re-hashes to verify the fingerprint).
+ * self-healing + idempotent. Sends the satellite's NATIVE register contract — RAW key bytes as base64
+ * under {public_key, encryption_pk, pq_kem_pk, pq_sig_pk} (buildCanonicalRegisterPayload), which the
+ * satellite b64decodes and re-hashes SHA256(sign‖enc‖kem‖sig) to verify the fingerprint (Athena #137918).
+ * NOT buildSatelliteRegisterFields (hex + armored public_key → 400 "Invalid public_key encoding", KB#89639).
  * 409 = already-registered = success. Returns false on network miss / missing public_key — fail-closed.
  */
 export async function runRegisterCeremony(args: {
@@ -361,31 +363,31 @@ export async function runRegisterCeremony(args: {
   const fetchImpl = args.fetchImpl ?? fetch;
   const base = args.satelliteUrl.replace(/\/$/, '');
   try {
-    let extra: {
-      fingerprint?: string;
-      sign_pub?: string;
-      enc_pub?: string;
-      kem_pub?: string;
-      sig_pub?: string;
-    } | null = null;
+    // Hybrid identities send the satellite's native raw-b64 4-key contract; missing PQ pubs (classical/
+    // legacy, or an unparseable armor) fall back to the legacy {fingerprint, public_key} shape unchanged.
+    let payload: Record<string, string> = { fingerprint: fp, public_key: publicKey };
     try {
-      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
-      extra = await buildSatelliteRegisterFields(
-        args.identity as Parameters<typeof buildSatelliteRegisterFields>[0],
+      const { buildCanonicalRegisterPayload } = await import('@/lib/identity/fingerprint');
+      const canonical = await buildCanonicalRegisterPayload(
+        args.identity as Parameters<typeof buildCanonicalRegisterPayload>[0],
       );
+      if (canonical) {
+        payload = {
+          fingerprint: canonical.fingerprint,
+          public_key: canonical.public_key,
+          encryption_pk: canonical.encryption_pk,
+          pq_kem_pk: canonical.pq_kem_pk,
+          pq_sig_pk: canonical.pq_sig_pk,
+          ...(canonical.name ? { name: canonical.name } : {}),
+        };
+      }
     } catch {
-      extra = null; // classical-only / missing PQ keys → fall back to {fingerprint, public_key}
+      // parse failure → keep the legacy fallback payload
     }
     const res = await fetchImpl(`${base}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fingerprint: extra?.fingerprint || fp,
-        public_key: publicKey,
-        ...(extra?.sign_pub
-          ? { sign_pub: extra.sign_pub, enc_pub: extra.enc_pub, kem_pub: extra.kem_pub, sig_pub: extra.sig_pub }
-          : {}),
-      }),
+      body: JSON.stringify(payload),
     });
     return res.ok || res.status === 409; // 409 = already registered
   } catch {

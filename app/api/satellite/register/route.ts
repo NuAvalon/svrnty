@@ -11,10 +11,16 @@ const ALLOWED_FIELDS = [
   'public_key',
   'name',
   'slug',
+  // Legacy hex bundle (slug-claim path)
   'sign_pub',
   'enc_pub',
   'kem_pub',
   'sig_pub',
+  // Satellite-native raw-b64 bundle (PSI enroll path — buildCanonicalRegisterPayload).
+  // Without these the shim would DROP them and the satellite can't reconstruct the hybrid fingerprint.
+  'encryption_pk',
+  'pq_kem_pk',
+  'pq_sig_pk',
 ] as const;
 
 export async function POST(request: NextRequest) {
@@ -25,7 +31,7 @@ export async function POST(request: NextRequest) {
     }
     const body: Record<string, unknown> = {};
     for (const key of ALLOWED_FIELDS) {
-      const max = key.endsWith('_pub') ? KEY_HEX_MAX : SHORT_MAX;
+      const max = key.endsWith('_pub') || key.endsWith('_pk') ? KEY_HEX_MAX : SHORT_MAX;
       if (key in raw && typeof raw[key] === 'string' && raw[key].length <= max) {
         body[key] = raw[key];
       }

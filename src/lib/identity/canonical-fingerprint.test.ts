@@ -21,6 +21,7 @@ import {
   deriveCanonicalFingerprintHex,
   mintCanonicalFingerprint,
   canonicalPubsFromArmoredPublicKey,
+  buildCanonicalRegisterPayload,
   fingerprintMatchesKey,
   canonicalClaimMatches,
   SIGN_PUB_LEN,
@@ -101,6 +102,50 @@ test('canonical fp is 64 hex and matches SHA256(sign‖enc‖kem‖sig) byte ord
   bundle.set(pq.kem.publicKey, SIGN_PUB_LEN + ENC_PUB_LEN);
   bundle.set(pq.signing.publicKey, SIGN_PUB_LEN + ENC_PUB_LEN + KEM_PUB_LEN);
   assert.equal(bytesToHex(sha256(bundle)), minted.fingerprint);
+});
+
+test('buildCanonicalRegisterPayload: raw-b64 4-key payload round-trips the deployed /register fp check', async () => {
+  const identity = {
+    identity: { fingerprint: 'input-fp-ignored', public_key: publicKey, name: 'Canon' },
+    post_quantum: {
+      kem_public_key: Buffer.from(pq.kem.publicKey).toString('base64'),
+      sig_public_key: Buffer.from(pq.signing.publicKey).toString('base64'),
+    },
+  };
+  const payload = await buildCanonicalRegisterPayload(identity);
+  if (!payload) return assert.fail('hybrid identity → non-null payload');
+
+  // public_key is RAW base64 (32B Ed25519), NOT the OpenPGP armor that caused "Invalid public_key encoding"
+  assert.ok(!payload.public_key.includes('BEGIN PGP'), 'public_key is not armored');
+  const dec = (s: string) => new Uint8Array(Buffer.from(s, 'base64'));
+  assert.equal(dec(payload.public_key).length, SIGN_PUB_LEN); // satellite b64decode + length checks
+  assert.equal(dec(payload.encryption_pk).length, ENC_PUB_LEN);
+  assert.equal(dec(payload.pq_kem_pk).length, KEM_PUB_LEN);
+  assert.equal(dec(payload.pq_sig_pk).length, SIG_PUB_LEN);
+
+  // fingerprint IS the canonical minted id (not the ignored input)
+  const minted = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked,
+    kemPublicKey: pq.kem.publicKey,
+    sigPublicKey: pq.signing.publicKey,
+  });
+  assert.equal(payload.fingerprint, minted.fingerprint);
+
+  // reproduce the satellite's EXACT hybrid check: SHA256(pk‖enc‖kem‖sig).startswith(fingerprint)
+  const bundle = new Uint8Array(SIGN_PUB_LEN + ENC_PUB_LEN + KEM_PUB_LEN + SIG_PUB_LEN);
+  bundle.set(dec(payload.public_key), 0);
+  bundle.set(dec(payload.encryption_pk), SIGN_PUB_LEN);
+  bundle.set(dec(payload.pq_kem_pk), SIGN_PUB_LEN + ENC_PUB_LEN);
+  bundle.set(dec(payload.pq_sig_pk), SIGN_PUB_LEN + ENC_PUB_LEN + KEM_PUB_LEN);
+  assert.ok(bytesToHex(sha256(bundle)).startsWith(payload.fingerprint), 'satellite /register fp check passes');
+});
+
+test('buildCanonicalRegisterPayload: missing PQ keys → null (caller falls back to legacy shape)', async () => {
+  const payload = await buildCanonicalRegisterPayload({
+    identity: { fingerprint: 'fp', public_key: publicKey },
+    post_quantum: {},
+  });
+  assert.equal(payload, null);
 });
 
 test('fp commits to all four keys — omitting any one changes the fingerprint', async () => {
