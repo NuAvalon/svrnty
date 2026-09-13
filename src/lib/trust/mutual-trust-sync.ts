@@ -598,8 +598,10 @@ export async function syncMutualTrust(
   // Step 2: Initiate sessions with peers that haven't synced recently. For KNOW, restrict to the
   // open-visible (consented) subset up front (D1/D2) — initiateTrustSync also fails-closed on it.
   try {
-    let stalePeers = await getStaleMutualPeers(deps);
+    let stalePeers = await getStaleMutualPeers(deps, layer);
     if (layer === 'know') {
+      // Defensive re-assert of the D1/D2 consent gate (redundant now that the KNOW candidate source IS
+      // the open-visible set, but kept as a load-bearing invariant — never initiate outside consent).
       const consented = new Set(await getKnownFingerprints(deps));
       stalePeers = stalePeers.filter(fp => consented.has(fp));
     }
@@ -653,9 +655,14 @@ async function getLayerFingerprints(deps: OrchestratorDeps, layer: 'know' | 'tru
  */
 async function getStaleMutualPeers(
   deps: OrchestratorDeps,
+  layer: 'know' | 'trust',
   maxAgeMs: number = 24 * 60 * 60 * 1000
 ): Promise<string[]> {
-  const peers = await deps.getTrustedPeers();
+  // Layer-aware candidate source: KNOW = the open-visible (consented) subset, TRUST = the trusted set.
+  // Previously hardcoded getTrustedPeers, which silently excluded known-but-untrusted open-visible peers
+  // from EVER being initiated — so the KNOW-layer "who you both know" chord could never form for
+  // know-level contacts (respond/pending fired, but POST /trust/psi/initiate never did). KB#89649.
+  const peers = layer === 'know' ? await deps.getKnownPeers() : await deps.getTrustedPeers();
   const now = Date.now();
 
   return peers

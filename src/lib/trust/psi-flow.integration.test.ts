@@ -23,6 +23,7 @@ import {
   initiateTrustSync,
   respondToTrustSync,
   completeTrustSync,
+  syncMutualTrust,
   type OrchestratorDeps,
   type PSISyncOptions,
 } from './mutual-trust-sync';
@@ -194,6 +195,52 @@ test('MUTUAL: A↔B discover exactly the contacts they both hold + both consente
     // A or B themselves must NEVER appear (own fp not in own blinded set).
     assert.equal(disclosed.includes(A), false);
     assert.equal(disclosed.includes(B), false);
+  });
+});
+
+test('KNOW initiate: layer-aware candidate source — an open-visible but UNTRUSTED peer IS initiated (KB#89649)', async () => {
+  await withRelay(async (relay) => {
+    // Alice holds Bob as open-visible (KNOW-level) but NOT trusted, never synced. Pre-fix the KNOW
+    // initiate candidate source was getTrustedPeers → Bob excluded → POST /trust/psi/initiate never
+    // fired → "who you both know" chord stayed 0. Post-fix the KNOW source IS getKnownPeers.
+    const deps: OrchestratorDeps = {
+      getTrustedPeers: async () => [], // NO trusted peers
+      getKnownPeers: async () => [{ fingerprint: B, lastSync: null }], // Bob: open-visible, never synced
+      applyMutualResult: async () => {},
+    };
+    const options: PSISyncOptions = { satelliteUrl: 'http://relay', myFingerprint: A, signFn: () => new Uint8Array(64) };
+    const result = await syncMutualTrust(deps, options, 'know');
+    assert.deepEqual(result.errors, [], 'no errors');
+    assert.equal(result.initiated.length, 1, 'KNOW initiates with the untrusted open-visible peer');
+    assert.equal(result.initiated[0].peerFingerprint, B);
+    assert.equal(relay.sessions.size, 1, 'exactly one PSI session created (POST /initiate fired)');
+  });
+});
+
+test('KNOW initiate: an EMPTY open-visible set initiates NOTHING even with a trusted peer (chord-0 correct, Flint D1/D2 not loosened)', async () => {
+  await withRelay(async (relay) => {
+    const deps: OrchestratorDeps = {
+      getTrustedPeers: async () => [{ fingerprint: B, lastSync: null }], // trusted, but NOT open-visible
+      getKnownPeers: async () => [], // empty open set ⇒ fail-closed
+      applyMutualResult: async () => {},
+    };
+    const options: PSISyncOptions = { satelliteUrl: 'http://relay', myFingerprint: A, signFn: () => new Uint8Array(64) };
+    const result = await syncMutualTrust(deps, options, 'know');
+    assert.equal(result.initiated.length, 0, 'no open-visible peers → no initiate (the boundary is not widened to trusted)');
+    assert.equal(relay.sessions.size, 0);
+  });
+});
+
+test('TRUST layer unchanged: an open-visible-but-untrusted peer is NOT initiated at the trust layer', async () => {
+  await withRelay(async () => {
+    const deps: OrchestratorDeps = {
+      getTrustedPeers: async () => [], // no trusted peers
+      getKnownPeers: async () => [{ fingerprint: B, lastSync: null }], // open-visible only
+      applyMutualResult: async () => {},
+    };
+    const options: PSISyncOptions = { satelliteUrl: 'http://relay', myFingerprint: A, signFn: () => new Uint8Array(64) };
+    const result = await syncMutualTrust(deps, options, 'trust');
+    assert.equal(result.initiated.length, 0, 'trust layer sources getTrustedPeers only (unchanged)');
   });
 });
 
