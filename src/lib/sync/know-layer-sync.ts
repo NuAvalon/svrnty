@@ -339,6 +339,61 @@ export async function runBindCeremony(args: {
 }
 
 /**
+ * Enroll the identity at the satellite (prerequisite for bind → PSI auth).
+ * The satellite's /bind 404s "Unknown fingerprint" if the identity isn't registered (KB#89329).
+ * Mint only registers on slug-claim (SoverentityFrontend) → a minted-but-unslugged identity is never
+ * enrolled, so PSI 404s. This co-locates register with bind (same SATELLITE_URL, backend-agnostic),
+ * self-healing + idempotent. Sends the SAME payload the proven slug-claim register uses
+ * (buildSatelliteRegisterFields + public_key, which the satellite re-hashes to verify the fingerprint).
+ * 409 = already-registered = success. Returns false on network miss / missing public_key — fail-closed.
+ */
+export async function runRegisterCeremony(args: {
+  satelliteUrl: string;
+  identity: unknown;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const id = args.identity as {
+    identity?: { fingerprint?: string; public_key?: string; publicKey?: string };
+  } | null;
+  const fp = id?.identity?.fingerprint;
+  const publicKey = id?.identity?.public_key || id?.identity?.publicKey || '';
+  if (!fp || !publicKey) return false;
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const base = args.satelliteUrl.replace(/\/$/, '');
+  try {
+    let extra: {
+      fingerprint?: string;
+      sign_pub?: string;
+      enc_pub?: string;
+      kem_pub?: string;
+      sig_pub?: string;
+    } | null = null;
+    try {
+      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
+      extra = await buildSatelliteRegisterFields(
+        args.identity as Parameters<typeof buildSatelliteRegisterFields>[0],
+      );
+    } catch {
+      extra = null; // classical-only / missing PQ keys → fall back to {fingerprint, public_key}
+    }
+    const res = await fetchImpl(`${base}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fingerprint: extra?.fingerprint || fp,
+        public_key: publicKey,
+        ...(extra?.sign_pub
+          ? { sign_pub: extra.sign_pub, enc_pub: extra.enc_pub, kem_pub: extra.kem_pub, sig_pub: extra.sig_pub }
+          : {}),
+      }),
+    });
+    return res.ok || res.status === 409; // 409 = already registered
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Decrypt the vaulted OpenPGP identity (session must be unlocked), scalar-extract the
  * Ed25519 seed into a closure (in-memory only — never persisted), and return PSI options.
  * Null if locked / missing key / bind did not complete — fail-closed, no sync.
@@ -378,6 +433,11 @@ export async function buildPsiSyncOptions(
 
   const satelliteUrl = (deps.satelliteUrl ?? SATELLITE_BROWSER_BASE).replace(/\/$/, '');
   if (!deps.skipBind) {
+    // Enroll at the satellite BEFORE bind — /bind 404s "Unknown fingerprint" if the identity isn't
+    // registered there, and register is otherwise only called on slug-claim (so a PSI-only identity is
+    // never enrolled). Same SATELLITE_URL as bind → co-located, self-healing, idempotent (409=ok).
+    const registered = await runRegisterCeremony({ satelliteUrl, identity, fetchImpl: deps.fetchImpl });
+    if (!registered) return null;
     const bound = await runBindCeremony({
       satelliteUrl,
       fingerprint: fp,
