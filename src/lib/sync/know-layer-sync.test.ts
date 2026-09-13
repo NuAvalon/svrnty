@@ -16,6 +16,7 @@ import {
   runPsiCompletionPass,
   savePsiInitiated,
   runBindCeremony,
+  runRegisterCeremony,
   type KnowOverlayStore,
   type SyncMutualTrustFn,
   type CompleteTrustSyncFn,
@@ -390,4 +391,48 @@ test('runBindCeremony: fail-closed when POST /bind !ok (no PSI)', async () => {
     fetchImpl: mockFetch,
   });
   assert.equal(ok, false);
+});
+
+// ── runRegisterCeremony: enroll at the satellite before bind (else bind 404 "Unknown fingerprint") ──
+test('runRegisterCeremony: POST /register {fingerprint, public_key} (enroll before bind)', async () => {
+  const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+  const mockFetch = (async (url: string, init?: { body?: string }) => {
+    calls.push({ url, body: init?.body ? JSON.parse(init.body) : undefined });
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  const ok = await runRegisterCeremony({
+    satelliteUrl: 'https://sat/api/satellite',
+    identity: { identity: { fingerprint: 'fp-alice', public_key: 'PUBKEY-armored' } },
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, true);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/register'), 'POST /register');
+  assert.equal(calls[0].body?.fingerprint, 'fp-alice');
+  assert.equal(calls[0].body?.public_key, 'PUBKEY-armored');
+});
+
+test('runRegisterCeremony: 409 (already registered) = success', async () => {
+  const mockFetch = (async () => ({ ok: false, status: 409, json: async () => ({}) }) as Response) as unknown as typeof fetch;
+  const ok = await runRegisterCeremony({
+    satelliteUrl: 'https://sat',
+    identity: { identity: { fingerprint: 'fp', public_key: 'pk' } },
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, true);
+});
+
+test('runRegisterCeremony: missing public_key → false, no call (fail-closed)', async () => {
+  let called = false;
+  const mockFetch = (async () => {
+    called = true;
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  const ok = await runRegisterCeremony({
+    satelliteUrl: 'https://sat',
+    identity: { identity: { fingerprint: 'fp' } },
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, false);
+  assert.equal(called, false);
 });
