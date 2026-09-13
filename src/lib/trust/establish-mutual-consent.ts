@@ -18,6 +18,7 @@
 
 import { loadKey } from '@/lib/identity/client-store';
 import { extractRawSign, signAllowedAdd } from '@/lib/identity/raw-sign';
+import { normalizeFingerprintHex } from '@/lib/identity/fingerprint';
 import { toBase64 } from '@/lib/crypto/kdf';
 import { decryptKey, readPrivateKey } from 'openpgp';
 
@@ -36,14 +37,21 @@ export async function establishMutualConsent(
   peerFp: string,
   deps: EstablishConsentDeps = {},
 ): Promise<boolean> {
-  // Real, distinct, keyed SVRNTY peers only. Keyless (vCard/gray) contacts carry no fingerprint and
-  // never participate in PSI; a self-edge is meaningless. Guard both — silent no-op, not an error.
-  if (!ownerFp || !peerFp || ownerFp === peerFp) return false;
+  // ★ Byte-discipline (Flint #138570): sign over AND transmit ONE canonical lowercase-hex fp at BOTH
+  // the URL path (owner) and body (sender). A display/middot fp signed-but-not-sent (or vice versa)
+  // diverges from the satellite's preimage reconstruction → verify fails while "everything looks right".
+  const owner = normalizeFingerprintHex(ownerFp);
+  const peer = normalizeFingerprintHex(peerFp);
+  // Real, distinct, keyed SVRNTY peers only. Keyless (vCard/gray) contacts normalize to '' (no
+  // fingerprint) and never do PSI; a self-edge is meaningless. Guard both — silent no-op, not an error.
+  if (!owner || !peer || owner === peer) return false;
 
   const load = deps.loadKey ?? loadKey;
   const doFetch = deps.fetchImpl ?? fetch;
 
   try {
+    // loadKey uses the caller's owner fp — the local identity key-lookup convention. The owner is our
+    // own minted identity whose fp is already canonical, so normalize(ownerFp) === ownerFp here.
     const key = await load(ownerFp);
     // Locked session ⇒ no signing key in memory ⇒ fail-soft (do NOT prompt, do NOT persist plaintext).
     // The consent is (re)written the next time this peer is added/admitted with the session open.
@@ -56,15 +64,15 @@ export async function establishMutualConsent(
     const { seed } = extractRawSign(decrypted); // 32B Ed25519 seed — in-memory only, never persisted
 
     const unix = Math.floor(Date.now() / 1000);
-    const sig = signAllowedAdd(seed, ownerFp, peerFp, unix); // ⚠ preimage GATED on Flint's Q1 pin
+    const sig = signAllowedAdd(seed, owner, peer, unix); // Flint-pinned preimage (#138570), canonical fps
     const wire = `${unix}:${toBase64(sig)}`; // satellite parses "{unix}:{b64sig}", ±30s replay window
 
-    const res = await doFetch(`/api/satellite/allowed/${encodeURIComponent(ownerFp)}`, {
+    const res = await doFetch(`/api/satellite/allowed/${encodeURIComponent(owner)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // AllowedSenderRequest: sender_fingerprint = the peer we consent to; signature = owner-signed,
-      // sender-bound (svrnty-allowed-add). Zero request-schema change (Athena #138504).
-      body: JSON.stringify({ sender_fingerprint: peerFp, signature: wire }),
+      // AllowedSenderRequest: sender_fingerprint = the (canonical) peer we consent to; signature =
+      // owner-signed, sender-bound (svrnty-allowed-add). Zero request-schema change (Athena #138504).
+      body: JSON.stringify({ sender_fingerprint: peer, signature: wire }),
     });
     return res.ok;
   } catch (err) {

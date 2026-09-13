@@ -81,6 +81,21 @@ test('fail-soft guards: keyless peer, self-edge, and locked session → no fetch
   assert.equal(calls.length, 0, 'no consent write on any guard');
 });
 
+test('byte-discipline: normalizes a display/middot fp to canonical for BOTH the sig and the wire', async () => {
+  const { calls, fetchImpl } = captureFetch();
+  // display form of peerFp: uppercase + middot groups (what a card/QR might surface)
+  const displayPeer = peerFp.toUpperCase().replace(/(.{4})(?=.)/g, '$1·');
+  const ok = await establishMutualConsent(ownerFp, displayPeer, { ...okKey(), fetchImpl });
+  assert.equal(ok, true);
+  // wire carries the CANONICAL peer, not the display form (Athena reconstructs verbatim, no re-normalize)
+  assert.equal(calls[0].body.sender_fingerprint, peerFp);
+  assert.equal(calls[0].url, `/api/satellite/allowed/${ownerFp}`);
+  // and the sig is over the canonical preimage → the satellite's verbatim reconstruction matches
+  const [unixStr, b64sig] = String(calls[0].body.signature).split(':');
+  const sig = Uint8Array.from(atob(b64sig), (c) => c.charCodeAt(0));
+  assert.equal(ed25519.verify(sig, allowedAddPreimage(ownerFp, peerFp, Number(unixStr)), signPub), true);
+});
+
 test('fail-soft: a non-ok satellite response resolves false without throwing', async () => {
   const { fetchImpl } = captureFetch(403, { detail: 'nope' });
   const ok = await establishMutualConsent(ownerFp, peerFp, { ...okKey(), fetchImpl });
