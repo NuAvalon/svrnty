@@ -68,3 +68,58 @@ export function signPsiAuthWrapped(seed: Uint8Array, wrappedOrFull: Uint8Array):
   if (text.startsWith('svrnty-psi-auth:')) return rawSign(wrappedOrFull, seed);
   return rawSign(utf8(`svrnty-psi-auth:${text}`), seed);
 }
+
+/**
+ * allowed-sender-add preimage: Ed25519(sign_seed, "svrnty-allowed-add:{owner_fp}:{sender_fp}:{unix}").
+ *
+ * The sender-BOUND consent preimage for POST /allowed (KB#89666 hardening): binds owner + the sender
+ * being consented + timestamp, so a live svrnty-psi-auth sig can't be replayed onto /allowed with an
+ * attacker-chosen sender_fingerprint. It is a DISTINCT tag from svrnty-psi-auth — sign it with rawSign
+ * DIRECTLY, NEVER through signPsiAuthWrapped (which would prepend svrnty-psi-auth: → wrong bytes).
+ *
+ * ✅ Flint-PINNED byte-exact (#138570): string + owner-then-sender order + no-wrap + fps are canonical
+ * lowercase-hex (normalizeFingerprintHex). Client-sign here and satellite-verify (Athena's dedicated
+ * _allowed_add_preimage) match these RAW utf-8 bytes. Callers MUST pass canonical fps.
+ */
+export function allowedAddPreimage(
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return utf8(`svrnty-allowed-add:${ownerFp}:${senderFp}:${unixSeconds}`);
+}
+
+export function signAllowedAdd(
+  seed: Uint8Array,
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return rawSign(allowedAddPreimage(ownerFp, senderFp, unixSeconds), seed);
+}
+
+/**
+ * allowed-sender-REMOVE preimage: Ed25519(sign_seed, "svrnty-allowed-remove:{owner_fp}:{sender_fp}:{unix}").
+ *
+ * The de-consent twin of allowedAddPreimage (Flint Q3, #138570) with a DISTINCT domain-tag so an add-sig
+ * can never replay as a remove (or vice-versa). Same sender-binding + key axis (bound sig_pubkey) +
+ * no-wrap + canonical-lowercase-hex fps. Transmitted as an X-Signature header "{unix}:{b64sig}" on
+ * DELETE /allowed/{owner}, ±30s. PRIMITIVE ONLY — no client de-consent flow is wired yet; this matches
+ * the satellite's hardened remove-verify (Athena, same pass #138583) so a future flow signs correctly.
+ */
+export function allowedRemovePreimage(
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return utf8(`svrnty-allowed-remove:${ownerFp}:${senderFp}:${unixSeconds}`);
+}
+
+export function signAllowedRemove(
+  seed: Uint8Array,
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return rawSign(allowedRemovePreimage(ownerFp, senderFp, unixSeconds), seed);
+}
