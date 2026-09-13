@@ -68,3 +68,32 @@ export function signPsiAuthWrapped(seed: Uint8Array, wrappedOrFull: Uint8Array):
   if (text.startsWith('svrnty-psi-auth:')) return rawSign(wrappedOrFull, seed);
   return rawSign(utf8(`svrnty-psi-auth:${text}`), seed);
 }
+
+/**
+ * allowed-sender-add preimage: Ed25519(sign_seed, "svrnty-allowed-add:{owner_fp}:{sender_fp}:{unix}").
+ *
+ * The sender-BOUND consent preimage for POST /allowed (KB#89666 hardening): binds owner + the sender
+ * being consented + timestamp, so a live svrnty-psi-auth sig can't be replayed onto /allowed with an
+ * attacker-chosen sender_fingerprint. It is a DISTINCT tag from svrnty-psi-auth — sign it with rawSign
+ * DIRECTLY, NEVER through signPsiAuthWrapped (which would prepend svrnty-psi-auth: → wrong bytes).
+ *
+ * ⚠ PREIMAGE GATED on Flint's byte-exact pin (Athena #138504 Q1): the exact string, field order
+ * (owner-then-sender), and the no-wrap rule. Client-sign here and satellite-verify (Athena's internal
+ * swap) MUST match these RAW utf-8 bytes. Confirm before this ships.
+ */
+export function allowedAddPreimage(
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return utf8(`svrnty-allowed-add:${ownerFp}:${senderFp}:${unixSeconds}`);
+}
+
+export function signAllowedAdd(
+  seed: Uint8Array,
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return rawSign(allowedAddPreimage(ownerFp, senderFp, unixSeconds), seed);
+}
