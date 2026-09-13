@@ -4,8 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ed25519, x25519 } from '@noble/curves/ed25519.js';
-import { generateKEMKeypair } from '../crypto/pq.js';
-import { deriveMailboxFp, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope.js';
+import { generateKEMKeypair, uint8ToBase64 } from '../crypto/pq.js';
+import { deriveMailboxFp, sealToMailbox, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope.js';
 import {
   deriveRendezvousTag,
   rendezvousTagFor,
@@ -234,4 +234,34 @@ test('httpTrustRelay: fail-soft — non-2xx deposit→false, failed poll→[]', 
   const relay = httpTrustRelay('http://sat:8100', fetchImpl);
   assert.equal(await relay.deposit('R', 'b'), false);
   assert.deepEqual(await relay.poll('R'), []);
+});
+
+// ── ★ ANTI-FORGERY NEGATIVE PATH (Flint #137377) ──────────────────────────────────────────────────
+// The relay serves arbitrary bytes at R, so "relay can't forge a bond" holds ONLY if the client's
+// sig-verify is LOAD-BEARING in the poll path. A happy-path-green e2e can hide a dead/always-pass verify
+// branch. These prove a forged beacon that OPENS (sealed to the recipient) still yields bond=FALSE.
+test('★ anti-forgery negative path: forged beacon (wrong signer) sealed to recipient → pollForPeerTrust REJECTS', async () => {
+  const relay = mockRelay();
+  const a = mkPeer('a'); // claimed truster (victim)
+  const b = mkPeer('b'); // attacker: wants to fake "A trusts B" in B's own view
+  // B shares S_pair (→ can compute the symmetric R) and can seal to its OWN mailbox (→ B's poll opens it),
+  // but CANNOT produce A's Ed25519 sig → signs the "from A" beacon with B's own key.
+  const rTag = deriveRendezvousTag(deriveSharedSecret(b.edPriv, a.edPub), b.did, a.did, EPOCH);
+  const forged = buildSignedBeacon(a.did, b.did, EPOCH, b.edPriv, signFn); // claims from=A, signed by B
+  const sealed = await sealToMailbox(new TextEncoder().encode(JSON.stringify(forged)), b.mbPub, b.mbFp);
+  await relay.deposit(uint8ToBase64(rTag), JSON.stringify(sealed));
+  const bond = await pollForPeerTrust({ relay, myEdPriv: b.edPriv, myDid: b.did, myMailbox: b.mbSec, myMailboxFp: b.mbFp, peerEdPub: a.edPub, peerDid: a.did, verifyFn, now: EPOCH });
+  assert.equal(bond, false, 'forged beacon (signed by B, claims A) must NOT bond — poll-path sig-verify is load-bearing');
+});
+
+test('★ anti-forgery negative path: corrupted/tampered sig on an opening beacon → pollForPeerTrust REJECTS', async () => {
+  const relay = mockRelay();
+  const a = mkPeer('a');
+  const b = mkPeer('b');
+  // Genuine A-signed beacon, then tamper the sig bytes (valid 64-byte length, garbage content).
+  const tampered: TrustBeacon = { ...buildSignedBeacon(a.did, b.did, EPOCH, a.edPriv, signFn), sig: 'deadbeef'.repeat(16) };
+  const sealed = await sealToMailbox(new TextEncoder().encode(JSON.stringify(tampered)), b.mbPub, b.mbFp);
+  await relay.deposit(uint8ToBase64(deriveRendezvousTag(deriveSharedSecret(b.edPriv, a.edPub), b.did, a.did, EPOCH)), JSON.stringify(sealed));
+  const bond = await pollForPeerTrust({ relay, myEdPriv: b.edPriv, myDid: b.did, myMailbox: b.mbSec, myMailboxFp: b.mbFp, peerEdPub: a.edPub, peerDid: a.did, verifyFn, now: EPOCH });
+  assert.equal(bond, false, 'tampered sig must NOT bond');
 });
