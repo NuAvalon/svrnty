@@ -15,6 +15,7 @@ import {
   startKnowLayerSync,
   runPsiCompletionPass,
   savePsiInitiated,
+  runBindCeremony,
   type KnowOverlayStore,
   type SyncMutualTrustFn,
   type CompleteTrustSyncFn,
@@ -342,4 +343,51 @@ test('completion FAIL-CLOSED: session missing its scalar → dropped, never comp
   assert.equal(completeCalled, false); // never proceeds without the persisted scalar
   assert.equal(writes.length, 1);
   assert.equal(writes[0].updates.psi_session_id, undefined); // dropped
+});
+
+// ── runBindCeremony: bind-405 fix — POST-direct to the authoritative POST-only /bind ──
+// The satellite has NO GET-challenge route (a GET 405s → fail-closed → PSI never ran = the Gate-A
+// bind-405). Fix: POST /bind directly, self-gen nonce, fields sig_pubkey/binding_sig (byte-matches
+// psi_harness.py + satellite_9223f3d3_reconciled.py `@app.post("/bind")`).
+test('runBindCeremony: POST-direct to /bind (no GET-challenge), authoritative fields', async () => {
+  const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+  const mockFetch = (async (url: string, init?: { method?: string; body?: string }) => {
+    calls.push({
+      url,
+      method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(init.body) : undefined,
+    });
+    return { ok: true, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+  const ok = await runBindCeremony({
+    satelliteUrl: 'https://sat/api/satellite',
+    fingerprint: 'fp-alice',
+    seed: new Uint8Array(32).fill(7),
+    signPub: new Uint8Array(32).fill(9),
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, true);
+  assert.equal(calls.length, 1); // exactly one call — NO GET-challenge
+  assert.equal(calls[0].method, 'POST');
+  assert.ok(calls[0].url.endsWith('/bind') && !calls[0].url.includes('?'), 'POST /bind, no ?fingerprint challenge');
+  const b = calls[0].body as Record<string, unknown>;
+  assert.equal(b.fingerprint, 'fp-alice');
+  assert.equal(typeof b.sig_pubkey, 'string');
+  assert.equal((b.sig_pubkey as string).length, 64); // hex of 32-byte pub
+  assert.equal((b.nonce as string).length, 32); // hex of 16 random bytes
+  assert.equal(b.epoch, 0);
+  assert.equal(typeof b.binding_sig, 'string');
+  assert.ok(!('sign_pubkey' in b) && !('signature' in b), 'no legacy field names');
+});
+
+test('runBindCeremony: fail-closed when POST /bind !ok (no PSI)', async () => {
+  const mockFetch = (async () => ({ ok: false, json: async () => ({}) }) as Response) as unknown as typeof fetch;
+  const ok = await runBindCeremony({
+    satelliteUrl: 'https://sat/api/satellite',
+    fingerprint: 'fp',
+    seed: new Uint8Array(32).fill(7),
+    signPub: new Uint8Array(32).fill(9),
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, false);
 });
