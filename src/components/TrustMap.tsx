@@ -24,7 +24,8 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
+import { witnessedPeerTrustChords, witnessedDisclosedCircleChords } from '@/lib/trust/peer-trust-chords';
+import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
@@ -390,6 +391,11 @@ export function TrustMap({
   );
   const peerChords = useMemo(
     () => witnessedPeerTrustChords(visibleContacts),
+    [visibleContacts],
+  );
+  // "Who you both know" — PSI disclosed-circle mutuals, gated at render by isPSIDiscoveryLive.
+  const disclosedChords = useMemo(
+    () => witnessedDisclosedCircleChords(visibleContacts),
     [visibleContacts],
   );
   const edgeByFp = useMemo(() => {
@@ -873,6 +879,35 @@ export function TrustMap({
               );
             })}
           </g>
+
+          {/* "Who you both know" — disclosed-circle PSI mutuals (REAL computed disclosed_circle, gated live) */}
+          {isPSIDiscoveryLive() && (
+            <g>
+              {disclosedChords.map((ch, i) => {
+                const a = layout.nodes.find((n) => n.id === ch.a);
+                const b = layout.nodes.find((n) => n.id === ch.b);
+                if (!a || !b) return null;
+                return (
+                  <line
+                    key={`disclosed-${ch.a}-${ch.b}`}
+                    className="tm-cluster"
+                    data-testid="trust-disclosed-chord"
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={T.lit}
+                    strokeOpacity={0.45}
+                    strokeWidth={1.4}
+                    strokeDasharray="4 3"
+                    style={{ ['--tm-o' as string]: 0.85, animationDelay: `${0.1 + i * 0.02}s` }}
+                  >
+                    <title>You both know this contact (private discovery)</title>
+                  </line>
+                );
+              })}
+            </g>
+          )}
 
           {/* Pending intro chords (introducer → introducee) — authored metadata */}
           <g>
