@@ -57,7 +57,7 @@ export function RecoverySheet({ open, onClose, identity, contacts }: Props) {
       if (cancelled) return;
       const given = (data?.shards || [])
         .map((s: { given_to?: { name?: string; fingerprint?: string } }) => s.given_to)
-        .filter(Boolean)
+        .filter((g): g is { name?: string; fingerprint?: string } => Boolean(g))
         .map((g: { name?: string; fingerprint?: string }) => ({
           name: g.name || 'Guardian',
           fingerprint: g.fingerprint || '',

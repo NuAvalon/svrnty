@@ -13,7 +13,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { ed25519, x25519 } from '@noble/curves/ed25519.js';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 
 // --- Constants ---
 
@@ -70,8 +70,10 @@ export function deriveSharedSecret(
 
   const rawShared = x25519.getSharedSecret(myX25519Private, theirX25519Public);
 
-  // HKDF to derive a uniform key
-  return hkdf(sha256, rawShared, undefined, TRUST_PROTOCOL_VERSION, 32);
+  // HKDF to derive a uniform key.
+  // info must be Uint8Array (@noble/hashes v2 rejects strings at runtime); encode the
+  // version string to its canonical UTF-8 bytes for domain separation.
+  return hkdf(sha256, rawShared, undefined, utf8ToBytes(TRUST_PROTOCOL_VERSION), 32);
 }
 
 /**

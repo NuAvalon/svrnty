@@ -12,7 +12,7 @@ void root;
 const src = readFileSync(join(__dir, '../IdentitySeal.tsx'), 'utf8');
 const lines = src.split('\n');
 
-function extractFn(name) {
+function extractFn(name: string) {
   const start = lines.findIndex((l) => l.includes(`export function ${name}(`));
   if (start < 0) throw new Error('missing ' + name);
   let docStart = start;

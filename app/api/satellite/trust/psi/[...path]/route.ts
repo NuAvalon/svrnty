@@ -31,7 +31,7 @@ async function proxy(request: NextRequest, path: string, method: 'GET' | 'POST')
       return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
     }
     headers['Content-Type'] = 'application/json';
-    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(pickPsiBody(raw)) });
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(pickPsiBody(raw as Record<string, unknown>)) });
   }
   const text = await res.text();
   try {

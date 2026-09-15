@@ -168,7 +168,7 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
       delete share.open_visibility;
       next.share_settings = share;
     }
-    out.metadata = next;
+    (out as { metadata?: unknown }).metadata = next;
   }
   delete (out as { distress_inbound?: unknown }).distress_inbound;
   delete (out as { open_visibility?: unknown }).open_visibility;
