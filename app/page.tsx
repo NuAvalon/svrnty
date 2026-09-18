@@ -540,7 +540,20 @@ export default function Home() {
         hasIdentity={Boolean(identity)}
         canLock={canLock}
         onLock={handleLockNow}
-        onGrow={() => setGrowOpen(true)}
+        onGrow={() => {
+          // Grow mints an invite via loadKey(), which needs the in-memory session key when the
+          // identity is encrypted-at-rest (canLock). An iOS-PWA background→restore can bring back
+          // this React tree (identity set, appState 'unlocked') while the JS heap re-init clears
+          // _sessionKey — a desync that would open Grow onto a dead panel (no QR/link). When the
+          // session key is absent for an encrypted identity, route to the unlock gate instead of
+          // presenting Grow as actionable (Flint/Hypatia fail-closed-with-clear-prompt). Legacy /
+          // unencrypted identities (canLock=false) loadKey fine with no session — open normally.
+          if (canLock && !isSessionUnlocked()) {
+            handleLockNow();
+            return;
+          }
+          setGrowOpen(true);
+        }}
         onRecovery={() => setRecoveryOpen(true)}
         gateCount={identity ? gateCount : 0}
       />
