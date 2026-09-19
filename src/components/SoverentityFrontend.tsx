@@ -1851,6 +1851,7 @@ export function SoverentityFrontend({
         />
         <OwnerCardStudio
           fingerprint={identity.identity.fingerprint}
+          name={identity.identity.name}
           email={identity.identity.email}
           onEmailChange={async (value) => {
             const fp = identity.identity.fingerprint as string;

@@ -38,6 +38,8 @@ jobs:
         run: npx --no-install tsx --test src/lib/contacts/contact-update-allowlist-guard.test.ts
       - name: Contract guards — own-identity vCard never emits tags/blocked — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/own-vcard.test.ts
+      - name: Contract guards — owner-card persist + receiver-local annotations — BLOCKING
+        run: npx --no-install tsx --test src/components/identity/owner-card.test.ts src/lib/contacts/method-relay.test.ts src/lib/contacts/owner-local-annotations.test.ts
       - name: Mint-build guards — next-authority pin + rotation verifier — BLOCKING
         run: npx --no-install tsx --test src/lib/identity/next-authority.test.ts
       - name: Contract guards — canonical identity fingerprint + PSI auth allowlist — BLOCKING
