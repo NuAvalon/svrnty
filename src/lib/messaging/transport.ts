@@ -4,6 +4,7 @@
 
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
+import { sealNoteHybrid } from './note-seal-hybrid';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
@@ -30,6 +31,11 @@ export async function sendNoteToPeer(args: {
   senderPqSigPublicKey?: string;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+  /** Recipient's PQ pubkeys (base64) from their card. When BOTH are present the note is sealed with the
+   *  PQ-hybrid core (REPLACE-forward, Flint #141587 pin B); a classical-only peer (no PQ keys on the
+   *  card) falls back to the OpenPGP seal so we never fail to send to a legacy identity. */
+  peerPqKemPublicKey?: string;
+  peerPqSigPublicKey?: string;
   body: string;
   threadId?: string;
   relayBase?: string;
@@ -61,7 +67,21 @@ export async function sendNoteToPeer(args: {
     args.senderPqKemPublicKey, // §5: canonical-fp binding (both must be present to bind; else classical path)
     args.senderPqSigPublicKey,
   );
-  const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
+  // PQ-hybrid seal when the recipient card carries PQ keys (the "wire PQ to the caller" step, Peter
+  // #141546); classical OpenPGP fallback for a legacy peer with no PQ keys. The signed `wire` (incl. its
+  // signature) is the plaintext either way — confidentiality upgraded, authenticity unchanged.
+  const blob =
+    args.peerPqKemPublicKey && args.peerPqSigPublicKey
+      ? await sealNoteHybrid(
+          wire,
+          {
+            publicKeyArmored: args.peerPublicKeyArmored,
+            pqKemPublicKeyB64: args.peerPqKemPublicKey,
+            pqSigPublicKeyB64: args.peerPqSigPublicKey,
+          },
+          args.sender.fingerprint,
+        )
+      : await sealNoteTo(wire, args.peerPublicKeyArmored);
   const mailbox_id = deriveMailboxId(args.peerFingerprint);
   const res = await fetchImpl(`${relayBase}/envelope`, {
     method: 'POST',

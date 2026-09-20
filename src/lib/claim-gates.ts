@@ -18,12 +18,15 @@
 export { isBiometricSeamLive } from '../components/biometric/biometric-seam';
 
 /**
- * ML-KEM-1024 post-quantum ENCRYPTION (encapsulation) is wired into the send/seal path.
+ * ML-KEM-1024 post-quantum ENCRYPTION (encapsulation) is wired into a USER-REACHABLE send/seal path.
  *
- * FALSE today: `hybridEncapsulate()` has ZERO real callers (only the crypto/index barrel re-export) —
- * the seal is classical OpenPGP. Cards CARRY a pq_kem public key (mint = ED25519+ML-DSA-87+ML-KEM-1024)
- * but nothing encrypts with it yet. Carrying a key ≠ protection.
- * Flip to true WITH the first real `hybridEncapsulate` caller (and update claim-gates.test.ts).
+ * FALSE today — honestly, even though the CAPABILITY now exists: the PQ-hybrid note seal
+ * (messaging/note-seal-hybrid.ts → crypto/hybrid-seal.ts) DOES ML-KEM-encapsulate to the recipient's
+ * card pq_kem key, and transport.ts `sendNoteToPeer` uses it. BUT `sendNoteToPeer` has NO user-reachable
+ * UI caller yet (notes ship later), so no user's data is PQ-encrypted in practice. Wiring a seal no user
+ * invokes ≠ live protection — the same "carrying a key ≠ protection" honesty.
+ * Flip to true WITH the first user-reachable note send (and update claim-gates.test.ts). See also the
+ * legacy `hybridEncapsulate()` (hybrid.ts) which is still call-free; note-seal uses `encapsulate` (pq.ts).
  */
 export function isPQEncapLive(): boolean {
   return false;
