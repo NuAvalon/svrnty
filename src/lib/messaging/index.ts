@@ -5,6 +5,14 @@
 export { DOMAIN_NOTE, DOMAIN_RING_KEY_WRAP, NOTE_WIRE_TYPE } from './domains';
 export { noteSigningInput } from './canonical';
 export { sealNoteTo, noteOpenpgpDecryptor } from './seal';
+export {
+  sealNoteHybrid,
+  hybridNoteDecryptor,
+  noteDecryptor,
+  isHybridNoteWire,
+  NOTE_SEAL_DOMAIN,
+} from './note-seal-hybrid';
+export type { HybridNoteRecipient, HybridNoteSecrets } from './note-seal-hybrid';
 export { createRingChannel, rotateRingMembership, ringDepositTargets } from './ring';
 export {
   initNotesStore,
