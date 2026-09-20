@@ -158,11 +158,37 @@ test('epoch window: current-1 accepted, current-2 rejected, wrong from/to reject
   assert.equal(verifyBeacon(genuine, a.did, 'did:wrong:yy', a.edPub, verifyFn, EPOCH), false, 'to mismatch');
 });
 
-test('beacon sig preimage is domain-separated + injective on fields', () => {
-  const p1 = new TextDecoder().decode(beaconSigPreimage('did:a', 'did:b', 7));
-  assert.ok(p1.startsWith('svrnty-trust-beacon-v1:'));
-  // swapping from/to changes the preimage (no field-merge ambiguity)
-  assert.notEqual(p1, new TextDecoder().decode(beaconSigPreimage('did:b', 'did:a', 7)));
+test('beacon sig preimage: all-binary LP-TLV, domain "svrnty-trust-beacon-v1", injective on fields (Flint pin #141599)', () => {
+  const p1 = beaconSigPreimage('did:a', 'did:b', 7);
+  // first field = LP("svrnty-trust-beacon-v1") = uint32_be(22) ‖ utf8("svrnty-trust-beacon-v1")
+  const dom = new TextEncoder().encode('svrnty-trust-beacon-v1');
+  assert.equal(dom.length, 22);
+  assert.equal(bytesToHex(p1.slice(0, 4)), '00000016', 'uint32_be(22) length prefix');
+  assert.equal(bytesToHex(p1.slice(4, 4 + 22)), bytesToHex(dom), 'domain bytes follow the length prefix');
+  // swapping from/to changes the preimage (LP-framed → no field-merge ambiguity)
+  assert.notEqual(bytesToHex(p1), bytesToHex(beaconSigPreimage('did:b', 'did:a', 7)));
+});
+
+// ── ★ BYTE-PIN CONFORMANCE (Flint #141599) — my impl must byte-match his independent Python ref ────
+test('★ byte-pin conformance: R byte-matches Flint tr_byte_pin_vectors.json (independent Python ref)', () => {
+  // Flint's canonical inputs: sPair = 00 01 02 … 1f, didLow = "a"×64, didHigh = "b"×64, epoch = 2937.
+  const sPair = Uint8Array.from({ length: 32 }, (_, i) => i);
+  const didLow = 'a'.repeat(64);
+  const didHigh = 'b'.repeat(64);
+  const epoch = 2937;
+  // R = HKDF-SHA256(IKM=sPair, salt=∅→zeros(32), info=LP(dom)‖LP(didLow)‖LP(didHigh)‖u64be(epoch), 32)
+  const R = deriveRendezvousTag(sPair, didLow, didHigh, epoch);
+  assert.equal(
+    bytesToHex(R),
+    '30e39ccb1d49b32b3e562480b1b62e83c90cc0b6ce0c7ed6ff7805919da62176',
+    'R must byte-match Flint independent ref (any mismatch = a real divergence)',
+  );
+  // symmetry (both peers depend on it): swapping didA/didB → identical R (sortDids normalizes)
+  assert.equal(bytesToHex(deriveRendezvousTag(sPair, didHigh, didLow, epoch)), bytesToHex(R));
+  // beacon msg domain prefix = LP("svrnty-trust-beacon-v1") = uint32_be(22) ‖ utf8(domain)
+  const dom = new TextEncoder().encode('svrnty-trust-beacon-v1');
+  const msg = beaconSigPreimage(didLow, didHigh, epoch);
+  assert.equal(bytesToHex(msg.slice(0, 4 + dom.length)), '00000016' + bytesToHex(dom));
 });
 
 test('rehydrate: idempotent re-deposit to a fresh relay still bonds (migrate/rehydrate §46)', async () => {

@@ -9,9 +9,9 @@
  * How it works (Flint's contract §7 + #136666, Apollo design §54-73):
  *   1. Two VERIFY'd peers share S_pair = deriveSharedSecret(myEdPriv, theirEdPub) — X25519 DH, symmetric,
  *      the relay CANNOT compute it (no privkeys). So the rendezvous tag R is NOT dictionary-reversible.
- *   2. R = HKDF-SHA256( sort(DID_A,DID_B) ‖ S_pair ‖ epoch, info="svrnty-tr-rendezvous-v1" ). DID = the
- *      DURABLE genesis fingerprint (survives key rotation). epoch = currentEpochWeek() → R rotates weekly
- *      (cross-epoch relay-unlinkability); poll {epoch, epoch-1} for week-boundary skew.
+ *   2. R = HKDF-SHA256(IKM=S_pair, info=LP(domain)‖LP(didLow)‖LP(didHigh)‖u64be(epoch)) — all-binary
+ *      LP-TLV (Flint pin #141596). DID = the DURABLE genesis fingerprint (survives key rotation).
+ *      epoch = currentEpochWeek() → R rotates weekly (cross-epoch relay-unlinkability); poll {epoch, epoch-1}.
  *   3. The trust beacon is Ed25519-SIGNED over the assertion (anti-forgery — encryption≠authentication;
  *      both peers can deposit at R, so presence alone proves nothing; only the depositor's identity sig
  *      proves "A trusts B"), then SEALED via the PQ-hybrid mailbox envelope (Track A) to the peer's
@@ -20,9 +20,9 @@
  *      natural filter between the two beacons that collide at the symmetric R), verifies the sig vs the
  *      peer's identity pubkey from the book, checks from/to/epoch → accepts authentic "peer trusts me".
  *
- * ⚠ CRYPTO CO-VERIFY (Flint): §7 gives the R formula but NOT a byte-exact preimage layout (no §5-style
- * vector). The R + beacon preimage SERIALIZATIONS below are my explicit injective choice — FLAGGED for
- * Flint to pin/co-verify. Do not treat as final until he greens the bytes.
+ * ✅ CRYPTO PINNED (Flint #141596): the R + beacon preimages below use the byte-exact ALL-BINARY LP-TLV
+ * layout — LP(x)=uint32_be(byteLen(x))‖x, u64be(epoch), S_pair as HKDF IKM. Flint byte-verifies with
+ * independent vectors both directions. (Supersedes the earlier pipe-delimited draft — pre-deploy, free.)
  *
  * SCOPE (minimal 24h slice, Archie/Flint): R-derive (epoch IN, per Flint #136628) + signed-beacon
  * seal/deposit + poll/open/verify → mutual-on-match + idempotent rehydrate (Peter's migrate req, §46).
@@ -42,7 +42,7 @@ import {
 } from '../crypto/mailbox-envelope.js';
 
 const TR_RENDEZVOUS_INFO = 'svrnty-tr-rendezvous-v1';
-const TR_BEACON_SIG_PREFIX = 'svrnty-trust-beacon-v1:';
+const TR_BEACON_INFO = 'svrnty-trust-beacon-v1'; // Flint pin #141596+#141599 (drop only the ':' from 'svrnty-trust-beacon-v1:')
 const TR_ASSERTION = 'trust';
 const BEACON_V = 1;
 
@@ -53,7 +53,7 @@ export interface TrustBeacon {
   to_did: string;
   epoch: number;
   assertion: 'trust';
-  /** Ed25519(depositor_identity_priv, TR_BEACON_SIG_PREFIX + from|to|epoch|assertion), hex. */
+  /** Ed25519(depositor_identity_priv, beaconSigPreimage(from,to,epoch)) — binary LP-TLV, hex. */
   sig: string;
 }
 
@@ -116,16 +116,46 @@ function sortDids(didA: string, didB: string): [string, string] {
 }
 
 /**
- * R = HKDF-SHA256( preimage, info="svrnty-tr-rendezvous-v1" ) → 32 bytes.
- * preimage (injective, domain-separated — FLAGGED for Flint's pin):
- *   utf8(`${didLow}|${didHigh}|`) ‖ S_pair(32) ‖ utf8(`|${epoch}`)
- * DIDs are hex (no '|'); S_pair is raw bytes between delimited text; epoch is a decimal integer.
- * Symmetric: both peers sort DIDs identically + derive the same S_pair → the same R.
+ * Binary length-prefix TLV: uint32_be(byteLen(x)) ‖ x — injective by fixed-width length (no
+ * parse-until-delimiter subtlety). ONE shared helper for BOTH R and the beacon preimage below
+ * (Flint byte-pin #141596, guard 1 — never inline-duplicate; copies diverge).
+ *
+ * FRAMING (Flint guard 2): this binary-TLV is for STRUCTURALLY CLIENT-ONLY byte crypto — R and the
+ * beacon preimage. The relay CANNOT compute R (no privkeys) nor open/verify the sealed beacon, so no
+ * satellite/cross-language reproducer exists → binary is right, internally consistent with u64be(epoch).
+ * This is DISTINCT from sign-envelope.ts `lengthPrefix` (decimal-colon netstring STRING, "N:s"), which
+ * exists for CROSS-LANGUAGE reproduction of signed objects (cards, contact-updates) a Python satellite
+ * verifies. Right framing per domain — do not conflate.
+ */
+function lpBin(x: Uint8Array): Uint8Array {
+  const out = new Uint8Array(4 + x.length);
+  new DataView(out.buffer).setUint32(0, x.length, false); // big-endian length prefix
+  out.set(x, 4);
+  return out;
+}
+/** utf8-then-length-prefix, for the string fields (domain, DIDs, assertion). */
+function lpStr(s: string): Uint8Array {
+  return lpBin(utf8ToBytes(s));
+}
+/** epoch as unsigned 64-bit big-endian (fixed width — no decimal-length variance). */
+function u64be(epoch: number): Uint8Array {
+  const b = new Uint8Array(8);
+  new DataView(b.buffer).setBigUint64(0, BigInt(epoch), false); // big-endian
+  return b;
+}
+
+/**
+ * R = HKDF-SHA256(IKM = S_pair, salt = ∅, info) → 32 bytes. (Flint byte-pin #141596, all-binary LP-TLV)
+ *   info = LP("svrnty-tr-rendezvous-v1") ‖ LP(didLow) ‖ LP(didHigh) ‖ u64be(epoch)
+ * S_pair is the SECRET → it is the HKDF IKM (not concatenated into a text preimage). DIDs/epoch/domain
+ * are CONTEXT → HKDF `info`, binary-LP-framed so the concat is injective REGARDLESS of DID contents
+ * (a DID carrying the old '|' delimiter can no longer boundary-shift into a 2nd-preimage).
+ * Symmetric: both peers sortDids identically + derive the same S_pair → the same R.
  */
 export function deriveRendezvousTag(sPair: Uint8Array, didA: string, didB: string, epoch: number): Uint8Array {
   const [didLow, didHigh] = sortDids(didA, didB);
-  const preimage = concatBytes(utf8ToBytes(`${didLow}|${didHigh}|`), sPair, utf8ToBytes(`|${epoch}`));
-  return hkdf(sha256, preimage, undefined, utf8ToBytes(TR_RENDEZVOUS_INFO), 32);
+  const info = concatBytes(lpStr(TR_RENDEZVOUS_INFO), lpStr(didLow), lpStr(didHigh), u64be(epoch));
+  return hkdf(sha256, sPair, undefined, info, 32);
 }
 
 /** Convenience: derive R straight from the Ed25519 keypair + DIDs (derives S_pair internally). */
@@ -140,9 +170,14 @@ export function rendezvousTagFor(
   return deriveRendezvousTag(sPair, myDid, theirDid, epoch);
 }
 
-/** The exact bytes the beacon signature covers (injective, domain-separated — FLAGGED for Flint's pin). */
+/**
+ * The exact bytes the beacon signature covers (Flint byte-pin #141596, all-binary LP-TLV):
+ *   LP("svrnty-trust-beacon-v1") ‖ LP(fromDid) ‖ LP(toDid) ‖ u64be(epoch) ‖ LP(TR_ASSERTION)
+ * Distinct domain from R ("…-beacon-v1" vs "…-rendezvous-v1") so a beacon-sig input can never equal an
+ * R info; binary-LP-framed → injective regardless of DID/assertion contents.
+ */
 export function beaconSigPreimage(fromDid: string, toDid: string, epoch: number): Uint8Array {
-  return utf8ToBytes(`${TR_BEACON_SIG_PREFIX}${fromDid}|${toDid}|${epoch}|${TR_ASSERTION}`);
+  return concatBytes(lpStr(TR_BEACON_INFO), lpStr(fromDid), lpStr(toDid), u64be(epoch), lpStr(TR_ASSERTION));
 }
 
 /** Build a trust beacon signed by the depositor's identity key. */
