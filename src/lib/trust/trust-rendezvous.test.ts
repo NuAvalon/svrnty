@@ -185,10 +185,13 @@ test('★ byte-pin conformance: R byte-matches Flint tr_byte_pin_vectors.json (i
   );
   // symmetry (both peers depend on it): swapping didA/didB → identical R (sortDids normalizes)
   assert.equal(bytesToHex(deriveRendezvousTag(sPair, didHigh, didLow, epoch)), bytesToHex(R));
-  // beacon msg domain prefix = LP("svrnty-trust-beacon-v1") = uint32_be(22) ‖ utf8(domain)
-  const dom = new TextEncoder().encode('svrnty-trust-beacon-v1');
+  // beacon msg — FULL byte-lock vs Flint tr_byte_pin_vectors.json[1].beacon_msg_A_to_B_hex (#141610)
   const msg = beaconSigPreimage(didLow, didHigh, epoch);
-  assert.equal(bytesToHex(msg.slice(0, 4 + dom.length)), '00000016' + bytesToHex(dom));
+  assert.equal(
+    bytesToHex(msg),
+    '000000167376726e74792d74727573742d626561636f6e2d7631000000406161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616100000040626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262620000000000000b79000000057472757374',
+    'beacon-msg byte-matches Flint independent ref (vectors[1])',
+  );
 });
 
 test('rehydrate: idempotent re-deposit to a fresh relay still bonds (migrate/rehydrate §46)', async () => {
