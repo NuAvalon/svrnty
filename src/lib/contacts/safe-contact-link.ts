@@ -5,6 +5,8 @@
 // Only scheme-allowlisted hrefs become clickable links. Everything else
 // renders as inert text (never javascript:/data:).
 
+import { sanitizeSingleLine } from './safe-text';
+
 /** Display char budget for imported contact-method strings (I-10a bound). */
 export const CONTACT_METHOD_DISPLAY_MAX = 200;
 
@@ -20,13 +22,14 @@ export interface SafeContactHref {
   kind: ContactMethodKind;
 }
 
-/** Strip C0/C1 controls + bidi overrides; NFC-normalize; bound length. */
+/**
+ * Strip C0/C1 controls + bidi + zero-width/invisible; NFC-normalize; bound length. Delegates to the
+ * shared §9 ingestion sanitizer (safe-text.ts) so render-side and ingestion-side use ONE definition
+ * and cannot drift (Flint pin #141768). Method values are single-line — TAB/LF stripped too. Strictly
+ * stronger than the prior inline regex (now also strips zero-width, BOM, bidi marks LRM/RLM/ALM).
+ */
 export function sanitizeContactMethodText(raw: unknown, max = CONTACT_METHOD_DISPLAY_MAX): string {
-  if (typeof raw !== 'string') return '';
-  const nfc = raw.normalize('NFC');
-  // eslint-disable-next-line no-control-regex -- intentional control/bidi strip (I-10a)
-  const stripped = nfc.replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, '');
-  return stripped.slice(0, max);
+  return sanitizeSingleLine(raw, max);
 }
 
 function isPlainEmail(s: string): boolean {

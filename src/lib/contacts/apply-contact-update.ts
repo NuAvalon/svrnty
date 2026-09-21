@@ -55,6 +55,16 @@ import {
   URLS_MAX_COUNT,
   URL_VALUE_MAX_LEN,
 } from '../trust/contact-update';
+// §9 layer-3 (Flint pin #141768/#141780): strip the invisible/control/bidi class from peer-authored
+// text AT INGESTION, before the store — the enforce-by-construction defense render-escaping can't do.
+// Visible markup is NOT touched here (each sink context-escapes it); see safe-text.ts.
+import {
+  sanitizeText,
+  sanitizeSingleLine,
+  DISPLAY_NAME_MAX,
+  NOTE_MAX,
+  METHOD_VALUE_MAX,
+} from './safe-text';
 
 /**
  * The verified delta this module consumes. Structurally identical to
@@ -163,15 +173,15 @@ type FieldSetter = (record: StoredContact, value: unknown) => void;
 
 const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
   // display_name → the typed `name` (contactToEdge: peer_name ← c.name).
-  display_name: (r, v) => { r.name = asString(v); },
+  display_name: (r, v) => { r.name = sanitizeSingleLine(asString(v), DISPLAY_NAME_MAX); },
   // note → top-level `notes` (contactToEdge reads `c.notes || c.metadata?.notes`;
   // top-level surfaces first). The verify field is `note` (singular) — a NAME seam.
-  note: (r, v) => { r.notes = asString(v); },
+  note: (r, v) => { r.notes = sanitizeText(asString(v), { max: NOTE_MAX, allowNewlines: true }); },
   // emails → primary to the typed `email` (what contactToEdge surfaces as peer_email),
   // full list preserved on `emails` passthrough. NOTE: contactToEdge does not yet
   // surface the full list — flagged in the memo as a view gap, not a data loss.
   emails: (r, v) => {
-    const list = asStringArray(v);
+    const list = asStringArray(v).map((e) => sanitizeSingleLine(e, METHOD_VALUE_MAX));
     r.emails = list;
     if (list.length > 0) r.email = list[0];
   },
@@ -180,7 +190,7 @@ const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
   // import produces it (contact_info.phone). Same view-gap caveat as emails —
   // contactToEdge does not surface the list yet; the data is stored, never dropped.
   phones: (r, v) => {
-    const list = asStringArray(v);
+    const list = asStringArray(v).map((p) => sanitizeSingleLine(p, METHOD_VALUE_MAX));
     r.phones = list;
     if (list.length > 0) r.phone = list[0];
   },
@@ -204,7 +214,7 @@ const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
       : {};
     for (const [k, val] of Object.entries(incoming)) {
       if (val === '') delete merged[k]; // '' = explicit removal
-      else merged[k] = val; // set / overwrite
+      else merged[k] = sanitizeSingleLine(val, HANDLE_VALUE_MAX_LEN); // set / overwrite (strip invisible/bidi at ingestion)
     }
     ci.handles = merged;
     r.contact_info = ci;
@@ -216,7 +226,7 @@ const FIELD_MAP: Readonly<Record<string, FieldSetter>> = {
     const ci: Record<string, unknown> = isPlainObject(r.contact_info)
       ? { ...(r.contact_info as Record<string, unknown>) }
       : {};
-    ci.urls = asUrls(v);
+    ci.urls = asUrls(v).map((u) => sanitizeSingleLine(u, URL_VALUE_MAX_LEN));
     r.contact_info = ci;
   },
 };

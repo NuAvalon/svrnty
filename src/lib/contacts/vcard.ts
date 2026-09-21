@@ -172,7 +172,16 @@ export function fromVCard(vcf: string): Partial<TrustEdge>[] {
 }
 
 function escapeVCard(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,');
+  // RFC 6350 value escaping. Newlines MUST be escaped to '\n' (literal) — otherwise a value carrying a
+  // line break (e.g. a multi-line NOTE) breaks out of its field and injects a vCard header line on
+  // re-export (§9 worm PROPAGATION leg — caught by contact-worm.test.ts). Escape backslash FIRST so we
+  // don't double-escape, then newlines, then the structural ; and , delimiters. fromVCard already
+  // reverses '\n' → newline on NOTE import (line-unfolding-safe).
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/\r\n|\r|\n/g, '\\n')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,');
 }
 
 function unescapeVCard(s: string): string {
