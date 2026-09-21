@@ -7,7 +7,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { deriveSharedSecret } from '../crypto/mutual-trust.js';
 import { deriveRendezvousTag, type TrustRelay } from './trust-rendezvous.js';
-import { deriveMailboxFp, sealToMailbox } from '../crypto/mailbox-envelope.js';
+import { deriveMailboxFp, sealToMailbox, openMailboxEnvelope } from '../crypto/mailbox-envelope.js';
 import { generateMailboxKeypair, mailboxFpOf, toPublicKeys, toSecretKeys } from '../crypto/mailbox-keys.js';
 import { buildSignedMailboxPointer } from '../crypto/mailbox-pointer.js';
 import { uint8ToBase64 } from '../crypto/pq.js';
@@ -134,4 +134,39 @@ test('resolve with non-matching candidate keys → null (wrong-recipient filter)
     ...resolveArgs([{ secrets: toSecretKeys(stranger), fp: mailboxFpOf(stranger) }]),
   });
   assert.equal(got, null); // sealed to bMailbox, opened with stranger keys → envelope returns null
+});
+
+// INVARIANT (Flint #141682): resolveMailboxPointer polls a RELAY-INJECTABLE queue, JSON.parses each blob,
+// and calls openMailboxEnvelope WITHOUT wrapping the open — so a malicious relay cannot wedge resolve ONLY
+// IF openMailboxEnvelope is null-not-throw on every hostile input (including JSON.parse yielding null/a
+// primitive from a blob like "null"/"123"). This test pins that dependency: swap in a throwing AEAD or
+// reorder a guard and CI fails here, right next to the consumer that relies on it.
+test('INVARIANT: openMailboxEnvelope is null-not-throw on hostile relay input (resolve depends on this)', async () => {
+  const kp = generateMailboxKeypair();
+  const secrets = toSecretKeys(kp);
+  const myFp = mailboxFpOf(kp);
+  const alg = 'X25519+ML-KEM-1024/HKDF-SHA256/AES-256-GCM';
+  const b64 = (n: number) => uint8ToBase64(new Uint8Array(n));
+  const wellFormed = { v: 1, alg, mailbox_fp: myFp, epk: b64(32), kem_ct: b64(1568), nonce: b64(12), ct: b64(32) };
+  const hostile: unknown[] = [
+    null, undefined, 123, 'a string', true, [], {}, // JSON.parse of a relay blob can yield any of these
+    { ...wellFormed, epk: '!!not base64!!' }, // bad base64
+    { ...wellFormed, epk: b64(31) }, // wrong epk length
+    { ...wellFormed, kem_ct: b64(1567) }, // wrong kem_ct length
+    { ...wellFormed, nonce: b64(11) }, // wrong nonce length
+    { ...wellFormed, v: 2 }, // wrong version
+    { ...wellFormed, alg: 'nope' }, // wrong alg
+    { ...wellFormed, mailbox_fp: 'deadbeef' }, // wrong recipient
+    wellFormed, // valid shape, garbage ct → AEAD tag fail
+  ];
+  for (const pkg of hostile) {
+    let result: unknown = '__THREW__';
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      result = await openMailboxEnvelope(pkg as any, secrets, myFp);
+    } catch {
+      /* result stays __THREW__ */
+    }
+    assert.equal(result, null, `must return null (not throw) for: ${String(JSON.stringify(pkg)).slice(0, 48)}`);
+  }
 });
