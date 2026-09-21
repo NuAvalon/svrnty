@@ -88,9 +88,13 @@ function u32beAt(buf: Uint8Array, off: number): number {
   return buf[off] * 0x1000000 + (buf[off + 1] << 16) + (buf[off + 2] << 8) + buf[off + 3];
 }
 
-function u64beAt(buf: Uint8Array, off: number): number {
+function u64beAt(buf: Uint8Array, off: number): number | null {
+  // N1 (Flint): reject epoch values we cannot represent EXACTLY as a JS number (>= 2^53), so a crafted
+  // high-epoch blob can't parse to a lossy value. MAX_SAFE_INTEGER = 2^53-1 = 0x001FFFFFFFFFFFFF, so any
+  // value with a nonzero top byte, or a second byte > 0x1f, exceeds it. (No BigInt — repo targets < ES2020.)
+  if (buf[off] !== 0 || buf[off + 1] > 0x1f) return null;
   let v = 0;
-  for (let i = 0; i < 8; i++) v = v * 256 + buf[off + i]; // exact for epochs (< 2^53)
+  for (let i = 0; i < 8; i++) v = v * 256 + buf[off + i]; // exact: result <= 2^53-1
   return v;
 }
 
@@ -128,6 +132,7 @@ export function parseSignedMailboxPointer(blob: Uint8Array): RawPointer | null {
 
   if (off + 8 > blob.length) return null;
   const epoch = u64beAt(blob, off);
+  if (epoch === null) return null; // N1: reject epoch >= 2^53 (unrepresentable exactly)
   off += 8;
 
   const x25519Pub = readLP();
