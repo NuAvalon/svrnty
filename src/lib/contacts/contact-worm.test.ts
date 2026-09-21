@@ -17,7 +17,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyVerifiedContactUpdate, type StoredContact, type VerifiedContactUpdate } from './apply-contact-update.js';
 import { toVCard, fromVCard } from './vcard.js';
-import { sanitizeContactInfo, sanitizeSingleLine, sanitizeText, DISPLAY_NAME_MAX, NOTE_MAX } from './safe-text.js';
+import { sanitizeContactInfo, sanitizeContactRecordText, sanitizeSingleLine, sanitizeText, DISPLAY_NAME_MAX, NOTE_MAX } from './safe-text.js';
 
 // The invisible/control/bidi class that MUST NOT survive ingestion into the store (or propagation out).
 // TAB (U+0009) + LF (U+000A) are legit in multi-line notes and are intentionally EXCLUDED from this set.
@@ -139,4 +139,45 @@ test('WORM-4 vCard-IMPORT path: malicious .vcf → fromVCard → sanitize (edgeT
   const out = toVCard({ peer_name: name, notes, contact_info: ci } as unknown as Parameters<typeof toVCard>[0]);
   assertNoInvisible(out, 're-exported imported vCard');
   assert.ok(!out.split(/\r\n|\n/).some((l) => /^X-EVIL:/.test(l)), 'no injected header from imported note');
+});
+
+test('WORM-5 CHOKEPOINT: a record BYPASSING FIELD_MAP/edgeToRecordFields → text inert + crypto/lookup fields BYTE-EXACT', () => {
+  // Simulates the admit paths (JoinerCeremony:309 / grow-gate:174) — a raw ContactRecord handed straight
+  // to addContact/updateContact, never through FIELD_MAP or edgeToRecordFields. sanitizeContactRecordText
+  // is what those store fns now call; it must hold ALONE (Flint chokepoint pin #141811, item 4).
+  const FP = 'a'.repeat(64); // byte-exact identity/lookup key — getContactByFingerprint depends on it
+  const PUB = `ARMORED-PUBLIC-KEY-${RLO}-bytes`; // crypto field — even if it (implausibly) held a control char, we must NOT alter it
+  const raw = {
+    fingerprint: FP,
+    public_key: PUB,
+    added_at: '2026-01-01T00:00:00Z',
+    trust_level: 'verified',
+    version: 3,
+    epoch: 0,
+    name: `Mallory${RLO}gnp.exe${ZW}${SCRIPT}`,
+    email: `m${RLO}@x.com`,
+    phone: `+1${ZW}555${RLO}123`,
+    phones: [`+1${ZW}555${RLO}123`],
+    emails: [`m${ZW}@x.com`],
+    notes: `n${NUL}${ZW}ote${RLO}\r\nX-EVIL:1`,
+    contact_info: { handles: { signal: `s${RLO}${ZW}ig` }, urls: [`javascript:1${BOM}`], org: `Org${RLO}Inc` },
+  };
+  const out = sanitizeContactRecordText(raw);
+
+  // text fields inert
+  assertNoInvisible(out.name, 'name'); assertNoInvisible(out.email, 'email'); assertNoInvisible(out.phone, 'phone');
+  assertNoInvisible(out.notes, 'notes');
+  for (const p of out.phones) assertNoInvisible(p, 'phone[]');
+  for (const em of out.emails) assertNoInvisible(em, 'email[]');
+  const ci = out.contact_info as { handles: Record<string, string>; urls: string[]; org: string };
+  assertNoInvisible(ci.handles.signal, 'handle'); assertNoInvisible(ci.urls[0], 'url'); assertNoInvisible(ci.org, 'org');
+  assert.ok(out.name.includes(SCRIPT), 'markup preserved as data');
+
+  // ★ item 2: crypto / lookup / structural fields BYTE-EXACT — NEVER sanitized (would corrupt identity + break matching).
+  assert.equal(out.fingerprint, FP, 'fingerprint byte-exact (the lookup key)');
+  assert.equal(out.public_key, PUB, 'public_key byte-exact (crypto — even a control char left untouched)');
+  assert.equal(out.added_at, '2026-01-01T00:00:00Z', 'added_at byte-exact');
+  assert.equal(out.trust_level, 'verified', 'trust_level byte-exact');
+  assert.equal(out.version, 3, 'version preserved');
+  assert.equal(out.epoch, 0, 'epoch preserved');
 });

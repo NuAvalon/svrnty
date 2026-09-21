@@ -106,3 +106,30 @@ export function sanitizeContactInfo(ci: unknown): Record<string, unknown> | unde
   }
   return out;
 }
+
+/**
+ * §9 CHOKEPOINT (Flint pin #141811). Sanitize a contact record's peer-authored DISPLAY/CONTACT text at
+ * the client-store WRITE boundary — the ONE convergence every ingestion path flows through (vCard-import,
+ * joiner/grow admit, broadcast, management, and any FUTURE writer). enforce-by-construction: a path that
+ * forgets to sanitize still cannot store a booby-trapped string, because the store never holds one.
+ *
+ * FIELD ALLOWLIST — sanitize ONLY these peer-authored text fields:
+ *   name (single-line) · notes (multi-line) · email/phone (single-line) · phones[]/emails[] · contact_info.
+ * NEVER touch structural / crypto / lookup fields (fingerprint, public_key, id, owner_fingerprint,
+ * added_at, trust_level, version, epoch, pq_* keys, PSI session state, …): NFC/strip there would corrupt
+ * identity and break BYTE-EXACT matching — fingerprint is THE lookup key (getContactByFingerprint), and
+ * dedup matches on NORMALIZED channels, not raw. Idempotent → composes safely on the FIELD_MAP /
+ * edgeToRecordFields sanitizers (kept as layered defense-in-depth). Returns a shallow-sanitized copy.
+ */
+export function sanitizeContactRecordText<T>(rec: T): T {
+  if (rec === null || typeof rec !== 'object') return rec;
+  const out = { ...(rec as Record<string, unknown>) };
+  if (typeof out.name === 'string') out.name = sanitizeSingleLine(out.name, DISPLAY_NAME_MAX);
+  if (typeof out.notes === 'string') out.notes = sanitizeText(out.notes, { max: NOTE_MAX, allowNewlines: true });
+  if (typeof out.email === 'string') out.email = sanitizeSingleLine(out.email, METHOD_VALUE_MAX);
+  if (typeof out.phone === 'string') out.phone = sanitizeSingleLine(out.phone, METHOD_VALUE_MAX);
+  if (Array.isArray(out.emails)) out.emails = out.emails.map((x) => (typeof x === 'string' ? sanitizeSingleLine(x, METHOD_VALUE_MAX) : x));
+  if (Array.isArray(out.phones)) out.phones = out.phones.map((x) => (typeof x === 'string' ? sanitizeSingleLine(x, METHOD_VALUE_MAX) : x));
+  if (out.contact_info && typeof out.contact_info === 'object') out.contact_info = sanitizeContactInfo(out.contact_info);
+  return out as unknown as T;
+}

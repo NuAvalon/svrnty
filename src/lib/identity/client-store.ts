@@ -10,6 +10,10 @@ import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+// §9 chokepoint (Flint pin #141811): the store-write is the ONE convergence for every contact ingestion
+// path — sanitize peer-authored text (invisible/control/bidi strip) HERE so no path can store a
+// booby-trapped string, even one that forgot to sanitize. Leaf util (pure string ops), no cycle.
+import { sanitizeContactRecordText } from '../contacts/safe-text';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -646,6 +650,11 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   if (!_sessionKey || !_contactKeys) {
     throw new Error('Session locked — addContact refuses to store plaintext (enc-b fail-closed)');
   }
+  // §9 CHOKEPOINT (#141811): strip invisible/control/bidi from peer-authored text BEFORE store — every
+  // ingestion path (vCard-import / joiner+grow admit / broadcast / management / future) converges here.
+  // Field-allowlisted: never touches fingerprint/public_key/crypto/lookup fields (the binding check below
+  // still sees byte-exact crypto). Idempotent — composes with the per-path FIELD_MAP/edgeToRecordFields.
+  contact = sanitizeContactRecordText(contact);
   // Invariant-1: a fingerprint exists only with a bound key.
   // Keyless rows MUST NOT carry a fingerprint (even a placeholder).
   const pk = (contact.public_key || '').trim();
@@ -704,7 +713,10 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   }
   const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
   if (!existing) throw new Error('Contact not found');
-  const next = { ...existing, ...updates, id: existing.id };
+  let next = { ...existing, ...updates, id: existing.id };
+  // §9 CHOKEPOINT (#141811): sanitize peer-authored text on the merged record before store (enforce-by-
+  // construction for EVERY write path; excludes fingerprint/public_key/crypto/lookup — byte-exact).
+  next = sanitizeContactRecordText(next);
   const pk = (next.public_key || '').trim();
   // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
   if (!pk) {
