@@ -113,3 +113,15 @@ test('selectLatestValidPointer: highest-epoch valid wins; tampered dropped', () 
   assert.equal(selectLatestValidPointer([e7, forged], PUBLISHER_PUB)!.epoch, 7);
   assert.equal(selectLatestValidPointer([], PUBLISHER_PUB), null);
 });
+
+test('N1: crafted epoch >= 2^53 → parse rejects (null); MAX_SAFE_INTEGER still parses', () => {
+  const blob = buildSignedMailboxPointer(7, X25519_PUB, MLKEM_EK, IDENTITY_SEED);
+  // epoch occupies bytes 61..68: LP(domain)=25 + LP(fp)=36 → offset 61, 8 bytes big-endian.
+  const huge = blob.slice();
+  for (let i = 61; i < 69; i++) huge[i] = 0xff; // 2^64-1, unrepresentable exactly
+  assert.equal(parseSignedMailboxPointer(huge), null);
+  const maxSafe = blob.slice();
+  const b = [0x00, 0x1f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]; // 2^53 - 1 = Number.MAX_SAFE_INTEGER
+  for (let i = 0; i < 8; i++) maxSafe[61 + i] = b[i];
+  assert.ok(parseSignedMailboxPointer(maxSafe), 'MAX_SAFE_INTEGER epoch parses structurally');
+});

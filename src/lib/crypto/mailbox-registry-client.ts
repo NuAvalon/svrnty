@@ -54,8 +54,10 @@ export interface RegisterResult {
 /** Injected transport over the satellite's mailbox endpoints. */
 export interface MailboxRegistry {
   register(fields: MailboxRegisterFields): Promise<RegisterResult>;
-  /** Raw GET — returns the record or null (404 / non-2xx / malformed). Does NOT anti-substitution-check. */
-  get(mailboxFp: string): Promise<MailboxRecord | null>;
+  /** UNSAFE raw GET — record or null (404 / non-2xx / malformed). Does NOT anti-substitution-check the
+   *  fp<->pubkeys binding. NEVER seal to these keys directly — route through fetchMailbox, which enforces
+   *  the MUST. Underscore-prefixed so the unsafe path is hard to reach by accident (Flint N3, #141676). */
+  _getRaw(mailboxFp: string): Promise<MailboxRecord | null>;
 }
 
 /**
@@ -88,7 +90,7 @@ export function buildMailboxRegisterFields(
  * The returned keys are safe to seal to; a null means "no trustworthy mailbox at this fp" — do NOT seal.
  */
 export async function fetchMailbox(registry: MailboxRegistry, mailboxFp: string): Promise<MailboxPublicKeys | null> {
-  const rec = await registry.get(mailboxFp);
+  const rec = await registry._getRaw(mailboxFp);
   if (!rec) return null;
   if (typeof rec.x25519_pk !== 'string' || typeof rec.mlkem1024_pk !== 'string') return null;
   if (rec.x25519_pk.length !== X25519_HEX || rec.mlkem1024_pk.length !== KEM_PUB_HEX) return null;
@@ -131,7 +133,7 @@ export function httpMailboxRegistry(satelliteUrl: string, fetchImpl: typeof fetc
         return { ok: false, status: 0, error: e instanceof Error ? e.message : 'network error' };
       }
     },
-    async get(mailboxFp) {
+    async _getRaw(mailboxFp) {
       try {
         const res = await fetchImpl(`${base}/mailbox/${encodeURIComponent(mailboxFp)}`);
         if (!res.ok) return null; // 404 unknown / any non-2xx → null
