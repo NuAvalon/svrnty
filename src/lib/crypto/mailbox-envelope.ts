@@ -186,6 +186,11 @@ export async function openMailboxEnvelope(
   secrets: MailboxSecretKeys,
   myMailboxFpHex: string,
 ): Promise<Uint8Array | null> {
+  // Hostile relay input: a polled rendezvous blob can JSON.parse to null / a primitive. Guard before ANY
+  // property access so the documented "never throws on attacker input" contract actually holds for the
+  // consumers that don't wrap the open (resolveMailboxPointer, pollForPeerTrust). Surfaced by Flint's
+  // null-not-throw invariant test (#141682): pkg="null" → JSON.parse → null → pkg.v used to throw.
+  if (pkg === null || typeof pkg !== 'object') return null;
   if (pkg.v !== 1 || pkg.alg !== MAILBOX_ENV_ALG) return null;
   if (pkg.mailbox_fp !== myMailboxFpHex) return null; // wrong recipient — reject before any crypto
 

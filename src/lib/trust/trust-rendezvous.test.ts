@@ -294,3 +294,22 @@ test('★ anti-forgery negative path: corrupted/tampered sig on an opening beaco
   const bond = await pollForPeerTrust({ relay, myEdPriv: b.edPriv, myDid: b.did, myMailbox: b.mbSec, myMailboxFp: b.mbFp, peerEdPub: a.edPub, peerDid: a.did, verifyFn, now: EPOCH });
   assert.equal(bond, false, 'tampered sig must NOT bond');
 });
+
+test('★ DoS: malicious relay serving garbage/"null" blobs → pollForPeerTrust returns false, never throws (Flint #141685)', async () => {
+  const a = mkPeer('a');
+  const b = mkPeer('b');
+  const relay = mockRelay();
+  // A malicious relay can inject arbitrary blob STRINGS at the pair rendezvous. JSON.parse may yield
+  // null / a primitive / an array; openMailboxEnvelope MUST null-not-throw (its documented contract) so one
+  // poisoned blob cannot wedge the poll. Consumer-level regression for the JSON.parse("null") →
+  // openMailboxEnvelope(null) deref that used to throw before the root guard in mailbox-envelope.ts.
+  const rTag = uint8ToBase64(deriveRendezvousTag(deriveSharedSecret(b.edPriv, a.edPub), b.did, a.did, EPOCH));
+  for (const garbage of ['null', '123', 'true', '"str"', '[]', '{}', '{"v":1}', 'not-json']) {
+    await relay.deposit(rTag, garbage);
+  }
+  const bond = await pollForPeerTrust({
+    relay, myEdPriv: b.edPriv, myDid: b.did, myMailbox: b.mbSec, myMailboxFp: b.mbFp,
+    peerEdPub: a.edPub, peerDid: a.did, verifyFn, now: EPOCH,
+  });
+  assert.equal(bond, false); // no authentic beacon — and critically, no throw from any garbage blob
+});
