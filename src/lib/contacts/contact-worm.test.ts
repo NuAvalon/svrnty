@@ -16,12 +16,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyVerifiedContactUpdate, type StoredContact, type VerifiedContactUpdate } from './apply-contact-update.js';
-import { toVCard } from './vcard.js';
+import { toVCard, fromVCard } from './vcard.js';
+import { sanitizeContactInfo, sanitizeSingleLine, sanitizeText, DISPLAY_NAME_MAX, NOTE_MAX } from './safe-text.js';
 
 // The invisible/control/bidi class that MUST NOT survive ingestion into the store (or propagation out).
 // TAB (U+0009) + LF (U+000A) are legit in multi-line notes and are intentionally EXCLUDED from this set.
 const INVISIBLE_BIDI = new RegExp(
-  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u061C\\u200B-\\u200F\\u202A-\\u202E\\u2060\\u2066-\\u2069\\uFEFF]',
+  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00AD\\u061C\\u200B-\\u200F\\u2028\\u2029\\u202A-\\u202E\\u2060\\u2066-\\u2069\\uFEFF]',
 );
 
 function assertNoInvisible(s: unknown, where: string) {
@@ -103,4 +104,39 @@ test('WORM-3 PROPAGATION — re-export via vCard stays inert end-to-end', () => 
   // (c) the FN line is a single inert logical line — the name payload cannot break field framing.
   const fn = lines.find((l) => l.startsWith('FN:'));
   assert.ok(fn && !/[\r\n]/.test(fn), 'FN is one inert line');
+});
+
+test('WORM-4 vCard-IMPORT path: malicious .vcf → fromVCard → sanitize (edgeToRecordFields mirror) → inert store + re-export', () => {
+  // A hostile .vcf a peer hands you. This exercises the SAME calls edgeToRecordFields makes at ingestion
+  // (the vCard-import store convergence) — the path that bypassed applyVerifiedContactUpdate (Flint #141804).
+  const vcf = [
+    'BEGIN:VCARD', 'VERSION:3.0',
+    `FN:Alice${RLO}gnp.exe${ZW}${SCRIPT}`,
+    `NOTE:evil${ZW}note${RLO}\\nX-EVIL:1`, // escaped-\n in the wire → fromVCard restores a real newline
+    `TEL;TYPE=CELL:+1${ZW}555${RLO}123`,
+    `EMAIL;TYPE=INTERNET:ev${RLO}il@x.com`,
+    `URL:https://ex${ZW}ample.com${RLO}`,
+    `X-SIGNAL:user${ZW}name${RLO}`,
+    'END:VCARD',
+  ].join('\r\n');
+  const parsed = fromVCard(vcf);
+  assert.ok(parsed.length === 1, 'one card parsed');
+  const edge = parsed[0];
+  // Mirror edgeToRecordFields' ingestion sanitization exactly:
+  const name = sanitizeSingleLine(edge.peer_name || '', DISPLAY_NAME_MAX);
+  const notes = sanitizeText(edge.notes || '', { max: NOTE_MAX, allowNewlines: true });
+  const ci = sanitizeContactInfo(edge.contact_info);
+
+  assertNoInvisible(name, 'imported name');
+  assert.ok(name.includes(SCRIPT), 'markup survives import as data');
+  assertNoInvisible(notes, 'imported notes');
+  for (const p of (ci?.phones as string[]) ?? []) assertNoInvisible(p, 'imported phone');
+  for (const em of (ci?.emails as string[]) ?? []) assertNoInvisible(em, 'imported email');
+  for (const u of (ci?.urls as string[]) ?? []) assertNoInvisible(u, 'imported url');
+  for (const [k, v] of Object.entries((ci?.handles as Record<string, string>) ?? {})) assertNoInvisible(v, `imported handle ${k}`);
+
+  // Re-export the sanitized-imported card → still inert end-to-end (propagation).
+  const out = toVCard({ peer_name: name, notes, contact_info: ci } as unknown as Parameters<typeof toVCard>[0]);
+  assertNoInvisible(out, 're-exported imported vCard');
+  assert.ok(!out.split(/\r\n|\n/).some((l) => /^X-EVIL:/.test(l)), 'no injected header from imported note');
 });

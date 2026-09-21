@@ -18,6 +18,9 @@ import { Upload, Users, GitMerge, UserPlus, AlertTriangle } from 'lucide-react';
 import type { TrustEdge } from '@/lib/trust/types';
 import { migrateTrustLevel } from '@/lib/trust/types';
 import { fromVCard } from '@/lib/contacts/vcard';
+import {
+  sanitizeSingleLine, sanitizeText, sanitizeContactInfo, DISPLAY_NAME_MAX, NOTE_MAX, METHOD_VALUE_MAX,
+} from '@/lib/contacts/safe-text';
 import { dedupeContacts, type DedupPlan } from '@/lib/contacts/import-dedup';
 import { applyImportPlan } from '@/lib/contacts/import-apply';
 import { mergeProvenance, type ChannelChange } from '@/lib/contacts/import-diff';
@@ -63,19 +66,24 @@ function recordToEdge(c: any): TrustEdge {
 // trust_level:'unverified' → projects trusted:false → the book renders it GRAY (getContactState,
 // contact-state.ts:27). The absent fingerprint is NOT the gray trigger; `trusted` is.
 function edgeToRecordFields(e: Partial<TrustEdge>) {
-  const phones = e.contact_info?.phones ?? [];
-  const emails = e.contact_info?.emails ?? [];
+  // §9 layer-3 (Flint #141804): the vCard-import store convergence. This path does NOT flow through
+  // applyVerifiedContactUpdate's FIELD_MAP, so a malicious .vcf would otherwise store peer-authored
+  // bidi/zero-width RAW. Sanitize HERE, mirroring the FIELD_MAP (import ≡ broadcast). Markup preserved
+  // as data (React/escapeVCard escape at the sink); only the invisible/control/bidi class is stripped.
+  const contact_info = sanitizeContactInfo(e.contact_info);
+  const phones = Array.isArray(contact_info?.phones) ? (contact_info!.phones as string[]) : [];
+  const emails = Array.isArray(contact_info?.emails) ? (contact_info!.emails as string[]) : [];
   return {
     fingerprint: e.peer_fingerprint || '',
-    name: e.peer_name || '',
-    email: e.peer_email || emails[0] || '',
+    name: sanitizeSingleLine(e.peer_name || '', DISPLAY_NAME_MAX),
+    email: sanitizeSingleLine(e.peer_email || '', METHOD_VALUE_MAX) || emails[0] || '',
     public_key: e.peer_public_key || '',
     trust_level: 'unverified',
     phone: phones[0] || '',
     phones,
     emails,
-    notes: e.notes || '',
-    contact_info: e.contact_info ?? { phones, emails },
+    notes: sanitizeText(e.notes || '', { max: NOTE_MAX, allowNewlines: true }),
+    contact_info: contact_info ?? { phones, emails },
   };
 }
 

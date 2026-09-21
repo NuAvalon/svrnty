@@ -25,10 +25,14 @@ export const DISPLAY_NAME_MAX = 256;
 export const NOTE_MAX = 4096;
 /** Single-line method value bound (emails/phones) — handles/urls keep their own tighter wire bounds. */
 export const METHOD_VALUE_MAX = 256;
+/** URL bound (matches the contact.update wire URL_VALUE_MAX_LEN). */
+export const URL_MAX = 512;
 
 // Always-strip set: control + bidi + zero-width/invisible. Two variants only differ on whether TAB+LF
 // are also stripped (single-line fields strip them; multi-line `note` keeps them).
-const INVISIBLE_BIDI = '\\u00AD\\u061C\\u200B-\\u200F\\u202A-\\u202E\\u2060\\u2066-\\u2069\\uFEFF';
+// U+2028/2029 (line/paragraph separators) included: JS line-terminators / JSON-hijack chars that also
+// inject visual breaks in single-line fields; no legit display use in a name/method (Flint nit #141804).
+const INVISIBLE_BIDI = '\\u00AD\\u061C\\u200B-\\u200F\\u2028\\u2029\\u202A-\\u202E\\u2060\\u2066-\\u2069\\uFEFF';
 // Single-line: strip ALL C0 (0000-001F, incl \t\n\r) + DEL/C1 (007F-009F) + invisible/bidi.
 const STRIP_SINGLE_LINE = new RegExp(`[\\u0000-\\u001F\\u007F-\\u009F${INVISIBLE_BIDI}]`, 'g');
 // Multi-line: strip C0 EXCEPT \t (0009) and \n (000A); still strip DEL/C1 + invisible/bidi.
@@ -65,4 +69,40 @@ export function sanitizeText(raw: unknown, opts: SanitizeTextOptions): string {
 /** Single-line convenience (display_name, contact methods): strips TAB/LF too. */
 export function sanitizeSingleLine(raw: unknown, max: number): string {
   return sanitizeText(raw, { max, allowNewlines: false });
+}
+
+/**
+ * Sanitize a peer-authored contact_info object's text fields at INGESTION — the vCard-import / QR-scan
+ * store paths (the two paths that DON'T flow through applyVerifiedContactUpdate's FIELD_MAP). Returns a
+ * shallow-sanitized copy so import ≡ broadcast: string arrays (phones/emails/urls) + handle-map values +
+ * the vCard free-ish fields (org/title/nickname/bday/adr) + extras values, all single-line-stripped.
+ * Non-object → undefined. Reuses the SAME strip as the apply FIELD_MAP (one definition, no drift).
+ */
+export function sanitizeContactInfo(ci: unknown): Record<string, unknown> | undefined {
+  if (ci === null || typeof ci !== 'object') return undefined;
+  const src = ci as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...src };
+  const cleanArr = (v: unknown, max: number) =>
+    Array.isArray(v) ? v.filter((x) => typeof x === 'string').map((x) => sanitizeSingleLine(x, max)) : v;
+  if ('phones' in src) out.phones = cleanArr(src.phones, METHOD_VALUE_MAX);
+  if ('emails' in src) out.emails = cleanArr(src.emails, METHOD_VALUE_MAX);
+  if ('urls' in src) out.urls = cleanArr(src.urls, URL_MAX);
+  for (const f of ['org', 'title', 'nickname', 'bday', 'adr']) {
+    if (typeof src[f] === 'string') out[f] = sanitizeSingleLine(src[f], METHOD_VALUE_MAX);
+  }
+  if (src.handles && typeof src.handles === 'object' && !Array.isArray(src.handles)) {
+    const h: Record<string, string> = {};
+    for (const [k, v] of Object.entries(src.handles as Record<string, unknown>)) {
+      if (typeof v === 'string') h[k] = sanitizeSingleLine(v, METHOD_VALUE_MAX);
+    }
+    out.handles = h;
+  }
+  if (Array.isArray(src.extras)) {
+    out.extras = src.extras.map((x) =>
+      x && typeof x === 'object' && typeof (x as { value?: unknown }).value === 'string'
+        ? { ...(x as object), value: sanitizeSingleLine((x as { value: string }).value, METHOD_VALUE_MAX) }
+        : x,
+    );
+  }
+  return out;
 }
