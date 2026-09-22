@@ -42,6 +42,10 @@ const die = (msg: string): never => { console.error(`\n\u2717 ${msg}`); process.
 function buildPathToServedPath(buildRel: string): string | null {
   const p = buildRel.split('\\').join('/'); // as-served, forward-slash, no decode/normalize
   if (p.startsWith('.next/static/')) return '/_next/static/' + p.slice('.next/static/'.length);
+  // The signer's OWN delivery output (release.json + csp artifact) is served but verified by its SIGNATURE, not
+  // manifest-membership. Exclude it — else a re-run walks the prior run's release.json back INTO the manifest
+  // (circular: the manifest would depend on the release.json that carries the bundle_hash) → non-deterministic.
+  if (p.startsWith('public/.well-known/')) return null;
   if (p.startsWith('public/')) return '/' + p.slice('public/'.length);
   if (p.startsWith('.next/server/app/') && p.endsWith('.html')) {
     const route = p.slice('.next/server/app/'.length, -'.html'.length);
@@ -87,6 +91,13 @@ const collect = (files: string[], onlyHtml = false) => {
     const buildRel = relative(ROOT, abs).split('\\').join('/');
     const servedPath = buildPathToServedPath(buildRel);
     if (servedPath === null) continue;
+    // Non-ASCII guard (Apollo #142315): buildPathToServedPath emits the RAW name, but the SW's manifestPath
+    // (URL.pathname) PERCENT-ENCODES non-ASCII (and distinguishes NFC/NFD) → the SW's exact-path lookup would
+    // MISS this manifest key → false-WARN (fail-CLOSED: a legit asset fails to verify; NOT a hole admitting a bad
+    // one). Fail LOUD at sign-time rather than ship a silent runtime divergence. (Correct fix if non-ASCII assets
+    // are ever needed: percent-encode per-segment to mirror URL.pathname. Next content-hashes chunks + public/ is
+    // ASCII, so this never fires on the current build — it also DOUBLES as the "all 82 paths are ASCII" proof.)
+    if (/[^\x00-\x7F]/.test(servedPath)) die(`non-ASCII served path ${JSON.stringify(servedPath)} (${buildRel}) — signer emits raw, SW percent-encodes → divergent lookup. Percent-encode or rename (Apollo #142315).`);
     if (seen.has(servedPath)) die(`duplicate served path ${servedPath} (${buildRel} vs ${seen.get(servedPath)})`);
     seen.set(servedPath, buildRel);
     const bytes = new Uint8Array(readFileSync(abs));
