@@ -24,6 +24,10 @@
 # The source of truth is src/sw/sw-source.ts; never hand-edit or commit the bundle (Archie #142294).
 /public/sw.js
 
+# generated: signer-walk dev artifacts (TEST-genesis release delivery + CSP inline-hash union). The REAL
+# release.json comes from the mint ceremony (air-gapped genesis Root-B), never this dev output.
+/public/.well-known/
+
 # production
 /build
 
