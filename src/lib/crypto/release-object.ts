@@ -54,6 +54,13 @@ export const RELEASE_DOMAIN = 'svrnty:release:v1';
  * NOT a reject/forgery. DISTINCT from ReleaseObject.versionCounter (the anti-rollback release counter).
  * Bump ONLY when the release-object wire format itself changes (and retain older grammars for backward
  * verification when you do, keeping the anti-rollback counter check on every verify branch).
+ *
+ * ORTHOGONAL VERSION AXES (Flint #142163) — do NOT conflate: the domain-tag ":v1" is the PROTOCOL-
+ * GENERATION separator (cross-protocol domain separation; a nuclear/hard break, essentially NEVER
+ * bumped), while grammar_version is the read-first FORMAT version — the forward-compat dispatch axis
+ * that actually evolves. Which to bump for a future release-object format change? grammar_version.
+ * The domain ":vN" essentially never (only a total protocol re-generation). Both are bound in the
+ * preimage; they are different axes, not redundant.
  */
 export const RELEASE_GRAMMAR_VERSION = 1;
 
@@ -136,16 +143,30 @@ export interface NodeZeroGenesisPubkeys {
   sigPub: Uint8Array; // ml-dsa-87 2592  (also epoch-0 dsa signing pubkey)
 }
 
+/**
+ * Structured outcome KIND for the §3 WARN-ceremony to switch on (Flint #142163 — NEVER reason-strings;
+ * string-matching in a security ceremony is brittle). Only 'attack' fires the scary tampering WARN
+ * (+ markDiverged); the rest are benign so the scary warning keeps its credibility for real attacks:
+ *   • 'accept'          — verified & adopted.
+ *   • 'update-required' — grammar_version ahead of this client → calm UPDATE-REQUIRED (Peter #142110).
+ *   • 'attack'          — anchor-mismatch / fp-substitution / signature-invalid → scary WARN + markDiverged.
+ *   • 'malformed'       — invalid/unsupported grammar_version or malformed genesis pubkeys → benign ignore/retry
+ *                         (corrupt ≠ attack; a truncated fetch / CDN hiccup must not cry wolf).
+ *   • 'stale'           — anti-rollback (counter ≤ HWM) → benign keep-current (client already protected).
+ */
+export type RecognizeKind = 'accept' | 'update-required' | 'attack' | 'malformed' | 'stale';
+
 export interface RecognizeResult {
   accepted: boolean;
+  /** structured outcome — SWITCH ON THIS in the WARN-ceremony, never the reason string (Flint #142163). */
+  kind: RecognizeKind;
   /** the high-water-mark AFTER this decision (unchanged on reject; = version_counter on accept). */
   newHwm: number;
   /**
-   * TRUE iff this release's grammar_version is AHEAD of what this client understands — a benign
-   * "client update required" state, semantically DISTINCT from a reject/forgery (Peter #142110:
-   * "different truths must look different" — the UI MUST render this as UPDATE-REQUIRED, never the
-   * under-attack / lineage-mismatch warning; else cry-wolf erodes the real warning). Flint's §3
-   * WARN-ceremony consumes this. Only ever set on the version-ahead branch; absent otherwise.
+   * Convenience alias for kind === 'update-required' (Peter #142110 addendum term). Always consistent
+   * with `kind`. TRUE iff this release's grammar_version is AHEAD of what this client understands — a
+   * benign "client update required" state the UI MUST render as UPDATE-REQUIRED, never the under-attack
+   * warning ("different truths must look different"; else cry-wolf erodes the real warning).
    */
   updateRequired?: boolean;
   reason?: string;
@@ -172,29 +193,30 @@ export function recognizeRelease(args: {
 }): RecognizeResult {
   const pinned = normalizeFingerprintHex(args.pinnedPublisherFp);
   const hwm = args.hwm;
-  const reject = (reason: string): RecognizeResult => ({ accepted: false, newHwm: hwm, reason });
+  const reject = (kind: RecognizeKind, reason: string): RecognizeResult => ({ accepted: false, kind, newHwm: hwm, reason });
 
   // (0) PRE-VERIFY GRAMMAR DISPATCH (Flint #142106 refinements 1+3; Peter #142110). grammar_version is
   //     read from UNVERIFIED wire bytes ONLY to choose which grammar to verify under. Every branch is
   //     fail-safe and NO branch accepts/serves anything unverified:
   //       • ahead of us  → DISTINCT benign updateRequired (render as UPDATE-REQUIRED, NOT a forgery warning)
-  //       • older/unknown → reject (this v1 build retains only RELEASE_GRAMMAR_VERSION)
+  //       • older/unknown → reject 'malformed' (this v1 build retains only RELEASE_GRAMMAR_VERSION)
   //       • ==ours       → verify under this grammar below (version re-encoded → tamper fails verify)
   const gv = args.release.grammarVersion;
-  if (!Number.isSafeInteger(gv) || gv < 1) return reject(`invalid grammar_version ${gv}`);
+  if (!Number.isSafeInteger(gv) || gv < 1) return reject('malformed', `invalid grammar_version ${gv}`);
   if (gv > RELEASE_GRAMMAR_VERSION) {
-    return { accepted: false, newHwm: hwm, updateRequired: true, reason: `grammar_version ${gv} ahead of client ${RELEASE_GRAMMAR_VERSION} — client update required` };
+    return { accepted: false, kind: 'update-required', newHwm: hwm, updateRequired: true, reason: `grammar_version ${gv} ahead of client ${RELEASE_GRAMMAR_VERSION} — client update required` };
   }
   if (gv !== RELEASE_GRAMMAR_VERSION) {
     // gv < RELEASE_GRAMMAR_VERSION: an OLDER grammar. A future multi-version client would retain the
     // older grammar and verify under it WITH the same anti-rollback counter check (Flint refinement 4).
     // This v1 build understands exactly RELEASE_GRAMMAR_VERSION → older/unknown is refused (client is
-    // ahead, not behind → NOT updateRequired). Unreachable while RELEASE_GRAMMAR_VERSION === 1.
-    return reject(`unsupported grammar_version ${gv}`);
+    // ahead, not behind → NOT updateRequired). MALFORMED (unsupported), not attack. Unreachable while
+    // RELEASE_GRAMMAR_VERSION === 1.
+    return reject('malformed', `unsupported grammar_version ${gv}`);
   }
 
-  // (a) anchor-binding / cross-lineage-replay reject: the release must claim the pinned lineage.
-  if (bytesToHex(args.releasePublisherFp) !== pinned) return reject('publisher_fp != pinned anchor');
+  // (a) anchor-binding / cross-lineage-replay reject: the release must claim the pinned lineage. ATTACK.
+  if (bytesToHex(args.releasePublisherFp) !== pinned) return reject('attack', 'publisher_fp != pinned anchor');
 
   // (b) substitution-reject: presented genesis pubkeys must hash to the pin before we trust them.
   if (args.presentedGenesis) {
@@ -203,9 +225,9 @@ export function recognizeRelease(args: {
     try {
       derived = deriveCanonicalFingerprintHex(g.signPub, g.encPub, g.kemPub, g.sigPub);
     } catch {
-      return reject('genesis pubkeys malformed');
+      return reject('malformed', 'genesis pubkeys malformed'); // corrupt input, not tampering evidence
     }
-    if (derived !== pinned) return reject('fp != SHA256(pubkeys)');
+    if (derived !== pinned) return reject('attack', 'fp != SHA256(pubkeys)'); // key-substitution = ATTACK
   }
 
   // (c) two-leg verify over the EXACT frozen preimage (re-encoded here — never trust a caller-supplied
@@ -219,15 +241,16 @@ export function recognizeRelease(args: {
     epoch: args.release.epoch,
   });
   if (!verifyReleaseSig(signingInput, args.release.sig, args.epochSigningKeys.edPub, args.epochSigningKeys.dsaPub)) {
-    return reject('signature invalid');
+    return reject('attack', 'signature invalid'); // known-version + bad sig = tampering evidence = ATTACK
   }
 
   // (d) anti-rollback: strictly greater than the high-water-mark. Never equal, never lower — even a
   //     validly-signed older release is refused (the verifier never goes backwards). This ADOPT branch
   //     runs the counter check on every accepted release regardless of grammar_version (refinement 4).
+  //     A valid-but-older release is STALE (replay / stale-cache), NOT an attack — benign keep-current.
   if (!(args.release.versionCounter > hwm)) {
-    return reject(`rollback: version_counter ${args.release.versionCounter} <= HWM ${hwm}`);
+    return reject('stale', `rollback: version_counter ${args.release.versionCounter} <= HWM ${hwm}`);
   }
 
-  return { accepted: true, newHwm: args.release.versionCounter };
+  return { accepted: true, kind: 'accept', newHwm: args.release.versionCounter };
 }

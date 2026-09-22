@@ -212,3 +212,28 @@ test('KAT-7 grammar-version: ahead⇒updateRequired(distinct); invalid⇒reject;
   assert.equal(okv1.accepted, true, 'honest v1 release ⇒ accept');
   assert.equal(okv1.updateRequired, undefined, 'accepted release has no updateRequired flag');
 });
+
+// ── Vector 8: reject-KIND taxonomy (Flint #142163 — §3 WARN-ceremony switches on kind, NOT reason) ──
+test('KAT-8 kind taxonomy: only ATTACK is tampering; malformed/stale/update-required are benign', () => {
+  const common = { releasePublisherFp: A_FP_RAW, pinnedPublisherFp: A_FP_HEX, epochSigningKeys: A_EPOCH_KEYS, presentedGenesis: A_GENESIS };
+  // accept
+  assert.equal(recognizeRelease({ ...common, release: makeReleaseA(1, 0), hwm: 0 }).kind, 'accept');
+  // update-required (grammar_version ahead) — benign, calm UPDATE-REQUIRED
+  const ur = recognizeRelease({ ...common, release: makeReleaseA(1, 0, A_FP_RAW, BUNDLE_HASH, RELEASE_GRAMMAR_VERSION + 1), hwm: 0 });
+  assert.equal(ur.kind, 'update-required');
+  assert.equal(ur.updateRequired, true, 'kind update-required ⟺ updateRequired alias');
+  // malformed (invalid grammar_version) — benign ignore/retry, NOT attack
+  const badGv: ReleaseObject = { grammarVersion: 0, bundleHash: BUNDLE_HASH, versionCounter: 1, epoch: 0, sig: new Uint8Array(64 + 100) };
+  assert.equal(recognizeRelease({ ...common, release: badGv, hwm: 0 }).kind, 'malformed');
+  // stale (anti-rollback: valid-but-older) — benign keep-current, NOT attack
+  assert.equal(recognizeRelease({ ...common, release: makeReleaseA(4, 0), hwm: 5 }).kind, 'stale');
+  // attack: anchor-mismatch (release claims A, pinned is B)
+  assert.equal(recognizeRelease({ release: makeReleaseA(1, 0), releasePublisherFp: A_FP_RAW, pinnedPublisherFp: B_FP_HEX, hwm: 0, epochSigningKeys: B_EPOCH_KEYS }).kind, 'attack');
+  // attack: fp-substitution (well-formed but wrong signPub ⇒ derived fp ≠ pin)
+  const substituted: NodeZeroGenesisPubkeys = { ...A_GENESIS, signPub: bEdPub };
+  assert.equal(recognizeRelease({ ...common, presentedGenesis: substituted, release: makeReleaseA(1, 0), hwm: 0 }).kind, 'attack');
+  // attack: signature-invalid (v2-signed object claiming wire gv=1 ⇒ verify fails)
+  const si2 = encodeReleaseSigningInput({ grammarVersion: 2, publisherFp: A_FP_RAW, bundleHash: BUNDLE_HASH, versionCounter: 1, epoch: 0 });
+  const spoof: ReleaseObject = { grammarVersion: 1, bundleHash: BUNDLE_HASH, versionCounter: 1, epoch: 0, sig: signRelease(si2, A_ED_SEED, aDsa.secretKey) };
+  assert.equal(recognizeRelease({ ...common, release: spoof, hwm: 0 }).kind, 'attack');
+});
