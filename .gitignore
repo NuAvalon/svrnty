@@ -20,6 +20,10 @@
 /.next/
 /out/
 
+# generated: the REAL Node Zero G-D service worker — build:sw bundles src/sw/sw-source.ts → public/sw.js.
+# The source of truth is src/sw/sw-source.ts; never hand-edit or commit the bundle (Archie #142294).
+/public/sw.js
+
 # production
 /build
 
