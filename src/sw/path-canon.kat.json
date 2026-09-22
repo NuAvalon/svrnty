@@ -1,0 +1,141 @@
+{
+  "spec": "svrnty:path-canon:v1",
+  "purpose": "Cross-walker known-answer test for the #141748 residual. Three walkers derive the manifest path string from DIFFERENT native inputs — SIGNER (build-file -> served-URL map), SW (request.url -> pathname), WATCHTOWER (fetch-URL -> pathname) — and MUST produce the BYTE-IDENTICAL string for the same asset, or Apollo's bundle_hash silently disagrees (WARN-storms / verify gap). Co-witnessed by Apollo (signer) + Flint (independent).",
+  "rule": "path = new URL(requestUrl).pathname WHEN URL.origin === origin, else null. NO decodeURIComponent. Query/fragment are dropped by URL.pathname. Dot-segments (./ , ../) ARE resolved by URL — the signer must NEVER emit them (a clean fs walk does not). NO trailing-slash normalization. NO double-slash collapse. Case-sensitive. %-encoding AS-SERVED; NFC and NFD of the same visual path are DISTINCT percent-encodings — the signer must read the as-served filename and never re-normalize.",
+  "origin": "https://svrnty.is",
+  "coverage": {
+    "static": "exact-path SRI — this vector's expectedPath IS the manifest key and the request-time lookup key",
+    "shell": "content-hash membership — the served navigation HTML's SHA256 must be in the shell-hash-set; expectedPath is shown only as the signer's shell KEY (route template), NOT used for request-time lookup (a dynamic-param route serves one byte-stable shell across infinite paths, e.g. /u/alice == /u/bob)",
+    "dynamic": "not covered (skip): /api/*, /_next/image, /_next/data, cross-origin"
+  },
+  "stringAgreement": "The 3-way byte-identical path-STRING agreement is LOAD-BEARING only for class:static entries — the SW does exact-path KEY lookup, so request.url->pathname MUST byte-match the signer's emitted path or the lookup misses -> WARN. class:shell entries are verified by content-hash SET membership: the served concrete path (/u/alice) is NEVER matched against a manifest key, so a shell's expectedPath is the signer's canonical template KEY (documentary only); the load-bearing shell property is that all 3 walkers agree on the shell-HASH-SET, co-witnessed separately. (Apollo #142024.)",
+  "cases": [
+    {
+      "name": "normal-chunk",
+      "class": "static",
+      "signerBuildPath": ".next/static/chunks/main-abc123.js",
+      "requestUrl": "https://svrnty.is/_next/static/chunks/main-abc123.js",
+      "expectedPath": "/_next/static/chunks/main-abc123.js"
+    },
+    {
+      "name": "query-buster-stripped",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/_next/static/chunks/main-abc123.js?v=456&x=1",
+      "expectedPath": "/_next/static/chunks/main-abc123.js"
+    },
+    {
+      "name": "fragment-stripped",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/icon-192.svg#f",
+      "expectedPath": "/icon-192.svg"
+    },
+    {
+      "name": "public-asset",
+      "class": "static",
+      "signerBuildPath": "public/icon-192.svg",
+      "requestUrl": "https://svrnty.is/icon-192.svg",
+      "expectedPath": "/icon-192.svg"
+    },
+    {
+      "name": "root-shell",
+      "class": "shell",
+      "signerBuildPath": ".next/server/app/index.html",
+      "requestUrl": "https://svrnty.is/",
+      "expectedPath": "/"
+    },
+    {
+      "name": "dynamic-param-shell",
+      "class": "shell",
+      "requestUrl": "https://svrnty.is/u/alice",
+      "expectedPath": "/u/alice",
+      "note": "VERIFIED BY CONTENT-MEMBERSHIP, not by this path. /u/alice and /u/bob are byte-identical shells. Signer KEY = /u/[name]."
+    },
+    {
+      "name": "pct-encoded-slash-not-decoded",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/a%2Fb.js",
+      "expectedPath": "/a%2Fb.js",
+      "distinctFrom": "pct-decoded-counterpart"
+    },
+    {
+      "name": "pct-decoded-counterpart",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/a/b.js",
+      "expectedPath": "/a/b.js"
+    },
+    {
+      "name": "case-sensitive-upper",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/Icon.png",
+      "expectedPath": "/Icon.png",
+      "distinctFrom": "case-sensitive-lower"
+    },
+    {
+      "name": "case-sensitive-lower",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/icon.png",
+      "expectedPath": "/icon.png"
+    },
+    {
+      "name": "trailing-slash-preserved",
+      "class": "shell",
+      "requestUrl": "https://svrnty.is/foo/",
+      "expectedPath": "/foo/",
+      "distinctFrom": "no-trailing-slash"
+    },
+    {
+      "name": "no-trailing-slash",
+      "class": "shell",
+      "requestUrl": "https://svrnty.is/foo",
+      "expectedPath": "/foo"
+    },
+    {
+      "name": "double-slash-preserved",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/a//b.js",
+      "expectedPath": "/a//b.js"
+    },
+    {
+      "name": "dot-dot-segment-resolved",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/a/../b.js",
+      "expectedPath": "/b.js",
+      "note": "URL resolves ../ ; signer never emits dot-segments"
+    },
+    {
+      "name": "dot-single-segment-resolved",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/./b.js",
+      "expectedPath": "/b.js"
+    },
+    {
+      "name": "traversal-out-of-static-then-skip",
+      "class": "dynamic",
+      "requestUrl": "https://svrnty.is/_next/static/../../secret",
+      "expectedPath": "/secret",
+      "note": "resolves OUT of /_next/static -> not covered -> skip. No bypass: all 3 walkers use URL semantics identically."
+    },
+    {
+      "name": "unicode-nfc",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/café.js",
+      "expectedPath": "/caf%C3%A9.js",
+      "note": "NFC: e-acute = U+00E9 (escaped so file normalization cannot collapse it)",
+      "distinctFrom": "unicode-nfd"
+    },
+    {
+      "name": "unicode-nfd",
+      "class": "static",
+      "requestUrl": "https://svrnty.is/café.js",
+      "expectedPath": "/cafe%CC%81.js",
+      "note": "NFD: e + combining-acute U+0301 (escaped). DISTINCT percent-encoding from NFC. Signer must read as-served, never re-normalize."
+    },
+    {
+      "name": "cross-origin-null",
+      "class": "dynamic",
+      "requestUrl": "https://evil.example/x.js",
+      "expectedPath": null,
+      "note": "cross-origin -> not a T1 manifest asset"
+    }
+  ]
+}
