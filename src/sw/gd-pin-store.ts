@@ -156,3 +156,30 @@ export async function markDiverged(): Promise<void> {
   const db = await openDb();
   await idbPut(db, KEY, { ...body, authTag: await computeAuthTag(body) });
 }
+
+/**
+ * Escalation-B upgrade-trigger (Flint launch-hardening spec Part B, #142061). The TOFU pin is captured null-tag
+ * (no passphrase exists at first install), so readPin cannot reject a raw IndexedDB overwrite until the pin is
+ * integrity-BOUND. Once the wrap-key provider is live (the user has set a passphrase), this re-MACs the EXISTING
+ * pin under it — closing the window WITHOUT changing which lineage is pinned. Idempotent, never-downgrade.
+ *
+ * Safe even if script-invoked: it re-MACs the already-captured pin (never changes the anchor), and computeAuthTag
+ * needs the step-up wrap key (a fresh P_user step-up a script cannot silently supply). Call at identity creation,
+ * on unlock while still null-tag, or lazily before a pin read when null-tag + a live provider.
+ *
+ * NOTE (provider-interface reconciliation, flagged to Flint): the existing seam (_pinWrapProvider → CryptoKey |
+ * null) conflates provider-absent with user-cancel, so Flint's Part-B 'cancelled' is folded into 'not-live' here
+ * until we agree whether to adopt his throwing getStepUpKey shape.
+ */
+export async function upgradePinIntegrity(): Promise<'upgraded' | 'already-bound' | 'no-pin' | 'not-live'> {
+  const db = await openDb();
+  const rec = await idbGet<PinRecord>(db, KEY); // RAW read — deliberately bypasses readPin's fail-closed authTag check
+  if (!rec) return 'no-pin';
+  if (rec.authTag) return 'already-bound'; // never revert bound → null
+  if (!isPinIntegrityLive()) return 'not-live';
+  const { authTag, ...body } = rec;
+  const tag = await computeAuthTag(body); // MAC the EXISTING pin bytes under the live wrap key
+  if (!tag) return 'not-live'; // provider yielded no key (unavailable / cancelled)
+  await idbPut(db, KEY, { ...body, authTag: tag });
+  return 'upgraded';
+}
