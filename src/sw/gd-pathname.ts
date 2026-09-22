@@ -6,13 +6,18 @@
 // false-WARNs. This module is the SW half; the signer + watchtower mirror the same rule. Co-witnessed by Apollo
 // + Flint via the path-canon KAT.
 //
-// COVERAGE MODEL (resolved empirically 9/22 — the running svrnty app):
-//   svrnty is default-SSR Next15 but every render route is 'use client', so shells are PRERENDERED byte-stable
-//   HTML (x-nextjs-prerender:1). /u/alice ≡ /u/bob byte-identical (slug read client-side) — a dynamic-param
-//   route serves ONE byte-stable shell across infinite paths. Therefore:
+// COVERAGE MODEL (corrected 9/22 on a PROD build — KB#3220):
+//   svrnty is default-SSR Next15 with 'use client' render routes. The STATIC routes (/, /msg, /dev/seals, and
+//   the param-free /u + /c shells) prerender to byte-stable HTML. IMPORTANT: a Next DYNAMIC segment ([name],
+//   [code]) is NOT byte-stable — Next echoes the route param into the RSC flight-data inline script, so a raw
+//   /u/[name] served /u/alice ≠ /u/bob in prod. The app was refactored to param-free /u + /c shells (static
+//   route + middleware rewrite /u/<name>→/u, /c/<code>→/c, URL preserved; slug/code read client-side) so that
+//   /u/alice ≡ /u/bob byte-identical again. Therefore:
 //     • STATIC assets (/_next/static/**, /public files, /sw.js, /manifest.json) → EXACT-PATH SRI (manifestPath).
-//     • SHELLS (~5 prerendered navigations) → CONTENT-HASH MEMBERSHIP, NOT path-keyed (one hash covers infinite
-//       /u/<name> paths). The classifier routes navigations to 'shell'; the SW checks SHA256(served) ∈ shell-set.
+//     • SHELLS (the prerendered navigations: /, /msg, /dev/seals, /u, /c) → CONTENT-HASH MEMBERSHIP, NOT
+//       path-keyed (one /u hash covers infinite /u/<name> and bare /<name> paths; one /c hash covers all codes).
+//       The classifier routes navigations to 'shell'; the SW checks SHA256(served) ∈ shell-set — so the rewrite
+//       needs NO path-canon special case (membership is by bytes, not path). Depends on the param-free refactor.
 //     • DYNAMIC (/api/*, /_next/image, /_next/data) → not covered (skip).
 //   This supersedes the earlier spa-single/per-route SHELL_MODE — shells are content-addressed, not path-keyed.
 //
@@ -81,7 +86,7 @@ export function classifyRequest(requestUrl: string, origin: string, isNavigation
  * Classify a MANIFEST ENTRY path (not a live request) into its coverage class, so the SW can split the accepted
  * manifest into the exact-path static set and the content-membership shell set. Differs from classifyRequest in
  * ONE case: a no-extension path here is a SHELL (a prerendered route the signer deliberately included, e.g. '/',
- * '/u/[name]'), whereas a no-extension non-navigation live request is dynamic/skip. Same prefix rules otherwise.
+ * '/u', '/c'), whereas a no-extension non-navigation live request is dynamic/skip. Same prefix rules otherwise.
  */
 export function manifestPathClass(path: string): AssetClass {
   if (DYNAMIC_PREFIXES.some((d) => path.startsWith(d))) return 'dynamic';

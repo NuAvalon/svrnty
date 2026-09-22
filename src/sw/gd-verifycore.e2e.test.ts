@@ -34,7 +34,7 @@ const FP_RAW = hexToBytes(FP_HEX);
 // ── a REAL bundle: one static chunk + one shell (route-template path) ──
 const CHUNK_PATH = '/_next/static/chunks/main-abc123.js';
 const CHUNK_BYTES = new TextEncoder().encode('self.__chunk=1;console.log("main");');
-const SHELL_PATH = '/u/[name]'; // route-template → manifestPathClass 'shell'
+const SHELL_PATH = '/u'; // param-free shell route → manifestPathClass 'shell'
 const SHELL_BYTES = new TextEncoder().encode('<!doctype html><html><body>RESOLVING…<script src="/_next/static/chunks/main-abc123.js"></script></body></html>');
 const ENTRIES: ManifestEntry[] = [
   { path: CHUNK_PATH, contentHash: sha256(CHUNK_BYTES) },
@@ -84,7 +84,7 @@ test('E2E-3 per-asset SRI: exact-path static verify (ok / mismatch / unknown)', 
 test('E2E-4 shell content-hash membership: only the shell hash is in the set; static is not', () => {
   const m = acceptedMap(MANIFEST_BYTES);
   const shells = shellHashSet(m);
-  assert.equal(shells.size, 1, 'exactly one shell entry (/u/[name])');
+  assert.equal(shells.size, 1, 'exactly one shell entry (/u)');
   assert.ok(shells.has(bytesToHex(sha256(SHELL_BYTES))), 'the shell hash is in the set');
   assert.ok(!shells.has(bytesToHex(sha256(CHUNK_BYTES))), 'the static chunk hash is NOT a shell');
   assert.equal(verifyShell(shells, SHELL_BYTES), 'ok', 'served shell matches the publisher set');

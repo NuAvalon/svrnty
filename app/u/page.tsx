@@ -1,9 +1,13 @@
-// app/u/[name]/page.tsx — Public profile page
-// Client component that checks both registration API and local identity
+// app/u/page.tsx — Public profile page (PARAM-FREE shell)
+// Node Zero G-D coverage: this is a byte-stable prerendered shell. The middleware rewrites both
+// the canonical /u/<name> and the bare /<name> alias to this param-free /u route (URL preserved),
+// so the slug lives ONLY in window.location — never in a Next dynamic segment. A dynamic segment
+// would echo the slug into the RSC flight-data inline script, making /u/alice ≠ /u/bob in prod
+// (KB#3220) and breaking content-addressing + hash-CSP. Reading the slug client-side (post-hydration,
+// like /c reads its #key) keeps the served shell identical across every profile URL.
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { hasIdentity, loadIdentity } from '@/lib/identity/client-store';
 import { slugUrlShort } from '@/lib/config/domain';
@@ -17,20 +21,43 @@ interface ProfileData {
   registered_at?: string;
 }
 
+/**
+ * The profile slug, read from the current URL CLIENT-SIDE only. Handles the canonical
+ * /u/<name> and the bare /<name> alias (both rewritten to /u by middleware, URL preserved).
+ * Returns '' during SSR/prerender (window undefined) so the prerendered shell carries no slug.
+ */
+function readSlugFromLocation(): string {
+  if (typeof window === 'undefined') return '';
+  const segs = window.location.pathname.split('/').filter(Boolean);
+  const raw = segs[0] === 'u' ? segs[1] : segs[0];
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export default function ProfilePage() {
-  const params = useParams();
-  const name = params?.name as string;
+  const [name, setName] = useState('');
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
   useEffect(() => {
-    if (!name) return;
+    const slug = readSlugFromLocation();
+    setName(slug);
+
+    if (!slug) {
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
 
     async function loadProfile() {
       // Try registration API first (server-side identities)
       try {
-        const res = await fetch(`/api/auth/slug/${encodeURIComponent(name)}`);
+        const res = await fetch(`/api/auth/slug/${encodeURIComponent(slug)}`);
         if (res.ok) {
           const data = await res.json();
           setProfile(data);
@@ -43,7 +70,7 @@ export default function ProfilePage() {
       try {
         if (await hasIdentity()) {
           const identity = await loadIdentity();
-          if (identity?.name?.toLowerCase() === name.toLowerCase()) {
+          if (identity?.name?.toLowerCase() === slug.toLowerCase()) {
             setProfile({
               display_name: identity.name,
               public_key: identity.publicKey || identity.signingPublicKey,
@@ -62,7 +89,7 @@ export default function ProfilePage() {
     }
 
     loadProfile();
-  }, [name]);
+  }, []);
 
   if (loading) {
     return (
