@@ -654,7 +654,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
               // of "sent" ≠ "delivered".)
               <>
                 <h2 style={headingStyle}>You&apos;ve added {peer?.name || 'them'}</h2>
-                <p style={subStyle}>Your edge is live. They&apos;ll see you when they next open their wallet.</p>
+                <p style={subStyle}>Your side is set — they&apos;ll see you the next time they open their wallet, and you&apos;ll be connected once they do.</p>
               </>
             )}
             <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
