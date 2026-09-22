@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 
 // Deployed Node Zero G-D verify (Archie's "built≠deployed" bar): the REAL bundled public/sw.js (build:sw) — not
 // the module-level gd-* KATs — registers, activates, adopts the signed release (TOFU pin from the served
@@ -64,4 +65,55 @@ test('deployed SW registers + activates + adopts the signed release + verifies t
   const warns = await page.evaluate(() => (window as unknown as { __nzWarn: unknown[] }).__nzWarn ?? []);
   expect(warns, `no scary NODEZERO_WARN on the honest signed bundle (got ${JSON.stringify(warns)})`).toHaveLength(0);
   expect(runtimeErrors.filter((e) => /sw\.js|serviceworker|nodezero|indexeddb/i.test(e)), `no SW runtime errors: ${JSON.stringify(runtimeErrors)}`).toHaveLength(0);
+});
+
+// CSP ENFORCEMENT GATE (Flint §9 completeness — the definitive proof, beyond static extraction): serve every
+// shell under the signer's exact script-src hash-union and assert the browser raises ZERO script-src violations.
+// A violation = a MISSING inline-script hash → that script is CSP-BLOCKED → the shell breaks (or someone adds
+// 'unsafe-inline' and defeats the lock). Flint's two-seat static extraction (#142321) already == the 24; this is
+// the runtime enforcement half. The hashes come from the signer's csp-inline-hashes.json (byte-stable shells).
+test('CSP enforcement gate: the signer 24-hash script-src loads every shell with ZERO script-src violations', async ({ browser }) => {
+  const hashes: string[] = JSON.parse(readFileSync('public/.well-known/svrnty/csp-inline-hashes.json', 'utf8')).script_src_inline_hashes;
+  expect(hashes.length, 'signer emitted inline-script hashes (run `npx tsx scripts/sign-release.ts` first)').toBeGreaterThan(0);
+  const csp = [
+    `default-src 'self'`,
+    `script-src 'self' ${hashes.join(' ')}`, // 'self' = /_next/static chunks; hashes = the inline scripts. NO unsafe-inline.
+    `style-src 'self' 'unsafe-inline'`, // Next injects inline styles; not the security-critical axis for this gate
+    `img-src 'self' data: blob:`,
+    `font-src 'self' data:`,
+    `connect-src 'self'`,
+    `object-src 'none'`,
+    `base-uri 'none'`,
+    `frame-ancestors 'none'`,
+  ].join('; ');
+
+  const ctx = await browser.newContext(); // fresh — no SW, isolate the CSP gate
+  const page = await ctx.newPage();
+  await page.addInitScript(() => {
+    (window as unknown as { __csp: string[] }).__csp = [];
+    document.addEventListener('securitypolicyviolation', (e: SecurityPolicyViolationEvent) => {
+      (window as unknown as { __csp: string[] }).__csp.push(`${e.effectiveDirective || e.violatedDirective}|${e.blockedURI || 'inline'}|${e.sourceFile || ''}:${e.lineNumber || 0}`);
+    });
+  });
+  // inject the launch CSP onto the navigation documents (the shells)
+  await page.route('**/*', async (route) => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    const resp = await route.fetch();
+    const headers = { ...resp.headers() };
+    delete headers['content-security-policy'];
+    delete headers['content-security-policy-report-only'];
+    headers['content-security-policy'] = csp;
+    await route.fulfill({ response: resp, headers });
+  });
+
+  const violations: string[] = [];
+  for (const path of ['/', '/u/alice', '/c/testcode', '/msg', '/dev/seals', '/definitely-not-a-real-route']) {
+    await page.goto(path, { waitUntil: 'load' });
+    await page.waitForTimeout(400);
+    const v: string[] = await page.evaluate(() => (window as unknown as { __csp: string[] }).__csp || []);
+    for (const x of v) if (x.startsWith('script-src')) violations.push(`${path} → ${x}`);
+    await page.evaluate(() => { (window as unknown as { __csp: string[] }).__csp = []; });
+  }
+  await ctx.close();
+  expect(violations, `ZERO script-src violations under the signer ${hashes.length}-hash union (a violation = a MISSING inline-script hash): ${JSON.stringify(violations)}`).toHaveLength(0);
 });
