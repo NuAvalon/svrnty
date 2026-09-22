@@ -15,7 +15,7 @@ import { verifyServedManifest, parseManifest, type ManifestEntry } from '../lib/
 import { verifyReleaseEpoch0, type PinnedLineage } from './gd-verify.js';
 import type { ReleaseObject } from '../lib/crypto/release-object.js';
 import { readPin, commitAccepted } from './gd-pin-store.js';
-import { broadcastWarn } from './gd-warn.js';
+import { broadcastWarn, broadcastUpdateRequired } from './gd-warn.js';
 import { manifestPathClass } from './gd-pathname.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -91,7 +91,22 @@ export async function adoptUpdate(
 
   const sig = verifyReleaseEpoch0(release, releasePublisherFp, pinned);
   if (!sig.accepted) {
-    await broadcastWarn({ kind: 'verify-fail', reason: `release rejected: ${sig.reason}`, publisherFpHex: pinned.publisherFpHex });
+    // Route the disposition by the STRUCTURED kind (Flint #142163 — never string-match, never all-scary). Only a
+    // genuine tampering signal fires the loud WARN; an obsolescence (client-too-old) rejection is the CALM
+    // UPDATE-REQUIRED; a corrupt/anti-rollback rejection is BENIGN (keep serving last-good, no cry-wolf). In every
+    // branch the bad release is NOT adopted (fail-closed) — only the user-facing signal differs.
+    switch (sig.kind) {
+      case 'attack':
+        await broadcastWarn({ kind: 'verify-fail', reason: `release rejected: ${sig.reason}`, publisherFpHex: pinned.publisherFpHex });
+        break;
+      case 'update-required':
+        await broadcastUpdateRequired({ reason: sig.reason ?? 'client update required', publisherFpHex: pinned.publisherFpHex });
+        break;
+      // 'malformed' (corrupt/unsupported — a truncated fetch or CDN hiccup must not cry wolf) and 'stale'
+      // (anti-rollback: counter <= HWM, the client is already protected) are benign: no loud warning.
+      default:
+        break;
+    }
     return { adopted: false, reason: sig.reason ?? 'release verify failed' };
   }
   let entries: ManifestEntry[];

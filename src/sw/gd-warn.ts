@@ -42,6 +42,38 @@ export async function broadcastWarn(detail: WarnDetail): Promise<void> {
   }
 }
 
+export interface UpdateRequiredDetail {
+  reason: string;
+  publisherFpHex?: string; // the pinned lineage, for the UI
+}
+
+/**
+ * CALM "client update required" signal — DELIBERATELY DISTINCT from broadcastWarn (Flint #142163: "different
+ * truths must look different"). Fires when a served release is well-formed and fail-CLOSED-rejected NOT for
+ * tampering but because it is AHEAD of this client (grammar_version ahead, or a rotated epoch a launch client
+ * cannot follow yet — obsolescence, not attack). The client keeps running its verified last-good bundle; this
+ * is an update notice, NEVER the scary "could not be verified" warning — crying wolf here would erode the real
+ * tampering warning's credibility. Own message type so the UI can render a calm banner, not the override ceremony.
+ */
+export async function broadcastUpdateRequired(detail: UpdateRequiredDetail): Promise<void> {
+  try {
+    // @ts-expect-error self is the ServiceWorkerGlobalScope at runtime
+    const clients: Array<{ postMessage: (m: unknown) => void }> = await self.clients.matchAll({
+      includeUncontrolled: true,
+      type: 'window',
+    });
+    for (const c of clients) {
+      c.postMessage({
+        type: 'NODEZERO_UPDATE_REQUIRED',
+        message: 'A newer version of this app is available. Update to keep receiving verified updates.',
+        detail,
+      });
+    }
+  } catch {
+    // never let a signal-delivery failure brick the SW.
+  }
+}
+
 // Session-scoped one-time "proceed anyway". NOT persisted — a diverged run stays marked (gd-pin-store) and the
 // warning re-fires next load. Cleared when the SW restarts (a new session = a fresh warning).
 let _proceedThisSession = false;

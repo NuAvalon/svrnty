@@ -19,7 +19,7 @@ import type { ReleaseObject } from '../lib/crypto/release-object.js';
 import type { DeliveredGenesis } from './gd-bootstrap.js';
 
 export interface DeliveredRelease {
-  release: ReleaseObject; // bundleHash(32) / versionCounter / epoch / sig
+  release: ReleaseObject; // grammarVersion / bundleHash(32) / versionCounter / epoch / sig
   releasePublisherFp: Uint8Array; // 32 — the publisher_fp bound inside the release preimage (bytes, for verify)
   manifestBytes: Uint8Array; // the canonical §4 manifest bytes (verifyServedManifest checks SHA256==bundle_hash)
   genesis?: DeliveredGenesis; // present on bootstrap-capable deliveries (genesis pubkeys for first-install TOFU)
@@ -73,6 +73,13 @@ export function parseDeliveredRelease(raw: unknown): ParsedDelivery {
   if (!isRecord(raw.release)) return fail('release block missing');
   const r = raw.release;
 
+  // grammar_version — the read-first FORMAT dispatch axis (bound in the signed preimage). STRUCTURAL check
+  // only: a safe integer >= 1. Whether it is ahead/current/older is a SEMANTIC decision made downstream by
+  // recognizeRelease (ahead → benign update-required; older/unknown → malformed) — not duplicated here.
+  if (!Number.isSafeInteger(r.grammar_version) || (r.grammar_version as number) < 1) {
+    return fail('release.grammar_version is not a safe integer >= 1');
+  }
+
   const bundleHash = hexToBytes(r.bundle_hash, 32);
   if (!bundleHash) return fail('release.bundle_hash is not 32-byte hex');
 
@@ -90,6 +97,7 @@ export function parseDeliveredRelease(raw: unknown): ParsedDelivery {
   if (!manifestBytes) return fail('manifest bytes missing or not base64');
 
   const release: ReleaseObject = {
+    grammarVersion: r.grammar_version as number,
     bundleHash,
     versionCounter: r.version_counter as number,
     epoch: r.epoch as number,

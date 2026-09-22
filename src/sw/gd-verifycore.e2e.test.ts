@@ -13,7 +13,7 @@ import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { deriveCanonicalFingerprintHex } from '../lib/identity/fingerprint.js';
-import { encodeReleaseSigningInput, signRelease, type ReleaseObject } from '../lib/crypto/release-object.js';
+import { encodeReleaseSigningInput, signRelease, RELEASE_GRAMMAR_VERSION, type ReleaseObject } from '../lib/crypto/release-object.js';
 import { computeBundleHash, serializeManifest, verifyServedManifest, type ManifestEntry } from '../lib/crypto/bundle-manifest.js';
 import { verifyReleaseEpoch0, type PinnedLineage } from './gd-verify.js';
 import { verifyAsset, verifyShell, shellHashSet } from './gd-verify-flow.js';
@@ -44,8 +44,9 @@ const BUNDLE_HASH = computeBundleHash(ENTRIES);
 const MANIFEST_BYTES = serializeManifest(ENTRIES);
 
 function makeRelease(versionCounter: number, epoch: number, bundleHash = BUNDLE_HASH, publisherFp = FP_RAW): ReleaseObject {
-  const si = encodeReleaseSigningInput({ publisherFp, bundleHash, versionCounter, epoch });
-  return { bundleHash, versionCounter, epoch, sig: signRelease(si, ED_SEED, dsa.secretKey) };
+  const grammarVersion = RELEASE_GRAMMAR_VERSION;
+  const si = encodeReleaseSigningInput({ grammarVersion, publisherFp, bundleHash, versionCounter, epoch });
+  return { grammarVersion, bundleHash, versionCounter, epoch, sig: signRelease(si, ED_SEED, dsa.secretKey) };
 }
 function pinned(hwm: number): PinnedLineage {
   return { publisherFpHex: FP_HEX, genesis: GENESIS, hwm, followedEpoch: 0 };
@@ -93,10 +94,13 @@ test('E2E-4 shell content-hash membership: only the shell hash is in the set; st
   assert.equal(verifyShell(shells, tampered), 'mismatch', 'an injected/swapped shell is a mismatch');
 });
 
-test('E2E-5 fail-closed: epoch != 0 rejected (no silent accept)', () => {
+test('E2E-5 fail-closed: epoch != 0 rejected (no silent accept), classified update-required (calm, not scary)', () => {
   const res = verifyReleaseEpoch0(makeRelease(1, 1), FP_RAW, pinned(0));
   assert.equal(res.accepted, false, 'epoch 1 rejected at launch');
   assert.match(res.reason ?? '', /epoch/);
+  // epoch>0 is obsolescence (a rotated epoch a launch client can't follow), NOT tampering → the calm
+  // UPDATE-REQUIRED signal, never the scary "under attack" WARN (cry-wolf would erode the real warning).
+  assert.equal(res.kind, 'update-required', 'epoch>0 is calm update-required, not a scary attack');
 });
 
 test('E2E-6 anti-rollback: counter must be strictly > HWM', () => {
@@ -105,10 +109,13 @@ test('E2E-6 anti-rollback: counter must be strictly > HWM', () => {
   assert.equal(verifyReleaseEpoch0(makeRelease(1, 0), FP_RAW, pinned(2)).accepted, false, 'valid-but-older 1 < HWM 2 rejects');
 });
 
-test('E2E-7 anchor-binding: a release for a different pinned lineage is rejected', () => {
+test('E2E-7 anchor-binding: a release for a different pinned lineage is rejected (attack ⇒ scary WARN)', () => {
   const wrongFp = hexToBytes(deriveCanonicalFingerprintHex(ed25519.getPublicKey(fill(32, 0x99)), ENC_PUB, KEM_PUB, dsa.publicKey));
   const res = verifyReleaseEpoch0(makeRelease(1, 0), wrongFp, pinned(0));
   assert.equal(res.accepted, false, 'releasePublisherFp != pinned anchor ⇒ reject');
+  // anchor-mismatch is genuine tampering (cross-lineage replay / fp-substitution) → 'attack' → the loud WARN
+  // path (broadcastWarn + serve last-good). This locks the scary-path trigger so a refactor can't downgrade it.
+  assert.equal(res.kind, 'attack', 'anchor-mismatch is an attack (loud WARN), not benign');
 });
 
 test('E2E-8 tampered signature is rejected (both-legs hybrid)', () => {

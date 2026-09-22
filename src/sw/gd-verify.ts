@@ -48,9 +48,18 @@ export function verifyReleaseEpoch0(
   pinned: PinnedLineage,
 ): RecognizeResult {
   if (release.epoch !== 0) {
+    // epoch > 0 is a release for a ROTATED epoch a launch (epoch-0-only) client cannot follow yet — the
+    // epoch-walk is a post-launch fast-follow (Apollo's spec). This is OBSOLESCENCE, not tampering: a
+    // legitimate future release WILL carry epoch > 0, so it must NOT fire the scary "under attack" WARN
+    // (cry-wolf erodes the real warning). It maps to the calm UPDATE-REQUIRED state (this client is too old
+    // to follow rotation), same family as a grammar_version ahead. Fail-CLOSED regardless — never a silent
+    // accept. (kind flagged for Flint's §3 ceremony co-verify: update-required vs a distinct benign kind is a
+    // 1-line ceremony call; the load-bearing property — no adopt, no cry-wolf — holds either way.)
     return {
       accepted: false,
+      kind: 'update-required',
       newHwm: pinned.hwm,
+      updateRequired: true,
       reason: `epoch ${release.epoch} != 0 — epoch-walk is a post-launch fast-follow`,
     };
   }
