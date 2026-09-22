@@ -115,14 +115,20 @@ export function serializeManifest(entries: ManifestEntry[]): Uint8Array {
 /**
  * STRICT bounds-safe parse of a served canonical manifest back into entries (for the SW per-asset SRI
  * map + the watchtower). Served over UNTRUSTED transport → throws a typed Error on ANY structural
- * malformation (out-of-bounds length, wrong domain, bad hash width, trailing bytes, duplicate path); it
- * NEVER reads past the buffer. AUTHENTICITY is NOT established here — the caller MUST verify
- * SHA256(bytes) === release.bundle_hash (that check also enforces canonical ordering, since bundle_hash
- * was computed over the canonical bytes). Use verifyServedManifest() to do both in the right order.
+ * malformation (out-of-bounds length, wrong domain, bad hash width, trailing bytes, duplicate path,
+ * non-UTF-8 path); it NEVER reads past the buffer. AUTHENTICITY is NOT established here — the caller
+ * MUST verify SHA256(bytes) === release.bundle_hash (that check also enforces canonical ordering, since
+ * bundle_hash was computed over the canonical bytes). Use verifyServedManifest() to do both in order.
+ *
+ * The decoder is FATAL (Flint #142014): invalid UTF-8 → throw, not a silent U+FFFD. This makes the
+ * parse-side dedup (on decoded strings) exactly mirror encode-side dedup (on raw bytes) — two distinct
+ * byte-paths can no longer collide to one string — so the parser is safe even if called WITHOUT the
+ * verifyServedManifest SHA256 gate. Authentic (verify-first) manifests always have valid-UTF-8 paths,
+ * so this never rejects a legitimate manifest.
  */
 export function parseManifest(bytes: Uint8Array): ManifestEntry[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const dec = new TextDecoder('utf-8');
+  const dec = new TextDecoder('utf-8', { fatal: true });
   let off = 0;
   const readLP = (): Uint8Array => {
     if (off + 4 > bytes.length) throw new Error('bundle-manifest: truncated length prefix');
