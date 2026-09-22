@@ -112,8 +112,15 @@ test('parse is bounds-safe: trailing bytes / wrong domain / truncation all throw
   assert.throws(() => parseManifest(trailing), /trailing bytes/);
   assert.throws(() => parseManifest(good.subarray(0, good.length - 5)), /exceeds buffer|truncated/);
   const wrongDom = good.slice();
-  wrongDom[4] ^= 0xff; // flip a byte inside the domain string
+  wrongDom[4] = 0x74; // 's' -> 't': valid-ASCII but WRONG domain (reaches the domain check, not the UTF-8 gate)
   assert.throws(() => parseManifest(wrongDom), /wrong domain/);
+});
+
+test('parse rejects non-UTF-8 path bytes (fatal decoder, Flint #142014)', () => {
+  const h = sha256(utf8ToBytes('x'));
+  const badPath = new Uint8Array([0x2f, 0xff]); // '/' + 0xff — 0xff is never valid UTF-8
+  const forged = concatBytes(lpStr(MANIFEST_DOMAIN), u64be(1), lpBin(badPath), lpBin(h));
+  assert.throws(() => parseManifest(forged)); // fatal TextDecoder throws before any dedup ambiguity
 });
 
 test('parse rejects a served manifest that decodes to duplicate paths', () => {
