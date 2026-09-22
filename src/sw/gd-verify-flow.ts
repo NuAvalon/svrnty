@@ -36,12 +36,22 @@ export async function loadAcceptedManifest(): Promise<Map<string, string> | null
     const cache = await caches.open(ACCEPTED_CACHE);
     const resp = await cache.match(ACCEPTED_KEY);
     if (!resp) return null;
-    const entries = parseManifest(new Uint8Array(await resp.arrayBuffer())); // our own already-verified bytes
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    // PIN-BIND (Flint #142068): the accepted-manifest cache is same-origin JS-WRITABLE, so a session-bug script
+    // could poison it (path → SHA256(malicious)) and make VERIFY-CURRENT return 'ok' on malicious content,
+    // bypassing the pin (which is otherwise only consulted on ADOPT-UPDATE) → transient-XSS → persistent exec.
+    // Defence: trust the cache ONLY if it hashes to the integrity-bound acceptedBundleHashHex carried in the pin
+    // (readPin is authTag-validated when the provider is live). bundle_hash == SHA256(manifest_bytes), so a
+    // poisoned/stale cache → hash mismatch → null → the caller re-adopts from the SIGNED release (fail-closed).
+    const pin = await readPin();
+    if (!pin || pin.acceptedBundleHashHex === null) return null;
+    if (bytesToHex(sha256(bytes)) !== pin.acceptedBundleHashHex) return null;
+    const entries = parseManifest(bytes);
     const map = new Map<string, string>();
     for (const e of entries) map.set(e.path, bytesToHex(e.contentHash));
     return map;
   } catch {
-    return null; // corrupt cache → behave as no-accepted (re-adopt path)
+    return null; // corrupt / unreadable → behave as no-accepted (re-adopt path)
   }
 }
 
