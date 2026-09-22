@@ -135,6 +135,59 @@ async function servePreferCached(request: Request, freshUnverified: Response): P
   return cached || freshUnverified;
 }
 
+// §3 WARN INTERSTITIAL — a SW-SYNTHETIC navigation Response served when a shell can't be verified and there is no
+// verified last-good copy (offline, or first-load-already-tampered). It NEVER passes through Caddy, so it carries
+// its OWN tight CSP set on the Response (Flint #142097): the inline proceed-script's sha256 is computed here and
+// placed in THIS response's script-src — the Caddy edge union never sees it. The button posts NODEZERO_PROCEED
+// (session-scoped one-time) + reloads → the next fetch serves the fresh (now proceed-granted) bytes.
+const PROCEED_SCRIPT =
+  "document.getElementById('nz-p').addEventListener('click',function(){navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage({type:'NODEZERO_PROCEED'});setTimeout(function(){location.reload()},150)});";
+
+async function sha256Base64(s: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  let bin = '';
+  for (let i = 0; i < digest.length; i++) bin += String.fromCharCode(digest[i]);
+  return btoa(bin);
+}
+
+async function warnInterstitial(): Promise<Response> {
+  const csp = `default-src 'self'; script-src 'sha256-${await sha256Base64(PROCEED_SCRIPT)}'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`;
+  const html =
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Could not verify — svrnty</title></head>' +
+    '<body style="font-family:system-ui,sans-serif;max-width:38rem;margin:10vh auto;padding:0 1.25rem;line-height:1.55;color:#e8e8e8;background:#111">' +
+    '<h1 style="font-size:1.35rem">⚠ This page could not be verified</h1>' +
+    '<p>The code served for this page does not match what the publisher signed. This can mean the network or the server is compromised. ' +
+    '<strong>Proceeding runs unverified code — it does not make it safe.</strong></p>' +
+    '<p style="opacity:.8">Your saved data is not exposed by staying here. If you did not expect this, close the tab.</p>' +
+    '<button id="nz-p" style="margin-top:1rem;padding:.6rem 1rem;font:inherit;cursor:pointer">Proceed anyway (this session only)</button>' +
+    '<script>' + PROCEED_SCRIPT + '</script></body></html>';
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-security-policy': csp,
+    },
+  });
+}
+
+/**
+ * A cached shell, returned ONLY if its bytes still verify against the pin-bound shell-set (a poisoned Cache-API
+ * entry is rejected — Flint #142077 offline-shell close). Tries the exact request, then the root shell, as the
+ * offline last-known-good.
+ */
+async function verifiedCachedShell(request: Request): Promise<Response | null> {
+  const shells = await getShells();
+  for (const key of [request, '/'] as const) {
+    const cached = await caches.match(key);
+    if (!cached) continue;
+    const cb = await cappedBytes(cached.clone());
+    if (cb && verifyShell(shells, cb) === 'ok') return cached;
+  }
+  return null;
+}
+
 // ── verify-before-serve: STATIC (exact-path SRI) ───────────────────────────────────────────────────────────
 async function verifyStaticOnce(path: string, bytes: Uint8Array): Promise<AssetVerdict | 'no-manifest'> {
   const accepted = await getAccepted();
@@ -146,7 +199,14 @@ async function handleStatic(request: Request, url: URL): Promise<Response> {
   try {
     resp = await fetch(request);
   } catch {
-    return (await caches.match(request)) || Response.error(); // offline → last-good
+    // OFFLINE: re-verify the cached asset vs the pin-bound accepted-map; serve if ok, else WARN + serve-anyway
+    // (defense-in-depth behind the shell-closure — never brick a legit stale chunk after the accepted-map advanced).
+    const cached = await caches.match(request);
+    if (!cached) return Response.error();
+    const p = manifestPath(request.url, ORIGIN);
+    const cb = await cappedBytes(cached.clone());
+    if (p && cb && (await verifyStaticOnce(p, cb)) !== 'ok') await warnAndDiverge('offline: cached asset failed re-verify', p);
+    return cached;
   }
   if (!resp.ok) return resp; // 404 etc — not a verify target
   const bytes = await cappedBytes(resp.clone());
@@ -171,23 +231,26 @@ async function handleShell(request: Request): Promise<Response> {
   try {
     resp = await fetch(request);
   } catch {
-    return (await caches.match(request)) || (await caches.match('/')) || Response.error(); // offline fallback
+    // OFFLINE: serve a RE-VERIFIED cached shell, else the §3 WARN interstitial (never a poisoned or blank shell).
+    return (await verifiedCachedShell(request)) ?? warnInterstitial();
   }
   if (!resp.ok) return resp;
   const bytes = await cappedBytes(resp.clone());
   const path = new URL(request.url).pathname;
-  if (bytes === null) {
-    await warnAndDiverge('shell unverifiable (too large)', path);
-    return servePreferCached(request, resp);
+  if (bytes !== null) {
+    let ok = verifyShell(await getShells(), bytes) === 'ok';
+    if (!ok && (await tryAdopt())) ok = verifyShell(await getShells(true), bytes) === 'ok';
+    if (ok) {
+      cachePut(request, resp.clone());
+      return resp;
+    }
   }
-  let ok = verifyShell(await getShells(), bytes) === 'ok';
-  if (!ok && (await tryAdopt())) ok = verifyShell(await getShells(true), bytes) === 'ok';
-  if (ok) {
-    cachePut(request, resp.clone());
-    return resp;
-  }
+  // Served shell is unverified (mismatch, or too large to buffer). §3 CLOSE-the-shell-window: WARN, then honour a
+  // one-time proceed (serve fresh) else a RE-VERIFIED cached shell else the WARN interstitial — never run
+  // whole-app unverified code by default, never blank-brick.
   await warnAndDiverge('served shell is not in the signed publisher set', path);
-  return servePreferCached(request, resp);
+  if (proceedGrantedThisSession()) return resp;
+  return (await verifiedCachedShell(request)) ?? warnInterstitial();
 }
 
 // ── dynamic / export passthrough (no verify; preserves network-first + offline) ────────────────────────────
