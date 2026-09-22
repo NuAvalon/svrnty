@@ -122,6 +122,28 @@ export function lockSession(): void {
   _contactKeys = null;
 }
 
+/**
+ * Verify a re-entered passphrase reproduces the CURRENT session key — functionally, with NO stored verifier.
+ * Used by the step-up-key provider (guardian-wrap-seam) so a fresh P_user re-entry is proven correct BEFORE any
+ * wrap/MAC key is minted (prevents binding guardian data / the pin-integrity MAC to a wrong or typo'd key).
+ * Returns false when locked. Mechanism: probe-encrypt a random block under the live _sessionKey, decrypt under a
+ * candidate key derived from the re-entered passphrase + the SAME _sessionSalt — the GCM tag verifies iff
+ * candidate === _sessionKey. (Flint launch-hardening spec Part A, #142061 — reviewed impl, landed as-is.)
+ */
+export async function verifyDevicePassphrase(passphrase: string): Promise<boolean> {
+  if (!_sessionKey || !_sessionSalt) return false; // must be unlocked
+  const candidate = await deriveSessionKey(passphrase, _sessionSalt);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const probe = crypto.getRandomValues(new Uint8Array(16));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, _sessionKey, probe);
+  try {
+    const pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, candidate, ct));
+    return pt.length === probe.length && pt.every((b, i) => b === probe[i]); // GCM tag matches ⟺ candidate === _sessionKey
+  } catch {
+    return false;
+  }
+}
+
 async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
   if (!_sessionKey) throw new Error('Session locked — call initSessionKey() first');
   const iv = new Uint8Array(12);
