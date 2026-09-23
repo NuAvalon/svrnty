@@ -53,8 +53,8 @@ import { hybridSign, hybridVerify } from './hybrid';
 // signed-bytes consumers (release-object, identity/fingerprint) don't drag openpgp into the air-gap
 // signer bundle. Imported for local use below; re-exported for backward compat (index.ts + any
 // importer that got these from sign-envelope before the split). Byte-identical — no signed bytes change.
-import { SUITE_CLASSICAL, SUITE_HYBRID, buildSignedBytes } from './sign-envelope-framing.js';
-export { SUITE_CLASSICAL, SUITE_HYBRID, lengthPrefix, buildSignedBytes } from './sign-envelope-framing.js';
+import { SUITE_CLASSICAL, SUITE_HYBRID, buildSignedBytes } from './sign-envelope-framing';
+export { SUITE_CLASSICAL, SUITE_HYBRID, lengthPrefix, buildSignedBytes } from './sign-envelope-framing';
 
 /** A signature produced by the envelope. `pq_signature` present ⇒ the hybrid suite was bound. */
 export interface EnvelopeSignature {

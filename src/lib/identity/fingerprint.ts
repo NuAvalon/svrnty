@@ -20,14 +20,14 @@ import { sign as pqSign, verify as pqVerify, encapsulate as pqEncapsulate, decap
 // openpgp-free leaf fingerprint-canonical.ts so the air-gap signer + release-object derive the
 // canonical fingerprint WITHOUT pulling openpgp. Imported for internal use here; the public ones are
 // re-exported for backward compat (every existing importer of fingerprint.ts is unaffected).
-import { SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN, asU8, normalizeFingerprintHex, deriveCanonicalFingerprintHex } from './fingerprint-canonical.js';
-export { SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN, normalizeFingerprintHex, deriveCanonicalFingerprintHex } from './fingerprint-canonical.js';
+import { SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN, asU8, normalizeFingerprintHex, deriveCanonicalFingerprintHex } from './fingerprint-canonical';
+export { SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN, normalizeFingerprintHex, deriveCanonicalFingerprintHex } from './fingerprint-canonical';
 // rotationAuthorityLeg + deriveNextAuthorityKeypair/deriveNextAuthorityCommitment + NextAuthorityKeypair
 // live in the openpgp-free leaf rotation-authority.ts (same reason as fingerprint-canonical.ts) so the
 // air-gap ceremony-keygen derives the rotation-authority nac WITHOUT pulling openpgp. Re-exported for
 // backward compat — every existing importer of './fingerprint' is unaffected.
-export { deriveNextAuthorityKeypair, deriveNextAuthorityCommitment } from './rotation-authority.js';
-export type { NextAuthorityKeypair } from './rotation-authority.js';
+export { deriveNextAuthorityKeypair, deriveNextAuthorityCommitment } from './rotation-authority';
+export type { NextAuthorityKeypair } from './rotation-authority';
 
 /** Raw lengths for the sign-only rotation-authority hybrid (ed25519 + ML-DSA-87). */
 export const AUTH_ED25519_PUB_BYTES = 32;

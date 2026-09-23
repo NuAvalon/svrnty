@@ -41,9 +41,9 @@ import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
 import { bytesToHex, concatBytes } from '@noble/hashes/utils.js';
 import { lpBin, lpStr, u64be } from './lp-tlv.js';
 // The suite id is the EXACT constant the rest of svrnty binds (anti-downgrade); never hand-typed here.
-import { SUITE_HYBRID } from './sign-envelope-framing.js';
+import { SUITE_HYBRID } from './sign-envelope-framing';
 // Reuse the canonical fp preimage (P4 = identical to the user fingerprint) — never reimplement it.
-import { deriveCanonicalFingerprintHex, normalizeFingerprintHex } from '../identity/fingerprint-canonical.js';
+import { deriveCanonicalFingerprintHex, normalizeFingerprintHex } from '../identity/fingerprint-canonical';
 
 export const RELEASE_DOMAIN = 'svrnty:release:v1';
 

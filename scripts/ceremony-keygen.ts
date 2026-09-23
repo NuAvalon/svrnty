@@ -42,11 +42,11 @@ import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js';
 import {
   deriveCanonicalFingerprintHex,
   SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN,
-} from '../src/lib/identity/fingerprint-canonical.js';
+} from '../src/lib/identity/fingerprint-canonical';
 import {
   deriveNextAuthorityCommitment,
   deriveNextAuthorityKeypair,
-} from '../src/lib/identity/rotation-authority.js';
+} from '../src/lib/identity/rotation-authority';
 import { generateMasterSecret, masterSecretToSeedPhrase, seedPhraseToMasterSecret } from '../src/lib/crypto/recovery.js';
 
 // ── FROZEN domain-separation labels (v1). Changing ANY label re-derives that key forever. GATED on Flint. ──
