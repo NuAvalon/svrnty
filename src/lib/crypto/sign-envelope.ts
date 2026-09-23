@@ -49,25 +49,12 @@ import {
 } from 'openpgp';
 import { hybridSign, hybridVerify } from './hybrid';
 
-/**
- * Crypto suite identifiers bound into the signed bytes (anti-downgrade). DERIVED from whether a PQ
- * signature is present — never a stored field. The hybrid id mirrors HybridSignature.algorithm.
- */
-export const SUITE_CLASSICAL = 'ed25519';
-export const SUITE_HYBRID = 'ed25519+ml-dsa-87';
-
-/**
- * Injective length prefix: decimal UTF-8 byte length, a colon, then the string.
- *   lengthPrefix("svrnty:slug-claim:v1") === "20:svrnty:slug-claim:v1"
- */
-export function lengthPrefix(s: string): string {
-  return new TextEncoder().encode(s).length + ':' + s;
-}
-
-/** The exact bytes (as a string) that get signed: LP(domain) ‖ LP(suite) ‖ canonical_input. */
-export function buildSignedBytes(domainTag: string, suiteId: string, canonicalInput: string): string {
-  return lengthPrefix(domainTag) + lengthPrefix(suiteId) + canonicalInput;
-}
+// Suite ids + signed-bytes framing live in the openpgp-free leaf sign-envelope-framing.ts, so pure
+// signed-bytes consumers (release-object, identity/fingerprint) don't drag openpgp into the air-gap
+// signer bundle. Imported for local use below; re-exported for backward compat (index.ts + any
+// importer that got these from sign-envelope before the split). Byte-identical — no signed bytes change.
+import { SUITE_CLASSICAL, SUITE_HYBRID, buildSignedBytes } from './sign-envelope-framing.js';
+export { SUITE_CLASSICAL, SUITE_HYBRID, lengthPrefix, buildSignedBytes } from './sign-envelope-framing.js';
 
 /** A signature produced by the envelope. `pq_signature` present ⇒ the hybrid suite was bound. */
 export interface EnvelopeSignature {

@@ -23,7 +23,7 @@ import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
 import { encodeReleaseSigningInput } from '../src/lib/crypto/release-object.js';
-import { deriveCanonicalFingerprintHex } from '../src/lib/identity/fingerprint.js';
+import { deriveCanonicalFingerprintHex } from '../src/lib/identity/fingerprint-canonical.js';
 
 const die = (m: string): never => { console.error(`\n✗ ${m}`); process.exit(1); };
 const argv = process.argv.slice(2);
