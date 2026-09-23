@@ -36,12 +36,17 @@ import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js';
+// @noble-only leaves (NO openpgp): canonical fp from fingerprint-canonical.ts, rotation-authority nac
+// from rotation-authority.ts. Importing from fingerprint.ts here would drag openpgp (readKey) into the
+// air-gap keygen bundle for zero function — the (A) RIDE ruling (Flint) severs it.
 import {
   deriveCanonicalFingerprintHex,
+  SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN,
+} from '../src/lib/identity/fingerprint-canonical.js';
+import {
   deriveNextAuthorityCommitment,
   deriveNextAuthorityKeypair,
-  SIGN_PUB_LEN, ENC_PUB_LEN, KEM_PUB_LEN, SIG_PUB_LEN,
-} from '../src/lib/identity/fingerprint.js';
+} from '../src/lib/identity/rotation-authority.js';
 import { generateMasterSecret, masterSecretToSeedPhrase, seedPhraseToMasterSecret } from '../src/lib/crypto/recovery.js';
 
 // ── FROZEN domain-separation labels (v1). Changing ANY label re-derives that key forever. GATED on Flint. ──
