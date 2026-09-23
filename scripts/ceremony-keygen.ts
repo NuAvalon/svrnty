@@ -226,14 +226,58 @@ function main() {
 
   const outDir = arg('--out');
   if (!outDir) {
-    console.error('usage: ceremony-keygen.ts --selftest [--master-hex <64hex>]   |   --out <dir> [--seedphrase-out <file>]');
+    console.error('usage: ceremony-keygen.ts --selftest [--master-hex <64hex>]');
+    console.error('       ceremony-keygen.ts --out <dir> [--seedphrase-out <file>]                                        (fresh mint — CSPRNG)');
+    console.error('       ceremony-keygen.ts --out <dir> --master-hex <64hex> --expect-fp <fp> [--seedphrase-out <file>]   (DR re-materialize)');
     process.exit(1);
   }
 
-  // REAL MINT — CSPRNG masterSecret. Refuse to write anything unless every KAT passes.
-  const masterSecret = generateMasterSecret(); // 32B crypto.getRandomValues
+  // ── masterSecret source: fresh CSPRNG mint (default) OR DR re-materialize from a provided masterSecret. ──
+  const restoreHex = arg('--master-hex');
+  const isRestore = restoreHex !== null;
+  let masterSecret: Uint8Array;
+  let expectFp: string | null = null;
+  if (isRestore) {
+    // DR RE-MATERIALIZE — reconstruct an EXISTING genesis (Flint cond.3: loud, never confusable with a fresh mint).
+    masterSecret = hexToBytes(restoreHex);
+    if (masterSecret.length !== 32) { console.error(`✗ --master-hex must be 64 hex chars (32B), got ${masterSecret.length}B`); process.exit(1); }
+    // ⛔ fp-ASSERT is MANDATORY here (Flint cond.2): a wrong seedphrase silently re-materializes a DIFFERENT genesis.
+    expectFp = arg('--expect-fp');
+    if (!expectFp) {
+      console.error('\n✗ --out --master-hex (DR re-materialize) REQUIRES --expect-fp <published-genesis-fp>.');
+      console.error('  Without it a wrong seedphrase would silently write a DIFFERENT forever-key. Do-no-harm: refusing.');
+      masterSecret.fill(0); process.exit(1);
+    }
+    console.log('\n⚠⚠⚠  DR RE-MATERIALIZE MODE — NOT a fresh mint  ⚠⚠⚠');
+    console.log('  Reconstructing an EXISTING Node Zero genesis from the provided masterSecret (disaster recovery).');
+    console.log('  Output MUST byte-match the genesis you already published; fp is asserted against --expect-fp below.');
+  } else {
+    // REAL MINT — CSPRNG masterSecret.
+    masterSecret = generateMasterSecret(); // 32B crypto.getRandomValues
+  }
+
+  // Refuse to write anything unless every KAT passes (Flint cond.1 — identical guard on both paths).
   const { nz, allPass } = printKats(masterSecret);
-  if (!allPass) { console.error('\n✗ KAT FAILURE — refusing to write a Node Zero genesis. Nothing minted.'); process.exit(1); }
+  const wipe = () => {
+    masterSecret.fill(0); nz.secrets.masterSecret.fill(0);
+    nz.secrets.edSeed.fill(0); nz.secrets.dsaSeed.fill(0); nz.secrets.encSeed.fill(0);
+    nz.secrets.kemSeed.fill(0); nz.secrets.dsaSecret.fill(0); nz.secrets.kemSecret.fill(0);
+  };
+  if (!allPass) { console.error('\n✗ KAT FAILURE — refusing to write a Node Zero genesis. Nothing minted.'); wipe(); process.exit(1); }
+
+  // ⛔ fp-ASSERT GUARD (Flint cond.2) — the re-materialized fp MUST equal the published genesis fp, else the
+  // provided seedphrase recovers the WRONG identity. Refuse to write on mismatch (the do-no-harm line).
+  if (isRestore) {
+    const norm = (s: string) => s.toLowerCase().replace(/[^0-9a-f]/g, '');
+    if (norm(nz.fingerprint) !== norm(expectFp!)) {
+      console.error('\n⛔ fp-ASSERT FAILED — re-materialized genesis does NOT match --expect-fp. NOTHING WRITTEN.');
+      console.error(`     re-materialized fp     = ${nz.fingerprint}`);
+      console.error(`     expected (--expect-fp) = ${norm(expectFp!)}`);
+      console.error('  The provided masterSecret/seedphrase recovers a DIFFERENT identity than you published. Check the seed phrase.');
+      wipe(); process.exit(1);
+    }
+    console.log(`\n  ✓ fp-ASSERT PASSED — re-materialized fp == published genesis: ${nz.fingerprint}`);
+  }
 
   mkdirSync(outDir, { recursive: true });
   const pubkeys = {
@@ -247,19 +291,25 @@ function main() {
   const spOut = arg('--seedphrase-out');
   if (spOut) writeFileSync(spOut, seedPhrase + '\n');
 
-  console.log('\n=== ✓ REAL NODE ZERO GENESIS MINTED ===');
-  console.log(`  → ${outDir}/pubkeys.json  (travels to build machine)`);
-  console.log(`  → ${outDir}/secret-seeds.json  (SECRET — ed_seed+dsa_seed for airgap-sign; never leaves the air-gap)`);
-  console.log(`  → ${outDir}/genesis-attestation.json  (fp + nac + epoch-0, the nac's home)`);
-  console.log('\n  ⛔ COLD BACKUP — WRITE THIS DOWN ON PAPER. It is the ONLY recovery for the entire forever-key:');
-  console.log(`\n     SEED PHRASE:  ${seedPhrase}\n`);
-  console.log(`  masterSecret recovers ALL keys (identity + rotation authority) via the frozen HKDF labels.`);
-  if (spOut) console.log(`  (also written to ${spOut} at operator request — treat as TOP SECRET; destroy after cold transcription.)`);
+  if (isRestore) {
+    console.log('\n=== ✓ NODE ZERO RE-MATERIALIZED (disaster recovery) ===');
+    console.log(`  → ${outDir}/pubkeys.json + secret-seeds.json + genesis-attestation.json  (regenerated, byte-identical to the original genesis)`);
+    console.log(`  fingerprint = ${nz.fingerprint}  (asserted == published)`);
+    console.log('  secret-seeds.json is ready for airgap-sign. The seed phrase is UNCHANGED — you recovered from it; no new cold-backup needed.');
+    if (spOut) console.log(`  (seed phrase also re-written to ${spOut} at operator request — same value; treat as TOP SECRET.)`);
+  } else {
+    console.log('\n=== ✓ REAL NODE ZERO GENESIS MINTED ===');
+    console.log(`  → ${outDir}/pubkeys.json  (travels to build machine)`);
+    console.log(`  → ${outDir}/secret-seeds.json  (SECRET — ed_seed+dsa_seed for airgap-sign; never leaves the air-gap)`);
+    console.log(`  → ${outDir}/genesis-attestation.json  (fp + nac + epoch-0, the nac's home)`);
+    console.log('\n  ⛔ COLD BACKUP — WRITE THIS DOWN ON PAPER. It is the ONLY recovery for the entire forever-key:');
+    console.log(`\n     SEED PHRASE:  ${seedPhrase}\n`);
+    console.log(`  masterSecret recovers ALL keys (identity + rotation authority) via the frozen HKDF labels.`);
+    if (spOut) console.log(`  (also written to ${spOut} at operator request — treat as TOP SECRET; destroy after cold transcription.)`);
+  }
 
   // Flint D2 — zero secret material after backup + nac derivation.
-  masterSecret.fill(0); nz.secrets.masterSecret.fill(0);
-  nz.secrets.edSeed.fill(0); nz.secrets.dsaSeed.fill(0); nz.secrets.encSeed.fill(0);
-  nz.secrets.kemSeed.fill(0); nz.secrets.dsaSecret.fill(0); nz.secrets.kemSecret.fill(0);
+  wipe();
   process.exit(0);
 }
 
