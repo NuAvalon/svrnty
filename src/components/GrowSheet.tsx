@@ -57,7 +57,14 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
   channelRef.current = channel;
 
   const mint = useCallback(async () => {
-    if (!identity?.identity?.fingerprint) return;
+    if (!identity?.identity?.fingerprint) {
+      // Never fail silently — a blank Grow panel (no QR, no link, no message) is the worst outcome to
+      // demo. Cause-agnostic message (Hypatia claim-honesty #136782): the fingerprint can be missing
+      // because the identity isn't unlocked OR a stale/unpopulated record loaded — so do NOT assert
+      // "you're locked" when they may already be unlocked. Unlock-state is caught separately at loadKey.
+      setError("Couldn't prepare your invite — your identity isn't ready yet. Try unlocking it, or reopen and refresh your identity.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setSpent(false);
