@@ -20,6 +20,7 @@
 import type { IdentityCard } from '../format/envelope';
 import { DOMAIN_IDENTITY_CARD, identityCardSigningInput } from '../format/envelope';
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
+import { base64ToUint8 } from '../crypto/pq';
 import { fingerprintMatchesKey } from './fingerprint';
 
 // ── §6 Suite-length validation: the ek length IS the suite discriminant ──────────
@@ -123,12 +124,29 @@ export async function verifySignedIdentityCard(
   const envSig: EnvelopeSignature = pq_signature
     ? { classical: signature, pq_signature }
     : { classical: signature };
+  // A hybrid card's ML-DSA leg needs the signer's pq_sig PUBLIC key. It is CARRIED in the card
+  // (id.pq_sig_public_key), and self-supplying it here is SOUND without a separate trust input:
+  //   • the classical signature (checked by verifyWithEnvelope) is over the canonical card that
+  //     INCLUDES pq_sig_public_key (signIdentityCard binds the WHOLE card), so a swapped/added pq
+  //     leg breaks the classical half → can't forge; AND
+  //   • for a four-key identity, pq_sig_public_key is additionally bound by the fingerprint checked
+  //     in (1) above.
+  // An explicitly-passed pqSigningPublicKey still wins. A hybrid card with no usable carried key
+  // leaves pqPub undefined → hybridVerify fail-closes (branch 3, loud) rather than false-accept.
+  let pqPub = pqSigningPublicKey;
+  if (pq_signature && !pqPub && typeof id.pq_sig_public_key === 'string' && id.pq_sig_public_key.length > 0) {
+    try {
+      pqPub = base64ToUint8(id.pq_sig_public_key);
+    } catch {
+      pqPub = undefined; // malformed carried key → fail-closed in verifyWithEnvelope
+    }
+  }
   return verifyWithEnvelope(
     DOMAIN_IDENTITY_CARD,
     identityCardSigningInput(cardFields),
     envSig,
     id.public_key,
-    pqSigningPublicKey,
+    pqPub,
   );
 }
 
@@ -138,10 +156,17 @@ export async function verifySignedIdentityCard(
 // v1/no-PQ identity yields '' → the card is signed over the ABSENCE, which the receiver reads as
 // branch-4a (quiet, no pq). Signing needs the classical private key ⇒ the session must be unlocked;
 // the caller loads it via loadKey() and handles the locked case.
+//
+// PQ-HYBRID: pass pqSigningSecretKey (the identity's ML-DSA-87 signing secret, loaded via
+// loadPQKeys()) to dual-sign the card (ED25519 + ML-DSA-87 → SUITE_HYBRID, un-strippable via the
+// anti-downgrade envelope). Omit it (or a v1/no-PQ identity) → classical-only, same as before. The
+// PQ leg is carried as card.pq_signature and re-verified on import against the card's own
+// pq_sig_public_key (see verifySignedIdentityCard).
 export async function buildSignedIdentityCard(
   identity: any,
   classicalPrivateKeyArmored: string,
   classicalPassphrase: string,
+  pqSigningSecretKey?: Uint8Array,
 ): Promise<SignedIdentityCard> {
   const idData = identity?.identity ?? identity;
   if (!idData?.fingerprint || !idData?.public_key) {
@@ -183,7 +208,7 @@ export async function buildSignedIdentityCard(
       'refusing to build a self-inconsistent identity card — fingerprint does not bind to its carried keys (missing/mismatched PQ legs?)',
     );
   }
-  return signIdentityCard(card, classicalPrivateKeyArmored, classicalPassphrase);
+  return signIdentityCard(card, classicalPrivateKeyArmored, classicalPassphrase, pqSigningSecretKey);
 }
 
 // ── RECEIVE side: the fail-closed 4-branch import disposition (both receive-paths share this) ──
