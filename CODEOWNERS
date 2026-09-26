@@ -36,6 +36,7 @@
 #     NOT plain contact-management. ---
 /src/lib/contacts/contact-lane.ts        @palberts22
 /src/lib/contacts/safe-contact-link.ts   @palberts22
+/src/lib/contacts/resolve-sms-href.ts   @palberts22
 
 # NOTE (honesty over the fence): the restore-gate CONTROL FLOW (seedPathActive / path-selection /
 # which-key-decrypts-what / step-up + auth / trust-block wire-strip) is NEVER-TOUCH per AGENTS.md,
