@@ -184,6 +184,8 @@ test('INVARIANT: the key fragment is always AFTER the #, never in path or query'
     ['CODE-with-dashes', 'AAAA1111bbbb2222'],
     ['0', 'ZZZ'],
     ['LONGCODE1234567890', 'x'.repeat(256)],
+    // The real shape: relay.ts hands in base64url(raw AES key) — includes '-' and '_'.
+    ['r3lAyC0d3', 'Zm9vYmFy-_0123456789abcdefGHIJKLMNOPQRSTUV'],
   ];
   for (const [code, key] of cases) {
     const url = shareUrl(code, key);
