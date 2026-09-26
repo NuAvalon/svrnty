@@ -123,3 +123,27 @@ export function signAllowedRemove(
 ): Uint8Array {
   return rawSign(allowedRemovePreimage(ownerFp, senderFp, unixSeconds), seed);
 }
+
+/**
+ * Mailbox-register preimage (KB#90104 item 3, byte-exact to satellite.py:1092):
+ *   Ed25519(identity_seed, "svrnty-mailbox-reg-v1:{owner_identity_fp}:{mailbox_fp}:{epoch}")
+ * GUARDRAIL (Flint): this `:`-joined string is injective ONLY because both fps are 64-lowercase-hex
+ * (no ':' possible) and epoch is the trailing int. NEVER extend it with a variable-length or ':'-bearing
+ * field — every FUTURE mutable-op preimage (rekey / relay-change / rehydrate) MUST be LP-framed instead.
+ */
+export function mailboxRegPreimage(
+  ownerIdentityFp: string,
+  mailboxFp: string,
+  epoch: string | number,
+): Uint8Array {
+  return utf8(`svrnty-mailbox-reg-v1:${ownerIdentityFp}:${mailboxFp}:${epoch}`);
+}
+
+export function signMailboxReg(
+  seed: Uint8Array,
+  ownerIdentityFp: string,
+  mailboxFp: string,
+  epoch: string | number,
+): Uint8Array {
+  return rawSign(mailboxRegPreimage(ownerIdentityFp, mailboxFp, epoch), seed);
+}
