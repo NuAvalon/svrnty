@@ -38,6 +38,12 @@
 /src/lib/contacts/safe-contact-link.ts   @palberts22
 /src/lib/contacts/resolve-sms-href.ts   @palberts22
 
+# --- CI / guard-of-guards: Devin's App has workflows:write, and CI enforces test-guarded
+#     surfaces (e.g. the book-export.test.ts private-tag export-firewall). Fence CI so any
+#     workflow change needs code-owner review (else Devin could gut a firewall test with only a
+#     general approval). Pairs with wiring ci.yml as a required status check (#7). ---
+/.github/workflows/      @palberts22
+
 # NOTE (honesty over the fence): the restore-gate CONTROL FLOW (seedPathActive / path-selection /
 # which-key-decrypts-what / step-up + auth / trust-block wire-strip) is NEVER-TOUCH per AGENTS.md,
 # but it currently lives embedded in src/components/SoverentityFrontend.tsx (a render component)
