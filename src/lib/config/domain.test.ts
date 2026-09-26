@@ -2,17 +2,21 @@
 // Domain/link config — the one self-hoster knob + the share-link shapes it produces.
 // Run: npx tsx --test src/lib/config/domain.test.ts
 //
-// domain.ts reads NEXT_PUBLIC_* at MODULE-EVAL time (consts, not lazy), so a changed env
-// cannot be observed by re-importing in-process: an `import('./domain.ts?case=N')`
-// cache-bust is loader-dependent (tsx may resolve it to the already-evaluated module, in
-// which case the override silently reads back as the default). Each env case therefore
-// evaluates domain.ts in a SUBPROCESS with the env preset, and asserts on what it emits.
+// domain.ts reads NEXT_PUBLIC_* at MODULE-EVAL time (consts, not lazy), so a changed env can
+// only be observed in a FRESH process — an in-process `import('./domain.ts?case=N')`
+// cache-bust is loader-dependent (some tsx builds hand back the already-evaluated module, in
+// which case the override silently reads back as the default). Each env case therefore spawns
+// the sibling helper FILE `__domain-env-probe.ts` with the env preset and asserts on the JSON
+// snapshot it prints. A helper file (not an inline `tsx -e` string) keeps the spawn portable
+// across tsx/node versions and platforms.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { SVRNTY_BASE_URL, SVRNTY_DOMAIN, shareUrl, shareUrlShort, slugUrlShort } from './domain';
+import { SNAPSHOT_MARKER } from './__domain-env-probe';
 
 /** What a subprocess evaluation of domain.ts reports back. */
 interface DomainSnapshot {
@@ -24,30 +28,25 @@ interface DomainSnapshot {
   slugUrlShort: string;
 }
 
-const DOMAIN_MODULE = new URL('./domain.ts', import.meta.url).href;
-const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli');
-const MARKER = '__SNAPSHOT__';
+const PROBE_PATH = fileURLToPath(new URL('./__domain-env-probe.ts', import.meta.url));
 
-/** Runs in the child: import domain.ts fresh, emit one JSON snapshot of its outputs. */
-const PROBE = `
-import(process.env.__PROBE_MODULE).then((m) => {
-  const code = process.env.__PROBE_CODE;
-  const key = process.env.__PROBE_KEY;
-  const slug = process.env.__PROBE_SLUG;
-  process.stdout.write('${MARKER}' + JSON.stringify({
-    SVRNTY_DOMAIN: m.SVRNTY_DOMAIN,
-    SVRNTY_BASE_URL: m.SVRNTY_BASE_URL,
-    shareUrl: m.shareUrl(code, key),
-    shareUrlShortNoKey: m.shareUrlShort(code),
-    shareUrlShortWithKey: m.shareUrlShort(code, key),
-    slugUrlShort: m.slugUrlShort(slug),
-  }));
-});
-`;
+/** How to run a .ts file in a child process: the resolved tsx CLI, else `npx tsx`. */
+function probeCommands(): Array<{ file: string; args: string[] }> {
+  const candidates: Array<{ file: string; args: string[] }> = [];
+  try {
+    const tsxCli = createRequire(import.meta.url).resolve('tsx/cli');
+    candidates.push({ file: process.execPath, args: [tsxCli, PROBE_PATH] });
+  } catch {
+    // tsx/cli not resolvable from here — fall through to npx.
+  }
+  candidates.push({ file: 'npx', args: ['--no-install', 'tsx', PROBE_PATH] });
+  return candidates;
+}
 
 /**
- * Evaluate domain.ts in a child process under the given NEXT_PUBLIC_* env (any not listed
- * is unset) and return its outputs. `probe` chooses the helper arguments.
+ * Evaluate domain.ts in a child process under the given NEXT_PUBLIC_* env (any not listed is
+ * unset, so defaults are defaults even on a machine that sets them) and return its outputs.
+ * `probe` chooses the arguments the link helpers are called with.
  */
 function loadWithEnv(
   env: { NEXT_PUBLIC_SVRNTY_DOMAIN?: string; NEXT_PUBLIC_SVRNTY_BASE_URL?: string },
@@ -57,21 +56,37 @@ function loadWithEnv(
   delete childEnv.NEXT_PUBLIC_SVRNTY_DOMAIN;
   delete childEnv.NEXT_PUBLIC_SVRNTY_BASE_URL;
 
-  const stdout = execFileSync(process.execPath, [TSX_CLI, '-e', PROBE], {
-    encoding: 'utf8',
-    env: {
-      ...childEnv,
-      ...env,
-      __PROBE_MODULE: DOMAIN_MODULE,
-      __PROBE_CODE: probe.code ?? 'ABC123',
-      __PROBE_KEY: probe.key ?? 'k',
-      __PROBE_SLUG: probe.slug ?? 'alice',
-    },
-  });
+  const failures: string[] = [];
+  for (const { file, args } of probeCommands()) {
+    let stdout: string;
+    try {
+      stdout = execFileSync(file, args, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...childEnv,
+          ...env,
+          __PROBE_CODE: probe.code ?? 'ABC123',
+          __PROBE_KEY: probe.key ?? 'k',
+          __PROBE_SLUG: probe.slug ?? 'alice',
+        },
+      });
+    } catch (err) {
+      // Surface the child's own stderr — `Command failed: …` alone says nothing.
+      const e = err as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+      failures.push(`${file} ${args.join(' ')}\n${e.stderr ?? e.stdout ?? e.message ?? err}`);
+      continue;
+    }
 
-  const at = stdout.lastIndexOf(MARKER);
-  assert.notEqual(at, -1, `probe emitted no snapshot:\n${stdout}`);
-  return JSON.parse(stdout.slice(at + MARKER.length)) as DomainSnapshot;
+    const at = stdout.lastIndexOf(SNAPSHOT_MARKER);
+    if (at === -1) {
+      failures.push(`${file} ${args.join(' ')}\nno snapshot marker in stdout:\n${stdout}`);
+      continue;
+    }
+    return JSON.parse(stdout.slice(at + SNAPSHOT_MARKER.length)) as DomainSnapshot;
+  }
+
+  throw new Error(`env probe failed for ${JSON.stringify(env)}:\n\n${failures.join('\n\n')}`);
 }
 
 // --- SVRNTY_DOMAIN / SVRNTY_BASE_URL -------------------------------------------------
