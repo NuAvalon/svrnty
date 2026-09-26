@@ -2,98 +2,151 @@
 // Domain/link config — the one self-hoster knob + the share-link shapes it produces.
 // Run: npx tsx --test src/lib/config/domain.test.ts
 //
-// domain.ts reads NEXT_PUBLIC_* at MODULE-EVAL time, so env-override cases re-import a
-// fresh module instance (cache-busting query) after setting process.env.
+// domain.ts reads NEXT_PUBLIC_* at MODULE-EVAL time (consts, not lazy), so a changed env
+// cannot be observed by re-importing in-process: an `import('./domain.ts?case=N')`
+// cache-bust is loader-dependent (tsx may resolve it to the already-evaluated module, in
+// which case the override silently reads back as the default). Each env case therefore
+// evaluates domain.ts in a SUBPROCESS with the env preset, and asserts on what it emits.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { SVRNTY_BASE_URL, SVRNTY_DOMAIN, shareUrl, shareUrlShort, slugUrlShort } from './domain';
 
-type DomainModule = typeof import('./domain');
+/** What a subprocess evaluation of domain.ts reports back. */
+interface DomainSnapshot {
+  SVRNTY_DOMAIN: string;
+  SVRNTY_BASE_URL: string;
+  shareUrl: string;
+  shareUrlShortNoKey: string;
+  shareUrlShortWithKey: string;
+  slugUrlShort: string;
+}
 
-let reimportCounter = 0;
+const DOMAIN_MODULE = new URL('./domain.ts', import.meta.url).href;
+const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli');
+const MARKER = '__SNAPSHOT__';
 
-/** Load a fresh copy of domain.ts with the given NEXT_PUBLIC_* env, then restore env. */
-async function loadWithEnv(env: {
-  NEXT_PUBLIC_SVRNTY_DOMAIN?: string;
-  NEXT_PUBLIC_SVRNTY_BASE_URL?: string;
-}): Promise<DomainModule> {
-  const keys = ['NEXT_PUBLIC_SVRNTY_DOMAIN', 'NEXT_PUBLIC_SVRNTY_BASE_URL'] as const;
-  const saved = keys.map((k) => [k, process.env[k]] as const);
-  for (const k of keys) delete process.env[k];
-  for (const [k, v] of Object.entries(env)) process.env[k] = v;
-  try {
-    return (await import(`./domain.ts?case=${reimportCounter++}`)) as DomainModule;
-  } finally {
-    for (const [k, v] of saved) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+/** Runs in the child: import domain.ts fresh, emit one JSON snapshot of its outputs. */
+const PROBE = `
+import(process.env.__PROBE_MODULE).then((m) => {
+  const code = process.env.__PROBE_CODE;
+  const key = process.env.__PROBE_KEY;
+  const slug = process.env.__PROBE_SLUG;
+  process.stdout.write('${MARKER}' + JSON.stringify({
+    SVRNTY_DOMAIN: m.SVRNTY_DOMAIN,
+    SVRNTY_BASE_URL: m.SVRNTY_BASE_URL,
+    shareUrl: m.shareUrl(code, key),
+    shareUrlShortNoKey: m.shareUrlShort(code),
+    shareUrlShortWithKey: m.shareUrlShort(code, key),
+    slugUrlShort: m.slugUrlShort(slug),
+  }));
+});
+`;
+
+/**
+ * Evaluate domain.ts in a child process under the given NEXT_PUBLIC_* env (any not listed
+ * is unset) and return its outputs. `probe` chooses the helper arguments.
+ */
+function loadWithEnv(
+  env: { NEXT_PUBLIC_SVRNTY_DOMAIN?: string; NEXT_PUBLIC_SVRNTY_BASE_URL?: string },
+  probe: { code?: string; key?: string; slug?: string } = {},
+): DomainSnapshot {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  delete childEnv.NEXT_PUBLIC_SVRNTY_DOMAIN;
+  delete childEnv.NEXT_PUBLIC_SVRNTY_BASE_URL;
+
+  const stdout = execFileSync(process.execPath, [TSX_CLI, '-e', PROBE], {
+    encoding: 'utf8',
+    env: {
+      ...childEnv,
+      ...env,
+      __PROBE_MODULE: DOMAIN_MODULE,
+      __PROBE_CODE: probe.code ?? 'ABC123',
+      __PROBE_KEY: probe.key ?? 'k',
+      __PROBE_SLUG: probe.slug ?? 'alice',
+    },
+  });
+
+  const at = stdout.lastIndexOf(MARKER);
+  assert.notEqual(at, -1, `probe emitted no snapshot:\n${stdout}`);
+  return JSON.parse(stdout.slice(at + MARKER.length)) as DomainSnapshot;
 }
 
 // --- SVRNTY_DOMAIN / SVRNTY_BASE_URL -------------------------------------------------
 
-test('defaults: svrnty.is / https://svrnty.is when no env override is set', async () => {
-  const mod = await loadWithEnv({});
-  assert.equal(mod.SVRNTY_DOMAIN, 'svrnty.is');
-  assert.equal(mod.SVRNTY_BASE_URL, 'https://svrnty.is');
+test('the harness really observes an override (guards against a hollow pass)', () => {
+  // If the subprocess/env plumbing silently failed, every override case below would read
+  // back the default and pass vacuously. Assert the two differ before trusting them.
+  const base = loadWithEnv({});
+  const overridden = loadWithEnv({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com' });
+  assert.notEqual(overridden.SVRNTY_DOMAIN, base.SVRNTY_DOMAIN);
 });
 
-test('default base URL carries a scheme; default domain does not', async () => {
-  const mod = await loadWithEnv({});
-  assert.ok(mod.SVRNTY_BASE_URL.startsWith('https://'));
-  assert.ok(!mod.SVRNTY_DOMAIN.includes('://'));
+test('defaults: svrnty.is / https://svrnty.is when no env override is set', () => {
+  const snap = loadWithEnv({});
+  assert.equal(snap.SVRNTY_DOMAIN, 'svrnty.is');
+  assert.equal(snap.SVRNTY_BASE_URL, 'https://svrnty.is');
 });
 
-test('NEXT_PUBLIC_SVRNTY_DOMAIN overrides the domain AND derives the base URL', async () => {
-  const mod = await loadWithEnv({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com' });
-  assert.equal(mod.SVRNTY_DOMAIN, 'id.example.com');
-  assert.equal(mod.SVRNTY_BASE_URL, 'https://id.example.com');
+test('default base URL carries a scheme; default domain does not', () => {
+  const snap = loadWithEnv({});
+  assert.ok(snap.SVRNTY_BASE_URL.startsWith('https://'));
+  assert.ok(!snap.SVRNTY_DOMAIN.includes('://'));
 });
 
-test('NEXT_PUBLIC_SVRNTY_BASE_URL overrides the base URL independently of the domain', async () => {
-  const mod = await loadWithEnv({ NEXT_PUBLIC_SVRNTY_BASE_URL: 'http://localhost:3000' });
-  assert.equal(mod.SVRNTY_DOMAIN, 'svrnty.is'); // untouched
-  assert.equal(mod.SVRNTY_BASE_URL, 'http://localhost:3000');
+test('NEXT_PUBLIC_SVRNTY_DOMAIN overrides the domain AND derives the base URL', () => {
+  const snap = loadWithEnv({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com' });
+  assert.equal(snap.SVRNTY_DOMAIN, 'id.example.com');
+  assert.equal(snap.SVRNTY_BASE_URL, 'https://id.example.com');
 });
 
-test('both overrides set: each is honored verbatim (base URL is NOT re-derived)', async () => {
-  const mod = await loadWithEnv({
+test('NEXT_PUBLIC_SVRNTY_BASE_URL overrides the base URL independently of the domain', () => {
+  const snap = loadWithEnv({ NEXT_PUBLIC_SVRNTY_BASE_URL: 'http://localhost:3000' });
+  assert.equal(snap.SVRNTY_DOMAIN, 'svrnty.is'); // untouched
+  assert.equal(snap.SVRNTY_BASE_URL, 'http://localhost:3000');
+});
+
+test('both overrides set: each is honored verbatim (base URL is NOT re-derived)', () => {
+  const snap = loadWithEnv({
     NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com',
     NEXT_PUBLIC_SVRNTY_BASE_URL: 'http://id.example.com:8080',
   });
-  assert.equal(mod.SVRNTY_DOMAIN, 'id.example.com');
-  assert.equal(mod.SVRNTY_BASE_URL, 'http://id.example.com:8080');
+  assert.equal(snap.SVRNTY_DOMAIN, 'id.example.com');
+  assert.equal(snap.SVRNTY_BASE_URL, 'http://id.example.com:8080');
 });
 
-test('empty-string env vars fall back to the defaults (|| semantics)', async () => {
-  const mod = await loadWithEnv({
+test('empty-string env vars fall back to the defaults (|| semantics)', () => {
+  const snap = loadWithEnv({
     NEXT_PUBLIC_SVRNTY_DOMAIN: '',
     NEXT_PUBLIC_SVRNTY_BASE_URL: '',
   });
-  assert.equal(mod.SVRNTY_DOMAIN, 'svrnty.is');
-  assert.equal(mod.SVRNTY_BASE_URL, 'https://svrnty.is');
+  assert.equal(snap.SVRNTY_DOMAIN, 'svrnty.is');
+  assert.equal(snap.SVRNTY_BASE_URL, 'https://svrnty.is');
 });
 
-test('self-host override propagates to every link helper — no svrnty.is left behind', async () => {
-  const mod = await loadWithEnv({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com' });
-  assert.equal(mod.shareUrl('ABC123', 'k'), 'https://id.example.com/c/ABC123#k');
-  assert.equal(mod.shareUrlShort('ABC123'), 'id.example.com/c/ABC123');
-  assert.equal(mod.shareUrlShort('ABC123', 'k'), 'id.example.com/c/ABC123#k');
-  assert.equal(mod.slugUrlShort('alice'), 'id.example.com/alice');
-  for (const link of [
-    mod.shareUrl('ABC123', 'k'),
-    mod.shareUrlShort('ABC123', 'k'),
-    mod.slugUrlShort('alice'),
-  ]) {
+test('self-host override propagates to every link helper — no svrnty.is left behind', () => {
+  const snap = loadWithEnv({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com' });
+  assert.equal(snap.shareUrl, 'https://id.example.com/c/ABC123#k');
+  assert.equal(snap.shareUrlShortNoKey, 'id.example.com/c/ABC123');
+  assert.equal(snap.shareUrlShortWithKey, 'id.example.com/c/ABC123#k');
+  assert.equal(snap.slugUrlShort, 'id.example.com/alice');
+  for (const link of [snap.shareUrl, snap.shareUrlShortWithKey, snap.slugUrlShort]) {
     assert.ok(!link.includes('svrnty.is'), `leaked default domain: ${link}`);
   }
 });
 
-test('a base-URL override with a trailing slash is used verbatim (documents current behavior)', async () => {
-  const mod = await loadWithEnv({ NEXT_PUBLIC_SVRNTY_BASE_URL: 'https://x.example/' });
-  assert.equal(mod.shareUrl('ABC', 'k'), 'https://x.example//c/ABC#k');
+test('INVARIANT holds under a self-host override: the key stays after the #', () => {
+  const snap = loadWithEnv({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.com' }, { key: 'sEcReTkEy' });
+  const u = new URL(snap.shareUrl);
+  assert.equal(u.hash, '#sEcReTkEy');
+  assert.ok(!`${u.origin}${u.pathname}${u.search}`.includes('sEcReTkEy'));
+});
+
+test('a base-URL override with a trailing slash is used verbatim (documents current behavior)', () => {
+  const snap = loadWithEnv({ NEXT_PUBLIC_SVRNTY_BASE_URL: 'https://x.example/' }, { code: 'ABC' });
+  assert.equal(snap.shareUrl, 'https://x.example//c/ABC#k');
 });
 
 // --- shareUrl ------------------------------------------------------------------------
@@ -202,9 +255,9 @@ test('INVARIANT: shareUrlShort keeps the key after the #, never in the path', ()
   assert.ok(!s.includes('?'), 'display links must not carry a query string');
 });
 
-test('shareUrlShort is the scheme-less form of shareUrl for the same inputs', async () => {
-  const mod = await loadWithEnv({});
-  assert.equal(mod.shareUrl('ABC123', 'k'), `https://${mod.shareUrlShort('ABC123', 'k')}`);
+test('shareUrlShort is the scheme-less form of shareUrl for the same inputs', () => {
+  const snap = loadWithEnv({});
+  assert.equal(snap.shareUrl, `https://${snap.shareUrlShortWithKey}`);
 });
 
 // --- slugUrlShort --------------------------------------------------------------------
