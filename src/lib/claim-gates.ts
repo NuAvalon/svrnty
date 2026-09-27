@@ -61,5 +61,9 @@ export function isPQWireLive(): boolean {
  * mutual-consent; the relay-level mutual-reveal fairness-gate is post-alpha (Archie #134280).
  */
 export function isPSIDiscoveryLive(): boolean {
-  return false;
+  // ⚠ DEV-TEST-ONLY FLIP (branch athena/psi-e2e-dev) — NEVER MERGE TO MAIN.
+  // Enables the PSI machinery (register+bind+consent+discovery via startKnowLayerSync) on dev
+  // so the admit↔admit e2e can exercise PSI-initiate. Prod/main stays `return false` (dormant +
+  // honest); the real launch flip is step-6, post e2e-green + Flint at-rest-blinder co-verify.
+  return true;
 }
