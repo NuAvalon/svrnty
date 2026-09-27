@@ -47,6 +47,7 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { GATE_COPY, buildAdmitRecord, clampArrivalName, joinerPersistPlan } from '@/lib/trust/grow-gate';
+import { establishMutualConsent } from '@/lib/trust/establish-mutual-consent';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -312,6 +313,10 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             ...pqFields,
           } as any);
           edgeId = contact.id;
+          // PSI-discovery consent: an in-person admit makes the giver a Known star → write our OWN
+          // direction (joiner→giver) into allowed_senders (best-effort, fail-soft, never the reverse;
+          // fingerprint-gated inside). The enqueue-gate (remote) branch defers consent to admit-time.
+          void establishMutualConsent(ownerFp, peer.fingerprint);
         }
       }
       // R1: the edge is live locally — now fire the return-channel deposit to the giver (best-effort,
