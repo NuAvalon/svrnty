@@ -28,7 +28,7 @@ import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
-import { ownerHasVerified } from '@/lib/trust/trust-recipe';
+import { ownerHasVerified, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import {
   buildLinkToSvrntyUpdate,
@@ -579,6 +579,23 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trust');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleOwnerVerify = async (contact: Contact, method: 'in_person' | 'other_channel') => {
+    if (!fingerprint) return;
+    try {
+      setLoading(true);
+      setError(null);
+      // Owner-local verify (trust prereq): persist owner_verified_at via the REAL recipe patch
+      // (in-person / other-channel) — NOT a flag-flip/force-true. This is the missing card leg:
+      // once verified, confirmTarget.ownerVerified flips true → card-Trust (PR#149) applies.
+      await updateContact(contact.id, ownerVerifyPersistPatch((contact as any).metadata, method) as any);
+      await loadContacts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to record verification');
     } finally {
       setLoading(false);
     }
@@ -1740,6 +1757,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           trustIcon={selectedContact ? <TrustIcon contact={selectedContact} className="h-4 w-4" /> : null}
           isTrusted={!!selectedContact && isTrusted(selectedContact)}
           isBlocked={!!selectedContact && isContactBlocked(selectedContact)}
+          ownerVerified={!!selectedContact && ownerHasVerified(contactRecordToEdge(selectedContact))}
+          onOwnerVerify={(method) => {
+            if (!selectedContact) return;
+            if (!isSvrnNetworkContact(selectedContact)) {
+              setError('Trust is SVRNTY-only — link this classical contact first.');
+              return;
+            }
+            void handleOwnerVerify(selectedContact, method);
+          }}
           onTrustToggle={() => {
             if (!selectedContact) return;
             if (!isSvrnNetworkContact(selectedContact)) {
