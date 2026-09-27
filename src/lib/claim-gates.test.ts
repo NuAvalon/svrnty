@@ -13,11 +13,11 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isPQEncapLive(), false);
   });
 
-  it('isPQSignLive is false until buildSignedIdentityCard threads the PQ secret (classical-signed today)', () => {
-    assert.equal(isPQSignLive(), false);
+  it('isPQSignLive is TRUE — buildSignedIdentityCard threads the PQ secret; cards are ML-DSA-87 dual-signed (PR#146, Flint-reviewed)', () => {
+    assert.equal(isPQSignLive(), true);
   });
 
-  it('isPQWireLive is false unless BOTH encap and sign are live', () => {
+  it('isPQWireLive is false unless BOTH encap and sign are live (sign IS live now; encap pending → still false)', () => {
     assert.equal(isPQWireLive(), false);
   });
 

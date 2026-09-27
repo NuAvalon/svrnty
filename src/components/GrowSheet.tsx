@@ -14,10 +14,12 @@ import {
   issuedCodeSpent,
   loadIssuedCodeMap,
   loadKey,
+  loadPQKeys,
   recordIssuedGrowCode,
   type GrowMintChannel,
 } from '@/lib/identity/client-store';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
+import { base64ToUint8 } from '@/lib/crypto/pq';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { GROW_INVITE_MAX, clampGrowCap, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
@@ -65,7 +67,13 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
       const fp = identity.identity.fingerprint;
       const key = await loadKey(fp);
       if (!key) throw new Error('Unlock your identity first.');
-      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      // PQ-hybrid (PR#146): dual-sign the grown card (classical-only fallback if PQ half unreadable).
+      let pqSigningSecretKey: Uint8Array | undefined;
+      try {
+        const pq = await loadPQKeys(fp);
+        if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+      } catch { /* classical-only */ }
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase, pqSigningSecretKey);
       const result = await createRelay(JSON.stringify(signed));
       const ch = channelRef.current;
       const cap = ch === 'in_person' ? 1 : usesRef.current;

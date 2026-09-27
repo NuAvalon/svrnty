@@ -106,6 +106,20 @@ export async function verifySignedIdentityCard(
   card: SignedIdentityCard,
   pqSigningPublicKey?: Uint8Array,
 ): Promise<boolean> {
+  // Top-level fail-closed guard (Flint PR#146): verify's contract is "never throws" — any unexpected
+  // error (a malformed field reaching a decoder, etc.) becomes false, so callers get the branch-2/3
+  // disposition, never a crashed import. The hybrid pq-sig decode is also guarded at source in hybrid.ts.
+  try {
+    return await verifySignedIdentityCardInner(card, pqSigningPublicKey);
+  } catch {
+    return false;
+  }
+}
+
+async function verifySignedIdentityCardInner(
+  card: SignedIdentityCard,
+  pqSigningPublicKey?: Uint8Array,
+): Promise<boolean> {
   // Defensive fail-closed: a card parsed from an untrusted carrier may be malformed.
   const id = card?.identity;
   if (!id || typeof id.public_key !== 'string' || typeof id.fingerprint !== 'string') return false;

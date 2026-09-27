@@ -202,7 +202,18 @@ export async function hybridVerify(
 
   const hybridSig = signature as HybridSignature;
   const payloadBytes = new TextEncoder().encode(payload);
-  const pqSigBytes = base64ToUint8(hybridSig.post_quantum);
+  // FAIL-CLOSED decode: a malformed/corrupted post_quantum field must return false, NEVER throw.
+  // base64ToUint8 uses atob, which throws on non-base64. This decode is newly reachable via
+  // identity-card self-supply (verifySignedIdentityCard) — an attacker's own consistent 4-key card,
+  // or a corrupted-in-transit hybrid card, can carry a valid pq_sig pubkey + a garbage pq_signature.
+  // Verify's contract is "never throws"; without this guard the throw escapes to JoinerCeremony /
+  // ContactManagement instead of the intended branch-3 (loud, classical-only) disposition. (Flint PR#146.)
+  let pqSigBytes: Uint8Array;
+  try {
+    pqSigBytes = base64ToUint8(hybridSig.post_quantum);
+  } catch {
+    return false;
+  }
 
   return pqVerify(payloadBytes, pqSigBytes, pqSigningPublicKey);
 }

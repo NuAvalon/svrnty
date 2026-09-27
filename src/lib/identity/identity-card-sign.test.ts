@@ -325,3 +325,30 @@ test('PQ-HYBRID: threading the PQ secret yields a dual-signed card that self-ver
   assert.equal(await verifySignedIdentityCard(stripped), false, 'stripping the carried pq_sig pubkey fails closed');
   assert.equal((await classifyImportedCard(stripped)).branch, 1);
 });
+
+// Flint PR#146 required-fix guard: self-supply newly makes the pq_signature base64-decode reachable,
+// so a malformed pq_signature must FAIL CLOSED (branch 3, loud), never throw out of verify.
+test('PQ-HYBRID guard: a malformed-base64 pq_signature returns false → branch 3 (never throws)', async () => {
+  const { identity, priv, pass, sigSecret } = await makeHybridId('hybrid-garbage');
+  const hybrid = await buildSignedIdentityCard(identity, priv, pass, sigSecret);
+  // Valid classical sig + valid carried pq_sig pubkey, but a GARBAGE (non-base64) pq_signature.
+  // Pre-guard, self-supply → base64ToUint8(atob) → THROW; post-guard → false.
+  const garbage = { ...hybrid, pq_signature: '!!! not base64 !!!' } as SignedIdentityCard;
+  assert.equal(await verifySignedIdentityCard(garbage), false); // returns (does not throw)
+  const disp = await classifyImportedCard(garbage);
+  assert.equal(disp.branch, 3);
+  assert.equal(disp.alarm, 'loud');
+});
+
+// Anti-downgrade lock: stripping the pq_signature but KEEPING the pq_sig pubkey (attempt to force the
+// card back to classical-only) flips the derived suite HYBRID→CLASSICAL → the signed bytes change →
+// the classical sig no longer verifies → branch 3 (loud), never a silent classical accept.
+test('PQ-HYBRID guard: stripping pq_signature (keeping pubkey) → branch 3, not a silent downgrade', async () => {
+  const { identity, priv, pass, sigSecret } = await makeHybridId('hybrid-stripsig');
+  const hybrid = await buildSignedIdentityCard(identity, priv, pass, sigSecret);
+  const { pq_signature, ...noSig } = hybrid;
+  void pq_signature;
+  const stripped = noSig as SignedIdentityCard;
+  assert.equal(await verifySignedIdentityCard(stripped), false);
+  assert.equal((await classifyImportedCard(stripped)).branch, 3);
+});

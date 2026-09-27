@@ -32,12 +32,15 @@ export function isPQEncapLive(): boolean {
 /**
  * ML-DSA-87 post-quantum SIGNING is wired into the identity/card-sign path.
  *
- * FALSE today: `buildSignedIdentityCard()` signs classical-only (does not thread pqSigningSecretKey →
- * SUITE_CLASSICAL). Cards carry a pq_sig public key but are not PQ-signed.
- * Flip to true WITH the card-sign path threading the PQ secret (and update claim-gates.test.ts).
+ * TRUE (PR#146): `buildSignedIdentityCard()` threads pqSigningSecretKey → SUITE_HYBRID (ED25519 +
+ * ML-DSA-87), and all three send paths (Grow / Ceremony / share-card) load the ML-DSA signing secret
+ * and pass it, so a card minted by a PQ-capable (4-key native) identity is dual-signed. On import,
+ * verifySignedIdentityCard self-supplies the pq_sig pubkey from the signature-bound card, so every
+ * carrier re-verifies the PQ leg. Crypto-reviewed: Flint PR#146 (self-supply soundness + malformed-sig
+ * fail-closed guard). NOTE: message-ENCRYPTION is still classical — see isPQEncapLive() (post-launch).
  */
 export function isPQSignLive(): boolean {
-  return false;
+  return true;
 }
 
 /**
