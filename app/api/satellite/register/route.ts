@@ -14,6 +14,7 @@ const ALLOWED_FIELDS = [
   'fingerprint',
   'public_key',
   'name',
+  'display_name',
   'slug',
   'encryption_pk',
   'pq_kem_pk',
