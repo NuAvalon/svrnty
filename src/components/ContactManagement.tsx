@@ -28,6 +28,7 @@ import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { ownerHasVerified } from '@/lib/trust/trust-recipe';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import {
   buildLinkToSvrntyUpdate,
@@ -618,6 +619,14 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         fingerprint: selectedContact.fingerprint,
         name: selectedContact.name,
         trusted: isTrusted(selectedContact),
+        // Beating-heart last-mile fix (KB#90832): populate ownerVerified from the peer's REAL
+        // owner-verify state (mirror TrustMap.tsx:444) so an already-verified peer can be Trusted
+        // from the contact card. Previously omitted → applyTrustAction always returned 'need-verify'
+        // → trust_level never set → edge.trusted never true → /initiate never fired → no psi_sessions
+        // row. This PRESERVES verify-before-trust: an unverified peer still returns need-verify (no
+        // bypass — unlike the bulk-select path). Full fix also needs a verify AFFORDANCE on the card
+        // (persist owner_verified_at) so an unverified peer can be verified-then-trusted here — see PR body.
+        ownerVerified: ownerHasVerified(contactRecordToEdge(selectedContact)),
         blocked: isContactBlocked(selectedContact),
       }
     : null;
