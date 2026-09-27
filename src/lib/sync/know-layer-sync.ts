@@ -271,7 +271,10 @@ export interface KnowLayerSyncHandle {
 
 /** KNOW visibility is not latency-critical (staleness window is 24h); a modest interval avoids
  *  hammering the satellite while still driving the responder path (psiPending) on app-open + periodically. */
-const DEFAULT_KNOW_SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// ⚠ DEV-TEST-ONLY FLIP (branch athena/psi-e2e-dev) — NEVER MERGE TO MAIN. Prod/main = 5 * 60 * 1000.
+// Shortened to 15s so the admit↔admit e2e catches the getStaleMutualPeers→/initiate tick within a
+// single run budget (the row-drive kept just-missing the 5-min tick). Revert to 5*60*1000 on main.
+const DEFAULT_KNOW_SYNC_INTERVAL_MS = 15 * 1000; // 15s (DEV-ONLY; prod = 5 * 60 * 1000)
 
 /** Resolve the owner fingerprint from the unlocked identity shape (same object ContactManagement holds). */
 function ownerFingerprintOf(identity: unknown): string | null {
