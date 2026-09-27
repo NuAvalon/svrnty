@@ -21,6 +21,9 @@ import {
   type SyncMutualTrustFn,
   type CompleteTrustSyncFn,
 } from './know-layer-sync';
+import { generateKey } from 'openpgp';
+import { generatePQKeypairBundle } from '@/lib/crypto/pq';
+import { canonicalPubsFromArmoredPublicKey } from '@/lib/identity/fingerprint';
 
 const OWNER = 'owner-fp';
 
@@ -435,4 +438,45 @@ test('runRegisterCeremony: missing public_key → false, no call (fail-closed)',
   });
   assert.equal(ok, false);
   assert.equal(called, false);
+});
+
+// PSI-path fix (register-before-bind): a PQ identity must POST the SAME base64 register contract
+// as the claim-URL path — NOT the armored public_key + old hex sign_pub/… that silently broke
+// post-#147-rename and left PSI dark (buildPsiSyncOptions:439 → registered=false → no bind).
+test('runRegisterCeremony (PQ path): POSTs base64 renamed contract, not armored/old-names', async () => {
+  const { publicKey } = await generateKey({
+    type: 'ecc', curve: 'ed25519',
+    userIDs: [{ name: 'A', email: 'a@x.test' }], passphrase: 'p', format: 'armored',
+  });
+  const pq = generatePQKeypairBundle();
+  const kemB64 = Buffer.from(pq.kem.publicKey).toString('base64');
+  const sigB64 = Buffer.from(pq.signing.publicKey).toString('base64');
+  const canonical = await canonicalPubsFromArmoredPublicKey(publicKey, kemB64, sigB64);
+
+  const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+  const mockFetch = (async (url: string, init?: { body?: string }) => {
+    calls.push({ url, body: init?.body ? JSON.parse(init.body) : undefined });
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  }) as unknown as typeof fetch;
+
+  const ok = await runRegisterCeremony({
+    satelliteUrl: 'https://sat/api/satellite',
+    identity: {
+      identity: { fingerprint: canonical.fingerprint, public_key: publicKey },
+      post_quantum: { kem_public_key: kemB64, sig_public_key: sigB64 },
+    },
+    fetchImpl: mockFetch,
+  });
+  assert.equal(ok, true);
+  const body = calls[0].body!;
+  // The fix: base64 renamed fields present, satellite's exact schema.
+  assert.ok(body.encryption_pk && body.pq_kem_pk && body.pq_sig_pk, 'PQ fields present');
+  assert.equal(body.crypto_version, 'hybrid-v1');
+  // public_key is base64 raw Ed25519, NOT OpenPGP-armored (the prior 400/403).
+  assert.equal((body.public_key as string).includes('BEGIN PGP'), false);
+  // Old hex names are gone (they were undefined post-rename → zero PQ keys).
+  assert.equal(body.sign_pub, undefined);
+  assert.equal(body.enc_pub, undefined);
+  // Wire fingerprint = the canonical fp (satellite re-derives SHA256(sign‖enc‖kem‖sig) == this).
+  assert.equal(body.fingerprint, canonical.fingerprint);
 });
