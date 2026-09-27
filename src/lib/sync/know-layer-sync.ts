@@ -363,10 +363,11 @@ export async function runRegisterCeremony(args: {
   try {
     let extra: {
       fingerprint?: string;
-      sign_pub?: string;
-      enc_pub?: string;
-      kem_pub?: string;
-      sig_pub?: string;
+      public_key?: string;
+      encryption_pk?: string;
+      pq_kem_pk?: string;
+      pq_sig_pk?: string;
+      crypto_version?: string;
     } | null = null;
     try {
       const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
@@ -376,16 +377,18 @@ export async function runRegisterCeremony(args: {
     } catch {
       extra = null; // classical-only / missing PQ keys → fall back to {fingerprint, public_key}
     }
+    // Spread buildSatelliteRegisterFields WHOLESALE — the SAME satellite register contract the
+    // claim-URL path (SoverentityFrontend) sends: base64 public_key/encryption_pk/pq_kem_pk/pq_sig_pk
+    // + crypto_version, bytes = the canonical fp-preimage. Prior bug: armored public_key + hex
+    // sign_pub/… (the latter undefined post-rename → zero PQ keys) → satellite 400/403 → returns false
+    // → buildPsiSyncOptions returns null → no bind → PSI dark. Fallback keeps the classical
+    // (missing-PQ) shape (unreachable at launch — PQ mints ⇒ extra present).
     const res = await fetchImpl(`${base}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        fingerprint: extra?.fingerprint || fp,
-        public_key: publicKey,
-        ...(extra?.sign_pub
-          ? { sign_pub: extra.sign_pub, enc_pub: extra.enc_pub, kem_pub: extra.kem_pub, sig_pub: extra.sig_pub }
-          : {}),
-      }),
+      body: JSON.stringify(
+        extra ? extra : { fingerprint: fp, public_key: publicKey },
+      ),
     });
     return res.ok || res.status === 409; // 409 = already registered
   } catch {
