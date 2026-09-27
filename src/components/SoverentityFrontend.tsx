@@ -431,17 +431,11 @@ export function SoverentityFrontend({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           display_name: slug,
-          public_key: pk,
-          fingerprint: extra?.fingerprint || fp || '',
           slug,
-          ...(extra
-            ? {
-                sign_pub: extra.sign_pub,
-                enc_pub: extra.enc_pub,
-                kem_pub: extra.kem_pub,
-                sig_pub: extra.sig_pub,
-              }
-            : {}),
+          // extra carries the satellite register schema (base64 public_key/encryption_pk/
+          // pq_kem_pk/pq_sig_pk + canonical fingerprint + crypto_version). Fall back to the
+          // classical {public_key, fingerprint} shape only when PQ keys are absent (legacy edge).
+          ...(extra ? extra : { public_key: pk, fingerprint: fp || '' }),
         }),
       });
       if (regRes.ok || regRes.status === 409) {
