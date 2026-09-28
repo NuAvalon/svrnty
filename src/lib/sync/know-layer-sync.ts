@@ -559,6 +559,15 @@ export function startKnowLayerSync(
       if (psiDiagEnabled()) await logCandidateDiagnostics(store, owner);
       // 2. Respond to pending + initiate new sessions ('know' explicit — C1).
       const result = await runKnowLayerSyncTick(deps, options, syncFn);
+      // DEV DIAGNOSTIC (flag-gated): the tick OUTCOME — distinguishes "candidate set empty" (see the
+      // per-contact log above) from "candidate found but initiate FAILED internally" (initiated=0 with
+      // errors) or "initiated OK but no row downstream" (initiated>0). Closes the candidate-vs-initiate
+      // question in the same drive.
+      if (psiDiagEnabled()) {
+        console.info(
+          `[psi-diag] KNOW tick result: initiated=${result.initiated.length} responded=${result.responded.length} errors=${JSON.stringify(result.errors)}`,
+        );
+      }
       // 3. Persist the newly-initiated blinders so a later tick can complete them.
       await savePsiInitiated(store, owner, result.initiated);
     } catch (err) {
