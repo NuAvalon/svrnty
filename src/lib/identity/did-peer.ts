@@ -70,6 +70,17 @@ export const DID_METHOD = 'did:svrnty'; // (d) custom, registry-free; anchor mat
 export const DID_CONTEXT = 'https://www.w3.org/ns/did/v1';
 export const DID_DOC_PROOF_TYPE = 'SvrntyDidDoc2026';
 
+// ── subject_type attestation (introduce-shell / Devin dogfood — KB#91090, Flint REQ 1) ───────────────────────
+// A HONEST, SELF-DECLARED attestation of what kind of subject controls this identity. Bound INTO the signed
+// canonical input (a normal DID-Doc field) — NOT a loose field — so it is integrity-protected + non-strippable
+// + covered by the same signature/fp-verify a contact already does. svrnty NEVER cryptographically proves
+// embodiment (it can't; a personhood-authority = centralization/§0-violation + a two-tier personhood hierarchy
+// the mission rejects). An agent signs subject_type='agent' honestly; it is verified SOCIALLY (trust graph),
+// not by a personhood gate. OPTIONAL + byte-preserving: a doc built WITHOUT it canonicalizes IDENTICALLY to a
+// pre-attestation doc (the key is simply absent), so existing human-identity DID-Docs + vectors are unchanged.
+export const SUBJECT_TYPES = ['agent', 'human', 'org'] as const;
+export type SubjectType = (typeof SUBJECT_TYPES)[number];
+
 // verificationMethod `type` tags. Classical types use the W3C names; PQ has no registered type yet → svrnty-native.
 export const VM_TYPE_ED25519 = 'Ed25519VerificationKey2020';
 export const VM_TYPE_X25519 = 'X25519KeyAgreementKey2020';
@@ -118,6 +129,10 @@ export interface DidDocument {
   // = deriveNextAuthorityCommitment(coldSeed, epoch). Committed at genesis (operational self-sign binds it to
   // durable_id); each doc re-commits so the edge can walk the lineage. 64-lowercase-hex.
   nextAuthorityCommitment: string;
+  // OPTIONAL honest self-attestation of subject kind (agent|human|org). When present it is part of the signed
+  // canonical input (integrity-protected, non-strippable). When ABSENT the key is omitted → byte-identical to a
+  // pre-attestation doc. Set for agent identities (introduce-shell); omitted for ordinary human identities.
+  subjectType?: SubjectType;
   proof?: DidDocProof; // attached after signing; excluded from the canonical input
 }
 
@@ -206,6 +221,7 @@ export function buildDidDocument(params: {
   nextAuthorityCommitment: string;
   services?: ServiceEndpoint[];
   seq?: number;
+  subjectType?: SubjectType;
 }): DidDocument {
   const { did } = params;
   parseDid(did); // fail-closed on a malformed DID
@@ -227,7 +243,9 @@ export function buildDidDocument(params: {
   }
   const seq = params.seq ?? 0;
   if (!Number.isInteger(seq) || seq < 0) throw new Error('buildDidDocument: seq must be a non-negative integer');
-  return {
+  if (params.subjectType !== undefined && !SUBJECT_TYPES.includes(params.subjectType))
+    throw new Error(`buildDidDocument: subjectType must be one of {${SUBJECT_TYPES.join(', ')}}`);
+  const doc: DidDocument = {
     '@context': [DID_CONTEXT],
     id: did,
     verificationMethod,
@@ -237,6 +255,9 @@ export function buildDidDocument(params: {
     seq,
     nextAuthorityCommitment,
   };
+  // Byte-preservation: attach subjectType ONLY when provided, so an ordinary doc canonicalizes unchanged.
+  if (params.subjectType !== undefined) doc.subjectType = params.subjectType;
+  return doc;
 }
 
 // ── multi-device mutations (return a NEW unsigned doc with seq++; re-sign with the AUTHORITY before sharing) ──
@@ -387,6 +408,8 @@ export interface DidDocVerifyResult {
   did?: string;
   /** The authority commitment this doc pins for the NEXT doc — the edge threads it as the next expected commitment. */
   nextAuthorityCommitment?: string;
+  /** The honest subject attestation carried by the doc (agent|human|org), if any — bound under the signature. */
+  subjectType?: SubjectType;
 }
 
 /**
@@ -407,6 +430,8 @@ export function verifyDidDocument(
   if (!Number.isInteger(doc.seq) || doc.seq < 0) return { ok: false, reason: 'bad-seq' };
   if (opts.lastSeenSeq !== undefined && doc.seq <= opts.lastSeenSeq) return { ok: false, reason: 'seq-not-monotonic' };
   if (!HEX64_RE.test(doc.nextAuthorityCommitment)) return { ok: false, reason: 'bad-next-authority-commitment' };
+  // subjectType, if present, must be a sanctioned enum value (it is bound under the signature either way).
+  if (doc.subjectType !== undefined && !SUBJECT_TYPES.includes(doc.subjectType)) return { ok: false, reason: 'bad-subject-type' };
   let anchorHex: string;
   try {
     anchorHex = parseDid(doc.id).anchorHex;
@@ -425,7 +450,7 @@ export function verifyDidDocument(
     // (2) hybrid signature under those operational pubs.
     if (!verifyDidDocHybrid(canonicalInput, proof.sig, bytesToHex(keys.signPub), bytesToHex(keys.sigPub)))
       return { ok: false, reason: 'genesis-operational-sig-invalid' };
-    return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment };
+    return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment, subjectType: doc.subjectType };
   }
 
   if (proof.mode === 'authority-mutation') {
@@ -444,7 +469,7 @@ export function verifyDidDocument(
     // (2) hybrid signature under the revealed authority pubs.
     if (!verifyDidDocHybrid(canonicalInput, proof.sig, proof.authorityPubkeys.sign, proof.authorityPubkeys.pq_sig))
       return { ok: false, reason: 'authority-sig-invalid' };
-    return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment };
+    return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment, subjectType: doc.subjectType };
   }
 
   return { ok: false, reason: 'unknown-proof-mode' };
