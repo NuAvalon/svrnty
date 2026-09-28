@@ -75,7 +75,7 @@ export interface AdmitKeypair {
 }
 
 export function generateAdmitKeypair(): AdmitKeypair {
-  const admitSk = ed25519.utils.randomPrivateKey();
+  const admitSk = randomBytes(32); // an Ed25519 private key IS a 32-byte seed (noble getPublicKey/sign take it directly)
   return { admitSk, admitPub: ed25519.getPublicKey(admitSk) };
 }
 

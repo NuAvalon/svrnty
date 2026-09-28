@@ -105,6 +105,16 @@ test('wrong admit pubkey → issuer_cert-invalid', () => {
   assert.equal(r.reason, 'issuer_cert-invalid');
 });
 
+test('generateAdmitKeypair → issue → present → verify OK (random keys)', () => {
+  const { admitSk: ask, admitPub: apub } = generateAdmitKeypair();
+  const hsk = generateAdmitKeypair().admitSk; // reuse as a random 32B holder seed
+  const hpub = ed25519.getPublicKey(hsk);
+  const cert = issueCapability(ask, MAILBOX, OP, EPOCH, hpub);
+  const header = presentCapability({ holderSk: hsk, holderPub: hpub, issuerCert: cert, mailboxId: MAILBOX, opType: OP, epoch: EPOCH, unixSec: UNIX });
+  const r = verifyCapability({ header, mailboxId: MAILBOX, admitPub: apub, nowUnixSec: UNIX });
+  assert.equal(r.ok, true, r.reason);
+});
+
 // ── S5/T6 CO-VERIFY VECTOR — hand to Athena's Python verify_capability (byte-exact lock) ──
 test('EMIT co-verify vector for Athena verify_capability', () => {
   const issuerCert = issueCapability(admitSk, MAILBOX, OP, EPOCH, holderPub);
