@@ -75,6 +75,70 @@ function lastSyncOf(edge: TrustEdge): string | null {
   return edge.mutual?.last_sync ?? null;
 }
 
+// ── Dev-only PSI candidate diagnostics (flag-gated; ZERO prod surface) ────────────────────────────
+// WHY: the KNOW /initiate candidate = trusted ∩ open_visibility ∩ stale, but TWO ownerEdges pre-filters
+// (empty fingerprint, grow_gate) drop a contact BEFORE trust/open_vis is even evaluated — and none of
+// these are visible in the card UI. This logs, per contact, the exact include/exclude reason + the final
+// candidate count, so a SINGLE drive names the blocker instead of N blind re-drives. Never runs unless a
+// dev flag is set (NEXT_PUBLIC_PSI_DIAG=1 at build, or window.__PSI_DIAG=true at runtime).
+function psiDiagEnabled(): boolean {
+  return (
+    (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_PSI_DIAG === '1') ||
+    (typeof window !== 'undefined' && (window as unknown as { __PSI_DIAG?: boolean }).__PSI_DIAG === true)
+  );
+}
+
+async function logCandidateDiagnostics(store: KnowOverlayStore, ownerFingerprint: string): Promise<void> {
+  try {
+    const contacts = await store.getAllContacts(ownerFingerprint);
+    const now = Date.now();
+    const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+    const rows = contacts.map((c) => {
+      const hasFingerprint = typeof c.fingerprint === 'string' && c.fingerprint.length > 0;
+      const growGate = c.metadata?.grow_gate === true;
+      const edge = contactRecordToEdge(c);
+      const decayed = isDecayed(edge);
+      const lastSync = lastSyncOf(edge);
+      const stale = !lastSync || now - new Date(lastSync).getTime() > MAX_AGE_MS;
+      // Mirror the real pipeline: ownerEdges drops !hasFingerprint and growGate BEFORE projection;
+      // getTrustedPeers requires trusted && !decayed; getKnownPeers requires open_visibility === true.
+      const survivesEdgeFilter = hasFingerprint && !growGate;
+      const inTrusted = survivesEdgeFilter && edge.trusted === true && !decayed;
+      const inKnown = survivesEdgeFilter && edge.open_visibility === true;
+      const isCandidate = inTrusted && inKnown && stale;
+      const excluded = isCandidate
+        ? null
+        : !hasFingerprint ? 'no-fingerprint'
+        : growGate ? 'grow_gate'
+        : edge.trusted !== true ? 'not-trusted'
+        : decayed ? 'decayed'
+        : edge.open_visibility !== true ? 'not-open-visible'
+        : !stale ? 'not-stale'
+        : 'unknown';
+      return {
+        fp: (c.fingerprint || c.id || '?').slice(0, 8),
+        trust_level: c.trust_level,
+        hasFingerprint,
+        growGate,
+        trusted: edge.trusted === true,
+        decayed,
+        openVis: edge.open_visibility === true,
+        lastSync,
+        stale,
+        isCandidate,
+        excluded,
+      };
+    });
+    const candidates = rows.filter((r) => r.isCandidate).length;
+    console.info(
+      `[psi-diag] KNOW tick owner=${ownerFingerprint.slice(0, 8)} contacts=${rows.length} candidates=${candidates}`,
+      rows,
+    );
+  } catch (e) {
+    console.warn('[psi-diag] failed:', e);
+  }
+}
+
 // ── The 3 pieces — the OrchestratorDeps Apollo's syncMutualTrust consumes ────────────────────────
 
 /**
@@ -427,6 +491,9 @@ export function startKnowLayerSync(
       // 1. Complete initiator sessions saved on prior ticks (responder answers async) + forward-revoke
       //    de-consented peers. THIS closes the initiator half that was never wired = the trust map.
       await runPsiCompletionPass(store, owner, deps, options);
+      // DEV DIAGNOSTIC (flag-gated, zero prod surface): why is the /initiate candidate set empty?
+      // Logs the exact per-contact include/exclude reason so one drive names the blocker.
+      if (psiDiagEnabled()) await logCandidateDiagnostics(store, owner);
       // 2. Respond to pending + initiate new sessions ('know' explicit — C1).
       const result = await runKnowLayerSyncTick(deps, options, syncFn);
       // 3. Persist the newly-initiated blinders so a later tick can complete them.
