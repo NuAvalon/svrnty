@@ -592,7 +592,19 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       // Owner-local verify (trust prereq): persist owner_verified_at via the REAL recipe patch
       // (in-person / other-channel) — NOT a flag-flip/force-true. This is the missing card leg:
       // once verified, confirmTarget.ownerVerified flips true → card-Trust (PR#149) applies.
-      await updateContact(contact.id, ownerVerifyPersistPatch((contact as any).metadata, method) as any);
+      const patch = ownerVerifyPersistPatch((contact as any).metadata, method);
+      await updateContact(contact.id, patch as any);
+      // Re-sync selectedContact from the just-persisted patch so confirmTarget.ownerVerified
+      // (= ownerHasVerified(edge), which reads metadata.owner_verify) flips true IN THE SAME card
+      // session. loadContacts() below only refreshes the LIST — it never touches selectedContact — so
+      // without this the immediately-following card-Trust reads a stale (pre-verify) selectedContact,
+      // sees ownerVerified=false, and bounces need-verify → trust_level never leaves "known" →
+      // edge.trusted false → /initiate never fires. Mirrors handleToggleTrust's setSelectedContact
+      // refresh; patch.metadata carries the prior metadata (incl. share_settings) + owner_verify, so
+      // open_visibility et al. are preserved. This is the all-via-card last leg PR#150 missed.
+      if (selectedContact && selectedContact.id === contact.id) {
+        setSelectedContact({ ...selectedContact, metadata: patch.metadata as any });
+      }
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to record verification');
