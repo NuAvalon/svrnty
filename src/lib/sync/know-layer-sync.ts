@@ -35,6 +35,7 @@ import {
 } from '@/lib/identity/client-store';
 import { extractRawSign, signBind, signPsiAuthWrapped } from '@/lib/identity/raw-sign';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { establishMutualConsent } from '@/lib/trust/establish-mutual-consent';
 import { isDecayed, type TrustEdge } from '@/lib/trust/types';
 import {
   syncMutualTrust,
@@ -554,6 +555,21 @@ export function startKnowLayerSync(
       // 1. Complete initiator sessions saved on prior ticks (responder answers async) + forward-revoke
       //    de-consented peers. THIS closes the initiator half that was never wired = the trust map.
       await runPsiCompletionPass(store, owner, deps, options);
+      // 1b. Self-heal mutual-consent BEFORE initiating. The JOIN-time establishMutualConsent
+      //     (JoinerCeremony/grow, fire-and-forget) 403s and is NEVER retried if it raced ahead of the
+      //     satellite /register (register is lazy — fires on the deliberate slug-claim, not eagerly at
+      //     onboarding) → the owner's key isn't in `identities` yet → the owner-bound /allowed sig can't
+      //     verify → allowed_senders stays permanently empty → PSI /initiate 403 "requires mutual
+      //     connection". Re-assert owner→peer consent here each tick (idempotent, INSERT-OR-IGNORE
+      //     satellite-side): by tick-time /register has landed, so the write that failed at join now
+      //     succeeds. Awaited (allSettled) so /allowed lands before /initiate THIS tick; fail-soft —
+      //     one failed consent write must never wedge the loop. Scope = getKnownPeers = the
+      //     open_visibility (consented) subset, the SAME set that enters PSI, so this re-persists the
+      //     consent the user already granted (trust + open-visibility) — never a new/auto consent (C1-safe).
+      //     Self-limiting: once consent lands + the pair syncs, it's no longer stale, so /initiate stops.
+      await Promise.allSettled(
+        (await deps.getKnownPeers()).map((p) => establishMutualConsent(owner, p.fingerprint)),
+      );
       // DEV DIAGNOSTIC (flag-gated, zero prod surface): why is the /initiate candidate set empty?
       // Logs the exact per-contact include/exclude reason so one drive names the blocker.
       if (psiDiagEnabled()) await logCandidateDiagnostics(store, owner);
