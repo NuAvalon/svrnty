@@ -28,6 +28,11 @@ export const DOMAIN_ROTATION = 'svrnty:rotation:v1';
 // joiner-response signature can never verify as a contact-update / identity-card, and vice-versa.
 export const DOMAIN_JOINER_RESPONSE = 'svrnty:joiner-response:v1';
 export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
+// T1 DID-Document mutation (add/revoke a device verificationMethod, serviceEndpoint move, key-rotation
+// folded in). Signed by the COLD-SEED rotation-authority key (Flint X5) over canonicalize(DID-Doc w/ seq).
+// DISTINCT from DOMAIN_ROTATION so a DID-Doc-update signature can never verify as a rotation-successor and
+// vice-versa (domain separation). PENDING Flint's concur ☀7490 (this-vs-reuse-DOMAIN_ROTATION).
+export const DOMAIN_DID_DOC = 'svrnty:did-doc:v1';
 
 // --- A2: Durable identity + epoch/lineage (formats-cheap: fields only, no rotation UX) ---
 
