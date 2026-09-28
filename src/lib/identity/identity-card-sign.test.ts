@@ -274,3 +274,81 @@ test('buildSignedIdentityCard GUARD (N2 class-killer): a canonical fp with ABSEN
     /self-inconsistent|does not bind/,
   );
 });
+
+// ── PQ-HYBRID card signing (§7): threading the ML-DSA-87 signing secret dual-signs the card; it
+// re-verifies via the card's OWN carried pq_sig pubkey (self-supply — sound because the classical
+// half signs OVER that field AND the canonical fp binds it), while classical cards still verify.
+// Locks: send-thread + receive self-supply + backward-compat + anti-strip.
+async function makeHybridId(name: string): Promise<{ identity: any; priv: string; pass: string; sigSecret: Uint8Array }> {
+  const pass = 'pw-' + name;
+  const { privateKey: priv, publicKey: pub } = await generateKey({
+    type: 'ecc',
+    // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime (same keygen as core.ts).
+    curve: 'ed25519',
+    userIDs: [{ name, email: `${name}@x.test` }], passphrase: pass, format: 'armored',
+  });
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: priv });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase: pass });
+  const { fingerprint: fp } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked, kemPublicKey: pq.kem.publicKey, sigPublicKey: pq.signing.publicKey,
+  });
+  const identity = {
+    identity: { fingerprint: fp, public_key: pub, display_name: name },
+    post_quantum: { sig_public_key: uint8ToBase64(pq.signing.publicKey), kem_public_key: uint8ToBase64(pq.kem.publicKey) },
+  };
+  return { identity, priv, pass, sigSecret: pq.signing.secretKey };
+}
+
+test('PQ-HYBRID: threading the PQ secret yields a dual-signed card that self-verifies (4b); classical still verifies; strip fails closed', async () => {
+  const { identity, priv, pass, sigSecret } = await makeHybridId('hybrid-alice');
+
+  // HYBRID: pass the ML-DSA signing secret → the card carries a pq_signature.
+  const hybrid = await buildSignedIdentityCard(identity, priv, pass, sigSecret);
+  assert.ok(typeof hybrid.pq_signature === 'string' && hybrid.pq_signature.length > 0, 'card must carry an ML-DSA pq_signature');
+
+  // Verifies with NO explicit pq pubkey — self-supplied from the card's carried, sig-bound pq_sig_public_key.
+  assert.equal(await verifySignedIdentityCard(hybrid), true, 'hybrid card self-verifies');
+  const dispHybrid = await classifyImportedCard(hybrid);
+  assert.equal(dispHybrid.branch, '4b');
+  assert.equal(dispHybrid.alarm, 'quiet');
+
+  // BACKWARD-COMPAT: the SAME identity signed classically (omit the secret) still verifies + imports 4b.
+  const classical = await buildSignedIdentityCard(identity, priv, pass);
+  assert.equal(classical.pq_signature, undefined, 'classical card carries no pq_signature');
+  assert.equal(await verifySignedIdentityCard(classical), true, 'classical card still verifies (backward compat)');
+
+  // ANTI-STRIP: deleting the carried pq_sig pubkey to dodge the ML-DSA check breaks the canonical
+  // fingerprint binding (fp = H(sign‖enc‖kem‖sig)) → rejected at Invariant-1 (branch 1), never a
+  // silent downgrade. (The classical half also signs over the field, so tampering is caught twice.)
+  const stripped = { ...hybrid, identity: { ...hybrid.identity, pq_sig_public_key: '' } } as SignedIdentityCard;
+  assert.equal(await verifySignedIdentityCard(stripped), false, 'stripping the carried pq_sig pubkey fails closed');
+  assert.equal((await classifyImportedCard(stripped)).branch, 1);
+});
+
+// Flint PR#146 required-fix guard: self-supply newly makes the pq_signature base64-decode reachable,
+// so a malformed pq_signature must FAIL CLOSED (branch 3, loud), never throw out of verify.
+test('PQ-HYBRID guard: a malformed-base64 pq_signature returns false → branch 3 (never throws)', async () => {
+  const { identity, priv, pass, sigSecret } = await makeHybridId('hybrid-garbage');
+  const hybrid = await buildSignedIdentityCard(identity, priv, pass, sigSecret);
+  // Valid classical sig + valid carried pq_sig pubkey, but a GARBAGE (non-base64) pq_signature.
+  // Pre-guard, self-supply → base64ToUint8(atob) → THROW; post-guard → false.
+  const garbage = { ...hybrid, pq_signature: '!!! not base64 !!!' } as SignedIdentityCard;
+  assert.equal(await verifySignedIdentityCard(garbage), false); // returns (does not throw)
+  const disp = await classifyImportedCard(garbage);
+  assert.equal(disp.branch, 3);
+  assert.equal(disp.alarm, 'loud');
+});
+
+// Anti-downgrade lock: stripping the pq_signature but KEEPING the pq_sig pubkey (attempt to force the
+// card back to classical-only) flips the derived suite HYBRID→CLASSICAL → the signed bytes change →
+// the classical sig no longer verifies → branch 3 (loud), never a silent classical accept.
+test('PQ-HYBRID guard: stripping pq_signature (keeping pubkey) → branch 3, not a silent downgrade', async () => {
+  const { identity, priv, pass, sigSecret } = await makeHybridId('hybrid-stripsig');
+  const hybrid = await buildSignedIdentityCard(identity, priv, pass, sigSecret);
+  const { pq_signature, ...noSig } = hybrid;
+  void pq_signature;
+  const stripped = noSig as SignedIdentityCard;
+  assert.equal(await verifySignedIdentityCard(stripped), false);
+  assert.equal((await classifyImportedCard(stripped)).branch, 3);
+});

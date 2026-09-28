@@ -20,7 +20,8 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createRelay } from '@/lib/sync/relay';
-import { loadKey } from '@/lib/identity/client-store';
+import { loadKey, loadPQKeys } from '@/lib/identity/client-store';
+import { base64ToUint8 } from '@/lib/crypto/pq';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { shareUrlShort } from '@/lib/config/domain';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
@@ -70,7 +71,13 @@ export function Ceremony({ identity, contacts = [], onClose }: CeremonyProps) {
     const fp = identity.identity.fingerprint;
     const key = await loadKey(fp);
     if (!key) throw new Error('Unlock your identity first to share a signed card.');
-    const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+    // PQ-hybrid (PR#146): dual-sign the ceremony card (classical-only fallback if PQ half unreadable).
+    let pqSigningSecretKey: Uint8Array | undefined;
+    try {
+      const pq = await loadPQKeys(fp);
+      if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+    } catch { /* classical-only */ }
+    const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase, pqSigningSecretKey);
     return JSON.stringify(signed);
   }, [identity]);
 

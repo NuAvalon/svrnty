@@ -1700,7 +1700,14 @@ export function SoverentityFrontend({
       const fp = identity.identity.fingerprint as string;
       const key = await loadKey(fp);
       if (!key) throw new Error('Unlock your identity first to share a signed card.');
-      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      // PQ-hybrid (PR#146): load the ML-DSA signing secret so the shared card is dual-signed
+      // (classical-only fallback if the PQ half can't be read — never block the share).
+      let pqSigningSecretKey: Uint8Array | undefined;
+      try {
+        const pq = await loadPQKeys(fp);
+        if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+      } catch { /* classical-only */ }
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase, pqSigningSecretKey);
       setSharePackage(JSON.stringify(signed, null, 2));
       setShowShareIdentity(true);
     } catch (e) {
