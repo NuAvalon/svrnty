@@ -38,17 +38,27 @@
 //                                   self-sign. The lost device's key is NOT needed — the pre-commitment IS
 //                                   the authorization. ZERO DID reference at the relay → unlinkable. Reuses
 //                                   the T1 applyRotation `H(reveal)==commitment` primitive (not net-new).
-//   NB (pending Flint co-verify): whether the owner-key install/rotate uses THIS owner-op preimage with
-//   op=`rotate-owner` (target=new_owner_pubkey) or a distinct `svrnty-mailbox-ownerkey:` preimage
-//   (Athena #151353) is the one detail in the truncated tail of #151432 — the primitives here support
-//   either; the exact composition is pinned at co-verify.
+//   RESOLVED (Flint #151507 / KB#91073): the owner-key install/rotate/recovery uses a DISTINCT preimage
+//   `svrnty-mailbox-ownerkey:{mailbox_fp}:{owner_pub_hex}:{epoch}` (NOT the rotate-owner op — dropped). The
+//   NEW owner-key SELF-signs its own registration (genesis = TOFU, relay stores durable_id-BLIND on
+//   client-auth; rotate/recovery = pre-rotation reveal H(reveal)==stored commitment_n). The owner-key CHAIN
+//   is per-mailbox + DID-blind: owner_key_n = HKDF(seed, info=utf8("svrnty-mailbox-ownerkey-chain:v1:{mailbox_fp}:{n}"))
+//   (KB#91096 HKDF-encoding nod) — mailbox-scoped so the relay can never link mailbox↔DID (§0). NO
+//   current-key-sig and NO DID-authority sig on the rotate/recovery path (survives current-key theft; unlinkable).
+//   ⚠ The owner-key-reg `epoch` is the ROTATION INDEX n (0 at genesis, +1 per rotation) — DISTINCT from the
+//   routine-op anti-replay epoch above; the satellite stores them separately. Flagged for Flint/Athena at co-verify.
 
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { hkdf } from '@noble/hashes/hkdf.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 
 // ── FLAG-1: op_type is a CLOSED ENUM (never free-form) ─────────────────────────────────────────────────
-export const OWNER_OP_TYPES = ['allow-add', 'allow-remove', 'revoke-holder', 'register-admission', 'rotate-owner'] as const;
+// `rotate-owner` was REMOVED (Flint #151507 / KB#91073): an owner-KEY install/rotate/recovery changes the
+// mailbox ROOT authority — a different security class + verify mechanism than ops-signed-UNDER-that-authority.
+// It gets its OWN domain-separated preimage (`svrnty-mailbox-ownerkey:`, below) so a routine-op signature can
+// never replay as a key-install (separation law). The routine enum is these four only.
+export const OWNER_OP_TYPES = ['allow-add', 'allow-remove', 'revoke-holder', 'register-admission'] as const;
 export type OwnerOpType = (typeof OWNER_OP_TYPES)[number];
 
 const HEX_RE = /^[0-9a-f]+$/; // canonical lowercase-hex
@@ -128,4 +138,122 @@ export function verifyRecoveryReveal(revealedNextOwnerPub: Uint8Array, storedCom
   } catch {
     return false;
   }
+}
+
+// ══ OWNER-KEY LIFECYCLE (install / rotate / recovery) — Flint #151507 / KB#91073+91096 ═══════════════════
+// The owner-KEY registration is DISTINCT from a routine owner-op (separation law): different domain preimage,
+// self-signed by the NEW owner key. Genesis = TOFU (relay durable_id-blind); rotate/recovery = pre-rotation
+// reveal (H(reveal)==stored commitment_n). The owner-key chain is seed-derived, per-mailbox, and DID-BLIND.
+
+const HEX64_RE = /^[0-9a-f]{64}$/; // SHA-256 commitment / 32B pubkey as lowercase hex
+
+/**
+ * The owner-KEY registration preimage, byte-exact and domain-separated from `svrnty-mailbox-op:`:
+ *   `svrnty-mailbox-ownerkey:{mailbox_fp}:{owner_pub_hex}:{epoch}`
+ * Flat delimited, signed DIRECTLY as UTF-8 with Ed25519 (no envelope). The owner_pub is BOUND into the
+ * preimage (it self-signs) so a relay can't swap the registered key. `epoch` here is the owner-key ROTATION
+ * INDEX n (0 = genesis), monotonic — DISTINCT from the routine-op anti-replay epoch.
+ */
+export function ownerKeyRegScope(mailboxFp: string, ownerPubHex: string, epoch: number): string {
+  if (!HEX_RE.test(mailboxFp)) throw new Error(`ownerKeyRegScope: mailbox_fp must be canonical lowercase-hex, got ${JSON.stringify(mailboxFp)}`);
+  if (!HEX_RE.test(ownerPubHex) || ownerPubHex.length !== PUBKEY_HEX_LEN)
+    throw new Error(`ownerKeyRegScope: owner_pub must be ${PUBKEY_HEX_LEN}-char lowercase-hex, got ${JSON.stringify(ownerPubHex)}`);
+  if (!Number.isInteger(epoch) || epoch < 0) throw new Error(`ownerKeyRegScope: epoch must be a non-negative integer, got ${epoch}`);
+  return `svrnty-mailbox-ownerkey:${mailboxFp}:${ownerPubHex}:${epoch}`;
+}
+
+/**
+ * Derive the owner key at rotation index `n` from the owner's cold seed — per-mailbox + DID-blind (KB#91096):
+ *   owner_key_n = HKDF-SHA256(seed, info=utf8("svrnty-mailbox-ownerkey-chain:v1:{mailbox_fp}:{n}"), 32B)
+ * mailbox_fp is in the info (mailbox-scoped) but the DID is NOT → the relay can never link mailbox↔DID (§0).
+ * Returns the 32B ed25519 seed + its pubkey. The seed survives device loss (re-derivable from the cold seed),
+ * so recovery reveals the pre-committed next key without ever needing the lost device.
+ */
+export function deriveOwnerKey(seed: Uint8Array, mailboxFp: string, n: number): { seed: Uint8Array; pub: Uint8Array } {
+  if (!HEX_RE.test(mailboxFp)) throw new Error(`deriveOwnerKey: mailbox_fp must be canonical lowercase-hex`);
+  if (!Number.isInteger(n) || n < 0) throw new Error(`deriveOwnerKey: n must be a non-negative integer, got ${n}`);
+  const info = utf8ToBytes(`svrnty-mailbox-ownerkey-chain:v1:${mailboxFp}:${n}`);
+  const keySeed = hkdf(sha256, seed, undefined, info, 32);
+  return { seed: keySeed, pub: ed25519.getPublicKey(keySeed) };
+}
+
+/**
+ * SELF-sign an owner-key registration: the owner key signs the preimage that names its OWN pubkey. Derives
+ * the pubkey from the seed (fail-closed self-consistency — you cannot register a key you do not hold).
+ */
+export function signOwnerKeyReg(ownerKeySeed: Uint8Array, mailboxFp: string, epoch: number): { ownerPubHex: string; sig: Uint8Array } {
+  const ownerPubHex = bytesToHex(ed25519.getPublicKey(ownerKeySeed));
+  const sig = ed25519.sign(utf8ToBytes(ownerKeyRegScope(mailboxFp, ownerPubHex, epoch)), ownerKeySeed);
+  return { ownerPubHex, sig };
+}
+
+/** A completed owner-key registration record — what the client hands the relay (genesis or rotate/recovery). */
+export interface OwnerKeyRegistration {
+  mailboxFp: string;
+  epoch: number; // rotation index n (0 = genesis)
+  ownerPubHex: string; // the owner key being registered (self-signs)
+  sig: Uint8Array; // self-sign over ownerKeyRegScope
+  nextCommitmentHex: string; // H(owner_key_{n+1}) — the pre-rotation commitment this reg SETS for the next rotation
+}
+
+/** Build the GENESIS owner-key registration (epoch 0): owner_key_0 self-signs, commits H(owner_key_1). */
+export function buildOwnerKeyGenesis(seed: Uint8Array, mailboxFp: string): OwnerKeyRegistration {
+  const k0 = deriveOwnerKey(seed, mailboxFp, 0);
+  const k1 = deriveOwnerKey(seed, mailboxFp, 1);
+  const { ownerPubHex, sig } = signOwnerKeyReg(k0.seed, mailboxFp, 0);
+  return { mailboxFp, epoch: 0, ownerPubHex, sig, nextCommitmentHex: commitNextOwnerKey(k1.pub) };
+}
+
+/**
+ * Build a ROTATION/RECOVERY owner-key registration INTO rotation index `epoch` (≥ 1): reveal owner_key_epoch
+ * (which the relay checks hashes to the stored commitment_{epoch-1}), self-sign, and commit H(owner_key_{epoch+1}).
+ * Rotate and recovery are the SAME path — recovery just re-derives the chain from the cold seed after device loss.
+ */
+export function buildOwnerKeyRotation(seed: Uint8Array, mailboxFp: string, epoch: number): OwnerKeyRegistration {
+  if (!Number.isInteger(epoch) || epoch < 1) throw new Error('buildOwnerKeyRotation: epoch must be ≥ 1 (genesis is epoch 0)');
+  const kn = deriveOwnerKey(seed, mailboxFp, epoch);
+  const kNext = deriveOwnerKey(seed, mailboxFp, epoch + 1);
+  const { ownerPubHex, sig } = signOwnerKeyReg(kn.seed, mailboxFp, epoch);
+  return { mailboxFp, epoch, ownerPubHex, sig, nextCommitmentHex: commitNextOwnerKey(kNext.pub) };
+}
+
+export interface OwnerKeyRegVerifyInput {
+  ownerPub: Uint8Array; // the owner key being registered (verifies its own self-sign)
+  sig: Uint8Array;
+  mailboxFp: string;
+  epoch: number; // rotation index n
+  nextCommitmentHex: string; // the commitment this reg sets (stored on accept) — format-checked here
+  priorCommitmentHex?: string; // PRESENT ⇒ rotate/recovery (reveal must hash to it); ABSENT ⇒ genesis (TOFU)
+  lastEpoch?: number; // satellite's stored rotation index — reject epoch ≤ lastEpoch (rotate/recovery only)
+}
+
+/**
+ * Mirror of the satellite's owner-key registration verify (satellite is authoritative — it owns the
+ * (mailbox)→{owner_pub, rotation-index, commitment} store). Two modes:
+ *   • genesis (priorCommitmentHex absent): TOFU — epoch must be 0, the owner key self-signs. Relay stores
+ *     the record on client-auth WITHOUT any durable_id lookup (§0 unlinkable).
+ *   • rotate/recovery (priorCommitmentHex present): the revealed owner key must hash to the stored
+ *     commitment_{n-1} (pre-rotation), self-sign valid, and the rotation index strictly advances.
+ * NO current-key signature and NO DID-authority is ever required — the pre-commitment IS the authorization.
+ */
+export function verifyOwnerKeyReg(inp: OwnerKeyRegVerifyInput): OwnerOpVerifyResult {
+  if (inp.ownerPub.length !== 32) return { ok: false, reason: 'bad-owner-pub-length' };
+  if (!HEX64_RE.test((inp.nextCommitmentHex || '').toLowerCase())) return { ok: false, reason: 'bad-next-commitment' };
+  let scope: string;
+  try {
+    scope = ownerKeyRegScope(inp.mailboxFp, bytesToHex(inp.ownerPub), inp.epoch);
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : 'bad-ownerkey-scope-fields' };
+  }
+  if (!ed25519.verify(inp.sig, utf8ToBytes(scope), inp.ownerPub)) return { ok: false, reason: 'ownerkey-self-sign-invalid' };
+  if (inp.priorCommitmentHex === undefined) {
+    // genesis (TOFU) — no prior commitment to check; the relay is trusting-on-first-use.
+    if (inp.epoch !== 0) return { ok: false, reason: 'genesis-must-be-epoch-0' };
+    return { ok: true };
+  }
+  // rotate / recovery
+  if (inp.epoch < 1) return { ok: false, reason: 'rotation-must-advance-epoch' };
+  if (inp.lastEpoch !== undefined && !(inp.epoch > inp.lastEpoch)) return { ok: false, reason: 'epoch-not-monotonic' };
+  if (!verifyRecoveryReveal(inp.ownerPub, inp.priorCommitmentHex)) return { ok: false, reason: 'reveal-does-not-match-commitment' };
+  return { ok: true };
 }
