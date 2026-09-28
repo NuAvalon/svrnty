@@ -1,42 +1,49 @@
 // src/lib/identity/did-peer.ts
 //
-// T1 — DID + DID-Document for svrnty (C-build, Lane C / Apollo).
+// T1 — DID + DID-Document for svrnty (C-build, Lane C / Apollo). (c)-COLLAPSE REWRITE.
 //
-// WHAT THIS IS. svrnty's identity today is `fp = hex(SHA256(sign‖enc‖kem‖sig))` over the 4 operational
-// public keys (deriveCanonicalFingerprintHex, ./fingerprint). That fp IS the identity — so a key ROTATION
-// changes the fp, which changes the identity. That is exactly Peter's migratability flaw ("rotation changes
-// who you are"). This module adds a DID layer whose identifier is STABLE across operational rotation, so the
-// keys can change while the durable handle (and everyone's address-book entry) does not.
+// WHAT THIS IS. svrnty's identity is `durable_id = hex(SHA256(sign32 ‖ enc32 ‖ kem1568 ‖ sig2592))` over the 4
+// GENESIS operational public keys (deriveCanonicalFingerprintHex, ./fingerprint). This module adds a DID layer
+// whose identifier is STABLE across operational rotation, so the keys can change while the durable handle (and
+// everyone's address-book entry) does not — Peter's migratability fix.
 //
-// ── THE STABLE-ANCHOR DESIGN (the crux; corrects the plan doc's did:peer numalgo-2 choice) ───────────────
-//   did:peer numalgo-2 encodes the CURRENT keys INTO the id string, so rotating a key changes the id — it
-//   does NOT give a stable handle. So the DID id here anchors to the ONE thing that survives operational
-//   rotation: the COLD-SEED GENESIS ROTATION-AUTHORITY (epoch-0), the same cold-seed material that
-//   deriveNextAuthorityKeypair/deriveNextAuthorityCommitment already manage (./fingerprint). The DID-Document
-//   then lists the CURRENT operational keys as verificationMethods and is MUTABLE (add/revoke a device,
-//   move a serviceEndpoint, rotate keys) — each mutation signed by the cold-seed authority key with a
-//   monotonic seq (Flint X5). Identity = the anchor; the keys are just the current contents.
+// ── THE (c)-COLLAPSE ANCHOR (KB#91051/91054/91096; corrects the old authority-pubs anchor) ──────────────────
+//   The DID id anchors to `durable_id` — the SAME canonical fingerprint that is the trust-graph key
+//   (TrustEdge.peer_fingerprint) and the satellite `identities.fingerprint` (byte-identical by construction,
+//   zero FK re-key). Identity ≠ governance key: the anchor is the genesis OPERATIONAL key bundle, NOT the
+//   cold-seed authority. This is why the old self-certification (reveal authority pubs, hash == id) no longer
+//   holds — H(authority pubs) ≠ id — and the verifier splits into TWO signer paths:
 //
-//   id = `did:svrnty:` + hex(SHA256( DID_ANCHOR_TAG ‖ authEd0[32] ‖ authDsa0[2592] ))
-//   (authEd0/authDsa0 = the epoch-0 cold-seed authority pubs). Self-certifying: a DID-Doc's proof reveals
-//   the authority pubs whose hash must equal the anchor embedded in the id — no registry, no lookup.
+//   id = `did:svrnty:` + deriveCanonicalFingerprintHex(genesis sign, enc, kem, sig)   (no re-hash; wrap the fp)
 //
-// ── SIGNING (reuses Flint X5 — no new crypto) ────────────────────────────────────────────────────────────
+// ── TWO-SIGNER VERIFY MODEL (Flint verify-model nod, KB#91096) ───────────────────────────────────────────────
+//   • GENESIS DID-Doc (seq 0) = OPERATIONAL-KEY SELF-SIGN. The genesis device's own signing keys (ed25519
+//     `sign` + ML-DSA-87 `sig` — the same keys that sign the identity card) sign the doc. Self-certifies:
+//     deriveCanonicalFingerprintHex(the doc's genesis operational keys) == the id anchor. A contact who
+//     accepted the card already trusts these keys → no cold-seed needed for the genesis doc. The genesis doc
+//     COMMITS the governance authority: `nextAuthorityCommitment = H(cold-seed authority epoch-0 pubs)`.
+//   • MUTATION DID-Doc (add/revoke device, endpoint move, key rotation — seq ≥ 1) = COLD-SEED AUTHORITY SIGN
+//     (Flint X5 governance). The proof REVEALS the authority pubs; the verifier checks
+//     H(reveal) == the prior doc's `nextAuthorityCommitment` (pre-rotation commitment chain, KERI-style) and
+//     verifies the hybrid authority signature. The lineage WALK across rotations lives at the EDGE — this
+//     module verifies one hop given the expected commitment; the caller threads doc_n.nextAuthorityCommitment
+//     as the expected commitment for doc_{n+1}.
+//
+//   ★ §0-SAFE (KB#91096): a DID-Doc is verified AT THE EDGE by CONTACTS (who hold your DID), NEVER at the
+//   blind relay → cold-seed-authority on a DID-Doc mutation is FINE (no mailbox↔DID leak). This is the
+//   OPPOSITE of S1 owner-key (relay-verified → per-mailbox pre-rotation, no DID-authority). Rule:
+//   edge-verified ⇒ authority-OK; relay-verified ⇒ no-DID-authority.
+//
+// ── SIGNING (reuses the SAME hybrid envelope for BOTH paths — no new crypto) ──────────────────────────────────
 //   signed_bytes = buildSignedBytes(DOMAIN_DID_DOC, SUITE_HYBRID, canonicalize(doc, {exclude:['proof']}))
 //   = LP(domain) ‖ LP(suite) ‖ canonical_input   (./crypto/sign-envelope — netstring-injective, the SAME
 //   envelope + house canonicalizer every other svrnty signed object uses; cross-language reproducible for a
-//   Python verifier). Signed HYBRID (ed25519 + ML-DSA-87) with the cold-seed authority keypair, byte-identical
-//   to sign/verifyRotationAuthority except the domain tag.
-//
-// ── GATED DECISIONS (marked; pinged to Flint ☀7490 / Archie — build is to my lean, isolated swaps if flipped) ─
-//   (a) canonicalizer = the house canonicalize() (NOT a new JCS lib) — it IS the deployed seam contract.
-//   (b) domain = DOMAIN_DID_DOC (distinct from DOMAIN_ROTATION) — 1-const swap if Flint prefers reuse.
-//   (c) key encoding = svrnty-native HEX (matches sign_pub/enc_pub/kem_pub/sig_pub) — a spec-pure multibase
-//       encoder (base58btc+varint, external-resolver interop) is a post-launch drop-in behind encode/decode.
-//   (d) method name = `did:svrnty` (custom, registry-free) vs did:peer numalgo-4 (hash-of-genesis short form).
-//       The ANCHOR MATH is method-agnostic; only the printed prefix changes.
+//   Python verifier). Signed HYBRID (ed25519 + ML-DSA-87). Only the KEY differs between the two paths:
+//   genesis = the doc's operational (sign, sig) keypair; mutation = the cold-seed authority keypair. The
+//   ed25519 `sign` operational secret is the raw 32B seed from extractRawSign — ed25519.sign(payload, seed)
+//   verifies vs the operational signPub (proven in ./raw-sign), so the genesis self-sign is the SAME primitive
+//   the identity card uses.
 
-import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
@@ -51,18 +58,26 @@ import {
   AUTH_ED25519_PUB_BYTES,
   AUTH_ML_DSA87_PUB_BYTES,
   AUTH_ED25519_SIG_BYTES,
+  deriveCanonicalFingerprintHex,
+  authorityCommitmentFromReveal,
+  encodeAuthorityPubkeys,
+  normalizeFingerprintHex,
+  type NextAuthorityKeypair,
 } from './fingerprint';
 
 // ── Method + shapes ──────────────────────────────────────────────────────────────────────────────────────
 export const DID_METHOD = 'did:svrnty'; // (d) custom, registry-free; anchor math is method-agnostic
-export const DID_ANCHOR_TAG = 'svrnty:did-anchor:v1'; // domain-separates the id-anchor hash preimage
 export const DID_CONTEXT = 'https://www.w3.org/ns/did/v1';
+export const DID_DOC_PROOF_TYPE = 'SvrntyDidDoc2026';
 
 // verificationMethod `type` tags. Classical types use the W3C names; PQ has no registered type yet → svrnty-native.
 export const VM_TYPE_ED25519 = 'Ed25519VerificationKey2020';
 export const VM_TYPE_X25519 = 'X25519KeyAgreementKey2020';
 export const VM_TYPE_ML_DSA87 = 'MlDsa87VerificationKey2026';
 export const VM_TYPE_ML_KEM1024 = 'MlKem1024KeyAgreementKey2026';
+
+/** Which key signed a DID-Doc: genesis = the doc's own operational keys; mutation = the cold-seed authority. */
+export type DidDocProofMode = 'genesis-operational' | 'authority-mutation';
 
 /** A public key inside the DID-Doc. `publicKeyHex` is svrnty-native (matches sign_pub/enc_pub/... fields). */
 export interface VerificationMethod {
@@ -80,12 +95,14 @@ export interface ServiceEndpoint {
   serviceEndpoint: string;
 }
 
-/** The authority signature over the DID-Doc. EXCLUDED from its own canonical signed input (sign-then-attach). */
+/** The signature over the DID-Doc. EXCLUDED from its own canonical signed input (sign-then-attach). */
 export interface DidDocProof {
-  type: 'SvrntyAuthorityHybrid2026';
+  type: typeof DID_DOC_PROOF_TYPE;
+  mode: DidDocProofMode;
   domain: string; // DOMAIN_DID_DOC (informational; also bound structurally via the sign-envelope LP prefix)
-  epoch: number; // cold-seed authority epoch whose key signed this (v1 launch: 0 = genesis)
-  authorityPubkeys: { sign: string; pq_sig: string }; // revealed cold-seed authority pubs (hex); H(reveal) chains to the id anchor
+  // authority-mutation ONLY: the REVEALED cold-seed authority pubs (hex). H(reveal) must equal the prior
+  // doc's nextAuthorityCommitment. Absent for genesis-operational (its pubs are the doc's own genesis VMs).
+  authorityPubkeys?: { sign: string; pq_sig: string };
   sig: string; // hybrid sig hex: ed25519(64B) ‖ ML-DSA-87
 }
 
@@ -97,6 +114,10 @@ export interface DidDocument {
   authentication: string[]; // fragment refs into verificationMethod (which keys may authenticate)
   service: ServiceEndpoint[];
   seq: number; // monotonic mutation counter — INSIDE the signed bytes (replay guard, Flint X5)
+  // Pre-rotation commitment to the governance authority allowed to sign the NEXT doc: H(next authority pubs)
+  // = deriveNextAuthorityCommitment(coldSeed, epoch). Committed at genesis (operational self-sign binds it to
+  // durable_id); each doc re-commits so the edge can walk the lineage. 64-lowercase-hex.
+  nextAuthorityCommitment: string;
   proof?: DidDocProof; // attached after signing; excluded from the canonical input
 }
 
@@ -109,43 +130,40 @@ export interface DeviceKeys {
   sigPub: Uint8Array; // 2592B ML-DSA-87
 }
 
+/** Genesis operational signing material: the raw ed25519 seed (extractRawSign) + the ML-DSA-87 sig secret. */
+export interface GenesisOperationalSigner {
+  signSeed: Uint8Array; // 32B raw ed25519 seed (== extractRawSign().seed); ed25519.sign(_, seed) verifies vs signPub
+  sigSecret: Uint8Array; // ML-DSA-87 secret key
+}
+
 const DEVICE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/; // fragment-safe, canonical
+const HEX64_RE = /^[0-9a-f]{64}$/;
 
-// ── id anchor ────────────────────────────────────────────────────────────────────────────────────────────
+// ── id anchor (durable_id) ───────────────────────────────────────────────────────────────────────────────────
 /**
- * The stable DID for an identity, anchored to its GENESIS (epoch-0) cold-seed rotation-authority pubs.
- * STABLE across operational key rotation (the cold seed does not change), which is the whole migratability
- * fix. Self-certifying: a DID-Doc's proof reveals authority pubs whose SHA256 must reproduce this anchor.
+ * The stable DID for an identity, anchored to its `durable_id` = deriveCanonicalFingerprintHex over the 4
+ * GENESIS operational public keys. STABLE across operational key rotation is NOT provided by re-hashing keys
+ * (that would change the id) — it is provided by the DID layer: the id is fixed to the genesis bundle's hash
+ * and the DID-Doc's CONTENTS mutate under governance. Byte-identical to the trust-graph / satellite fingerprint.
  */
-export function deriveDid(authEd0Pub: Uint8Array, authDsa0Pub: Uint8Array): string {
-  if (authEd0Pub.length !== AUTH_ED25519_PUB_BYTES)
-    throw new Error(`deriveDid: authority ed25519 pub must be ${AUTH_ED25519_PUB_BYTES}B`);
-  if (authDsa0Pub.length !== AUTH_ML_DSA87_PUB_BYTES)
-    throw new Error(`deriveDid: authority ML-DSA-87 pub must be ${AUTH_ML_DSA87_PUB_BYTES}B`);
-  const anchor = bytesToHex(sha256(concatBytes(utf8ToBytes(DID_ANCHOR_TAG), authEd0Pub, authDsa0Pub)));
-  return `${DID_METHOD}:${anchor}`;
+export function deriveDid(signPub: Uint8Array, encPub: Uint8Array, kemPub: Uint8Array, sigPub: Uint8Array): string {
+  return `${DID_METHOD}:${deriveCanonicalFingerprintHex(signPub, encPub, kemPub, sigPub)}`;
 }
 
-/** Recompute the id anchor from revealed authority pubs (hex) — used to check a DID-Doc against its own id. */
-export function anchorFromAuthorityReveal(signHex: string, pqSigHex: string): string {
-  let ed: Uint8Array;
-  let dsa: Uint8Array;
-  try {
-    ed = hexToBytes(signHex);
-    dsa = hexToBytes(pqSigHex);
-  } catch {
-    throw new Error('anchorFromAuthorityReveal: authority reveal is not valid hex');
-  }
-  return deriveDid(ed, dsa);
+/** Wrap an already-computed 64-hex durable_id (the identity's canonical fingerprint) as a did:svrnty DID. */
+export function didFromFingerprint(fingerprintHex: string): string {
+  const fp = normalizeFingerprintHex(fingerprintHex);
+  if (!HEX64_RE.test(fp)) throw new Error('didFromFingerprint: durable_id must be 64 lowercase hex');
+  return `${DID_METHOD}:${fp}`;
 }
 
-/** Extract the `did:svrnty:<anchor>` portion (drops any `#fragment`). Throws on a non-svrnty DID. */
+/** Extract the `did:svrnty:<durable_id>` portion (drops any `#fragment`). Throws on a non-svrnty DID. */
 export function parseDid(did: string): { method: string; anchorHex: string } {
   const base = did.split('#')[0];
   const prefix = `${DID_METHOD}:`;
   if (!base.startsWith(prefix)) throw new Error(`parseDid: not a ${DID_METHOD} DID: ${JSON.stringify(base)}`);
   const anchorHex = base.slice(prefix.length);
-  if (!/^[0-9a-f]{64}$/.test(anchorHex)) throw new Error('parseDid: anchor is not 64-hex');
+  if (!HEX64_RE.test(anchorHex)) throw new Error('parseDid: anchor is not 64-hex');
   return { method: DID_METHOD, anchorHex };
 }
 
@@ -176,19 +194,25 @@ function deviceVMs(did: string, dev: DeviceKeys): { signing: VerificationMethod[
 }
 
 /**
- * Assemble an UNSIGNED DID-Document. `did` must be the stable anchor (deriveDid). `devices` is one entry per
- * device (multi-device = multiple entries). `services` are routing endpoints (blinded tags). `seq` starts at 0
- * at genesis and strictly increments on every mutation. Sign with signDidDocument() before sharing.
+ * Assemble an UNSIGNED DID-Document. `did` must be the durable_id anchor (deriveDid / didFromFingerprint).
+ * `devices` is one entry per device — at GENESIS there must be exactly ONE (its 4 keys ARE the durable_id;
+ * additional devices are added later via authority-signed mutations). `nextAuthorityCommitment` binds the
+ * governance authority (H(cold-seed authority pubs) = deriveNextAuthorityCommitment). Sign with
+ * signDidDocGenesis() (seq 0) or signDidDocMutation() (seq ≥ 1) before sharing.
  */
 export function buildDidDocument(params: {
   did: string;
   devices: DeviceKeys[];
+  nextAuthorityCommitment: string;
   services?: ServiceEndpoint[];
   seq?: number;
 }): DidDocument {
   const { did } = params;
   parseDid(did); // fail-closed on a malformed DID
   if (!params.devices.length) throw new Error('buildDidDocument: at least one device required');
+  const nextAuthorityCommitment = normalizeFingerprintHex(params.nextAuthorityCommitment);
+  if (!HEX64_RE.test(nextAuthorityCommitment))
+    throw new Error('buildDidDocument: nextAuthorityCommitment must be 64 lowercase hex');
   const verificationMethod: VerificationMethod[] = [];
   const keyAgreement: VerificationMethod[] = [];
   const authentication: string[] = [];
@@ -211,11 +235,12 @@ export function buildDidDocument(params: {
     authentication,
     service: params.services ?? [],
     seq,
+    nextAuthorityCommitment,
   };
 }
 
-// ── multi-device mutations (return a NEW unsigned doc with seq++; re-sign before sharing) ────────────────────
-/** Add a device's key set. Returns a new unsigned doc with seq incremented; caller re-signs. */
+// ── multi-device mutations (return a NEW unsigned doc with seq++; re-sign with the AUTHORITY before sharing) ──
+/** Add a device's key set. Returns a new unsigned doc with seq incremented; caller re-signs (mutation). */
 export function addDevice(doc: DidDocument, dev: DeviceKeys): DidDocument {
   if (doc.verificationMethod.some((v) => v.id.startsWith(`${doc.id}#${dev.device}-`)))
     throw new Error(`addDevice: device ${dev.device} already present`);
@@ -246,29 +271,34 @@ export function revokeDevice(doc: DidDocument, device: string): DidDocument {
   };
 }
 
-// ── canonicalization + hybrid authority signing (mirrors sign/verifyRotationAuthority, DOMAIN_DID_DOC) ──────
+/** Re-commit to a (possibly new) governance authority on the NEXT doc. seq++; caller re-signs (mutation). */
+export function setNextAuthorityCommitment(doc: DidDocument, nextAuthorityCommitment: string): DidDocument {
+  const c = normalizeFingerprintHex(nextAuthorityCommitment);
+  if (!HEX64_RE.test(c)) throw new Error('setNextAuthorityCommitment: must be 64 lowercase hex');
+  return { ...doc, seq: doc.seq + 1, nextAuthorityCommitment: c, proof: undefined };
+}
+
+// ── canonicalization + hybrid signing (shared by BOTH paths, DOMAIN_DID_DOC) ─────────────────────────────────
 /** The exact string that gets signed: house canonicalize() over the doc MINUS its own proof. */
 export function canonicalDidDocInput(doc: DidDocument): string {
   return canonicalize(doc, { exclude: ['proof'] });
 }
 
-function didDocAuthorityPayload(canonicalInput: string): Uint8Array {
+function didDocHybridPayload(canonicalInput: string): Uint8Array {
   return utf8ToBytes(buildSignedBytes(DOMAIN_DID_DOC, SUITE_HYBRID, canonicalInput));
 }
 
-/** Hybrid authority signature over the canonical DID-Doc input: hex(ed25519-sig 64B ‖ ML-DSA-87-sig). */
-export function signDidDocAuthority(canonicalInput: string, edSecret: Uint8Array, dsaSecret: Uint8Array): string {
-  const payload = didDocAuthorityPayload(canonicalInput);
+/**
+ * Hybrid signature over the canonical DID-Doc input: hex(ed25519-sig 64B ‖ ML-DSA-87-sig). Generic over the
+ * keypair — used with the genesis OPERATIONAL keys (self-sign) and with the cold-seed AUTHORITY keys (mutation).
+ */
+export function signDidDocHybrid(canonicalInput: string, edSecret: Uint8Array, dsaSecret: Uint8Array): string {
+  const payload = didDocHybridPayload(canonicalInput);
   return bytesToHex(concatBytes(ed25519.sign(payload, edSecret), ml_dsa87.sign(payload, dsaSecret)));
 }
 
-/** Verify BOTH legs of a DID-Doc authority signature under the revealed authority pubs. */
-export function verifyDidDocAuthority(
-  canonicalInput: string,
-  sigHex: string,
-  signHex: string,
-  pqSigHex: string,
-): boolean {
+/** Verify BOTH legs of a DID-Doc hybrid signature under the given ed25519 (32B) + ML-DSA-87 (2592B) pubs. */
+export function verifyDidDocHybrid(canonicalInput: string, sigHex: string, signHex: string, pqSigHex: string): boolean {
   try {
     const sig = hexToBytes(sigHex);
     const edPub = hexToBytes(signHex);
@@ -277,7 +307,7 @@ export function verifyDidDocAuthority(
     if (sig.length <= AUTH_ED25519_SIG_BYTES) return false;
     const edSig = sig.subarray(0, AUTH_ED25519_SIG_BYTES);
     const dsaSig = sig.subarray(AUTH_ED25519_SIG_BYTES);
-    const payload = didDocAuthorityPayload(canonicalInput);
+    const payload = didDocHybridPayload(canonicalInput);
     if (!ed25519.verify(edSig, payload, edPub)) return false;
     return ml_dsa87.verify(dsaSig, payload, dsaPub);
   } catch {
@@ -285,29 +315,68 @@ export function verifyDidDocAuthority(
   }
 }
 
-// ── high-level sign / verify ─────────────────────────────────────────────────────────────────────────────
 /**
- * Sign an unsigned DID-Doc with the cold-seed authority keypair and attach the proof. `epoch` names the
- * authority epoch (v1 launch: 0 = genesis). The revealed authority pubs MUST hash to the DID's id anchor —
- * this function checks that (fail-closed) so you can only sign a doc with the authority that owns it.
+ * Extract the SINGLE genesis device's 4 operational public keys (by VM type). Returns null unless the doc has
+ * EXACTLY one of each (sign/enc/kem/sig) — i.e. the one-device genesis shape whose bundle defines durable_id.
  */
-export function signDidDocument(
+export function extractGenesisOperationalKeys(
   doc: DidDocument,
-  authority: { edPublic: Uint8Array; edSecret: Uint8Array; dsaPublic: Uint8Array; dsaSecret: Uint8Array },
-  epoch: number,
-): DidDocument {
-  if (!Number.isInteger(epoch) || epoch < 0) throw new Error('signDidDocument: epoch must be a non-negative integer');
-  const signHex = bytesToHex(authority.edPublic);
-  const pqSigHex = bytesToHex(authority.dsaPublic);
-  // v1 (epoch 0): the signing authority IS the genesis authority → it must reproduce the id anchor directly.
-  // (Post-launch authority rotation: the reveal chains to the anchor via the lineage; verified at the edge.)
-  if (epoch === 0 && anchorFromAuthorityReveal(signHex, pqSigHex) !== doc.id)
-    throw new Error('signDidDocument: genesis authority pubs do not match the DID id anchor');
+): { signPub: Uint8Array; encPub: Uint8Array; kemPub: Uint8Array; sigPub: Uint8Array } | null {
+  const pick = (arr: VerificationMethod[], type: string) => arr.filter((v) => v.type === type);
+  const signVMs = pick(doc.verificationMethod, VM_TYPE_ED25519);
+  const sigVMs = pick(doc.verificationMethod, VM_TYPE_ML_DSA87);
+  const encVMs = pick(doc.keyAgreement, VM_TYPE_X25519);
+  const kemVMs = pick(doc.keyAgreement, VM_TYPE_ML_KEM1024);
+  if (signVMs.length !== 1 || sigVMs.length !== 1 || encVMs.length !== 1 || kemVMs.length !== 1) return null;
+  try {
+    const signPub = hexToBytes(signVMs[0].publicKeyHex);
+    const encPub = hexToBytes(encVMs[0].publicKeyHex);
+    const kemPub = hexToBytes(kemVMs[0].publicKeyHex);
+    const sigPub = hexToBytes(sigVMs[0].publicKeyHex);
+    if (signPub.length !== SIGN_PUB_LEN || encPub.length !== ENC_PUB_LEN || kemPub.length !== KEM_PUB_LEN || sigPub.length !== SIG_PUB_LEN)
+      return null;
+    return { signPub, encPub, kemPub, sigPub };
+  } catch {
+    return null;
+  }
+}
+
+// ── high-level sign (two paths) ──────────────────────────────────────────────────────────────────────────────
+/**
+ * GENESIS path — self-sign the (seq-0) DID-Doc with the identity's OWN genesis operational signing keys
+ * (ed25519 `sign` + ML-DSA-87 `sig`). Fail-closed: the doc must be a single-device genesis whose operational
+ * keys hash to the id anchor, and the supplied ed25519 seed must reproduce the doc's genesis sign pub. This is
+ * the same key the identity card is signed with — a contact who accepted the card already trusts it.
+ */
+export function signDidDocGenesis(doc: DidDocument, signer: GenesisOperationalSigner): DidDocument {
+  if (doc.seq !== 0) throw new Error('signDidDocGenesis: genesis doc must have seq 0');
+  const keys = extractGenesisOperationalKeys(doc);
+  if (!keys) throw new Error('signDidDocGenesis: genesis doc must have exactly one device (sign/enc/kem/sig)');
+  const anchor = deriveCanonicalFingerprintHex(keys.signPub, keys.encPub, keys.kemPub, keys.sigPub);
+  if (`${DID_METHOD}:${anchor}` !== doc.id)
+    throw new Error('signDidDocGenesis: genesis operational keys do not anchor to the DID id (durable_id mismatch)');
+  // fail-closed: the seed must correspond to the doc's genesis sign pub (mirrors extractRawSign's invariant).
+  if (bytesToHex(ed25519.getPublicKey(signer.signSeed)) !== bytesToHex(keys.signPub))
+    throw new Error('signDidDocGenesis: signSeed does not match the genesis sign pub in the doc');
   const canonicalInput = canonicalDidDocInput({ ...doc, proof: undefined });
-  const sig = signDidDocAuthority(canonicalInput, authority.edSecret, authority.dsaSecret);
+  const sig = signDidDocHybrid(canonicalInput, signer.signSeed, signer.sigSecret);
+  return { ...doc, proof: { type: DID_DOC_PROOF_TYPE, mode: 'genesis-operational', domain: DOMAIN_DID_DOC, sig } };
+}
+
+/**
+ * MUTATION path — sign a (seq ≥ 1) DID-Doc with the cold-seed governance AUTHORITY keypair and REVEAL its pubs.
+ * A verifier checks H(revealed pubs) == the prior doc's nextAuthorityCommitment before accepting. Use for
+ * add/revoke device, endpoint move, or authority rotation.
+ */
+export function signDidDocMutation(doc: DidDocument, authority: NextAuthorityKeypair): DidDocument {
+  if (!Number.isInteger(doc.seq) || doc.seq < 1)
+    throw new Error('signDidDocMutation: a mutation must have seq ≥ 1 (genesis is operational-self-signed)');
+  const authorityPubkeys = encodeAuthorityPubkeys(authority.edPublic, authority.dsaPublic);
+  const canonicalInput = canonicalDidDocInput({ ...doc, proof: undefined });
+  const sig = signDidDocHybrid(canonicalInput, authority.edSecret, authority.dsaSecret);
   return {
     ...doc,
-    proof: { type: 'SvrntyAuthorityHybrid2026', domain: DOMAIN_DID_DOC, epoch, authorityPubkeys: { sign: signHex, pq_sig: pqSigHex }, sig },
+    proof: { type: DID_DOC_PROOF_TYPE, mode: 'authority-mutation', domain: DOMAIN_DID_DOC, authorityPubkeys, sig },
   };
 }
 
@@ -316,38 +385,69 @@ export interface DidDocVerifyResult {
   reason?: string;
   seq?: number;
   did?: string;
+  /** The authority commitment this doc pins for the NEXT doc — the edge threads it as the next expected commitment. */
+  nextAuthorityCommitment?: string;
 }
 
 /**
- * Verify a signed DID-Doc as SELF-CONSISTENT: (1) the proof's revealed authority pubs hash to the id anchor
- * (v1/epoch-0; post-launch, the caller supplies the lineage walk), and (2) the hybrid signature verifies over
- * the canonical input. Monotonic-seq enforcement across successive docs is the EDGE's job (like
- * verifyRotationSuccessor's epoch-not-next) — pass the last-seen seq to reject stale/replayed docs.
+ * Verify a signed DID-Doc. TWO paths:
+ *   • genesis-operational (seq 0): the doc's single-device operational keys must hash to the id anchor
+ *     (self-certification), and the hybrid signature must verify under those operational pubs.
+ *   • authority-mutation (seq ≥ 1): H(revealed authority pubs) must equal `opts.expectedAuthorityCommitment`
+ *     (the prior doc's nextAuthorityCommitment, threaded by the edge's lineage walk), and the hybrid signature
+ *     must verify under the revealed authority pubs.
+ * Monotonic-seq enforcement across successive docs is the EDGE's job — pass `lastSeenSeq` to reject stale/replayed docs.
  */
-export function verifyDidDocument(doc: DidDocument, opts: { lastSeenSeq?: number } = {}): DidDocVerifyResult {
+export function verifyDidDocument(
+  doc: DidDocument,
+  opts: { lastSeenSeq?: number; expectedAuthorityCommitment?: string } = {},
+): DidDocVerifyResult {
   const proof = doc.proof;
-  if (!proof || proof.type !== 'SvrntyAuthorityHybrid2026') return { ok: false, reason: 'missing-or-unknown-proof' };
+  if (!proof || proof.type !== DID_DOC_PROOF_TYPE) return { ok: false, reason: 'missing-or-unknown-proof' };
   if (!Number.isInteger(doc.seq) || doc.seq < 0) return { ok: false, reason: 'bad-seq' };
   if (opts.lastSeenSeq !== undefined && doc.seq <= opts.lastSeenSeq) return { ok: false, reason: 'seq-not-monotonic' };
-  // (1) id-anchor self-certification (v1: genesis authority signs → reveal hashes to the id).
-  if (proof.epoch === 0) {
-    let anchorDid: string;
-    try {
-      anchorDid = anchorFromAuthorityReveal(proof.authorityPubkeys.sign, proof.authorityPubkeys.pq_sig);
-    } catch (e) {
-      return { ok: false, reason: e instanceof Error ? e.message : 'anchor-reveal-decode' };
-    }
-    if (anchorDid !== doc.id) return { ok: false, reason: 'authority-does-not-anchor-to-id' };
-  } else {
-    // Post-launch authority rotation: the reveal must chain to the anchor via the rotation lineage. That walk
-    // lives at the edge (existing next_authority_commitment chain); this module verifies the signature only.
-    return { ok: false, reason: 'rotated-authority-lineage-walk-not-yet-implemented' };
+  if (!HEX64_RE.test(doc.nextAuthorityCommitment)) return { ok: false, reason: 'bad-next-authority-commitment' };
+  let anchorHex: string;
+  try {
+    anchorHex = parseDid(doc.id).anchorHex;
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : 'bad-did' };
   }
-  // (2) signature over the canonical input (proof excluded).
   const canonicalInput = canonicalDidDocInput(doc);
-  if (!verifyDidDocAuthority(canonicalInput, proof.sig, proof.authorityPubkeys.sign, proof.authorityPubkeys.pq_sig))
-    return { ok: false, reason: 'authority-sig-invalid' };
-  return { ok: true, seq: doc.seq, did: doc.id };
+
+  if (proof.mode === 'genesis-operational') {
+    if (doc.seq !== 0) return { ok: false, reason: 'genesis-must-be-seq-0' };
+    const keys = extractGenesisOperationalKeys(doc);
+    if (!keys) return { ok: false, reason: 'genesis-not-single-device' };
+    // (1) self-certification: the doc's own operational keys reproduce the durable_id anchor.
+    if (deriveCanonicalFingerprintHex(keys.signPub, keys.encPub, keys.kemPub, keys.sigPub) !== anchorHex)
+      return { ok: false, reason: 'operational-keys-do-not-anchor-to-id' };
+    // (2) hybrid signature under those operational pubs.
+    if (!verifyDidDocHybrid(canonicalInput, proof.sig, bytesToHex(keys.signPub), bytesToHex(keys.sigPub)))
+      return { ok: false, reason: 'genesis-operational-sig-invalid' };
+    return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment };
+  }
+
+  if (proof.mode === 'authority-mutation') {
+    if (doc.seq < 1) return { ok: false, reason: 'mutation-must-advance-seq' };
+    if (!proof.authorityPubkeys) return { ok: false, reason: 'mutation-missing-authority-reveal' };
+    if (!opts.expectedAuthorityCommitment) return { ok: false, reason: 'authority-commitment-required' };
+    // (1) the revealed authority must match the pre-rotation commitment the prior doc pinned.
+    let revealedCommitment: string;
+    try {
+      revealedCommitment = authorityCommitmentFromReveal(proof.authorityPubkeys.sign, proof.authorityPubkeys.pq_sig);
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : 'authority-reveal-decode' };
+    }
+    if (revealedCommitment !== normalizeFingerprintHex(opts.expectedAuthorityCommitment))
+      return { ok: false, reason: 'authority-not-committed' };
+    // (2) hybrid signature under the revealed authority pubs.
+    if (!verifyDidDocHybrid(canonicalInput, proof.sig, proof.authorityPubkeys.sign, proof.authorityPubkeys.pq_sig))
+      return { ok: false, reason: 'authority-sig-invalid' };
+    return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment };
+  }
+
+  return { ok: false, reason: 'unknown-proof-mode' };
 }
 
 // ── resolver (used by verify + future T3 edge-verify wiring) ─────────────────────────────────────────────
