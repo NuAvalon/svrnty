@@ -72,8 +72,7 @@ test('★ import-compatible: a minted agent card round-trips through encryptToCo
 });
 
 test('serialize: Athena custody wire shape — snake_case public/private, base64 round-trips, throwaway flag', async () => {
-  const coldSeed = new Uint8Array(32).fill(0x5c);
-  const a = await mintHeadlessAgent({ coldSeed, throwaway: false, recoveryMode: 'm-of-n' });
+  const a = await mintHeadlessAgent({ throwaway: false, recoveryMode: 'm-of-n' }); // real mint: fresh cold seed (no caller seed)
   const w = serializeMintArtifact(a);
 
   // public block (snake_case)
@@ -84,11 +83,23 @@ test('serialize: Athena custody wire shape — snake_case public/private, base64
   assert.equal(w.public.signed_did_doc.subjectType, 'agent'); // signed doc keeps its own field names
 
   // private block — opaque to custody; base64 decodes back to the exact secret bytes
-  assert.deepEqual(base64ToUint8(w.private.cold_seed), coldSeed);
+  assert.equal(base64ToUint8(w.private.cold_seed).length, 32);
+  assert.deepEqual(base64ToUint8(w.private.cold_seed), a.cold_seed); // base64 round-trips the freshly generated seed
   assert.deepEqual(base64ToUint8(w.private.ed25519_seed), a.secret_material.ed25519Seed);
   assert.deepEqual(base64ToUint8(w.private.mldsa87_secret), a.secret_material.mldsa87Secret);
 
   // real-mint flags carried through
   assert.equal(w.recovery_mode, 'm-of-n');
   assert.equal(w.throwaway, false);
+});
+
+test('★ real mint REJECTS a caller-supplied coldSeed (recovery authority must be fresh, full-entropy)', async () => {
+  const weak = new Uint8Array(32).fill(0x01); // attacker-known / low-entropy
+  await assert.rejects(
+    () => mintHeadlessAgent({ throwaway: false, recoveryMode: 'm-of-n', coldSeed: weak }),
+    /caller-supplied coldSeed is only allowed for throwaway/,
+  );
+  // throwaway still allows a fixed seed (deterministic tests)
+  const t = await mintHeadlessAgent({ throwaway: true, coldSeed: weak });
+  assert.deepEqual(t.cold_seed, weak);
 });

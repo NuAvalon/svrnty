@@ -65,6 +65,13 @@ export async function mintHeadlessAgent(
 ): Promise<MintArtifact> {
   const throwaway = opts.throwaway ?? true;
   const recoveryMode = opts.recoveryMode ?? null;
+  // A caller-supplied coldSeed is ONLY for deterministic THROWAWAY tests. A REAL mint (throwaway:false) MUST use
+  // a freshly-generated, full-entropy cold seed — the recovery authority must never be caller-known or low-entropy
+  // (an attacker-known cold seed = forgeable recovery). (Codex P1, #153190.)
+  if (opts.coldSeed !== undefined && !throwaway)
+    throw new Error(
+      'mintHeadlessAgent: caller-supplied coldSeed is only allowed for throwaway mints; a real mint must use a freshly generated cold seed',
+    );
   const cold_seed = opts.coldSeed ?? randomBytes(32);
   if (cold_seed.length !== 32) throw new Error('mintHeadlessAgent: coldSeed must be exactly 32 bytes');
 
