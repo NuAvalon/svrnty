@@ -274,3 +274,28 @@ test('buildSignedIdentityCard GUARD (N2 class-killer): a canonical fp with ABSEN
     /self-inconsistent|does not bind/,
   );
 });
+
+test('entity_type: bound in the signed card (immutable), tamper-detected, byte-preserving, enum-validated', async () => {
+  const aid = await makeCanonicalId('agentcard');
+  const idInput = {
+    fingerprint: aid.fingerprint,
+    public_key: aid.publicKey,
+    post_quantum: { sig_public_key: aid.sigB64, kem_public_key: aid.kemB64 },
+  };
+  // typed card carries entity_type + verifies
+  const typed = await buildSignedIdentityCard(idInput, aid.privateKey, aid.passphrase, 'agent');
+  assert.equal(typed.entity_type, 'agent');
+  assert.equal(await verifySignedIdentityCard(typed), true);
+  // ★ entity_type is UNDER the signature: flipping it post-sign breaks verification (immutable/non-strippable)
+  const tampered = { ...typed, entity_type: 'human' as const };
+  assert.equal(await verifySignedIdentityCard(tampered), false);
+  // byte-preserving: a card built WITHOUT entity_type has none + still verifies (legacy-compatible)
+  const untyped = await buildSignedIdentityCard(idInput, aid.privateKey, aid.passphrase);
+  assert.equal(untyped.entity_type, undefined);
+  assert.equal(await verifySignedIdentityCard(untyped), true);
+  // enum-validated: an out-of-enum type is refused at build
+  await assert.rejects(
+    () => buildSignedIdentityCard(idInput, aid.privateKey, aid.passphrase, 'robot' as any),
+    /entity_type must be one of/,
+  );
+});

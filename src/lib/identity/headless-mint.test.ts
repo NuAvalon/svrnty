@@ -18,6 +18,7 @@ import {
   type SenderKeys,
   type MyKeys,
 } from '../crypto/contact-message.js';
+import { verifySignedIdentityCard } from './identity-card-sign.js';
 import { mintHeadlessAgent, serializeMintArtifact } from './headless-mint.js';
 
 const MSG = 'agent-to-agent — the barzakh at dawn 🌀';
@@ -30,6 +31,10 @@ test('mint: valid self-signed genesis, subject_type=agent (silicon-only), durabl
   assert.equal(a.introduction.subjectType, 'agent'); // hardcoded — no path mints anything else
   assert.equal(parseDid(a.introduction.did).anchorHex, a.introduction.durableId);
   assert.match(a.introduction.durableId, /^[0-9a-f]{64}$/);
+  // ★ the emitted card is a SELF-SIGNED, TYPED IdentityCard (option-b): verifies + entity_type='agent'
+  assert.equal(await verifySignedIdentityCard(a.introduction.card), true);
+  assert.equal(a.introduction.card.entity_type, 'agent');
+  assert.equal(a.introduction.card.identity.fingerprint, a.introduction.durableId);
   // secret material shapes
   assert.equal(a.secret_material.ed25519Seed.length, 32);
   assert.equal(a.secret_material.x25519Sec.length, 32);
@@ -53,8 +58,18 @@ test('★ import-compatible: a minted agent card round-trips through encryptToCo
     sigSecret: alice.secret_material.mldsa87Secret,
     senderFingerprint: alice.introduction.durableId,
   };
-  const aliceCard: ContactKeys = { ...alice.introduction.card, fingerprint: alice.introduction.durableId };
-  const bobCard: ContactKeys = { ...bob.introduction.card, fingerprint: bob.introduction.durableId };
+  const aliceCard: ContactKeys = {
+    public_key: alice.introduction.card.identity.public_key,
+    pq_kem_public_key: alice.introduction.card.identity.pq_kem_public_key,
+    pq_sig_public_key: alice.introduction.card.identity.pq_sig_public_key,
+    fingerprint: alice.introduction.durableId,
+  };
+  const bobCard: ContactKeys = {
+    public_key: bob.introduction.card.identity.public_key,
+    pq_kem_public_key: bob.introduction.card.identity.pq_kem_public_key,
+    pq_sig_public_key: bob.introduction.card.identity.pq_sig_public_key,
+    fingerprint: bob.introduction.durableId,
+  };
   const bobMe: MyKeys = {
     x25519Sec: bob.secret_material.x25519Sec,
     mlkem1024Sec: bob.secret_material.mlkem1024Sec,
@@ -79,7 +94,8 @@ test('serialize: Athena custody wire shape — snake_case public/private, base64
   assert.equal(w.public.durable_id, a.introduction.durableId);
   assert.equal(w.public.did, a.introduction.did);
   assert.equal(w.public.subject_type, 'agent');
-  assert.ok(w.public.card.public_key.includes('BEGIN PGP PUBLIC KEY'));
+  assert.ok(w.public.card.identity.public_key.includes('BEGIN PGP PUBLIC KEY'));
+  assert.equal(w.public.card.entity_type, 'agent'); // the wire card carries the typed entity_type
   assert.equal(w.public.signed_did_doc.subjectType, 'agent'); // signed doc keeps its own field names
 
   // private block — opaque to custody; base64 decodes back to the exact secret bytes

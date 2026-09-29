@@ -14,10 +14,11 @@
 // Athena's per-agent custody store (agent_custody.py); this module NEVER persists, logs, or prints a secret.
 
 import * as openpgp from 'openpgp';
-import { randomBytes } from '@noble/hashes/utils.js';
+import { randomBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { generateKEMKeypair, generateSigningKeypair, uint8ToBase64 } from '../crypto/pq';
 import { extractRawSign, extractRawEnc } from './raw-sign';
 import { buildAgentIntroduction, deriveGenesisAuthorityCommitment } from './introduce-shell';
+import { buildSignedIdentityCard, type SignedIdentityCard } from './identity-card-sign';
 import type { DidDocument } from './did-peer';
 
 /** SILICON-ONLY: the headless path mints exactly this subject_type. Not a parameter — a constant. */
@@ -29,7 +30,7 @@ export interface MintPublic {
   did: string;
   subjectType: typeof AGENT_SUBJECT_TYPE;
   signedDidDoc: DidDocument;
-  card: { public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
+  card: SignedIdentityCard; // self-signed, entity_type='agent' — importable via the SAME path as humans
 }
 
 /**
@@ -76,26 +77,52 @@ export async function mintHeadlessAgent(
   if (cold_seed.length !== 32) throw new Error('mintHeadlessAgent: coldSeed must be exactly 32 bytes');
 
   // Classical (ed25519 sign + x25519 enc) via OpenPGP → raw, so the emitted card is import-compatible.
-  const { privateKey, publicKey } = (await openpgp.generateKey({
+  // Generate WITH a throwaway in-process passphrase: extractRaw* needs a DECRYPTED key (we decrypt a copy),
+  // and buildSignedIdentityCard's signer decrypts an ENCRYPTED armored key with the passphrase (openpgp refuses
+  // to "decrypt" an already-decrypted key). The passphrase is random, used ONLY in-process, NEVER emitted; the
+  // armored private key is discarded after signing.
+  const kpass = bytesToHex(randomBytes(16));
+  const { privateKey: encPrivateKey, publicKey } = (await openpgp.generateKey({
     type: 'ecc',
     curve: 'ed25519',
     userIDs: [{ name: 'agent' }],
     format: 'object',
+    passphrase: kpass,
   } as any)) as any;
-  const { seed: ed25519Seed, signPub } = extractRawSign(privateKey);
-  const { encSec: x25519Sec, encPub: x25519Pub } = await extractRawEnc(privateKey);
+  const decryptedPrivateKey = await openpgp.decryptKey({ privateKey: encPrivateKey, passphrase: kpass });
+  const { seed: ed25519Seed, signPub } = extractRawSign(decryptedPrivateKey);
+  const { encSec: x25519Sec, encPub: x25519Pub } = await extractRawEnc(decryptedPrivateKey);
 
   // Post-quantum bundle.
   const kem = generateKEMKeypair(); // { publicKey, secretKey } ML-KEM-1024
   const sig = generateSigningKeypair(); // { publicKey, secretKey } ML-DSA-87
 
   // Genesis introduction: durable_id + operationally self-signed DID-Doc, subject_type='agent' bound immutably.
+  const authorityCommitment = deriveGenesisAuthorityCommitment(cold_seed);
   const intro = buildAgentIntroduction({
     keys: { deviceSlug: 'genesis', signPub, encPub: x25519Pub, kemPub: kem.publicKey, sigPub: sig.publicKey },
     signer: { signSeed: ed25519Seed, sigSecret: sig.secretKey },
-    authorityCommitment: deriveGenesisAuthorityCommitment(cold_seed),
+    authorityCommitment,
     subjectType: AGENT_SUBJECT_TYPE, // silicon-only, fail-closed
   });
+
+  // A SELF-SIGNED, TYPED IdentityCard so the agent imports via the SAME path as humans
+  // (buildSignedIdentityCard → verifySignedIdentityCard). entity_type='agent' is bound IN the signed card
+  // (immutable, G-attest). Signed IN-PROCESS with the transient armored key, which is then discarded — only
+  // the signed PUBLIC card is emitted; NO armored private key ever leaves this function.
+  const card = await buildSignedIdentityCard(
+    {
+      fingerprint: intro.durableId,
+      public_key: publicKey.armor(),
+      display_name: 'agent',
+      email: '',
+      post_quantum: { sig_public_key: uint8ToBase64(sig.publicKey), kem_public_key: uint8ToBase64(kem.publicKey) },
+      next_authority_commitment: authorityCommitment,
+    },
+    encPrivateKey.armor(),
+    kpass,
+    AGENT_SUBJECT_TYPE,
+  );
 
   return {
     introduction: {
@@ -103,11 +130,7 @@ export async function mintHeadlessAgent(
       did: intro.did,
       subjectType: AGENT_SUBJECT_TYPE,
       signedDidDoc: intro.signedDidDoc,
-      card: {
-        public_key: publicKey.armor(),
-        pq_kem_public_key: uint8ToBase64(kem.publicKey),
-        pq_sig_public_key: uint8ToBase64(sig.publicKey),
-      },
+      card,
     },
     secret_material: {
       ed25519Seed,
@@ -135,7 +158,7 @@ export interface SerializedMintArtifact {
     did: string;
     subject_type: typeof AGENT_SUBJECT_TYPE;
     signed_did_doc: DidDocument;
-    card: { public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
+    card: SignedIdentityCard; // the self-signed, entity_type='agent' identity card — REQUIRED for import
   };
   private: {
     // OPAQUE to custody — all secrets (base64) + the non-secret enc/kem pubs so the serve can rebuild keys.
