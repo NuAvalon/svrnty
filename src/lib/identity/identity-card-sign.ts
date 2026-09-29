@@ -142,6 +142,7 @@ export async function buildSignedIdentityCard(
   identity: any,
   classicalPrivateKeyArmored: string,
   classicalPassphrase: string,
+  entityType?: 'agent' | 'human' | 'org',
 ): Promise<SignedIdentityCard> {
   const idData = identity?.identity ?? identity;
   if (!idData?.fingerprint || !idData?.public_key) {
@@ -170,6 +171,14 @@ export async function buildSignedIdentityCard(
       next_authority_commitment,
     },
   };
+  // Bind the self-attested entity_type into the signed card (immutable, G-attest). Optional + byte-preserving:
+  // omit it → the card canonicalizes exactly as a legacy card. Read from an explicit arg OR the identity input.
+  const et = entityType ?? idData?.entity_type ?? identity?.entity_type;
+  if (et !== undefined) {
+    if (et !== 'agent' && et !== 'human' && et !== 'org')
+      throw new Error(`buildSignedIdentityCard: entity_type must be one of {agent, human, org}, got ${String(et)}`);
+    card.entity_type = et;
+  }
   // Build-time self-consistency guard (N2 class-killer — Archie ⚡9693 + Hypatia's claim-honesty vote):
   // a card whose canonical fingerprint claims 4 keys MUST carry all 4. Assert the card binds to its
   // OWN carried keys BEFORE it can be constructed, so a self-inconsistent card (fp≠carried-keys — e.g.
