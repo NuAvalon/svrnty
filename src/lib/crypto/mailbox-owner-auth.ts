@@ -33,8 +33,8 @@
 //                                   key (one-time, like the genesis DID-Doc self-sign; a contact already
 //                                   trusts it via card-exchange).
 //     3. recovery owner-key re-reg → per-mailbox owner-key PRE-ROTATION: at reg, commit H(next_owner_key)
-//                                   (seed-derived); on recovery, REVEAL next_owner_key + it self-signs the
-//                                   rotate-owner op; the satellite checks H(reveal)==commitment + the
+//                                   (seed-derived); on recovery, REVEAL next_owner_key + it self-signs its
+//                                   owner-key registration (svrnty-mailbox-ownerkey preimage); the satellite checks H(reveal)==commitment + the
 //                                   self-sign. The lost device's key is NOT needed — the pre-commitment IS
 //                                   the authorization. ZERO DID reference at the relay → unlinkable. Reuses
 //                                   the T1 applyRotation `H(reveal)==commitment` primitive (not net-new).
@@ -128,8 +128,9 @@ export function commitNextOwnerKey(nextOwnerPub: Uint8Array): string {
 }
 
 /** Recovery check (satellite mirror): the revealed next owner-key must hash to the pre-committed value.
- *  On success the caller then verifies the revealed key SELF-SIGNS the rotate-owner op (via verifyOwnerOp
- *  with op='rotate-owner', target=hex(revealed), ownerPub=revealed) — the pre-commitment IS the authority,
+ *  On success the caller then verifies the revealed key SELF-SIGNS its owner-key registration (via
+ *  signOwnerKeyReg / verifyOwnerKeyReg over ownerKeyRegScope — NOT a routine owner-op; `rotate-owner` was
+ *  dropped from OWNER_OP_TYPES, #151507) — the pre-commitment IS the authority,
  *  so the lost device's key is never needed. Fail-closed on any length/hash mismatch. */
 export function verifyRecoveryReveal(revealedNextOwnerPub: Uint8Array, storedCommitmentHex: string): boolean {
   try {
