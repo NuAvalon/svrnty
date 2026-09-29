@@ -420,10 +420,12 @@ export interface DidDocVerifyResult {
  *     (the prior doc's nextAuthorityCommitment, threaded by the edge's lineage walk), and the hybrid signature
  *     must verify under the revealed authority pubs.
  * Monotonic-seq enforcement across successive docs is the EDGE's job — pass `lastSeenSeq` to reject stale/replayed docs.
+ * SubjectType CONTINUITY is likewise the EDGE's job — pass `expectedSubjectType` (the genesis subject_type) to reject
+ * any seq≥1 doc that relabels or drops the honest type (Peter's "never changes" + G-attest-durability, enforced not assumed).
  */
 export function verifyDidDocument(
   doc: DidDocument,
-  opts: { lastSeenSeq?: number; expectedAuthorityCommitment?: string } = {},
+  opts: { lastSeenSeq?: number; expectedAuthorityCommitment?: string; expectedSubjectType?: SubjectType } = {},
 ): DidDocVerifyResult {
   const proof = doc.proof;
   if (!proof || proof.type !== DID_DOC_PROOF_TYPE) return { ok: false, reason: 'missing-or-unknown-proof' };
@@ -469,6 +471,12 @@ export function verifyDidDocument(
     // (2) hybrid signature under the revealed authority pubs.
     if (!verifyDidDocHybrid(canonicalInput, proof.sig, proof.authorityPubkeys.sign, proof.authorityPubkeys.pq_sig))
       return { ok: false, reason: 'authority-sig-invalid' };
+    // (3) subject_type CONTINUITY (cross-doc pin): a mutation must carry the SAME subject_type the genesis bound.
+    // The edge threads the genesis subject_type as `expectedSubjectType`; this rejects a relabel (agent↔human↔org)
+    // OR a drop-after-genesis, even when signed by the identity's own authority key. subjectType is already under
+    // this doc's signature, so it's a pure, free equality — makes "type never changes" + G-attest DURABLE, not convention.
+    if (opts.expectedSubjectType !== undefined && doc.subjectType !== opts.expectedSubjectType)
+      return { ok: false, reason: 'subject-type-not-continuous' };
     return { ok: true, seq: doc.seq, did: doc.id, nextAuthorityCommitment: doc.nextAuthorityCommitment, subjectType: doc.subjectType };
   }
 

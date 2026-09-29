@@ -254,3 +254,43 @@ test('EMIT co-verify vector — genesis (self-sign) + mutation (authority) byte-
   assert.equal(verifyDidDocument(genesis).ok, true);
   assert.equal(verifyDidDocument(mutation, { expectedAuthorityCommitment: nac0 }).ok, true);
 });
+
+// ── subject_type CONTINUITY across rotation (Flint's cross-doc pin — G-attest DURABILITY) ──
+const typedGenesis = () =>
+  signDidDocGenesis(
+    buildDidDocument({ did: DID, devices: [genesisDevice], nextAuthorityCommitment: nac0, subjectType: 'agent', seq: 0 }),
+    operationalSigner,
+  );
+
+test('subjectType continuity: typed genesis verifies + surfaces its type', () => {
+  const r = verifyDidDocument(typedGenesis());
+  assert.equal(r.ok, true);
+  assert.equal(r.subjectType, 'agent');
+});
+
+test('subjectType continuity: an honest mutation PRESERVES the type → passes the pin', () => {
+  const mut = signDidDocMutation(addDevice(typedGenesis(), laptop), auth0); // ...doc spread keeps subjectType='agent'
+  assert.equal(verifyDidDocument(mut, { expectedAuthorityCommitment: nac0, expectedSubjectType: 'agent' }).ok, true);
+});
+
+test('★ subjectType continuity: a RELABEL (agent→human) by the authority key is REJECTED by the pin', () => {
+  const relabel = signDidDocMutation(
+    buildDidDocument({ did: DID, devices: [genesisDevice, laptop], nextAuthorityCommitment: nac0, subjectType: 'human', seq: 1 }),
+    auth0,
+  );
+  const r = verifyDidDocument(relabel, { expectedAuthorityCommitment: nac0, expectedSubjectType: 'agent' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'subject-type-not-continuous');
+  // proves it's ONLY the pin catching it: without expectedSubjectType the relabel is otherwise fully valid (the latent gap)
+  assert.equal(verifyDidDocument(relabel, { expectedAuthorityCommitment: nac0 }).ok, true);
+});
+
+test('★ subjectType continuity: a DROP-after-genesis (typed→untyped) is REJECTED by the pin', () => {
+  const dropped = signDidDocMutation(
+    buildDidDocument({ did: DID, devices: [genesisDevice, laptop], nextAuthorityCommitment: nac0, seq: 1 }), // subjectType omitted
+    auth0,
+  );
+  const r = verifyDidDocument(dropped, { expectedAuthorityCommitment: nac0, expectedSubjectType: 'agent' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'subject-type-not-continuous');
+});
