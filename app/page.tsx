@@ -6,6 +6,7 @@ import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { GrowSurface } from '@/components/GrowSurface';
+import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
@@ -551,7 +552,7 @@ export default function Home() {
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
-              className="w-full max-w-xl mx-auto mb-8"
+              className="w-full max-w-2xl mx-auto mb-8"
               style={{
                 background: 'rgba(30,20,10,.55)',
                 border: `1px solid ${E.border}`,
@@ -580,6 +581,15 @@ export default function Home() {
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Contacts
+              </TabsTrigger>
+              <TabsTrigger
+                value="encrypt-decrypt"
+                aria-label="Encrypt / Decrypt"
+                data-testid="tab-encrypt-decrypt"
+                className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Encrypt
               </TabsTrigger>
             </TabsList>
 
@@ -732,6 +742,10 @@ export default function Home() {
 
             <TabsContent value="contacts">
               <ContactManagement identity={identity} onContactsChange={refreshContacts} />
+            </TabsContent>
+
+            <TabsContent value="encrypt-decrypt">
+              <EncryptDecryptTab identity={identity} />
             </TabsContent>
           </Tabs>
         )}
