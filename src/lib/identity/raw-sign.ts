@@ -3,7 +3,7 @@
 // (do not re-derive). Bind and PSI-auth preimage helpers sit underneath and only
 // concatenate the specified UTF-8 strings.
 
-import { ed25519 } from '@noble/curves/ed25519.js';
+import { ed25519, x25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 
 // svrnty identity = openpgp generateKey({type:'ecc',curve:'ed25519'}) → algo 22 (eddsaLegacy):
@@ -21,6 +21,24 @@ export function extractRawSign(decryptedIdentityKey: any): { seed: Uint8Array; s
   if (bytesToHex(ed25519.getPublicKey(seed)) !== bytesToHex(signPub))
     throw new Error('scalar-extract invariant failed: seed↔signPub mismatch');
   return { seed, signPub };
+}
+
+// svrnty identity enc subkey = openpgp ECDH curve25519 (algo 18): publicParams.Q = 33B (0x40 prefix),
+// privateParams.d = 32B raw scalar in OpenPGP BIG-ENDIAN. @noble x25519 (RFC 7748) is LITTLE-ENDIAN, so the
+// scalar must be REVERSED. PROVEN empirically: x25519.getPublicKey(reverse(d)) === strip0x40(Q) (byte-exact).
+// Used to OPEN a PQ-hybrid contact message sealed to this identity's enc key (contact-message.ts).
+// Key MUST be DECRYPTED first (openpgp.decryptKey). Async: the enc subkey is a subkey lookup.
+export async function extractRawEnc(decryptedIdentityKey: any): Promise<{ encSec: Uint8Array; encPub: Uint8Array }> {
+  const encSub = await decryptedIdentityKey.getEncryptionKey();
+  const kp = encSub.keyPacket;
+  const dBE: Uint8Array = kp.privateParams.d;                       // 32B OpenPGP big-endian scalar — IN-MEMORY ONLY
+  if (!(dBE instanceof Uint8Array) || dBE.length !== 32) throw new Error('extractRawEnc: enc secret is not a 32B scalar');
+  const encSec = Uint8Array.from([...dBE].reverse());              // → RFC 7748 little-endian for @noble x25519
+  const encPub = strip0x40(kp.publicParams.Q ?? kp.publicParams.A); // 32B canonical x25519 pubkey
+  // FAIL-CLOSED invariant — never decrypt with an inconsistent enc key (catches an encoding/endianness drift):
+  if (bytesToHex(x25519.getPublicKey(encSec)) !== bytesToHex(encPub))
+    throw new Error('scalar-extract invariant failed: enc secret↔encPub mismatch (endianness?)');
+  return { encSec, encPub };
 }
 
 // raw Ed25519 auth-sign for tag#3 + /bind (raw 64B sig over EXACT preimage bytes)
