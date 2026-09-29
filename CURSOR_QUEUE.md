@@ -6,7 +6,7 @@ Work top-down: the top task first, then the next. Build to spec. Open **ONE PR p
 
 *Recently completed: Camera QR-scan (#96), Mint-Build Recipe v2 KERI (#112).*
 
-## ✅ 1. Encrypt / Decrypt tab — no-wire PQ-hybrid contact messaging  [render-glass]
+## 1. Encrypt / Decrypt tab — ✅ READY · no-wire PQ-hybrid contact messaging · render-glass
 
 A new **"Encrypt / Decrypt"** tab in svrnty.is: pick a svrnty contact → encrypt or decrypt a message (PQ-hybrid, authenticated sign-then-seal). Ciphertext is **copy-pasted by the user over any channel** — **NO WIRE**, zero network calls, zero relay traffic. Crypto is DONE + co-verified on main (PR #155: `src/lib/crypto/contact-message.ts` + `src/lib/identity/raw-sign.ts`). Wire the UI to these hooks; do NOT reimplement crypto.
 
