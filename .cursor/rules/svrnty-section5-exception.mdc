@@ -1,0 +1,37 @@
+---
+description: svrnty — TEMPORARY scoped exception authorizing the §5 greenfield identity/auth refactor build. Additive to the standing render-glass rules; the review-before-merge gate is preserved. Expires when the §5 PR merges.
+alwaysApply: true
+---
+# 🔓 AUTHORIZED EXCEPTION — §5 Greenfield Identity/Auth Refactor (ACTIVE TASK)
+
+Authorized by the architecture + security review. NARROW, ADDITIVE, TIME-BOXED exception that authorizes the §5 build (see CURSOR_QUEUE.md). It does NOT loosen the render-glass boundary anywhere else, and it does NOT waive review — the review-before-merge gate is PRESERVED. **Remove this file when the §5 PR merges.**
+
+## (1) SCOPE — you may build ONLY at these exact §5 sites:
+- `src/lib/identity/browser-identity.ts`, `src/lib/identity/core.ts`, `src/lib/identity/fingerprint.ts` — swap the canonical fingerprint DERIVATION to the spec's SHA256 bundle. Use the EXISTING OpenPGP primary Ed25519 as the raw `sign` key via scalar-extract (see (2)/(7)) — read the seed TRANSIENTLY for signing, NEVER persisted; do NOT generate or store a new key. fp/register use its 0x40-stripped 32B pubkey.
+- the raw `tag#3` signFn + the `/bind` ceremony (client path) + the `buildPsiSyncOptions` seam (`know-layer-sync.ts:196`) + the PSI trigger.
+This is NOT a blanket "identity/crypto open." Everything else stays under full DO-NOT-TOUCH.
+
+## (2) BUILD TO EXACT SPEC — no crypto DECISIONS:
+Implement the spec's EXACT construction; the spec + review decide, you type:
+- `fp = SHA256( sign32 ‖ enc32 ‖ kem1568 ‖ sig2592 )` — exact order, raw bytes, exact FIPS lengths (Ed25519 32 · X25519 32 · ML-KEM-1024 1568 · ML-DSA-87 2592).
+- 0x40-strip BOTH `sign` and `enc` pubkeys (algo-22) before fp/register.
+- scalar-extract the Ed25519 seed per the proven method (see (7)).
+If any value is ambiguous or you would have to CHOOSE a crypto value → STOP and flag for review. Do not guess. Call `@noble`; never hand-roll crypto.
+
+## (3) REVIEW BEFORE TRUST/MERGE (load-bearing, non-negotiable):
+ONE draft PR. Do NOT self-merge. The built seam is reviewed against the spec's acceptance checklist + the empirical acceptance tests (register→bind→tag#3 round-trip + reject-wrong-length + scalar-extract round-trip) BEFORE any trust/merge.
+
+## (4) ADDITIVE, §5-ONLY — no general loosening:
+All other crypto / identity / PSI / recovery / vault logic + all copy-claims keep their full DO-NOT-TOUCH + review-before-merge status.
+
+## (5) DATA-PRIVACY INVARIANT STAYS:
+Tags / blocked-flags / group-cluster-labels are device-local; they must NEVER serialize onto any publish / PSI-sync / export payload. §5 touches PSI — assert this with a NEGATIVE test.
+
+## (6) KEEP UNTOUCHED:
+OpenPGP encryption/cards + the existing signing paths; vault unlock/recovery logic (`initSessionKey` / `verifyPassphrase`); the satellite/server; gate/visibility/consent/trust-semantics; the seal.
+
+## (7) RISK-REDUCER — scalar-extract:
+For the subtlest bit (`keyPacket.privateParams.seed` → `@noble` sign), COPY the proven scalar-extract snippet verbatim (inlined in the CURSOR_QUEUE.md §5 task) rather than re-deriving it. Wire it + do the UX; do not re-author the extraction.
+
+## (8) NO INTERNAL REFS IN COMMITTED OUTPUT (public repo):
+NEVER echo agent names, internal KB/doc references, or internal spec/invariant labels into committed code, comments, or PR text. Describe every requirement in neutral product terms. This repo is public.
