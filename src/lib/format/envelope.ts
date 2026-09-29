@@ -168,6 +168,12 @@ export interface IdentityCard {
     pq_kem_public_key: string;      // base64(ML-KEM pubkey) — the field the signature protects
     next_authority_commitment: string; // 64-hex authority pin; '' for pre-mint/legacy cards
   };
+  // Self-attested entity type, bound in the signed card (identityCardSigningInput canonicalizes the whole
+  // card minus signature/pq_signature, so a top-level entity_type IS signed) → immutable for the identity's
+  // life, like the DID-Doc subject_type. OPTIONAL + byte-preserving: ABSENT on legacy/pre-field cards → the
+  // card canonicalizes exactly as before, and import MUST render "unknown", NEVER default "human" (G-legacy).
+  // ATTESTED, not verified — svrnty can't prove embodiment; any badge must read "attested: <type>".
+  entity_type?: 'agent' | 'human' | 'org';
 }
 
 // --- Canonical signing inputs (the signing layer prefixes LP(domain)‖LP(suite_id) then signs) ---
