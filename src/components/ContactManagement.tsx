@@ -28,6 +28,7 @@ import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { ownerHasVerified, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import {
   buildLinkToSvrntyUpdate,
@@ -45,8 +46,11 @@ import {
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
+import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
+import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -288,6 +292,29 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     return () => handle.stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable fingerprint; identity's
     // object ref is intentionally not a dep (public key stable per fp; private key re-loaded each tick).
+  }, [fingerprint]);
+
+  // KNOW-layer PSI: bind the raw sign key, then tick syncMutualTrust with layer "know".
+  // Fail-closed: locked session / failed bind ⇒ no options ⇒ no sync.
+  useEffect(() => {
+    if (!fingerprint) return;
+    // Gated OFF for alpha (claim-gates.isPSIDiscoveryLive === false): the PSI discovery wire-in is
+    // present but DO-NOT-ADVERTISE until the e2e verify passes (determinism / unlinkability /
+    // set-change / stateless-reload) + Flint's at-rest-blinder co-verify. Ships dormant + honest —
+    // no discovery runs, no "see who you both know" claim — then this flips WITH the gate.
+    if (!isPSIDiscoveryLive()) return;
+    let stopped = false;
+    let handle: { stop: () => void } | undefined;
+    void (async () => {
+      const options = await buildPsiSyncOptions(identity);
+      if (stopped || !options) return;
+      handle = startKnowLayerSync(identity, options);
+    })();
+    return () => {
+      stopped = true;
+      handle?.stop();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable fingerprint
   }, [fingerprint]);
 
   // Filter contacts — binary: all, trusted, known; blocked is a separate local list
@@ -557,6 +584,23 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     }
   };
 
+  const handleOwnerVerify = async (contact: Contact, method: 'in_person' | 'other_channel') => {
+    if (!fingerprint) return;
+    try {
+      setLoading(true);
+      setError(null);
+      // Owner-local verify (trust prereq): persist owner_verified_at via the REAL recipe patch
+      // (in-person / other-channel) — NOT a flag-flip/force-true. This is the missing card leg:
+      // once verified, confirmTarget.ownerVerified flips true → card-Trust (PR#149) applies.
+      await updateContact(contact.id, ownerVerifyPersistPatch((contact as any).metadata, method) as any);
+      await loadContacts();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to record verification');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSetBlocked = async (contact: Contact, blocked: boolean) => {
     if (!fingerprint) return;
     try {
@@ -592,6 +636,14 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         fingerprint: selectedContact.fingerprint,
         name: selectedContact.name,
         trusted: isTrusted(selectedContact),
+        // Beating-heart last-mile fix (KB#90832): populate ownerVerified from the peer's REAL
+        // owner-verify state (mirror TrustMap.tsx:444) so an already-verified peer can be Trusted
+        // from the contact card. Previously omitted → applyTrustAction always returned 'need-verify'
+        // → trust_level never set → edge.trusted never true → /initiate never fired → no psi_sessions
+        // row. This PRESERVES verify-before-trust: an unverified peer still returns need-verify (no
+        // bypass — unlike the bulk-select path). Full fix also needs a verify AFFORDANCE on the card
+        // (persist owner_verified_at) so an unverified peer can be verified-then-trusted here — see PR body.
+        ownerVerified: ownerHasVerified(contactRecordToEdge(selectedContact)),
         blocked: isContactBlocked(selectedContact),
       }
     : null;
@@ -730,11 +782,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       setError(null);
       const records = await getAllContacts(fingerprint);
       if (kind === 'json') {
-        const exportData = JSON.stringify(
-          { contacts: records, exported_at: new Date().toISOString() },
-          null,
-          2,
-        );
+        // Firewall: project each record through the safe-field allowlist (book-export.ts) so
+        // device-local metadata (tags/blocked/notes/last_interaction) never lands in the plaintext
+        // downloadable file. Full-fidelity backup is the ENCRYPTED vault export, not this. KB#88313.
+        const exportData = toContactBookJson(records, new Date().toISOString());
         const blob = new Blob([exportData], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1706,6 +1757,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           trustIcon={selectedContact ? <TrustIcon contact={selectedContact} className="h-4 w-4" /> : null}
           isTrusted={!!selectedContact && isTrusted(selectedContact)}
           isBlocked={!!selectedContact && isContactBlocked(selectedContact)}
+          ownerVerified={!!selectedContact && ownerHasVerified(contactRecordToEdge(selectedContact))}
+          onOwnerVerify={(method) => {
+            if (!selectedContact) return;
+            if (!isSvrnNetworkContact(selectedContact)) {
+              setError('Trust is SVRNTY-only — link this classical contact first.');
+              return;
+            }
+            void handleOwnerVerify(selectedContact, method);
+          }}
           onTrustToggle={() => {
             if (!selectedContact) return;
             if (!isSvrnNetworkContact(selectedContact)) {

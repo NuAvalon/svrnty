@@ -44,6 +44,12 @@ export interface JoinerResponseSender {
   displayName: string;
   privateKeyArmored: string;
   passphrase: string;
+  /** §5 canonical-fp binding: the joiner's ML-KEM-1024 public (base64, 1568B). Thread with sigPublicKeyB64
+   *  so the giver recomputes our 64-hex canonical id (SHA256(sign‖enc‖kem‖sig)). Optional — a classical
+   *  (40-hex OpenPGP) joiner omits both; sourced from the identity's post_quantum.kem_public_key. */
+  kemPublicKeyB64?: string;
+  /** §5 canonical-fp binding: the joiner's ML-DSA-87 public (base64, 2592B) — the other half. */
+  sigPublicKeyB64?: string;
 }
 
 /** The giver being connected back to: fingerprint (→ mailbox + binding) + pubkey (→ encrypt-to) + code. */
@@ -88,6 +94,11 @@ export async function buildJoinerResponseDeposit(
         joinerName: sender.displayName,
         giverFp: target.fingerprint,
         inviteNonce: target.inviteNonce,
+        // §5: carry our PQ pubkeys so the giver recomputes our 64-hex canonical id. Only when BOTH are
+        // present (a canonical identity); a classical identity omits them → the giver's OpenPGP-fp path.
+        ...(sender.kemPublicKeyB64 && sender.sigPublicKeyB64
+          ? { joinerPqKemPublicKey: sender.kemPublicKeyB64, joinerPqSigPublicKey: sender.sigPublicKeyB64 }
+          : {}),
       },
       sender.privateKeyArmored,
       sender.passphrase,

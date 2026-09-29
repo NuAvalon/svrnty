@@ -15,7 +15,9 @@
 // matters is the inner signed update — which is why this helper builds a real one.
 
 import type { APIRequestContext, Page } from '@playwright/test';
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
+import { generatePQKeypairBundle, uint8ToBase64 } from '../../src/lib/crypto/pq';
+import { mintCanonicalFingerprint } from '../../src/lib/identity/fingerprint';
 import { signWithEnvelope } from '../../src/lib/crypto/sign-envelope';
 import {
   DOMAIN_CONTACT_UPDATE,
@@ -27,13 +29,21 @@ import { encryptContactUpdateTo } from '../../src/lib/sync/contact-update-envelo
 import { deriveMailboxId } from '../../src/lib/relay/mailbox-auth';
 
 export interface E2EIdentity {
-  fingerprint: string;
+  fingerprint: string; // 64-hex CANONICAL = SHA256(sign‖enc‖kem‖sig) — §5 canonical identity
   publicKey: string; // armored
   privateKey: string; // armored
   passphrase: string;
+  kemPublicKeyB64: string; // base64(ML-KEM-1024 pubkey) — the canonical fp-match overlay
+  sigPublicKeyB64: string; // base64(ML-DSA-87 pubkey)
 }
 
-/** Generate a real openpgp (Ed25519) identity node-side — deterministic keys the test fully controls. */
+/**
+ * Generate a real §5 CANONICAL identity node-side: an openpgp (Ed25519) classical key + a Cat-5 PQ bundle,
+ * with the durable 64-hex canonical fingerprint = SHA256(sign‖enc‖kem‖sig). Post-res1-gate the consume
+ * verifies fp↔key via the canonical branch (the 40-hex OpenPGP fall-through is removed), so the fixture's
+ * synthetic sender MUST be canonical + carry its PQ pubkeys. Mirrors core.ts mint + the makeCanonicalIdentity
+ * unit fixture (mailbox-auth.test.ts).
+ */
 export async function makeE2EIdentity(name: string): Promise<E2EIdentity> {
   const passphrase = `e2e-${name}-pass`;
   const { privateKey, publicKey } = await generateKey({
@@ -44,8 +54,22 @@ export async function makeE2EIdentity(name: string): Promise<E2EIdentity> {
     passphrase,
     format: 'armored',
   });
-  const fingerprint = (await readKey({ armoredKey: publicKey })).getFingerprint();
-  return { fingerprint, publicKey, privateKey, passphrase };
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: privateKey });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase });
+  const { fingerprint } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked,
+    kemPublicKey: pq.kem.publicKey,
+    sigPublicKey: pq.signing.publicKey,
+  });
+  return {
+    fingerprint,
+    publicKey,
+    privateKey,
+    passphrase,
+    kemPublicKeyB64: uint8ToBase64(pq.kem.publicKey),
+    sigPublicKeyB64: uint8ToBase64(pq.signing.publicKey),
+  };
 }
 
 export interface ContactUpdateFields {
@@ -143,7 +167,7 @@ export async function seedAliceWithBob(
 ): Promise<{ aliceFp: string; aliceArmoredPub: string; bob: E2EIdentity }> {
   const bob = await makeE2EIdentity('bob');
   const alice = await page.evaluate(
-    async ({ bobFp, bobPub }: { bobFp: string; bobPub: string }) => {
+    async ({ bobFp, bobPub, bobKem, bobSig }: { bobFp: string; bobPub: string; bobKem: string; bobSig: string }) => {
       const openDb = () =>
         new Promise<IDBDatabase>((resolve, reject) => {
           const r = indexedDB.open('svrnty'); // no version → open the app's existing DB as-is
@@ -173,6 +197,11 @@ export async function seedAliceWithBob(
           name: 'Bob',
           email: 'bob@e2e.test',
           public_key: bobPub,
+          // §5 CRUX: Bob's canonical PQ pubkeys on his STORED contact record — the consume's
+          // fingerprintMatchesKey (via updateContact) reads pq from HERE (next.pq_kem/sig), NOT the
+          // envelope, so post-res1-gate the canonical branch matches Bob's 64-hex fp (beat-4 stays green).
+          pq_kem_public_key: bobKem,
+          pq_sig_public_key: bobSig,
           trust_level: 'verified',
           added_at: new Date().toISOString(),
           owner_fingerprint: aliceFp,
@@ -185,7 +214,7 @@ export async function seedAliceWithBob(
       db.close();
       return { aliceFp, aliceArmoredPub };
     },
-    { bobFp: bob.fingerprint, bobPub: bob.publicKey },
+    { bobFp: bob.fingerprint, bobPub: bob.publicKey, bobKem: bob.kemPublicKeyB64, bobSig: bob.sigPublicKeyB64 },
   );
   return { aliceFp: alice.aliceFp, aliceArmoredPub: alice.aliceArmoredPub, bob };
 }

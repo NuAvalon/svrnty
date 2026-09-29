@@ -5,7 +5,7 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { base64ToUint8 } from '@/lib/crypto/pq';
@@ -22,6 +22,9 @@ import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodRe
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
+import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
+import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -29,6 +32,10 @@ interface SoverentityFrontendProps {
   onVaultRestore?: (contents: any) => void;
   /** Jump to Trust Map from the card's "Your circle" affordance */
   onOpenCircle?: () => void;
+  /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
+  appLockPrefs?: AppLockPrefs;
+  onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
+  onLockNow?: () => void;
 }
 
 type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
@@ -228,6 +235,9 @@ export function SoverentityFrontend({
   onIdentityUpdate,
   onVaultRestore,
   onOpenCircle,
+  appLockPrefs,
+  onAppLockPrefsChange,
+  onLockNow,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
@@ -250,8 +260,12 @@ export function SoverentityFrontend({
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
   const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
+  /** 3a-pure seed recovery: device passphrase the user sets to protect recovered keys at rest. */
+  const [seedNewPassphrase, setSeedNewPassphrase] = useState('');
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
+  /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
+  const [plaintextImportNote, setPlaintextImportNote] = useState<string | null>(null);
   /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
   const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
   /** After successful seed-only restore — unmissable contacts-honesty interstitial (no CTA). */
@@ -410,11 +424,25 @@ export function SoverentityFrontend({
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
       const pk = identity?.identity?.public_key || identity?.identity?.publicKey || '';
-      const email = identity?.identity?.email || '';
-      const regRes = await fetch('/register', {
+      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
+      const extra = await buildSatelliteRegisterFields(identity);
+      const regRes = await fetch('/api/satellite/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, display_name: slug, public_key: pk, fingerprint: fp || '', slug }),
+        body: JSON.stringify({
+          display_name: slug,
+          public_key: pk,
+          fingerprint: extra?.fingerprint || fp || '',
+          slug,
+          ...(extra
+            ? {
+                sign_pub: extra.sign_pub,
+                enc_pub: extra.enc_pub,
+                kem_pub: extra.kem_pub,
+                sig_pub: extra.sig_pub,
+              }
+            : {}),
+        }),
       });
       if (regRes.ok || regRes.status === 409) {
         // Claim the slug
@@ -532,6 +560,7 @@ export function SoverentityFrontend({
       setVaultHeader(header);
       setRestorePath('passphrase');
       setSoulSeedPhrase('');
+      setSeedNewPassphrase('');
       setVaultPassphrase('');
       setGateMode('restore-verify');
     } catch (err) {
@@ -559,9 +588,15 @@ export function SoverentityFrontend({
         setRestoreError('Enter your recovery code.');
         return;
       }
+      // 3a-pure (Blocker-C): recovered keys must be encrypted at rest — require a device passphrase
+      // before the (fail-closed) stores run, so there is never a plaintext-at-rest window.
+      if (seedNewPassphrase.length < 12) {
+        setRestoreError('Set a device passphrase (at least 12 characters) to protect your recovered keys at rest.');
+        return;
+      }
       const arrayBuffer = await vaultFile.arrayBuffer();
       const { restoreIdentityFromSeedVault } = await import('@/components/recovery/seedVaultRestore');
-      const result = await restoreIdentityFromSeedVault(arrayBuffer, soulSeedPhrase);
+      const result = await restoreIdentityFromSeedVault(arrayBuffer, soulSeedPhrase, seedNewPassphrase);
       // Keys are persisted; hold identity out of the main surface until the
       // contacts-honesty interstitial is acknowledged (queue: UNMISSABLE, no CTA).
       setSeedRestoreInterstitial({
@@ -570,6 +605,7 @@ export function SoverentityFrontend({
         pqSecretsRecovered: result.pqSecretsRecovered,
       });
       setSoulSeedPhrase('');
+      setSeedNewPassphrase('');
       setVaultPassphrase('');
       setRestorePath('passphrase');
     } catch (err) {
@@ -596,13 +632,13 @@ export function SoverentityFrontend({
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
-        const { importAll, storeKey, addContact, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
+        const { importAll, storeKey, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
 
         // Detect format and normalize
         if (data.type === 'svrnty-full-backup') {
           // Encrypted full backup — decrypt first, then import
           if (!vaultPassphrase) {
-            setRestoreError('Enter your backup password to decrypt.');
+            setRestoreError('Enter the encryption password you set when exporting this copy.');
             return;
           }
           const fromBase64 = (b64: string) => {
@@ -656,7 +692,10 @@ export function SoverentityFrontend({
             }
           }
 
-          await importAll(backup);
+          const fullReport = await importAll(backup);
+          if (fullReport.kept + fullReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(fullReport));
+          }
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
           if (!backup.pq_keys) {
@@ -691,7 +730,10 @@ export function SoverentityFrontend({
               return;
             }
           }
-          await importAll(data);
+          const sovereignReport = await importAll(data);
+          if (sovereignReport.kept + sovereignReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(sovereignReport));
+          }
 
           // PQ migration: check for missing PRIVATE PQ keys
           if (!data.pq_keys) {
@@ -706,17 +748,12 @@ export function SoverentityFrontend({
           setIdentity(data.identity);
           onIdentityUpdate?.(data.identity);
         } else if (data.owner_fingerprint && data.contacts) {
-          // SecureExportDialog format — contacts only, no identity
-          // Import contacts into existing identity or create stub
+          // SecureExportDialog format — contacts only, no identity.
+          // Same Known-only plaintext gate as importAll; unbindable rows skip and are reported.
           const fp = data.owner_fingerprint;
-          for (const contact of data.contacts) {
-            await addContact(fp, {
-              fingerprint: contact.fingerprint || '',
-              name: contact.name || '',
-              email: contact.email || '',
-              public_key: contact.public_key || '',
-              trust_level: contact.trust_level || 'unknown',
-            });
+          const contactsReport = await importPlaintextContacts(fp, data.contacts);
+          if (contactsReport.kept + contactsReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(contactsReport));
           }
           await setActiveFingerprint(fp);
           const existingIdentity = await loadIdentity(fp);
@@ -757,6 +794,12 @@ export function SoverentityFrontend({
           const keyData = JSON.parse(new TextDecoder().decode(decrypted));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
+          // 3a-pure (Blocker-C): keys must be encrypted at rest. Establish the session key from the
+          // export password the user just entered (unless a session is already open — don't clobber
+          // it). storeKey is fail-closed, so this guarantees no plaintext-at-rest window.
+          if (!isSessionUnlocked()) {
+            await initSessionKey(vaultPassphrase);
+          }
           if (keyData.privateKey) {
             await storeKey(fp, keyData.privateKey, keyData.passphrase || '');
           }
@@ -819,7 +862,7 @@ export function SoverentityFrontend({
         looksLikeDecryptFail
           ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
             ? 'Incorrect passphrase. Try again, or recover with your recovery code below.'
-            : 'Incorrect password. This backup requires your password to restore.'
+            : 'Incorrect encryption password. Use the password you set when you exported this copy.'
           : msg || 'Failed to restore'
       );
     } finally {
@@ -965,10 +1008,10 @@ export function SoverentityFrontend({
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>{TRUST_RECIPE_COPY.gateContinue}</span>
+                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Restore from a copy.</span>
                 <span style={s.doorDesc}>
-                  Restore your identity from a vault file.
-                  Pick up where you left off.
+                  Open an exported vault or backup file.
+                  You&apos;ll need the encryption password you set when you exported it.
                 </span>
               </button>
             </div>
@@ -1042,7 +1085,7 @@ export function SoverentityFrontend({
             />
             <EntropyMeter value={unlockPassphrase} label="Unlock strength" />
             {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
-            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Soul-seed recovery phrase is shown next — a separate second factor.)</p>
+            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Recovery code is shown next — a separate second factor.)</p>
           </div>
 
           <button
@@ -1108,10 +1151,11 @@ export function SoverentityFrontend({
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateContinue}</h2>
+            <h2 style={s.heroTitle}>Restore from a copy</h2>
             <p style={s.heroSub}>
-              Upload your .svrnty vault or .json backup to restore your identity,
-              contacts, and trust network on this device.
+              Upload a .svrnty vault or .json backup you exported earlier.
+              Next you&apos;ll enter the encryption password you chose for that file —
+              not an account login password.
             </p>
           </div>
 
@@ -1188,11 +1232,21 @@ export function SoverentityFrontend({
               </svg>
             </div>
             <h2 style={s.heroTitle}>
-              {seedPathActive ? 'Recover with your recovery code' : TRUST_RECIPE_COPY.gateContinue}
+              {seedPathActive ? 'Recover with your recovery code' : 'Unlock your exported copy'}
             </h2>
-            {seedPathActive && (
+            {seedPathActive ? (
               <p style={s.heroSub}>
                 Enter your recovery code to unlock this backup — it works without your passphrase.
+              </p>
+            ) : (
+              <p style={s.heroSub}>
+                Enter the encryption password you set when you exported this file.
+                This is not a website or account login password.
+              </p>
+            )}
+            {isV4Vault && !seedPathActive && (
+              <p style={s.heroSub}>
+                Two ways to restore — both need your backup file:
               </p>
             )}
           </div>
@@ -1204,11 +1258,25 @@ export function SoverentityFrontend({
                 <span style={s.vaultInfoLabel}>FILE</span>
                 <span style={s.vaultInfoValue}>Encrypted svrnty vault · v{vaultHeader.version}</span>
               </div>
-              <p style={s.safeWordHint}>
-                {seedPathActive
-                  ? 'Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can\'t rebuild you from nothing.'
-                  : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
-              </p>
+              {isV4Vault && !seedPathActive ? (
+                <div style={{ ...s.safeWordHint, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <p style={{ margin: 0 }}>
+                    Password + backup file → everything (identity, contacts, and trust).
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    Recovery code + backup file → your identity only (no contacts; reconnect those).
+                  </p>
+                  <p style={{ margin: '4px 0 0', opacity: 0.85 }}>
+                    Alternatives — never both. Password alone opens a v4 backup fully.
+                  </p>
+                </div>
+              ) : (
+                <p style={s.safeWordHint}>
+                  {seedPathActive
+                    ? 'Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can\'t rebuild you from nothing.'
+                    : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
+                </p>
+              )}
             </div>
           )}
 
@@ -1238,7 +1306,7 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Encrypted key backup detected.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  Enter the password you used when exporting, then your soul-seed if the backup includes a KeyVault.
+                  Enter the encryption password you set when exporting this copy, then your soul-seed if the backup includes a KeyVault. Not your everyday unlock passphrase.
                 </p>
               </div>
             </div>
@@ -1265,17 +1333,19 @@ export function SoverentityFrontend({
               vaultHeader?.format === 'json-full-encrypted' ||
               vaultHeader?.format === 'svrnty-vault') && (
             <div style={s.field}>
-              <label style={s.label}>
-                {vaultHeader?.format === 'svrnty-vault' ? 'VAULT PASSPHRASE' : 'DECRYPTION PASSWORD'}
-              </label>
+              <label style={s.label}>EXPORT ENCRYPTION PASSWORD</label>
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                The password you chose when you exported this copy. It is not a website login password.
+              </p>
               <div style={{ position: 'relative' }}>
                 <input
                   type={showPassphrase ? 'text' : 'password'}
-                  placeholder={
-                    vaultHeader?.format === 'svrnty-vault'
-                      ? 'Enter your vault passphrase'
-                      : 'Enter your export password'
-                  }
+                  name="svrnty-export-encryption-password"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  placeholder="Encryption password from export"
                   value={vaultPassphrase}
                   onChange={e => setVaultPassphrase(e.target.value)}
                   onKeyDown={e => {
@@ -1304,6 +1374,9 @@ export function SoverentityFrontend({
                   )}
                 </button>
               </div>
+              {isV4Vault && (
+                <p style={s.hint}>Unlocks the backup file — identity, contacts, and trust.</p>
+              )}
             </div>
           )}
 
@@ -1332,6 +1405,36 @@ export function SoverentityFrontend({
                 {seedPathActive
                   ? 'Wrong code fails closed — no lockout; try again.'
                   : 'Second factor when the backup includes a KeyVault. Required to open sealed recovery material.'}
+              </p>
+            </div>
+          )}
+
+          {seedPathActive && (
+            <div style={s.field}>
+              <label style={s.label}>SET A DEVICE PASSPHRASE</label>
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                Protects your recovered keys on this device — they are encrypted at rest with this
+                passphrase and never written unprotected. You&apos;ll use it to unlock this device from now on.
+              </p>
+              <input
+                type="password"
+                name="svrnty-new-device-passphrase"
+                autoComplete="new-password"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                placeholder="At least 12 characters"
+                value={seedNewPassphrase}
+                onChange={e => setSeedNewPassphrase(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && soulSeedPhrase.trim() && seedNewPassphrase.length >= 12) handleSeedVaultRestore();
+                }}
+                style={s.input}
+              />
+              <p style={s.hint}>
+                {seedNewPassphrase.length > 0 && seedNewPassphrase.length < 12
+                  ? 'At least 12 characters.'
+                  : 'New device passphrase — keeps your recovered keys encrypted at rest.'}
               </p>
             </div>
           )}
@@ -1371,10 +1474,10 @@ export function SoverentityFrontend({
               <button
                 type="button"
                 onClick={handleSeedVaultRestore}
-                disabled={restoreLoading || !soulSeedPhrase.trim()}
+                disabled={restoreLoading || !soulSeedPhrase.trim() || seedNewPassphrase.length < 12}
                 style={{
                   ...s.restoreBtn,
-                  opacity: restoreLoading || !soulSeedPhrase.trim() ? 0.5 : 1,
+                  opacity: restoreLoading || !soulSeedPhrase.trim() || seedNewPassphrase.length < 12 ? 0.5 : 1,
                 }}
               >
                 {restoreLoading ? (
@@ -1390,6 +1493,7 @@ export function SoverentityFrontend({
                 onClick={() => {
                   setRestorePath('passphrase');
                   setSoulSeedPhrase('');
+                  setSeedNewPassphrase('');
                   setRestoreError(null);
                 }}
                 style={{ ...s.backBtn, marginTop: 12, alignSelf: 'center' }}
@@ -1418,7 +1522,9 @@ export function SoverentityFrontend({
                     <Spinner /> Decrypting vault...
                   </span>
                 ) : (
-                  <span style={s.btnInner}>Open Vault</span>
+                  <span style={s.btnInner}>
+                    {isBinaryVault ? 'Restore identity' : 'Open Vault'}
+                  </span>
                 )}
               </button>
 
@@ -1428,6 +1534,7 @@ export function SoverentityFrontend({
                   onClick={() => {
                     setRestorePath('seed');
                     setVaultPassphrase('');
+                    setSeedNewPassphrase('');
                     setRestoreError(null);
                   }}
                   style={{
@@ -1451,7 +1558,7 @@ export function SoverentityFrontend({
                     This backup was created before passphrase-free recovery. It can be restored only with your passphrase.
                   </p>
                   <p style={{ margin: 0 }}>
-                    Re-export your identity to enable seed-phrase recovery.
+                    Re-export your identity to enable recovery-code restore if you lose your passphrase.
                   </p>
                 </div>
               )}
@@ -1470,6 +1577,13 @@ export function SoverentityFrontend({
   // --- Gate: PQ Migration (shown after v1 import) ---
   if (gateMode === 'pq-migrate' && pendingPqMigration) {
     const handlePqUpgrade = async () => {
+      // 3a-pure (Blocker-C): storePQKeys is fail-closed. The identity was just restored with a
+      // device passphrase (session open), but guard explicitly so a locked session gives a clear
+      // message instead of a generic failure — never a plaintext write.
+      if (!isSessionUnlocked()) {
+        setError('Unlock your identity first, then add post-quantum keys from settings.');
+        return;
+      }
       setPqMigrating(true);
       try {
         const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
@@ -1683,6 +1797,43 @@ export function SoverentityFrontend({
   return (
     <div style={s.outerWrap}>
       <div style={s.identityPanel}>
+        {plaintextImportNote && (
+          <div
+            role="status"
+            data-testid="plaintext-import-note"
+            style={{
+              background: 'rgba(78, 205, 196, 0.08)',
+              border: '1px solid rgba(78, 205, 196, 0.28)',
+              borderRadius: 12,
+              padding: '14px 16px',
+              marginBottom: 16,
+              maxWidth: 440,
+              width: '100%',
+            }}
+          >
+            <p style={{ margin: 0, color: SE.text, fontSize: 13, lineHeight: 1.5 }}>
+              {plaintextImportNote}
+            </p>
+            <button
+              type="button"
+              onClick={() => setPlaintextImportNote(null)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: SE.dim,
+                fontFamily: SE.fontSans,
+                fontSize: 12,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                textUnderlineOffset: 2,
+                padding: 0,
+                marginTop: 8,
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <SovereignIdentityCard
           name={identity.identity.name}
           fingerprint={identity.identity.fingerprint}
@@ -1778,7 +1929,7 @@ export function SoverentityFrontend({
                   Update your backup to enable passphrase-free recovery
                 </p>
                 <p style={{ margin: '0 0 12px', color: SE.muted, fontSize: 12, lineHeight: 1.5 }}>
-                  This identity was opened from a v3 backup. Re-export a new .svrnty file so seed-phrase recovery works if you lose your passphrase.
+                  This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
                 </p>
                 <button
                   type="button"
@@ -1857,6 +2008,15 @@ export function SoverentityFrontend({
           </div>
         )}
 
+        {/* CUR-7 — app-lock settings (shell owns lockSession + idle timers) */}
+        {identity && appLockPrefs && onAppLockPrefsChange && (
+          <AppLockSettingsPanel
+            prefs={appLockPrefs}
+            onChange={onAppLockPrefsChange}
+            onLockNow={onLockNow}
+          />
+        )}
+
         {/* Set Passphrase button */}
         {identity && (
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
@@ -1917,6 +2077,14 @@ export function SoverentityFrontend({
               </button>
             )}
           </div>
+        )}
+
+        {/* CUR-6 — device unlock (WebAuthn/PRF seam = Flint; stub is claim-honest) */}
+        {identity?.identity?.fingerprint && (
+          <BiometricSettingsPanel
+            fingerprint={identity.identity.fingerprint}
+            compact
+          />
         )}
 
         {/* Passphrase Dialog */}

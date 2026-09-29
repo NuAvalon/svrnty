@@ -95,12 +95,13 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await genesis(bob, 'Bob E2E', 'bob-e2e@example.test'); // the joiner needs an identity first
 
     // Alice: Grow → the handshake auto-creates the relay → grab the full join URL.
-    await alice.getByRole('button', { name: /^Grow$/i }).click();
+    await alice.getByTestId('nav-grow').click();
     const joinPath = await extractJoinPath(aliceCtx, alice);
 
     // Bob: open the link on his device → walk the joiner steps → the edge persists.
     await bob.goto(joinPath);
     await bob.getByRole('button', { name: /receive their card/i }).click();
+    await bob.getByTestId('join-presence-in-person').click();
     await bob.getByRole('button', { name: /add to my network/i }).click();
     // Joiner /c/ navigation drops the in-memory session key — persistEdge prompts
     // to unlock so the return-channel deposit can be signed (R1). Then lattice.

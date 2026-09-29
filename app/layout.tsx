@@ -1,26 +1,42 @@
 import './globals.css'
-import { JetBrains_Mono, Cormorant_Garamond, Space_Grotesk } from 'next/font/google'
+import localFont from 'next/font/local'
 import { AppearanceProvider } from '@/components/ui-prefs/AppearanceProvider'
 import { UI_PREFS_KEY } from '@/components/recovery/solar-ember'
 
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['300', '400', '500', '600', '700'],
+// Fonts are served locally — no build-time dependency on fonts.googleapis.com / fonts.gstatic.com.
+// Each family's latin subset is a single Google *variable* woff2 (its wght axis spans all the
+// weights below), committed under public/fonts/. One src entry per weight mirrors the prior
+// Google-hosted output; the repeated per-family path is intentional (one variable file covers
+// the whole weight range).
+const jetbrainsMono = localFont({
+  src: [
+    { path: '../public/fonts/JetBrainsMono.woff2', weight: '300', style: 'normal' },
+    { path: '../public/fonts/JetBrainsMono.woff2', weight: '400', style: 'normal' },
+    { path: '../public/fonts/JetBrainsMono.woff2', weight: '500', style: 'normal' },
+    { path: '../public/fonts/JetBrainsMono.woff2', weight: '600', style: 'normal' },
+    { path: '../public/fonts/JetBrainsMono.woff2', weight: '700', style: 'normal' },
+  ],
   variable: '--font-mono',
   display: 'swap',
 })
 
-const cormorantGaramond = Cormorant_Garamond({
-  subsets: ['latin'],
-  weight: ['300', '400', '500'],
-  style: ['normal', 'italic'],
+const cormorantGaramond = localFont({
+  src: [
+    { path: '../public/fonts/CormorantGaramond.woff2', weight: '300', style: 'normal' },
+    { path: '../public/fonts/CormorantGaramond.woff2', weight: '400', style: 'normal' },
+    { path: '../public/fonts/CormorantGaramond.woff2', weight: '500', style: 'normal' },
+  ],
   variable: '--font-serif',
   display: 'swap',
 })
 
-const spaceGrotesk = Space_Grotesk({
-  subsets: ['latin'],
-  weight: ['300', '400', '500', '600'],
+const spaceGrotesk = localFont({
+  src: [
+    { path: '../public/fonts/SpaceGrotesk.woff2', weight: '300', style: 'normal' },
+    { path: '../public/fonts/SpaceGrotesk.woff2', weight: '400', style: 'normal' },
+    { path: '../public/fonts/SpaceGrotesk.woff2', weight: '500', style: 'normal' },
+    { path: '../public/fonts/SpaceGrotesk.woff2', weight: '600', style: 'normal' },
+  ],
   variable: '--font-sans',
   display: 'swap',
 })

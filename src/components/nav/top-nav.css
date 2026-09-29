@@ -1,0 +1,75 @@
+/* Phone vs desktop chrome for the app header. Wordmark stays in flow;
+   the overflow panel is absolutely positioned so opening Menu cannot
+   reflow SVRNTY.IS YOURS. */
+
+.svrnty-topnav {
+  max-width: 1100px;
+  margin: 0 auto 1.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+  position: relative;
+}
+
+.svrnty-topnav-wordmark {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--se-accent);
+}
+
+.svrnty-topnav-desktop {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.svrnty-topnav-phone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.svrnty-topnav-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 220px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid var(--se-border-lit);
+  background: var(--se-surface-solid);
+  box-shadow: var(--se-glass-shadow);
+  backdrop-filter: blur(20px);
+}
+
+@media (min-width: 768px) {
+  .svrnty-topnav-desktop {
+    display: flex;
+  }
+
+  .svrnty-topnav-phone {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .svrnty-topnav-wordmark {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .svrnty-topnav-menu {
+    transition: none;
+  }
+}

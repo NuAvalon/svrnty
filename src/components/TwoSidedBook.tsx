@@ -250,9 +250,13 @@ export function TwoSidedBook({ edges, onSelect, className = '', liveIds }: {
   });
 
   // Light up freshly-ignited contacts, then fade them after the bloom window.
+  // Respect prefers-reduced-motion: skip the timed glow (instant settle).
   const bloomKey = view.bloomingIds.join(',');
   useEffect(() => {
     if (!view.bloomingIds.length) return;
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
     const ids = view.bloomingIds;
     setGlow(prev => { const n = new Set(prev); ids.forEach(id => n.add(id)); return n; });
     const t = setTimeout(() => {

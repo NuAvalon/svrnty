@@ -106,6 +106,10 @@ export type ContactDetailDialogProps = {
   availableGroups?: string[];
   onToggleGroup?: (tag: string) => void;
   onShareSettingsChange?: (next: ContactShareSettings) => void;
+  /** Owner-local verify state (trust prereq). When false + not trusted, the card offers a Verify action. */
+  ownerVerified: boolean;
+  /** Record a REAL owner-side verification (in-person / other-channel) → persists owner_verified_at. NOT a flag-flip. */
+  onOwnerVerify?: (method: 'in_person' | 'other_channel') => void;
 };
 
 function SectionLabel({ children }: { children: ReactNode }) {
@@ -153,6 +157,8 @@ export function ContactDetailDialog({
   availableGroups = [],
   onToggleGroup,
   onShareSettingsChange,
+  ownerVerified,
+  onOwnerVerify,
 }: ContactDetailDialogProps) {
   const [tab, setTab] = useState('reach');
 
@@ -669,6 +675,24 @@ export function ContactDetailDialog({
                     >
                       <LinkIcon className="mr-2 h-4 w-4" /> Link to SVRNTY
                     </DropdownMenuItem>
+                  ) : null}
+                  {svrn && !isBlocked && !isTrusted && !ownerVerified && onOwnerVerify ? (
+                    <>
+                      <DropdownMenuItem
+                        onClick={() => onOwnerVerify('in_person')}
+                        data-testid="contact-verify-in-person"
+                        style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                      >
+                        <ShieldCheck className="mr-2 h-4 w-4" /> Verify — met in person
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={() => onOwnerVerify('other_channel')}
+                        data-testid="contact-verify-other-channel"
+                        style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                      >
+                        <ShieldCheck className="mr-2 h-4 w-4" /> Verify — confirmed another way
+                      </DropdownMenuItem>
+                    </>
                   ) : null}
                   {svrn && !isBlocked ? (
                     <DropdownMenuItem

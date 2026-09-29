@@ -24,10 +24,10 @@ Nothing personal ever leaves your device unless you choose to send it.
 
 svrnty is post-quantum where it counts today — identity — and building toward post-quantum everywhere:
 
-- **Signatures: ED25519 + ML-DSA-87** (classical + FIPS 204 post-quantum, Cat 5) — **live on the wire.** Every identity card and trust signal is dual-signed; if one scheme breaks, the other holds.
+- **Signatures: ED25519 live. ML-DSA-87** (FIPS 204 post-quantum, Cat 5): **live for contact-update trust-signals** (hybrid ED25519+ML-DSA-87 when the identity carries its post-quantum signing key; classical-only fallback), and **advertised + fingerprint-bound on identity cards, where post-quantum signing is being wired in** (cards are classical-signed today). The ML-DSA-87 primitives are built and tested; where both are live, if one scheme breaks the other holds.
 - **Encryption: Curve25519 today, with ML-KEM-1024** (FIPS 203, Cat 5) on the way. Each identity **advertises** a post-quantum encryption key, and the hybrid-KEM primitives are built and tested — but the message envelope is **currently classical**. Wiring the hybrid-KEM into the envelope is the next step, not yet on the wire.
 
-This isn't paranoia. A trust protocol is infrastructure that should measure in decades. Harvest-now-decrypt-later is a known attack vector, and the NIST post-quantum standards were finalized in 2024 — so we ship post-quantum *signatures* from the first keypair and are closing the gap on post-quantum *encryption* honestly, rather than claiming it before it's wired.
+This isn't paranoia. A trust protocol is infrastructure that should measure in decades. Harvest-now-decrypt-later is a known attack vector, and the NIST post-quantum standards were finalized in 2024 — so we advertise a post-quantum signature key from the first keypair — live on contact-update trust-signals, card-signing being wired in — and are closing the gap on post-quantum *encryption* the same honest way, rather than claiming either before it's wired.
 
 ## The Trust Model
 

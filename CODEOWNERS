@@ -1,18 +1,52 @@
-# svrnty CODEOWNERS — crypto / key / vault-format surfaces require review before merge.
+# svrnty CODEOWNERS — crypto / key / vault / relay / seal / contact-security surfaces
+# require code-owner review before merge.
 #
-# ENFORCEMENT: this file only auto-REQUESTS review until branch protection on `main`
-# has "Require review from Code Owners" enabled. Turn that on to make the freeze binding
-# (recommended for any unsupervised window — a crypto/format/key change must WAIT for
-# review, never auto-merge while the fleet is away).
+# ENFORCEMENT: ACTIVE — branch-protection rulesets on `main` (main-1: block force-push/delete;
+# main-2: require PR + require code-owner review + 1 approval + no bypass). A change under a
+# fenced path below CANNOT merge without @palberts22 review.
 #
-# Rationale + the full render-glass boundary: .cursor/rules/svrnty-gap-freeze.mdc
+# PRINCIPLE: the enforced fence == AGENTS.md §HARD BOUNDARY NEVER-TOUCH, but NO broader —
+# never wall pure-render (Cursor/Devin build the render-glass freely).
+# Rationale + full render-glass boundary: AGENTS.md + .cursor/rules/svrnty-gap-freeze.mdc
 
+# --- Crypto / keys / identity / vault ---
 /src/lib/crypto/          @palberts22
-/src/lib/sync/vault.ts    @palberts22
 /src/lib/identity/        @palberts22
 
-# Trust-layer crypto: PSI core (mutual-trust-sync.ts), §C publish firewall
-# (trust-recipe.ts / stripOwnerLocalForPublish), signing (contact-update-sign.ts),
-# owner-local projection (contact-edge.ts). The .mdc names these DO-NOT-TOUCH by
-# description; this binds them by path so the freeze is enforceable.
+# --- Trust-layer crypto: PSI core (mutual-trust-sync.ts), publish firewall
+#     (trust-recipe.ts / stripOwnerLocalForPublish), signing (contact-update-sign.ts),
+#     owner-local projection (contact-edge.ts) ---
 /src/lib/trust/           @palberts22
+
+# --- Publish/sync wire + the .svrnty vault format (whole dir: all wire/protocol, no pure-render;
+#     supersedes the sync/vault.ts-only fence) ---
+/src/lib/sync/            @palberts22
+
+# --- Message crypto + relay/candle/mailbox protocol internals (whole dirs: no pure-render) ---
+/src/lib/messaging/       @palberts22
+/src/lib/relay/           @palberts22
+
+# --- The SEAL: deterministic-from-fingerprint, recompute-never-transmit. Seal-specific files ONLY;
+#     the rest of components/identity/ (OwnerCardStudio, SovereignIdentityCard, dialogs) is
+#     render-glass Cursor/Devin build freely — do NOT whole-dir fence it. ---
+/src/components/identity/IdentitySeal.tsx     @palberts22
+/src/components/identity/sacred-geometry.ts   @palberts22
+
+# --- Contact-security surfaces only (lane routing + link-scheme allowlist);
+#     NOT plain contact-management. ---
+/src/lib/contacts/contact-lane.ts        @palberts22
+/src/lib/contacts/safe-contact-link.ts   @palberts22
+/src/lib/contacts/resolve-sms-href.ts   @palberts22
+
+# --- CI / guard-of-guards: Devin's App has workflows:write, and CI enforces test-guarded
+#     surfaces (e.g. the book-export.test.ts private-tag export-firewall). Fence CI so any
+#     workflow change needs code-owner review (else Devin could gut a firewall test with only a
+#     general approval). Pairs with wiring ci.yml as a required status check (#7). ---
+/.github/workflows/      @palberts22
+
+# NOTE (honesty over the fence): the restore-gate CONTROL FLOW (seedPathActive / path-selection /
+# which-key-decrypts-what / step-up + auth / trust-block wire-strip) is NEVER-TOUCH per AGENTS.md,
+# but it currently lives embedded in src/components/SoverentityFrontend.tsx (a render component)
+# and is NOT path-fenced here — fencing the whole component would wall pure-render. Tracked for
+# extraction into src/lib/ so it can be fenced without walling render. Until then: fleet-owned by
+# the RULE, not the fence.

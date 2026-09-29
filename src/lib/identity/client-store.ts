@@ -7,6 +7,9 @@
 import { fingerprintMatchesKey } from './fingerprint';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
 import type { VaultContents } from '../sync/vault';
+// enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
+// returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
+import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -18,6 +21,9 @@ const DB_VERSION = 3;
 
 let _sessionKey: CryptoKey | null = null;
 let _sessionSalt: Uint8Array | null = null;
+// enc-b HMAC subkeys: index = blinded-fp keyed-PRF; manifest = book-integrity MAC. Derived at
+// initSessionKey (from the passphrase + salt-b), cleared on lock. Contact AES reuses _sessionKey.
+let _contactKeys: ContactCryptoKeys | null = null;
 
 const PBKDF2_ITERATIONS = 600_000;
 const ENC_VERSION = 1; // Encrypted record format version
@@ -61,6 +67,19 @@ async function deriveSessionKey(passphrase: string, salt: Uint8Array): Promise<C
 }
 
 /**
+ * enc-b HMAC-master salt = option (b), Flint-locked: SHA-256('svrnty/enc-b/hmac-master-salt/v1' ‖
+ * key_encryption_salt). Distinct from key_encryption_salt (domain separation between the AES
+ * _sessionKey and the HMAC-master), inherits its per-install randomness, no new stored state.
+ */
+async function deriveHmacMasterSalt(keSalt: Uint8Array): Promise<Uint8Array> {
+  const label = new TextEncoder().encode('svrnty/enc-b/hmac-master-salt/v1');
+  const preimage = new Uint8Array(label.length + keSalt.length);
+  preimage.set(label, 0);
+  preimage.set(keSalt, label.length);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+}
+
+/**
  * Initialize the session key from a user passphrase.
  * Call once per session (on identity creation or unlock).
  * The derived CryptoKey is held in memory — lost on tab close.
@@ -78,6 +97,17 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   }
   _sessionKey = await deriveSessionKey(passphrase, salt);
   _sessionSalt = salt;
+  // enc-b: derive the two HMAC subkeys {index, manifest} from the passphrase via the salt-(b)
+  // HMAC-master. Contact-record AES reuses _sessionKey (◆5701) — no separate AES key derived here.
+  _contactKeys = await deriveContactCryptoKeys(passphrase, await deriveHmacMasterSalt(salt), PBKDF2_ITERATIONS);
+  // enc-b B5: on every unlock, heal any legacy plaintext-at-rest contacts to encrypted, then establish
+  // (first run / post-upgrade) or verify the per-owner book manifest. Best-effort + resumable — it
+  // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
+  // sets a corrupt flag for the recovery UI rather than raising).
+  await migrateAndVerifyContactsOnUnlock();
+  // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
+  // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
+  await eagerMigrateIdentityStoresOnUnlock();
 }
 
 /** Check if the session is unlocked (key available in memory). */
@@ -89,6 +119,7 @@ export function isSessionUnlocked(): boolean {
 export function lockSession(): void {
   _sessionKey = null;
   _sessionSalt = null;
+  _contactKeys = null;
 }
 
 async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
@@ -339,6 +370,30 @@ async function txGetByIndex<T>(storeName: string, indexName: string, key: string
   });
 }
 
+// Multi-store atomic write (enc-b B4): put/delete across several stores in ONE IndexedDB transaction,
+// so a contact record and its book-manifest (or a delete and the manifest) commit together or not at
+// all. FOOTGUN (why this helper exists): an IDB txn auto-commits as soon as the microtask queue drains
+// with no pending IDB request — so callers must compute the manifest MAC + gather all entries BEFORE
+// calling this; the body here does synchronous puts/deletes only, never an awaited non-IDB op mid-tx.
+type TxOp = { store: string; value: unknown } | { store: string; delete: string };
+
+async function txPutMany(ops: TxOp[]): Promise<void> {
+  const db = await openDB();
+  const stores = [...new Set(ops.map((o) => o.store))];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, 'readwrite');
+    let firstError: unknown = null;
+    for (const op of ops) {
+      const store = tx.objectStore(op.store);
+      const req = 'delete' in op ? store.delete(op.delete) : store.put(op.value);
+      req.onerror = () => { firstError = req.error; }; // capture (e.g. ConstraintError) before the abort
+    }
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onabort = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction aborted')); };
+    tx.onerror = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction error')); };
+  });
+}
+
 // ── Identity operations ──────────────────────────────────────────
 
 export async function storeIdentity(fingerprint: string, data: any): Promise<void> {
@@ -373,14 +428,15 @@ export async function listIdentities(): Promise<IdentityRecord[]> {
 // ── Key operations ──────────────────────────────────────────────
 
 export async function storeKey(fingerprint: string, privateKey: string, passphrase: string): Promise<void> {
-  if (_sessionKey) {
-    // Encrypt before storing
-    const encrypted = await encryptKeyData({ privateKey, passphrase });
-    await txPut('keys', { fingerprint, ...encrypted });
-  } else {
-    // Fallback: store unencrypted (legacy / during initial setup before session key exists)
-    await txPut('keys', { fingerprint, privateKey, passphrase });
+  // Blocker-C fail-closed: never write key material as plaintext at rest. The caller MUST
+  // initSessionKey() first — genesis (passphrase-mandatory) and every recovery/import path
+  // establishes it. Mirrors the contacts fail-closed (addContact); a locked session throws
+  // instead of silently falling back to plaintext.
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey, passphrase });
+  await txPut('keys', { fingerprint, ...encrypted });
 }
 
 export async function loadKey(fingerprint: string): Promise<{ privateKey: string; passphrase: string } | null> {
@@ -406,12 +462,12 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
-    await txPut('pq_keys', { fingerprint, ...encrypted });
-  } else {
-    await txPut('pq_keys', { fingerprint, bundle });
+  // Blocker-C fail-closed: never write PQ key material as plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store PQ key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
+  await txPut('pq_keys', { fingerprint, ...encrypted });
 }
 
 export async function loadPQKeys(fingerprint: string): Promise<any | null> {
@@ -435,12 +491,12 @@ export async function loadPQKeys(fingerprint: string): Promise<any | null> {
 // ── Vault operations ─────────────────────────────────────────────
 
 export async function storeVault(fingerprint: string, vault: any): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
-    await txPut('vaults', { fingerprint, ...encrypted });
-  } else {
-    await txPut('vaults', { fingerprint, vault });
+  // Blocker-C fail-closed: never write vault key material as plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store vault key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
+  await txPut('vaults', { fingerprint, ...encrypted });
 }
 
 export async function loadVault(fingerprint: string): Promise<any | null> {
@@ -462,18 +518,18 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
 }
 
 // ── Shard operations (social recovery — "the tear") ──────────────
-// My own shards are key material → encrypted at rest like the vault
-// when a session key is present (falls back to plaintext pre-unlock,
-// same as keys/vaults).
+// My own shards are key material → encrypted at rest like the vault.
+// Blocker-C fail-closed: refuses rather than writing plaintext pre-unlock
+// (same guarantee as keys/pq_keys/vaults).
 
 /** Persist all shards for one of my identities (stops the create-time discard). */
 export async function storeShards(fingerprint: string, shardsData: ShardsData): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
-    await txPut('shards', { fingerprint, ...encrypted });
-  } else {
-    await txPut('shards', { fingerprint, shards_data: shardsData });
+  // Blocker-C fail-closed: my own shards are key material → never plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store shard key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
+  await txPut('shards', { fingerprint, ...encrypted });
 }
 
 export async function loadShards(fingerprint: string): Promise<ShardsData | null> {
@@ -536,13 +592,69 @@ export async function getHeldShards(holderFingerprint: string): Promise<HeldShar
 
 // ── Contact operations ───────────────────────────────────────────
 
+// ── Contact book-integrity manifest (enc-b B4) ───────────────────
+// A per-owner HMAC over {(id, version)…, count} (contact-crypto.serializeManifest) catches book-level
+// tampering that per-record AES-GCM tags miss: delete, truncation, rollback, insert/reorder. Stored as
+// a keyed record in `settings` under `contact_manifest:${owner}`, written in the SAME tx as every
+// contact mutation (add/update/remove) via txPutMany so the record and its manifest never diverge
+// across a crash. The manifest subkey is per-identity (deriveContactCryptoKeys) and never leaves memory.
+// `version` lives INSIDE the encrypted contact body, so entries are gathered by decrypting the owner's
+// book (getAllContacts) BEFORE the write tx — never mid-tx (the txPutMany auto-commit footgun).
+function contactManifestSettingKey(ownerFingerprint: string): string {
+  return `contact_manifest:${ownerFingerprint}`;
+}
+
+function toManifestEntry(c: ContactRecord): ManifestEntry {
+  return { id: c.id, version: typeof c.version === 'number' ? c.version : 0 };
+}
+
+/**
+ * Build the settings-store write op carrying the book manifest for `ownerFingerprint` over the given
+ * POST-mutation entries. Async (HMAC) — call BEFORE opening the write tx, then hand the returned op to
+ * txPutMany alongside the record put/delete. Fail-closed: needs the unlocked manifest subkey.
+ */
+async function buildContactManifestOp(ownerFingerprint: string, entries: ManifestEntry[]): Promise<TxOp> {
+  if (!_contactKeys) {
+    throw new Error('Session locked — cannot compute contact manifest (enc-b fail-closed)');
+  }
+  const mac = await computeManifestMAC(_contactKeys.manifestKey, entries, entries.length);
+  return { store: 'settings', value: { key: contactManifestSettingKey(ownerFingerprint), value: mac } };
+}
+
+/**
+ * Encrypt a logical ContactRecord into its at-rest envelope (fail-closed — throws if locked).
+ * Envelope = { id, owner_fingerprint (plaintext: keyPath / 'owner' index / AAD), fingerprint = the
+ * BLINDED index HMAC(indexKey, realFp) [omitted when keyless — skips the UNIQUE index],
+ * enc_version/iv/ciphertext = AES-GCM(body, AAD id+owner) }. The body is the full record minus the
+ * plaintext envelope keys; the real fingerprint stays inside the ciphertext.
+ */
+async function buildStoredContact(record: ContactRecord): Promise<Record<string, unknown>> {
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — refusing to store a contact unencrypted (enc-b fail-closed)');
+  }
+  const { id, owner_fingerprint, ...body } = record;
+  const payload = await encryptContactRecord(_sessionKey, id, owner_fingerprint, body);
+  const stored: Record<string, unknown> = { id, owner_fingerprint, ...payload };
+  const rawFp = (record.fingerprint || '').trim();
+  if (rawFp) stored.fingerprint = await blindFingerprint(_contactKeys.indexKey, rawFp);
+  return stored;
+}
+
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
+  // enc-b fail-closed (Flint seam Q4): never persist a contact unencrypted. Every add-path must be
+  // post-unlock; if locked, refuse (do NOT fall back to plaintext — that was the Blocker-C mistake).
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — addContact refuses to store plaintext (enc-b fail-closed)');
+  }
   // Invariant-1: a fingerprint exists only with a bound key.
   // Keyless rows MUST NOT carry a fingerprint (even a placeholder).
   const pk = (contact.public_key || '').trim();
   if (!pk) {
     contact = { ...contact, fingerprint: '', public_key: '' };
-  } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk))) {
+  } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk, {
+    kem_public_key: contact.pq_kem_public_key,
+    sig_public_key: contact.pq_sig_public_key,
+  }))) {
     // C2 / Invariant-1: fail-closed when a key is present —
     // refuse mismatched attacker-key + victim-fingerprint pairs.
     throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
@@ -554,21 +666,28 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
     owner_fingerprint: ownerFingerprint,
     added_at: new Date().toISOString(),
   };
-  // Keyless/gray contacts (vCard import) have no fingerprint. The `contacts.fingerprint` index is
-  // UNIQUE: IndexedDB collides multiple ''-valued keys, but SKIPS records whose key is ABSENT. So a
-  // second gray with fingerprint='' throws a ConstraintError — store an empty fingerprint as absent
-  // instead. (Verified in-browser: two ''-fp puts → 2nd errors; two absent-fp puts → both OK.)
+  // Keyless/gray contacts (vCard import) have no fingerprint. buildStoredContact omits the (blinded)
+  // fingerprint field for keyless records → they skip the UNIQUE index (IndexedDB skips ABSENT keys),
+  // so multiple grays coexist. Normalize the logical record the same way (absent fp/pk = keyless).
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
   if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
+  const stored = await buildStoredContact(record);
+  // enc-b B4: recompute the book manifest over the POST-insert set (existing owner contacts + this new
+  // record) and write it in the SAME tx as the record. Decrypt-all + MAC happen BEFORE the tx (the
+  // auto-commit footgun). A ConstraintError aborts BOTH puts → the book and manifest stay consistent.
+  const postAddEntries = [
+    ...(await getAllContacts(ownerFingerprint)).map(toManifestEntry),
+    { id: record.id, version: typeof record.version === 'number' ? record.version : 0 },
+  ];
+  const addManifestOp = await buildContactManifestOp(ownerFingerprint, postAddEntries);
   try {
-    await txPut('contacts', record);
+    await txPutMany([{ store: 'contacts', value: stored }, addManifestOp]);
   } catch (e) {
-    // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent
-    // add-paths for the same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add)
-    // can each pass a getContactByFingerprint pre-check as null, then both insert. The UNIQUE fingerprint
-    // index (contacts store) catches the 2nd → ConstraintError. Rather than surface that caught error,
-    // return the record that WON the race — exactly one contact, no duplicate, no error, every add-path
-    // safe by construction. Fetch runs in a fresh db/transaction (txPut closed its own), so it's clean.
+    // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent add-paths for the
+    // same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add) can each pass
+    // a getContactByFingerprint pre-check as null, then both insert. The UNIQUE (blinded) fingerprint
+    // index catches the 2nd → ConstraintError. Rather than surface it, return the record that WON the
+    // race. getContactByFingerprint takes the RAW fp (it blinds internally). Fresh db/txn → clean.
     if (record.fingerprint && (e as { name?: string } | null)?.name === 'ConstraintError') {
       const existing = await getContactByFingerprint(ownerFingerprint, record.fingerprint);
       if (existing) return existing;
@@ -579,7 +698,11 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
 }
 
 export async function updateContact(id: string, updates: Partial<ContactRecord>): Promise<void> {
-  const existing = await txGet<ContactRecord>('contacts', id);
+  // enc-b fail-closed: re-encrypting an update needs the session; refuse when locked.
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — updateContact refuses to store plaintext (enc-b fail-closed)');
+  }
+  const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
   if (!existing) throw new Error('Contact not found');
   const next = { ...existing, ...updates, id: existing.id };
   const pk = (next.public_key || '').trim();
@@ -587,10 +710,21 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   if (!pk) {
     next.public_key = '';
     delete (next as { fingerprint?: string }).fingerprint;
-  } else if (!(await fingerprintMatchesKey(next.fingerprint, pk))) {
+  } else if (!(await fingerprintMatchesKey(next.fingerprint, pk, {
+    kem_public_key: next.pq_kem_public_key,
+    sig_public_key: next.pq_sig_public_key,
+  }))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
-  await txPut('contacts', next);
+  const stored = await buildStoredContact(next);
+  // enc-b B4: manifest over the post-update set (this id's version replaced) in the SAME tx as the
+  // record. owner_fingerprint is immutable per contact, so the book is `existing.owner_fingerprint`.
+  const owner = existing.owner_fingerprint;
+  const postUpdateEntries = (await getAllContacts(owner)).map((c) =>
+    c.id === id ? { id, version: typeof next.version === 'number' ? next.version : 0 } : toManifestEntry(c),
+  );
+  const updateManifestOp = await buildContactManifestOp(owner, postUpdateEntries);
+  await txPutMany([{ store: 'contacts', value: stored }, updateManifestOp]);
 }
 
 /**
@@ -603,20 +737,170 @@ export async function hasEncryptedKeys(fingerprint: string): Promise<boolean> {
 }
 
 export async function removeContact(id: string): Promise<void> {
-  await txDelete('contacts', id);
+  // enc-b B4: delete the record AND rewrite the book manifest over the post-remove set in ONE tx, so a
+  // removal can't leave a stale manifest that would false-alarm as corruption on the next unlock.
+  const rec = await txGet<{ owner_fingerprint?: string }>('contacts', id);
+  if (!rec) return; // idempotent: nothing to remove
+  if (!_sessionKey || !_contactKeys) {
+    // Removal is a post-unlock user action; recomputing the manifest needs the session. Fail-closed
+    // (consistent with add/update) rather than delete-without-manifest and trip a false corruption flag.
+    throw new Error('Session locked — removeContact needs the session to update the book manifest (enc-b fail-closed)');
+  }
+  const owner = rec.owner_fingerprint ?? '';
+  const postRemoveEntries = (await getAllContacts(owner)).filter((c) => c.id !== id).map(toManifestEntry);
+  const removeManifestOp = await buildContactManifestOp(owner, postRemoveEntries);
+  await txPutMany([{ store: 'contacts', delete: id }, removeManifestOp]);
+}
+
+/**
+ * Decrypt a stored contact to the full in-memory ContactRecord. Backward-compatible: encrypted
+ * records (enc_version present) are AES-GCM-decrypted under _sessionKey (AAD = id+owner); legacy
+ * plaintext records pass through unchanged. At rest the `fingerprint` field holds the BLINDED index;
+ * the decrypted body carries the real fingerprint, which wins on the merge below.
+ */
+async function decryptContactIfNeeded(rec: any): Promise<ContactRecord> {
+  if (rec && rec.enc_version && rec.ciphertext) {
+    if (!_sessionKey) throw new Error('Session locked — cannot decrypt contact');
+    const body = await decryptContactRecord<ContactRecord>(
+      _sessionKey,
+      rec.id,
+      rec.owner_fingerprint,
+      { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext },
+    );
+    return { ...body, id: rec.id, owner_fingerprint: rec.owner_fingerprint };
+  }
+  return rec as ContactRecord;
 }
 
 export async function getContact(id: string): Promise<ContactRecord | null> {
-  return txGet('contacts', id);
+  const rec = await txGet<any>('contacts', id);
+  return rec ? decryptContactIfNeeded(rec) : null;
 }
 
 export async function getContactByFingerprint(ownerFingerprint: string, fingerprint: string): Promise<ContactRecord | null> {
-  const contacts = await txGetByIndex<ContactRecord>('contacts', 'owner', ownerFingerprint);
-  return contacts.find(c => c.fingerprint === fingerprint) ?? null;
+  // Blinded index: encrypted records store idx = HMAC(indexKey, fp) in the `fingerprint` field.
+  // Compute the same idx to look them up. Mixed-state during the on-unlock migration: legacy
+  // plaintext records still hold the raw fp, so match either. (idx needs an unlocked session.)
+  const idx = _contactKeys ? await blindFingerprint(_contactKeys.indexKey, fingerprint) : null;
+  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  const found = recs.find(c => (idx !== null && c.fingerprint === idx) || c.fingerprint === fingerprint);
+  return found ? decryptContactIfNeeded(found) : null;
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
-  return txGetByIndex('contacts', 'owner', ownerFingerprint);
+  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  return Promise.all(recs.map(decryptContactIfNeeded));
+}
+
+// ── enc-b B5: on-unlock heal + book-integrity establish/verify ────
+function contactIntegritySettingKey(ownerFingerprint: string): string {
+  return `contact_integrity:${ownerFingerprint}`;
+}
+
+/**
+ * Read the book-integrity status for an owner: 'corrupt' if the last unlock found a manifest mismatch
+ * (→ prompt cloud restore), else 'ok'. This is a UX hint, not a security control — the manifest MAC is
+ * the tamper-evidence; the flag just surfaces it. (Spec point 5: MAC-fail → cloud restore = wiring.)
+ */
+export async function getContactBookIntegrity(ownerFingerprint: string): Promise<'ok' | 'corrupt'> {
+  const flag = await txGet<{ key: string; value: string }>('settings', contactIntegritySettingKey(ownerFingerprint));
+  return flag?.value === 'corrupt' ? 'corrupt' : 'ok';
+}
+
+/**
+ * Heal legacy plaintext contacts to encrypted-at-rest, then establish or verify each owner's book
+ * manifest. Called from initSessionKey once the session + contact subkeys are set.
+ *  - Idempotent: encrypted records (enc_version present) are skipped.
+ *  - Crash-safe/resumable: each record is re-encrypted with txPut OVERWRITE (never delete-then-write),
+ *    so a crash mid-sweep just leaves the remainder for the next unlock.
+ *  - Manifest-neutral migration: encrypting a record changes neither its id nor its version, so the
+ *    {id,version} manifest stays valid across the sweep; we (re)establish/verify once at the end.
+ *  - Best-effort: never throws into the unlock path. A manifest MISMATCH sets a per-owner corrupt flag
+ *    (settings:contact_integrity:${owner}) for the recovery/cloud-restore UI — it does not raise.
+ */
+async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return; // guard; never called locked
+  let stored: Array<Record<string, unknown>>;
+  try {
+    stored = await txGetAll<Record<string, unknown>>('contacts');
+  } catch {
+    return; // store unavailable — nothing to do this unlock
+  }
+  if (stored.length === 0) return; // fresh identity / empty book
+
+  // 1. Migrate plaintext-at-rest contacts (no enc_version) → encrypted envelope, in place.
+  for (const rec of stored) {
+    if (rec && rec.enc_version) continue; // already encrypted — idempotent skip
+    try {
+      await txPut('contacts', await buildStoredContact(rec as unknown as ContactRecord));
+    } catch (e) {
+      console.warn('[enc-b] contact migration skipped a record (retries next unlock)', e);
+    }
+  }
+
+  // 2. Establish (first run / post-upgrade) or verify the per-owner book manifest over the healed book.
+  try {
+    const healed = await txGetAll<Record<string, unknown>>('contacts');
+    const byOwner = new Map<string, ContactRecord[]>();
+    for (const rec of healed) {
+      const c = await decryptContactIfNeeded(rec);
+      const list = byOwner.get(c.owner_fingerprint) ?? [];
+      list.push(c);
+      byOwner.set(c.owner_fingerprint, list);
+    }
+    for (const [owner, contacts] of byOwner) {
+      const entries = contacts.map(toManifestEntry);
+      const existing = await txGet<{ key: string; value: string }>('settings', contactManifestSettingKey(owner));
+      if (!existing) {
+        // No baseline yet (existing user upgrading, or first contact) → establish over current book.
+        await txPutMany([await buildContactManifestOp(owner, entries)]);
+        continue;
+      }
+      const ok = await verifyManifestMAC(_contactKeys.manifestKey, entries, entries.length, existing.value);
+      if (!ok) {
+        await txPut('settings', { key: contactIntegritySettingKey(owner), value: 'corrupt' });
+        console.warn(`[enc-b] contact book manifest MISMATCH for ${owner} — flagged for recovery`);
+      } else {
+        // Book verifies → clear any stale corrupt flag from a prior false-alarm/repair.
+        await txDelete('settings', contactIntegritySettingKey(owner)).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn('[enc-b] contact manifest establish/verify skipped this unlock', e);
+  }
+}
+
+/**
+ * enc-b Blocker-C (eager-migrate half): on unlock, proactively re-encrypt any plaintext-fallback
+ * records in the four identity stores (keys / pq_keys / vaults / shards). loadKey/loadPQKeys/loadVault/
+ * loadShards already lazy-migrate a plaintext record to encrypted-at-rest as a side effect when the
+ * session is unlocked — but only for records that are READ. Recovery material (esp. shards) is read
+ * rarely, so a written-never-read-post-unlock plaintext record would otherwise sit exposed indefinitely.
+ * Eager-calling the loaders once per identity on unlock heals those stragglers. No re-key (same
+ * _sessionKey the lazy path uses). Best-effort: never throws into the unlock path.
+ *
+ * NOTE: this is the SAFE half of Blocker-C. The OTHER half — removing the `else { plaintext }` fallback
+ * branches so storeKey/storePQKeys/storeVault/storeShards are fail-closed — is DEFERRED: a caller audit
+ * found live paths (importAll JSON restore, the passphrase-free seed/recovery-code restore, two vault-
+ * restore branches) that write identity key material while the session is still locked, so fail-closing
+ * as-is would break restore/recovery. That removal needs those paths fixed first + a product decision on
+ * the passphrase-free recovery path. Escalated to Flint (security) + Archie (product).
+ */
+async function eagerMigrateIdentityStoresOnUnlock(): Promise<void> {
+  if (!_sessionKey) return; // guard; never called locked
+  let identities: IdentityRecord[];
+  try {
+    identities = await listIdentities();
+  } catch {
+    return;
+  }
+  for (const idRec of identities) {
+    const fp = idRec.fingerprint;
+    try { await loadKey(fp); } catch (e) { console.warn('[enc-b] eager key migrate skipped', fp, e); }
+    try { await loadPQKeys(fp); } catch (e) { console.warn('[enc-b] eager pq_keys migrate skipped', fp, e); }
+    try { await loadVault(fp); } catch (e) { console.warn('[enc-b] eager vault migrate skipped', fp, e); }
+    try { await loadShards(fp); } catch (e) { console.warn('[enc-b] eager shards migrate skipped', fp, e); }
+  }
 }
 
 export async function searchContacts(ownerFingerprint: string, query: string): Promise<ContactRecord[]> {
@@ -663,9 +947,99 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
   return backup;
 }
 
-export async function importAll(backup: SovereignBackup): Promise<string> {
-  const fingerprint = backup.identity?.identity?.fingerprint;
+/**
+ * Plaintext JSON backup is untrusted. Drop claimed trust / owner_verify / Gate
+ * provenance so a crafted file cannot land Trusted, a fake verify mark, or a
+ * Grow-Gate holding-room row. Persistence still goes through addContact
+ * (fail-closed fingerprint↔key binding). Encrypted vault restore is unchanged.
+ */
+export function contactFromPlaintextBackup(
+  raw: ContactRecord,
+): Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'> {
+  const next: Record<string, unknown> = { ...(raw as unknown as Record<string, unknown>) };
+  delete next.id;
+  delete next.added_at;
+  delete next.owner_fingerprint;
+  delete next.owner_verify;
+  delete next.trusted;
+  delete next.trusted_since;
+  delete next.verified_at;
+  delete next.grow_gate;
+  delete next.grow_invite_nonce;
+  delete next.grow_mint_channel;
+  next.trust_level = 'known';
+  next.verification = { method: 'none', verified_at: null };
+  if (next.metadata && typeof next.metadata === 'object') {
+    const meta = { ...(next.metadata as Record<string, unknown>) };
+    delete meta.owner_verify;
+    delete meta.grow_gate;
+    delete meta.grow_invite_nonce;
+    delete meta.grow_mint_channel;
+    next.metadata = meta;
+  }
+  return next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>;
+}
+
+export type PlaintextImportReport = {
+  fingerprint: string;
+  kept: number;
+  skipped: number;
+};
+
+/** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
+export function formatPlaintextImportReport(report: Pick<PlaintextImportReport, 'kept' | 'skipped'>): string {
+  const known = `${report.kept} landed Known`;
+  if (report.skipped <= 0) return known;
+  return `${known}, ${report.skipped} skipped (key didn't match)`;
+}
+
+/**
+ * Fail-closed identity binding for an untrusted plaintext backup. Refuse before any
+ * IndexedDB write so a forged fingerprint leaves no partial state.
+ */
+export async function assertPlaintextBackupIdentityBinds(backup: SovereignBackup): Promise<string> {
+  const fingerprint = (backup.identity?.identity?.fingerprint || '').trim();
   if (!fingerprint) throw new Error('Invalid backup: no fingerprint');
+  const identityPub = backup.identity?.identity?.public_key || '';
+  const identityPq = backup.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fingerprint, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
+    throw new Error(
+      'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
+    );
+  }
+  return fingerprint;
+}
+
+/** Persist plaintext contacts via addContact. Unbindable rows skip and are counted. */
+export async function importPlaintextContacts(
+  ownerFingerprint: string,
+  contacts: ContactRecord[] | undefined,
+): Promise<{ kept: number; skipped: number }> {
+  let kept = 0;
+  let skipped = 0;
+  for (const contact of contacts || []) {
+    try {
+      await addContact(ownerFingerprint, contactFromPlaintextBackup(contact));
+      kept++;
+    } catch {
+      skipped++;
+    }
+  }
+  return { kept, skipped };
+}
+
+export async function importAll(backup: SovereignBackup): Promise<PlaintextImportReport> {
+  // 3a/block (Blocker-C, Archie #133842): a plaintext SovereignBackup carries no secret to derive
+  // an at-rest key from, so refuse to import unless a passphrase session is already established
+  // (the key stores are fail-closed). Block cleanly BEFORE any write — no partial import, no
+  // plaintext-at-rest window.
+  if (!isSessionUnlocked()) {
+    throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
+  }
+  const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
 
   await storeIdentity(fingerprint, backup.identity);
 
@@ -682,21 +1056,30 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
     await storeShards(fingerprint, backup.shards);
   }
 
-  for (const contact of (backup.contacts || [])) {
-    await txPut('contacts', { ...contact, owner_fingerprint: fingerprint });
-  }
+  // Same persistence gate as importVaultContents: never raw-put a contact from
+  // an untrusted file. Unbindable rows skip; the identity import still completes.
+  const { kept, skipped } = await importPlaintextContacts(fingerprint, backup.contacts);
 
   await setActiveFingerprint(fingerprint);
-  return fingerprint;
+  return { fingerprint, kept, skipped };
 }
 
 /**
  * Persist an already-decrypted .svrnty VaultContents to IndexedDB — the
  * restore-onto-this-device / daily passphrase-unlock path. Converges to the SAME
- * at-rest state as genesis (browser-identity.ts) and the recovery-code path
- * (restoreIdentityFromSeedVault), so a passphrase restore STICKS across reload
- * instead of only hydrating in-memory state (the data-safety launch-blocker:
- * before this, "Open Vault" set React state but wrote nothing → reload = identity lost).
+ * at-rest state as genesis (browser-identity.ts) — encrypted — so a passphrase
+ * restore STICKS across reload instead of only hydrating in-memory state (the
+ * data-safety launch-blocker: before this, "Open Vault" set React state but wrote
+ * nothing → reload = identity lost).
+ *
+ * AT-REST MODEL (2026-09-11 — Blocker-C fail-closed, Archie #133842): ALL key-material write
+ * paths now converge to encrypted-at-rest or fail closed. genesis + this (importVaultContents) +
+ * the passphrase-free recovery-code path (restoreIdentityFromSeedVault now requires a device
+ * passphrase + initSessionKey before writing) + the encrypted-key import all establish a session
+ * key first. The stores (storeKey/storePQKeys/storeVault/storeShards) THROW rather than ever
+ * writing plaintext, so there is no plaintext-at-rest window — not even transiently. Plaintext
+ * SovereignBackup import (importAll) blocks unless a session is established (no secret to derive
+ * an at-rest key from).
  *
  * SECURITY (persist SAFELY, not just persist):
  *  • Self-guarding like addContact: the identity's public_key MUST bind to `fingerprint`
@@ -720,7 +1103,11 @@ export async function importVaultContents(
   // Fail-closed identity binding (mirrors addContact): refuse a forged identity before
   // any write, so a rejected vault leaves NO partial state.
   const identityPub = contents.identity?.identity?.public_key || '';
-  if (!(await fingerprintMatchesKey(fp, identityPub))) {
+  const identityPq = contents.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fp, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
     throw new Error(
       'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
     );
@@ -831,9 +1218,17 @@ function clampCodeCap(n: unknown): number {
   return Math.max(1, Math.min(ISSUED_CODE_CAP_MAX, v));
 }
 
+/** How a Grow code was minted. Legacy entries with no field normalize to remote (fail-closed). */
+export type GrowMintChannel = 'in_person' | 'remote';
+
 /** One issued code: when it stops accepting (epoch ms), which joiner fps it has accepted, and the
  *  per-code distinct-joiner cap (issuer-chosen at generation; default 1 = single-use). */
-export interface IssuedCodeEntry { acceptUntil: number; accepted: string[]; cap: number }
+export interface IssuedCodeEntry {
+  acceptUntil: number;
+  accepted: string[];
+  cap: number;
+  channel: GrowMintChannel;
+}
 /** ownerFp -> { shortcode -> entry } */
 export type IssuedCodeMap = Record<string, Record<string, IssuedCodeEntry>>;
 
@@ -844,7 +1239,13 @@ function normalizeEntry(e: unknown): IssuedCodeEntry | null {
   // cap: a legacy entry (pre-cap) defaults to 1 (single-use) — it must NOT retroactively become
   // multi-use. A present cap is clamped to [1, MAX].
   const cap = r.cap === undefined ? 1 : clampCodeCap(r.cap);
-  return { acceptUntil: r.acceptUntil as number, accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [], cap };
+  const channel: GrowMintChannel = r.channel === 'in_person' ? 'in_person' : 'remote';
+  return {
+    acceptUntil: r.acceptUntil as number,
+    accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [],
+    cap,
+    channel,
+  };
 }
 
 /** Pure: drop entries past their acceptance window. Owners left empty are removed. */
@@ -882,6 +1283,19 @@ export function alreadyAccepted(map: IssuedCodeMap, ownerFp: string, code: strin
   return !!e && Array.isArray(e.accepted) && e.accepted.includes(joinerFp);
 }
 
+/** Pure: mint channel for a code. Missing / junk → remote (never upgrade to in-person). */
+export function issuedCodeChannel(map: IssuedCodeMap, ownerFp: string, code: string): GrowMintChannel {
+  return map?.[ownerFp]?.[code]?.channel === 'in_person' ? 'in_person' : 'remote';
+}
+
+/** Pure: distinct-joiner cap reached (in-person codes should regen after this). */
+export function issuedCodeSpent(map: IssuedCodeMap, ownerFp: string, code: string): boolean {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return false;
+  const cap = Number.isFinite(e.cap) ? e.cap : 1;
+  return (Array.isArray(e.accepted) ? e.accepted.length : 0) >= cap;
+}
+
 /** Pure: record a VERIFIED joiner fp as accepted on a code (idempotent). Mutates + returns map. */
 export function markAcceptedInMap(map: IssuedCodeMap, ownerFp: string, code: string, joinerFp: string): IssuedCodeMap {
   const e = map?.[ownerFp]?.[code];
@@ -915,18 +1329,31 @@ export async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
 }
 
 /** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window with a per-code
- *  distinct-joiner cap (issuer-chosen at generation; default 1 = single-use, max 1000). */
-export async function recordIssuedGrowCode(ownerFp: string, code: string, cap: number = 1): Promise<void> {
+ *  distinct-joiner cap (issuer-chosen at generation; default 1 = single-use, max 1000).
+ *  In-person codes are forced cap 1. Omit `channel` to preserve a prior mint channel on cap edits. */
+export async function recordIssuedGrowCode(
+  ownerFp: string,
+  code: string,
+  cap: number = 1,
+  channel?: GrowMintChannel,
+): Promise<void> {
   if (!ownerFp || !code) return;
   const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
   if (!map[ownerFp]) map[ownerFp] = {};
   const prior = map[ownerFp][code];
-  // Fresh window on (re)issue; preserve any joiners already accepted on this code. The cap is set from
-  // the issuer's choice at generation, clamped to [1, 1000].
+  const nextChannel: GrowMintChannel =
+    channel === 'in_person' || channel === 'remote'
+      ? channel
+      : prior?.channel === 'in_person'
+        ? 'in_person'
+        : 'remote';
+  // Fresh window on (re)issue; preserve any joiners already accepted on this code. In-person is
+  // always single-use; remote cap is the issuer's choice, clamped to [1, 1000].
   map[ownerFp][code] = {
     acceptUntil: Date.now() + R1_ACCEPTANCE_WINDOW_MS,
     accepted: prior?.accepted ?? [],
-    cap: clampCodeCap(cap),
+    cap: nextChannel === 'in_person' ? 1 : clampCodeCap(cap),
+    channel: nextChannel,
   };
   await saveIssuedCodeMap(map);
 }
@@ -948,4 +1375,119 @@ export async function recordAcceptedJoiner(ownerFp: string, code: string, verifi
  */
 export async function isOutstandingIssuedCode(ownerFp: string, code: string): Promise<boolean> {
   return isCodeOutstanding(await loadIssuedCodeMap(), ownerFp, code, Date.now());
+}
+
+// ── Grow Gate arrivals (glass) ───────────────────────────────────────────────
+// Remote (and in-person) joiners land here until the owner ADMITS them as Known.
+// Not a contact yet — Galaxy / Contacts / PSI must not see them. The return-channel
+// still consumes the mailbox and marks the issued code accepted (cap / single-use).
+// Identity forge/restore "Gate" is a different machine (SoverentityFrontend).
+
+const GROW_GATE_ARRIVALS_KEY = 'grow_gate_arrivals';
+
+/** A solicited arrival waiting at the Gate — not yet a star. Owner-local only. */
+export interface GateArrival {
+  fingerprint: string;
+  displayName: string;
+  publicKeyArmored: string;
+  pqSigPublicKey?: string;
+  pqKemPublicKey?: string;
+  epoch: number;
+  inviteNonce: string;
+  mintChannel: GrowMintChannel;
+  arrivedAt: string;
+  /** inbound_joiner = giver consumed a return-channel; scanned_giver = joiner gated the card they scanned. */
+  direction: 'inbound_joiner' | 'scanned_giver';
+}
+
+/** ownerFp -> { peerFp -> arrival } */
+export type GateArrivalMap = Record<string, Record<string, GateArrival>>;
+
+function isGrowMintChannel(v: unknown): v is GrowMintChannel {
+  return v === 'in_person' || v === 'remote';
+}
+
+function normalizeArrival(raw: unknown): GateArrival | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
+  if (typeof r.publicKeyArmored !== 'string' || !r.publicKeyArmored) return null;
+  if (typeof r.inviteNonce !== 'string' || !r.inviteNonce) return null;
+  const epoch = Number.isSafeInteger(r.epoch) ? (r.epoch as number) : 0;
+  const direction = r.direction === 'scanned_giver' ? 'scanned_giver' : 'inbound_joiner';
+  const arrival: GateArrival = {
+    fingerprint: r.fingerprint,
+    displayName: typeof r.displayName === 'string' ? r.displayName : '',
+    publicKeyArmored: r.publicKeyArmored,
+    epoch,
+    inviteNonce: r.inviteNonce,
+    mintChannel: isGrowMintChannel(r.mintChannel) ? r.mintChannel : 'remote',
+    arrivedAt: typeof r.arrivedAt === 'string' ? r.arrivedAt : new Date().toISOString(),
+    direction,
+  };
+  if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
+  if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  return arrival;
+}
+
+async function loadRawGateMap(): Promise<GateArrivalMap> {
+  const setting = await txGet<{ key: string; value: string }>('settings', GROW_GATE_ARRIVALS_KEY);
+  if (!setting?.value) return {};
+  try {
+    const parsed = JSON.parse(setting.value);
+    return parsed && typeof parsed === 'object' ? (parsed as GateArrivalMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveGateMap(map: GateArrivalMap): Promise<void> {
+  await txPut('settings', { key: GROW_GATE_ARRIVALS_KEY, value: JSON.stringify(map) });
+}
+
+function normalizeGateMap(map: GateArrivalMap): GateArrivalMap {
+  const out: GateArrivalMap = {};
+  for (const [fp, bag] of Object.entries(map || {})) {
+    const kept: Record<string, GateArrival> = {};
+    for (const [peer, raw] of Object.entries(bag || {})) {
+      const arrival = normalizeArrival(raw);
+      if (arrival) kept[arrival.fingerprint || peer] = arrival;
+    }
+    if (Object.keys(kept).length > 0) out[fp] = kept;
+  }
+  return out;
+}
+
+/** Load Gate arrivals for one owner (not contacts — not on Galaxy). */
+export async function loadGateArrivals(ownerFp: string): Promise<GateArrival[]> {
+  if (!ownerFp) return [];
+  const map = normalizeGateMap(await loadRawGateMap());
+  const bag = map[ownerFp] || {};
+  return Object.values(bag).sort((a, b) => (a.arrivedAt < b.arrivedAt ? 1 : -1));
+}
+
+export async function getGateArrival(ownerFp: string, peerFp: string): Promise<GateArrival | null> {
+  if (!ownerFp || !peerFp) return null;
+  const map = normalizeGateMap(await loadRawGateMap());
+  return map[ownerFp]?.[peerFp] ?? null;
+}
+
+/** Idempotent by fingerprint: a retry overwrites the same arrival. */
+export async function enqueueGateArrival(ownerFp: string, arrival: GateArrival): Promise<void> {
+  if (!ownerFp) return;
+  const normalized = normalizeArrival(arrival);
+  if (!normalized) return;
+  const map = normalizeGateMap(await loadRawGateMap());
+  if (!map[ownerFp]) map[ownerFp] = {};
+  map[ownerFp][normalized.fingerprint] = normalized;
+  await saveGateMap(map);
+}
+
+export async function removeGateArrival(ownerFp: string, peerFp: string): Promise<void> {
+  if (!ownerFp || !peerFp) return;
+  const map = normalizeGateMap(await loadRawGateMap());
+  if (!map[ownerFp]?.[peerFp]) return;
+  delete map[ownerFp][peerFp];
+  if (Object.keys(map[ownerFp]).length === 0) delete map[ownerFp];
+  await saveGateMap(map);
 }

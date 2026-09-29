@@ -5,14 +5,16 @@ import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'r
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
-import { HelpGuide } from '@/components/HelpGuide';
-import { GrowSheet } from '@/components/GrowSheet';
+import { GrowSurface } from '@/components/GrowSurface';
 import { RecoverySheet } from '@/components/RecoverySheet';
-import { JoinByCode } from '@/components/JoinByCode';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
+import { useAppLock } from '@/components/app-lock/useAppLock';
+import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { starsOnly } from '@/lib/trust/grow-gate';
+import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   loadMethodHistory,
@@ -32,12 +34,18 @@ import {
   setActiveFingerprint,
   updateContact,
   storeIdentity,
+  loadGateArrivals,
 } from '@/lib/identity/client-store';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
 import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { distressWentPersistPatch } from '@/lib/trust/distress';
+import { BiometricUnlockButton } from '@/components/biometric/BiometricUnlockButton';
+import {
+  getBiometricEnrollment,
+  probeBiometricCapability,
+} from '@/components/biometric/biometric-seam';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -60,6 +68,9 @@ export default function Home() {
   // state — never persisted as a new cross-identity link (the correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
+  // CUR-6 — mount device-unlock chrome when a platform authenticator is present.
+  // Pre-tap honesty (coming-soon vs live action) lives in BiometricUnlockButton.
+  const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
@@ -69,7 +80,9 @@ export default function Home() {
   } | null>(null);
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
-  const [joinOpen, setJoinOpen] = useState(false);
+  const [gateCount, setGateCount] = useState(0);
+  // CUR-7: only offer lock when vault keys are encrypted at rest.
+  const [canLock, setCanLock] = useState(false);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -89,10 +102,12 @@ export default function Home() {
                   fingerprint: fp,
                 });
                 setIdentity(null);
+                setCanLock(false);
                 setAppState('locked');
                 return;
               }
               setIdentity(id);
+              setCanLock(encrypted);
               setAppState('unlocked');
               return;
             }
@@ -106,6 +121,34 @@ export default function Home() {
     checkIdentity();
   }, []);
 
+  /** CUR-7 — Signal-model lock: clear fleet session + UI state → passphrase gate. */
+  const handleLockNow = useCallback(() => {
+    const fp =
+      identity?.identity?.fingerprint ||
+      lockedIdentity?.fingerprint ||
+      null;
+    const name =
+      identity?.identity?.name ||
+      lockedIdentity?.name ||
+      'Identity';
+    if (!fp) return;
+    lockSession();
+    setContacts([]);
+    setIdentity(null);
+    setPassphrase('');
+    setUnlockError('');
+    setMapRevise(null);
+    setLockedIdentity({ name, fingerprint: fp });
+    setCanLock(false);
+    setMainTab('identity');
+    setAppState('locked');
+  }, [identity, lockedIdentity]);
+
+  const { prefs: appLockPrefs, setPrefs: setAppLockPrefs } = useAppLock({
+    enabled: appState === 'unlocked' && canLock,
+    onAutoLock: handleLockNow,
+  });
+
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!lockedIdentity || !passphrase) return;
@@ -116,23 +159,7 @@ export default function Home() {
     try {
       // User unlock passphrase derives the session key — it is NOT the PGP key passphrase.
       await initSessionKey(passphrase);
-      const key = await loadKey(lockedIdentity.fingerprint);
-      if (!key) {
-        lockSession();
-        setUnlockError('Could not decrypt keys — wrong passphrase?');
-        return;
-      }
-      const id = await loadIdentity(lockedIdentity.fingerprint);
-      if (id) {
-        setIdentity(id);
-        setAppState('unlocked');
-        setPassphrase('');
-        setLockedIdentity(null);
-        setMainTab('identity');
-      } else {
-        lockSession();
-        setUnlockError('Identity data not found');
-      }
+      await finishUnlockFromSession();
     } catch {
       lockSession();
       setUnlockError('Incorrect passphrase');
@@ -160,6 +187,54 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [appState, lockedIdentity?.fingerprint]);
 
+  // CUR-6: probe platform authenticator on the lock screen (feature detect only — no crypto).
+  // Mount chrome when UVPA is available or enrolled; BiometricUnlockButton is honest
+  // pre-tap (coming soon while isBiometricSeamLive() is false).
+  useEffect(() => {
+    if (appState !== 'locked' || !lockedIdentity?.fingerprint) {
+      setBiometricUnlockVisible(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const cap = await probeBiometricCapability();
+        // Mount chrome when enrolled or UVPA-available so coming-soon is discoverable.
+        const enr = await getBiometricEnrollment(lockedIdentity.fingerprint);
+        if (!cancelled) {
+          setBiometricUnlockVisible(cap.status === 'available' || enr.enrolled);
+        }
+      } catch {
+        if (!cancelled) setBiometricUnlockVisible(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appState, lockedIdentity?.fingerprint]);
+
+  const finishUnlockFromSession = async () => {
+    if (!lockedIdentity) return;
+    const key = await loadKey(lockedIdentity.fingerprint);
+    if (!key) {
+      lockSession();
+      setUnlockError('Could not decrypt keys — wrong passphrase?');
+      return;
+    }
+    const id = await loadIdentity(lockedIdentity.fingerprint);
+    if (id) {
+      setIdentity(id);
+      setCanLock(true);
+      setAppState('unlocked');
+      setPassphrase('');
+      setLockedIdentity(null);
+      setMainTab('identity');
+    } else {
+      lockSession();
+      setUnlockError('Identity data not found');
+    }
+  };
+
   // Phase-1 swap: choose another EXISTING vault to unlock instead of the current one. We are already
   // locked (no keys in memory); lockSession() first is defensive so no key material bleeds across the
   // swap. Then repoint the active pointer + unlock form at the chosen vault. Existing
@@ -177,17 +252,25 @@ export default function Home() {
     setAppState('unlocked');
     setLockedIdentity(null);
     setMainTab('identity');
+    // Fresh forge encrypts at rest — enable Lock Now once identity exists.
+    const fp = newIdentity?.identity?.fingerprint;
+    if (fp) {
+      void hasEncryptedKeys(fp).then((enc) => setCanLock(enc)).catch(() => setCanLock(false));
+    }
   };
 
   // Load contacts — extracted as callback so ContactManagement can trigger refresh
   const refreshContacts = useCallback(async () => {
     if (!identity?.identity?.fingerprint) return;
     try {
-      const rawContacts = await getAllContacts(identity.identity.fingerprint);
+      const fp = identity.identity.fingerprint;
+      const rawContacts = await getAllContacts(fp);
       // Single shared projection (carries pq — see contact-edge.ts). Same helper the joiner
       // ceremony uses, so no field (incl. peer_pq_*) is dropped on one path but not the other.
-      const edges: TrustEdge[] = rawContacts.map(contactRecordToEdge);
+      // Gate arrivals are not contacts; starsOnly is belt-and-suspenders if grow_gate leaked onto a row.
+      const edges: TrustEdge[] = starsOnly(rawContacts).map(contactRecordToEdge);
       setContacts(edges);
+      setGateCount((await loadGateArrivals(fp)).length);
     } catch (err: any) {
       console.error('Failed to load contacts:', err);
     }
@@ -196,6 +279,12 @@ export default function Home() {
   // Load contacts when identity is available
   useEffect(() => {
     refreshContacts();
+  }, [refreshContacts]);
+
+  useEffect(() => {
+    return subscribeContactChanges(() => {
+      void refreshContacts();
+    });
   }, [refreshContacts]);
 
   // Demo circle can refresh when the book is empty or sample-only
@@ -361,6 +450,26 @@ export default function Home() {
             </button>
           </form>
 
+          {/* CUR-6 — device unlock chrome. Seam = Flint; glass is honest while stubbed. */}
+          <BiometricUnlockButton
+            fingerprint={lockedIdentity.fingerprint}
+            visible={biometricUnlockVisible}
+            disabled={unlocking}
+            onFallbackMessage={(msg) => setUnlockError(msg)}
+            onUnlocked={async () => {
+              setUnlocking(true);
+              setUnlockError('');
+              try {
+                await finishUnlockFromSession();
+              } catch {
+                lockSession();
+                setUnlockError('Device unlock failed. Enter your passphrase.');
+              } finally {
+                setUnlocking(false);
+              }
+            }}
+          />
+
           {/* Phase-1 identity switcher (home screen) — UI only, no vault changes. Single-identity case
               shows only "New Identity"; the switch list appears solely when 2+ vaults exist on-device. */}
           <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -427,106 +536,14 @@ export default function Home() {
   // Gate (no identity) or main app
   return (
     <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
-      <header
-        style={{
-          maxWidth: 1100,
-          margin: '0 auto 1.75rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 16,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, minWidth: 0 }}>
-          <span
-            style={{
-              fontFamily: E.fontSans,
-              fontSize: 12,
-              fontWeight: 600,
-              letterSpacing: '0.2em',
-              textTransform: 'uppercase',
-              color: E.accent,
-            }}
-          >
-            svrnty
-          </span>
-          <span
-            style={{
-              fontFamily: E.fontSans,
-              fontSize: 13,
-              color: E.dim,
-              letterSpacing: '0.01em',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            reclaim what&apos;s yours
-          </span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <AppearanceToggle />
-          {identity ? (
-            <>
-            <button
-              type="button"
-              onClick={() => setGrowOpen(true)}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: E.accent,
-                background: 'transparent',
-                border: `1px solid ${E.borderLit}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              Grow
-            </button>
-            <button
-              type="button"
-              onClick={() => setJoinOpen(true)}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: E.accent,
-                background: 'transparent',
-                border: `1px solid ${E.borderLit}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              Join
-            </button>
-            <button
-              type="button"
-              onClick={() => setRecoveryOpen(true)}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: E.accent,
-                background: 'transparent',
-                border: `1px solid ${E.borderLit}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              Recovery
-            </button>
-            </>
-          ) : null}
-          <HelpGuide />
-        </div>
-      </header>
+      <TopNav
+        hasIdentity={Boolean(identity)}
+        canLock={canLock}
+        onLock={handleLockNow}
+        onGrow={() => setGrowOpen(true)}
+        onRecovery={() => setRecoveryOpen(true)}
+        gateCount={identity ? gateCount : 0}
+      />
 
       <main className="max-w-6xl mx-auto">
         {!identity ? (
@@ -571,6 +588,9 @@ export default function Home() {
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
                 onOpenCircle={() => setMainTab('trust-map')}
+                appLockPrefs={canLock ? appLockPrefs : undefined}
+                onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
+                onLockNow={canLock ? handleLockNow : undefined}
               />
             </TabsContent>
 
@@ -756,13 +776,13 @@ export default function Home() {
 
       {identity && (
         <>
-        <GrowSheet open={growOpen} onClose={() => setGrowOpen(false)} identity={identity} />
-        <JoinByCode
-          open={joinOpen}
+        <GrowSurface
+          open={growOpen}
           onClose={() => {
-            setJoinOpen(false);
+            setGrowOpen(false);
             void refreshContacts();
           }}
+          identity={identity}
         />
         <RecoverySheet
           open={recoveryOpen}
