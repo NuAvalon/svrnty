@@ -110,7 +110,17 @@ export interface RingChannel {
    * the removed member is not part of. Encrypted at rest with the notes store.
    */
   session_snapshot?: RingSessionSnapshot;
+  /**
+   * Per-member history grant. `new` (the default when someone is added) means
+   * notes from before `since_epoch` are not resealed to them. `previous` means
+   * the device that added them reseals the notes it still holds.
+   * Absent entries are founders: they were here from epoch 1.
+   */
+  member_history?: Record<string, { history: RingHistoryAccess; since_epoch: number }>;
 }
+
+/** Whether a member added later receives earlier notes. Default is `new`. */
+export type RingHistoryAccess = 'new' | 'previous';
 
 /** One peer's triple-ratchet session inside a ring epoch. */
 export interface RingPairSnapshot {

@@ -154,6 +154,52 @@ test('(PCS) a snapshot from before our send cannot read the reply to that send',
   assert.equal(await seized!.receive(bob, peer(alice), follow[0]!.packet), null);
 });
 
+test('history is sealed only to the person just added', async () => {
+  const alice = identity('alice');
+  const bob = identity('bob');
+  const carol = identity('carol');
+  const members = ['alice', 'bob', 'carol'];
+  const a = RingSession.create('ring_kin', 'alice', members, 2);
+  const history = [
+    {
+      note_id: 'note_1',
+      sent_at: '2026-09-30T00:00:00.000Z',
+      from_fingerprint: 'alice',
+      body: 'before carol',
+    },
+  ];
+  const bundle = await a.sendOne(alice, peer(carol), note({ note_id: 'note_h', body: '' }), history);
+  assert.equal(bundle.fingerprint, 'carol');
+
+  const carolSession = RingSession.create('ring_kin', 'carol', members, 2);
+  const opened = await carolSession.receive(carol, peer(alice), bundle.packet);
+  assert.equal(opened?.history?.length, 1);
+  assert.equal(opened?.history?.[0]?.body, 'before carol');
+
+  const bobSession = RingSession.create('ring_kin', 'bob', ['alice', 'bob'], 1);
+  assert.equal(await bobSession.receive(bob, peer(alice), bundle.packet), null);
+
+  const next = await a.send(alice, [peer(bob), peer(carol)], note({ note_id: 'note_2', body: 'after' }));
+  assert.equal(next.find((s) => s.fingerprint === 'bob')?.packet === bundle.packet, false);
+  const bobNow = RingSession.create('ring_kin', 'bob', members, 2);
+  assert.equal((await bobNow.receive(bob, peer(alice), next.find((s) => s.fingerprint === 'bob')!.packet))?.body, 'after');
+  const followed = await carolSession.receive(carol, peer(alice), next.find((s) => s.fingerprint === 'carol')!.packet);
+  assert.equal(followed?.body, 'after');
+  assert.equal(followed?.history, undefined);
+});
+
+test('a bad history item is refused before it is sealed', async () => {
+  const alice = identity('alice');
+  const carol = identity('carol');
+  const a = RingSession.create('ring_kin', 'alice', ['alice', 'carol']);
+  await assert.rejects(
+    () => a.sendOne(alice, peer(carol), note({ note_id: 'note_h', body: '' }), [
+      { note_id: 'note_1', sent_at: '2026-09-30T00:00:00.000Z', from_fingerprint: 'nope space', body: 'x' },
+    ]),
+    /bad history item/,
+  );
+});
+
 test('side threads group under their root and stay off the main timeline', () => {
   const notes = [
     { note_id: 'note_1', sent_at: '1', body: 'root' },

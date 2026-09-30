@@ -72,6 +72,8 @@ Do not claim “sealed sender” until we have a real sender-anonymity construct
 
 Side threads live inside a conversation. A note with no `thread_root` is the main timeline. A reply sets `reply_to` and `thread_root` (the main-timeline note it hangs from). Those fields are inside the signed note and inside the ring plaintext. This does not light rung 2 or rung 3 in public copy — the Hive still says **notes**.
 
+Adding someone defaults to **new notes only**. Choosing earlier notes reseals plaintext this device still holds (at most 100) to that one new member. Removing someone leaves them what they already opened and stops later notes. There is no unsend. Notes backup is a `notes-1` file, separate from the contact-book export, so a long thread does not bloat the book.
+
 ---
 
 ## Matrix postmortems — lessons

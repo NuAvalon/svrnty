@@ -23,6 +23,9 @@ import type { ParticipantKind, RingSessionSnapshot } from './types';
 /** Including yourself. Small on purpose — naive fan-out, not MLS. */
 export const MAX_RING_MEMBERS = 8;
 
+/** Earlier notes resealed to one new member. Older than this stay on this device. */
+export const RING_HISTORY_LIMIT = 100;
+
 export interface RingPeer extends RatchetPeer {
   fingerprint: string;
 }
@@ -38,6 +41,22 @@ export interface RingNotePlain {
   sent_at: string;
   body: string;
   participant_kind: ParticipantKind;
+  reply_to?: string;
+  thread_root?: string;
+  /**
+   * Earlier notes resealed to one new member only. Absent on an ordinary fan-out.
+   * `new` (the default grant) sends no array. This is a copy of plaintext this
+   * device still holds — old epoch ciphertexts were never sealed to them.
+   */
+  history?: RingHistoryItem[];
+}
+
+/** One earlier note inside a history bundle. */
+export interface RingHistoryItem {
+  note_id: string;
+  sent_at: string;
+  from_fingerprint: string;
+  body: string;
   reply_to?: string;
   thread_root?: string;
 }
@@ -57,6 +76,39 @@ function sameMembers(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const sb = new Set(b);
   return a.every((m) => sb.has(m));
+}
+
+function parseHistoryItem(value: unknown): RingHistoryItem | null {
+  if (!value || typeof value !== 'object') return null;
+  const o = value as Record<string, unknown>;
+  if (!isId(o.note_id) || !isId(o.from_fingerprint)) return null;
+  if (typeof o.sent_at !== 'string' || o.sent_at.length === 0 || o.sent_at.length > 40) return null;
+  if (typeof o.body !== 'string' || o.body.length > 16_000) return null;
+  const hasReply = o.reply_to !== undefined;
+  const hasRoot = o.thread_root !== undefined;
+  if (hasReply !== hasRoot) return null;
+  if (hasReply && (!isId(o.reply_to) || !isId(o.thread_root))) return null;
+  const item: RingHistoryItem = {
+    note_id: o.note_id,
+    sent_at: o.sent_at,
+    from_fingerprint: o.from_fingerprint,
+    body: o.body,
+  };
+  if (hasReply && isId(o.reply_to) && isId(o.thread_root)) {
+    item.reply_to = o.reply_to;
+    item.thread_root = o.thread_root;
+  }
+  return item;
+}
+
+function copyHistoryItem(item: RingHistoryItem): RingHistoryItem {
+  return {
+    note_id: item.note_id,
+    sent_at: item.sent_at,
+    from_fingerprint: item.from_fingerprint,
+    body: item.body,
+    ...(item.reply_to && item.thread_root ? { reply_to: item.reply_to, thread_root: item.thread_root } : {}),
+  };
 }
 
 function parsePlain(text: string): RingNotePlain | null {
@@ -100,6 +152,16 @@ function parsePlain(text: string): RingNotePlain | null {
     plain.reply_to = replyTo;
     plain.thread_root = threadRoot;
   }
+  if (o.history !== undefined) {
+    if (!Array.isArray(o.history) || o.history.length > RING_HISTORY_LIMIT) return null;
+    const history: RingHistoryItem[] = [];
+    for (const item of o.history) {
+      const parsed = parseHistoryItem(item);
+      if (!parsed) return null;
+      history.push(parsed);
+    }
+    if (history.length) plain.history = history;
+  }
   return plain;
 }
 
@@ -119,6 +181,9 @@ function encodePlain(plain: RingNotePlain): string {
   if (plain.reply_to && plain.thread_root) {
     body.reply_to = plain.reply_to;
     body.thread_root = plain.thread_root;
+  }
+  if (plain.history && plain.history.length) {
+    body.history = plain.history.map(copyHistoryItem);
   }
   return JSON.stringify(body);
 }
@@ -206,24 +271,18 @@ export class RingSession {
     return this.members.filter((fp) => fp !== this.selfFp);
   }
 
-  /**
-   * Seal one note to every other current member. Partial peer lists throw —
-   * a ring send that skips someone by accident would desync the epoch.
-   * The body is stamped with this epoch, the member list, and our fingerprint.
-   */
-  async send(
-    self: RatchetIdentity,
-    peers: RingPeer[],
-    note: Omit<RingNotePlain, 'v' | 'channel_id' | 'epoch' | 'members' | 'sender_fp'>,
-  ): Promise<RingOutbound[]> {
-    const wanted = this.others();
-    if (peers.length !== wanted.length) throw new Error('ring: send needs every other member');
-    const byFp = new Map(peers.map((p) => [p.fingerprint, p]));
-    for (const fp of wanted) {
-      if (!byFp.has(fp)) throw new Error('ring: missing member key');
-    }
+  private stamp(
+    note: Omit<RingNotePlain, 'v' | 'channel_id' | 'epoch' | 'members' | 'sender_fp' | 'history'>,
+    history?: RingHistoryItem[],
+  ): RingNotePlain {
     if (note.reply_to || note.thread_root) {
       if (!isId(note.reply_to) || !isId(note.thread_root)) throw new Error('ring: bad reply thread');
+    }
+    if (history) {
+      if (history.length > RING_HISTORY_LIMIT) throw new Error('ring: history is too long');
+      for (const item of history) {
+        if (!parseHistoryItem(item)) throw new Error('ring: bad history item');
+      }
     }
     const plain: RingNotePlain = {
       v: 1,
@@ -241,7 +300,28 @@ export class RingSession {
       plain.reply_to = note.reply_to;
       plain.thread_root = note.thread_root;
     }
-    const text = encodePlain(plain);
+    if (history && history.length) plain.history = history.map(copyHistoryItem);
+    return plain;
+  }
+
+  /**
+   * Seal one note to every other current member. Partial peer lists throw —
+   * a ring send that skips someone by accident would desync the epoch.
+   * The body is stamped with this epoch, the member list, and our fingerprint.
+   * History is never attached here — a previous-notes grant is sendOne.
+   */
+  async send(
+    self: RatchetIdentity,
+    peers: RingPeer[],
+    note: Omit<RingNotePlain, 'v' | 'channel_id' | 'epoch' | 'members' | 'sender_fp' | 'history'>,
+  ): Promise<RingOutbound[]> {
+    const wanted = this.others();
+    if (peers.length !== wanted.length) throw new Error('ring: send needs every other member');
+    const byFp = new Map(peers.map((p) => [p.fingerprint, p]));
+    for (const fp of wanted) {
+      if (!byFp.has(fp)) throw new Error('ring: missing member key');
+    }
+    const text = encodePlain(this.stamp(note));
     const out: RingOutbound[] = [];
     for (const fp of wanted) {
       const peer = byFp.get(fp)!;
@@ -252,6 +332,28 @@ export class RingSession {
       out.push({ fingerprint: fp, packet });
     }
     return out;
+  }
+
+  /**
+   * Seal one note to a single current member. Used to reseal earlier notes
+   * to someone just added — the rest of the ring does not get this packet.
+   * The pair session is kept so the next fan-out continues it.
+   */
+  async sendOne(
+    self: RatchetIdentity,
+    peer: RingPeer,
+    note: Omit<RingNotePlain, 'v' | 'channel_id' | 'epoch' | 'members' | 'sender_fp' | 'history'>,
+    history?: RingHistoryItem[],
+  ): Promise<RingOutbound> {
+    if (!this.members.includes(peer.fingerprint) || peer.fingerprint === this.selfFp) {
+      throw new Error('ring: send-one needs a current other member');
+    }
+    const text = encodePlain(this.stamp(note, history));
+    let ratchet = this.sessions.get(peer.fingerprint);
+    if (!ratchet) ratchet = TripleRatchet.initiate(self, peer);
+    const packet = await ratchet.send(text);
+    this.sessions.set(peer.fingerprint, ratchet);
+    return { fingerprint: peer.fingerprint, packet };
   }
 
   /**

@@ -194,6 +194,25 @@ export async function putNote(note: NoteRecord): Promise<void> {
   } satisfies NoteRow);
 }
 
+export async function listAllNotes(): Promise<NoteRecord[]> {
+  const rows = await txGetAll<NoteRow>('notes');
+  const out: NoteRecord[] = [];
+  const now = Date.now();
+  for (const row of rows) {
+    try {
+      const note = await decryptJson<NoteRecord>(row.enc);
+      if (note.retention.expires_at && new Date(note.retention.expires_at).getTime() < now) {
+        await txDelete('notes', note.note_id);
+        continue;
+      }
+      out.push(note);
+    } catch {
+      // skip
+    }
+  }
+  return out.sort((a, b) => a.sent_at.localeCompare(b.sent_at) || a.note_id.localeCompare(b.note_id));
+}
+
 export async function listNotesForThread(threadId: string): Promise<NoteRecord[]> {
   const db = await openDb();
   const rows: NoteRow[] = await new Promise((resolve, reject) => {

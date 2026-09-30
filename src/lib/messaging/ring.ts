@@ -9,7 +9,10 @@
 // This module is LOCAL STATE + key lifecycle helpers. It does not talk to the network.
 
 import { randomBytes } from '@noble/hashes/utils.js';
-import type { RingChannel } from './types';
+import { MAX_RING_MEMBERS, RING_HISTORY_LIMIT } from './ring-session';
+import type { RingChannel, RingHistoryAccess } from './types';
+
+export { RING_HISTORY_LIMIT };
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -31,6 +34,11 @@ export function createRingChannel(
   if (unique.length < 2) {
     throw new Error('ring-channel needs at least 2 members');
   }
+  if (unique.length > MAX_RING_MEMBERS) {
+    throw new Error(`ring-channel holds at most ${MAX_RING_MEMBERS} members`);
+  }
+  const member_history: NonNullable<RingChannel['member_history']> = {};
+  for (const fp of unique) member_history[fp] = { history: 'previous', since_epoch: 1 };
   return {
     channel_id: newId('ring'),
     local_label: localLabel.trim() || 'Ring',
@@ -39,7 +47,55 @@ export function createRingChannel(
     content_key_b64: toBase64(randomBytes(32)),
     created_at: now,
     rotated_at: now,
+    member_history,
   };
+}
+
+/**
+ * Add someone. Epoch bumps, pair sessions drop, so old blobs are not readable
+ * with the new epoch. `history` defaults to `new`: earlier notes are not resealed.
+ * `previous` records that the adder should reseal the notes this device still holds.
+ */
+export function addRingMember(
+  channel: RingChannel,
+  fingerprint: string,
+  history: RingHistoryAccess = 'new',
+  now: string = new Date().toISOString(),
+): RingChannel {
+  const fp = fingerprint.trim();
+  if (!fp) throw new Error('ring-channel add needs a fingerprint');
+  if (channel.member_fingerprints.includes(fp)) {
+    throw new Error('ring-channel member is already in the ring');
+  }
+  if (channel.member_fingerprints.length + 1 > MAX_RING_MEMBERS) {
+    throw new Error(`ring-channel holds at most ${MAX_RING_MEMBERS} members`);
+  }
+  const next = rotateRingMembership(channel, [...channel.member_fingerprints, fp], now);
+  const member_history = { ...(channel.member_history ?? {}) };
+  member_history[fp] = {
+    history,
+    since_epoch: history === 'previous' ? 1 : next.key_epoch,
+  };
+  return { ...next, member_history };
+}
+
+/** Remove someone from later notes. Notes they already opened stay with them. */
+export function removeRingMember(
+  channel: RingChannel,
+  fingerprint: string,
+  now: string = new Date().toISOString(),
+): RingChannel {
+  if (!channel.member_fingerprints.includes(fingerprint)) {
+    throw new Error('ring-channel member is not in the ring');
+  }
+  const next = rotateRingMembership(
+    channel,
+    channel.member_fingerprints.filter((fp) => fp !== fingerprint),
+    now,
+  );
+  const member_history = { ...(channel.member_history ?? {}) };
+  delete member_history[fingerprint];
+  return { ...next, member_history };
 }
 
 /**
@@ -70,4 +126,29 @@ export function rotateRingMembership(
 /** What the relay is allowed to know: nothing about membership — only deposit targets. */
 export function ringDepositTargets(channel: RingChannel): string[] {
   return [...channel.member_fingerprints];
+}
+
+export interface SharedNote {
+  note_id: string;
+  sent_at: string;
+  from_fingerprint: string;
+  body: string;
+  reply_to?: string;
+  thread_root?: string;
+}
+
+/**
+ * Notes to reseal when someone joins. `new` (default) shares nothing.
+ * `previous` shares the most recent notes this device still holds, oldest first.
+ */
+export function notesToShare<T extends SharedNote>(notes: T[], history: RingHistoryAccess): SharedNote[] {
+  if (history !== 'previous') return [];
+  const sorted = notes.slice().sort((a, b) => a.sent_at.localeCompare(b.sent_at) || a.note_id.localeCompare(b.note_id));
+  return sorted.slice(-RING_HISTORY_LIMIT).map((n) => ({
+    note_id: n.note_id,
+    sent_at: n.sent_at,
+    from_fingerprint: n.from_fingerprint,
+    body: n.body,
+    ...(n.reply_to && n.thread_root ? { reply_to: n.reply_to, thread_root: n.thread_root } : {}),
+  }));
 }

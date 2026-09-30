@@ -29,10 +29,14 @@ import {
   listRingChannels,
   sendNoteToPeer,
   sendRingNote,
+  sendRingHistory,
   putThread,
   putRingChannel,
   createRingChannel,
-  rotateRingMembership,
+  addRingMember,
+  removeRingMember,
+  notesToShare,
+  exportNotesBackup,
   newThreadId,
   loadRatchetIdentity,
   ringPeerFromContact,
@@ -43,6 +47,7 @@ import {
   type NoteThread,
   type NoteRecord,
   type RingChannel,
+  type RingHistoryAccess,
   type RingPeer,
 } from '@/lib/messaging';
 
@@ -71,6 +76,8 @@ export default function NotesPage() {
   const [activeRingId, setActiveRingId] = useState<string | null>(null);
   const [sideRoot, setSideRoot] = useState<string | null>(null);
   const [freshThread, setFreshThread] = useState(false);
+  const [addFp, setAddFp] = useState('');
+  const [addHistory, setAddHistory] = useState<RingHistoryAccess>('new');
 
   const refresh = useCallback(async (fp: string) => {
     const [c, t, r] = await Promise.all([getAllContacts(fp), listThreads(), listRingChannels()]);
@@ -147,6 +154,8 @@ export default function NotesPage() {
     setActiveRingId(null);
     setSideRoot(null);
     setFreshThread(false);
+    setAddFp('');
+    setAddHistory('new');
     setPhase('compose');
     setStatus(null);
     const existing = threads.find(
@@ -162,6 +171,8 @@ export default function NotesPage() {
     setStatus(null);
     setPhase('compose');
     setRingOpen(false);
+    setAddFp('');
+    setAddHistory('new');
     if (t.kind === 'ring' && t.ring_channel_id) {
       setActiveRingId(t.ring_channel_id);
       setPeerFp('');
@@ -311,12 +322,94 @@ export default function NotesPage() {
     if (created) openThread(created);
   };
 
+  const backupNotes = async () => {
+    try {
+      const backup = await exportNotesBackup();
+      const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'svrnty-notes.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus('Saved svrnty-notes.json. That file is the notes themselves, not the contact book.');
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Notes backup failed');
+    }
+  };
+
+  const addToRing = async () => {
+    const ring = rings.find((r) => r.channel_id === activeRingId);
+    if (!ring || !addFp) return;
+    setSending(true);
+    setStatus(null);
+    try {
+      const contact = contacts.find((c) => c.fingerprint === addFp);
+      const history = addHistory;
+      const next = addRingMember(ring, addFp, history);
+      await putRingChannel(next);
+      const thread = threads.find((t) => t.ring_channel_id === ring.channel_id);
+      if (thread && contact) {
+        await putThread({
+          ...thread,
+          participants: [
+            ...thread.participants,
+            {
+              fingerprint: addFp,
+              kind: contact.metadata?.identity_type === 'agent' ? 'agent' as const : 'human' as const,
+              display_name: contact.name || addFp.slice(0, 8),
+            },
+          ],
+          last_activity_at: next.rotated_at,
+        });
+      }
+      let message = history === 'new'
+        ? 'Added. They will see new notes only.'
+        : 'Added. There were no earlier notes on this device to share.';
+      if (history === 'previous' && thread && contact) {
+        const held = await listNotesForThread(thread.thread_id);
+        const share = notesToShare(held, 'previous');
+        if (share.length) {
+          const self = await loadRatchetIdentity(fingerprint);
+          const peer = await ringPeerFromContact(contact);
+          if (!self || !peer) {
+            message = 'They are in the ring. Earlier notes stayed here — a hybrid key is missing.';
+          } else {
+            const sent = await sendRingHistory({
+              self,
+              selfFingerprint: fingerprint,
+              channel: next,
+              peer,
+              history: share,
+              threadId: thread.thread_id,
+            });
+            message = sent.deposited
+              ? 'Added. Earlier notes were sealed only to them.'
+              : 'Added. The earlier-notes seal did not reach their mailbox.';
+          }
+        }
+      }
+      setAddFp('');
+      setAddHistory('new');
+      setStatus(message);
+      await refresh(fingerprint);
+      if (thread) setNotes(await listNotesForThread(thread.thread_id));
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Could not add them');
+    } finally {
+      setSending(false);
+    }
+  };
+
   const removeFromRing = async (fp: string) => {
     const ring = rings.find((r) => r.channel_id === activeRingId);
     if (!ring || fp === fingerprint) return;
     const next = ring.member_fingerprints.filter((m) => m !== fp);
-    if (next.length < 2) return;
-    const rotated = rotateRingMembership(ring, next);
+    if (next.length < 2) {
+      setStatus('A ring needs two people. A direct note is the smaller conversation.');
+      return;
+    }
+    const rotated = removeRingMember(ring, fp);
     await putRingChannel(rotated);
     if (activeThreadId) {
       const t = threads.find((x) => x.thread_id === activeThreadId);
@@ -329,7 +422,7 @@ export default function NotesPage() {
       }
     }
     await refresh(fingerprint);
-    setStatus('They are off the next note. Earlier notes stay sealed to the old epoch.');
+    setStatus('They keep notes they already opened. Later notes are not sealed to them.');
   };
 
   const selected = contacts.find((c) => c.fingerprint === peerFp);
@@ -408,9 +501,16 @@ export default function NotesPage() {
               </button>
             </header>
 
+            {status && phase === 'select' && (
+              <p className="hive-status" data-testid="notes-status">{status}</p>
+            )}
+
             <Steps phase={phase} />
 
             <div className="thread-rail" data-testid="notes-thread-list">
+              <button type="button" className="hive-chip" data-testid="notes-backup" onClick={backupNotes}>
+                Back up notes
+              </button>
               <button type="button" className="hive-chip" data-testid="notes-new-ring" onClick={() => { setRingOpen((v) => !v); setStatus(null); }}>
                 New ring
               </button>
@@ -544,6 +644,58 @@ export default function NotesPage() {
                         </span>
                       );
                     })}
+                  </div>
+                )}
+
+                {activeRing && (
+                  <div className="ring-add" data-testid="notes-ring-add">
+                    <p className="hive-muted">
+                      Add someone. New notes only, unless you choose earlier notes. A sealed note is not unsent.
+                    </p>
+                    <select
+                      data-testid="notes-ring-add-person"
+                      value={addFp}
+                      onChange={(e) => setAddFp(e.target.value)}
+                    >
+                      <option value="">Choose someone</option>
+                      {contacts.filter((c) =>
+                        c.fingerprint !== fingerprint
+                        && !activeRing.member_fingerprints.includes(c.fingerprint)
+                        && Boolean(c.pq_kem_public_key && c.public_key),
+                      ).map((c) => (
+                        <option key={c.id} value={c.fingerprint}>{c.name || c.fingerprint.slice(0, 8)}</option>
+                      ))}
+                    </select>
+                    <label>
+                      <input
+                        type="radio"
+                        name="ring-history"
+                        checked={addHistory === 'new'}
+                        onChange={() => setAddHistory('new')}
+                      />
+                      New notes only
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="ring-history"
+                        checked={addHistory === 'previous'}
+                        onChange={() => setAddHistory('previous')}
+                      />
+                      Earlier notes too
+                    </label>
+                    <button
+                      type="button"
+                      className="hive-chip"
+                      data-testid="notes-ring-add-confirm"
+                      disabled={!addFp || sending}
+                      onClick={addToRing}
+                    >
+                      Add
+                    </button>
+                    <p className="hive-muted">
+                      Removing someone leaves them the notes they already opened. Later notes are not sealed to them.
+                    </p>
                   </div>
                 )}
 
@@ -805,6 +957,29 @@ function HiveStyles() {
         align-items: center;
       }
       .ring-picks label.is-dim { color: var(--muted); }
+      .ring-add {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 0 0 12px;
+      }
+      .ring-add select {
+        font: inherit;
+        color: var(--cream);
+        background: rgba(3, 10, 24, 0.85);
+        border: 1px solid rgba(94, 231, 255, 0.45);
+        border-radius: 12px;
+        padding: 8px 10px;
+      }
+      .ring-add label {
+        font-size: 12px;
+        color: var(--cream);
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .ring-add .hive-muted { flex-basis: 100%; margin: 0; }
       .ring-members button, .thread-jump {
         font: inherit;
         font-size: 10px;

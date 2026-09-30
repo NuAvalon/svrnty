@@ -11,7 +11,7 @@ import type { NoteWireV0, ParticipantKind, RingChannel } from './types';
 import { newNoteId, putNote, putThread, putRingChannel, listThreads, newThreadId } from './store';
 import type { NoteRecord, NoteThread } from './types';
 import { isNoteId } from './threads';
-import { RingSession, type RingPeer } from './ring-session';
+import { RingSession, type RingHistoryItem, type RingPeer } from './ring-session';
 
 export interface NoteSenderIdentity {
   fingerprint: string;
@@ -292,4 +292,68 @@ export async function sendRingNote(args: {
   }
 
   return { note_id, thread_id: args.threadId, deposited, channel };
+}
+
+/**
+ * Reseal earlier notes to one new member. One mailbox blob, not a fan-out.
+ * Nothing is written onto this device's timeline — the sender already has
+ * those notes. The pair session is saved so the next ring send continues it.
+ */
+export async function sendRingHistory(args: {
+  self: RatchetIdentity;
+  selfFingerprint: string;
+  channel: RingChannel;
+  peer: RingPeer;
+  history: RingHistoryItem[];
+  threadId: string;
+  relayBase?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ deposited: boolean; channel: RingChannel }> {
+  if (args.history.length === 0) {
+    return { deposited: true, channel: args.channel };
+  }
+  if (!args.channel.member_fingerprints.includes(args.peer.fingerprint) || args.peer.fingerprint === args.selfFingerprint) {
+    throw new Error('Earlier notes are sealed only to the person you added');
+  }
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const relayBase = args.relayBase ?? '/api/relay';
+
+  let session = RingSession.importSnapshot(args.channel.session_snapshot);
+  if (
+    !session ||
+    session.epoch !== args.channel.key_epoch ||
+    session.channelId !== args.channel.channel_id ||
+    session.selfFp !== args.selfFingerprint
+  ) {
+    session = RingSession.create(
+      args.channel.channel_id,
+      args.selfFingerprint,
+      args.channel.member_fingerprints,
+      args.channel.key_epoch,
+    );
+  }
+
+  const outbound = await session.sendOne(
+    args.self,
+    args.peer,
+    {
+      note_id: newNoteId(),
+      thread_id: args.threadId,
+      sent_at: new Date().toISOString(),
+      body: '',
+      participant_kind: 'human',
+    },
+    args.history,
+  );
+
+  const mailbox_id = deriveMailboxId(outbound.fingerprint);
+  const res = await fetchImpl(`${relayBase}/envelope`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mailbox_id, blob: JSON.stringify(outbound.packet) }),
+  });
+
+  const channel: RingChannel = { ...args.channel, session_snapshot: session.exportSnapshot() };
+  await putRingChannel(channel);
+  return { deposited: res.ok, channel };
 }
