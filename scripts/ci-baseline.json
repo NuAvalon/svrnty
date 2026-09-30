@@ -1,0 +1,5 @@
+{
+  "$schema": "Error-count baselines for checks that are red on main today. CI fails when a count GROWS past baseline; lower the number in the same PR that drains errors so the ratchet only tightens. Counts re-measured on main@def394a (2026-09-30).",
+  "tsc_errors": 29,
+  "lint_errors": 239
+}

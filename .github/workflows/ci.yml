@@ -1,16 +1,17 @@
 name: ci
 # svrnty CI status check. The machine-checkable half of the
 # merge-gate's "green" condition. Blocking: `next build` must pass
-# (catches real import/build breakage = merge-unsafe). Informational: typecheck, until the
-# 16-error baseline is drained. NOT YET a REQUIRED check — that needs branch protection,
-# which needs repo admin (palberts22 is push+triage only). Org owner enables it; the
-# merge-mechanic reads this check meanwhile.
+# (catches real import/build breakage = merge-unsafe), plus the contract-guard suite,
+# both e2e tiers, and the production image build.
 #
-# FOLLOW-UP (this week, tracked): add the cross-file divergence-guard test (verify-allowlist
-# ≡ apply-allowlist — the lockstep pattern) once BOTH allowlist files land on main via the
-# current drain, plus a unified test runner once the extensionless-vs-.ts convention is
-# settled. Kept out of the initial check on purpose — a flaky gate is worse than
-# a narrow one.
+# Typecheck + lint run as RATCHETS, not informational: they may not grow past the
+# baselines in scripts/ci-baseline.json (a check that can only tighten, never loosen
+# silently — the previous 16-error informational typecheck quietly grew to 29). Lower
+# the baseline in the same PR that drains errors.
+#
+# NOT YET a REQUIRED check — that needs branch protection, which needs repo admin
+# (palberts22 is push+triage only). Org owner enables it; the merge-mechanic reads
+# this check meanwhile.
 
 on:
   pull_request:
@@ -32,8 +33,30 @@ jobs:
         run: npm ci
       - name: Build (Next.js) — BLOCKING
         run: npm run build
-      - name: Typecheck — informational (16-error baseline being drained)
-        run: npx --no-install tsc --noEmit || true
+      - name: Typecheck — ratchet (fails if error count grows; lower scripts/ci-baseline.json when draining)
+        run: |
+          BASE=$(node -p "require('./scripts/ci-baseline.json').tsc_errors")
+          ACTUAL=$(npx --no-install tsc --noEmit 2>&1 | grep -c 'error TS' || true)
+          echo "tsc errors: $ACTUAL (baseline $BASE)"
+          if [ "$ACTUAL" -gt "$BASE" ]; then
+            echo "::error::tsc errors grew $BASE -> $ACTUAL — fix the new errors or raise the baseline with justification"
+            exit 1
+          fi
+          if [ "$ACTUAL" -lt "$BASE" ]; then
+            echo "::notice::tsc errors drained $BASE -> $ACTUAL — lower the baseline in this PR"
+          fi
+      - name: Lint — ratchet (fails if error count grows)
+        run: |
+          BASE=$(node -p "require('./scripts/ci-baseline.json').lint_errors")
+          ACTUAL=$(npm run lint 2>&1 | grep -c '  Error:' || true)
+          echo "lint errors: $ACTUAL (baseline $BASE)"
+          if [ "$ACTUAL" -gt "$BASE" ]; then
+            echo "::error::lint errors grew $BASE -> $ACTUAL — fix the new errors or raise the baseline with justification"
+            exit 1
+          fi
+          if [ "$ACTUAL" -lt "$BASE" ]; then
+            echo "::notice::lint errors drained $BASE -> $ACTUAL — lower the baseline in this PR"
+          fi
       - name: Contract guards — lockstep divergence (contact.update verify↔apply allowlist ≡) — BLOCKING
         run: npx --no-install tsx --test src/lib/contacts/contact-update-allowlist-guard.test.ts
       - name: Contract guards — own-identity vCard never emits tags/blocked — BLOCKING
@@ -91,3 +114,22 @@ jobs:
         env:
           E2E_PROD: '1'
         run: npx playwright test --config=playwright.beat3.config.ts
+
+  # Production image build — the CI half of CD. The Dockerfile is the deployable artifact
+  # (self-host compose + Caddy); a broken image must fail the gate even though no deploy
+  # secrets live here yet. Passes the same provenance args the deploy pipeline uses so
+  # /api/version stamps the real SHA. Actual push/deploy needs a registry + host secrets
+  # — wire in a follow-up once Peter provisions them.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build production image — BLOCKING
+        run: |
+          docker build \
+            --build-arg GIT_SHA="$GITHUB_SHA" \
+            --build-arg GIT_BRANCH="$GITHUB_REF_NAME" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t svrnty-ci .

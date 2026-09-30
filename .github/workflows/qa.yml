@@ -1,84 +1,84 @@
-name: qa
-# Devin-triggerable QA workflow for svrnty — the "webhook automation" (Peter 2026-09-27):
-# Devin (or any authorized actor) dispatches this via the GitHub API
-#   POST /repos/NuAvalon/svrnty/actions/workflows/qa.yml/dispatches   (workflow_dispatch)
-# and reads the run result — that IS the two-way channel (trigger in, status/summary out).
-# Also runs on PR + push to main.
-#
-# COMPLEMENTS ci.yml: ci.yml runs a hand-picked BLOCKING subset (~30 contract-guard files).
-# THIS adds the UNIFIED runner over ALL src/**/*.test.ts (83 files today) — closing the coverage
-# gap where the un-listed test files were never run in CI (ci.yml's own TODO: "add a unified test
-# runner"). Coverage != correctness: unrun tests hid real fails.
-#
-# The unified step is INFORMATIONAL for now (continue-on-error) — mirrors ci.yml's typecheck
-# baseline: surface the pre-existing fails without a red gate, drain them, THEN flip to BLOCKING
-# (continue-on-error: false) + make it a REQUIRED check (branch protection — org-owner gated;
-# palberts22 is push+triage only). A red gate on day 1 is worse than an honest informational one.
-#
-# CLAIM-SWEEP (copy-gate in CI): a second job that walks user-facing strings vs claim-gates.ts and
-# fails on a false claim — owned by Hypatia (claim->substrate map) + Flint's boundary review
-# (TRUSTED-side, branch-protection-REQUIRED so a PR can't edit its own gate to pass). Left as a
-# commented stub below until Hypatia's map lands — intentionally NOT wired as a fake-green.
-# — Athena 2026-09-27
+name: QA
 
 on:
-  workflow_dispatch: {}
   pull_request:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
-permissions:
-  contents: read
+# One job, one unified runner.
+#
+# - Gate (BLOCKING): every src/**/*.test.ts EXCEPT files in qa/quarantine.json must pass.
+# - Quarantine tier (informational): quarantined files still run so their other tests stay
+#   visible; a file that goes fully green FAILS the gate — drain the entry, don't let it
+#   collect dust.
+# - Quarantine lint (BLOCKING): expired/invalid entries fail — exceptions are enumerated
+#   and have owners + expiry, not a silent red badge.
+#
+# Claim sweep stays parked until Hypatia lands scripts/claim-sweep.ts + a CI-claimed ledger.
+# A no-op job reporting green would be false evidence — worse than nothing.
+# Re-enable when the contract exists. --Hypatia
 
 jobs:
-  unified-tests:
+  unified:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-      - name: Install (locked)
-        run: npm ci
-      - name: Unified test runner — ALL src/**/*.test.ts (coverage-gap closer)
-        id: unified
-        # INFORMATIONAL until pre-existing fails drain (mirrors ci.yml's typecheck baseline).
-        # Flip to `continue-on-error: false` once green, then make it a REQUIRED check.
-        continue-on-error: true
-        shell: bash
+      - run: npm ci
+
+      - name: Quarantine lint (blocking)
+        run: node scripts/qa-quarantine.mjs check
+
+      - name: Unified suite — gate tier (blocking)
+        env:
+          FORCE_COLOR: '0'
         run: |
           set -o pipefail
-          mapfile -t FILES < <(find src -name '*.test.ts' | sort)
-          echo "Discovered ${#FILES[@]} test files (ci.yml runs a hand-picked subset)."
-          npx --no-install tsx --test "${FILES[@]}" 2>&1 | tee /tmp/qa_unified.log
-      - name: Summary (Actions UI + Devin-readable)
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo "## svrnty QA — unified test run"
-            echo "Discovered **$(find src -name '*.test.ts' | wc -l)** \`*.test.ts\` files (ci.yml runs a hand-picked subset)."
-            echo "Unified step outcome: **${{ steps.unified.outcome }}** _(informational until fails drain, then blocking)_"
-            echo ""
-            echo "<details><summary>tail of unified run</summary>"
-            echo ""
-            echo '```'
-            tail -n 60 /tmp/qa_unified.log 2>/dev/null || echo "(no log captured)"
-            echo '```'
-            echo "</details>"
-          } >> "$GITHUB_STEP_SUMMARY"
+          mapfile -t FILES < <(node scripts/qa-quarantine.mjs list gate)
+          echo "gate files: ${#FILES[@]}"
+          npx --no-install tsx --test "${FILES[@]}" 2>&1 | tee /tmp/gate.log
 
-  # claim-sweep:            # copy-gate-in-CI — Hypatia owns claim-gates.ts + the sweep; Flint the boundary.
+      - name: Quarantine tier (informational — fails gate if a file goes green)
+        env:
+          FORCE_COLOR: '0'
+        run: |
+          mapfile -t FILES < <(node scripts/qa-quarantine.mjs list quarantined)
+          echo "quarantined files: ${#FILES[@]}"
+          STALE=""
+          : > /tmp/q.log
+          for f in "${FILES[@]}"; do
+            if npx --no-install tsx --test "$f" >> /tmp/q.log 2>&1; then
+              STALE="$STALE $f"
+            fi
+          done
+          tail -30 /tmp/q.log
+          if [ -n "$STALE" ]; then
+            echo "::error::quarantined file(s) now fully green — remove the entry from qa/quarantine.json:$STALE"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "gate suite last tally:"
+          grep -E '^ℹ (tests|pass|fail) ' /tmp/gate.log | tail -3 || true
+          echo "quarantined suite last tally:"
+          grep -E '^ℹ (tests|pass|fail) ' /tmp/q.log | tail -3 || true
+          cat /tmp/gate.log | grep '✖' | head -50 || true
+
+  # claim-sweep:
+  #   needs: build, e2e, e2e-prod
   #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
   #   steps:
   #     - uses: actions/checkout@v4
   #     - uses: actions/setup-node@v4
-  #       with: { node-version: '22', cache: 'npm' }
+  #         with: { node-version: '22' }
   #     - run: npm ci
-  #     - name: Claim sweep (fail on a false user-facing claim vs claim-gates.ts)
-  #       run: npx --no-install tsx scripts/claim-sweep.ts   # <- lands when Hypatia's map + script exist
-  #   NOTE: must be branch-protection-REQUIRED + TRUSTED-side (a PR must not be able to edit its own
-  #   gate to false-pass). Do NOT enable as a no-op — that would fake-green the copy-gate.
+  #     - name: Claim sweep (fails on over-claims vs claim-map)
+  #       run: npx --no-install tsx scripts/claim-sweep.ts
