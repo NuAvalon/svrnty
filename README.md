@@ -2,6 +2,9 @@
 
 Trust that lives on your device. Not on a server. Not on a blockchain. Yours.
 
+**You are the landlord** — of your keys, your living address book, your projects.
+`svrnty.is` is open-source plumbing you can replace. Read the [Manifesto](./MANIFESTO.md).
+
 ## The Problem
 
 Every digital relationship you have is mediated by someone else's infrastructure. Your contacts live in Google's database. Your messages route through Meta's servers. Your identity is a row in someone else's table, revocable at their discretion.
