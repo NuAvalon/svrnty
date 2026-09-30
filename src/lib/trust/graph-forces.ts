@@ -8,7 +8,7 @@
  * Forces (each iteration):
  *   1. Soft cloud keep — stay in a wide disk around self (not a ring)
  *   2. Cluster gravity — pull toward shared owner-local tags
- *   2b. Mutual-bond springs — witnessed open-visibility they_trust only
+ *   2b. Mutual-bond springs — witnessed open-visibility they_trust / disclosed_circle
  *   3. Collision / spacing — push overlapping seals apart
  *   4. Self clearance — keep out of the center seal
  *   5. Bounds clamp — stay inside the world
@@ -30,8 +30,8 @@ export type ForceOptions = {
   /** Owner-authored tag → member ids (cluster gravity only). */
   tagMembers?: Map<string, string[]>;
   /**
-   * Witnessed peer↔peer mutual bonds (open-visibility they_trust) — soft springs.
-   * Same fail-closed set as filament drawing; never invent from tags.
+   * Witnessed peer↔peer mutual bonds (open-visibility they_trust / disclosed_circle).
+   * Soft springs. Same fail-closed set as filament drawing; never invent from tags.
    */
   mutualBonds?: Array<{ a: string; b: string }>;
   /** Strength of mutual-bond springs [0..1]. */
@@ -221,7 +221,7 @@ export function relaxGraphNodes<T extends ForceNode>(
       }
     }
 
-    // 2b) Witnessed mutual-bond springs — topology from consented they_trust only
+    // 2b) Witnessed mutual-bond springs — consented they_trust / disclosed_circle only
     if (mutualBonds && mutualBonds.length > 0 && mutualBondGravity > 0) {
       for (const bond of mutualBonds) {
         const a = byId.get(bond.a) || byIdLower.get(bond.a.toLowerCase());

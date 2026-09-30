@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -29,12 +30,7 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     test.setTimeout(60_000);
     await genesis(page, 'Circle Owner');
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-    // Seed is async behind the button — wait until the graph shows Refresh
-    // (full roster written) before opening Contacts, or classical rows can race.
-    await page.getByTestId('trust-map-load-sample').click();
-    await expect(page.getByTestId('trust-map-load-sample')).toHaveText(/Refresh demo circle/i, {
-      timeout: 30_000,
-    });
+    await seedSampleGalaxy(page);
     await page.getByRole('tab', { name: 'Contacts' }).click();
 
     // Scope to master-book rows (not any other contact-row surface).

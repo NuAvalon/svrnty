@@ -6,9 +6,10 @@
  * I trust them). That is consented disclosure, not Facebook-style inference.
  *
  * Glass NEVER computes PSI. It only draws a chord when both edges already
- * carry `they_trust` / `peer_mutual` (fleet-filled or demo stand-in) AND
- * the local open-visibility + reciprocal-trust predicate holds. Co-membership
- * of an owner tag is not a bond.
+ * carry fleet-filled (or demo stand-in) fields AND the local open-visibility
+ * predicate holds. `isPSIDiscoveryLive()` stays false — this module does not
+ * start know-layer sync. Co-membership of an owner tag is not a bond.
+ * `metadata.mutual_contacts` (card-exchange leftover) is NOT disclosed_circle.
  */
 
 import type { TrustEdge } from '@/lib/trust/types';
@@ -84,7 +85,88 @@ export function witnessedPeerTrustChords(contacts: TrustEdge[]): WitnessedPeerCh
   return chords;
 }
 
-/** Fingerprints that form a witnessed peer-trust chord with `focusId`. */
+function theyKnowSet(c: ChordSource): Set<string> {
+  const extra = c as ChordSource & {
+    disclosed_circle?: string[];
+    metadata?: { disclosed_circle?: string[] };
+  };
+  const ids = [
+    ...(extra.disclosed_circle || []),
+    ...(extra.metadata?.disclosed_circle || []),
+  ];
+  return new Set(ids.map((id) => (id || '').toLowerCase()).filter(Boolean));
+}
+
+function isPendingStar(c: TrustEdge): boolean {
+  const e = c as TrustEdge & { connection_status?: string; pending_intro?: unknown };
+  return e.connection_status === 'pending' || !!e.pending_intro;
+}
+
+/**
+ * Eligible for open-visibility Know chords with the owner:
+ * in the book (Known), not pending, and I opened visibility toward them.
+ * Trust is NOT required — Know ≠ Trust.
+ */
+export function isOpenVisibilityKnown(c: TrustEdge): boolean {
+  if (isPendingStar(c)) return false;
+  if (!fpOf(c)) return false;
+  return ownerOpenVisibilityToward(c as ChordSource);
+}
+
+function chordKey(a: string, b: string): string {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  return x < y ? `${x}|${y}` : `${y}|${x}`;
+}
+
+export type WitnessedPeerLayer = 'know' | 'trust';
+
+export type LayeredPeerChord = WitnessedPeerChord & { layer: WitnessedPeerLayer };
+
+/**
+ * Undirected Know chords among people in MY book who consented to visibility
+ * and whose disclosed_circle (fleet visible() ∩ book) lists each other.
+ * Fail closed on one-way disclosure, missing open vis, or pending Gate/intro.
+ * Tags never invent a Know bond.
+ */
+export function witnessedPeerKnowChords(contacts: TrustEdge[]): WitnessedPeerChord[] {
+  const eligible = contacts.filter((c) => isOpenVisibilityKnown(c));
+  const chords: WitnessedPeerChord[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < eligible.length; i++) {
+    for (let j = i + 1; j < eligible.length; j++) {
+      const A = eligible[i] as ChordSource;
+      const B = eligible[j] as ChordSource;
+      const af = fpOf(A);
+      const bf = fpOf(B);
+      if (!af || !bf || af === bf) continue;
+      if (!theyKnowSet(A).has(bf) || !theyKnowSet(B).has(af)) continue;
+      const key = chordKey(af, bf);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const [left, right] = af < bf ? [A, B] : [B, A];
+      chords.push({ a: left.peer_fingerprint, b: right.peer_fingerprint });
+    }
+  }
+  return chords;
+}
+
+/**
+ * Consent mesh: Know filaments plus Trust filaments.
+ * A Trust chord supersedes Know for the same pair (don't double-draw).
+ */
+export function witnessedPeerChords(contacts: TrustEdge[]): LayeredPeerChord[] {
+  const trust = witnessedPeerTrustChords(contacts);
+  const trustKeys = new Set(trust.map((c) => chordKey(c.a, c.b)));
+  const out: LayeredPeerChord[] = trust.map((c) => ({ ...c, layer: 'trust' as const }));
+  for (const c of witnessedPeerKnowChords(contacts)) {
+    if (trustKeys.has(chordKey(c.a, c.b))) continue;
+    out.push({ ...c, layer: 'know' });
+  }
+  return out;
+}
+
 export function peerTrustNeighbors(focusId: string, contacts: TrustEdge[]): Set<string> {
   const id = (focusId || '').toLowerCase();
   const out = new Set<string>();
