@@ -102,6 +102,13 @@ export default function RootLayout({
               if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('/sw.js').catch(() => {});
               }
+              // Persistent storage: ask the browser not to evict the encrypted identity/contact
+              // book under storage pressure (Brave/Safari evict aggressively). Idempotent, best-effort.
+              if (navigator.storage && navigator.storage.persist) {
+                navigator.storage.persisted().then(function (p) {
+                  if (!p) navigator.storage.persist().catch(function () {});
+                }).catch(function () {});
+              }
             `,
           }}
         />
