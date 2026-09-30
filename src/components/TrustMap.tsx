@@ -181,14 +181,13 @@ function isPending(edge: EdgeExtras | null | undefined): boolean {
 function nodeStroke(state: TrustState, pending: boolean): string {
   if (pending) return T.pending;
   if (state === 'trusted') return T.lit;
-  if (state === 'decayed') return T.myEdge;
-  return T.dimStroke;
+  return T.myEdge;
 }
 
 function nodeFill(state: TrustState, pending: boolean): string {
   if (pending) return 'transparent';
   if (state === 'trusted') return 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
-  if (state === 'known') return 'transparent';
+  if (state === 'known') return 'color-mix(in srgb, var(--se-accent) 7%, transparent)';
   return T.dimFill;
 }
 
@@ -1049,8 +1048,8 @@ export function TrustMap({
                             ? 0.95
                             : 0.82
                           : verified
-                            ? 0.55
-                            : 0.38
+                            ? 0.58
+                            : 0.48
                     }
                     strokeWidth={trusted ? (mutual ? 2.4 : 1.85) : verified ? 1.25 : pending ? 1.1 : 1.05}
                     strokeDasharray={pending ? '5 4' : n.state === 'decayed' ? '3 3' : undefined}
@@ -1293,8 +1292,9 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span style={{ color: E.accent2 }}>● trusted</span>
-          <span>○ known</span>
+          <span style={{ color: E.accent2 }}>⬡ trusted · white light</span>
+          <span>⬡ known · dim spoke</span>
+          <span style={{ color: E.text }}>⬡ you · larger + light</span>
           <span style={{ color: E.accent }}>∪ known sphere</span>
           <span style={{ color: E.accent }}>⊙ Gate</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
@@ -1314,8 +1314,8 @@ export function TrustMap({
         }}
       >
         Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
-        Glow is the trust overlay. The U is your known sphere; the hole is the Gate.
-        Dashed gold is a group you named — not know, not trust.
+        A line to Known brightens when Trusted; white light is the overlay (yours is the larger cell).
+        Verify is a private ember — nobody else sees a badge. The U is your known sphere; the hole is the Gate.
       </p>
 
       {/* Contact sheet — alive contacts: seal + info + actions */}
