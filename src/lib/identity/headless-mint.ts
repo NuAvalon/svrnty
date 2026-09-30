@@ -45,6 +45,13 @@ export interface MintSecret {
   mlkem1024Sec: Uint8Array; // ML-KEM-1024 secret
   mlkem1024Pub: Uint8Array; // 1568B (not secret)
   mldsa87Secret: Uint8Array; // ML-DSA-87 secret
+  // The OpenPGP-armored operational private key + its passphrase. PERSISTED because ALL trust-signal signing
+  // (joiner-response / vouch / contact-update) runs through signWithEnvelope, which needs the ARMORED key — a
+  // raw seed can't drive it (openpgp v6 reconstruction is not viable). NO new secret surface: the armored key
+  // IS the ed25519Seed + x25519Sec already above, in OpenPGP encoding; custody AES-GCM-at-rest is the real
+  // protection, and classicalKpass is an openpgp-API artifact inside that same encrypted blob.
+  classicalPrivateKey: string; // armored OpenPGP private key (encrypted under classicalKpass)
+  classicalKpass: string; // openpgp passphrase for classicalPrivateKey
 }
 
 /** Full mint artifact handed to the custody store: public introduction + opaque secret + cold-seed recovery authority. */
@@ -77,10 +84,11 @@ export async function mintHeadlessAgent(
   if (cold_seed.length !== 32) throw new Error('mintHeadlessAgent: coldSeed must be exactly 32 bytes');
 
   // Classical (ed25519 sign + x25519 enc) via OpenPGP → raw, so the emitted card is import-compatible.
-  // Generate WITH a throwaway in-process passphrase: extractRaw* needs a DECRYPTED key (we decrypt a copy),
-  // and buildSignedIdentityCard's signer decrypts an ENCRYPTED armored key with the passphrase (openpgp refuses
-  // to "decrypt" an already-decrypted key). The passphrase is random, used ONLY in-process, NEVER emitted; the
-  // armored private key is discarded after signing.
+  // Generate WITH a passphrase: extractRaw* needs a DECRYPTED key (we decrypt a copy), the card-signer decrypts
+  // an ENCRYPTED armored key with the passphrase (openpgp refuses to "decrypt" an already-decrypted key), AND the
+  // armored key + passphrase are PERSISTED to custody — all trust-signal signing (joiner-response / vouch /
+  // contact-update) runs through signWithEnvelope, which needs the armored key (a raw seed can't drive it). No new
+  // secret surface: the armored key IS the ed25519+x25519 secrets we already persist, just OpenPGP-encoded.
   const kpass = bytesToHex(randomBytes(16));
   const { privateKey: encPrivateKey, publicKey } = (await openpgp.generateKey({
     type: 'ecc',
@@ -108,8 +116,9 @@ export async function mintHeadlessAgent(
 
   // A SELF-SIGNED, TYPED IdentityCard so the agent imports via the SAME path as humans
   // (buildSignedIdentityCard → verifySignedIdentityCard). entity_type='agent' is bound IN the signed card
-  // (immutable, G-attest). Signed IN-PROCESS with the transient armored key, which is then discarded — only
-  // the signed PUBLIC card is emitted; NO armored private key ever leaves this function.
+  // (immutable, G-attest). Signed IN-PROCESS with the armored key — which is ALSO persisted to custody (for later
+  // trust-signal signing); only the signed PUBLIC card is emitted publicly, the armored key rides the OPAQUE
+  // custody `private` bundle, never a public field.
   const card = await buildSignedIdentityCard(
     {
       fingerprint: intro.durableId,
@@ -139,6 +148,8 @@ export async function mintHeadlessAgent(
       mlkem1024Sec: kem.secretKey,
       mlkem1024Pub: kem.publicKey,
       mldsa87Secret: sig.secretKey,
+      classicalPrivateKey: encPrivateKey.armor(), // persisted for trust-signal signing (same secrets, OpenPGP-encoded)
+      classicalKpass: kpass,
     },
     cold_seed,
     recoveryMode,
@@ -169,6 +180,8 @@ export interface SerializedMintArtifact {
     mlkem1024_sec: string;
     mlkem1024_pub: string;
     mldsa87_secret: string;
+    classical_private_key: string; // armored OpenPGP op-key (for trust-signal signing via signWithEnvelope)
+    classical_kpass: string; // openpgp passphrase for classical_private_key
   };
   recovery_mode: string | null; // non-null REQUIRED for a real mint; null for throwaway
   throwaway: boolean;
@@ -194,6 +207,8 @@ export function serializeMintArtifact(a: MintArtifact): SerializedMintArtifact {
       mlkem1024_sec: uint8ToBase64(s.mlkem1024Sec),
       mlkem1024_pub: uint8ToBase64(s.mlkem1024Pub),
       mldsa87_secret: uint8ToBase64(s.mldsa87Secret),
+      classical_private_key: s.classicalPrivateKey, // already an armored string
+      classical_kpass: s.classicalKpass,
     },
     recovery_mode: a.recoveryMode,
     throwaway: a.throwaway,
