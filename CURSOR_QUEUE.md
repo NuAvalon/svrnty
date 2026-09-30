@@ -5,7 +5,7 @@ The top unchecked item below is the task. Build UI to spec (render-glass) — th
 ## ✅ 1. Camera QR-scan — receive side  [DONE — shipped in #96, not a task]
 Built + merged. Kept for provenance only.
 
-## 2. Encrypt / Decrypt tab — no-wire PQ-hybrid contact messaging  [render-glass]
+## ✅ 2. Encrypt / Decrypt tab — no-wire PQ-hybrid contact messaging  [DONE — merged #155/#157/#158, live on dev.svrnty.is, seam-signed. Spec kept for provenance.]
 
 A new **"Encrypt / Decrypt"** tab in svrnty.is: pick a svrnty contact → encrypt or decrypt a message (PQ-hybrid, authenticated sign-then-seal). Ciphertext is **copy-pasted by the user over any channel** — **NO WIRE**, zero network calls, zero relay traffic. Crypto is DONE + co-verified on main (PR #155: `src/lib/crypto/contact-message.ts` + `src/lib/identity/raw-sign.ts`). Wire the UI to these hooks; do NOT reimplement crypto.
 
@@ -83,3 +83,20 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 
 ### Acceptance
 From the Galaxy, focus a KNOWN (dashed) contact → **Verify** → guided compare (QR in-person OR code another-channel) → on match, `onOwnerVerify` records `owner_verify{method}` → edge renders **solid** locally + privately (no public badge, nothing on the wire). The SAME sheet is reachable from the address book. A **mismatched QR fails loud** and cannot verify. `ownerHasVerified` returns true after; `canGrantTrust` no longer blocks on need-verify.
+
+## 4. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [render-glass]
+
+_Non-urgent (the peer-mesh is dormant / go-live-gated — nothing renders live). Completes PR #170: the tooltip copy is already Hypatia-GREEN; this is the 2nd half of her spec. Prefer amending the existing draft **PR #170**; else a tiny follow-up PR._
+
+**Task (copy-only):** append ONE clause to the peer-mesh legend string `peerMeshLegend` (`src/lib/trust/trust-recipe.ts`, rendered in `TrustMap.tsx`) so the legend carries the explicit anti-surveillance negation, not just the positive consent.
+
+Current legend: "…both disclosed they know each other (gold) or trust each other (white-gold). Dashed gold is a group you named — not a bond."
+→ Append: **"These lines are disclosures, not observations — svrnty never infers who knows whom."**
+(Phrase-equivalent OK IF it preserves BOTH halves: disclosures-not-observations AND never-infers/observes.)
+
+### Why (Hypatia claims-render gate · Archie constitution-signed ✅)
+For the DV/survivor population this copy protects, the surveillance fear ("could svrnty also be watching / inferring my OTHER ties?") must be foreclosed EXPLICITLY. TRUE BY CONSTRUCTION: the mesh renders only consented `disclosed_circle` edges + svrnty's design (blind relay, consent-gated discovery) forecloses relationship-inference. No over-claim — an anti-capability statement backed by the architecture. (The dev comment "Glass never invents either layer from tags" already says this internally; this surfaces it to the user.)
+
+### Scope / gate
+- Copy-only. **NO crypto / data-source change** (already fixed to `disclosed_circle` in 22fd5164). Update the `peerMeshLegend` string + its test assertion.
+- Gate: Hypatia re-greens the legend copy → Athena undraft + merge → #106 fully closed (both halves).
