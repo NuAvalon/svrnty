@@ -50,6 +50,8 @@ import {
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
+import { VerifySheet } from '@/components/verify/VerifySheet';
+import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
 import {
   defaultShareSettings,
   isPendingSvrntyContact,
@@ -161,9 +163,13 @@ export function ContactDetailDialog({
   onOwnerVerify,
 }: ContactDetailDialogProps) {
   const [tab, setTab] = useState('reach');
+  const [verifyOpen, setVerifyOpen] = useState(false);
 
   useEffect(() => {
-    if (open) setTab('reach');
+    if (open) {
+      setTab('reach');
+      setVerifyOpen(false);
+    }
   }, [open, contact?.id]);
 
   const svrn = contact ? isSvrnNetworkContact(contact) : false;
@@ -183,6 +189,7 @@ export function ContactDetailDialog({
   };
 
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(next) => {
@@ -350,6 +357,20 @@ export function ContactDetailDialog({
                         ) : null}
                       </div>
                     </div>
+                  ) : null}
+
+                  {svrn && !isBlocked && !isTrusted && !ownerVerified && onOwnerVerify ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      data-testid="contact-verify"
+                      onClick={() => setVerifyOpen(true)}
+                      style={{ alignSelf: 'flex-start', fontFamily: E.fontSans }}
+                    >
+                      <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                      {VERIFY_SHEET_COPY.title}
+                    </Button>
                   ) : null}
 
                   {svrn && onShareSettingsChange ? (
@@ -677,22 +698,12 @@ export function ContactDetailDialog({
                     </DropdownMenuItem>
                   ) : null}
                   {svrn && !isBlocked && !isTrusted && !ownerVerified && onOwnerVerify ? (
-                    <>
-                      <DropdownMenuItem
-                        onClick={() => onOwnerVerify('in_person')}
-                        data-testid="contact-verify-in-person"
-                        style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
-                      >
-                        <ShieldCheck className="mr-2 h-4 w-4" /> Verify — met in person
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => onOwnerVerify('other_channel')}
-                        data-testid="contact-verify-other-channel"
-                        style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
-                      >
-                        <ShieldCheck className="mr-2 h-4 w-4" /> Verify — confirmed another way
-                      </DropdownMenuItem>
-                    </>
+                    <DropdownMenuItem
+                      onClick={() => setVerifyOpen(true)}
+                      style={{ fontFamily: E.fontSans, cursor: 'pointer' }}
+                    >
+                      <ShieldCheck className="mr-2 h-4 w-4" /> {VERIFY_SHEET_COPY.title}
+                    </DropdownMenuItem>
                   ) : null}
                   {svrn && !isBlocked ? (
                     <DropdownMenuItem
@@ -765,5 +776,16 @@ export function ContactDetailDialog({
         ) : null}
       </DialogContent>
     </Dialog>
+    <VerifySheet
+      open={!!(open && verifyOpen && contact)}
+      onClose={() => setVerifyOpen(false)}
+      displayName={contact?.name || ''}
+      fingerprint={contact?.fingerprint || ''}
+      onConfirm={async (method) => {
+        if (!onOwnerVerify) return;
+        await onOwnerVerify(method);
+      }}
+    />
+    </>
   );
 }
