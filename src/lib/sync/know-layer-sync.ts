@@ -26,7 +26,7 @@
 // buildPsiSyncOptions (scalar-extracted Ed25519 seed, in-memory only) and passed into the trigger.
 
 import { decryptKey, readPrivateKey } from 'openpgp';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
 import {
   getAllContacts,
   loadKey,
@@ -298,9 +298,14 @@ function bytesToB64(bytes: Uint8Array): string {
 
 /**
  * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth).
- * Challenge: GET /bind?fingerprint= → { nonce, epoch } or { bound: true }.
- * Complete: POST /bind { fingerprint, sign_pubkey, nonce, epoch, signature }.
- * Returns false on any misshape / network miss — caller stays fail-closed (no PSI).
+ *
+ * The satellite `/bind` is POST-ONLY (authoritative: satellite_9223f3d3_reconciled.py /
+ * satellite_F1.py `@app.post("/bind")`, Flint's svrnty_registration_bind_additive.patch). There is
+ * NO GET-challenge route — a GET 405s (the old code GET'd first → 405 → fail-closed → PSI never ran,
+ * the Gate-A bind-405). The satellite verifies Ed25519 over `svrnty-bind:{sig_pubkey}:{nonce}:{epoch}`
+ * against the REGISTERED identity key, so the client self-generates the nonce (the satellite does not
+ * issue/track it). Field names are `sig_pubkey` + `binding_sig` (NOT sign_pubkey/signature).
+ * Byte-matches psi_harness.py (proven 200). Returns false on any miss — caller stays fail-closed (no PSI).
  */
 export async function runBindCeremony(args: {
   satelliteUrl: string;
@@ -312,30 +317,77 @@ export async function runBindCeremony(args: {
   const fetchImpl = args.fetchImpl ?? fetch;
   const base = args.satelliteUrl.replace(/\/$/, '');
   try {
-    const challengeRes = await fetchImpl(
-      `${base}/bind?fingerprint=${encodeURIComponent(args.fingerprint)}`,
-    );
-    if (!challengeRes.ok) return false;
-    const challenge = await challengeRes.json();
-    if (challenge && challenge.bound === true) return true;
-    const nonce = challenge?.nonce;
-    const epoch = challenge?.epoch;
-    if (typeof nonce !== 'string' && typeof nonce !== 'number') return false;
-    if (typeof epoch !== 'string' && typeof epoch !== 'number') return false;
     const signPubHex = bytesToHex(args.signPub);
-    const signature = signBind(args.seed, signPubHex, String(nonce), epoch);
+    const nonce = bytesToHex(randomBytes(16)); // client self-gen; satellite verifies the sig, not the nonce source
+    const epoch = 0;
+    const signature = signBind(args.seed, signPubHex, nonce, epoch);
     const post = await fetchImpl(`${base}/bind`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fingerprint: args.fingerprint,
-        sign_pubkey: signPubHex,
-        nonce: String(nonce),
+        sig_pubkey: signPubHex,
+        nonce,
         epoch,
-        signature: bytesToB64(signature),
+        binding_sig: bytesToB64(signature),
       }),
     });
     return post.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Enroll the identity at the satellite (prerequisite for bind → PSI auth).
+ * The satellite's /bind 404s "Unknown fingerprint" if the identity isn't registered (KB#89329).
+ * Mint only registers on slug-claim (SoverentityFrontend) → a minted-but-unslugged identity is never
+ * enrolled, so PSI 404s. This co-locates register with bind (same SATELLITE_URL, backend-agnostic),
+ * self-healing + idempotent. Sends the SAME payload the proven slug-claim register uses
+ * (buildSatelliteRegisterFields + public_key, which the satellite re-hashes to verify the fingerprint).
+ * 409 = already-registered = success. Returns false on network miss / missing public_key — fail-closed.
+ */
+export async function runRegisterCeremony(args: {
+  satelliteUrl: string;
+  identity: unknown;
+  fetchImpl?: typeof fetch;
+}): Promise<boolean> {
+  const id = args.identity as {
+    identity?: { fingerprint?: string; public_key?: string; publicKey?: string };
+  } | null;
+  const fp = id?.identity?.fingerprint;
+  const publicKey = id?.identity?.public_key || id?.identity?.publicKey || '';
+  if (!fp || !publicKey) return false;
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const base = args.satelliteUrl.replace(/\/$/, '');
+  try {
+    let extra: {
+      fingerprint?: string;
+      sign_pub?: string;
+      enc_pub?: string;
+      kem_pub?: string;
+      sig_pub?: string;
+    } | null = null;
+    try {
+      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
+      extra = await buildSatelliteRegisterFields(
+        args.identity as Parameters<typeof buildSatelliteRegisterFields>[0],
+      );
+    } catch {
+      extra = null; // classical-only / missing PQ keys → fall back to {fingerprint, public_key}
+    }
+    const res = await fetchImpl(`${base}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fingerprint: extra?.fingerprint || fp,
+        public_key: publicKey,
+        ...(extra?.sign_pub
+          ? { sign_pub: extra.sign_pub, enc_pub: extra.enc_pub, kem_pub: extra.kem_pub, sig_pub: extra.sig_pub }
+          : {}),
+      }),
+    });
+    return res.ok || res.status === 409; // 409 = already registered
   } catch {
     return false;
   }
@@ -381,6 +433,11 @@ export async function buildPsiSyncOptions(
 
   const satelliteUrl = (deps.satelliteUrl ?? SATELLITE_BROWSER_BASE).replace(/\/$/, '');
   if (!deps.skipBind) {
+    // Enroll at the satellite BEFORE bind — /bind 404s "Unknown fingerprint" if the identity isn't
+    // registered there, and register is otherwise only called on slug-claim (so a PSI-only identity is
+    // never enrolled). Same SATELLITE_URL as bind → co-located, self-healing, idempotent (409=ok).
+    const registered = await runRegisterCeremony({ satelliteUrl, identity, fetchImpl: deps.fetchImpl });
+    if (!registered) return null;
     const bound = await runBindCeremony({
       satelliteUrl,
       fingerprint: fp,

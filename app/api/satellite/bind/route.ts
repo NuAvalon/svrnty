@@ -3,7 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
 
-const POST_FIELDS = ['fingerprint', 'sign_pubkey', 'nonce', 'epoch', 'signature'] as const;
+// Field names match the registration:8101/bind backend + the client (runBindCeremony):
+// sig_pubkey/binding_sig, NOT the old sign_pubkey/signature. A stale OLD-name allowlist here
+// silently DROPS the client's fields → backend-misses → 400/422 (the Gate-A bind-400, Hypatia #137741).
+const POST_FIELDS = ['fingerprint', 'sig_pubkey', 'nonce', 'epoch', 'binding_sig'] as const;
 
 export async function GET(request: NextRequest) {
   try {
@@ -33,8 +36,8 @@ export async function POST(request: NextRequest) {
       if (typeof value === 'string' && value.length <= 8192) body[key] = value;
       else if (key === 'epoch' && typeof value === 'number' && Number.isFinite(value)) body[key] = value;
     }
-    if (!body.fingerprint || !body.sign_pubkey || !body.signature) {
-      return NextResponse.json({ error: 'fingerprint, sign_pubkey, and signature are required' }, { status: 400 });
+    if (!body.fingerprint || !body.sig_pubkey || !body.binding_sig) {
+      return NextResponse.json({ error: 'fingerprint, sig_pubkey, and binding_sig are required' }, { status: 400 });
     }
     const res = await fetch(`${SATELLITE_URL}/bind`, {
       method: 'POST',
