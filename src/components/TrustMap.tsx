@@ -814,6 +814,16 @@ export function TrustMap({
             <RotateCw className="h-3.5 w-3.5" />
           </button>
         ) : null}
+        {showSampleBtn && !isEmpty ? (
+          <button
+            type="button"
+            data-testid="trust-map-load-sample"
+            onClick={() => void onLoadSample?.()}
+            style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}
+          >
+            Refresh demo circle
+          </button>
+        ) : null}
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <button type="button" data-testid="trust-map-zoom-out" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
@@ -863,8 +873,8 @@ export function TrustMap({
         onTouchEnd={vpHandlers.onTouchEnd}
       >
         <style>{`
-          .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
-                     animation: tm-grow .72s cubic-bezier(.2,.8,.2,1) both; }
+          .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center; }
+          .tm-node.tm-enter { animation: tm-grow .72s cubic-bezier(.2,.8,.2,1) both; }
           .tm-node.tm-ignite { animation: tm-ignite 1.05s cubic-bezier(.16,1,.3,1) both; }
           .tm-ignite-halo { animation: tm-ignite-halo 1.05s ease-out both; pointer-events: none; }
           .tm-edge, .tm-label, .tm-cluster { opacity: var(--tm-o, 1); animation: tm-fade .72s ease-out both; }
@@ -1243,14 +1253,13 @@ export function TrustMap({
           />
         ) : null}
 
-        {showSampleBtn && (
+        {showSampleBtn && isEmpty && (
           <div
             style={{
               position: 'absolute',
               left: 0,
               right: 0,
-              bottom: isEmpty ? 104 : undefined,
-              top: isEmpty ? undefined : 10,
+              bottom: 104,
               zIndex: 7,
               display: 'flex',
               justifyContent: 'center',
@@ -1272,7 +1281,7 @@ export function TrustMap({
                 cursor: 'pointer',
               }}
             >
-              {isEmpty ? 'Load sample circle' : 'Refresh demo circle'}
+              Load sample circle
             </button>
           </div>
         )}

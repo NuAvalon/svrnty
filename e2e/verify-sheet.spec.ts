@@ -38,9 +38,9 @@ test('Galaxy Verify — guided compare, mismatch fails loud, other-channel match
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
 
   const known = page.locator(
-    '[data-testid="trust-node"][data-trust-state="known"][data-verified="false"]',
+    '[data-testid="trust-node"][data-trust-state="known"][data-verified="false"][data-ignite="false"]',
   ).first();
-  await expect(known).toBeVisible();
+  await expect(known).toBeVisible({ timeout: 15_000 });
   const storedFp = (await known.getAttribute('data-fingerprint')) || '';
   expect(storedFp.length).toBeGreaterThan(8);
   await known.click();
