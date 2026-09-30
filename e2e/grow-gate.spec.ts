@@ -145,6 +145,10 @@ test.describe('Grow Gate chrome', () => {
     await expect(page.locator('[data-testid="trust-node"][data-ignite="true"]').first()).toBeVisible({
       timeout: 20_000,
     });
+    await expect(page.locator('[data-testid="trust-node"][data-shape="hex"]').first()).toBeVisible();
+    await expect(page.locator('[data-testid="trust-edge"][data-spoke="known"]').first()).toBeVisible();
+    await expect(page.locator('[data-testid="trust-node-light"]').first()).toBeVisible();
+    await expect(page.getByTestId('trust-self-light')).toBeVisible();
     await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_known_stars_ignite.png' });
   });
 });

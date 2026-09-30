@@ -18,9 +18,11 @@ import { boundsOf, hitTestNodes } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
 import {
   computeTrustLayout,
+  hexagonPoints,
   worldSizeForCount,
   SELF_CORE_RADIUS,
   SELF_RING_RADIUS,
+  trustStateOf,
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
@@ -32,6 +34,7 @@ import { loadGateArrivals } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import {
   applyLayoutMemory,
+  glassStateSignature,
   loadLayoutMemory,
   mutualTopologySignature,
   saveLayoutMemory,
@@ -129,7 +132,19 @@ const T = {
 } as const;
 
 /** Known stars rise from the Gate membrane once per session, then settle. */
-const IGNITE_MS = 1450;
+const IGNITE_MS = 1100;
+const GLASS_POP_MS = 900;
+const GATE_SPARK_MS = 1600;
+
+type GlassLane = 'pending' | 'known' | 'verified' | 'trusted' | 'decayed';
+
+function glassLane(state: TrustState, verified: boolean, pending: boolean): GlassLane {
+  if (pending) return 'pending';
+  if (state === 'trusted') return 'trusted';
+  if (state === 'decayed') return 'decayed';
+  if (verified) return 'verified';
+  return 'known';
+}
 const IGNITE_STORE = 'svrnty.galaxy.ignited.v1';
 
 function loadIgnited(owner: string): Set<string> {
@@ -231,8 +246,13 @@ export function TrustMap({
   const [crystallizeNote, setCrystallizeNote] = useState<string | null>(null);
   const prevMutualRef = useRef<Set<string>>(new Set());
   const [gateCount, setGateCount] = useState(0);
+  const [gateSparks, setGateSparks] = useState<string[]>([]);
   const [gateOpen, setGateOpen] = useState(false);
   const [igniteIds, setIgniteIds] = useState<Set<string>>(() => new Set());
+  const [glassPop, setGlassPop] = useState<Set<string>>(() => new Set());
+  const gateIdsRef = useRef<Set<string>>(new Set());
+  const gateBootedRef = useRef(false);
+  const prevGlassRef = useRef<Map<string, GlassLane>>(new Map());
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -261,7 +281,21 @@ export function TrustMap({
     const refresh = async () => {
       try {
         const list = await loadGateArrivals(ownerFingerprint);
-        if (!cancelled) setGateCount(list.length);
+        if (cancelled) return;
+        const ids = list.map((a) => a.fingerprint).filter(Boolean);
+        const prev = gateIdsRef.current;
+        const incoming = gateBootedRef.current
+          ? ids.filter((id) => !prev.has(id))
+          : [];
+        gateBootedRef.current = true;
+        gateIdsRef.current = new Set(ids);
+        setGateCount(list.length);
+        if (incoming.length > 0) {
+          setGateSparks(incoming);
+          window.setTimeout(() => {
+            setGateSparks((cur) => cur.filter((id) => !incoming.includes(id)));
+          }, GATE_SPARK_MS);
+        }
       } catch {
         /* non-fatal */
       }
@@ -270,9 +304,12 @@ export function TrustMap({
     const unsub = subscribeContactChanges(() => {
       void refresh();
     });
+    // Cheap local read so a joiner isn't waiting on the next mailbox tick alone.
+    const poll = window.setInterval(() => void refresh(), 1_000);
     return () => {
       cancelled = true;
       unsub();
+      window.clearInterval(poll);
     };
   }, [ownerFingerprint]);
 
@@ -320,11 +357,24 @@ export function TrustMap({
       b: c.b,
     }));
     const topo = mutualTopologySignature(mutualBonds);
-    const { nodes: memory, topology: rememberedTopo } = loadLayoutMemory(ownerFingerprint);
+    const glass = glassStateSignature(
+      visibleContacts.map((c) => ({
+        id: c.peer_fingerprint,
+        state: trustStateOf(c),
+        verified: ownerHasVerified(c),
+      })),
+    );
+    const {
+      nodes: memory,
+      topology: rememberedTopo,
+      glass: rememberedGlass,
+    } = loadLayoutMemory(ownerFingerprint);
     const topologyChanged = topo !== rememberedTopo;
-    const blended = applyLayoutMemory(raw.nodes, memory, 0.55, topologyChanged);
+    const stateChanged = glass !== rememberedGlass;
+    const blended = applyLayoutMemory(raw.nodes, memory, 0.55, topologyChanged, stateChanged);
     const n = blended.length;
     const density = Math.sqrt(Math.max(n, 1));
+    const rearrange = topologyChanged || stateChanged;
     const nodes = relaxGraphNodes(blended, {
       width: raw.width,
       height: raw.height,
@@ -332,19 +382,21 @@ export function TrustMap({
       cy: raw.cy,
       tagMembers: tagMembership(visibleContacts),
       mutualBonds,
-      mutualBondGravity: topologyChanged ? 0.22 : 0.14,
+      mutualBondGravity: rearrange ? 0.26 : 0.14,
       mutualBondRest: 64,
-      padding: Math.min(36, Math.round(18 + density * 1.6)),
-      selfClearance: SELF_RING_RADIUS + 18,
-      iterations: Math.min(48, 22 + Math.floor(n / 4)),
-      clusterGravity: 0.12,
-      centerGravity: 0.003,
+      padding: Math.min(40, Math.round(18 + density * 1.8)),
+      selfClearance: SELF_RING_RADIUS + 20,
+      iterations: rearrange
+        ? Math.min(72, 28 + Math.floor(n / 3))
+        : Math.min(36, 16 + Math.floor(n / 5)),
+      clusterGravity: rearrange ? 0.18 : 0.12,
+      centerGravity: rearrange ? 0.008 : 0.003,
       cloudMin: SELF_RING_RADIUS + 40,
       cloudMax: Math.min(raw.cx, raw.cy) * 0.94,
-      repulsion: Math.min(1.1, 0.75 + density * 0.03),
+      repulsion: Math.min(1.25, (rearrange ? 0.88 : 0.75) + density * 0.035),
       margin: 22,
     });
-    return { ...raw, nodes, topology: topo };
+    return { ...raw, nodes, topology: topo, glass };
   }, [ownerFingerprint, ownerName, visibleContacts, world]);
 
   useEffect(() => {
@@ -354,10 +406,11 @@ export function TrustMap({
         ownerFingerprint,
         layout.nodes.map((n) => ({ id: n.id, x: n.x, y: n.y })),
         layout.topology,
+        layout.glass,
       );
-    }, 800);
+    }, 400);
     return () => window.clearTimeout(t);
-  }, [ownerFingerprint, layout.nodes, layout.topology]);
+  }, [ownerFingerprint, layout.nodes, layout.topology, layout.glass]);
 
   useEffect(() => {
     fittedOnce.current = false;
@@ -399,6 +452,30 @@ export function TrustMap({
     for (const c of visibleContacts) m.set(c.peer_fingerprint, c as EdgeExtras);
     return m;
   }, [visibleContacts]);
+
+  useEffect(() => {
+    const rank: Record<GlassLane, number> = {
+      pending: 0,
+      known: 1,
+      verified: 2,
+      trusted: 3,
+      decayed: 1,
+    };
+    const next = new Map<string, GlassLane>();
+    const popped = new Set<string>();
+    for (const n of layout.nodes) {
+      const edge = edgeByFp.get(n.id);
+      const lane = glassLane(n.state, !!edge && ownerHasVerified(edge), isPending(edge));
+      next.set(n.id, lane);
+      const prev = prevGlassRef.current.get(n.id);
+      if (prev && rank[lane] > rank[prev]) popped.add(n.id);
+    }
+    prevGlassRef.current = next;
+    if (popped.size === 0) return;
+    setGlassPop(popped);
+    const t = window.setTimeout(() => setGlassPop(new Set()), GLASS_POP_MS);
+    return () => window.clearTimeout(t);
+  }, [layout.nodes, edgeByFp]);
 
   const [focusId, setFocusId] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
@@ -788,16 +865,22 @@ export function TrustMap({
       >
         <style>{`
           .tm-node { opacity: var(--tm-o, 1); transform-box: fill-box; transform-origin: center;
-                     animation: tm-grow 1.05s cubic-bezier(.2,.8,.2,1) both; }
-          .tm-node.tm-ignite { animation: tm-ignite 1.4s cubic-bezier(.16,1,.3,1) both; }
-          .tm-ignite-halo { animation: tm-ignite-halo 1.4s ease-out both; pointer-events: none; }
-          .tm-edge, .tm-label, .tm-cluster { opacity: var(--tm-o, 1); animation: tm-fade 1.05s ease-out both; }
-          .tm-self { animation: tm-fade .8s ease-out both; }
+                     animation: tm-grow .72s cubic-bezier(.2,.8,.2,1) both; }
+          .tm-node.tm-ignite { animation: tm-ignite 1.05s cubic-bezier(.16,1,.3,1) both; }
+          .tm-ignite-halo { animation: tm-ignite-halo 1.05s ease-out both; pointer-events: none; }
+          .tm-edge, .tm-label, .tm-cluster { opacity: var(--tm-o, 1); animation: tm-fade .72s ease-out both; }
+          .tm-self { animation: tm-fade .55s ease-out both; }
           .tm-pending { animation: tm-pulse 1.8s ease-in-out infinite; }
+          .tm-spoke-known { stroke-linecap: round; }
+          .tm-spoke-verified { stroke-linecap: round; }
+          .tm-spoke-trusted { stroke-linecap: round; animation: tm-spoke-live 2.4s ease-in-out infinite; }
+          .tm-core-light { animation: tm-core-breathe 2.8s ease-in-out infinite; }
+          .tm-self-light { animation: tm-self-breathe 3.6s ease-in-out infinite; }
+          .tm-glass-up { animation: tm-glass-up .9s cubic-bezier(.16,1,.3,1) both; }
           @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
           @keyframes tm-ignite {
-            0% { opacity: 0; transform: translateY(36px) scale(.2); }
-            42% { opacity: 1; transform: translateY(-10px) scale(1.22); }
+            0% { opacity: 0; transform: translateY(42px) scale(.18); }
+            38% { opacity: 1; transform: translateY(-8px) scale(1.18); }
             100% { opacity: var(--tm-o,1); transform: translateY(0) scale(1); }
           }
           @keyframes tm-ignite-halo {
@@ -807,8 +890,26 @@ export function TrustMap({
           }
           @keyframes tm-fade { from { opacity: 0; } to { opacity: var(--tm-o,1); } }
           @keyframes tm-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.95; } }
+          @keyframes tm-spoke-live {
+            0%, 100% { stroke-opacity: 0.72; }
+            50% { stroke-opacity: 1; }
+          }
+          @keyframes tm-core-breathe {
+            0%, 100% { opacity: 0.82; }
+            50% { opacity: 1; }
+          }
+          @keyframes tm-self-breathe {
+            0%, 100% { opacity: 0.88; }
+            50% { opacity: 1; }
+          }
+          @keyframes tm-glass-up {
+            0% { transform: scale(.86); filter: brightness(1.35); }
+            55% { transform: scale(1.12); filter: brightness(1.2); }
+            100% { transform: scale(1); filter: brightness(1); }
+          }
           @media (prefers-reduced-motion: reduce) {
-            .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending, .tm-ignite, .tm-ignite-halo { animation: none; }
+            .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending, .tm-ignite, .tm-ignite-halo,
+            .tm-spoke-trusted, .tm-core-light, .tm-self-light, .tm-glass-up { animation: none; }
             .tm-node { transform: none; }
           }
         `}</style>
@@ -910,45 +1011,51 @@ export function TrustMap({
             {layout.nodes.map((n, i) => {
               const edge = edgeByFp.get(n.id);
               const pending = isPending(edge);
+              const verified = !!edge && ownerHasVerified(edge);
               const mutual = !!edge?.mutual?.reciprocal;
+              const lane = glassLane(n.state, verified, pending);
+              const trusted = lane === 'trusted';
+              const spokeClass =
+                trusted ? 'tm-edge tm-spoke-trusted' : verified ? 'tm-edge tm-spoke-verified' : 'tm-edge tm-spoke-known';
               return (
                 <g key={`e-${n.id}`}>
-                  <line
-                    className="tm-edge"
-                    data-testid="trust-edge"
-                    x1={layout.self.x}
-                    y1={layout.self.y}
-                    x2={n.x}
-                    y2={n.y}
-                    stroke={pending ? T.pending : T.myEdge}
-                    strokeOpacity={
-                      pending ? 0.4 : n.state === 'trusted' ? (mutual ? 0.75 : 0.55) : 0.22
-                    }
-                    strokeWidth={n.state === 'trusted' ? (mutual ? 2 : 1.4) : pending ? 1.1 : 0.7}
-                    strokeDasharray={
-                      pending
-                        ? '5 4'
-                        : n.state === 'decayed'
-                          ? '3 3'
-                          : n.state === 'known' && !(edge && ownerHasVerified(edge))
-                            ? '2 3'
-                            : undefined
-                    }
-                    style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.15 + i * 0.03}s` }}
-                  />
-                  {mutual && n.state === 'trusted' && (
+                  {trusted && (
                     <line
                       className="tm-edge"
                       x1={layout.self.x}
                       y1={layout.self.y}
                       x2={n.x}
                       y2={n.y}
-                      stroke={T.lit}
-                      strokeOpacity={0.2}
-                      strokeWidth={4}
-                      style={{ ['--tm-o' as string]: 0.8, animationDelay: `${0.15 + i * 0.03}s` }}
+                      stroke="#fff8ee"
+                      strokeOpacity={mutual ? 0.28 : 0.16}
+                      strokeWidth={mutual ? 5.5 : 4.2}
+                      style={{ ['--tm-o' as string]: 0.85, animationDelay: `${0.08 + i * 0.02}s` }}
                     />
                   )}
+                  <line
+                    className={spokeClass}
+                    data-testid="trust-edge"
+                    data-spoke={lane}
+                    x1={layout.self.x}
+                    y1={layout.self.y}
+                    x2={n.x}
+                    y2={n.y}
+                    stroke={pending ? T.pending : trusted ? '#fff6e8' : T.myEdge}
+                    strokeOpacity={
+                      pending
+                        ? 0.4
+                        : trusted
+                          ? mutual
+                            ? 0.95
+                            : 0.82
+                          : verified
+                            ? 0.55
+                            : 0.38
+                    }
+                    strokeWidth={trusted ? (mutual ? 2.4 : 1.85) : verified ? 1.25 : pending ? 1.1 : 1.05}
+                    strokeDasharray={pending ? '5 4' : n.state === 'decayed' ? '3 3' : undefined}
+                    style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` }}
+                  />
                 </g>
               );
             })}
@@ -969,6 +1076,7 @@ export function TrustMap({
                   mutual={!!edge?.mutual?.reciprocal}
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
+                  glassPop={glassPop.has(n.id)}
                   onSelect={handleNodeClick}
                 />
               );
@@ -976,24 +1084,36 @@ export function TrustMap({
           </g>
 
           <g className="tm-self" data-testid="trust-map-self" style={{ ['--tm-o' as string]: 1 }}>
-            <circle
-              cx={layout.self.x}
-              cy={layout.self.y}
-              r={SELF_RING_RADIUS}
+            <polygon
+              points={hexagonPoints(layout.self.x, layout.self.y, SELF_RING_RADIUS)}
               fill="none"
               stroke={T.selfRing}
-              strokeWidth={0.8}
-              opacity={0.4}
+              strokeWidth={0.85}
+              opacity={0.38}
             />
-            <circle
-              cx={layout.self.x}
-              cy={layout.self.y}
-              r={SELF_CORE_RADIUS}
+            <polygon
+              points={hexagonPoints(layout.self.x, layout.self.y, SELF_CORE_RADIUS)}
               fill={T.field}
               stroke={T.selfRing}
-              strokeWidth={1.6}
+              strokeWidth={1.7}
             />
-            <circle cx={layout.self.x} cy={layout.self.y} r={5} fill={T.selfDot} />
+            <circle
+              className="tm-self-light"
+              cx={layout.self.x}
+              cy={layout.self.y}
+              r={11}
+              fill="#fff8ee"
+              opacity={0.16}
+              style={{ pointerEvents: 'none' }}
+            />
+            <circle
+              className="tm-self-light"
+              data-testid="trust-self-light"
+              cx={layout.self.x}
+              cy={layout.self.y}
+              r={6.2}
+              fill="#fffef8"
+            />
           </g>
         </svg>
 
@@ -1106,7 +1226,7 @@ export function TrustMap({
           </div>
         )}
 
-        <GalaxyGateMembrane count={gateCount} onOpen={() => setGateOpen(true)} />
+        <GalaxyGateMembrane count={gateCount} sparkIds={gateSparks} onOpen={() => setGateOpen(true)} />
 
         {gateOpen && ownerFingerprint ? (
           <GrowGatePanel
@@ -1740,6 +1860,7 @@ function ContactNode({
   mutual,
   distress,
   ignite,
+  glassPop,
   onSelect,
 }: {
   node: LaidOutNode;
@@ -1751,27 +1872,34 @@ function ContactNode({
   mutual: boolean;
   distress: boolean;
   ignite: boolean;
+  glassPop: boolean;
   onSelect: (id: string, multi: boolean) => void;
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
   const trusted = node.state === 'trusted' && !pending;
-  const dashed = pending || node.state === 'decayed' || (node.state === 'known' && !verified);
+  const lane = glassLane(node.state, verified, pending);
+  const cls = [
+    'tm-node',
+    pending ? 'tm-pending' : '',
+    ignite ? 'tm-ignite' : '',
+    glassPop ? 'tm-glass-up' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
     <g
-      className={`tm-node${pending ? ' tm-pending' : ''}${ignite ? ' tm-ignite' : ''}`}
+      className={cls}
       data-graph-node={node.id}
-      style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.04}s`, cursor: 'pointer' }}
+      style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.025}s`, cursor: 'pointer' }}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
       }}
     >
       {ignite && (
-        <circle
+        <polygon
           className="tm-ignite-halo"
-          cx={node.x}
-          cy={node.y}
-          r={r + 10}
+          points={hexagonPoints(node.x, node.y, r + 10)}
           fill="none"
           stroke={T.myEdge}
           strokeOpacity={0.8}
@@ -1779,18 +1907,16 @@ function ContactNode({
       )}
       {distress && <StarEmber x={node.x} y={node.y} r={r} />}
       {trusted && (
-        <circle
-          cx={node.x}
-          cy={node.y}
-          r={r + (mutual ? 5 : 3.5)}
+        <polygon
+          points={hexagonPoints(node.x, node.y, r + (mutual ? 5 : 3.5))}
           fill="none"
-          stroke={T.lit}
-          strokeOpacity={mutual ? 0.35 : 0.18}
-          strokeWidth={mutual ? 1.4 : 1}
+          stroke="#fff8ee"
+          strokeOpacity={mutual ? 0.42 : 0.22}
+          strokeWidth={mutual ? 1.5 : 1.05}
           style={{ pointerEvents: 'none' }}
         />
       )}
-      <circle
+      <polygon
         data-testid="trust-node"
         data-fingerprint={node.id}
         data-trust-state={pending ? 'pending' : node.state}
@@ -1798,16 +1924,48 @@ function ContactNode({
         data-mutual={mutual ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
-        cx={node.x}
-        cy={node.y}
-        r={r}
+        data-shape="hex"
+        data-glass={lane}
+        data-light={trusted ? 'white' : verified ? 'ember' : 'none'}
+        points={hexagonPoints(node.x, node.y, r)}
         fill={nodeFill(node.state, pending)}
         stroke={picked ? E.accent : selected ? T.selfDot : nodeStroke(node.state, pending)}
-        strokeWidth={picked || trusted ? 1.8 : pending ? 1.4 : 0.9}
-        strokeDasharray={dashed ? (pending ? '3 2' : '2 2') : undefined}
+        strokeWidth={picked || trusted ? 1.85 : pending ? 1.4 : 1.05}
+        strokeDasharray={pending || node.state === 'decayed' ? (pending ? '3 2' : '2 2') : undefined}
       >
         <title>{`${node.name} — ${pending ? 'pending intro' : describe(node)}${mutual ? ' · mutual' : ''}`}</title>
-      </circle>
+      </polygon>
+      {verified && !trusted && !pending && (
+        <circle
+          cx={node.x}
+          cy={node.y}
+          r={Math.max(1.6, r * 0.22)}
+          fill={T.myEdge}
+          opacity={0.85}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
+      {trusted && (
+        <>
+          <circle
+            cx={node.x}
+            cy={node.y}
+            r={Math.max(4.2, r * 0.55)}
+            fill="#fff8ee"
+            opacity={0.18}
+            style={{ pointerEvents: 'none' }}
+          />
+          <circle
+            className="tm-core-light"
+            data-testid="trust-node-light"
+            cx={node.x}
+            cy={node.y}
+            r={Math.max(2.1, r * 0.28)}
+            fill="#fffef8"
+            style={{ pointerEvents: 'none' }}
+          />
+        </>
+      )}
     </g>
   );
 }

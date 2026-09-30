@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   computeTrustLayout,
   disclosureDepth,
+  hexagonPoints,
   trustStateOf,
   NODE_RADIUS,
 } from './trust-map-layout';
@@ -80,6 +81,20 @@ test('no node escapes the frame — for any count, any viewBox size', () => {
       }
       assert.equal(layout.nodes.length, count, 'every contact is placed');
     }
+  }
+});
+
+test('hexagonPoints is a pointy-top cell of circumradius r', () => {
+  const pts = hexagonPoints(100, 100, 10)
+    .split(' ')
+    .map((p) => p.split(',').map(Number));
+  assert.equal(pts.length, 6);
+  const top = pts[0];
+  assert.ok(Math.abs(top[0] - 100) < 0.05, 'pointy top is on the vertical');
+  assert.ok(Math.abs(top[1] - 90) < 0.05, 'pointy top is r above center');
+  for (const [x, y] of pts) {
+    const d = Math.hypot(x - 100, y - 100);
+    assert.ok(Math.abs(d - 10) < 0.05, `vertex not on circumcircle: ${d}`);
   }
 });
 

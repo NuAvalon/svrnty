@@ -1,7 +1,7 @@
 // app/page.tsx
 "use client";
 
-import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
@@ -16,6 +16,7 @@ import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
+import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   loadMethodHistory,
@@ -287,6 +288,35 @@ export default function Home() {
       void refreshContacts();
     });
   }, [refreshContacts]);
+
+  // Living book + Gate: poll at the shell so a share-link joiner lands while you're
+  // on Galaxy / Grow, not only after opening Contacts. Burst after unlock, Grow, and focus.
+  const livePollRef = useRef<{ burst: (ms?: number) => void } | null>(null);
+  useEffect(() => {
+    if (!identity?.identity?.fingerprint) return;
+    const handle = startLiveBookPolling(identity);
+    livePollRef.current = handle;
+    handle.burst(12_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') handle.burst(8_000);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      livePollRef.current = null;
+      handle.stop();
+      document.removeEventListener('visibilitychange', onVis);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on stable fingerprint; identity
+    // object ref is not a dep (public key stable per fp; private key re-loaded each tick).
+  }, [identity?.identity?.fingerprint]);
+
+  useEffect(() => {
+    if (growOpen) livePollRef.current?.burst(20_000);
+  }, [growOpen]);
+
+  useEffect(() => {
+    if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
+  }, [mainTab]);
 
   // Demo circle can refresh when the book is empty or sample-only
   const [sampleRefreshable, setSampleRefreshable] = useState(false);
