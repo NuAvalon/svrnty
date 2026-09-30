@@ -18,10 +18,19 @@ test('createRingChannel mints key + rejects tiny membership', () => {
 
 test('rotateRingMembership bumps epoch and replaces content key', () => {
   const ch = createRingChannel('Kin', ['a', 'b', 'c']);
+  ch.session_snapshot = {
+    v: 1,
+    channel_id: ch.channel_id,
+    epoch: 1,
+    self_fp: 'a',
+    members: ['a', 'b', 'c'],
+    pairs: [],
+  };
   const next = rotateRingMembership(ch, ['a', 'b']);
   assert.equal(next.key_epoch, 2);
   assert.notEqual(next.content_key_b64, ch.content_key_b64);
   assert.deepEqual(next.member_fingerprints, ['a', 'b']);
+  assert.equal(next.session_snapshot, undefined);
 });
 
 test('noteSigningInput is stable and excludes signature', () => {
@@ -42,4 +51,7 @@ test('noteSigningInput is stable and excludes signature', () => {
   assert.ok(a.includes(NOTE_WIRE_TYPE));
   assert.equal(a, noteSigningInput(note));
   void b;
+  const threaded = noteSigningInput({ ...note, reply_to: 'note_9', thread_root: 'note_1' });
+  assert.notEqual(a, threaded);
+  assert.ok(threaded.includes('note_9'));
 });

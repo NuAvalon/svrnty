@@ -3,12 +3,15 @@
 // Discriminator is inside the sealed payload (svrnty-note-v0), not an HTTP path.
 
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
+import type { RatchetIdentity } from '@/lib/crypto/message-ratchet';
 import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
-import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
+import type { NoteWireV0, ParticipantKind, RingChannel } from './types';
+import { newNoteId, putNote, putThread, putRingChannel, listThreads, newThreadId } from './store';
 import type { NoteRecord, NoteThread } from './types';
+import { isNoteId } from './threads';
+import { RingSession, type RingPeer } from './ring-session';
 
 export interface NoteSenderIdentity {
   fingerprint: string;
@@ -32,6 +35,9 @@ export async function sendNoteToPeer(args: {
   peerPublicKeyArmored: string;
   body: string;
   threadId?: string;
+  /** Side thread. Both or neither. */
+  replyTo?: string;
+  threadRoot?: string;
   relayBase?: string;
   fetchImpl?: typeof fetch;
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
@@ -40,6 +46,7 @@ export async function sendNoteToPeer(args: {
   const thread_id = args.threadId ?? newThreadId();
   const note_id = newNoteId();
   const sent_at = new Date().toISOString();
+  const reply = replyPair(args.replyTo, args.threadRoot);
 
   const unsignedWire: NoteWireV0 = {
     type: NOTE_WIRE_TYPE,
@@ -49,6 +56,7 @@ export async function sendNoteToPeer(args: {
     sent_at,
     body: args.body,
     participant_kind: args.sender.participant_kind,
+    ...reply,
   };
 
   // Sign BEFORE sealing so the recipient can authenticate the sender (not just decrypt). The
@@ -82,6 +90,7 @@ export async function sendNoteToPeer(args: {
     participant_kind: args.sender.participant_kind,
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    ...reply,
   };
   await putNote(local);
 
@@ -156,6 +165,7 @@ export async function acceptInboundNote(args: {
     participant_kind: args.wire.participant_kind || args.peerKind || 'human',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    ...replyPair(args.wire.reply_to, args.wire.thread_root, true),
   };
   await putNote(record);
 
@@ -182,4 +192,104 @@ export async function acceptInboundNote(args: {
   }
   await putThread(thread);
   return record;
+}
+
+function replyPair(
+  replyTo: string | undefined,
+  threadRoot: string | undefined,
+  lenient = false,
+): { reply_to?: string; thread_root?: string } {
+  if (!replyTo && !threadRoot) return {};
+  if (!isNoteId(replyTo) || !isNoteId(threadRoot)) {
+    if (lenient) return {};
+    throw new Error('A reply needs both a parent note and a thread root');
+  }
+  return { reply_to: replyTo, thread_root: threadRoot };
+}
+
+/**
+ * Fan a ring note out through the hybrid triple ratchet, one mailbox blob per
+ * other member. The relay sees those blobs and nothing about membership.
+ * Pair sessions are saved on the channel (encrypted at rest by the notes store).
+ */
+export async function sendRingNote(args: {
+  self: RatchetIdentity;
+  selfFingerprint: string;
+  participantKind: ParticipantKind;
+  channel: RingChannel;
+  peers: RingPeer[];
+  body: string;
+  threadId: string;
+  replyTo?: string;
+  threadRoot?: string;
+  relayBase?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ note_id: string; thread_id: string; deposited: boolean; channel: RingChannel }> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const relayBase = args.relayBase ?? '/api/relay';
+  const reply = replyPair(args.replyTo, args.threadRoot);
+  const note_id = newNoteId();
+  const sent_at = new Date().toISOString();
+
+  let session = RingSession.importSnapshot(args.channel.session_snapshot);
+  if (
+    !session ||
+    session.epoch !== args.channel.key_epoch ||
+    session.channelId !== args.channel.channel_id ||
+    session.selfFp !== args.selfFingerprint
+  ) {
+    session = RingSession.create(
+      args.channel.channel_id,
+      args.selfFingerprint,
+      args.channel.member_fingerprints,
+      args.channel.key_epoch,
+    );
+  }
+
+  const packets = await session.send(args.self, args.peers, {
+    note_id,
+    thread_id: args.threadId,
+    sent_at,
+    body: args.body,
+    participant_kind: args.participantKind,
+    ...reply,
+  });
+
+  let deposited = packets.length > 0;
+  for (const item of packets) {
+    const mailbox_id = deriveMailboxId(item.fingerprint);
+    const res = await fetchImpl(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob: JSON.stringify(item.packet) }),
+    });
+    if (!res.ok) deposited = false;
+  }
+
+  const channel: RingChannel = { ...args.channel, session_snapshot: session.exportSnapshot() };
+  await putRingChannel(channel);
+
+  const local: NoteRecord = {
+    note_id,
+    thread_id: args.threadId,
+    direction: 'outbound',
+    from_fingerprint: args.selfFingerprint,
+    to_fingerprints: packets.map((p) => p.fingerprint),
+    sent_at,
+    body: args.body,
+    participant_kind: args.participantKind,
+    retention: { expires_at: null },
+    wire_type: NOTE_WIRE_TYPE,
+    ...reply,
+  };
+  await putNote(local);
+
+  const threads = await listThreads();
+  let thread = threads.find((t) => t.thread_id === args.threadId);
+  if (thread) {
+    thread = { ...thread, last_activity_at: sent_at };
+    await putThread(thread);
+  }
+
+  return { note_id, thread_id: args.threadId, deposited, channel };
 }

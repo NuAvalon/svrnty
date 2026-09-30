@@ -62,6 +62,8 @@ export function rotateRingMembership(
     key_epoch: channel.key_epoch + 1,
     content_key_b64: toBase64(randomBytes(32)),
     rotated_at: now,
+    // Old pair sessions belong to the previous epoch. The next send initiates fresh.
+    session_snapshot: undefined,
   };
 }
 

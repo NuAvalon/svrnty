@@ -66,6 +66,12 @@ Do not claim “sealed sender” until we have a real sender-anonymity construct
 
 **MLS:** adopt if/when member-count ambitions outgrow naïve envelope fan-out. Reading MLS now prevents rediscovering treeKEM the hard way; implementing MLS before ring-channels ship is premature.
 
+### Ring fan-out and side threads (unwired from the public word)
+
+`src/lib/messaging/ring-session.ts` sends each ring note as a **pairwise hybrid triple ratchet** to every other member (cap 8, including you). The relay gets one mailbox blob per member and no roster. Removing someone bumps the epoch, drops pair sessions, and the next note is a fresh initiate they are not on. That is the forward-secret path; the older shared `content_key_b64` on `RingChannel` is not what these notes are sealed under.
+
+Side threads live inside a conversation. A note with no `thread_root` is the main timeline. A reply sets `reply_to` and `thread_root` (the main-timeline note it hangs from). Those fields are inside the signed note and inside the ring plaintext. This does not light rung 2 or rung 3 in public copy — the Hive still says **notes**.
+
 ---
 
 ## Matrix postmortems — lessons

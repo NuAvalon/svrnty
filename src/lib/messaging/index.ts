@@ -6,6 +6,10 @@ export { DOMAIN_NOTE, DOMAIN_RING_KEY_WRAP, NOTE_WIRE_TYPE } from './domains';
 export { noteSigningInput } from './canonical';
 export { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 export { createRingChannel, rotateRingMembership, ringDepositTargets } from './ring';
+export { RingSession, MAX_RING_MEMBERS } from './ring-session';
+export type { RingPeer } from './ring-session';
+export { mainTimeline, sideThread, replyCount, replyLink, isNoteId } from './threads';
+export { loadRatchetIdentity, ringPeerFromContact } from './ring-keys';
 export {
   initNotesStore,
   isNotesStoreUnlocked,
@@ -22,6 +26,7 @@ export {
 } from './store';
 export {
   sendNoteToPeer,
+  sendRingNote,
   acceptInboundNote,
   tryParseNoteWire,
 } from './transport';

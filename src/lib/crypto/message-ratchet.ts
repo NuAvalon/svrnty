@@ -116,6 +116,29 @@ export interface RatchetPacket {
   ct: string; // base64, ciphertext || 16B tag
 }
 
+/**
+ * Secret session snapshot for at-rest storage (the notes store encrypts it).
+ * This is the live ratchet, not an identity key. Import rejects a malformed blob.
+ */
+export interface RatchetSnapshot {
+  v: 1;
+  root: string;
+  sendCk: string | null;
+  recvCk: string | null;
+  ns: number;
+  nr: number;
+  pn: number;
+  myDhSk: string | null;
+  myDhPk: string | null;
+  myKemSk: string | null;
+  myKemPk: string | null;
+  theirDh: string;
+  theirKem: string;
+  sendKemCt: string | null;
+  pendingSendRatchet: boolean;
+  skipped: { id: string; mk: string }[];
+}
+
 interface ParsedPacket {
   header: RatchetHeader;
   dh: Uint8Array;
@@ -433,6 +456,91 @@ export class TripleRatchet {
     const pt = await session.receive(packet);
     if (pt === null) return null;
     return { session, plaintext: pt };
+  }
+
+  /** Copy secrets out as base64. The live session is not wiped by this. */
+  exportState(): RatchetSnapshot {
+    const b64 = (b: Uint8Array | null) => (b ? uint8ToBase64(b) : null);
+    return {
+      v: 1,
+      root: uint8ToBase64(this.root),
+      sendCk: b64(this.sendCk),
+      recvCk: b64(this.recvCk),
+      ns: this.ns,
+      nr: this.nr,
+      pn: this.pn,
+      myDhSk: b64(this.myDhSk),
+      myDhPk: b64(this.myDhPk),
+      myKemSk: b64(this.myKemSk),
+      myKemPk: b64(this.myKemPk),
+      theirDh: uint8ToBase64(this.theirDh!),
+      theirKem: uint8ToBase64(this.theirKem!),
+      sendKemCt: b64(this.sendKemCt),
+      pendingSendRatchet: this.pendingSendRatchet,
+      skipped: [...this.skipped.entries()].map(([id, mk]) => ({ id, mk: uint8ToBase64(mk) })),
+    };
+  }
+
+  /** Restore a snapshot. Null on any malformed or inconsistent field. */
+  static importState(snap: RatchetSnapshot | null): TripleRatchet | null {
+    if (!snap || snap.v !== 1) return null;
+    if (!isCount(snap.ns) || !isCount(snap.nr) || !isCount(snap.pn)) return null;
+    if (typeof snap.pendingSendRatchet !== 'boolean') return null;
+    if (!Array.isArray(snap.skipped)) return null;
+    const opt = (b: string | null, len: number) => {
+      if (b === null) return null;
+      if (typeof b !== 'string') return undefined;
+      try {
+        const bytes = base64ToUint8(b);
+        return bytes.length === len ? bytes : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    const root = opt(snap.root, KEY_LEN);
+    const theirDh = opt(snap.theirDh, X25519_LEN);
+    const theirKem = opt(snap.theirKem, KEM_PUB_LEN);
+    const sendCk = opt(snap.sendCk, KEY_LEN);
+    const recvCk = opt(snap.recvCk, KEY_LEN);
+    const myDhSk = opt(snap.myDhSk, X25519_LEN);
+    const myDhPk = opt(snap.myDhPk, X25519_LEN);
+    const myKemSk = opt(snap.myKemSk, KEM_SK_LEN);
+    const myKemPk = opt(snap.myKemPk, KEM_PUB_LEN);
+    const sendKemCt = opt(snap.sendKemCt, KEM_CT_LEN);
+    if (
+      root === undefined || theirDh === undefined || theirKem === undefined ||
+      sendCk === undefined || recvCk === undefined || myDhSk === undefined ||
+      myDhPk === undefined || myKemSk === undefined || myKemPk === undefined ||
+      sendKemCt === undefined || !root || !theirDh || !theirKem
+    ) {
+      return null;
+    }
+    const dhPair = (myDhSk === null) === (myDhPk === null);
+    const kemPair = (myKemSk === null) === (myKemPk === null);
+    if (!dhPair || !kemPair) return null;
+    const session = new TripleRatchet({
+      root,
+      sendCk,
+      recvCk,
+      theirDh,
+      theirKem,
+      myDhSk,
+      myDhPk,
+      myKemSk,
+      myKemPk,
+      sendKemCt,
+      pendingSendRatchet: snap.pendingSendRatchet,
+    });
+    session.ns = snap.ns;
+    session.nr = snap.nr;
+    session.pn = snap.pn;
+    for (const row of snap.skipped) {
+      if (!row || typeof row.id !== 'string' || row.id.length > 80 || typeof row.mk !== 'string') return null;
+      const mk = opt(row.mk, KEY_LEN);
+      if (!mk) return null;
+      session.skipped.set(row.id, mk);
+    }
+    return session;
   }
 
   /** Deep copy. A later wipe on this session does not reach the clone. */

@@ -4,6 +4,7 @@
 
 import { NOTE_WIRE_TYPE } from './domains';
 import type { EnvelopeSignature } from '@/lib/crypto/sign-envelope';
+import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 
 /** Who is speaking — humans and human-trusted agents share the admit-to-speak rule. */
 export type ParticipantKind = 'human' | 'agent';
@@ -49,6 +50,10 @@ export interface NoteRecord {
   retention: RetentionPolicy;
   /** Wire protocol version that produced this note */
   wire_type: typeof NOTE_WIRE_TYPE;
+  /** Side-thread: the note this one replies to. Absent on the main timeline. */
+  reply_to?: string;
+  /** Side-thread root note_id. Absent on the main timeline. */
+  thread_root?: string;
 }
 
 /**
@@ -65,6 +70,10 @@ export interface NoteWireV0 {
   participant_kind: ParticipantKind;
   /** Optional; omitted on direct threads */
   ring_channel_id?: string;
+  /** Side-thread parent. Signed with the rest of the note. Absent on the main timeline. */
+  reply_to?: string;
+  /** Side-thread root. Signed. Present only together with reply_to. */
+  thread_root?: string;
   // ── Sender authentication (Apollo — Flint #55 forgeable-sender merge-gate) ──────────────────
   // Without these a note is only ENCRYPTED, not SIGNED: from_fingerprint would be attacker-set and
   // any admitted contact's fingerprint could be forged. `public_key` is the sender's openpgp key;
@@ -95,4 +104,26 @@ export interface RingChannel {
   content_key_b64: string;
   created_at: string;
   rotated_at: string;
+  /**
+   * Pairwise triple-ratchet sessions for the current epoch. Secret.
+   * Cleared on membership rotation so the next send is a fresh initiate
+   * the removed member is not part of. Encrypted at rest with the notes store.
+   */
+  session_snapshot?: RingSessionSnapshot;
+}
+
+/** One peer's triple-ratchet session inside a ring epoch. */
+export interface RingPairSnapshot {
+  fingerprint: string;
+  snapshot: RatchetSnapshot;
+}
+
+/** Serializable ring fan-out state. Secrets live in `pairs`. */
+export interface RingSessionSnapshot {
+  v: 1;
+  channel_id: string;
+  epoch: number;
+  self_fp: string;
+  members: string[];
+  pairs: RingPairSnapshot[];
 }

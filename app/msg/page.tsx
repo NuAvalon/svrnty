@@ -26,10 +26,24 @@ import {
   lockNotesStore,
   listThreads,
   listNotesForThread,
+  listRingChannels,
   sendNoteToPeer,
+  sendRingNote,
   putThread,
+  putRingChannel,
+  createRingChannel,
+  rotateRingMembership,
+  newThreadId,
+  loadRatchetIdentity,
+  ringPeerFromContact,
+  mainTimeline,
+  sideThread,
+  replyCount,
+  replyLink,
   type NoteThread,
   type NoteRecord,
+  type RingChannel,
+  type RingPeer,
 } from '@/lib/messaging';
 
 type Gate = 'loading' | 'locked' | 'ready' | 'empty';
@@ -50,11 +64,19 @@ export default function NotesPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [phase, setPhase] = useState<Phase>('select');
+  const [rings, setRings] = useState<RingChannel[]>([]);
+  const [ringOpen, setRingOpen] = useState(false);
+  const [ringLabel, setRingLabel] = useState('');
+  const [ringPicks, setRingPicks] = useState<string[]>([]);
+  const [activeRingId, setActiveRingId] = useState<string | null>(null);
+  const [sideRoot, setSideRoot] = useState<string | null>(null);
+  const [freshThread, setFreshThread] = useState(false);
 
   const refresh = useCallback(async (fp: string) => {
-    const [c, t] = await Promise.all([getAllContacts(fp), listThreads()]);
+    const [c, t, r] = await Promise.all([getAllContacts(fp), listThreads(), listRingChannels()]);
     setContacts(c);
     setThreads(t);
+    setRings(r);
   }, []);
 
   useEffect(() => {
@@ -122,6 +144,9 @@ export default function NotesPage() {
 
   const selectPeer = (fp: string) => {
     setPeerFp(fp);
+    setActiveRingId(null);
+    setSideRoot(null);
+    setFreshThread(false);
     setPhase('compose');
     setStatus(null);
     const existing = threads.find(
@@ -130,16 +155,84 @@ export default function NotesPage() {
     setActiveThreadId(existing?.thread_id ?? null);
   };
 
-  const handleSend = async () => {
-    if (!draft.trim() || !peerFp) return;
-    const contact = contacts.find((c) => c.fingerprint === peerFp);
-    if (!contact?.public_key) {
-      setStatus('They need a public key in your book before a note can seal.');
-      return;
+  const openThread = (t: NoteThread) => {
+    setActiveThreadId(t.thread_id);
+    setSideRoot(null);
+    setFreshThread(false);
+    setStatus(null);
+    setPhase('compose');
+    setRingOpen(false);
+    if (t.kind === 'ring' && t.ring_channel_id) {
+      setActiveRingId(t.ring_channel_id);
+      setPeerFp('');
+    } else {
+      setActiveRingId(null);
+      setPeerFp(t.participants[0]?.fingerprint ?? '');
     }
+  };
+
+  const replyFields = () => {
+    if (!sideRoot) return {};
+    const latest = sideThread(notes, sideRoot).at(-1);
+    const link = replyLink(notes, latest?.note_id ?? sideRoot);
+    return link ? { replyTo: link.reply_to, threadRoot: link.thread_root } : {};
+  };
+
+  const handleSend = async () => {
+    if (!draft.trim()) return;
+    const ring = rings.find((r) => r.channel_id === activeRingId) ?? null;
+    if (!ring && !peerFp) return;
     setSending(true);
     setStatus(null);
     try {
+      if (ring) {
+        const self = await loadRatchetIdentity(fingerprint);
+        if (!self) {
+          setStatus('This identity has no hybrid keys yet, so a ring note cannot seal.');
+          return;
+        }
+        const peers: RingPeer[] = [];
+        for (const fp of ring.member_fingerprints) {
+          if (fp === fingerprint) continue;
+          const contact = contacts.find((c) => c.fingerprint === fp);
+          if (!contact) {
+            setStatus('Someone in this ring is not in your book.');
+            return;
+          }
+          const peer = await ringPeerFromContact(contact);
+          if (!peer) {
+            setStatus(`${contact.name || 'A member'} has no hybrid key in your book.`);
+            return;
+          }
+          peers.push(peer);
+        }
+        const threadId = activeThreadId ?? newThreadId();
+        const result = await sendRingNote({
+          self,
+          selfFingerprint: fingerprint,
+          participantKind: 'human',
+          channel: ring,
+          peers,
+          body: draft.trim(),
+          threadId,
+          ...replyFields(),
+        });
+        setDraft('');
+        setFreshThread(false);
+        setActiveThreadId(result.thread_id);
+        setActiveRingId(result.channel.channel_id);
+        setPhase('sealed');
+        setStatus(result.deposited ? 'Sealed · queued to each mailbox' : 'Saved locally · a mailbox deposit failed');
+        await refresh(fingerprint);
+        setNotes(await listNotesForThread(result.thread_id));
+        return;
+      }
+
+      const contact = contacts.find((c) => c.fingerprint === peerFp);
+      if (!contact?.public_key) {
+        setStatus('They need a public key in your book before a note can seal.');
+        return;
+      }
       const key = await loadKey(fingerprint);
       if (!key) throw new Error('Session locked');
       // Sender authentication (Flint #55): sendNoteToPeer signs the note so the recipient can verify
@@ -147,9 +240,6 @@ export default function NotesPage() {
       // — its fingerprint equals `fingerprint` by construction, so the recipient's fingerprintMatchesKey
       // binds the carried key to the claimed sender.
       const senderPublicKeyArmored = (await readPrivateKey({ armoredKey: key.privateKey })).toPublic().armor();
-      const thread = threads.find(
-        (t) => t.kind === 'direct' && t.participants.some((p) => p.fingerprint === peerFp),
-      );
       const result = await sendNoteToPeer({
         sender: { fingerprint, participant_kind: 'human' },
         senderPublicKeyArmored,
@@ -158,11 +248,12 @@ export default function NotesPage() {
         peerFingerprint: peerFp,
         peerPublicKeyArmored: contact.public_key,
         body: draft.trim(),
-        threadId: thread?.thread_id,
+        threadId: freshThread ? undefined : activeThreadId ?? undefined,
+        ...replyFields(),
       });
       const tlist = await listThreads();
       const updated = tlist.find((t) => t.thread_id === result.thread_id);
-      if (updated) {
+      if (updated && updated.kind === 'direct') {
         updated.participants = [
           {
             fingerprint: peerFp,
@@ -173,6 +264,7 @@ export default function NotesPage() {
         await putThread(updated);
       }
       setDraft('');
+      setFreshThread(false);
       setActiveThreadId(result.thread_id);
       setPhase('sealed');
       setStatus(result.deposited ? 'Sealed · queued to their mailbox' : 'Saved locally · mailbox deposit failed');
@@ -185,8 +277,70 @@ export default function NotesPage() {
     }
   };
 
+  const startRing = async () => {
+    if (ringPicks.length < 2) {
+      setStatus('A ring needs two other admitted people.');
+      return;
+    }
+    const members = [fingerprint, ...ringPicks];
+    const channel = createRingChannel(ringLabel, members);
+    const now = new Date().toISOString();
+    const threadId = newThreadId();
+    await putRingChannel(channel);
+    await putThread({
+      thread_id: threadId,
+      kind: 'ring',
+      participants: ringPicks.map((fp) => {
+        const c = contacts.find((x) => x.fingerprint === fp);
+        return {
+          fingerprint: fp,
+          kind: c?.metadata?.identity_type === 'agent' ? 'agent' as const : 'human' as const,
+          display_name: c?.name || fp.slice(0, 8),
+        };
+      }),
+      ring_channel_id: channel.channel_id,
+      created_at: now,
+      last_activity_at: now,
+      retention: { expires_at: null },
+    });
+    setRingLabel('');
+    setRingPicks([]);
+    setRingOpen(false);
+    await refresh(fingerprint);
+    const created = (await listThreads()).find((t) => t.thread_id === threadId);
+    if (created) openThread(created);
+  };
+
+  const removeFromRing = async (fp: string) => {
+    const ring = rings.find((r) => r.channel_id === activeRingId);
+    if (!ring || fp === fingerprint) return;
+    const next = ring.member_fingerprints.filter((m) => m !== fp);
+    if (next.length < 2) return;
+    const rotated = rotateRingMembership(ring, next);
+    await putRingChannel(rotated);
+    if (activeThreadId) {
+      const t = threads.find((x) => x.thread_id === activeThreadId);
+      if (t) {
+        await putThread({
+          ...t,
+          participants: t.participants.filter((p) => p.fingerprint !== fp),
+          last_activity_at: rotated.rotated_at,
+        });
+      }
+    }
+    await refresh(fingerprint);
+    setStatus('They are off the next note. Earlier notes stay sealed to the old epoch.');
+  };
+
   const selected = contacts.find((c) => c.fingerprint === peerFp);
-  const active = threads.find((t) => t.thread_id === activeThreadId) || null;
+  const activeRing = rings.find((r) => r.channel_id === activeRingId) ?? null;
+  const shown = sideRoot ? sideThread(notes, sideRoot) : mainTimeline(notes);
+  const threadTitle = (t: NoteThread) => {
+    if (t.kind === 'ring') {
+      return rings.find((r) => r.channel_id === t.ring_channel_id)?.local_label || 'Ring';
+    }
+    return t.participants.map((p) => p.display_name).join(', ') || 'Thread';
+  };
 
   return (
     <div className="hive">
@@ -243,6 +397,10 @@ export default function NotesPage() {
                   setPhase('select');
                   setPeerFp('');
                   setActiveThreadId(null);
+                  setActiveRingId(null);
+                  setSideRoot(null);
+                  setFreshThread(false);
+                  setRingOpen(false);
                   setStatus(null);
                 }}
               >
@@ -251,6 +409,62 @@ export default function NotesPage() {
             </header>
 
             <Steps phase={phase} />
+
+            <div className="thread-rail" data-testid="notes-thread-list">
+              <button type="button" className="hive-chip" data-testid="notes-new-ring" onClick={() => { setRingOpen((v) => !v); setStatus(null); }}>
+                New ring
+              </button>
+              {threads.map((t) => (
+                <button
+                  key={t.thread_id}
+                  type="button"
+                  className={`hive-chip ${t.thread_id === activeThreadId ? 'is-on' : ''}`}
+                  onClick={() => openThread(t)}
+                >
+                  {t.kind === 'ring' ? 'Ring · ' : ''}{threadTitle(t)}
+                </button>
+              ))}
+              {threads.length === 0 && <span className="hive-muted">No threads yet.</span>}
+            </div>
+
+            {ringOpen && (
+              <section className="ring-panel" data-testid="notes-ring-create">
+                <p className="hive-eyebrow">Ring · admitted only · relay sees separate sealed mail</p>
+                <input
+                  className="ring-label"
+                  placeholder="Local name (stays on this device)"
+                  value={ringLabel}
+                  onChange={(e) => setRingLabel(e.target.value)}
+                />
+                <div className="ring-picks">
+                  {contacts.map((c) => {
+                    const hybrid = Boolean(c.pq_kem_public_key && c.public_key);
+                    const on = ringPicks.includes(c.fingerprint);
+                    return (
+                      <label key={c.id} className={hybrid ? '' : 'is-dim'}>
+                        <input
+                          type="checkbox"
+                          disabled={!hybrid}
+                          checked={on}
+                          onChange={() => {
+                            setRingPicks((prev) =>
+                              prev.includes(c.fingerprint)
+                                ? prev.filter((fp) => fp !== c.fingerprint)
+                                : [...prev, c.fingerprint],
+                            );
+                          }}
+                        />
+                        {c.name || c.fingerprint.slice(0, 8)}
+                        {!hybrid && <span> · no hybrid key</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+                <button type="button" className="seal-btn" onClick={startRing} disabled={ringPicks.length < 2}>
+                  Start ring
+                </button>
+              </section>
+            )}
 
             {/* Spatial hive — mobile-first: hex cluster above, YOU below */}
             <div className="hive-field" aria-label="Admitted contacts">
@@ -296,34 +510,101 @@ export default function NotesPage() {
             </div>
 
             {/* Compose sheet — rises when a hex is selected */}
-            {phase !== 'select' && selected && (
+            {phase !== 'select' && (selected || activeRing) && (
               <section className="hive-sheet" data-testid="notes-compose">
                 <div className="sheet-head">
                   <div>
-                    <p className="hive-eyebrow">{selected.metadata?.identity_type === 'agent' ? 'Agent' : 'Human'}</p>
-                    <h2>{selected.name || selected.fingerprint.slice(0, 12)}</h2>
+                    <p className="hive-eyebrow">
+                      {activeRing ? 'Ring' : selected?.metadata?.identity_type === 'agent' ? 'Agent' : 'Human'}
+                      {sideRoot ? ' · thread' : ''}
+                    </p>
+                    <h2>
+                      {activeRing
+                        ? activeRing.local_label
+                        : freshThread
+                          ? `New thread · ${selected?.name || ''}`
+                          : selected?.name || selected?.fingerprint.slice(0, 12)}
+                    </h2>
                   </div>
-                  <button type="button" className="hive-chip" onClick={() => setPhase('select')}>
+                  <button type="button" className="hive-chip" onClick={() => { setPhase('select'); setSideRoot(null); }}>
                     Close
                   </button>
                 </div>
 
+                {activeRing && (
+                  <div className="ring-members">
+                    {activeRing.member_fingerprints.filter((fp) => fp !== fingerprint).map((fp) => {
+                      const c = contacts.find((x) => x.fingerprint === fp);
+                      return (
+                        <span key={fp}>
+                          {c?.name || fp.slice(0, 8)}
+                          <button type="button" onClick={() => removeFromRing(fp)} aria-label={`Remove ${c?.name || 'member'}`}>
+                            Remove
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {!activeRing && selected && (
+                  <button
+                    type="button"
+                    className="hive-chip"
+                    data-testid="notes-new-thread"
+                    onClick={() => {
+                      setFreshThread(true);
+                      setActiveThreadId(null);
+                      setSideRoot(null);
+                      setNotes([]);
+                      setStatus(null);
+                      setPhase('compose');
+                    }}
+                  >
+                    New thread
+                  </button>
+                )}
+
+                {sideRoot && (
+                  <button type="button" className="hive-chip" data-testid="notes-side-back" onClick={() => setSideRoot(null)}>
+                    Back to timeline
+                  </button>
+                )}
+
                 <div className="timeline" data-testid="notes-timeline">
-                  {notes.map((n) => (
-                    <article key={n.note_id} className={n.direction === 'outbound' ? 'bubble out' : 'bubble in'}>
-                      <p>{n.body}</p>
-                      <time>{new Date(n.sent_at).toLocaleString()}</time>
-                    </article>
-                  ))}
-                  {active && notes.length === 0 && (
-                    <p className="hive-muted">No notes in this thread yet.</p>
+                  {shown.map((n) => {
+                    const replies = n.thread_root ? 0 : replyCount(notes, n.note_id);
+                    return (
+                      <article key={n.note_id} className={n.direction === 'outbound' ? 'bubble out' : 'bubble in'}>
+                        <p>{n.body}</p>
+                        <time>{new Date(n.sent_at).toLocaleString()}</time>
+                        {!sideRoot && replies > 0 && (
+                          <button type="button" className="thread-jump" data-testid="notes-open-thread" onClick={() => setSideRoot(n.note_id)}>
+                            {replies} in thread
+                          </button>
+                        )}
+                        {!n.thread_root && (
+                          <button
+                            type="button"
+                            className="thread-jump"
+                            data-testid="notes-reply"
+                            onClick={() => setSideRoot(n.note_id)}
+                          >
+                            Thread
+                          </button>
+                        )}
+                      </article>
+                    );
+                  })}
+                  {shown.length === 0 && (
+                    <p className="hive-muted">{sideRoot ? 'No replies in this thread yet.' : 'No notes in this thread yet.'}</p>
                   )}
                 </div>
 
                 <div className="composer">
                   <textarea
                     rows={3}
-                    placeholder="Write a sealed note…"
+                    placeholder={sideRoot ? 'Reply in this thread…' : 'Write a sealed note…'}
                     value={draft}
                     onChange={(e) => {
                       setDraft(e.target.value);
@@ -486,6 +767,56 @@ function HiveStyles() {
         text-decoration: none;
         cursor: pointer;
       }
+      .hive-chip.is-on {
+        border-color: var(--cyan);
+        color: var(--cyan);
+      }
+      .thread-rail, .ring-picks, .ring-members {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 0 0 14px;
+      }
+      .ring-panel {
+        border: 1px solid rgba(232, 197, 71, 0.28);
+        border-radius: 16px;
+        padding: 12px;
+        margin-bottom: 14px;
+        background: rgba(4, 12, 28, 0.72);
+      }
+      .ring-label {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        border-radius: 12px;
+        border: 1px solid rgba(94, 231, 255, 0.45);
+        background: rgba(3, 10, 24, 0.85);
+        color: var(--cream);
+        padding: 12px 14px;
+        margin: 8px 0 12px;
+      }
+      .ring-label::placeholder { color: rgba(200, 214, 235, 0.55); }
+      .ring-picks label, .ring-members span {
+        font-size: 12px;
+        color: var(--cream);
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .ring-picks label.is-dim { color: var(--muted); }
+      .ring-members button, .thread-jump {
+        font: inherit;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--gold);
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+      }
+      .thread-jump { display: block; margin-top: 6px; }
 
       .hive-steps {
         list-style: none;
