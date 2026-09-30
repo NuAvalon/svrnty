@@ -325,11 +325,12 @@ export default function Home() {
     return loadMethodHistory(identity.identity.fingerprint);
   }, [identity, methodHistoryTick]);
 
-  // Playwright-only demo seed — never shown in the product. Keyless sample rows
-  // go through addContact (enc-b); the hook is absent unless navigator.webdriver.
+  // Playwright-only in production. In next dev the hook exists so we can
+  // grow a demo mesh without shipping a Load-sample button.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!(navigator as Navigator & { webdriver?: boolean }).webdriver) return;
+    const webdriver = !!(navigator as Navigator & { webdriver?: boolean }).webdriver;
+    if (!webdriver && process.env.NODE_ENV === 'production') return;
     const w = window as Window & { __svrntySeedSampleCircle?: () => Promise<number> };
     w.__svrntySeedSampleCircle = async () => {
       const fp = identity?.identity?.fingerprint;
