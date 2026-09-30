@@ -28,6 +28,19 @@ We ship **our** strengths (closed-by-default graph, sealed personal containers, 
 
 **Until 3.3 is green:** classical seal-to-contact-pubkey notes (OpenPGP today, hybrid wrapper when #116410 lands) are **honestly scoped “notes”** — confidentiality in transit/at host, **not** FS/PCS. Never market as Signal-grade messaging.
 
+### Triple-ratchet primitive (unwired)
+
+`src/lib/crypto/message-ratchet.ts` is the 3.3 candidate, not a product claim. It is a hybrid triple ratchet: a symmetric chain on every message, plus an X25519 DH and an ML-KEM-1024 encapsulation on every direction change, mixed as `ssDh ‖ ssKem` into one root KDF. Both legs have to break to follow a later epoch. It is not wired into `sealNoteTo`, the notes store, or the Encrypt tab, and `isPQEncapLive()` stays false.
+
+Honest limits, so this file does not light rung 2 by itself:
+
+- No one-time prekeys. The recipient's long-term X25519 + ML-KEM secrets re-open the **initial** sending chain. Forward secrecy against that seizure starts at the first reply, whose ephemeral secrets are deleted and are not a function of the identity keys.
+- Post-compromise security heals when the compromised party **sends** a new ratchet. A snapshot of a receiver still opens the next inbound message addressed to keys that snapshot already holds.
+- Skipped keys are capped (64 per gap, 128 stored). Over the cap the open returns null and does not advance state.
+- Forking a session (two live copies sending) reuses chain keys. `clone()` is a test probe.
+
+Public word stays **notes** until this primitive is reviewed, wired, and the rung-2 tests are green.
+
 ---
 
 ## Sealed sender — what matters for us
@@ -89,7 +102,7 @@ Separate IndexedDB (or later container volume). **Never** stuff conversation cip
 
 ## Open questions for Flint / Athena (not blocking notes scaffold)
 
-1. PQXDH-class handshake details vs existing identity-card PQ fields.
+1. PQXDH-class handshake details vs existing identity-card PQ fields. The unwired answer in `message-ratchet.ts` uses the identity X25519 + ML-KEM-1024 pubs as the first prekeys (static-static DH binds the peer; ephemeral X25519 + ML-KEM ride in the header). A one-time prekey pool is still open — without it the initial flight is not forward-secret against seizure of the recipient's long-term secrets.
 2. Skipped-message key cache limits on mobile PWAs.
 3. Multi-device pairing — out of Phase 3.1 scope; must not corrupt 1:1 ratchet design.
 4. Receipt-of-record vs read receipts (coercion) — Athena lane; no impl in notes scaffold.
