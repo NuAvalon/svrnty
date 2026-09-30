@@ -95,6 +95,8 @@ test('scan sources never fetch, persist frames, or console-log (INV-5 leak-site)
     join(dir, 'scanInvite.ts'),
     join(dir, 'decodeQrFrame.ts'),
     join(dir, '../../components/ScanToJoin.tsx'),
+    join(dir, '../../components/scan/QrScanCamera.tsx'),
+    join(dir, '../../components/verify/fingerprint-from-scan.ts'),
   ];
   const forbidden = [
     /\bfetch\s*\(/,
