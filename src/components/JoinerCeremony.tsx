@@ -640,8 +640,23 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         {state.step === 'complete' && (
           <div>
             <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
-            <h2 style={headingStyle}>You are connected</h2>
-            <p style={subStyle}>A card received, an edge live, a facet lit in your constellation.</p>
+            {presence === 'in_person' || alreadyKnown ? (
+              // In person (mutual on the spot) or already-known → the connection is real both ways.
+              <>
+                <h2 style={headingStyle}>You are connected</h2>
+                <p style={subStyle}>A card received, an edge live, a facet lit in your constellation.</p>
+              </>
+            ) : (
+              // REMOTE join: the giver only learns of us when their wallet next polls the return channel —
+              // they are NOT connected yet on their side. Claim only what is locally true (our edge is live);
+              // mutual connection is pending their next open. (Flint #142277 launch-min: the unconditional
+              // "You are connected" was an over-claim on a dropped/pending remote join — joiner-path analog
+              // of "sent" ≠ "delivered".)
+              <>
+                <h2 style={headingStyle}>You&apos;ve added {peer?.name || 'them'}</h2>
+                <p style={subStyle}>Your side is set — they&apos;ll see you the next time they open their wallet, and you&apos;ll be connected once they do.</p>
+              </>
+            )}
             <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
           </div>
         )}
