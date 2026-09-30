@@ -1,0 +1,6 @@
+# fed-qa /etc/hosts additions — append for browser-level runs (Playwright or manual).
+# In-compose runs need nothing here (service aliases resolve inside the network).
+127.0.0.1 svrnty.is
+127.0.0.1 relay-b.test
+127.0.0.1 relay-c.test
+127.0.0.1 registry.test
