@@ -46,6 +46,8 @@ jobs:
         run: npx --no-install tsx --test src/lib/trust/grow-gate.test.ts src/lib/identity/issued-codes.test.ts src/lib/trust/disclosed-circle-strip.test.ts src/lib/trust/trust-recipe.test.ts src/lib/trust/contact-edge.test.ts
       - name: Contract guards — QR-scan invite leak-site (INV-5) — BLOCKING
         run: npx --no-install tsx --test src/lib/invite/scanInvite.test.ts src/lib/invite/decodeQrFrame.test.ts src/lib/invite/parseInviteUrl.test.ts
+      - name: Contract guards — life-safety UI copy scrub (no cry/panic-send glass) — BLOCKING
+        run: npx --no-install tsx --test src/copy/life-safety-honesty.test.ts
 
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
   # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
