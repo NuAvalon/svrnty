@@ -22,6 +22,7 @@ Header **Grow** (Ceremony tab removed). QR + short link; uses 1–7 (multi-use n
 
 ## Galaxy
 Tab label. Nameplate: fingerprint for compare-aloud + in-person / another-channel verify, then Trust.
+Spokes radiate to you. **Between** people: a solid gold filament is Know they both consented to show (`disclosed_circle` + open vis); white-gold is mutual Trust (`they_trust` + reciprocal + open vis). Dashed gold is a group you named — not a bond. Glass never invents either layer from tags. PSI / `visible()` still fleet.
 Inbound Distress paints a vivre: ember in the star, burning corner on the card. **I went** clears the mark on this device only. Sender Recovery → Distress is silent (no sent receipt).
 
 ## Bottom
@@ -46,7 +47,7 @@ One mailbox path. Three pulses that do not complete today. Receive/poll exists (
 
 **Transport**
 
-8. **WebSockets / subscribe** — replace 5s poll as the live consume path.
+8. **WebSockets / subscribe** — replace 1.5s poll as the live consume path. Ask: owner-authed subscribe only (I-4 occupancy oracle stays closed). Net: Gate/Distress land in ~100ms instead of waiting the next tick; burst poll already covers Grow mint. SSE is a smaller middle ground if WS is heavy. Do not emit peer-online / mailbox-count events.
 9. **Push** — wake the phone for Distress / summon. Payload still opaque.
 
 **Also blocked on fleet (not P0, still real)**

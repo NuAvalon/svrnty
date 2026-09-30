@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -141,7 +142,7 @@ test.describe('Grow Gate chrome', () => {
     await genesis(page, 'Gate Ignite');
 
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-    await page.getByTestId('trust-map-load-sample').click();
+    await seedSampleGalaxy(page);
     await expect(page.locator('[data-testid="trust-node"][data-ignite="true"]').first()).toBeVisible({
       timeout: 20_000,
     });

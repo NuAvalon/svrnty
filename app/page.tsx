@@ -318,33 +318,33 @@ export default function Home() {
     if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
   }, [mainTab]);
 
-  // Demo circle can refresh when the book is empty or sample-only
-  const [sampleRefreshable, setSampleRefreshable] = useState(false);
   const [methodHistoryTick, setMethodHistoryTick] = useState(0);
   const methodHistory = useMemo(() => {
     if (!identity?.identity?.fingerprint) return [];
     void methodHistoryTick;
     return loadMethodHistory(identity.identity.fingerprint);
   }, [identity, methodHistoryTick]);
+
+  // Playwright-only demo seed — never shown in the product. Keyless sample rows
+  // go through addContact (enc-b); the hook is absent unless navigator.webdriver.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!identity?.identity?.fingerprint) {
-        if (!cancelled) setSampleRefreshable(false);
-        return;
-      }
-      try {
-        const { canRefreshSampleCircle } = await import('@/lib/trust/sample-circle');
-        const ok = await canRefreshSampleCircle(identity.identity.fingerprint);
-        if (!cancelled) setSampleRefreshable(ok);
-      } catch {
-        if (!cancelled) setSampleRefreshable(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
+    if (typeof window === 'undefined') return;
+    if (!(navigator as Navigator & { webdriver?: boolean }).webdriver) return;
+    const w = window as Window & { __svrntySeedSampleCircle?: () => Promise<number> };
+    w.__svrntySeedSampleCircle = async () => {
+      const fp = identity?.identity?.fingerprint;
+      if (!fp) return 0;
+      const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
+      const n = await seedSampleCircle(fp);
+      seedDemoMethodHistory(fp);
+      setMethodHistoryTick((t) => t + 1);
+      await refreshContacts();
+      return n;
     };
-  }, [identity, contacts]);
+    return () => {
+      delete w.__svrntySeedSampleCircle;
+    };
+  }, [identity, refreshContacts]);
 
   // Loading state
   if (appState === 'checking') {
@@ -639,15 +639,7 @@ export default function Home() {
                 ownerFingerprint={identity.identity.fingerprint}
                 ownerName={identity.identity.name}
                 contacts={contacts}
-                sampleRefreshable={sampleRefreshable}
-                onLoadSample={async () => {
-                  const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
-                  await seedSampleCircle(identity.identity.fingerprint);
-                  // CUR-2: seed local demo revisions once so history UI is exercisable
-                  seedDemoMethodHistory(identity.identity.fingerprint);
-                  setMethodHistoryTick((t) => t + 1);
-                  await refreshContacts();
-                }}
+                onGrow={() => setGrowOpen(true)}
                 onRefresh={async () => {
                   const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
                   await pollLiveBookOnce(identity);

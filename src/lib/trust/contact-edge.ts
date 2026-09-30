@@ -24,7 +24,10 @@ import type { TrustEdge } from './types';
 export function contactRecordToEdge(c: any): TrustEdge {
   return {
     id: c.id,
-    peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
+    // Keyless demo rows lose fingerprint at addContact (Invariant-1). Sample hex is
+    // owner-local metadata only — never a living-wire id, never a key binding.
+    peer_fingerprint:
+      c.peer_fingerprint || c.fingerprint || c.metadata?.sample_fingerprint || c.id,
     peer_name: c.peer_name || c.name,
     peer_email: c.peer_email || c.email || '',
     peer_public_key: c.peer_public_key || c.public_key || '',

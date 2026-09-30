@@ -240,3 +240,33 @@ test('witnessed mutual springs pull a pair closer than the same graph without th
   );
   assert.ok(withBond < 130, `bonded pair still too far: ${withBond}`);
 });
+
+test('witnessed Know springs pull a disclosed pair closer than tags-only', () => {
+  const base = (fp: string, circle: string[] = [], vis = true) =>
+    knownEdge({
+      peer_fingerprint: fp,
+      peer_name: fp,
+      open_visibility: vis,
+      disclosed_circle: circle,
+      tags: [],
+    });
+  const lonely = [base('claude'), base('hedy'), base('other')];
+  const bonded = [
+    base('claude', ['hedy']),
+    base('hedy', ['claude']),
+    base('other'),
+  ];
+  const a = computeTrustLayout('o', 'Me', lonely, { width: 720, height: 720 });
+  const b = computeTrustLayout('o', 'Me', bonded, { width: 720, height: 720 });
+  const by = (layout: typeof a) => Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  const dist = (layout: typeof a) => {
+    const m = by(layout);
+    return Math.hypot(m.claude.x - m.hedy.x, m.claude.y - m.hedy.y);
+  };
+  const without = dist(a);
+  const withBond = dist(b);
+  assert.ok(
+    withBond < without * 0.75,
+    `know spring did not tighten Claude↔Hedy: ${without} → ${withBond}`,
+  );
+});

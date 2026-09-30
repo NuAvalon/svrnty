@@ -24,6 +24,8 @@ interface SampleContact {
   open_visibility?: boolean;
   /** People in this demo book this peer also trusts (PSI stand-in). */
   they_trust?: string[];
+  /** People in this demo book this peer also Knows (visible() ∩ book stand-in). */
+  disclosed_circle?: string[];
   notes?: string;
   /** Pending intro — known≠accepted; trust still false */
   pending_intro?: {
@@ -60,6 +62,7 @@ const SAMPLE: SampleContact[] = [
     reciprocal: true,
     open_visibility: true,
     they_trust: [GRACE, MARGARET],
+    disclosed_circle: [GRACE, MARGARET],
     notes: 'Mutual trust · analytical engines & poetry.',
     distress: true,
   },
@@ -74,6 +77,7 @@ const SAMPLE: SampleContact[] = [
     reciprocal: true,
     open_visibility: true,
     they_trust: [ADA, MARGARET],
+    disclosed_circle: [ADA, MARGARET],
     notes: 'Mutual trust · introduced Frank (pending).',
   },
   {
@@ -85,6 +89,8 @@ const SAMPLE: SampleContact[] = [
     phones: ['+44 1625 555 019'],
     handles: { telegram: '@a_turing' },
     reciprocal: false,
+    open_visibility: true,
+    disclosed_circle: [CLAUDE],
     notes: 'Trusted — mutual sync not yet confirmed.',
   },
   {
@@ -94,6 +100,8 @@ const SAMPLE: SampleContact[] = [
     trust_level: 'unverified',
     tags: ['radio', 'bletchley'],
     handles: { email_alt: 'shannon@theory.info' },
+    open_visibility: true,
+    disclosed_circle: [HEDY, KATHERINE, ALAN],
     notes: 'Known · information theory circle.',
   },
   {
@@ -104,6 +112,8 @@ const SAMPLE: SampleContact[] = [
     tags: ['radio'],
     phones: ['+1 310 555 0188'],
     urls: ['https://fhss.radio'],
+    open_visibility: true,
+    disclosed_circle: [CLAUDE, KATHERINE],
     notes: 'Known · frequency hopping.',
   },
   {
@@ -112,6 +122,8 @@ const SAMPLE: SampleContact[] = [
     fingerprint: KATHERINE,
     trust_level: 'unverified',
     tags: ['radio', 'orbital'],
+    open_visibility: true,
+    disclosed_circle: [CLAUDE, HEDY],
     notes: 'Known · orbital mechanics.',
   },
   {
@@ -124,6 +136,7 @@ const SAMPLE: SampleContact[] = [
     reciprocal: true,
     open_visibility: true,
     they_trust: [ADA, GRACE],
+    disclosed_circle: [ADA, GRACE],
     notes: 'Mutual · software that flew.',
   },
   {
@@ -208,15 +221,20 @@ export async function seedSampleCircle(ownerFingerprint: string): Promise<number
         : { method: 'none', verified_at: null },
       connection_status: c.pending_intro ? 'pending' : 'accepted',
       they_trust: c.they_trust,
+      disclosed_circle: c.disclosed_circle,
       open_visibility: c.open_visibility,
       metadata: {
         sample: true,
+        // addContact strips fingerprint on keyless rows (Invariant-1). Keep a
+        // stable demo id so they_trust / disclosed_circle can match on the glass.
+        sample_fingerprint: c.fingerprint,
         tags: c.tags,
         notes: c.notes,
         pending_intro: c.pending_intro || undefined,
         connection_status: c.pending_intro ? 'pending' : 'accepted',
         distress_inbound: c.distress || undefined,
         they_trust: c.they_trust,
+        disclosed_circle: c.disclosed_circle,
         share_settings: c.open_visibility ? { open_visibility: true } : undefined,
       },
       distress_inbound: c.distress || undefined,

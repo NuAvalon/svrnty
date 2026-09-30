@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -34,7 +35,7 @@ test('Galaxy Verify — guided compare, mismatch fails loud, other-channel match
 
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
   await expect(page.getByTestId('trust-map')).toBeVisible();
-  await page.getByRole('button', { name: /load sample circle/i }).click();
+  await seedSampleGalaxy(page);
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
 
   const known = page.locator(

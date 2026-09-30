@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
 
 test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   test.setTimeout(90_000);
@@ -25,8 +26,12 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
 
   await expect(page.getByTestId('trust-map')).toBeVisible();
-  await page.getByRole('button', { name: /load sample circle/i }).click();
+  await expect(page.getByTestId('trust-map-empty')).toContainText(/Grow your galaxy/i);
+  await expect(page.getByTestId('trust-map-load-sample')).toHaveCount(0);
+  await seedSampleGalaxy(page);
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]').first()).toBeVisible();
+  await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="know"]').first()).toBeVisible();
   await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_lattice_sample.png', fullPage: true });
 
   const svg = page.getByTestId('trust-map-svg');

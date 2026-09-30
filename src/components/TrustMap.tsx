@@ -6,7 +6,7 @@
 // Constitutional:
 //   (a) FACETS GROW, NEVER APPEAR — nodes/edges crystallize on entry.
 //   (b) I-6 RENDER PROVENANCE — authored or witnessed only; none inferred.
-//   Peer filaments: open-visibility reciprocal they_trust, never tags.
+//   Peer filaments: open-visibility Know (disclosed_circle) and Trust (they_trust), never tags.
 // Layout: trust-map-layout.ts (pure). Camera: graph-camera.ts.
 
 "use client";
@@ -26,7 +26,7 @@ import {
   type LaidOutNode,
   type TrustState,
 } from '@/lib/trust/trust-map-layout';
-import { witnessedPeerTrustChords } from '@/lib/trust/peer-trust-chords';
+import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
@@ -88,10 +88,8 @@ interface TrustMapProps {
   ownerFingerprint: string;
   ownerName: string;
   contacts: TrustEdge[];
-  /** Optional demo seed when the lattice is empty / refreshable */
-  onLoadSample?: () => void | Promise<void>;
-  /** Show refresh when book is demo-only */
-  sampleRefreshable?: boolean;
+  /** Empty galaxy CTA — opens Grow (share / in-person). */
+  onGrow?: () => void;
   /** Assign a local group label (tag) to selected peers */
   onAssignGroup?: (fingerprints: string[], groupName: string) => void | Promise<void>;
   onTrustToggle?: (edge: TrustEdge) => void | Promise<void>;
@@ -211,8 +209,7 @@ export function TrustMap({
   ownerFingerprint,
   ownerName,
   contacts,
-  onLoadSample,
-  sampleRefreshable,
+  onGrow,
   onAssignGroup,
   onTrustToggle,
   onRemoveContact,
@@ -351,7 +348,7 @@ export function TrustMap({
       width: world,
       height: world,
     });
-    const mutualBonds = witnessedPeerTrustChords(visibleContacts).map((c) => ({
+    const mutualBonds = witnessedPeerChords(visibleContacts).map((c) => ({
       a: c.a,
       b: c.b,
     }));
@@ -443,7 +440,7 @@ export function TrustMap({
     [visibleContacts, posById],
   );
   const peerChords = useMemo(
-    () => witnessedPeerTrustChords(visibleContacts),
+    () => witnessedPeerChords(visibleContacts),
     [visibleContacts],
   );
   const edgeByFp = useMemo(() => {
@@ -501,7 +498,6 @@ export function TrustMap({
   );
 
   const isEmpty = visibleContacts.length === 0;
-  const showSampleBtn = !!onLoadSample && (isEmpty || !!sampleRefreshable);
 
   const clearFocus = useCallback(() => {
     setFocusId(null);
@@ -814,16 +810,6 @@ export function TrustMap({
             <RotateCw className="h-3.5 w-3.5" />
           </button>
         ) : null}
-        {showSampleBtn && !isEmpty ? (
-          <button
-            type="button"
-            data-testid="trust-map-load-sample"
-            onClick={() => void onLoadSample?.()}
-            style={{ ...iconBtnStyle(), fontSize: 10, padding: '6px 8px' }}
-          >
-            Refresh demo circle
-          </button>
-        ) : null}
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <button type="button" data-testid="trust-map-zoom-out" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
@@ -883,6 +869,8 @@ export function TrustMap({
           .tm-spoke-known { stroke-linecap: round; }
           .tm-spoke-verified { stroke-linecap: round; }
           .tm-spoke-trusted { stroke-linecap: round; animation: tm-spoke-live 2.4s ease-in-out infinite; }
+          .tm-peer-trust { stroke-linecap: round; animation: tm-spoke-live 2.4s ease-in-out infinite; }
+          .tm-peer-know { stroke-linecap: round; }
           .tm-core-light { animation: tm-core-breathe 2.8s ease-in-out infinite; }
           .tm-self-light { animation: tm-self-breathe 3.6s ease-in-out infinite; }
           .tm-glass-up { animation: tm-glass-up .9s cubic-bezier(.16,1,.3,1) both; }
@@ -918,7 +906,7 @@ export function TrustMap({
           }
           @media (prefers-reduced-motion: reduce) {
             .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending, .tm-ignite, .tm-ignite-halo,
-            .tm-spoke-trusted, .tm-core-light, .tm-self-light, .tm-glass-up { animation: none; }
+            .tm-spoke-trusted, .tm-peer-trust, .tm-core-light, .tm-self-light, .tm-glass-up { animation: none; }
             .tm-node { transform: none; }
           }
         `}</style>
@@ -956,32 +944,6 @@ export function TrustMap({
                   style={{ ['--tm-o' as string]: 0.9, animationDelay: `${0.05 + i * 0.02}s` }}
                 >
                   <title>{`Group · ${ch.tag}`}</title>
-                </line>
-              );
-            })}
-          </g>
-
-          {/* Witnessed open-visibility peer bonds — not tags */}
-          <g>
-            {peerChords.map((ch, i) => {
-              const a = layout.nodes.find((n) => n.id === ch.a);
-              const b = layout.nodes.find((n) => n.id === ch.b);
-              if (!a || !b) return null;
-              return (
-                <line
-                  key={`peer-${ch.a}-${ch.b}`}
-                  className="tm-cluster"
-                  data-testid="trust-peer-chord"
-                  x1={a.x}
-                  y1={a.y}
-                  x2={b.x}
-                  y2={b.y}
-                  stroke={T.lit}
-                  strokeOpacity={0.55}
-                  strokeWidth={1.6}
-                  style={{ ['--tm-o' as string]: 0.9, animationDelay: `${0.08 + i * 0.02}s` }}
-                >
-                  <title>Witnessed mutual trust</title>
                 </line>
               );
             })}
@@ -1065,6 +1027,48 @@ export function TrustMap({
                     strokeDasharray={pending ? '5 4' : n.state === 'decayed' ? '3 3' : undefined}
                     style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` }}
                   />
+                </g>
+              );
+            })}
+          </g>
+
+          {/* Witnessed open-visibility peer mesh — Know and Trust between contacts, not tags */}
+          <g>
+            {peerChords.map((ch, i) => {
+              const a = layout.nodes.find((n) => n.id === ch.a);
+              const b = layout.nodes.find((n) => n.id === ch.b);
+              if (!a || !b) return null;
+              const trust = ch.layer === 'trust';
+              return (
+                <g key={`peer-${ch.layer}-${ch.a}-${ch.b}`}>
+                  {trust ? (
+                    <line
+                      className="tm-cluster"
+                      x1={a.x}
+                      y1={a.y}
+                      x2={b.x}
+                      y2={b.y}
+                      stroke="#fff8ee"
+                      strokeOpacity={0.22}
+                      strokeWidth={4.4}
+                      style={{ ['--tm-o' as string]: 0.85, animationDelay: `${0.08 + i * 0.02}s` }}
+                    />
+                  ) : null}
+                  <line
+                    className={trust ? 'tm-cluster tm-peer-trust' : 'tm-cluster tm-peer-know'}
+                    data-testid="trust-peer-chord"
+                    data-layer={ch.layer}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
+                    stroke={trust ? '#fff6e8' : T.myEdge}
+                    strokeOpacity={trust ? 0.92 : 0.55}
+                    strokeWidth={trust ? 2.05 : 1.2}
+                    style={{ ['--tm-o' as string]: 0.95, animationDelay: `${0.08 + i * 0.02}s` }}
+                  >
+                    <title>{trust ? 'Witnessed mutual trust' : 'Witnessed mutual know'}</title>
+                  </line>
                 </g>
               );
             })}
@@ -1219,19 +1223,44 @@ export function TrustMap({
               position: 'absolute',
               left: 16,
               right: 16,
-              bottom: showSampleBtn ? 168 : 104,
+              bottom: 104,
               textAlign: 'center',
               pointerEvents: 'none',
               fontFamily: E.fontSans,
+              zIndex: 7,
             }}
           >
-            <p style={{ margin: 0, fontSize: 14, color: T.label }}>Your lattice is dark</p>
+            <p style={{ margin: 0, fontSize: 16, color: T.label, letterSpacing: '0.04em' }}>
+              Grow your galaxy
+            </p>
             <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              Tap Grow. In person they can become a star you Know. Remote, they wait at the Gate.
+              In person they can become a star you Know. Remote, they wait at the Gate.
             </p>
             <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
               Trust is mutual, after you make sure it&apos;s them.
             </p>
+            {onGrow ? (
+              <button
+                type="button"
+                data-testid="trust-map-grow"
+                onClick={onGrow}
+                style={{
+                  pointerEvents: 'auto',
+                  marginTop: 14,
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  letterSpacing: '0.08em',
+                  color: T.myEdge,
+                  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                  border: `1px solid ${T.dimStroke}`,
+                  borderRadius: 8,
+                  padding: '8px 14px',
+                  cursor: 'pointer',
+                }}
+              >
+                Grow
+              </button>
+            ) : null}
           </div>
         )}
 
@@ -1252,39 +1281,6 @@ export function TrustMap({
             }}
           />
         ) : null}
-
-        {showSampleBtn && isEmpty && (
-          <div
-            style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              bottom: 104,
-              zIndex: 7,
-              display: 'flex',
-              justifyContent: 'center',
-            }}
-          >
-            <button
-              type="button"
-              data-testid="trust-map-load-sample"
-              onClick={() => void onLoadSample?.()}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.08em',
-                color: T.myEdge,
-                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                border: `1px solid ${T.dimStroke}`,
-                borderRadius: 8,
-                padding: '8px 14px',
-                cursor: 'pointer',
-              }}
-            >
-              Load sample circle
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Legend */}
@@ -1304,11 +1300,11 @@ export function TrustMap({
           <span style={{ color: E.accent2 }}>⬡ trusted · white light</span>
           <span>⬡ known · dim spoke</span>
           <span style={{ color: E.text }}>⬡ you · larger + light</span>
+          <span style={{ color: E.accent2 }}>═ trust between you</span>
+          <span>─ know between you</span>
           <span style={{ color: E.accent }}>∪ known sphere</span>
           <span style={{ color: E.accent }}>⊙ Gate</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
-          <span style={{ color: E.accent2 }}>═ mutual</span>
-          <span style={{ color: E.accent2 }}>= peer bond</span>
           <span>- - group</span>
         </div>
       )}
@@ -1323,7 +1319,8 @@ export function TrustMap({
         }}
       >
         Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
-        A line to Known brightens when Trusted; white light is the overlay (yours is the larger cell).
+        Spokes go to you. Solid gold between people is Know they both consented to show;
+        white-gold is mutual Trust. Dashed gold is a group you named — not a bond.
         Verify is a private ember — nobody else sees a badge. The U is your known sphere; the hole is the Gate.
       </p>
 
