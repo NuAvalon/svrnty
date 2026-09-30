@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -141,10 +142,14 @@ test.describe('Grow Gate chrome', () => {
     await genesis(page, 'Gate Ignite');
 
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-    await page.getByTestId('trust-map-load-sample').click();
+    await seedSampleGalaxy(page);
     await expect(page.locator('[data-testid="trust-node"][data-ignite="true"]').first()).toBeVisible({
       timeout: 20_000,
     });
+    await expect(page.locator('[data-testid="trust-node"][data-shape="hex"]').first()).toBeVisible();
+    await expect(page.locator('[data-testid="trust-edge"][data-spoke="known"]').first()).toBeVisible();
+    await expect(page.locator('[data-testid="trust-node-light"]').first()).toBeVisible();
+    await expect(page.getByTestId('trust-self-light')).toBeVisible();
     await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_known_stars_ignite.png' });
   });
 });

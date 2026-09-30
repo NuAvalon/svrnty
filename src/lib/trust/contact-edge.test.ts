@@ -76,6 +76,36 @@ test('carries inbound distress as a witnessed receipt', () => {
   assert.equal(edge.distress_inbound, true);
 });
 
+test('keyless sample rows keep a stable demo fingerprint for peer chords', () => {
+  const edge = contactRecordToEdge({
+    id: 'uuid-ada',
+    name: 'Ada',
+    public_key: '',
+    metadata: {
+      sample: true,
+      sample_fingerprint: 'a11a10e1ace00000000000000000000000000001',
+      they_trust: ['61ace00000000000000000000000000000000003'],
+      disclosed_circle: ['61ace00000000000000000000000000000000003'],
+      share_settings: { open_visibility: true },
+    },
+  });
+  assert.equal(edge.peer_fingerprint, 'a11a10e1ace00000000000000000000000000001');
+  assert.deepEqual(edge.they_trust, ['61ace00000000000000000000000000000000003']);
+  assert.deepEqual(edge.disclosed_circle, ['61ace00000000000000000000000000000000003']);
+  assert.equal(edge.open_visibility, true);
+});
+
+test('mutual_contacts is not projected as disclosed_circle', () => {
+  const edge = contactRecordToEdge({
+    id: 'm',
+    fingerprint: 'fp-m',
+    name: 'Mo',
+    public_key: 'PK',
+    metadata: { mutual_contacts: ['fp-other'] },
+  });
+  assert.equal(edge.disclosed_circle, undefined);
+});
+
 test('a contact with no pq → edge pq is undefined (no crash, classical-only edge)', () => {
   const edge = contactRecordToEdge({ id: 'z', fingerprint: 'fp3', name: 'Cy', public_key: 'PK3' });
   assert.equal(edge.peer_pq_kem_public_key, undefined);

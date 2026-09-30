@@ -14,10 +14,11 @@
 //               can ONLY fire on an incoming apply (a local ui-edit uses reason:'ui-edit').
 //
 // startLiveBookPolling(identity) opens a background interval (the "living" behaviour: Alice's book
-// self-updates when a peer's verified contact.update arrives) and returns stop(). It is FAIL-SOFT: a
-// locked identity or a transient poll error never throws to React — the book just stays static until a
-// later successful tick. All custody/verify/whitelist logic lives inside the caller; nothing here is
-// smart about the social graph.
+// self-updates when a peer's verified contact.update arrives, and Grow joiners land at the Gate).
+// The app shell owns the loop so Galaxy / Grow see arrivals without sitting on Contacts.
+// Returns stop() + burst(). FAIL-SOFT: a locked identity or a transient poll error never throws to
+// React — the book just stays static until a later successful tick. All custody/verify/whitelist
+// logic lives inside the caller; nothing here is smart about the social graph.
 
 import {
   consumeInboundContactUpdates,
@@ -45,7 +46,11 @@ import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-res
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam } from './consume-mailbox';
 
-const DEFAULT_POLL_INTERVAL_MS = 5_000;
+/** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
+export const DEFAULT_POLL_INTERVAL_MS = 1_500;
+/** After Grow mint / unlock / tab-focus — catch a joiner in ~a second, not a minute. */
+export const BURST_POLL_INTERVAL_MS = 350;
+export const DEFAULT_BURST_MS = 12_000;
 
 /**
  * Project a stored contact record into the verify seam's KnownContactIdentity.
@@ -159,6 +164,8 @@ export async function buildConsumeDeps(
 
 export interface LiveBookPollHandle {
   stop: () => void;
+  /** Temporarily poll at BURST_POLL_INTERVAL_MS, then settle back. Immediate tick. */
+  burst: (durationMs?: number) => void;
 }
 
 /**
@@ -192,6 +199,8 @@ export function startLiveBookPolling(
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
   let inFlight = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let burstTimer: ReturnType<typeof setTimeout> | null = null;
 
   const tick = async () => {
     if (stopped || inFlight) return; // never overlap polls
@@ -208,13 +217,34 @@ export function startLiveBookPolling(
     }
   };
 
+  const setCadence = (ms: number) => {
+    if (timer) clearInterval(timer);
+    if (stopped) return;
+    timer = setInterval(() => void tick(), ms);
+  };
+
+  const burst = (durationMs = DEFAULT_BURST_MS) => {
+    if (stopped) return;
+    void tick();
+    setCadence(BURST_POLL_INTERVAL_MS);
+    if (burstTimer) clearTimeout(burstTimer);
+    burstTimer = setTimeout(() => {
+      burstTimer = null;
+      if (!stopped) setCadence(intervalMs);
+    }, durationMs);
+  };
+
   void tick(); // immediate first poll
-  const timer = setInterval(() => void tick(), intervalMs);
+  setCadence(intervalMs);
 
   return {
     stop: () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      timer = null;
+      if (burstTimer) clearTimeout(burstTimer);
+      burstTimer = null;
     },
+    burst,
   };
 }

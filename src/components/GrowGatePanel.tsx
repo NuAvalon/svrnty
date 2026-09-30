@@ -6,7 +6,7 @@
  * Arrivals are not Galaxy stars until Admit.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   GATE_COPY,
@@ -54,6 +54,9 @@ const btnStyle = (primary?: boolean): CSSProperties => ({
 
 export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }: Props) {
   const [arrivals, setArrivals] = useState<GateArrival[]>([]);
+  const [entering, setEntering] = useState<Set<string>>(() => new Set());
+  const seenRef = useRef<Set<string>>(new Set());
+  const bootedRef = useRef(false);
   const [focus, setFocus] = useState<GateArrival | null>(null);
   const [query, setQuery] = useState('');
   const [name, setName] = useState('');
@@ -65,6 +68,16 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
   const refresh = async () => {
     try {
       const list = await loadGateArrivals(ownerFp);
+      const ids = list.map((a) => a.fingerprint);
+      if (bootedRef.current) {
+        const fresh = ids.filter((id) => !seenRef.current.has(id));
+        if (fresh.length > 0) {
+          setEntering(new Set(fresh));
+          window.setTimeout(() => setEntering(new Set()), 900);
+        }
+      }
+      bootedRef.current = true;
+      seenRef.current = new Set(ids);
       setArrivals(list);
     } catch {
       /* non-fatal */
@@ -254,10 +267,19 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       ) : (
         <ul style={{ listStyle: 'none', margin: '10px 0 0', padding: 0 }}>
           {visible.map((a) => (
-            <li key={a.fingerprint} style={{ marginBottom: 8 }}>
+            <li
+              key={a.fingerprint}
+              style={{
+                marginBottom: 8,
+                animation: entering.has(a.fingerprint)
+                  ? 'tm-gate-row-in .7s cubic-bezier(.16,1,.3,1) both'
+                  : undefined,
+              }}
+            >
               <button
                 type="button"
                 data-testid="grow-gate-arrival"
+                data-enter={entering.has(a.fingerprint) ? 'true' : 'false'}
                 onClick={() => openAdmit(a)}
                 style={{
                   ...btnStyle(),
@@ -298,6 +320,15 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
       }
     >
       {body}
+      <style>{`
+        @keyframes tm-gate-row-in {
+          0% { opacity: 0; transform: translateY(12px) scale(.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          [data-testid="grow-gate-arrival"] { animation: none !important; }
+        }
+      `}</style>
     </div>
   );
 }

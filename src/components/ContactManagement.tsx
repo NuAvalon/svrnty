@@ -45,7 +45,6 @@ import {
   type ContactRecord,
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
-import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -281,18 +280,8 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     });
   }, [loadContacts]);
 
-  // Live-beat poll: the runtime call-site that drives the return-channel consume on an interval,
-  // so a peer's verified contact.update self-applies IN this page → the caller emits reason:'live-apply' →
-  // the subscription above repaints the row data-live="push" (beat-4). startLiveBookPolling re-reads the
-  // unlocked key each tick and no-ops while the session is locked, so this effect keys only on the stable
-  // fingerprint; `identity` is closed over for the armored public key (stable per fingerprint).
-  useEffect(() => {
-    if (!fingerprint) return;
-    const handle = startLiveBookPolling(identity);
-    return () => handle.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stable fingerprint; identity's
-    // object ref is intentionally not a dep (public key stable per fp; private key re-loaded each tick).
-  }, [fingerprint]);
+  // Living book poll lives on the app shell (page.tsx) so Galaxy / Grow catch
+  // joiners without this tab being mounted. Rows still ignite via subscribeContactChanges.
 
   // KNOW-layer PSI: bind the raw sign key, then tick syncMutualTrust with layer "know".
   // Fail-closed: locked session / failed bind ⇒ no options ⇒ no sync.

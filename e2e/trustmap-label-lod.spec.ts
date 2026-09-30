@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import path from 'path';
+import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
 
 const ART = '/opt/cursor/artifacts/screenshots';
 
@@ -21,10 +22,7 @@ test('Trust Map label LOD + dense sample', async ({ page }) => {
   test.setTimeout(120_000);
   await genesis(page, 'LOD Owner');
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-  await page.getByTestId('trust-map-load-sample').click();
-  await expect(page.getByTestId('trust-map-load-sample')).toHaveText(/Refresh demo circle/i, {
-    timeout: 60_000,
-  });
+  await seedSampleGalaxy(page);
   await page.waitForTimeout(800);
   await page.screenshot({ path: path.join(ART, 'trustmap-lod-fit.png'), fullPage: true });
 
