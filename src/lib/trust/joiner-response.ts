@@ -89,6 +89,11 @@ export interface PendingJoiner {
   epoch: number;
   publicKeyArmored: string;
   pqSigningPublicKey?: Uint8Array;
+  /** ML-KEM-1024 pubkey (§5 canonical-fp leg). Bound into the joiner's canonical fingerprint, so the
+   *  giver's Gate-admit re-check (fingerprintMatchesKey via addContact) needs it — dropping it refuses a
+   *  canonical joiner with "fingerprint↔key binding failed". Present for any joiner that passed verify
+   *  (fingerprintMatchesKey is canonical-only → both PQ legs are required to reach this return). */
+  pqKemPublicKey?: Uint8Array;
   displayName: string;
   inviteNonce: string;
   ts: string;
@@ -358,6 +363,18 @@ export async function verifyJoinerResponse(
   // A hybrid signature with NO PQ key in the envelope cannot be verified — fail closed.
   if (signature.pq_signature && !pqSigningPublicKey) return null;
 
+  // §5: surface the KEM pubkey too. It's bound into the canonical fingerprint (step 5's
+  // fingerprintMatchesKey required it) and the GIVER's Gate-admit re-checks the SAME canonical binding
+  // via addContact — which needs BOTH PQ legs, else a canonical joiner is refused. It reached here valid.
+  let pqKemPublicKey: Uint8Array | undefined;
+  if (envelope.joiner_pq_kem_public_key !== undefined) {
+    try {
+      pqKemPublicKey = base64ToUint8(envelope.joiner_pq_kem_public_key);
+    } catch {
+      return null; // malformed KEM → drop (defensive; step 5 already length-gated it)
+    }
+  }
+
   let ok = false;
   try {
     ok = await verifyWithEnvelope(
@@ -377,6 +394,7 @@ export async function verifyJoinerResponse(
     epoch: envelope.joiner_epoch,
     publicKeyArmored: envelope.joiner_public_key,
     ...(pqSigningPublicKey ? { pqSigningPublicKey } : {}),
+    ...(pqKemPublicKey ? { pqKemPublicKey } : {}),
     displayName: envelope.joiner_display_name,
     inviteNonce: envelope.invite_nonce,
     ts: envelope.ts,
