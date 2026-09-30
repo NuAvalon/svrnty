@@ -8,6 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as openpgp from 'openpgp';
 import { base64ToUint8 } from '../crypto/pq.js';
 import { verifyDidDocument, parseDid } from './did-peer.js';
 import { deriveGenesisAuthorityCommitment } from './introduce-shell.js';
@@ -118,4 +119,20 @@ test('★ real mint REJECTS a caller-supplied coldSeed (recovery authority must 
   // throwaway still allows a fixed seed (deterministic tests)
   const t = await mintHeadlessAgent({ throwaway: true, coldSeed: weak });
   assert.deepEqual(t.cold_seed, weak);
+});
+
+test('★ persists the armored op-key (usable) so the agent can later sign trust-signals (joiner-response/vouch)', async () => {
+  const a = await mintHeadlessAgent();
+  // the armored op-key + its passphrase live in the OPAQUE secret bundle (never a public field)
+  assert.ok(a.secret_material.classicalPrivateKey.includes('BEGIN PGP PRIVATE KEY'));
+  assert.ok(a.secret_material.classicalKpass.length > 0);
+  // ...and it's USABLE: reads + decrypts with the co-stored passphrase → can drive signWithEnvelope later
+  const key = await openpgp.readPrivateKey({ armoredKey: a.secret_material.classicalPrivateKey });
+  const unlocked = await openpgp.decryptKey({ privateKey: key, passphrase: a.secret_material.classicalKpass });
+  assert.equal(unlocked.isDecrypted(), true);
+  // survives serialization into the custody wire shape's OPAQUE `private` — and is NOT exposed in `public`
+  const w = serializeMintArtifact(a);
+  assert.equal(w.private.classical_private_key, a.secret_material.classicalPrivateKey);
+  assert.ok(w.private.classical_kpass.length > 0);
+  assert.equal((w.public as any).classical_private_key, undefined);
 });
