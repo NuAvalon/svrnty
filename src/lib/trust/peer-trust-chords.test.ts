@@ -162,6 +162,20 @@ test('Know chord fail-closed: one-way disclosed_circle or missing vis or tags-on
     0,
     'tags must never invent a Know bond',
   );
+  assert.equal(
+    witnessedPeerKnowChords([
+      edge('sally', {
+        open_visibility: true,
+        metadata: { mutual_contacts: ['joe'] },
+      } as unknown as TrustEdge),
+      edge('joe', {
+        open_visibility: true,
+        metadata: { mutual_contacts: ['sally'] },
+      } as unknown as TrustEdge),
+    ]).length,
+    0,
+    'card-exchange mutual_contacts is not disclosed_circle',
+  );
 });
 
 test('pending Gate/intro is not a Know chord', () => {

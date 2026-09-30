@@ -95,6 +95,17 @@ test('keyless sample rows keep a stable demo fingerprint for peer chords', () =>
   assert.equal(edge.open_visibility, true);
 });
 
+test('mutual_contacts is not projected as disclosed_circle', () => {
+  const edge = contactRecordToEdge({
+    id: 'm',
+    fingerprint: 'fp-m',
+    name: 'Mo',
+    public_key: 'PK',
+    metadata: { mutual_contacts: ['fp-other'] },
+  });
+  assert.equal(edge.disclosed_circle, undefined);
+});
+
 test('a contact with no pq → edge pq is undefined (no crash, classical-only edge)', () => {
   const edge = contactRecordToEdge({ id: 'z', fingerprint: 'fp3', name: 'Cy', public_key: 'PK3' });
   assert.equal(edge.peer_pq_kem_public_key, undefined);
