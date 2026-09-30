@@ -95,3 +95,42 @@ export function peerTrustNeighbors(focusId: string, contacts: TrustEdge[]): Set<
   }
   return out;
 }
+
+/**
+ * Disclosed-circle chords — the "who you both know" PSI intersection, made visible.
+ *
+ * After a CONSENTED PSI run, a peer's edge carries `disclosed_circle`: the fingerprints THEY disclosed
+ * they also know, intersected with MY book (know-layer-sync.ts — consented disclosure, never inferred
+ * from tags). Each (peer, shared-contact) pair is an HONEST witnessed edge "this peer also knows this
+ * contact of mine" → a chord between the two nodes (both already in my book). The REAL computed
+ * disclosed_circle — not a mock, not friends-of-friends inference.
+ *
+ * Render gates on isPSIDiscoveryLive (disclosed_circle only populates honestly when PSI is live).
+ * Fail-closed: a disclosed fp not in my book is skipped (only chords between two nodes I already hold).
+ */
+export function witnessedDisclosedCircleChords(contacts: TrustEdge[]): WitnessedPeerChord[] {
+  const inBook = new Set(contacts.map((c) => fpOf(c)).filter(Boolean));
+  const chords: WitnessedPeerChord[] = [];
+  const seen = new Set<string>();
+  for (const c of contacts) {
+    const peer = fpOf(c);
+    if (!peer) continue;
+    const src = c as ChordSource & { disclosed_circle?: string[]; metadata?: { disclosed_circle?: string[] } };
+    const discList = Array.isArray(c.disclosed_circle)
+      ? c.disclosed_circle
+      : Array.isArray(src.metadata?.disclosed_circle)
+        ? src.metadata?.disclosed_circle
+        : undefined;
+    if (!discList) continue;
+    for (const raw of discList) {
+      const shared = (raw || '').toLowerCase();
+      if (!shared || shared === peer || !inBook.has(shared)) continue; // only chords to contacts in my book
+      const key = peer < shared ? `${peer}|${shared}` : `${shared}|${peer}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const [a, b] = peer < shared ? [peer, shared] : [shared, peer];
+      chords.push({ a, b });
+    }
+  }
+  return chords;
+}

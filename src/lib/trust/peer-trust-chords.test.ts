@@ -1,7 +1,7 @@
 // Run: npx tsx --test src/lib/trust/peer-trust-chords.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { peerTrustNeighbors, witnessedPeerTrustChords } from './peer-trust-chords';
+import { peerTrustNeighbors, witnessedPeerTrustChords, witnessedDisclosedCircleChords } from './peer-trust-chords';
 import type { TrustEdge } from './types';
 
 function edge(fp: string, extra: Partial<TrustEdge> = {}): TrustEdge {
@@ -111,4 +111,26 @@ test('untrusted contact listed in they_trust — no chord', () => {
     }),
   ];
   assert.equal(witnessedPeerTrustChords(contacts).length, 0);
+});
+
+// ── witnessedDisclosedCircleChords — the "who you both know" PSI intersection render-data ──
+test('disclosed-circle: Bob discloses knowing Carol (in my book) → chord Bob↔Carol', () => {
+  const contacts = [edge('bob', { disclosed_circle: ['carol'] }), edge('carol'), edge('dave')];
+  const chords = witnessedDisclosedCircleChords(contacts);
+  assert.equal(chords.length, 1);
+  assert.deepEqual(chords[0], { a: 'bob', b: 'carol' }); // sorted bob<carol
+});
+
+test('disclosed-circle: a disclosed fp NOT in my book is skipped (fail-closed — only chords between held nodes)', () => {
+  const contacts = [edge('bob', { disclosed_circle: ['stranger-not-in-book'] }), edge('carol')];
+  assert.equal(witnessedDisclosedCircleChords(contacts).length, 0);
+});
+
+test('disclosed-circle: dedupe — Bob↔Carol disclosed from both sides → ONE chord', () => {
+  const contacts = [edge('bob', { disclosed_circle: ['carol'] }), edge('carol', { disclosed_circle: ['bob'] })];
+  assert.equal(witnessedDisclosedCircleChords(contacts).length, 1);
+});
+
+test('disclosed-circle: no disclosed_circle → no chords (dormant until PSI populates)', () => {
+  assert.equal(witnessedDisclosedCircleChords([edge('bob'), edge('carol')]).length, 0);
 });
