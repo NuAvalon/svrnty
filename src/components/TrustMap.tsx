@@ -1317,7 +1317,7 @@ export function TrustMap({
           padding: '10px 12px',
           borderRadius: 10,
           border: `1px solid ${E.border}`,
-          background: 'color-mix(in srgb, var(--se-surface-solid) 55%, transparent)',
+          background: 'color-mix(in srgb, var(--se-bg) 70%, transparent)',
           fontFamily: E.fontSans,
         }}
       >
