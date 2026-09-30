@@ -207,6 +207,10 @@ export function arrivalFromPendingJoiner(
   };
   const sig = pqToB64(pj.pqSigningPublicKey);
   if (sig) arrival.pqSigPublicKey = sig;
+  // §5 canonical-fp: carry the KEM leg too, else buildAdmitRecord omits pq_kem_public_key and addContact's
+  // canonical fingerprintMatchesKey (needs BOTH PQ legs) refuses the joiner ("binding failed").
+  const kem = pqToB64(pj.pqKemPublicKey);
+  if (kem) arrival.pqKemPublicKey = kem;
   return arrival;
 }
 
