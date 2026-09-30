@@ -2,7 +2,7 @@
 
 // Notes PWA (/msg) — Phase 3 rung 1 · Hive aesthetic (mobile-first).
 // Claim discipline: NOTES between admitted contacts — not "messaging".
-// Visual language: sovereign YOU node ↔ hex hive of admitted keys (Apollo Hive glimpse).
+// Visual language: solar ember field, pointy-top hexes, same as the galaxy.
 // No trading/berries mechanics — only the network geometry + palette.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -592,7 +592,9 @@ export default function NotesPage() {
                         onClick={() => selectPeer(c.fingerprint)}
                         title={c.name || c.fingerprint}
                       >
-                        <span className="hex-shape" />
+                        <EmberHex
+                          kind={selectedNode ? 'selected' : hasThread ? 'thread' : isAgent ? 'agent' : 'known'}
+                        />
                         <span className="hex-label">{(c.name || '?').slice(0, 10)}</span>
                         <span className="hex-sub">{isAgent ? 'Agent' : hasThread ? 'Thread' : 'Known'}</span>
                       </button>
@@ -801,6 +803,76 @@ function Steps({ phase }: { phase: Phase }) {
   );
 }
 
+/** Pointy-top hex, same vertices as the galaxy map. */
+function hexPoints(cx: number, cy: number, r: number): string {
+  const pts: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 3;
+    pts.push(`${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`);
+  }
+  return pts.join(' ');
+}
+
+function EmberHex({
+  kind,
+  large,
+}: {
+  kind: 'you' | 'thread' | 'known' | 'agent' | 'selected';
+  large?: boolean;
+}) {
+  const w = large ? 96 : kind === 'you' ? 84 : 68;
+  const h = large ? 108 : kind === 'you' ? 94 : 76;
+  const cx = w / 2;
+  const cy = h / 2 - 2;
+  const r = large ? 36 : kind === 'you' ? 30 : 24;
+  const lit = kind === 'you' || kind === 'thread' || kind === 'selected';
+  const fill = kind === 'you'
+    ? 'var(--se-bg)'
+    : kind === 'thread' || kind === 'selected'
+      ? 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))'
+      : kind === 'agent'
+        ? 'color-mix(in srgb, var(--se-accent2) 12%, transparent)'
+        : 'color-mix(in srgb, var(--se-accent) 18%, var(--se-bg))';
+  const stroke = kind === 'thread' || kind === 'agent' ? 'var(--se-accent2)' : 'var(--se-accent)';
+  return (
+    <svg className="ember-hex" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
+      {kind === 'you' && (
+        <polygon
+          points={hexPoints(cx, cy, r + 8)}
+          fill="none"
+          stroke="var(--se-accent)"
+          strokeWidth={0.85}
+          opacity={0.38}
+        />
+      )}
+      {(kind === 'thread' || kind === 'selected') && (
+        <polygon
+          points={hexPoints(cx, cy, r + 4)}
+          fill="none"
+          stroke="#fff8ee"
+          strokeOpacity={0.28}
+          strokeWidth={1.05}
+        />
+      )}
+      <polygon
+        points={hexPoints(cx, cy, r)}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={lit ? 1.7 : 1.45}
+      />
+      {lit && (
+        <>
+          <circle cx={cx} cy={cy} r={r * 0.42} fill="#fff8ee" opacity={0.16} />
+          <circle className="ember-core" cx={cx} cy={cy} r={Math.max(2.4, r * 0.22)} fill="#fffef8" />
+        </>
+      )}
+      {!lit && (
+        <circle cx={cx} cy={cy} r={Math.max(1.8, r * 0.18)} fill={stroke} opacity={0.85} />
+      )}
+    </svg>
+  );
+}
+
 function HexMark({
   label,
   sub,
@@ -814,7 +886,7 @@ function HexMark({
 }) {
   return (
     <div className={`hex-mark ${tone} ${large ? 'large' : ''}`}>
-      <span className="hex-shape" />
+      <EmberHex kind={tone === 'you' ? 'you' : 'known'} large={large} />
       <span className="hex-label">{label}</span>
       <span className="hex-sub">{sub}</span>
     </div>
@@ -825,23 +897,16 @@ function HiveStyles() {
   return (
     <style>{`
       .hive {
-        --bg0: #030712;
-        --bg1: #0a1630;
-        --cyan: #5ee7ff;
-        --cyan-dim: rgba(94, 231, 255, 0.35);
-        --gold: #e8c547;
-        --gold-dim: rgba(232, 197, 71, 0.35);
-        --cream: #e8eef8;
-        --muted: rgba(200, 214, 235, 0.45);
-        --err: #ff8f9a;
-        --ok: #7dffc8;
+        --cream: var(--se-text);
+        --muted: var(--se-muted);
+        --gold: var(--se-accent);
+        --err: var(--se-danger);
+        --ok: var(--se-ok);
+        accent-color: var(--se-accent);
         min-height: 100dvh;
-        color: var(--cream);
+        color: var(--se-text);
         font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif;
-        background:
-          radial-gradient(ellipse 80% 55% at 50% 18%, rgba(40, 90, 160, 0.28), transparent 60%),
-          radial-gradient(ellipse 70% 50% at 50% 100%, rgba(20, 50, 100, 0.35), transparent 55%),
-          linear-gradient(180deg, var(--bg1), var(--bg0));
+        background: var(--se-bg-css);
         position: relative;
         overflow-x: hidden;
       }
@@ -849,11 +914,11 @@ function HiveStyles() {
         content: '';
         position: absolute;
         inset: 0;
-        background-image: radial-gradient(rgba(94, 231, 255, 0.09) 1px, transparent 1px);
-        background-size: 28px 28px;
-        mask-image: radial-gradient(ellipse at 50% 40%, black 20%, transparent 70%);
+        background-image: radial-gradient(color-mix(in srgb, var(--se-accent) 35%, transparent) 1px, transparent 1px);
+        background-size: 22px 22px;
+        mask-image: radial-gradient(ellipse at 50% 42%, black 12%, transparent 70%);
         pointer-events: none;
-        opacity: 0.45;
+        opacity: 0.28;
       }
       .hive-stage {
         position: relative;
@@ -901,27 +966,28 @@ function HiveStyles() {
       .hive-status { color: var(--ok); font-size: 0.8rem; margin: 8px 0 0; text-align: center; }
       .center { text-align: center; }
       .hive-link {
-        color: var(--cyan);
+        color: var(--se-accent);
         text-decoration: none;
         font-size: 0.85rem;
-        border-bottom: 1px solid var(--cyan-dim);
+        border-bottom: 1px solid var(--se-border-lit);
       }
       .hive-chip {
         font: inherit;
         font-size: 11px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        color: var(--cream);
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.18);
+        color: var(--se-muted);
+        background: var(--se-surface);
+        border: 1px solid var(--se-border);
         border-radius: 999px;
         padding: 8px 12px;
         text-decoration: none;
         cursor: pointer;
       }
       .hive-chip.is-on {
-        border-color: var(--cyan);
-        color: var(--cyan);
+        border-color: var(--se-border-lit);
+        color: var(--se-accent);
+        background: color-mix(in srgb, var(--se-accent) 14%, transparent);
       }
       .thread-rail, .ring-picks, .ring-members {
         display: flex;
@@ -931,24 +997,28 @@ function HiveStyles() {
         margin: 0 0 14px;
       }
       .ring-panel {
-        border: 1px solid rgba(232, 197, 71, 0.28);
+        border: 1px solid var(--se-border);
         border-radius: 16px;
         padding: 12px;
         margin-bottom: 14px;
-        background: rgba(4, 12, 28, 0.72);
+        background: var(--se-surface-solid);
+        box-shadow: var(--se-glass-shadow);
+        backdrop-filter: blur(20px);
       }
       .ring-label {
         width: 100%;
         box-sizing: border-box;
         font: inherit;
         border-radius: 12px;
-        border: 1px solid rgba(94, 231, 255, 0.45);
-        background: rgba(3, 10, 24, 0.85);
-        color: var(--cream);
+        border: 1px solid var(--se-border);
+        background: var(--se-input-bg);
+        color: var(--se-text);
         padding: 12px 14px;
         margin: 8px 0 12px;
       }
-      .ring-label::placeholder { color: rgba(200, 214, 235, 0.55); }
+      .ring-label::placeholder,
+      .hive-form input::placeholder,
+      .composer textarea::placeholder { color: color-mix(in srgb, var(--se-dim) 80%, transparent); }
       .ring-picks label, .ring-members span {
         font-size: 12px;
         color: var(--cream);
@@ -966,9 +1036,9 @@ function HiveStyles() {
       }
       .ring-add select {
         font: inherit;
-        color: var(--cream);
-        background: rgba(3, 10, 24, 0.85);
-        border: 1px solid rgba(94, 231, 255, 0.45);
+        color: var(--se-text);
+        background: var(--se-input-bg);
+        border: 1px solid var(--se-border);
         border-radius: 12px;
         padding: 8px 10px;
       }
@@ -1009,9 +1079,9 @@ function HiveStyles() {
         font-size: 10px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        color: rgba(200, 214, 235, 0.35);
+        color: var(--se-dim);
       }
-      .hive-steps li.on { color: var(--cyan); }
+      .hive-steps li.on { color: var(--se-accent); }
       .hive-steps .dot {
         width: 6px; height: 6px; border-radius: 50%;
         background: currentColor;
@@ -1038,24 +1108,28 @@ function HiveStyles() {
       .hive-form input, .composer textarea {
         font: inherit;
         border-radius: 12px;
-        border: 1px solid rgba(94, 231, 255, 0.25);
-        background: rgba(3, 10, 24, 0.65);
-        color: var(--cream);
+        border: 1px solid var(--se-border);
+        background: var(--se-input-bg);
+        color: var(--se-text);
         padding: 12px 14px;
-        box-shadow: inset 0 0 20px rgba(94, 231, 255, 0.04);
+      }
+      .hive-form input:focus, .composer textarea:focus, .ring-label:focus, .ring-add select:focus {
+        outline: none;
+        border-color: var(--se-border-lit);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--se-accent) 18%, transparent);
       }
       .hive-form button, .seal-btn {
         font: inherit;
         cursor: pointer;
         border-radius: 12px;
-        border: 1px solid var(--gold-dim);
-        background: linear-gradient(180deg, rgba(232, 197, 71, 0.18), rgba(232, 197, 71, 0.06));
-        color: var(--gold);
+        border: 1px solid var(--se-border-lit);
+        background: color-mix(in srgb, var(--se-accent) 16%, transparent);
+        color: var(--se-accent);
         padding: 12px 14px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         font-size: 12px;
-        box-shadow: 0 0 24px rgba(232, 197, 71, 0.12);
+        box-shadow: var(--se-glass-shadow);
       }
       .seal-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -1078,8 +1152,8 @@ function HiveStyles() {
       .hive-spine {
         width: 2px;
         flex: 0 0 36px;
-        background: linear-gradient(180deg, var(--gold), var(--cyan));
-        box-shadow: 0 0 12px var(--cyan-dim);
+        background: linear-gradient(180deg, var(--se-accent), var(--se-accent2));
+        box-shadow: 0 0 12px color-mix(in srgb, var(--se-accent) 45%, transparent);
         border-radius: 2px;
         margin: 6px 0;
         opacity: 0.85;
@@ -1101,87 +1175,56 @@ function HiveStyles() {
       }
 
       .hex-node, .hex-mark {
-        position: relative;
-        width: 72px;
-        height: 84px;
         border: none;
         background: transparent;
-        color: var(--cream);
+        color: var(--se-text);
         cursor: pointer;
         padding: 0;
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: center;
+        gap: 1px;
         animation: hex-pop 0.55s ease-out both;
         animation-delay: calc(var(--i, 0) * 35ms);
       }
-      .hex-mark { cursor: default; width: 88px; height: 100px; }
-      .hex-mark.large { width: 110px; height: 124px; }
-      .hex-shape {
-        position: absolute;
-        inset: 8px 6px 22px;
-        background: rgba(8, 20, 42, 0.9);
-        clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-        border: none;
-        box-shadow:
-          0 0 0 1px var(--gold-dim),
-          0 0 18px rgba(232, 197, 71, 0.2);
+      .hex-mark { cursor: default; }
+      .ember-hex { display: block; overflow: visible; }
+      .ember-core {
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: ember-breathe 3.6s ease-in-out infinite;
       }
-      .hex-mark.you .hex-shape, .hex-node.is-selected .hex-shape {
-        box-shadow:
-          0 0 0 1.5px var(--cyan),
-          0 0 22px rgba(94, 231, 255, 0.45);
-        background: rgba(10, 36, 64, 0.95);
-      }
-      .hex-node.has-thread .hex-shape {
-        box-shadow:
-          0 0 0 1px var(--gold),
-          0 0 16px rgba(232, 197, 71, 0.35);
-      }
-      .hex-node.is-agent .hex-shape {
-        box-shadow:
-          0 0 0 1px rgba(125, 255, 200, 0.45),
-          0 0 14px rgba(125, 255, 200, 0.2);
-      }
-      .hex-node.is-selected {
-        transform: translateY(-2px) scale(1.06);
-      }
+      .hex-node.is-selected { transform: translateY(-2px); }
       .hex-label {
-        position: relative;
-        z-index: 1;
         font-size: 10px;
         font-weight: 600;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
-        max-width: 62px;
+        max-width: 76px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        margin-top: -6px;
+        color: var(--se-text);
       }
-      .hex-mark .hex-label { font-size: 13px; letter-spacing: 0.12em; }
-      .hex-mark.large .hex-label { font-size: 15px; }
+      .hex-mark .hex-label { font-size: 12px; letter-spacing: 0.16em; }
+      .hex-mark.large .hex-label { font-size: 13px; }
       .hex-sub {
-        position: relative;
-        z-index: 1;
         font-size: 8px;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: var(--muted);
-        margin-top: 2px;
+        color: var(--se-dim);
       }
-      .hex-mark.you .hex-sub { color: var(--cyan); }
+      .hex-mark.you .hex-sub { color: var(--se-accent); }
 
       .hive-sheet {
         margin-top: 8px;
-        border: 1px solid rgba(94, 231, 255, 0.22);
-        border-radius: 20px 20px 16px 16px;
-        background: rgba(4, 12, 28, 0.88);
-        box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.45), 0 0 30px rgba(94, 231, 255, 0.08);
+        border: 1px solid var(--se-border);
+        border-radius: 16px;
+        background: var(--se-surface-solid);
+        box-shadow: var(--se-glass-shadow);
         padding: 14px 14px 16px;
         animation: sheet-up 0.35s ease-out both;
-        backdrop-filter: blur(10px);
+        backdrop-filter: blur(20px);
       }
       .sheet-head {
         display: flex;
@@ -1208,8 +1251,8 @@ function HiveStyles() {
         max-width: 88%;
         padding: 10px 12px;
         border-radius: 14px;
-        border: 1px solid rgba(255,255,255,0.08);
-        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--se-border);
+        background: var(--se-surface);
       }
       .bubble p { margin: 0 0 6px; white-space: pre-wrap; font-size: 0.92rem; }
       .bubble time {
@@ -1219,13 +1262,13 @@ function HiveStyles() {
       }
       .bubble.out {
         align-self: flex-end;
-        border-color: rgba(94, 231, 255, 0.28);
-        background: rgba(94, 231, 255, 0.07);
+        border-color: var(--se-border-lit);
+        background: color-mix(in srgb, var(--se-accent) 12%, transparent);
       }
       .bubble.in {
         align-self: flex-start;
-        border-color: rgba(232, 197, 71, 0.22);
-        background: rgba(232, 197, 71, 0.05);
+        border-color: color-mix(in srgb, var(--se-accent2) 45%, transparent);
+        background: color-mix(in srgb, var(--se-accent2) 10%, transparent);
       }
       .composer { display: flex; flex-direction: column; gap: 8px; }
 
@@ -1238,11 +1281,15 @@ function HiveStyles() {
         to { opacity: 1; transform: scale(1); }
       }
       @keyframes sheet-up {
-        from { opacity: 0; transform: translateY(24px); }
-        to { opacity: 1; transform: translateY(0); }
+        from { transform: translateY(16px); }
+        to { transform: translateY(0); }
+      }
+      @keyframes ember-breathe {
+        0%, 100% { opacity: 0.72; }
+        50% { opacity: 1; }
       }
       @media (prefers-reduced-motion: reduce) {
-        .hive-lock, .hive-cluster, .hive-you, .hex-node, .hive-sheet { animation: none; }
+        .hive-lock, .hive-cluster, .hive-you, .hex-node, .hive-sheet, .ember-core { animation: none; }
       }
       @media (min-width: 720px) {
         .hive-stage { max-width: 560px; padding-top: 28px; }
