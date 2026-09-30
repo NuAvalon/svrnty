@@ -23,6 +23,7 @@ import {
   canonicalPubsFromArmoredPublicKey,
   fingerprintMatchesKey,
   canonicalClaimMatches,
+  buildSatelliteRegisterFields,
   SIGN_PUB_LEN,
   ENC_PUB_LEN,
   KEM_PUB_LEN,
@@ -199,4 +200,46 @@ test('bind + PSI-auth preimages are the exact UTF-8 strings; signatures verify',
   assert.equal(ed25519.verify(fromWrapped, psiMsg, signPub), true);
   const alreadyFull = psiAuthPreimage(fp, 1_700_000_000);
   assert.equal(ed25519.verify(signPsiAuthWrapped(seed, alreadyFull), alreadyFull, signPub), true);
+});
+
+test('buildSatelliteRegisterFields emits the satellite /register contract (base64 raw keys, correct names, SHA256(sign‖enc‖kem‖sig)==fingerprint)', async () => {
+  const kemB64 = Buffer.from(pq.kem.publicKey).toString('base64');
+  const sigB64 = Buffer.from(pq.signing.publicKey).toString('base64');
+  const canonical = await canonicalPubsFromArmoredPublicKey(publicKey, kemB64, sigB64);
+
+  const fields = await buildSatelliteRegisterFields({
+    identity: { fingerprint: canonical.fingerprint, public_key: publicKey, name: 'Canon' },
+    post_quantum: { kem_public_key: kemB64, sig_public_key: sigB64 },
+  });
+  assert.ok(fields, 'fields must be non-null for a full PQ identity');
+
+  // public_key is base64 raw Ed25519, NOT OpenPGP-armored (the prior 400 "Invalid public_key encoding").
+  assert.equal(fields!.public_key.includes('BEGIN PGP'), false);
+
+  // Every key field base64-decodes to its exact FIPS length (I-6 injectivity, satellite-enforced).
+  const pkB = Buffer.from(fields!.public_key, 'base64');
+  const encB = Buffer.from(fields!.encryption_pk, 'base64');
+  const kemBytes = Buffer.from(fields!.pq_kem_pk, 'base64');
+  const sigBytes = Buffer.from(fields!.pq_sig_pk, 'base64');
+  assert.equal(pkB.length, SIGN_PUB_LEN); // 32
+  assert.equal(encB.length, ENC_PUB_LEN); // 32
+  assert.equal(kemBytes.length, KEM_PUB_LEN); // 1568
+  assert.equal(sigBytes.length, SIG_PUB_LEN); // 2592
+
+  // THE satellite re-derivation (register_identity): SHA256(sign‖enc‖kem‖sig) must equal the
+  // fingerprint. Green here ⇒ the satellite verifies the wire payload ⇒ register 200 by construction.
+  const bundle = new Uint8Array(SIGN_PUB_LEN + ENC_PUB_LEN + KEM_PUB_LEN + SIG_PUB_LEN);
+  bundle.set(pkB, 0);
+  bundle.set(encB, SIGN_PUB_LEN);
+  bundle.set(kemBytes, SIGN_PUB_LEN + ENC_PUB_LEN);
+  bundle.set(sigBytes, SIGN_PUB_LEN + ENC_PUB_LEN + KEM_PUB_LEN);
+  assert.equal(bytesToHex(sha256(bundle)), fields!.fingerprint);
+  assert.equal(fields!.fingerprint, canonical.fingerprint);
+
+  // crypto_version satisfies the satellite regex ^(classical|hybrid-v1)$.
+  assert.equal(fields!.crypto_version, 'hybrid-v1');
+
+  // The wrong-shape fields the client used to send are gone (armored public_key / hex sign_pub/…).
+  assert.equal((fields as Record<string, unknown>).sign_pub, undefined);
+  assert.equal((fields as Record<string, unknown>).enc_pub, undefined);
 });

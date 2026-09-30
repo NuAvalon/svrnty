@@ -5,17 +5,23 @@ import { NextRequest, NextResponse } from 'next/server';
 const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
 
 const SHORT_MAX = 4096;
-const KEY_HEX_MAX = 16384; // ML-DSA-87 pubkey hex is 5184 chars
+const KEY_MATERIAL_MAX = 16384; // base64 of ML-DSA-87 (2592B) = 3456 chars; hex was 5184 — 16384 covers both
+// Satellite RegisterRequest contract (satellite.py): base64 raw pubkeys under these EXACT names
+// + crypto_version. The old sign_pub/enc_pub/kem_pub/sig_pub matched no backend decoder and were
+// stripped here / ignored downstream → register-400. Keep the allowlist and the client builder
+// (buildSatelliteRegisterFields) in lockstep with the satellite schema.
 const ALLOWED_FIELDS = [
   'fingerprint',
   'public_key',
   'name',
+  'display_name',
   'slug',
-  'sign_pub',
-  'enc_pub',
-  'kem_pub',
-  'sig_pub',
+  'encryption_pk',
+  'pq_kem_pk',
+  'pq_sig_pk',
+  'crypto_version',
 ] as const;
+const KEY_MATERIAL_FIELDS = new Set<string>(['public_key', 'encryption_pk', 'pq_kem_pk', 'pq_sig_pk']);
 
 export async function POST(request: NextRequest) {
   try {
@@ -25,7 +31,7 @@ export async function POST(request: NextRequest) {
     }
     const body: Record<string, unknown> = {};
     for (const key of ALLOWED_FIELDS) {
-      const max = key.endsWith('_pub') ? KEY_HEX_MAX : SHORT_MAX;
+      const max = KEY_MATERIAL_FIELDS.has(key) ? KEY_MATERIAL_MAX : SHORT_MAX;
       if (key in raw && typeof raw[key] === 'string' && raw[key].length <= max) {
         body[key] = raw[key];
       }
