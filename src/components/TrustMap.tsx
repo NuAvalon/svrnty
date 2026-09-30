@@ -67,6 +67,8 @@ import {
   revisionsForPeer,
   type MethodRevision,
 } from '@/components/identity/method-history';
+import { VerifySheet } from '@/components/verify/VerifySheet';
+import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
 
 interface PendingIntro {
   introduced_by: string;
@@ -414,7 +416,7 @@ export function TrustMap({
   const [showHistory, setShowHistory] = useState(false);
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
-  const [verifyConfirm, setVerifyConfirm] = useState<'in_person' | 'other_channel' | null>(null);
+  const [verifyOpen, setVerifyOpen] = useState(false);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -432,7 +434,7 @@ export function TrustMap({
     setShowHistory(false);
     setActionNote(null);
     setConfirmKind(null);
-    setVerifyConfirm(null);
+    setVerifyOpen(false);
   }, []);
 
   const confirmTarget: TrustActionTarget | null = focusEdge
@@ -500,6 +502,7 @@ export function TrustMap({
     setActionsOpen(false);
     setShowHistory(false);
     setActionNote(null);
+    setVerifyOpen(false);
   }, [edgeByFp]);
 
   const handleNodeClick = useCallback((id: string, multi: boolean) => {
@@ -923,7 +926,13 @@ export function TrustMap({
                     }
                     strokeWidth={n.state === 'trusted' ? (mutual ? 2 : 1.4) : pending ? 1.1 : 0.7}
                     strokeDasharray={
-                      pending ? '5 4' : n.state === 'decayed' ? '3 3' : n.state === 'known' ? '2 3' : undefined
+                      pending
+                        ? '5 4'
+                        : n.state === 'decayed'
+                          ? '3 3'
+                          : n.state === 'known' && !(edge && ownerHasVerified(edge))
+                            ? '2 3'
+                            : undefined
                     }
                     style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.15 + i * 0.03}s` }}
                   />
@@ -956,6 +965,7 @@ export function TrustMap({
                   selected={focusId === n.id}
                   picked={picked.has(n.id)}
                   pending={isPending(edge)}
+                  verified={!!edge && ownerHasVerified(edge)}
                   mutual={!!edge?.mutual?.reciprocal}
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
@@ -1446,6 +1456,14 @@ export function TrustMap({
               gap: 10,
             }}
           >
+            {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
+              <ActionBtn
+                testId="galaxy-verify"
+                label={VERIFY_SHEET_COPY.title}
+                primary
+                onClick={() => setVerifyOpen(true)}
+              />
+            )}
             <ActionBtn
               label="Actions"
               primary
@@ -1483,44 +1501,6 @@ export function TrustMap({
                     }}
                   />
                 )}
-                {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
-                  verifyConfirm ? (
-                    <div data-testid="verify-confirm" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <p style={{ margin: 0, fontSize: 12, color: E.dim, lineHeight: 1.45 }}>
-                        {TRUST_RECIPE_COPY.verifyConfirmBody}
-                      </p>
-                      <ActionBtn
-                        testId="verify-confirm-yes"
-                        label={
-                          verifyConfirm === 'in_person'
-                            ? TRUST_RECIPE_COPY.verifyConfirm
-                            : TRUST_RECIPE_COPY.verifyOtherChannel
-                        }
-                        primary
-                        onClick={() => {
-                          const method = verifyConfirm;
-                          setVerifyConfirm(null);
-                          void runAction(
-                            () => onOwnerVerify(focusEdge, method),
-                            'Saved here only.',
-                          );
-                        }}
-                      />
-                      <ActionBtn label="Not yet" onClick={() => setVerifyConfirm(null)} />
-                    </div>
-                  ) : (
-                  <>
-                    <ActionBtn
-                      label={TRUST_RECIPE_COPY.verifyInPerson}
-                      onClick={() => setVerifyConfirm('in_person')}
-                    />
-                    <ActionBtn
-                      label={TRUST_RECIPE_COPY.verifyOtherChannel}
-                      onClick={() => setVerifyConfirm('other_channel')}
-                    />
-                  </>
-                  )
-                )}
                 {!isPending(focusEdge) && onTrustToggle && (
                   <ActionBtn
                     label={
@@ -1540,7 +1520,7 @@ export function TrustMap({
                         return;
                       }
                       if (!ownerHasVerified(focusEdge)) {
-                        setActionNote(TRUST_RECIPE_COPY.verifyWhy);
+                        setVerifyOpen(true);
                         return;
                       }
                       setConfirmKind('trust');
@@ -1664,6 +1644,18 @@ export function TrustMap({
         </div>
       )}
 
+      <VerifySheet
+        open={verifyOpen && !!focusEdge}
+        onClose={() => setVerifyOpen(false)}
+        displayName={focusEdge?.peer_name || focusNode?.name || ''}
+        fingerprint={focusEdge?.peer_fingerprint || ''}
+        onConfirm={async (method) => {
+          if (!focusEdge || !onOwnerVerify) return;
+          await onOwnerVerify(focusEdge, method);
+          setActionNote('Saved here only.');
+        }}
+      />
+
       <TrustActionConfirmDialog
         open={!!confirmKind && !!confirmTarget}
         kind={confirmKind}
@@ -1744,6 +1736,7 @@ function ContactNode({
   selected,
   picked,
   pending,
+  verified,
   mutual,
   distress,
   ignite,
@@ -1754,6 +1747,7 @@ function ContactNode({
   selected: boolean;
   picked: boolean;
   pending: boolean;
+  verified: boolean;
   mutual: boolean;
   distress: boolean;
   ignite: boolean;
@@ -1761,6 +1755,7 @@ function ContactNode({
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
   const trusted = node.state === 'trusted' && !pending;
+  const dashed = pending || node.state === 'decayed' || (node.state === 'known' && !verified);
   return (
     <g
       className={`tm-node${pending ? ' tm-pending' : ''}${ignite ? ' tm-ignite' : ''}`}
@@ -1799,6 +1794,7 @@ function ContactNode({
         data-testid="trust-node"
         data-fingerprint={node.id}
         data-trust-state={pending ? 'pending' : node.state}
+        data-verified={verified ? 'true' : 'false'}
         data-mutual={mutual ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
@@ -1808,7 +1804,7 @@ function ContactNode({
         fill={nodeFill(node.state, pending)}
         stroke={picked ? E.accent : selected ? T.selfDot : nodeStroke(node.state, pending)}
         strokeWidth={picked || trusted ? 1.8 : pending ? 1.4 : 0.9}
-        strokeDasharray={pending ? '3 2' : node.state === 'decayed' || node.state === 'known' ? '2 2' : undefined}
+        strokeDasharray={dashed ? (pending ? '3 2' : '2 2') : undefined}
       >
         <title>{`${node.name} — ${pending ? 'pending intro' : describe(node)}${mutual ? ' · mutual' : ''}`}</title>
       </circle>
