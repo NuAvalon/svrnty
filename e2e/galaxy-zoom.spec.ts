@@ -26,6 +26,11 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
 
   await expect(page.getByTestId('trust-map')).toBeVisible();
+  await expect(page.getByTestId('trust-map-legend')).toContainText(
+    /disclosures, not observations/i,
+  );
+  await expect(page.getByTestId('trust-map-legend')).toContainText(/never infers who knows whom/i);
+  await expect(page.getByTestId('trust-map-legend')).toContainText(/consented to show/i);
   await expect(page.getByTestId('trust-map-empty')).toContainText(/Grow your galaxy/i);
   await expect(page.getByTestId('trust-map-load-sample')).toHaveCount(0);
   await expect(page.getByTestId('trust-map-grow')).toBeVisible();

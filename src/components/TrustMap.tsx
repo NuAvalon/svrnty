@@ -72,6 +72,7 @@ import {
 } from '@/components/identity/method-history';
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
+import { PEER_MESH_ANTI_SURVEILLANCE } from '@/components/peer-mesh-copy';
 
 interface PendingIntro {
   introduced_by: string;
@@ -1321,6 +1322,7 @@ export function TrustMap({
         Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
         Spokes go to you. Solid gold between people is Know they both consented to show;
         white-gold is mutual Trust. Dashed gold is a group you named — not a bond.
+        {PEER_MESH_ANTI_SURVEILLANCE}{' '}
         Verify is a private ember — nobody else sees a badge. The U is your known sphere; the hole is the Gate.
       </p>
 
