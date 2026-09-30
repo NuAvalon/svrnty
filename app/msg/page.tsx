@@ -2,7 +2,7 @@
 
 // Notes PWA (/msg) — Phase 3 rung 1 · Hive aesthetic (mobile-first).
 // Claim discipline: NOTES between admitted contacts — not "messaging".
-// Visual language: sovereign YOU node ↔ hex hive of admitted keys (Apollo Hive glimpse).
+// Visual language: solar ember field, pointy-top hexes, same as the galaxy.
 // No trading/berries mechanics — only the network geometry + palette.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -26,10 +26,29 @@ import {
   lockNotesStore,
   listThreads,
   listNotesForThread,
+  listRingChannels,
   sendNoteToPeer,
+  sendRingNote,
+  sendRingHistory,
   putThread,
+  putRingChannel,
+  createRingChannel,
+  addRingMember,
+  removeRingMember,
+  notesToShare,
+  exportNotesBackup,
+  newThreadId,
+  loadRatchetIdentity,
+  ringPeerFromContact,
+  mainTimeline,
+  sideThread,
+  replyCount,
+  replyLink,
   type NoteThread,
   type NoteRecord,
+  type RingChannel,
+  type RingHistoryAccess,
+  type RingPeer,
 } from '@/lib/messaging';
 
 type Gate = 'loading' | 'locked' | 'ready' | 'empty';
@@ -50,11 +69,21 @@ export default function NotesPage() {
   const [status, setStatus] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [phase, setPhase] = useState<Phase>('select');
+  const [rings, setRings] = useState<RingChannel[]>([]);
+  const [ringOpen, setRingOpen] = useState(false);
+  const [ringLabel, setRingLabel] = useState('');
+  const [ringPicks, setRingPicks] = useState<string[]>([]);
+  const [activeRingId, setActiveRingId] = useState<string | null>(null);
+  const [sideRoot, setSideRoot] = useState<string | null>(null);
+  const [freshThread, setFreshThread] = useState(false);
+  const [addFp, setAddFp] = useState('');
+  const [addHistory, setAddHistory] = useState<RingHistoryAccess>('new');
 
   const refresh = useCallback(async (fp: string) => {
-    const [c, t] = await Promise.all([getAllContacts(fp), listThreads()]);
+    const [c, t, r] = await Promise.all([getAllContacts(fp), listThreads(), listRingChannels()]);
     setContacts(c);
     setThreads(t);
+    setRings(r);
   }, []);
 
   useEffect(() => {
@@ -122,6 +151,11 @@ export default function NotesPage() {
 
   const selectPeer = (fp: string) => {
     setPeerFp(fp);
+    setActiveRingId(null);
+    setSideRoot(null);
+    setFreshThread(false);
+    setAddFp('');
+    setAddHistory('new');
     setPhase('compose');
     setStatus(null);
     const existing = threads.find(
@@ -130,16 +164,86 @@ export default function NotesPage() {
     setActiveThreadId(existing?.thread_id ?? null);
   };
 
-  const handleSend = async () => {
-    if (!draft.trim() || !peerFp) return;
-    const contact = contacts.find((c) => c.fingerprint === peerFp);
-    if (!contact?.public_key) {
-      setStatus('They need a public key in your book before a note can seal.');
-      return;
+  const openThread = (t: NoteThread) => {
+    setActiveThreadId(t.thread_id);
+    setSideRoot(null);
+    setFreshThread(false);
+    setStatus(null);
+    setPhase('compose');
+    setRingOpen(false);
+    setAddFp('');
+    setAddHistory('new');
+    if (t.kind === 'ring' && t.ring_channel_id) {
+      setActiveRingId(t.ring_channel_id);
+      setPeerFp('');
+    } else {
+      setActiveRingId(null);
+      setPeerFp(t.participants[0]?.fingerprint ?? '');
     }
+  };
+
+  const replyFields = () => {
+    if (!sideRoot) return {};
+    const latest = sideThread(notes, sideRoot).at(-1);
+    const link = replyLink(notes, latest?.note_id ?? sideRoot);
+    return link ? { replyTo: link.reply_to, threadRoot: link.thread_root } : {};
+  };
+
+  const handleSend = async () => {
+    if (!draft.trim()) return;
+    const ring = rings.find((r) => r.channel_id === activeRingId) ?? null;
+    if (!ring && !peerFp) return;
     setSending(true);
     setStatus(null);
     try {
+      if (ring) {
+        const self = await loadRatchetIdentity(fingerprint);
+        if (!self) {
+          setStatus('This identity has no hybrid keys yet, so a ring note cannot seal.');
+          return;
+        }
+        const peers: RingPeer[] = [];
+        for (const fp of ring.member_fingerprints) {
+          if (fp === fingerprint) continue;
+          const contact = contacts.find((c) => c.fingerprint === fp);
+          if (!contact) {
+            setStatus('Someone in this ring is not in your book.');
+            return;
+          }
+          const peer = await ringPeerFromContact(contact);
+          if (!peer) {
+            setStatus(`${contact.name || 'A member'} has no hybrid key in your book.`);
+            return;
+          }
+          peers.push(peer);
+        }
+        const threadId = activeThreadId ?? newThreadId();
+        const result = await sendRingNote({
+          self,
+          selfFingerprint: fingerprint,
+          participantKind: 'human',
+          channel: ring,
+          peers,
+          body: draft.trim(),
+          threadId,
+          ...replyFields(),
+        });
+        setDraft('');
+        setFreshThread(false);
+        setActiveThreadId(result.thread_id);
+        setActiveRingId(result.channel.channel_id);
+        setPhase('sealed');
+        setStatus(result.deposited ? 'Sealed · queued to each mailbox' : 'Saved locally · a mailbox deposit failed');
+        await refresh(fingerprint);
+        setNotes(await listNotesForThread(result.thread_id));
+        return;
+      }
+
+      const contact = contacts.find((c) => c.fingerprint === peerFp);
+      if (!contact?.public_key) {
+        setStatus('They need a public key in your book before a note can seal.');
+        return;
+      }
       const key = await loadKey(fingerprint);
       if (!key) throw new Error('Session locked');
       // Sender authentication (Flint #55): sendNoteToPeer signs the note so the recipient can verify
@@ -147,9 +251,6 @@ export default function NotesPage() {
       // — its fingerprint equals `fingerprint` by construction, so the recipient's fingerprintMatchesKey
       // binds the carried key to the claimed sender.
       const senderPublicKeyArmored = (await readPrivateKey({ armoredKey: key.privateKey })).toPublic().armor();
-      const thread = threads.find(
-        (t) => t.kind === 'direct' && t.participants.some((p) => p.fingerprint === peerFp),
-      );
       const result = await sendNoteToPeer({
         sender: { fingerprint, participant_kind: 'human' },
         senderPublicKeyArmored,
@@ -158,11 +259,12 @@ export default function NotesPage() {
         peerFingerprint: peerFp,
         peerPublicKeyArmored: contact.public_key,
         body: draft.trim(),
-        threadId: thread?.thread_id,
+        threadId: freshThread ? undefined : activeThreadId ?? undefined,
+        ...replyFields(),
       });
       const tlist = await listThreads();
       const updated = tlist.find((t) => t.thread_id === result.thread_id);
-      if (updated) {
+      if (updated && updated.kind === 'direct') {
         updated.participants = [
           {
             fingerprint: peerFp,
@@ -173,6 +275,7 @@ export default function NotesPage() {
         await putThread(updated);
       }
       setDraft('');
+      setFreshThread(false);
       setActiveThreadId(result.thread_id);
       setPhase('sealed');
       setStatus(result.deposited ? 'Sealed · queued to their mailbox' : 'Saved locally · mailbox deposit failed');
@@ -185,8 +288,152 @@ export default function NotesPage() {
     }
   };
 
+  const startRing = async () => {
+    if (ringPicks.length < 2) {
+      setStatus('A ring needs two other admitted people.');
+      return;
+    }
+    const members = [fingerprint, ...ringPicks];
+    const channel = createRingChannel(ringLabel, members);
+    const now = new Date().toISOString();
+    const threadId = newThreadId();
+    await putRingChannel(channel);
+    await putThread({
+      thread_id: threadId,
+      kind: 'ring',
+      participants: ringPicks.map((fp) => {
+        const c = contacts.find((x) => x.fingerprint === fp);
+        return {
+          fingerprint: fp,
+          kind: c?.metadata?.identity_type === 'agent' ? 'agent' as const : 'human' as const,
+          display_name: c?.name || fp.slice(0, 8),
+        };
+      }),
+      ring_channel_id: channel.channel_id,
+      created_at: now,
+      last_activity_at: now,
+      retention: { expires_at: null },
+    });
+    setRingLabel('');
+    setRingPicks([]);
+    setRingOpen(false);
+    await refresh(fingerprint);
+    const created = (await listThreads()).find((t) => t.thread_id === threadId);
+    if (created) openThread(created);
+  };
+
+  const backupNotes = async () => {
+    try {
+      const backup = await exportNotesBackup();
+      const blob = new Blob([JSON.stringify(backup)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'svrnty-notes.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus('Saved svrnty-notes.json. That file is the notes themselves, not the contact book.');
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Notes backup failed');
+    }
+  };
+
+  const addToRing = async () => {
+    const ring = rings.find((r) => r.channel_id === activeRingId);
+    if (!ring || !addFp) return;
+    setSending(true);
+    setStatus(null);
+    try {
+      const contact = contacts.find((c) => c.fingerprint === addFp);
+      const history = addHistory;
+      const next = addRingMember(ring, addFp, history);
+      await putRingChannel(next);
+      const thread = threads.find((t) => t.ring_channel_id === ring.channel_id);
+      if (thread && contact) {
+        await putThread({
+          ...thread,
+          participants: [
+            ...thread.participants,
+            {
+              fingerprint: addFp,
+              kind: contact.metadata?.identity_type === 'agent' ? 'agent' as const : 'human' as const,
+              display_name: contact.name || addFp.slice(0, 8),
+            },
+          ],
+          last_activity_at: next.rotated_at,
+        });
+      }
+      let message = history === 'new'
+        ? 'Added. They will see new notes only.'
+        : 'Added. There were no earlier notes on this device to share.';
+      if (history === 'previous' && thread && contact) {
+        const held = await listNotesForThread(thread.thread_id);
+        const share = notesToShare(held, 'previous');
+        if (share.length) {
+          const self = await loadRatchetIdentity(fingerprint);
+          const peer = await ringPeerFromContact(contact);
+          if (!self || !peer) {
+            message = 'They are in the ring. Earlier notes stayed here — a hybrid key is missing.';
+          } else {
+            const sent = await sendRingHistory({
+              self,
+              selfFingerprint: fingerprint,
+              channel: next,
+              peer,
+              history: share,
+              threadId: thread.thread_id,
+            });
+            message = sent.deposited
+              ? 'Added. Earlier notes were sealed only to them.'
+              : 'Added. The earlier-notes seal did not reach their mailbox.';
+          }
+        }
+      }
+      setAddFp('');
+      setAddHistory('new');
+      setStatus(message);
+      await refresh(fingerprint);
+      if (thread) setNotes(await listNotesForThread(thread.thread_id));
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : 'Could not add them');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const removeFromRing = async (fp: string) => {
+    const ring = rings.find((r) => r.channel_id === activeRingId);
+    if (!ring || fp === fingerprint) return;
+    const next = ring.member_fingerprints.filter((m) => m !== fp);
+    if (next.length < 2) {
+      setStatus('A ring needs two people. A direct note is the smaller conversation.');
+      return;
+    }
+    const rotated = removeRingMember(ring, fp);
+    await putRingChannel(rotated);
+    if (activeThreadId) {
+      const t = threads.find((x) => x.thread_id === activeThreadId);
+      if (t) {
+        await putThread({
+          ...t,
+          participants: t.participants.filter((p) => p.fingerprint !== fp),
+          last_activity_at: rotated.rotated_at,
+        });
+      }
+    }
+    await refresh(fingerprint);
+    setStatus('They keep notes they already opened. Later notes are not sealed to them.');
+  };
+
   const selected = contacts.find((c) => c.fingerprint === peerFp);
-  const active = threads.find((t) => t.thread_id === activeThreadId) || null;
+  const activeRing = rings.find((r) => r.channel_id === activeRingId) ?? null;
+  const shown = sideRoot ? sideThread(notes, sideRoot) : mainTimeline(notes);
+  const threadTitle = (t: NoteThread) => {
+    if (t.kind === 'ring') {
+      return rings.find((r) => r.channel_id === t.ring_channel_id)?.local_label || 'Ring';
+    }
+    return t.participants.map((p) => p.display_name).join(', ') || 'Thread';
+  };
 
   return (
     <div className="hive">
@@ -243,6 +490,10 @@ export default function NotesPage() {
                   setPhase('select');
                   setPeerFp('');
                   setActiveThreadId(null);
+                  setActiveRingId(null);
+                  setSideRoot(null);
+                  setFreshThread(false);
+                  setRingOpen(false);
                   setStatus(null);
                 }}
               >
@@ -250,7 +501,70 @@ export default function NotesPage() {
               </button>
             </header>
 
+            {status && phase === 'select' && (
+              <p className="hive-status" data-testid="notes-status">{status}</p>
+            )}
+
             <Steps phase={phase} />
+
+            <div className="thread-rail" data-testid="notes-thread-list">
+              <button type="button" className="hive-chip" data-testid="notes-backup" onClick={backupNotes}>
+                Back up notes
+              </button>
+              <button type="button" className="hive-chip" data-testid="notes-new-ring" onClick={() => { setRingOpen((v) => !v); setStatus(null); }}>
+                New ring
+              </button>
+              {threads.map((t) => (
+                <button
+                  key={t.thread_id}
+                  type="button"
+                  className={`hive-chip ${t.thread_id === activeThreadId ? 'is-on' : ''}`}
+                  onClick={() => openThread(t)}
+                >
+                  {t.kind === 'ring' ? 'Ring · ' : ''}{threadTitle(t)}
+                </button>
+              ))}
+              {threads.length === 0 && <span className="hive-muted">No threads yet.</span>}
+            </div>
+
+            {ringOpen && (
+              <section className="ring-panel" data-testid="notes-ring-create">
+                <p className="hive-eyebrow">Ring · admitted only · relay sees separate sealed mail</p>
+                <input
+                  className="ring-label"
+                  placeholder="Local name (stays on this device)"
+                  value={ringLabel}
+                  onChange={(e) => setRingLabel(e.target.value)}
+                />
+                <div className="ring-picks">
+                  {contacts.map((c) => {
+                    const hybrid = Boolean(c.pq_kem_public_key && c.public_key);
+                    const on = ringPicks.includes(c.fingerprint);
+                    return (
+                      <label key={c.id} className={hybrid ? '' : 'is-dim'}>
+                        <input
+                          type="checkbox"
+                          disabled={!hybrid}
+                          checked={on}
+                          onChange={() => {
+                            setRingPicks((prev) =>
+                              prev.includes(c.fingerprint)
+                                ? prev.filter((fp) => fp !== c.fingerprint)
+                                : [...prev, c.fingerprint],
+                            );
+                          }}
+                        />
+                        {c.name || c.fingerprint.slice(0, 8)}
+                        {!hybrid && <span> · no hybrid key</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+                <button type="button" className="seal-btn" onClick={startRing} disabled={ringPicks.length < 2}>
+                  Start ring
+                </button>
+              </section>
+            )}
 
             {/* Spatial hive — mobile-first: hex cluster above, YOU below */}
             <div className="hive-field" aria-label="Admitted contacts">
@@ -278,7 +592,9 @@ export default function NotesPage() {
                         onClick={() => selectPeer(c.fingerprint)}
                         title={c.name || c.fingerprint}
                       >
-                        <span className="hex-shape" />
+                        <EmberHex
+                          kind={selectedNode ? 'selected' : hasThread ? 'thread' : isAgent ? 'agent' : 'known'}
+                        />
                         <span className="hex-label">{(c.name || '?').slice(0, 10)}</span>
                         <span className="hex-sub">{isAgent ? 'Agent' : hasThread ? 'Thread' : 'Known'}</span>
                       </button>
@@ -296,34 +612,153 @@ export default function NotesPage() {
             </div>
 
             {/* Compose sheet — rises when a hex is selected */}
-            {phase !== 'select' && selected && (
+            {phase !== 'select' && (selected || activeRing) && (
               <section className="hive-sheet" data-testid="notes-compose">
                 <div className="sheet-head">
                   <div>
-                    <p className="hive-eyebrow">{selected.metadata?.identity_type === 'agent' ? 'Agent' : 'Human'}</p>
-                    <h2>{selected.name || selected.fingerprint.slice(0, 12)}</h2>
+                    <p className="hive-eyebrow">
+                      {activeRing ? 'Ring' : selected?.metadata?.identity_type === 'agent' ? 'Agent' : 'Human'}
+                      {sideRoot ? ' · thread' : ''}
+                    </p>
+                    <h2>
+                      {activeRing
+                        ? activeRing.local_label
+                        : freshThread
+                          ? `New thread · ${selected?.name || ''}`
+                          : selected?.name || selected?.fingerprint.slice(0, 12)}
+                    </h2>
                   </div>
-                  <button type="button" className="hive-chip" onClick={() => setPhase('select')}>
+                  <button type="button" className="hive-chip" onClick={() => { setPhase('select'); setSideRoot(null); }}>
                     Close
                   </button>
                 </div>
 
+                {activeRing && (
+                  <div className="ring-members">
+                    {activeRing.member_fingerprints.filter((fp) => fp !== fingerprint).map((fp) => {
+                      const c = contacts.find((x) => x.fingerprint === fp);
+                      return (
+                        <span key={fp}>
+                          {c?.name || fp.slice(0, 8)}
+                          <button type="button" onClick={() => removeFromRing(fp)} aria-label={`Remove ${c?.name || 'member'}`}>
+                            Remove
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {activeRing && (
+                  <div className="ring-add" data-testid="notes-ring-add">
+                    <p className="hive-muted">
+                      Add someone. New notes only, unless you choose earlier notes. A sealed note is not unsent.
+                    </p>
+                    <select
+                      data-testid="notes-ring-add-person"
+                      value={addFp}
+                      onChange={(e) => setAddFp(e.target.value)}
+                    >
+                      <option value="">Choose someone</option>
+                      {contacts.filter((c) =>
+                        c.fingerprint !== fingerprint
+                        && !activeRing.member_fingerprints.includes(c.fingerprint)
+                        && Boolean(c.pq_kem_public_key && c.public_key),
+                      ).map((c) => (
+                        <option key={c.id} value={c.fingerprint}>{c.name || c.fingerprint.slice(0, 8)}</option>
+                      ))}
+                    </select>
+                    <label>
+                      <input
+                        type="radio"
+                        name="ring-history"
+                        checked={addHistory === 'new'}
+                        onChange={() => setAddHistory('new')}
+                      />
+                      New notes only
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="ring-history"
+                        checked={addHistory === 'previous'}
+                        onChange={() => setAddHistory('previous')}
+                      />
+                      Earlier notes too
+                    </label>
+                    <button
+                      type="button"
+                      className="hive-chip"
+                      data-testid="notes-ring-add-confirm"
+                      disabled={!addFp || sending}
+                      onClick={addToRing}
+                    >
+                      Add
+                    </button>
+                    <p className="hive-muted">
+                      Removing someone leaves them the notes they already opened. Later notes are not sealed to them.
+                    </p>
+                  </div>
+                )}
+
+                {!activeRing && selected && (
+                  <button
+                    type="button"
+                    className="hive-chip"
+                    data-testid="notes-new-thread"
+                    onClick={() => {
+                      setFreshThread(true);
+                      setActiveThreadId(null);
+                      setSideRoot(null);
+                      setNotes([]);
+                      setStatus(null);
+                      setPhase('compose');
+                    }}
+                  >
+                    New thread
+                  </button>
+                )}
+
+                {sideRoot && (
+                  <button type="button" className="hive-chip" data-testid="notes-side-back" onClick={() => setSideRoot(null)}>
+                    Back to timeline
+                  </button>
+                )}
+
                 <div className="timeline" data-testid="notes-timeline">
-                  {notes.map((n) => (
-                    <article key={n.note_id} className={n.direction === 'outbound' ? 'bubble out' : 'bubble in'}>
-                      <p>{n.body}</p>
-                      <time>{new Date(n.sent_at).toLocaleString()}</time>
-                    </article>
-                  ))}
-                  {active && notes.length === 0 && (
-                    <p className="hive-muted">No notes in this thread yet.</p>
+                  {shown.map((n) => {
+                    const replies = n.thread_root ? 0 : replyCount(notes, n.note_id);
+                    return (
+                      <article key={n.note_id} className={n.direction === 'outbound' ? 'bubble out' : 'bubble in'}>
+                        <p>{n.body}</p>
+                        <time>{new Date(n.sent_at).toLocaleString()}</time>
+                        {!sideRoot && replies > 0 && (
+                          <button type="button" className="thread-jump" data-testid="notes-open-thread" onClick={() => setSideRoot(n.note_id)}>
+                            {replies} in thread
+                          </button>
+                        )}
+                        {!n.thread_root && (
+                          <button
+                            type="button"
+                            className="thread-jump"
+                            data-testid="notes-reply"
+                            onClick={() => setSideRoot(n.note_id)}
+                          >
+                            Thread
+                          </button>
+                        )}
+                      </article>
+                    );
+                  })}
+                  {shown.length === 0 && (
+                    <p className="hive-muted">{sideRoot ? 'No replies in this thread yet.' : 'No notes in this thread yet.'}</p>
                   )}
                 </div>
 
                 <div className="composer">
                   <textarea
                     rows={3}
-                    placeholder="Write a sealed note…"
+                    placeholder={sideRoot ? 'Reply in this thread…' : 'Write a sealed note…'}
                     value={draft}
                     onChange={(e) => {
                       setDraft(e.target.value);
@@ -368,6 +803,76 @@ function Steps({ phase }: { phase: Phase }) {
   );
 }
 
+/** Pointy-top hex, same vertices as the galaxy map. */
+function hexPoints(cx: number, cy: number, r: number): string {
+  const pts: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 3;
+    pts.push(`${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`);
+  }
+  return pts.join(' ');
+}
+
+function EmberHex({
+  kind,
+  large,
+}: {
+  kind: 'you' | 'thread' | 'known' | 'agent' | 'selected';
+  large?: boolean;
+}) {
+  const w = large ? 96 : kind === 'you' ? 84 : 68;
+  const h = large ? 108 : kind === 'you' ? 94 : 76;
+  const cx = w / 2;
+  const cy = h / 2 - 2;
+  const r = large ? 36 : kind === 'you' ? 30 : 24;
+  const lit = kind === 'you' || kind === 'thread' || kind === 'selected';
+  const fill = kind === 'you'
+    ? 'var(--se-bg)'
+    : kind === 'thread' || kind === 'selected'
+      ? 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))'
+      : kind === 'agent'
+        ? 'color-mix(in srgb, var(--se-accent2) 12%, transparent)'
+        : 'color-mix(in srgb, var(--se-accent) 18%, var(--se-bg))';
+  const stroke = kind === 'thread' || kind === 'agent' ? 'var(--se-accent2)' : 'var(--se-accent)';
+  return (
+    <svg className="ember-hex" width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden>
+      {kind === 'you' && (
+        <polygon
+          points={hexPoints(cx, cy, r + 8)}
+          fill="none"
+          stroke="var(--se-accent)"
+          strokeWidth={0.85}
+          opacity={0.38}
+        />
+      )}
+      {(kind === 'thread' || kind === 'selected') && (
+        <polygon
+          points={hexPoints(cx, cy, r + 4)}
+          fill="none"
+          stroke="#fff8ee"
+          strokeOpacity={0.28}
+          strokeWidth={1.05}
+        />
+      )}
+      <polygon
+        points={hexPoints(cx, cy, r)}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={lit ? 1.7 : 1.45}
+      />
+      {lit && (
+        <>
+          <circle cx={cx} cy={cy} r={r * 0.42} fill="#fff8ee" opacity={0.16} />
+          <circle className="ember-core" cx={cx} cy={cy} r={Math.max(2.4, r * 0.22)} fill="#fffef8" />
+        </>
+      )}
+      {!lit && (
+        <circle cx={cx} cy={cy} r={Math.max(1.8, r * 0.18)} fill={stroke} opacity={0.85} />
+      )}
+    </svg>
+  );
+}
+
 function HexMark({
   label,
   sub,
@@ -381,7 +886,7 @@ function HexMark({
 }) {
   return (
     <div className={`hex-mark ${tone} ${large ? 'large' : ''}`}>
-      <span className="hex-shape" />
+      <EmberHex kind={tone === 'you' ? 'you' : 'known'} large={large} />
       <span className="hex-label">{label}</span>
       <span className="hex-sub">{sub}</span>
     </div>
@@ -392,23 +897,16 @@ function HiveStyles() {
   return (
     <style>{`
       .hive {
-        --bg0: #030712;
-        --bg1: #0a1630;
-        --cyan: #5ee7ff;
-        --cyan-dim: rgba(94, 231, 255, 0.35);
-        --gold: #e8c547;
-        --gold-dim: rgba(232, 197, 71, 0.35);
-        --cream: #e8eef8;
-        --muted: rgba(200, 214, 235, 0.45);
-        --err: #ff8f9a;
-        --ok: #7dffc8;
+        --cream: var(--se-text);
+        --muted: var(--se-muted);
+        --gold: var(--se-accent);
+        --err: var(--se-danger);
+        --ok: var(--se-ok);
+        accent-color: var(--se-accent);
         min-height: 100dvh;
-        color: var(--cream);
+        color: var(--se-text);
         font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif;
-        background:
-          radial-gradient(ellipse 80% 55% at 50% 18%, rgba(40, 90, 160, 0.28), transparent 60%),
-          radial-gradient(ellipse 70% 50% at 50% 100%, rgba(20, 50, 100, 0.35), transparent 55%),
-          linear-gradient(180deg, var(--bg1), var(--bg0));
+        background: var(--se-bg-css);
         position: relative;
         overflow-x: hidden;
       }
@@ -416,11 +914,11 @@ function HiveStyles() {
         content: '';
         position: absolute;
         inset: 0;
-        background-image: radial-gradient(rgba(94, 231, 255, 0.09) 1px, transparent 1px);
-        background-size: 28px 28px;
-        mask-image: radial-gradient(ellipse at 50% 40%, black 20%, transparent 70%);
+        background-image: radial-gradient(color-mix(in srgb, var(--se-accent) 35%, transparent) 1px, transparent 1px);
+        background-size: 22px 22px;
+        mask-image: radial-gradient(ellipse at 50% 42%, black 12%, transparent 70%);
         pointer-events: none;
-        opacity: 0.45;
+        opacity: 0.28;
       }
       .hive-stage {
         position: relative;
@@ -468,24 +966,102 @@ function HiveStyles() {
       .hive-status { color: var(--ok); font-size: 0.8rem; margin: 8px 0 0; text-align: center; }
       .center { text-align: center; }
       .hive-link {
-        color: var(--cyan);
+        color: var(--se-accent);
         text-decoration: none;
         font-size: 0.85rem;
-        border-bottom: 1px solid var(--cyan-dim);
+        border-bottom: 1px solid var(--se-border-lit);
       }
       .hive-chip {
         font: inherit;
         font-size: 11px;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        color: var(--cream);
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.18);
+        color: var(--se-muted);
+        background: var(--se-surface);
+        border: 1px solid var(--se-border);
         border-radius: 999px;
         padding: 8px 12px;
         text-decoration: none;
         cursor: pointer;
       }
+      .hive-chip.is-on {
+        border-color: var(--se-border-lit);
+        color: var(--se-accent);
+        background: color-mix(in srgb, var(--se-accent) 14%, transparent);
+      }
+      .thread-rail, .ring-picks, .ring-members {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 0 0 14px;
+      }
+      .ring-panel {
+        border: 1px solid var(--se-border);
+        border-radius: 16px;
+        padding: 12px;
+        margin-bottom: 14px;
+        background: var(--se-surface-solid);
+        box-shadow: var(--se-glass-shadow);
+        backdrop-filter: blur(20px);
+      }
+      .ring-label {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        border-radius: 12px;
+        border: 1px solid var(--se-border);
+        background: var(--se-input-bg);
+        color: var(--se-text);
+        padding: 12px 14px;
+        margin: 8px 0 12px;
+      }
+      .ring-label::placeholder,
+      .hive-form input::placeholder,
+      .composer textarea::placeholder { color: color-mix(in srgb, var(--se-dim) 80%, transparent); }
+      .ring-picks label, .ring-members span {
+        font-size: 12px;
+        color: var(--cream);
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .ring-picks label.is-dim { color: var(--muted); }
+      .ring-add {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin: 0 0 12px;
+      }
+      .ring-add select {
+        font: inherit;
+        color: var(--se-text);
+        background: var(--se-input-bg);
+        border: 1px solid var(--se-border);
+        border-radius: 12px;
+        padding: 8px 10px;
+      }
+      .ring-add label {
+        font-size: 12px;
+        color: var(--cream);
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .ring-add .hive-muted { flex-basis: 100%; margin: 0; }
+      .ring-members button, .thread-jump {
+        font: inherit;
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--gold);
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+      }
+      .thread-jump { display: block; margin-top: 6px; }
 
       .hive-steps {
         list-style: none;
@@ -503,9 +1079,9 @@ function HiveStyles() {
         font-size: 10px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        color: rgba(200, 214, 235, 0.35);
+        color: var(--se-dim);
       }
-      .hive-steps li.on { color: var(--cyan); }
+      .hive-steps li.on { color: var(--se-accent); }
       .hive-steps .dot {
         width: 6px; height: 6px; border-radius: 50%;
         background: currentColor;
@@ -532,24 +1108,28 @@ function HiveStyles() {
       .hive-form input, .composer textarea {
         font: inherit;
         border-radius: 12px;
-        border: 1px solid rgba(94, 231, 255, 0.25);
-        background: rgba(3, 10, 24, 0.65);
-        color: var(--cream);
+        border: 1px solid var(--se-border);
+        background: var(--se-input-bg);
+        color: var(--se-text);
         padding: 12px 14px;
-        box-shadow: inset 0 0 20px rgba(94, 231, 255, 0.04);
+      }
+      .hive-form input:focus, .composer textarea:focus, .ring-label:focus, .ring-add select:focus {
+        outline: none;
+        border-color: var(--se-border-lit);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--se-accent) 18%, transparent);
       }
       .hive-form button, .seal-btn {
         font: inherit;
         cursor: pointer;
         border-radius: 12px;
-        border: 1px solid var(--gold-dim);
-        background: linear-gradient(180deg, rgba(232, 197, 71, 0.18), rgba(232, 197, 71, 0.06));
-        color: var(--gold);
+        border: 1px solid var(--se-border-lit);
+        background: color-mix(in srgb, var(--se-accent) 16%, transparent);
+        color: var(--se-accent);
         padding: 12px 14px;
         letter-spacing: 0.06em;
         text-transform: uppercase;
         font-size: 12px;
-        box-shadow: 0 0 24px rgba(232, 197, 71, 0.12);
+        box-shadow: var(--se-glass-shadow);
       }
       .seal-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -572,8 +1152,8 @@ function HiveStyles() {
       .hive-spine {
         width: 2px;
         flex: 0 0 36px;
-        background: linear-gradient(180deg, var(--gold), var(--cyan));
-        box-shadow: 0 0 12px var(--cyan-dim);
+        background: linear-gradient(180deg, var(--se-accent), var(--se-accent2));
+        box-shadow: 0 0 12px color-mix(in srgb, var(--se-accent) 45%, transparent);
         border-radius: 2px;
         margin: 6px 0;
         opacity: 0.85;
@@ -595,87 +1175,56 @@ function HiveStyles() {
       }
 
       .hex-node, .hex-mark {
-        position: relative;
-        width: 72px;
-        height: 84px;
         border: none;
         background: transparent;
-        color: var(--cream);
+        color: var(--se-text);
         cursor: pointer;
         padding: 0;
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: center;
+        gap: 1px;
         animation: hex-pop 0.55s ease-out both;
         animation-delay: calc(var(--i, 0) * 35ms);
       }
-      .hex-mark { cursor: default; width: 88px; height: 100px; }
-      .hex-mark.large { width: 110px; height: 124px; }
-      .hex-shape {
-        position: absolute;
-        inset: 8px 6px 22px;
-        background: rgba(8, 20, 42, 0.9);
-        clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-        border: none;
-        box-shadow:
-          0 0 0 1px var(--gold-dim),
-          0 0 18px rgba(232, 197, 71, 0.2);
+      .hex-mark { cursor: default; }
+      .ember-hex { display: block; overflow: visible; }
+      .ember-core {
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: ember-breathe 3.6s ease-in-out infinite;
       }
-      .hex-mark.you .hex-shape, .hex-node.is-selected .hex-shape {
-        box-shadow:
-          0 0 0 1.5px var(--cyan),
-          0 0 22px rgba(94, 231, 255, 0.45);
-        background: rgba(10, 36, 64, 0.95);
-      }
-      .hex-node.has-thread .hex-shape {
-        box-shadow:
-          0 0 0 1px var(--gold),
-          0 0 16px rgba(232, 197, 71, 0.35);
-      }
-      .hex-node.is-agent .hex-shape {
-        box-shadow:
-          0 0 0 1px rgba(125, 255, 200, 0.45),
-          0 0 14px rgba(125, 255, 200, 0.2);
-      }
-      .hex-node.is-selected {
-        transform: translateY(-2px) scale(1.06);
-      }
+      .hex-node.is-selected { transform: translateY(-2px); }
       .hex-label {
-        position: relative;
-        z-index: 1;
         font-size: 10px;
         font-weight: 600;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
-        max-width: 62px;
+        max-width: 76px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        margin-top: -6px;
+        color: var(--se-text);
       }
-      .hex-mark .hex-label { font-size: 13px; letter-spacing: 0.12em; }
-      .hex-mark.large .hex-label { font-size: 15px; }
+      .hex-mark .hex-label { font-size: 12px; letter-spacing: 0.16em; }
+      .hex-mark.large .hex-label { font-size: 13px; }
       .hex-sub {
-        position: relative;
-        z-index: 1;
         font-size: 8px;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: var(--muted);
-        margin-top: 2px;
+        color: var(--se-dim);
       }
-      .hex-mark.you .hex-sub { color: var(--cyan); }
+      .hex-mark.you .hex-sub { color: var(--se-accent); }
 
       .hive-sheet {
         margin-top: 8px;
-        border: 1px solid rgba(94, 231, 255, 0.22);
-        border-radius: 20px 20px 16px 16px;
-        background: rgba(4, 12, 28, 0.88);
-        box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.45), 0 0 30px rgba(94, 231, 255, 0.08);
+        border: 1px solid var(--se-border);
+        border-radius: 16px;
+        background: var(--se-surface-solid);
+        box-shadow: var(--se-glass-shadow);
         padding: 14px 14px 16px;
         animation: sheet-up 0.35s ease-out both;
-        backdrop-filter: blur(10px);
+        backdrop-filter: blur(20px);
       }
       .sheet-head {
         display: flex;
@@ -702,8 +1251,8 @@ function HiveStyles() {
         max-width: 88%;
         padding: 10px 12px;
         border-radius: 14px;
-        border: 1px solid rgba(255,255,255,0.08);
-        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--se-border);
+        background: var(--se-surface);
       }
       .bubble p { margin: 0 0 6px; white-space: pre-wrap; font-size: 0.92rem; }
       .bubble time {
@@ -713,13 +1262,13 @@ function HiveStyles() {
       }
       .bubble.out {
         align-self: flex-end;
-        border-color: rgba(94, 231, 255, 0.28);
-        background: rgba(94, 231, 255, 0.07);
+        border-color: var(--se-border-lit);
+        background: color-mix(in srgb, var(--se-accent) 12%, transparent);
       }
       .bubble.in {
         align-self: flex-start;
-        border-color: rgba(232, 197, 71, 0.22);
-        background: rgba(232, 197, 71, 0.05);
+        border-color: color-mix(in srgb, var(--se-accent2) 45%, transparent);
+        background: color-mix(in srgb, var(--se-accent2) 10%, transparent);
       }
       .composer { display: flex; flex-direction: column; gap: 8px; }
 
@@ -732,11 +1281,15 @@ function HiveStyles() {
         to { opacity: 1; transform: scale(1); }
       }
       @keyframes sheet-up {
-        from { opacity: 0; transform: translateY(24px); }
-        to { opacity: 1; transform: translateY(0); }
+        from { transform: translateY(16px); }
+        to { transform: translateY(0); }
+      }
+      @keyframes ember-breathe {
+        0%, 100% { opacity: 0.72; }
+        50% { opacity: 1; }
       }
       @media (prefers-reduced-motion: reduce) {
-        .hive-lock, .hive-cluster, .hive-you, .hex-node, .hive-sheet { animation: none; }
+        .hive-lock, .hive-cluster, .hive-you, .hex-node, .hive-sheet, .ember-core { animation: none; }
       }
       @media (min-width: 720px) {
         .hive-stage { max-width: 560px; padding-top: 28px; }
