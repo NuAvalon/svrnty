@@ -25,6 +25,11 @@ import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
+import { CloudBackupShell } from '@/components/backup/CloudBackupShell';
+import {
+  loadCloudBackupTarget,
+  recordCloudBackupAttempt,
+} from '@/components/backup/cloud-backup-targets';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -1161,12 +1166,18 @@ export function SoverentityFrontend({
 
           {restoreError && <div style={s.error}>{restoreError}</div>}
 
+          <CloudBackupShell
+            surface="restore-gate"
+            onRestore={() => fileInputRef.current?.click()}
+          />
+
           {/* File Upload */}
           <input
             ref={fileInputRef}
             type="file"
             accept=".svrnty,.json"
             onChange={handleFileSelect}
+            data-testid="restore-backup-file"
             style={{ display: 'none' }}
           />
 
@@ -2005,6 +2016,10 @@ export function SoverentityFrontend({
                 Export Contacts
               </button>
             </div>
+            <CloudBackupShell
+              surface="settings"
+              onBackupNow={() => setShowVaultExportDialog(true)}
+            />
           </div>
         )}
 
@@ -2303,6 +2318,12 @@ export function SoverentityFrontend({
           fingerprint={identity?.identity?.fingerprint || ''}
           onSessionLocked={() => {
             window.location.reload();
+          }}
+          onExported={() => {
+            recordCloudBackupAttempt({ ok: true, target: loadCloudBackupTarget() });
+          }}
+          onExportFailed={() => {
+            recordCloudBackupAttempt({ ok: false, target: loadCloudBackupTarget() });
           }}
         />
         <SecureExportDialog
