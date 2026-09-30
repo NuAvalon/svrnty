@@ -134,6 +134,15 @@ test('round-trip (hybrid): a CANONICAL joiner PQ-signs → verifies under requir
   const joiner = await verifyJoinerResponse(blob, aliceGiver(), yes, { requirePq: true });
   assert.ok(joiner, 'hybrid canonical response must verify');
   assert.deepEqual(joiner!.pqSigningPublicKey, cid.sigPublicKey, 'returned pq key must round-trip exactly');
+  // REGRESSION (Peter first-contact 2026-09-30): the KEM leg MUST round-trip too. It is bound into the
+  // canonical fingerprint, and the GIVER's Gate-admit re-check (addContact → fingerprintMatchesKey, which
+  // is canonical-only → needs BOTH PQ legs) recomputes the fp from it. Dropping it from PendingJoiner
+  // refused every canonical (agent+PQ) joiner with "fingerprint↔key binding failed".
+  assert.equal(
+    uint8ToBase64(joiner!.pqKemPublicKey!),
+    cid.kemPublicKeyB64,
+    'the KEM leg must round-trip so the giver can recompute the canonical fp at admit',
+  );
 });
 
 test('anti-downgrade: stripping the pq half of a hybrid response fails verification (→ null)', async () => {
