@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { seedSampleGalaxy } from './helpers/seed-sample-galaxy';
+import { seedSampleGalaxy, SAMPLE_TESLA_FP } from './helpers/seed-sample-galaxy';
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -39,8 +39,8 @@ test('Galaxy Verify — guided compare, mismatch fails loud, other-channel match
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
 
   const known = page.locator(
-    '[data-testid="trust-node"][data-trust-state="known"][data-verified="false"][data-ignite="false"]',
-  ).first();
+    `[data-testid="trust-node"][data-fingerprint="${SAMPLE_TESLA_FP}"][data-trust-state="known"][data-verified="false"][data-ignite="false"]`,
+  );
   await expect(known).toBeVisible({ timeout: 15_000 });
   const storedFp = (await known.getAttribute('data-fingerprint')) || '';
   expect(storedFp.length).toBeGreaterThan(8);

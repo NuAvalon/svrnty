@@ -5,6 +5,8 @@ import { expect, type Page } from '@playwright/test';
  * navigator.webdriver, which installs window.__svrntySeedSampleCircle
  * (addContact path — enc-b). Call after genesis while Galaxy is visible.
  */
+export const SAMPLE_TESLA_FP = '7e51a00000000000000000000000000000000008';
+
 export async function seedSampleGalaxy(page: Page): Promise<number> {
   await expect
     .poll(async () => page.evaluate(() => typeof (window as unknown as { __svrntySeedSampleCircle?: unknown }).__svrntySeedSampleCircle), {

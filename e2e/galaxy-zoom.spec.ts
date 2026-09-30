@@ -10,7 +10,7 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
   await page.getByRole('button', { name: /^start$/i }).click();
-  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
+  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 60_000 });
   await page.getByRole('button', { name: /i have it/i }).click();
 
   const welcome = page.getByRole('heading', { name: /welcome back/i });
@@ -28,6 +28,11 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await expect(page.getByTestId('trust-map')).toBeVisible();
   await expect(page.getByTestId('trust-map-empty')).toContainText(/Grow your galaxy/i);
   await expect(page.getByTestId('trust-map-load-sample')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-grow')).toBeVisible();
+  await page.getByTestId('trust-map-grow').click();
+  await expect(page.getByTestId('grow-surface')).toBeVisible();
+  await page.getByRole('button', { name: /back to galaxy/i }).click();
+  await expect(page.getByTestId('grow-surface')).toHaveCount(0);
   await seedSampleGalaxy(page);
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]').first()).toBeVisible();
