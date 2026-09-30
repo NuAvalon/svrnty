@@ -22,7 +22,7 @@ Header **Grow** (Ceremony tab removed). QR + short link; uses 1–7 (multi-use n
 
 ## Galaxy
 Tab label. Nameplate: fingerprint for compare-aloud + in-person / another-channel verify, then Trust.
-Spokes radiate to you. **Between** people: a solid gold filament is Know they both consented to show (`disclosed_circle` + open vis); white-gold is mutual Trust (`they_trust` + reciprocal + open vis). Dashed gold is a group you named — not a bond. Glass never invents either layer from tags. PSI / `visible()` still fleet.
+Spokes radiate to you. **Between** people: both disclosed they know each other (gold) or trust each other (white-gold). Dashed gold is a group you named — not a bond. Glass never invents either layer from tags. PSI / `visible()` still fleet. Hover titles use `TRUST_RECIPE_COPY.peerKnowChord` / `peerTrustChord` (consent-explicit, not “witnessed”).
 Inbound Distress paints a vivre: ember in the star, burning corner on the card. **I went** clears the mark on this device only. Sender Recovery → Distress is silent (no sent receipt).
 
 ## Bottom

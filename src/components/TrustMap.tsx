@@ -1067,7 +1067,9 @@ export function TrustMap({
                     strokeWidth={trust ? 2.05 : 1.2}
                     style={{ ['--tm-o' as string]: 0.95, animationDelay: `${0.08 + i * 0.02}s` }}
                   >
-                    <title>{trust ? 'Witnessed mutual trust' : 'Witnessed mutual know'}</title>
+                    <title>
+                      {trust ? TRUST_RECIPE_COPY.peerTrustChord : TRUST_RECIPE_COPY.peerKnowChord}
+                    </title>
                   </line>
                 </g>
               );
@@ -1300,29 +1302,49 @@ export function TrustMap({
           <span style={{ color: E.accent2 }}>⬡ trusted · white light</span>
           <span>⬡ known · dim spoke</span>
           <span style={{ color: E.text }}>⬡ you · larger + light</span>
-          <span style={{ color: E.accent2 }}>═ trust between you</span>
-          <span>─ know between you</span>
+          <span style={{ color: E.accent2 }}>═ {TRUST_RECIPE_COPY.peerTrustChord}</span>
+          <span>─ {TRUST_RECIPE_COPY.peerKnowChord}</span>
           <span style={{ color: E.accent }}>∪ known sphere</span>
           <span style={{ color: E.accent }}>⊙ Gate</span>
           <span style={{ color: E.accent }}>◌ pending intro</span>
           <span>- - group</span>
         </div>
       )}
-      <p
-        data-testid="trust-map-legend"
+      <div
+        data-testid="trust-map-consent-legend"
         style={{
-          margin: '8px 0 0',
-          fontSize: 11,
-          color: E.dim,
+          marginTop: 10,
+          padding: '10px 12px',
+          borderRadius: 10,
+          border: `1px solid ${E.border}`,
+          background: 'color-mix(in srgb, var(--se-surface-solid) 55%, transparent)',
           fontFamily: E.fontSans,
-          lineHeight: 1.45,
         }}
       >
-        Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
-        Spokes go to you. Solid gold between people is Know they both consented to show;
-        white-gold is mutual Trust. Dashed gold is a group you named — not a bond.
-        Verify is a private ember — nobody else sees a badge. The U is your known sphere; the hole is the Gate.
-      </p>
+        <p
+          style={{
+            margin: 0,
+            fontSize: 11,
+            color: E.text,
+            lineHeight: 1.45,
+          }}
+        >
+          {TRUST_RECIPE_COPY.peerMeshLegend}
+        </p>
+        <p
+          data-testid="trust-map-legend"
+          style={{
+            margin: '8px 0 0',
+            fontSize: 11,
+            color: E.dim,
+            lineHeight: 1.45,
+          }}
+        >
+          Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
+          Spokes go to you. Verify is a private ember — nobody else sees a badge.
+          The U is your known sphere; the hole is the Gate.
+        </p>
+      </div>
 
       {/* Contact sheet — alive contacts: seal + info + actions */}
       {focusNode && focusEdge && (
