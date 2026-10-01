@@ -10,7 +10,6 @@ import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { base64ToUint8 } from '@/lib/crypto/pq';
 import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
-import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 import { SeedRestoreInterstitial } from '@/components/recovery/SeedRestoreInterstitial';
@@ -302,10 +301,6 @@ export function SoverentityFrontend({
   >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
-  const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
-  const [claimSlug, setClaimSlug] = useState('');
-  const [claimStatus, setClaimStatus] = useState<'idle' | 'checking' | 'claiming' | 'success' | 'taken' | 'error'>('idle');
-  const [claimedUrl, setClaimedUrl] = useState('');
   const [newPassphrase, setNewPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [passphraseError, setPassphraseError] = useState('');
@@ -364,16 +359,6 @@ export function SoverentityFrontend({
     });
   }, [identity]);
 
-  // Restore claimed URL from registration service on identity load
-  useEffect(() => {
-    const fp = identity?.identity?.fingerprint;
-    if (fp && !claimedUrl) {
-      fetch(`/identity/${fp}`).then(r => r.ok ? r.json() : null).then(data => {
-        if (data?.slug) setClaimedUrl(slugUrlShort(data.slug));
-      }).catch(() => {});
-    }
-  }, [identity]);
-
   const handleSetPassphrase = async () => {
     if (newPassphrase !== confirmPassphrase) {
       setPassphraseError('Passphrases do not match');
@@ -401,62 +386,6 @@ export function SoverentityFrontend({
       setPassphraseError('');
       setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
     } catch { setPassphraseError('Failed to set unlock passphrase'); }
-  };
-
-  const handleClaimUrl = async () => {
-    const slug = claimSlug.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    if (slug.length < 3) { setClaimStatus('error'); return; }
-    setClaimStatus('checking');
-    try {
-      // Check availability
-      const checkRes = await fetch(`/slug/${slug}`); const checkData = await checkRes.json();
-      if (checkRes.ok && !checkData.available) {
-        // Check if this slug is already ours
-        const fp = identity?.identity?.fingerprint;
-        if (checkData.fingerprint && checkData.fingerprint === fp) {
-          setClaimStatus('success');
-          setClaimedUrl(slugUrlShort(slug));
-          return;
-        }
-        setClaimStatus('taken');
-        return;
-      }
-      // Register with satellite
-      const fp = identity?.identity?.fingerprint;
-      const pk = identity?.identity?.public_key || identity?.identity?.publicKey || '';
-      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
-      const extra = await buildSatelliteRegisterFields(identity);
-      const regRes = await fetch('/api/satellite/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          display_name: slug,
-          public_key: pk,
-          fingerprint: extra?.fingerprint || fp || '',
-          slug,
-          ...(extra
-            ? {
-                sign_pub: extra.sign_pub,
-                enc_pub: extra.enc_pub,
-                kem_pub: extra.kem_pub,
-                sig_pub: extra.sig_pub,
-              }
-            : {}),
-        }),
-      });
-      if (regRes.ok || regRes.status === 409) {
-        // Claim the slug
-        const claimRes = await fetch(`/slug/${slug}/claim`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fingerprint: fp }),
-        });
-        if (claimRes.ok) {
-          setClaimStatus('success');
-          setClaimedUrl(slugUrlShort(slug));
-        } else { setClaimStatus('taken'); }
-      } else { setClaimStatus('error'); }
-    } catch { setClaimStatus('error'); }
   };
 
   const handleCreateIdentity = async () => {
@@ -1837,13 +1766,9 @@ export function SoverentityFrontend({
         <SovereignIdentityCard
           name={identity.identity.name}
           fingerprint={identity.identity.fingerprint}
-          handle={claimedUrl || undefined}
           email={identity.identity.email}
           signal={localMethods.signal}
-          site={
-            localMethods.site ||
-            (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined)
-          }
+          site={localMethods.site}
           hasPqKeys={!!hasPqKeys}
           onRevise={(kind) => setReviseKind(kind)}
           onOpenCircle={onOpenCircle}
@@ -1883,9 +1808,7 @@ export function SoverentityFrontend({
             reviseKind === 'signal'
               ? localMethods.signal || ''
               : reviseKind === 'site'
-                ? localMethods.site ||
-                  (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : '') ||
-                  ''
+                ? localMethods.site || ''
                 : identity.identity.email || ''
           }
           ownerFingerprint={identity.identity.fingerprint}
@@ -2043,39 +1966,6 @@ export function SoverentityFrontend({
               </svg>
               Set Passphrase
             </button>
-            {claimedUrl ? (
-              <span style={{
-                color: 'rgba(200, 168, 78, 0.7)',
-                fontSize: '12px',
-                fontFamily: "'Space Grotesk', sans-serif",
-                padding: '10px 16px',
-              }}>
-                {claimedUrl}
-              </span>
-            ) : (
-              <button
-                onClick={() => { setShowClaimUrlDialog(true); setClaimStatus('idle'); setClaimSlug(''); }}
-                style={{
-                  background: 'rgba(200, 168, 78, 0.08)',
-                  border: '1px solid rgba(200, 168, 78, 0.25)',
-                  borderRadius: '10px',
-                  padding: '10px 16px',
-                  color: '#c8a84e',
-                  fontSize: '13px',
-                  fontFamily: "'Space Grotesk', sans-serif",
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                </svg>
-                Claim URL
-              </button>
-            )}
           </div>
         )}
 
@@ -2189,87 +2079,6 @@ export function SoverentityFrontend({
                     }}
                   >
                     SET PASSPHRASE
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Claim URL Dialog */}
-        {showClaimUrlDialog && (
-          <div style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
-            display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 50,
-          }} onClick={() => setShowClaimUrlDialog(false)}>
-            <div
-              role="dialog"
-              aria-label="Claim URL"
-              style={{
-                background: SE.surfaceSolid,
-                border: `1px solid ${SE.border}`,
-                borderRadius: '16px',
-                padding: '32px',
-                maxWidth: '380px',
-                width: '100%',
-                margin: '20px',
-                boxShadow: 'var(--se-glass-shadow)',
-                color: SE.text,
-              }}
-              onClick={e => e.stopPropagation()}
-            >
-              <h3 style={{
-                fontFamily: SE.fontSans, fontSize: '1.15rem', fontWeight: 500,
-                letterSpacing: '-0.02em',
-                color: SE.text, marginBottom: '8px', textAlign: 'center' as const,
-              }}>
-                {claimStatus === 'success' ? 'URL Claimed' : 'Claim Your URL'}
-              </h3>
-              {claimStatus === 'success' ? (
-                <div style={{ textAlign: 'center' as const }}>
-                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px', marginBottom: '12px' }}>
-                    Your identity is now at:
-                  </p>
-                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '16px', fontWeight: 600 }}>
-                    {claimedUrl}
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <p style={{ color: SE.muted, fontFamily: SE.fontSans, fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
-                    Choose a URL for your public profile
-                  </p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
-                    <span style={{ color: SE.dim, fontFamily: SE.fontSans, fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
-                    <input
-                      type="text"
-                      placeholder="yourname"
-                      value={claimSlug}
-                      onChange={e => { setClaimSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setClaimStatus('idle'); }}
-                      style={{
-                        flex: 1, background: SE.inputBg, border: `1px solid ${SE.border}`,
-                        borderRadius: '8px', padding: '12px 14px', color: SE.text, fontSize: '14px',
-                        fontFamily: SE.fontSans, outline: 'none', boxSizing: 'border-box' as const,
-                      }}
-                    />
-                  </div>
-                  {claimStatus === 'taken' && (
-                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>This URL is already claimed</p>
-                  )}
-                  {claimStatus === 'error' && (
-                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
-                  )}
-                  <button
-                    onClick={handleClaimUrl}
-                    disabled={claimSlug.length < 3 || claimStatus === 'checking' || claimStatus === 'claiming'}
-                    style={{
-                      width: '100%', background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                      border: `1px solid ${SE.borderLit}`,
-                      borderRadius: '8px', padding: '12px', color: SE.accent, fontSize: '12px',
-                      fontFamily: SE.fontSans, letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
-                    }}
-                  >
-                    {claimStatus === 'checking' ? 'CHECKING...' : claimStatus === 'claiming' ? 'CLAIMING...' : 'CLAIM URL'}
                   </button>
                 </>
               )}
