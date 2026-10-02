@@ -210,8 +210,9 @@ function looksLikeStrippedInner(x: unknown): x is StrippedInner {
  * exists in this repo to pin against, unlike httpTrustRelay/httpMailboxRegistry which cite an Athena issue):
  *   POST {satelliteUrl}/onion        body = the sealed cell (MailboxEnvelopePackage) itself, no wrapper
  *                                     (mirrors httpMailboxRegistry.register, which POSTs its fields bare).
- *   GET  {satelliteUrl}/route/{id}   → { cells: StrippedInner[] } (a bare array is also tolerated, in case
- *                                     the real contract returns one — defensive, not a confirmed fallback).
+ *   GET  {satelliteUrl}/route/{id}   → { inners: StrippedInner[] } (CONFIRMED live shape, Athena 2026-10-02
+ *                                     from deployed satellite.py route_poll; `cells` + a bare array are also
+ *                                     tolerated as defensive fallbacks).
  * Fail-soft like every other relay client here: a non-2xx/throw deposit → false; a failed/malformed poll →
  * [] (never throws — the caller re-polls next tick; a hostile/malformed per-cell entry is filtered here,
  * before it ever reaches openOnionInner).
@@ -236,7 +237,16 @@ export function httpOnionRelay(satelliteUrl: string, fetchImpl: typeof fetch = f
         const res = await fetchImpl(`${base}/route/${encodeURIComponent(routeId)}`);
         if (!res.ok) return [];
         const j = (await res.json()) as unknown;
-        const raw = Array.isArray(j) ? j : Array.isArray((j as { cells?: unknown })?.cells) ? (j as { cells: unknown[] }).cells : [];
+        // Live S1 shape is { inners: [...] } (Athena-confirmed from deployed satellite.py); `cells` + a bare
+        // array kept as defensive fallbacks so a future contract tweak degrades to [] rather than throwing.
+        const container = j as { inners?: unknown; cells?: unknown };
+        const raw = Array.isArray(j)
+          ? j
+          : Array.isArray(container?.inners)
+            ? (container.inners as unknown[])
+            : Array.isArray(container?.cells)
+              ? (container.cells as unknown[])
+              : [];
         return raw.filter(looksLikeStrippedInner);
       } catch {
         return [];
