@@ -23,6 +23,32 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
+import {
+  sealPsiToSatellite,
+  openPsiSessionResponse,
+  newPsiSessionKey,
+  type PsiSessionKey,
+} from '../crypto/psi-wire-seal.js';
+import type { MailboxPublicKeys, MailboxEnvelopePackage } from '../crypto/mailbox-envelope.js';
+
+// ── PQ wire-wrap (psi-wire-seal.ts) — DARK until isPSIDiscoveryLive flips (claim-gates.ts) ─────────
+// When PSISyncOptions.pqWrap is set, 4 of the 5 wire exchanges below seal their bodies/responses in the
+// ML-KEM mailbox envelope instead of riding as classical plaintext JSON: initiate (POST, registers the
+// INITIATOR's response_pub), get_blinded (POST, registers the RESPONDER's response_pub — per-session,
+// minted fresh inside psiGetBlinded), respond (POST), and result (GET response only, opened with the
+// initiator's session key from initiate). `pending` (GET) is METADATA-ONLY (session_id /
+// initiator_fingerprint / created_at — no blinded data) and is deliberately left UNSEALED with no
+// response_pub registration (Athena/Apollo contract correction, 2026-10-02): the ML-KEM pubkey is
+// ~2KB base64 and can't ride a GET query string, and response_pub is per-SESSION while pending is
+// per-RESPONDER (all pending sessions at once) — the wrong home for it.
+// `pqWrap` absent (default) ⇒ byte-identical to today's classical behavior — every existing
+// caller/test that doesn't set it is completely unaffected. The X25519 PSI blinding crypto above
+// (hashFingerprintToPoint / blindFingerprints / reblindSet) is UNTOUCHED either way — this wrap only
+// concerns the WIRE transport of the already-blinded body (see psi-wire-seal.ts header).
+export interface PsiPqWrapConfig {
+  /** The satellite's mailbox pubkeys, already anti-swap-verified via verifySatelliteKey. */
+  satelliteKeys: MailboxPublicKeys;
+}
 
 // --- Constants ---
 
@@ -58,6 +84,9 @@ export interface PSISyncOptions {
   myFingerprint: string;
   /** Ed25519 signing function: (data, privateKey) => signature */
   signFn: (data: Uint8Array) => Uint8Array;
+  /** PQ wire-wrap config (see above). Absent ⇒ classical plaintext wire (today's prod behavior). Only
+   * ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (dark until the flip). */
+  pqWrap?: PsiPqWrapConfig;
 }
 
 /**
@@ -241,6 +270,13 @@ function buildAuthSignature(myFingerprint: string, signFn: (data: Uint8Array) =>
 /**
  * Initiate a PSI session with a specific peer.
  * Sends our blinded trust set to the satellite.
+ *
+ * PQ wrap (pqWrap set): mints this session's ephemeral response key (the INITIATOR's "first touch" —
+ * one newPsiSessionKey() per session, Athena/Apollo ordering contract), embeds its `response_pub` in
+ * the body so the satellite can later seal psiGetResult's response back to it, then seals the WHOLE
+ * body (fp's + the existing liveness `signature`, UNCHANGED — see buildAuthSignature — + blinded_set +
+ * response_pub) to the satellite's mailbox key. Classical (pqWrap undefined) path is byte-identical to
+ * before this change.
  */
 async function psiInitiate(
   satelliteUrl: string,
@@ -248,9 +284,11 @@ async function psiInitiate(
   peerFingerprint: string,
   blindedSet: string[],
   signFn: (data: Uint8Array) => Uint8Array,
-  layer: 'know' | 'trust'
-): Promise<{ sessionId: string } | { error: string }> {
-  const body = {
+  layer: 'know' | 'trust',
+  pqWrap?: PsiPqWrapConfig
+): Promise<{ sessionId: string; pqSession?: PsiSessionKey } | { error: string }> {
+  const pqSession = pqWrap ? newPsiSessionKey() : undefined;
+  const classicalBody = {
     initiator_fingerprint: myFingerprint,
     responder_fingerprint: peerFingerprint,
     blinded_set: blindedSet,
@@ -258,10 +296,18 @@ async function psiInitiate(
     signature: buildAuthSignature(myFingerprint, signFn),
   };
 
+  let fetchBody: unknown = classicalBody;
+  if (pqWrap && pqSession) {
+    fetchBody = await sealPsiToSatellite(
+      { ...classicalBody, response_pub: pqSession.responsePub },
+      pqWrap.satelliteKeys
+    );
+  }
+
   const res = await fetch(`${satelliteUrl}/trust/psi/initiate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(fetchBody),
   });
 
   if (!res.ok) {
@@ -270,11 +316,17 @@ async function psiInitiate(
   }
 
   const data = await res.json();
-  return { sessionId: data.session_id };
+  return { sessionId: data.session_id, pqSession };
 }
 
 /**
  * Check for pending PSI sessions addressed to us.
+ *
+ * NOT part of the PQ wire-wrap (Athena/Apollo contract correction, 2026-10-02): this call is
+ * metadata-only (session_id / initiator_fingerprint / created_at — no blinded data), stays classical
+ * plaintext in BOTH modes, and never registers a response_pub — that happens per-session at
+ * psiGetBlinded instead (pending is per-RESPONDER/all-sessions-at-once, the wrong home for a
+ * per-SESSION ephemeral key; the ML-KEM pubkey is also too large for a GET query string).
  */
 async function psiPending(
   satelliteUrl: string,
@@ -286,20 +338,62 @@ async function psiPending(
   });
   if (!res.ok) return [];
   const data = await res.json();
-  return data.pending_sessions ?? [];
+  // Tolerate either the legacy {pending_sessions:[{..., initiator}]} shape or the satellite's
+  // {sessions:[{..., initiator_fingerprint}]} shape (Athena contract note, 2026-10-02) — normalize to
+  // {session_id, initiator, created_at} so the rest of this file (session.initiator) is shape-agnostic.
+  const list = (data?.sessions ?? data?.pending_sessions ?? []) as Array<Record<string, unknown>>;
+  if (!Array.isArray(list)) return [];
+  return list.map((s) => ({
+    session_id: String(s.session_id ?? ''),
+    initiator: String(s.initiator_fingerprint ?? s.initiator ?? ''),
+    created_at: Number(s.created_at ?? 0),
+  }));
 }
 
 /**
  * Fetch the initiator's blinded set for a session.
+ *
+ * PQ wrap (pqWrap set, Athena/Apollo contract correction 2026-10-02): this is NOT a GET when wrapped —
+ * it's a POST to /trust/psi/session/{id}/blinded carrying a SEALED body
+ * { responder_fingerprint, signature, response_pub }. This is where the RESPONDER registers its
+ * per-SESSION ephemeral response_pub (a fresh newPsiSessionKey(), minted HERE — never shared across
+ * the tick/other sessions). The satellite opens it, verifies, stores responder_response_pub, and
+ * returns a SEALED { blinded_set } (the initiator's), opened here with that SAME ephemeral key. The
+ * session secret is used once and discarded — psiRespond submits no sealed read-back, so it is never
+ * threaded any further. Classical (pqWrap undefined) path is byte-identical to before this change:
+ * GET with ?fingerprint=.
  */
 async function psiGetBlinded(
   satelliteUrl: string,
   sessionId: string,
   myFingerprint: string,
-  signFn: (data: Uint8Array) => Uint8Array
+  signFn: (data: Uint8Array) => Uint8Array,
+  pqWrap?: PsiPqWrapConfig
 ): Promise<string[] | null> {
-  const signature = buildAuthSignature(myFingerprint, signFn);
+  if (pqWrap) {
+    const pqSession = newPsiSessionKey();
+    const sealedBody = await sealPsiToSatellite(
+      {
+        responder_fingerprint: myFingerprint,
+        signature: buildAuthSignature(myFingerprint, signFn),
+        response_pub: pqSession.responsePub,
+      },
+      pqWrap.satelliteKeys
+    );
+    const res = await fetch(`${satelliteUrl}/trust/psi/session/${sessionId}/blinded`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sealedBody),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const opened = await openPsiSessionResponse(data as MailboxEnvelopePackage, pqSession);
+    if (!opened || typeof opened !== 'object') return null;
+    const blinded = (opened as { blinded_set?: unknown }).blinded_set;
+    return Array.isArray(blinded) && blinded.every((x) => typeof x === 'string') ? (blinded as string[]) : null;
+  }
 
+  const signature = buildAuthSignature(myFingerprint, signFn);
   const res = await fetch(
     `${satelliteUrl}/trust/psi/session/${sessionId}/blinded?fingerprint=${myFingerprint}`,
     { headers: { 'X-Signature': signature } }
@@ -311,6 +405,13 @@ async function psiGetBlinded(
 
 /**
  * Respond to a PSI session with our blinded set + re-blinded initiator set.
+ *
+ * PQ wrap (pqWrap set): seals a body of EXACTLY { initiator_fingerprint, responder_fingerprint,
+ * signature, responder_blinded_set, reblinded_initiator_set } (the pinned contract — `blindedSet`
+ * above is carried as `responder_blinded_set` in the sealed shape; the classical wire below keeps its
+ * existing `blinded_set` key name, untouched) to the satellite's mailbox key. No response_pub here —
+ * the responder already registered its per-session key at psiGetBlinded, and respond has no sealed
+ * read-back to open. Classical (pqWrap undefined) path is byte-identical to before this change.
  */
 async function psiRespond(
   satelliteUrl: string,
@@ -318,31 +419,54 @@ async function psiRespond(
   myFingerprint: string,
   blindedSet: string[],
   reblindedInitiatorSet: string[],
-  signFn: (data: Uint8Array) => Uint8Array
+  signFn: (data: Uint8Array) => Uint8Array,
+  pqWrap?: PsiPqWrapConfig,
+  initiatorFingerprint?: string
 ): Promise<boolean> {
-  const body = {
+  const signature = buildAuthSignature(myFingerprint, signFn);
+
+  let fetchBody: unknown = {
     responder_fingerprint: myFingerprint,
     blinded_set: blindedSet,
     reblinded_initiator_set: reblindedInitiatorSet,
-    signature: buildAuthSignature(myFingerprint, signFn),
+    signature,
   };
+
+  if (pqWrap) {
+    fetchBody = await sealPsiToSatellite(
+      {
+        initiator_fingerprint: initiatorFingerprint,
+        responder_fingerprint: myFingerprint,
+        signature,
+        responder_blinded_set: blindedSet,
+        reblinded_initiator_set: reblindedInitiatorSet,
+      },
+      pqWrap.satelliteKeys
+    );
+  }
 
   const res = await fetch(`${satelliteUrl}/trust/psi/session/${sessionId}/respond`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(fetchBody),
   });
   return res.ok;
 }
 
 /**
  * Fetch PSI session result (initiator only — after responder has submitted).
+ *
+ * PQ wrap: the response (responder_blinded_set + reblinded_initiator_set) arrives sealed to the
+ * INITIATOR's response_pub, established back at psiInitiate — `pqSession` here is that SAME session
+ * key (threaded through initiateTrustSync → completeTrustSync), not a fresh mint. Classical
+ * (pqSession undefined) path is byte-identical to before this change.
  */
 async function psiGetResult(
   satelliteUrl: string,
   sessionId: string,
   myFingerprint: string,
-  signFn: (data: Uint8Array) => Uint8Array
+  signFn: (data: Uint8Array) => Uint8Array,
+  pqSession?: PsiSessionKey
 ): Promise<{
   responder_blinded_set: string[];
   reblinded_initiator_set: string[];
@@ -354,7 +478,23 @@ async function psiGetResult(
     { headers: { 'X-Signature': signature } }
   );
   if (!res.ok) return null;
-  return await res.json();
+  const data = await res.json();
+  if (pqSession) {
+    const opened = await openPsiSessionResponse(data as MailboxEnvelopePackage, pqSession);
+    if (!opened || typeof opened !== 'object') return null;
+    const o = opened as { responder_blinded_set?: unknown; reblinded_initiator_set?: unknown };
+    if (
+      !Array.isArray(o.responder_blinded_set) || !o.responder_blinded_set.every((x) => typeof x === 'string') ||
+      !Array.isArray(o.reblinded_initiator_set) || !o.reblinded_initiator_set.every((x) => typeof x === 'string')
+    ) {
+      return null;
+    }
+    return {
+      responder_blinded_set: o.responder_blinded_set as string[],
+      reblinded_initiator_set: o.reblinded_initiator_set as string[],
+    };
+  }
+  return data;
 }
 
 // --- High-Level Sync Operations ---
@@ -374,7 +514,10 @@ export async function initiateTrustSync(
   peerFingerprint: string,
   options: PSISyncOptions,
   layer: 'know' | 'trust'
-): Promise<{ sessionId: string; keypair: PSIKeypair; fpOrder: string[] } | { error: string }> {
+): Promise<
+  | { sessionId: string; keypair: PSIKeypair; fpOrder: string[]; pqSession?: PsiSessionKey }
+  | { error: string }
+> {
   // Load the layer's fingerprint set. KNOW = the open-visible (consented) subset (Flint D2).
   const fps = await getLayerFingerprints(deps, layer);
   if (fps.length === 0) {
@@ -400,11 +543,12 @@ export async function initiateTrustSync(
     peerFingerprint,
     blinded,
     options.signFn,
-    layer
+    layer,
+    options.pqWrap
   );
 
   if ('error' in result) return result;
-  return { sessionId: result.sessionId, keypair, fpOrder };
+  return { sessionId: result.sessionId, keypair, fpOrder, pqSession: result.pqSession };
 }
 
 /**
@@ -425,14 +569,16 @@ export async function completeTrustSync(
   keypair: PSIKeypair,
   options: PSISyncOptions,
   fpOrder: string[],
-  layer: 'know' | 'trust'
+  layer: 'know' | 'trust',
+  pqSession?: PsiSessionKey
 ): Promise<PSISyncResult | { error: string }> {
   // Fetch result
   const result = await psiGetResult(
     options.satelliteUrl,
     sessionId,
     options.myFingerprint,
-    options.signFn
+    options.signFn,
+    pqSession
   );
 
   if (!result) {
@@ -497,7 +643,7 @@ export async function respondToTrustSync(
 ): Promise<PSISyncResult[]> {
   const results: PSISyncResult[] = [];
 
-  // Check for pending sessions
+  // Check for pending sessions (metadata-only — never sealed, no response_pub here; see psiPending doc).
   const pending = await psiPending(options.satelliteUrl, options.myFingerprint, options.signFn);
   if (pending.length === 0) return results;
 
@@ -525,7 +671,8 @@ export async function respondToTrustSync(
       options.satelliteUrl,
       session.session_id,
       options.myFingerprint,
-      options.signFn
+      options.signFn,
+      options.pqWrap
     );
     if (!initiatorBlinded) continue;
 
@@ -542,7 +689,9 @@ export async function respondToTrustSync(
       options.myFingerprint,
       ourBlinded,
       reblindedInitiator,
-      options.signFn
+      options.signFn,
+      options.pqWrap,
+      session.initiator
     );
     if (!ok) continue;
 
@@ -580,11 +729,23 @@ export async function syncMutualTrust(
   layer: 'know' | 'trust'
 ): Promise<{
   responded: PSISyncResult[];
-  initiated: Array<{ peerFingerprint: string; sessionId: string; keypair: PSIKeypair; fpOrder: string[] }>;
+  initiated: Array<{
+    peerFingerprint: string;
+    sessionId: string;
+    keypair: PSIKeypair;
+    fpOrder: string[];
+    pqSession?: PsiSessionKey;
+  }>;
   errors: string[];
 }> {
   const responded: PSISyncResult[] = [];
-  const initiated: Array<{ peerFingerprint: string; sessionId: string; keypair: PSIKeypair; fpOrder: string[] }> = [];
+  const initiated: Array<{
+    peerFingerprint: string;
+    sessionId: string;
+    keypair: PSIKeypair;
+    fpOrder: string[];
+    pqSession?: PsiSessionKey;
+  }> = [];
   const errors: string[] = [];
 
   // Step 1: Respond to any pending sessions (consent-gated per layer inside).
@@ -613,6 +774,7 @@ export async function syncMutualTrust(
           sessionId: result.sessionId,
           keypair: result.keypair,
           fpOrder: result.fpOrder,
+          pqSession: result.pqSession,
         });
       }
     }
