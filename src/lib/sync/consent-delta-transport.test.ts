@@ -343,8 +343,14 @@ test('httpOnionRelay — fail-soft: non-2xx deposit -> false, thrown/non-2xx pol
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// (ROUTE_ID — the real K1 derivation, see consent-delta-transport.ts ★★★ ROUTE_ID GROUNDING)
+// (ROUTE_ID — the real K1 derivation, anchored at establishedEpochWeek; see consent-delta-transport.ts
+// ★★★ ROUTE_ID GROUNDING v2 for the full finding, including the TrustCommitment-is-dead-code gap.)
 // ════════════════════════════════════════════════════════════════════════
+const EPOCH_WEEK_SECONDS = 604_800; // mirrors mutual-trust.ts's non-exported constant (see module header)
+function epochWeekOf(nowMs: number): number {
+  return Math.floor(nowMs / 1000 / EPOCH_WEEK_SECONDS);
+}
+
 test('(K1 ROUTE_ID) same pair+window: sender outbound and recipient inbound derive the IDENTICAL route_id', () => {
   const aSeed = fill(0xa1, 32);
   const bSeed = fill(0xb2, 32);
@@ -353,14 +359,15 @@ test('(K1 ROUTE_ID) same pair+window: sender outbound and recipient inbound deri
   const aFp = 'aa'.repeat(32);
   const bFp = 'bb'.repeat(32);
   const now = 1_780_000_000_000;
+  const establishedEpochWeek = epochWeekOf(now) - 1; // established a week before "now"
 
   const aOutbound = deriveRotatingRouteId({
     myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp,
-    direction: 'outbound', cache: createInMemoryRouteRatchetCache(), now,
+    direction: 'outbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now,
   });
   const bInbound = deriveRotatingRouteId({
     myEdPriv: bSeed, myFp: bFp, peerEdPub: aPub, peerFp: aFp,
-    direction: 'inbound', cache: createInMemoryRouteRatchetCache(), now,
+    direction: 'inbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now,
   });
   assert.equal(aOutbound, bInbound, 'A->B outbound must equal B-side inbound-from-A, same window');
   assert.match(aOutbound, /^[0-9a-f]{32}$/, '128-bit hex route_id');
@@ -374,16 +381,17 @@ test('(K1 ROUTE_ID) different peers -> different route_ids; same peer across win
   const bFp = 'bb'.repeat(32);
   const cFp = 'cc'.repeat(32);
   const now = 1_780_000_000_000;
+  const establishedEpochWeek = epochWeekOf(now) - 1;
 
-  const toB = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', cache: createInMemoryRouteRatchetCache(), now });
-  const toC = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: cPub, peerFp: cFp, direction: 'outbound', cache: createInMemoryRouteRatchetCache(), now });
+  const toB = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now });
+  const toC = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: cPub, peerFp: cFp, direction: 'outbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now });
   assert.notEqual(toB, toC, 'unlinkability: distinct peers never share a route_id');
 
   const cache = createInMemoryRouteRatchetCache();
   const windowMs = 3600 * 1000;
-  const w0 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', cache, now });
-  const w1 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', cache, now: now + windowMs });
-  const w2 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', cache, now: now + 2 * windowMs });
+  const w0 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek, cache, now });
+  const w1 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek, cache, now: now + windowMs });
+  const w2 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek, cache, now: now + 2 * windowMs });
   assert.notEqual(w0, w1);
   assert.notEqual(w1, w2);
   assert.notEqual(w0, w2, 'rotates across multiple elapsed windows, not just a 2-cycle toggle');
@@ -395,8 +403,70 @@ test('(K1 ROUTE_ID) outbound (A->B) and inbound-as-seen-by-A are DIFFERENT chain
   const bPub = ed25519.getPublicKey(fill(0xb2, 32));
   const bFp = 'bb'.repeat(32);
   const now = 1_780_000_000_000;
+  const establishedEpochWeek = epochWeekOf(now) - 1;
 
-  const outbound = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', cache: createInMemoryRouteRatchetCache(), now });
-  const inbound = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'inbound', cache: createInMemoryRouteRatchetCache(), now });
+  const outbound = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now });
+  const inbound = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'inbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now });
   assert.notEqual(outbound, inbound, 'A->B traffic and B->A traffic must never collide on one route_id');
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// (CROSS-SESSION — the non-vacuous seal criterion) — two parties who bootstrap their RouteRatchet at
+// COMPLETELY DIFFERENT real moments (fresh, independent in-memory caches — no shared runtime state
+// whatsoever beyond the shared establishedEpochWeek) MUST derive the SAME route_id for the SAME target
+// window. This is the property v1 (anchor-at-"now") provably did NOT have.
+// ════════════════════════════════════════════════════════════════════════
+test('(CROSS-SESSION) recipient offline during deposit, polls days later — same establishedEpochWeek, fresh independent caches, still matches', () => {
+  const aSeed = fill(0xa1, 32); // depositor (goes private)
+  const bSeed = fill(0xb2, 32); // recipient (was offline)
+  const aPub = ed25519.getPublicKey(aSeed);
+  const bPub = ed25519.getPublicKey(bSeed);
+  const aFp = 'aa'.repeat(32);
+  const bFp = 'bb'.repeat(32);
+
+  const depositMoment = 1_780_000_000_000; // A deposits "live", right now
+  const establishedEpochWeek = epochWeekOf(depositMoment) - 3; // contact established 3 weeks earlier
+  const DAY_MS = 24 * 3600 * 1000;
+  const pollMomentDaysLater = depositMoment + 4 * DAY_MS; // B only resumes polling 4 days later
+
+  // A: a fresh process/cache depositing live at depositMoment.
+  const routeAtDeposit = deriveRotatingRouteId({
+    myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp,
+    direction: 'outbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now: depositMoment,
+  });
+
+  // B: a TOTALLY SEPARATE fresh cache (simulating a different process/session with zero runtime state
+  // carried over from A's computation) going back to check the EXACT window A deposited in — exactly what
+  // a real consume-with-backfill loop does after being offline. B's ratchet object is constructed for the
+  // first time HERE, days after A's, yet must reproduce A's bucket.
+  const routeBForDepositWindow = deriveRotatingRouteId({
+    myEdPriv: bSeed, myFp: bFp, peerEdPub: aPub, peerFp: aFp,
+    direction: 'inbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now: depositMoment,
+  });
+  assert.equal(
+    routeBForDepositWindow,
+    routeAtDeposit,
+    'B, bootstrapping its ratchet days later in a fresh independent cache, must still reconstruct the EXACT bucket A deposited to',
+  );
+
+  // And B's OWN current-window query (days later) is a genuinely DIFFERENT, rotated-forward bucket — proof
+  // this isn't a non-rotating constant masquerading as a fix.
+  const routeBNow = deriveRotatingRouteId({
+    myEdPriv: bSeed, myFp: bFp, peerEdPub: aPub, peerFp: aFp,
+    direction: 'inbound', establishedEpochWeek, cache: createInMemoryRouteRatchetCache(), now: pollMomentDaysLater,
+  });
+  assert.notEqual(routeBNow, routeBForDepositWindow, "B's current (4-days-later) bucket has rotated away from the deposit-time bucket");
+});
+
+test('(NEGATIVE CONTROL) a different establishedEpochWeek for the same pair+window yields a DIFFERENT route_id', () => {
+  const aSeed = fill(0xa1, 32);
+  const aFp = 'aa'.repeat(32);
+  const bPub = ed25519.getPublicKey(fill(0xb2, 32));
+  const bFp = 'bb'.repeat(32);
+  const now = 1_780_000_000_000;
+  const weekX = epochWeekOf(now) - 3;
+
+  const r1 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek: weekX, cache: createInMemoryRouteRatchetCache(), now });
+  const r2 = deriveRotatingRouteId({ myEdPriv: aSeed, myFp: aFp, peerEdPub: bPub, peerFp: bFp, direction: 'outbound', establishedEpochWeek: weekX - 1, cache: createInMemoryRouteRatchetCache(), now });
+  assert.notEqual(r1, r2, 'the anchor actually matters — a wrong/mismatched establishedEpochWeek does not accidentally still match');
 });

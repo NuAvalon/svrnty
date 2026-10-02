@@ -60,26 +60,65 @@
  *      exactly what route-ratchet.ts's own SCOPE note (line 48) defers as "a separate reviewable unit"
  *      ("wiring route_id into the ... send/register path"). That durable checkpoint store does not exist
  *      anywhere in this codebase (grepped: zero production callers of route-ratchet.ts prior to this file).
- *   4. WHAT THIS FILE ACTUALLY DOES (deriveRotatingRouteId, below): bootstraps a RouteRatchet instance
- *      anchored AT THE CURRENT WINDOW the first time a given (peer, direction) needs one (zero-hop, instant
- *      — real math, no new crypto), caches the live INSTANCE (not raw bytes) in an injectable in-memory
- *      cache, and calls .advanceTo() on subsequent calls (cheap incremental hops). This is the REAL K1
- *      chain, correctly composed, and is CORRECT for two parties who both first touch a given pair within
- *      the same ROUTE_WINDOW_SECONDS (1h) window — i.e. exactly a live, back-to-back deposit→consume demo
- *      in one process/session, which is what this file's tests and the live round-trip prove.
- *      ★ IT DOES NOT YET SOLVE THE GENERAL CASE: two independent clients who bootstrap at different real
- *      moments (e.g. the recipient's device is offline when I go private, and first polls hours later) will
- *      anchor at DIFFERENT windows and derive UNRELATED route_ids — not "slightly off", cryptographically
- *      unrelated (advanceRatchetKey chains don't converge). Fixing that needs a durable, MUTUALLY-AGREED
- *      anchor — the natural, already-available candidate is mutual-trust.ts's epoch_week /
- *      TrustCommitment.established semantics (both parties already compute that identically during mutual-
- *      trust establishment, with zero new wire negotiation) — but wiring that is a new, reviewable surface
- *      (persistence schema, bootstrap-for-existing-contacts, cross-device sync) and is OUT OF SCOPE here.
- *      TREAT deriveRotatingRouteId AS A SAME-SESSION/DEMO-GRADE REAL DERIVATION, NOT YET A PRODUCTION
- *      ROUTING LAYER. See the deliverable report for the explicit recommendation.
+ *   4. v1 OF THIS FILE bootstrapped a RouteRatchet anchored AT "now" on first use per (peer, direction) —
+ *      correct only for two parties who happened to first touch a pair within the same ROUTE_WINDOW_SECONDS
+ *      window (a same-session demo), NOT the general cross-session case (an offline recipient polling days
+ *      later would anchor at a different window and derive a cryptographically UNRELATED route_id — not
+ *      "slightly off"). Superseded by the fix below.
  *
- * SCOPE: this file = transport (HTTP deposit/poll) + the route_id derivation helper. It does not modify
- * consent-delta-emit.ts's two crypto leaves, and does not implement durable ratchet-checkpoint persistence.
+ * ★★★ ROUTE_ID GROUNDING v2 (the cross-session fix) — the anchor must be a FIXED point both parties can
+ * compute IDENTICALLY, independent of when each happens to run. The coordinator's proposed source,
+ * mutual-trust.ts `TrustCommitment.epoch_week` (set once at establishment by buildTrustCommitment), is
+ * exactly the right SHAPE of value — but GROUNDING it turned up a real, separate gap (task-2 "STOP and
+ * report" case):
+ *
+ *   • `TrustCommitment` / `buildTrustCommitment` / `submitCommitment` / `checkMutualTrust` (mutual-trust.ts)
+ *     are the OLD trust-commit oracle. trust-rendezvous.ts's OWN header (line 5-7) says it
+ *     "SUPERSEDES the dead trust-commit oracle (mutual-trust.ts computeCommitment/submitCommitment —
+ *     saltless, O(N)-reversible; REMOVED, never re-activated)". Grepped: `TrustCommitment` has ZERO
+ *     production callers anywhere in this repo outside mutual-trust.ts's own definitions (and now this
+ *     file) — nothing builds one, nothing stores one, nothing threads `.epoch_week` to a contact record.
+ *   • The LIVE mutual-trust orchestrator this feature actually sits on (mutual-trust-sync.ts, cited by
+ *     consent-delta-emit.ts's own grounding) calls NEITHER mutual-trust.ts's commitment functions NOR
+ *     trust-rendezvous.ts's beacon functions (grepped clean) — it uses its own PSI-based mechanism with no
+ *     epoch field at all.
+ *   • The live per-contact schema (trust/types.ts TrustEdge) has no "mutually-established-at" field either.
+ *     `trusted_since` is explicitly UNILATERAL ("when trust was last granted" — i.e. when *I* vouched for
+ *     *them*; my `trusted_since` and their `trusted_since` are independently-set, generally DIFFERENT real
+ *     moments). `mutual.last_sync` is a rolling "last exchange" timestamp, not a fixed establishment point
+ *     — using either would silently reintroduce the exact cross-session mismatch this fix is for, while
+ *     LOOKING fixed. trust-rendezvous.ts's `TrustBeacon.epoch` is likewise a rolling current-epoch marker
+ *     (recomputed fresh on every rehydrate), not a one-time establishment anchor.
+ *
+ *   ⇒ THE REAL REMAINING GAP: there is no live, persisted, per-contact, MUTUALLY-SHARED "establishment"
+ *   timestamp anywhere in this codebase today, under any name. Fabricating a new store for one here would
+ *   be exactly the kind of unreviewed new persistence surface this file has avoided throughout (and route-
+ *   ratchet.ts's own SCOPE note at line 48 already defers "wiring route_id into the send/register path" as
+ *   a separate reviewable unit).
+ *
+ *   WHAT THIS FILE DOES INSTEAD: implements the anchor MATH as a generic, explicit input —
+ *   `deriveRotatingRouteId` now REQUIRES an `establishedEpochWeek: number` (mutual-trust.ts epoch-week
+ *   granularity) and converts it to a route-ratchet window via `epochWeekToAnchorWindow` (604800s/3600s =
+ *   168 hourly windows per week — route-ratchet.ts ROUTE_WINDOW_SECONDS=3600, mutual-trust.ts's
+ *   EPOCH_WEEK_SECONDS=604800 is NOT exported, so the ratio is mirrored here as a literal — flagged as a
+ *   minor drift risk if either constant ever changes independently). `RouteRatchet.init(sAB, dir,
+ *   anchorWindow, nowWindow)` is then a PURE function of (sAB, dir, anchorWindow, targetWindow) — EITHER
+ *   party can recompute ANY window (the exact one a deposit landed in, or their own current one)
+ *   independently, in a fresh process, with NO shared runtime state beyond the (still-missing) shared
+ *   epoch_week — proven by the (CROSS-SESSION) test below. The cache (RouteRatchetCache) is kept purely as
+ *   a performance optimization (advance an existing instance instead of re-walking from the anchor every
+ *   call) — correctness no longer depends on it.
+ *
+ *   BLOCKER FOR PRODUCTION WIRING: callers cannot yet supply a REAL `establishedEpochWeek` per contact,
+ *   because nothing persists one (see gap above). This file's tests inject an explicit value to prove the
+ *   math; wiring a real one requires either reviving+actually-calling the commit oracle, adding an
+ *   establishment-epoch field to the live mutual-trust-sync/TrustEdge path, or repurposing trust-
+ *   rendezvous's beacon epoch into a retained (not rolling) establishment marker — a new, reviewable
+ *   decision, out of scope here.
+ *
+ * SCOPE: this file = transport (HTTP deposit/poll) + the route_id anchor-math derivation helper. It does
+ * not modify consent-delta-emit.ts's two crypto leaves, and does not implement per-contact establishment-
+ * epoch persistence (the blocker above).
  */
 import {
   emitConsentDelta,
@@ -93,7 +132,7 @@ import { openOnionInner, type StrippedInner } from '../crypto/onion-envelope.js'
 import { unframeUniform } from '../crypto/uniform-frame.js';
 import type { MailboxPublicKeys, MailboxSecretKeys, MailboxEnvelopePackage } from '../crypto/mailbox-envelope.js';
 import { deriveSharedSecret } from '../crypto/mutual-trust.js';
-import { directionTag, currentWindowIndex, RouteRatchet } from '../crypto/route-ratchet.js';
+import { directionTag, currentWindowIndex, RouteRatchet, ROUTE_WINDOW_SECONDS } from '../crypto/route-ratchet.js';
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════
 // TRANSPORT — the injected relay interface over the S1 blind relay, mirroring the existing
@@ -338,10 +377,12 @@ export async function consumeConsentDeltas(args: ConsumeConsentDeltasArgs): Prom
  *  CONSUME polls). These are independent ratchet chains (route-ratchet.ts:73) by design. */
 export type RouteDirection = 'outbound' | 'inbound';
 
-/** Caches live RouteRatchet INSTANCES (not raw key bytes) per (peerFp, direction) — advancing the SAME
- *  object over time is what gives real rotation; re-deriving from scratch each call either costs ~90s
- *  (anchor=0) or never rotates (anchor=now every time) — see ★★★ ROUTE_ID GROUNDING. In-memory only: does
- *  NOT survive a process restart, and does NOT solve cross-session anchor agreement (module header ★). */
+/** Caches live RouteRatchet INSTANCES (not raw key bytes) per (peerFp, direction) — a pure PERFORMANCE
+ *  optimization now (advance an existing instance instead of re-walking from the anchor every call);
+ *  correctness no longer depends on it (unlike v1) now that the anchor is the fixed establishedEpochWeek,
+ *  not "now". In-memory only: does not survive a process restart, but that no longer matters for
+ *  correctness either — a fresh cache + the same establishedEpochWeek reproduces the identical route_id
+ *  for any target window (proven by the (CROSS-SESSION) test). */
 export interface RouteRatchetCache {
   get(key: string): RouteRatchet | undefined;
   set(key: string, ratchet: RouteRatchet): void;
@@ -355,27 +396,53 @@ export function createInMemoryRouteRatchetCache(): RouteRatchetCache {
   };
 }
 
+/** route-ratchet windows are HOURLY (route-ratchet.ts ROUTE_WINDOW_SECONDS=3600); a mutual-trust epoch_week
+ *  is WEEKLY (mutual-trust.ts EPOCH_WEEK_SECONDS=604800 — not exported, mirrored here as a literal ratio;
+ *  flagged as a minor drift risk if either constant changes independently). 604800/3600 = 168 hourly
+ *  windows per week. */
+const ROUTE_WINDOWS_PER_EPOCH_WEEK = 604_800 / ROUTE_WINDOW_SECONDS; // 168
+
+/** Convert a mutual-trust epoch_week (mutual-trust.ts currentEpochWeek() / TrustCommitment.epoch_week — see
+ *  ★★★ ROUTE_ID GROUNDING v2 for why no live source of this value exists yet per-contact) into the
+ *  equivalent route-ratchet window index: the FIXED, mutually-computable K1 anchor for a contact pair. */
+export function epochWeekToAnchorWindow(epochWeek: number): number {
+  return epochWeek * ROUTE_WINDOWS_PER_EPOCH_WEEK;
+}
+
 export interface DeriveRotatingRouteIdArgs {
   myEdPriv: Uint8Array;
   myFp: string;
   peerEdPub: Uint8Array;
   peerFp: string;
   direction: RouteDirection;
+  /** The mutual-trust epoch_week (mutual-trust.ts currentEpochWeek() granularity) this contact pair was
+   *  ESTABLISHED in — the FIXED anchor. BOTH parties MUST supply the SAME value for their shared pair (see
+   *  ★★★ ROUTE_ID GROUNDING v2: no live per-contact source for this exists yet — tests inject it directly
+   *  to prove the derivation math; production wiring is blocked on that gap). */
+  establishedEpochWeek: number;
   cache: RouteRatchetCache;
-  /** Injectable wall-clock (ms) — defaults to Date.now(). */
+  /** Injectable wall-clock (ms) — defaults to Date.now(). Represents the TARGET window being computed for
+   *  (e.g. "now" for a live poll, or a specific past moment to recheck an old bucket during backfill). */
   now?: number;
 }
 
 /**
- * Derive the REAL rotating K1 route_id for one (contact, direction) pair at the current window.
+ * Derive the REAL rotating K1 route_id for one (contact, direction) pair at a target window, anchored at
+ * `establishedEpochWeek` (converted to a route-ratchet window via epochWeekToAnchorWindow).
  *
- * First call for a given (peerFp, direction): bootstraps a RouteRatchet anchored AT the current window
- * (zero hops — instant; `RouteRatchet.init(sAB, dir, nowWindow, nowWindow)`) and caches the instance.
- * Subsequent calls: advances the SAME cached instance forward (cheap — typically 0-few hops since the
- * last call) and reads currentRouteId(). This is CORRECT (byte-identical to what the sender/recipient
- * each independently compute) ONLY when both sides' first bootstrap for this pair falls in the same
- * ROUTE_WINDOW_SECONDS window — i.e. a live, same-session round trip. See ★★★ ROUTE_ID GROUNDING for why
- * the general (asynchronous, cross-restart) case needs a durable, mutually-agreed anchor instead.
+ * First call for a given (peerFp, direction) in this cache: bootstraps `RouteRatchet.init(sAB, dir,
+ * anchorWindow, targetWindow)` (walks forward from the FIXED anchor — a one-time COLD cost per contact,
+ * not per message; MEASURED (isolated-process, this hardware): 1-week-old contact (168 hops) ~86ms,
+ * 1-month (730 hops) ~218ms, 6-month (4368 hops) ~919ms, 1-year (8736 hops) ~2.4s, 2-year/TTL-boundary
+ * (17472 hops, mutual-trust.ts DEFAULT_TTL_WEEKS=104) ~3.6s — roughly linear in elapsed hops. Sub-second
+ * for recent contacts, creeping to a few seconds for very old ones; still 25-1000x faster than the v1
+ * anchor-at-0 measurement (89.7s), and a ONE-TIME per-(contact,direction) cost the cache then amortizes —
+ * but NOT the "sub-2s even for a year-old contact" originally predicted; flag before relying on it for a
+ * synchronous/blocking UI path with many old contacts). Subsequent calls for the SAME cache key: advance
+ * the cached instance (cheap incremental hop, milliseconds). Because the
+ * anchor is now a value BOTH parties hold identically (once a real source is wired — the open gap), this is
+ * CORRECT across independent processes/sessions bootstrapping at arbitrarily different real moments, as
+ * long as they agree on establishedEpochWeek and the target window — see the (CROSS-SESSION) test.
  */
 export function deriveRotatingRouteId(args: DeriveRotatingRouteIdArgs): string {
   const dir =
@@ -383,15 +450,16 @@ export function deriveRotatingRouteId(args: DeriveRotatingRouteIdArgs): string {
       ? directionTag(args.myFp, args.peerFp)
       : directionTag(args.peerFp, args.myFp);
   const key = `${args.peerFp}:${args.direction}`;
-  const nowWindow = currentWindowIndex(args.now ?? Date.now());
+  const targetWindow = currentWindowIndex(args.now ?? Date.now());
+  const anchorWindow = epochWeekToAnchorWindow(args.establishedEpochWeek);
 
   let ratchet = args.cache.get(key);
   if (!ratchet) {
     const sAB = deriveSharedSecret(args.myEdPriv, args.peerEdPub);
-    ratchet = RouteRatchet.init(sAB, dir, nowWindow, nowWindow);
+    ratchet = RouteRatchet.init(sAB, dir, anchorWindow, targetWindow);
     args.cache.set(key, ratchet);
   } else {
-    ratchet.advanceTo(nowWindow);
+    ratchet.advanceTo(targetWindow);
   }
   return ratchet.currentRouteId();
 }
