@@ -45,7 +45,9 @@ test('Trust Map label LOD + dense sample', async ({ page }) => {
   await expect(page.getByTestId('trust-map-nameplate')).toBeVisible();
   await expect(page.getByTestId('trust-map-nameplate')).toContainText('Ada');
   await expect(page.getByTestId('trust-map-lamp-links')).toBeVisible();
-  await expect(page.getByTestId('trust-map-lamp-links')).toContainText(/Witnessed mutual trust|No witnessed peer mutuals/i);
+  await expect(page.getByTestId('trust-map-lamp-links')).toContainText(
+    /A circle they disclosed to you|Both disclosed they trust each other|No disclosed peer ties/i,
+  );
   await page.screenshot({ path: path.join(ART, 'trustmap-lod-search-ada.png'), fullPage: true });
 
   // Lamp someone with group-only neighbors if needed — click Grace for clique filaments

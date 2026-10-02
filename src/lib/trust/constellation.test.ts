@@ -75,7 +75,7 @@ test('they-trust lights only under open-visibility reciprocal + they_trust both 
   assert.equal(c.members.has('b'), false, 'hub did not list b');
   assert.equal(c.members.has('c'), false, 'c did not opt into open visibility');
   const cap = constellationCaption(focusConstellation('hub', contacts), true);
-  assert.ok(cap.includes('ember = witnessed mutual trust'));
+  assert.ok(cap.includes('ember = both disclosed they trust each other'));
   assert.ok(!/\d+/.test(cap), cap);
 });
 

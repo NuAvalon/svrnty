@@ -34,6 +34,11 @@ export const TRUST_RECIPE_COPY = {
     'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
   mycelial:
     'The lattice knits; it doesn\'t recruit. New stars are people who joined you. Lines are ties you were meant to see.',
+  /** Peer-chord hover + legend (Hypatia K2 — consent-explicit, not observational). */
+  peerKnowChord: 'A circle they disclosed to you',
+  peerTrustChord: 'Both disclosed they trust each other',
+  peerMeshLegend:
+    'Between people: a circle they disclosed to you (gold), or trust both sides disclosed (white-gold). Dashed gold is a group you named — not a bond. These lines are disclosures, not observations — svrnty never infers who knows whom.',
   gateStart: 'Start',
   gateContinue: 'Continue',
   /** Site-bottom manifesto (the thing we must never lose). */
