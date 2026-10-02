@@ -96,29 +96,63 @@
  *   ratchet.ts's own SCOPE note at line 48 already defers "wiring route_id into the send/register path" as
  *   a separate reviewable unit).
  *
- *   WHAT THIS FILE DOES INSTEAD: implements the anchor MATH as a generic, explicit input —
- *   `deriveRotatingRouteId` now REQUIRES an `establishedEpochWeek: number` (mutual-trust.ts epoch-week
- *   granularity) and converts it to a route-ratchet window via `epochWeekToAnchorWindow` (604800s/3600s =
- *   168 hourly windows per week — route-ratchet.ts ROUTE_WINDOW_SECONDS=3600, mutual-trust.ts's
- *   EPOCH_WEEK_SECONDS=604800 is NOT exported, so the ratio is mirrored here as a literal — flagged as a
- *   minor drift risk if either constant ever changes independently). `RouteRatchet.init(sAB, dir,
- *   anchorWindow, nowWindow)` is then a PURE function of (sAB, dir, anchorWindow, targetWindow) — EITHER
- *   party can recompute ANY window (the exact one a deposit landed in, or their own current one)
- *   independently, in a fresh process, with NO shared runtime state beyond the (still-missing) shared
- *   epoch_week — proven by the (CROSS-SESSION) test below. The cache (RouteRatchetCache) is kept purely as
- *   a performance optimization (advance an existing instance instead of re-walking from the anchor every
- *   call) — correctness no longer depends on it.
+ *   v2's plan: implement the anchor MATH generically, with `establishedEpochWeek` as an explicit REQUIRED
+ *   input (not fabricate a new per-contact store). Superseded below by Flint's crypto-blessed interim call.
  *
- *   BLOCKER FOR PRODUCTION WIRING: callers cannot yet supply a REAL `establishedEpochWeek` per contact,
- *   because nothing persists one (see gap above). This file's tests inject an explicit value to prove the
- *   math; wiring a real one requires either reviving+actually-calling the commit oracle, adding an
- *   establishment-epoch field to the live mutual-trust-sync/TrustEdge path, or repurposing trust-
- *   rendezvous's beacon epoch into a retained (not rolling) establishment marker — a new, reviewable
- *   decision, out of scope here.
+ * ★★★ ROUTE_ID GROUNDING v3 (Flint-blessed interim: ONE GLOBAL ANCHOR, not per-contact) — since no live
+ * per-contact establishment timestamp exists (v2 finding, unchanged), Flint's ruling is: anchor EVERY
+ * contact-pair at the SAME fixed, compiled-in constant, `ANCHOR_EPOCH_WEEK` below. This is trivially
+ * "mutually computed" — it's not data exchanged over the wire or derived from any per-contact state, it's a
+ * literal in the source both parties run, so there is nothing to desync. `deriveRotatingRouteId` no longer
+ * takes `establishedEpochWeek` — it always anchors at `ANCHOR_EPOCH_WEEK * 168`, for ALL contacts.
  *
- * SCOPE: this file = transport (HTTP deposit/poll) + the route_id anchor-math derivation helper. It does
- * not modify consent-delta-emit.ts's two crypto leaves, and does not implement per-contact establishment-
- * epoch persistence (the blocker above).
+ *   ANCHOR_EPOCH_WEEK = 2961 = floor(Date.now()/1000/604800) computed 2026-10-02 (`node -e
+ *   "console.log(Math.floor(Date.now()/1000/604800))"` — NOT the coordinator's ~2909 estimate; use the
+ *   measured value). Choosing "now" (launch week) as the anchor means TODAY's hop-from-anchor cost is tiny
+ *   (≈40 hops, see benchmark) — but a FIXED constant means that cost only ever GROWS as real time passes
+ *   (≈168 more hops every week, forever, since the anchor never moves). This is an INTERIM measure, not a
+ *   permanent one — two fast-follows are explicitly NOT built here, flagged per Flint's instruction:
+ *     (a) a RE-ANCHOR PROTOCOL to bump ANCHOR_EPOCH_WEEK later without breaking cells deposited/polled
+ *         straddling the bump (a hard cutover would silently desync one side mid-transition — e.g. a sender
+ *         who updates before a recipient who hasn't would derive from a different anchor than the recipient
+ *         still expects; needs an overlap/dual-anchor transition window, not designed here);
+ *     (b) a PER-CONTACT establishment anchor (v2's plan) once a mutually-shared timestamp is actually
+ *         persisted somewhere (the v2 gap — still open, unchanged by this ruling).
+ *
+ * ★★★ OFFLINE-POLL-DEPTH (Flint's seal-critical requirement) — a global, non-rotating-relative-to-events
+ * anchor fixes CROSS-SESSION MATCHING, but a recipient who was offline during window W and comes back
+ * online at W+k must not just poll route_id(W+k) — that's a DIFFERENT bucket than the one the deposit
+ * landed in (W). `consumeConsentDeltas` therefore polls the WINDOW RANGE
+ * [currentWindow - HORIZON_WINDOWS, currentWindow] per contact (deriveRouteIdWindowRange, below), not just
+ * the single current window — see that function's doc for why this is ONE walk from the anchor (not
+ * HORIZON_WINDOWS separate walks, which would be catastrophically expensive).
+ *
+ *   ★ TENSIONS (reported, not silently resolved — Flint/Athena must weigh in):
+ *   (a) POLL COST: HORIZON_WINDOWS GETs per contact per catch-up poll (default 336 = 2 weeks of hourly
+ *       windows ⇒ up to 336 GETs/contact; 50 contacts ⇒ up to 16,800 GETs in one catch-up cycle). A batch
+ *       endpoint (`GET /route?ids=[...]`) would cut this to one request, but a single request naming many
+ *       route_ids together RE-LINKS them at the relay/network level — it reveals "all these rotated tags
+ *       belong to the same requester polling the same pair across time", exactly the cross-window
+ *       unlinkability K1 exists to prevent. So a batch endpoint is probably NOT the right fix. A further,
+ *       UNASKED-FOR finding worth flagging alongside it: even WITHOUT a batch endpoint, firing all
+ *       HORIZON_WINDOWS GETs back-to-back from the same connection/IP in strict sequential order is ITSELF
+ *       a timing/sequence correlation signal to a network observer (if not the relay) — real hardening would
+ *       need request jitter/reordering/interleaving with cover traffic (this codebase already has K3
+ *       "distress + uniform cover cadence" — distress-cadence.ts — which may be a reusable foundation for
+ *       that; not wired here). The practical, NOT-implemented-here optimization for the common case: track
+ *       `lastPolledWindow` per contact and only poll `[lastPolledWindow+1, currentWindow]` (capped at
+ *       HORIZON_WINDOWS for a never-before-polled/very-stale contact) instead of the full horizon on EVERY
+ *       call — this needs a small persisted-per-contact-poll-cursor, another new storage surface, deferred.
+ *   (b) RELAY RETENTION: for the catch-up range to find a stale deposit, the relay's /route bucket for
+ *       route_id(W) MUST still exist (not expired/GC'd) by the time an offline recipient polls it at W+k,
+ *       for k up to HORIZON_WINDOWS. This is a RELAY-SIDE (Athena) requirement to flag explicitly: the S1
+ *       relay must retain a bucket for at least HORIZON_WINDOWS hours (2 weeks, at the default), or a
+ *       deposit silently expires before an offline recipient can ever see it — the exact silent-failure
+ *       this whole mechanism exists to close. Not implementable from this client-only repo.
+ *
+ * SCOPE: this file = transport (HTTP deposit/poll) + the route_id anchor-math + window-range derivation. It
+ * does not modify consent-delta-emit.ts's two crypto leaves, does not implement a re-anchor protocol, a
+ * per-contact establishment anchor, a poll-cursor optimization, or relay-side retention (all flagged above).
  */
 import {
   emitConsentDelta,
@@ -132,7 +166,15 @@ import { openOnionInner, type StrippedInner } from '../crypto/onion-envelope.js'
 import { unframeUniform } from '../crypto/uniform-frame.js';
 import type { MailboxPublicKeys, MailboxSecretKeys, MailboxEnvelopePackage } from '../crypto/mailbox-envelope.js';
 import { deriveSharedSecret } from '../crypto/mutual-trust.js';
-import { directionTag, currentWindowIndex, RouteRatchet, ROUTE_WINDOW_SECONDS } from '../crypto/route-ratchet.js';
+import {
+  directionTag,
+  currentWindowIndex,
+  RouteRatchet,
+  ROUTE_WINDOW_SECONDS,
+  deriveRootRatchetKey,
+  advanceRatchetKey,
+  deriveRouteId,
+} from '../crypto/route-ratchet.js';
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════
 // TRANSPORT — the injected relay interface over the S1 blind relay, mirroring the existing
@@ -255,39 +297,49 @@ export async function depositConsentDeltas(args: DepositConsentDeltasArgs): Prom
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════════
-// CONSUME — poll each known contact's dedicated route bucket → open → unframe → apply.
+// CONSUME — for each known contact, poll the WINDOW RANGE of their dedicated route bucket (★
+// OFFLINE-POLL-DEPTH, module header) → open → unframe → apply.
 //
-// Because the REAL derived route_id (below) is pair-specific (s_AB is unique per contact), each contact
-// has their OWN "them→me" bucket — this loops per contact (mirrors the existing per-contact loop
-// convention: trust-rendezvous.ts pollForPeerTrust, know-layer-sync.ts runPsiCompletionPass), not a
-// try-every-pubkey-against-every-cell scan. If the caller is still on emitConsentDelta's DEFAULT_ROUTE
-// placeholder, every contact's `routeId` can simply be that same literal — the loop still works (and in
-// that fallback mode a hostile/foreign cell is simply rejected at applyInboundConsentDelta's signature
-// check, never mis-attributed to the wrong contact).
+// Because the REAL derived route_id is pair-specific (s_AB is unique per contact), each contact has their
+// OWN "them→me" bucket sequence — this loops per contact (mirrors the existing per-contact loop convention:
+// trust-rendezvous.ts pollForPeerTrust, know-layer-sync.ts runPsiCompletionPass), not a
+// try-every-pubkey-against-every-cell scan. The route_id(s) to poll are DERIVED here (not caller-supplied)
+// because the offline catch-up range needs the contact's pubkey + the shared anchor, not a single
+// precomputed string — see deriveRouteIdWindowRange below.
 // ════════════════════════════════════════════════════════════════════════════════════════════════════
 
 export interface ConsumeContactCandidate {
   /** The LOCAL book identifier for this contact — passed straight through to applyMutualResult. */
   peerFingerprint: string;
-  /** This contact's identity Ed25519 signing pubkey — verifies their consent-delta signature. */
+  /** This contact's identity Ed25519 pubkey — BOTH verifies their consent-delta signature AND (via
+   *  deriveSharedSecret's X25519 conversion) derives the K1 route_id range for their "them→me" bucket. */
   signerSignPub: Uint8Array;
   /** Highest epoch already accepted from this contact (§6a anti-rollback; -1 if none ever accepted). */
   lastSeenEpoch: number;
-  /** The route_id to GET /route/{routeId} for cells FROM this contact TO me. */
-  routeId: string;
 }
 
 export interface ConsumeConsentDeltasArgs {
   relay: OnionRelay;
   contacts: ConsumeContactCandidate[];
+  /** My raw Ed25519 seed — needed here (not just at deposit time) to derive each contact's inbound
+   *  route_id range via deriveSharedSecret(myEdPriv, contact.signerSignPub). */
+  myEdPriv: Uint8Array;
+  myFp: string;
   myDeviceSecrets: MailboxSecretKeys;
   myDeviceMailboxFpHex: string;
   /** The verifier's OWN stable identity fingerprint bytes (consent-delta.ts recipientBinding contract). */
   myRecipientBinding: Uint8Array;
   deps: ApplyConsentDeltaDeps;
+  /** How many past hourly windows to catch up on, per contact (★ OFFLINE-POLL-DEPTH). Defaults to
+   *  HORIZON_WINDOWS. Injectable so callers/tests can tune the cost/coverage tradeoff explicitly. */
+  horizonWindows?: number;
+  /** Injectable wall-clock (ms) — defaults to Date.now(). The END of the catch-up range (the range is
+   *  [currentWindow(now) - horizonWindows, currentWindow(now)]). */
+  now?: number;
 }
 
 export type ConsumeSkipReason =
+  | 'route-derivation-failed'
   | 'relay-poll-failed'
   | 'open-failed'
   | 'not-consent-delta'
@@ -301,20 +353,49 @@ export interface ConsumeConsentDeltasResult {
 }
 
 /**
- * Poll every candidate contact's route bucket, and for each returned cell: openOnionInner (device-side —
- * NOT peelOnion, see module header ★) → unframeUniform → if type === 'consent-delta', applyInboundConsentDelta
- * (UNMODIFIED). Never throws on hostile/malformed input at ANY stage — a bad cell is skipped with a reason,
- * and the batch (this contact's remaining cells, and every other contact) continues.
+ * For every candidate contact, derive their inbound route_id WINDOW RANGE (deriveRouteIdWindowRange —
+ * covers a while-offline deposit, ★ OFFLINE-POLL-DEPTH) and poll each bucket in it; for each returned
+ * cell: openOnionInner (device-side — NOT peelOnion, see module header ★) → unframeUniform → if
+ * type === 'consent-delta', applyInboundConsentDelta (UNMODIFIED). Never throws on hostile/malformed input
+ * at ANY stage — a bad cell is skipped with a reason, and the batch (this contact's remaining windows/
+ * cells, and every other contact) continues. Re-polling an already-applied window on a later catch-up is
+ * harmless — applyInboundConsentDelta's own §6a monotonic check makes a repeat a no-op, PROVIDED the caller
+ * updates `lastSeenEpoch` between poll cycles (same contract as before; this function does not persist it).
  */
 export async function consumeConsentDeltas(args: ConsumeConsentDeltasArgs): Promise<ConsumeConsentDeltasResult> {
   const applied: ConsumeConsentDeltasResult['applied'] = [];
   const skipped: ConsumeConsentDeltasResult['skipped'] = [];
+  const horizonWindows = args.horizonWindows ?? HORIZON_WINDOWS;
 
   for (const contact of args.contacts) {
-    let cells: StrippedInner[];
+    let routeIds: string[];
     try {
-      cells = await args.relay.poll(contact.routeId);
+      routeIds = deriveRouteIdWindowRange({
+        myEdPriv: args.myEdPriv,
+        myFp: args.myFp,
+        peerEdPub: contact.signerSignPub,
+        peerFp: contact.peerFingerprint,
+        direction: 'inbound',
+        horizonWindows,
+        now: args.now,
+      });
     } catch {
+      skipped.push({ peerFingerprint: contact.peerFingerprint, reason: 'route-derivation-failed' });
+      continue;
+    }
+
+    let cells: StrippedInner[] = [];
+    let pollFailed = false;
+    for (const routeId of routeIds) {
+      try {
+        cells = cells.concat(await args.relay.poll(routeId));
+      } catch {
+        pollFailed = true;
+        break; // a relay failure on one window of this contact's range is treated as systemic for them —
+        // move on to the NEXT CONTACT rather than spamming one skip entry per remaining window.
+      }
+    }
+    if (pollFailed) {
       skipped.push({ peerFingerprint: contact.peerFingerprint, reason: 'relay-poll-failed' });
       continue;
     }
@@ -402,12 +483,28 @@ export function createInMemoryRouteRatchetCache(): RouteRatchetCache {
  *  windows per week. */
 const ROUTE_WINDOWS_PER_EPOCH_WEEK = 604_800 / ROUTE_WINDOW_SECONDS; // 168
 
-/** Convert a mutual-trust epoch_week (mutual-trust.ts currentEpochWeek() / TrustCommitment.epoch_week — see
- *  ★★★ ROUTE_ID GROUNDING v2 for why no live source of this value exists yet per-contact) into the
- *  equivalent route-ratchet window index: the FIXED, mutually-computable K1 anchor for a contact pair. */
+/** Convert an epoch-week (mutual-trust.ts currentEpochWeek() granularity) into the equivalent
+ *  route-ratchet window index. Used ONLY for the one GLOBAL `ANCHOR_EPOCH_WEEK` below (★★★ ROUTE_ID
+ *  GROUNDING v3) — NOT per-contact (v2's per-contact plan is superseded; the gap it was blocked on is
+ *  unchanged and still open). */
 export function epochWeekToAnchorWindow(epochWeek: number): number {
   return epochWeek * ROUTE_WINDOWS_PER_EPOCH_WEEK;
 }
+
+/** THE global, fixed, Flint-blessed K1 anchor (★★★ ROUTE_ID GROUNDING v3) — a compiled-in constant every
+ *  client shares by construction, not data exchanged or derived per-contact.
+ *  = floor(Date.now() / 1000 / 604800), computed 2026-10-02 via:
+ *    `node -e "console.log(Math.floor(Date.now()/1000/604800))"` → 2961
+ *  (the coordinator's estimate was ~2909; this is the measured value — use it, not the estimate).
+ *  ★ FAST-FOLLOWS, NOT built here (see module header for the full tension writeup): (a) a re-anchor
+ *  protocol to bump this without breaking cells straddling the bump; (b) replace with a per-contact
+ *  establishment anchor once a mutually-shared timestamp is actually persisted somewhere (still absent). */
+export const ANCHOR_EPOCH_WEEK = 2961;
+
+/** How many past hourly windows consumeConsentDeltas catches up on by default (★ OFFLINE-POLL-DEPTH).
+ *  336 = 2 weeks of hourly windows. Named/exported so callers can override per their own
+ *  cost/coverage tradeoff (see module header ★ TENSIONS — this is NOT free: up to 336 GETs/contact). */
+export const HORIZON_WINDOWS = 336;
 
 export interface DeriveRotatingRouteIdArgs {
   myEdPriv: Uint8Array;
@@ -415,11 +512,6 @@ export interface DeriveRotatingRouteIdArgs {
   peerEdPub: Uint8Array;
   peerFp: string;
   direction: RouteDirection;
-  /** The mutual-trust epoch_week (mutual-trust.ts currentEpochWeek() granularity) this contact pair was
-   *  ESTABLISHED in — the FIXED anchor. BOTH parties MUST supply the SAME value for their shared pair (see
-   *  ★★★ ROUTE_ID GROUNDING v2: no live per-contact source for this exists yet — tests inject it directly
-   *  to prove the derivation math; production wiring is blocked on that gap). */
-  establishedEpochWeek: number;
   cache: RouteRatchetCache;
   /** Injectable wall-clock (ms) — defaults to Date.now(). Represents the TARGET window being computed for
    *  (e.g. "now" for a live poll, or a specific past moment to recheck an old bucket during backfill). */
@@ -428,21 +520,18 @@ export interface DeriveRotatingRouteIdArgs {
 
 /**
  * Derive the REAL rotating K1 route_id for one (contact, direction) pair at a target window, anchored at
- * `establishedEpochWeek` (converted to a route-ratchet window via epochWeekToAnchorWindow).
+ * the GLOBAL `ANCHOR_EPOCH_WEEK` (★★★ ROUTE_ID GROUNDING v3 — NOT a per-contact value; every contact pair
+ * shares the same anchor).
  *
  * First call for a given (peerFp, direction) in this cache: bootstraps `RouteRatchet.init(sAB, dir,
- * anchorWindow, targetWindow)` (walks forward from the FIXED anchor — a one-time COLD cost per contact,
- * not per message; MEASURED (isolated-process, this hardware): 1-week-old contact (168 hops) ~86ms,
- * 1-month (730 hops) ~218ms, 6-month (4368 hops) ~919ms, 1-year (8736 hops) ~2.4s, 2-year/TTL-boundary
- * (17472 hops, mutual-trust.ts DEFAULT_TTL_WEEKS=104) ~3.6s — roughly linear in elapsed hops. Sub-second
- * for recent contacts, creeping to a few seconds for very old ones; still 25-1000x faster than the v1
- * anchor-at-0 measurement (89.7s), and a ONE-TIME per-(contact,direction) cost the cache then amortizes —
- * but NOT the "sub-2s even for a year-old contact" originally predicted; flag before relying on it for a
- * synchronous/blocking UI path with many old contacts). Subsequent calls for the SAME cache key: advance
- * the cached instance (cheap incremental hop, milliseconds). Because the
- * anchor is now a value BOTH parties hold identically (once a real source is wired — the open gap), this is
- * CORRECT across independent processes/sessions bootstrapping at arbitrarily different real moments, as
- * long as they agree on establishedEpochWeek and the target window — see the (CROSS-SESSION) test.
+ * anchorWindow, targetWindow)` (walks forward from the FIXED anchor — a one-time COLD cost per contact, not
+ * per message; see the benchmark in the deliverable report — cost is small TODAY because the anchor is
+ * "this launch week", but it is NOT bounded: it grows ~168 hops every week forever absent a re-anchor,
+ * eventually reaching the v1-measured 89.7s/anchor-0 scale again after enough calendar time — this is the
+ * explicit cost of an interim global anchor vs. a real per-contact one). Subsequent calls for the SAME
+ * cache key: advance the cached instance (cheap incremental hop, milliseconds). Because EVERY party anchors
+ * at the SAME compiled-in constant, this is CORRECT across independent processes/sessions bootstrapping at
+ * arbitrarily different real moments — see the (CROSS-SESSION OFFLINE) test.
  */
 export function deriveRotatingRouteId(args: DeriveRotatingRouteIdArgs): string {
   const dir =
@@ -451,7 +540,7 @@ export function deriveRotatingRouteId(args: DeriveRotatingRouteIdArgs): string {
       : directionTag(args.peerFp, args.myFp);
   const key = `${args.peerFp}:${args.direction}`;
   const targetWindow = currentWindowIndex(args.now ?? Date.now());
-  const anchorWindow = epochWeekToAnchorWindow(args.establishedEpochWeek);
+  const anchorWindow = epochWeekToAnchorWindow(ANCHOR_EPOCH_WEEK);
 
   let ratchet = args.cache.get(key);
   if (!ratchet) {
@@ -462,4 +551,63 @@ export function deriveRotatingRouteId(args: DeriveRotatingRouteIdArgs): string {
     ratchet.advanceTo(targetWindow);
   }
   return ratchet.currentRouteId();
+}
+
+export interface DeriveRouteIdRangeArgs {
+  myEdPriv: Uint8Array;
+  myFp: string;
+  peerEdPub: Uint8Array;
+  peerFp: string;
+  direction: RouteDirection;
+  /** How many windows before the target window to include (inclusive range: [target-horizon, target]). */
+  horizonWindows: number;
+  /** Injectable wall-clock (ms) — defaults to Date.now(). Defines the END (most recent window) of the range. */
+  now?: number;
+}
+
+/**
+ * Derive route_id(w) for every window w in [max(ANCHOR_EPOCH_WEEK*168, targetWindow - horizonWindows),
+ * targetWindow], oldest first — the ★ OFFLINE-POLL-DEPTH catch-up range a recipient must poll to find a
+ * deposit made while they were offline (a deposit at window W has route_id(W); the tag ROTATES, so polling
+ * only the CURRENT window after returning online misses it entirely — the exact silent-failure this exists
+ * to close).
+ *
+ * ★ PERFORMANCE: this is ONE walk from the global anchor to targetWindow (the SAME cost as a single
+ * deriveRotatingRouteId cold call — see its doc), recording the route_id at each of the last
+ * `horizonWindows+1` steps along the way. It is deliberately NOT `horizonWindows` separate calls to
+ * RouteRatchet.init (one per target window) — that would re-walk from the anchor EVERY time, costing
+ * `horizonWindows × (hops from anchor)` instead of `(hops from anchor) + horizonWindows`, which would be
+ * catastrophic once the anchor is more than trivially old (see deriveRotatingRouteId's growth-over-time
+ * note). Uses the raw exported primitives directly (deriveRootRatchetKey/advanceRatchetKey/deriveRouteId)
+ * rather than the RouteRatchet class, because the class only exposes the CURRENT position's route_id, not a
+ * recorded history of the windows walked through — composition only, no new crypto, same chain
+ * RouteRatchet.advanceTo uses internally (route-ratchet.ts:174-181).
+ *
+ * No RouteRatchetCache reuse here — that cache speeds up repeated SINGLE-current-window queries
+ * (deriveRotatingRouteId); a historical range walk is a different access pattern and gets no benefit from
+ * it (deliberate, not an oversight).
+ */
+export function deriveRouteIdWindowRange(args: DeriveRouteIdRangeArgs): string[] {
+  const dir =
+    args.direction === 'outbound'
+      ? directionTag(args.myFp, args.peerFp)
+      : directionTag(args.peerFp, args.myFp);
+  const targetWindow = currentWindowIndex(args.now ?? Date.now());
+  const anchor = epochWeekToAnchorWindow(ANCHOR_EPOCH_WEEK);
+  if (anchor > targetWindow) {
+    throw new Error('deriveRouteIdWindowRange: ANCHOR_EPOCH_WEEK is in the future relative to now');
+  }
+  const rangeStart = Math.max(anchor, targetWindow - args.horizonWindows);
+
+  const sAB = deriveSharedSecret(args.myEdPriv, args.peerEdPub);
+  let rk = deriveRootRatchetKey(sAB, dir);
+  let w = anchor;
+  const ids: string[] = [];
+  if (w >= rangeStart) ids.push(deriveRouteId(rk));
+  while (w < targetWindow) {
+    rk = advanceRatchetKey(rk, w + 1);
+    w += 1;
+    if (w >= rangeStart) ids.push(deriveRouteId(rk));
+  }
+  return ids;
 }
