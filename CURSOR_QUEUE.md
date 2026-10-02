@@ -43,7 +43,35 @@ A new **"Encrypt / Decrypt"** tab in svrnty.is: pick a svrnty contact → encryp
 ### Acceptance
 Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as the recipient, with the sender's card in contacts) → recover the **exact** plaintext with `senderVerified === true`. Round-trips PQ-hybrid; nothing touches the wire.
 
-## 3. Verify in the Galaxy (social graph) + guided fingerprint-compare  [render-glass]
+## 3. Connect-UX — one-step grow-link (kill the 5-step joiner ceremony)  [render-glass]
+
+**Priority — queued above Verify-in-Galaxy** (Peter #155748: the 5-step ceremony is the priority; connect precedes verify in the user journey). Archie-spec'd; Hypatia finalizes microcopy; Archie claim-gates the trust-touching framing; **Apollo wires the add-logic + grow-link crypto POST-FLIP.** cursor builds the **UI shell + flow + `/c/{code}` resolve NOW, wired against the add-logic INTERFACE (typed stub) — never implement the crypto / trust / gate plumbing.**
+
+**GOAL:** replace the 5-step joiner ceremony with ONE step: paste a grow-link → the newcomer lands in your GATE (pending) → one tap promotes to Known. No-account users get create-identity-then-add as one continuous flow (PWA stays open).
+
+**FLOW:**
+1. Grow tab gets a paste field ("Paste a connect link"). User pastes `svrnty.is/c/{code}` (or the bare code).
+2. Resolve `/c/{code}` → the newcomer's shareable card (name/handle + identity pubkey + mailbox/relay pointer). The link carries the newcomer's consent-to-be-added (invariant 4). [resolve lives behind the add-logic interface — typed stub for now]
+3. Land the newcomer in GATE (pending), **NOT** Known. Show the card + a single "Add to Known" consent action.
+4. One tap → promote GATE→Known (your local disclosure choice). Done. No multi-step.
+5. No-account branch: no identity yet → inline create-identity (existing mint flow) → THEN land the pasted newcomer in GATE. One continuous flow.
+
+**★ TRUST-MODEL INVARIANTS (MUST preserve — do not flatten; Archie claim-gates):**
+1. Gate-not-Known on arrival (never auto-promote; promotion = explicit one-tap consent).
+2. Adding to your book is LOCAL + one-sided (your disclosure choice; not a mutual assertion).
+3. Mutual-known/trust requires BOTH sides (the link does NOT fabricate a mutual edge; mutual-known is computed, not asserted).
+4. The link carries the newcomer's consent-to-share (invitation, not capture).
+5. Trust-LEVEL on promote stays the user's explicit choice (never default a stranger to Known/Trusted).
+
+**COPY:** Hypatia's one-step / ceremony-killed strings (pull exact from her claim-ledger — ping Hypatia for final microcopy). Entity-type on card: agent / human / organization, label **"attested" not "verified"**, UNKNOWN = not-yet-attested (NOT guessed) [Hypatia KB#90007/90008].
+
+**BUILD-SCOPE:** UI shell + flow + `/c/{code}` resolve wired against the add-logic INTERFACE (typed stub). Do NOT implement the grow-link gen/resolve crypto or the add-to-gate/known logic — Apollo wires those post-flip. Thin render-glass over the interface; never modify crypto/gate/trust hooks.
+
+**NON-GOALS:** not bulk-import / auto-add-without-consent; not a mutual-edge fabricator; the grow-link is an invitation (card + add-me-if-you-want), NOT a bearer-capability granting more. No multi-step ceremony.
+
+**Acceptance:** paste a grow-link → newcomer appears in GATE (not Known) with their card → one tap → promoted to Known, trust-level = user's explicit choice. No-account → create → land-in-GATE works as one flow. All 5 invariants hold. Copy matches Hypatia's ledger. One PR into the canonical branch.
+
+## 4. Verify in the Galaxy (social graph) + guided fingerprint-compare  [render-glass]
 
 **Problem** (Peter, 2026-09-30, from live first-contact): a KNOWN contact shows as a **dashed line** in the Galaxy / social graph, but **Verify is only reachable from the Living Address Book** (`ContactManagement.tsx:1761` wires `onOwnerVerify`; `TrustMapGalaxy.tsx` wires NOTHING) — no way to verify from the graph. And today's verify is a bare provenance tap (`in_person`/`other_channel`); it should be a **guided fingerprint match** so "Verify" means "I actually compared the key," not "I clicked a label."
 
@@ -84,7 +112,7 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 ### Acceptance
 From the Galaxy, focus a KNOWN (dashed) contact → **Verify** → guided compare (QR in-person OR code another-channel) → on match, `onOwnerVerify` records `owner_verify{method}` → edge renders **solid** locally + privately (no public badge, nothing on the wire). The SAME sheet is reachable from the address book. A **mismatched QR fails loud** and cannot verify. `ownerHasVerified` returns true after; `canGrantTrust` no longer blocks on need-verify.
 
-## 4. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [render-glass]
+## 5. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [render-glass]
 
 _Non-urgent (the peer-mesh is dormant / go-live-gated — nothing renders live). Completes PR #170: the tooltip copy is already Hypatia-GREEN; this is the 2nd half of her spec. Prefer amending the existing draft **PR #170**; else a tiny follow-up PR._
 
