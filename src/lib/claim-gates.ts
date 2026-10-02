@@ -63,3 +63,14 @@ export function isPQWireLive(): boolean {
 export function isPSIDiscoveryLive(): boolean {
   return false;
 }
+
+/**
+ * One-step Connect-UX add-logic (resolve grow-link → land in Gate → promote to Known) is wired.
+ *
+ * FALSE today: the Grow paste + Gate-card chrome is render-glass over a typed stub.
+ * Apollo wires resolve / land / promote post-flip. Flip this WITH that implementation
+ * (and update claim-gates.test.ts). Until then `/c/{code}` keeps the live JoinerCeremony.
+ */
+export function isConnectAddLogicLive(): boolean {
+  return false;
+}

@@ -5,8 +5,10 @@
  *
  * Tab 1 "Show my code" hosts the existing GrowSheet body (mint + QR + share link).
  * Tab 2 "Scan / paste" hosts the existing JoinByCode body (ScanToJoin + paste).
- * JoinerCeremony still takes over full-screen when a valid invite is set (Tab 2
- * already branches this; we do not flatten it into the tab chrome).
+ * Above the tabs: one-step Connect-UX paste (CURSOR_QUEUE #3) — Gate chrome over the
+ * add-logic stub. JoinerCeremony still takes over full-screen when a valid invite
+ * is set from Tab 2. Live /c/{code} stays on JoinerCeremony until Apollo flips
+ * isConnectAddLogicLive().
  *
  * Consent: joining remains an invite, not instant — Tab 2 only CALLS JoinByCode /
  * ScanToJoin / JoinerCeremony unchanged.
@@ -16,6 +18,7 @@ import { useEffect, useState } from 'react';
 import { GrowSheet } from '@/components/GrowSheet';
 import { JoinByCode } from '@/components/JoinByCode';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
+import { ConnectOneStep } from '@/components/connect/ConnectOneStep';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -106,6 +109,17 @@ export function GrowSurface({ open, onClose, identity }: Props) {
               <GrowGatePanel ownerFp={identity.identity.fingerprint} />
             </div>
           ) : null}
+
+          <div
+            className="mt-4"
+            style={{
+              paddingBottom: 16,
+              marginBottom: 8,
+              borderBottom: `1px solid ${E.border}`,
+            }}
+          >
+            <ConnectOneStep hasIdentity={Boolean(identity?.identity?.fingerprint)} />
+          </div>
 
           {/* forceMount: keep the giver body mounted so switching tabs does not remint. */}
           <TabsContent
