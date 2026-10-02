@@ -46,6 +46,14 @@ jobs:
         run: npx --no-install tsx --test src/lib/trust/grow-gate.test.ts src/lib/identity/issued-codes.test.ts src/lib/trust/disclosed-circle-strip.test.ts src/lib/trust/trust-recipe.test.ts src/lib/trust/contact-edge.test.ts
       - name: Contract guards — QR-scan invite leak-site (INV-5) — BLOCKING
         run: npx --no-install tsx --test src/lib/invite/scanInvite.test.ts src/lib/invite/decodeQrFrame.test.ts src/lib/invite/parseInviteUrl.test.ts
+      # Keystone §8 (life-safety): these refute protect-the-person properties — a cry/consent-delta
+      # is byte-indistinguishable to a peeling relay, cover cadence is traffic-independent, a burst is
+      # unrepresentable, single-cell by construction. Blocking so a future edit can't break a §8
+      # invariant with CI staying green (the silent-rot trap — Flint C1, #558/#177). Verified 31/31
+      # local under this runner. Hard precondition before the distress emit-path / any present-tense
+      # undetectability claim ships.
+      - name: Keystone crypto guards — K2/K3 §8 silence invariant (distress + cover cadence, uniform frame, blinded consent-delta) — BLOCKING
+        run: npx --no-install tsx --test src/lib/crypto/distress-mark.test.ts src/lib/crypto/distress-cadence.test.ts src/lib/crypto/uniform-frame.test.ts src/lib/crypto/consent-delta.test.ts
 
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
   # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
