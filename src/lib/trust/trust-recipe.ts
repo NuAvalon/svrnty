@@ -35,10 +35,10 @@ export const TRUST_RECIPE_COPY = {
   mycelial:
     'The lattice knits; it doesn\'t recruit. New stars are people who joined you. Lines are ties you were meant to see.',
   /** Peer-chord hover + legend (Hypatia K2 — consent-explicit, not observational). */
-  peerKnowChord: 'Both disclosed they know each other',
+  peerKnowChord: 'A circle they disclosed to you',
   peerTrustChord: 'Both disclosed they trust each other',
   peerMeshLegend:
-    'Between people: both disclosed they know each other (gold) or trust each other (white-gold). Dashed gold is a group you named — not a bond.',
+    'Between people: a circle they disclosed to you (gold), or trust both sides disclosed (white-gold). Dashed gold is a group you named — not a bond. These lines are disclosures, not observations — svrnty never infers who knows whom.',
   gateStart: 'Start',
   gateContinue: 'Continue',
   /** Site-bottom manifesto (the thing we must never lose). */

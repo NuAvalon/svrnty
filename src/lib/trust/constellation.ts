@@ -140,7 +140,7 @@ export function constellationCaption(c: FocusConstellation, focusTrusted: boolea
   const parts = partitionConstellation(c);
   const bits: string[] = [];
   if (parts.witnessedTrust.length) bits.push('ember = both disclosed they trust each other');
-  if (parts.disclosedCircle.length) bits.push('both disclosed they know each other');
+  if (parts.disclosedCircle.length) bits.push('a circle they disclosed to you');
   if (parts.groupOnly.length) bits.push('dashed gold = groups you named · not trust');
   return bits.join(' · ') || 'Your bond';
 }
