@@ -1,9 +1,18 @@
-// Proxy to satellite /bind (raw Ed25519 sign-key binding). Allowlisted fields only.
+// Proxy to satellite /bind (raw Ed25519 auth-key binding, tag#3 PSI auth). Allowlisted fields only.
+//
+// Field names match the DEPLOYED satellite /bind contract (confirmed from its own Pydantic 422, which
+// requires `sig_pubkey` + `binding_sig` and rejects the old `sign_pubkey`/`signature`): the satellite
+// BindRequest = { fingerprint, sig_pubkey, nonce, epoch, binding_sig } where
+//   binding_sig = Ed25519( IDENTITY priv, "svrnty-bind:{sig_pubkey_hex}:{nonce_hex}:{epoch}" ).
+// The prior allowlist forwarded sign_pubkey/signature → the satellite stripped-view 422'd "Field
+// required: sig_pubkey/binding_sig" → NO bind could pass through this proxy. Dark until
+// isPSIDiscoveryLive flips. (The GET-challenge handler below is vestigial — the deployed satellite /bind
+// is POST-only and self-nonce'd; reconciling runBindCeremony to POST-direct is the paired client fix.)
 import { NextRequest, NextResponse } from 'next/server';
 
 const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
 
-const POST_FIELDS = ['fingerprint', 'sign_pubkey', 'nonce', 'epoch', 'signature'] as const;
+const POST_FIELDS = ['fingerprint', 'sig_pubkey', 'nonce', 'epoch', 'binding_sig'] as const;
 
 export async function GET(request: NextRequest) {
   try {
@@ -33,8 +42,8 @@ export async function POST(request: NextRequest) {
       if (typeof value === 'string' && value.length <= 8192) body[key] = value;
       else if (key === 'epoch' && typeof value === 'number' && Number.isFinite(value)) body[key] = value;
     }
-    if (!body.fingerprint || !body.sign_pubkey || !body.signature) {
-      return NextResponse.json({ error: 'fingerprint, sign_pubkey, and signature are required' }, { status: 400 });
+    if (!body.fingerprint || !body.sig_pubkey || !body.binding_sig) {
+      return NextResponse.json({ error: 'fingerprint, sig_pubkey, and binding_sig are required' }, { status: 400 });
     }
     const res = await fetch(`${SATELLITE_URL}/bind`, {
       method: 'POST',
