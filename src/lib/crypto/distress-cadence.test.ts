@@ -101,6 +101,23 @@ test('(c) a single guardian has no fan-out fingerprint — offset is just the ba
   assert.deepEqual(planFanoutJitter({ guardianCount: 1, baseMs: 500, spreadMs: 10_000, random: seeded(6) }), [500]);
 });
 
+test('(c) a synchronized N-way burst is UNREPRESENTABLE: spreadMs=0 with N>1 throws, never returns [base,base,...]', () => {
+  // Flint C2 (#177): by the same bar as the single-cell cap, a burst must be impossible-by-construction,
+  // not a runtime hope. spreadMs=0 across N>1 guardians would collapse to a synchronized burst — reject it
+  // rather than silently return a plan that violates the planner's own §8(c) guarantee.
+  assert.throws(
+    () => planFanoutJitter({ guardianCount: 3, baseMs: 0, spreadMs: 0 }),
+    /spreadMs must be > 0 when guardianCount > 1/,
+    'spreadMs=0 for N>1 must throw, not return a synchronized [0,0,0] burst',
+  );
+  // CONTROL: N=1 has no fan-out to fingerprint, so spreadMs=0 is legitimately fine (no burst possible).
+  assert.deepEqual(
+    planFanoutJitter({ guardianCount: 1, baseMs: 42, spreadMs: 0 }),
+    [42],
+    'single guardian + zero spread is fine — there is no fan-out to collapse',
+  );
+});
+
 test('(c) fan-out jitter is deterministic given the injected random (reproducible plans)', () => {
   const a = planFanoutJitter({ guardianCount: 4, baseMs: 100, spreadMs: 8_000, random: seeded(7) });
   const b = planFanoutJitter({ guardianCount: 4, baseMs: 100, spreadMs: 8_000, random: seeded(7) });
@@ -116,4 +133,5 @@ test('validation: bad cadence / fan-out parameters throw', () => {
   assert.throws(() => planCoverCadence({ startMs: 0, windowMs: -1, periodMs: 100 }), /windowMs must be >= 0/);
   assert.throws(() => planFanoutJitter({ guardianCount: 0, baseMs: 0, spreadMs: 10 }), /guardianCount must be >= 1/);
   assert.throws(() => planFanoutJitter({ guardianCount: 3, baseMs: 0, spreadMs: -1 }), /spreadMs must be >= 0/);
+  assert.throws(() => planFanoutJitter({ guardianCount: 3, baseMs: 0, spreadMs: 0 }), /spreadMs must be > 0 when guardianCount > 1/);
 });

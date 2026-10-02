@@ -117,11 +117,13 @@ export interface FanoutJitterOpts {
 /**
  * Plan a STAGGERED fan-out: distinct emit offsets for the N guardians, spread across [baseMs, baseMs+spreadMs],
  * so the fan-out does NOT present as a synchronized N-way burst (§8(c)). Each guardian gets its own sub-slot
- * [baseMs + i*spread/N, baseMs + (i+1)*spread/N) with uniform jitter inside it — guaranteeing the offsets are
- * distinct and spread (not all equal) for N > 1. For N = 1 there is no fan-out fingerprint, so the single
- * offset is simply baseMs.
+ * [baseMs + i*spread/N, baseMs + (i+1)*spread/N) with uniform jitter inside it. For N > 1 this guarantees the
+ * offsets are distinct and spread (not all equal) PROVIDED spreadMs > 0 — a zero spread would collapse every
+ * sub-slot to baseMs (a synchronized burst), so it is REJECTED by construction (see @throws), not silently
+ * returned. For N = 1 there is no fan-out fingerprint, so the single offset is simply baseMs (spreadMs ignored).
  *
  * @returns an array of `guardianCount` emit offsets (ms), one per guardian, in sub-slot order.
+ * @throws if guardianCount < 1, baseMs non-finite, spreadMs < 0, or (guardianCount > 1 and spreadMs == 0).
  */
 export function planFanoutJitter(opts: FanoutJitterOpts): number[] {
   const { guardianCount, baseMs, spreadMs } = opts;
@@ -131,6 +133,14 @@ export function planFanoutJitter(opts: FanoutJitterOpts): number[] {
   if (!(spreadMs >= 0) || !Number.isFinite(spreadMs)) throw new Error('cadence: spreadMs must be >= 0');
 
   if (guardianCount === 1) return [baseMs];
+
+  // N > 1: spreadMs = 0 collapses every sub-slot width to 0, so all offsets equal baseMs — a synchronized
+  // N-way burst, the exact §8(c) fingerprint this planner exists to prevent. Make that unrepresentable
+  // (mirror planCoverCadence's periodMs > 0 guard) rather than return a burst that violates the contract.
+  // The ADEQUATE spread magnitude (enough to pass as ordinary multi-contact cadence) is a threat-model /
+  // measurement call for the emit-path + Flint/Peter — same tier as periodMs — so it is NOT hardcoded here;
+  // only the degenerate zero is rejected.
+  if (!(spreadMs > 0)) throw new Error('cadence: spreadMs must be > 0 when guardianCount > 1 (spreadMs=0 collapses to a synchronized N-way burst)');
 
   const sub = spreadMs / guardianCount;
   const offsets: number[] = [];
