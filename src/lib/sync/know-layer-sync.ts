@@ -310,10 +310,24 @@ function bytesToB64(bytes: Uint8Array): string {
 }
 
 /**
- * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth).
- * Challenge: GET /bind?fingerprint= → { nonce, epoch } or { bound: true }.
- * Complete: POST /bind { fingerprint, sign_pubkey, nonce, epoch, signature }.
- * Returns false on any misshape / network miss — caller stays fail-closed (no PSI).
+ * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth tag#3).
+ *
+ * POST-DIRECT (the deployed satellite /bind is POST-only + self-nonce'd — the old GET-challenge is
+ * vestigial, satellite.py). The deployed BindRequest (satellite.py) requires exactly:
+ *   { fingerprint, sig_pubkey, nonce, epoch, binding_sig }
+ *   binding_sig = base64 Ed25519(IDENTITY seed, "svrnty-bind:{sig_pubkey_hex}:{nonce}:{epoch}")
+ * The identity seed signs its OWN pubkey into the sig_pubkey slot (self-bind — the current sole-key
+ * model; operational-key separation is a tracked key-hygiene fast-follow, NOT flip-blocking per Flint's
+ * ruling). The satellite re-verifies binding_sig against the STORED identity public_key, so this is safe
+ * even when reachable (gated-A).
+ *
+ * NONCE: a fresh client-generated lowercase-hex nonce per attempt — the satellite's single-use
+ * bind_nonces floor rejects any reuse (409), so a fresh nonce is the client half of the replay floor.
+ * EPOCH: client-local, init 0, ADOPT-ON-409. If the satellite's current epoch ≠ 0 it answers 409
+ * "stale epoch (current=N)"; we adopt N (satellite-sourced, NEVER registration — sovereignty:
+ * client → FE-proxy → satellite, zero registration dependency) and retry once.
+ *
+ * Returns false on any non-ok / network miss — caller stays fail-closed (no PSI).
  */
 export async function runBindCeremony(args: {
   satelliteUrl: string;
@@ -324,33 +338,47 @@ export async function runBindCeremony(args: {
 }): Promise<boolean> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const base = args.satelliteUrl.replace(/\/$/, '');
-  try {
-    const challengeRes = await fetchImpl(
-      `${base}/bind?fingerprint=${encodeURIComponent(args.fingerprint)}`,
-    );
-    if (!challengeRes.ok) return false;
-    const challenge = await challengeRes.json();
-    if (challenge && challenge.bound === true) return true;
-    const nonce = challenge?.nonce;
-    const epoch = challenge?.epoch;
-    if (typeof nonce !== 'string' && typeof nonce !== 'number') return false;
-    if (typeof epoch !== 'string' && typeof epoch !== 'number') return false;
-    const signPubHex = bytesToHex(args.signPub);
-    const signature = signBind(args.seed, signPubHex, String(nonce), epoch);
-    const post = await fetchImpl(`${base}/bind`, {
+  const signPubHex = bytesToHex(args.signPub);
+
+  const postBind = (epoch: number): Promise<Response> => {
+    const nonce = bytesToHex(crypto.getRandomValues(new Uint8Array(16))); // fresh lowercase-hex, even length
+    const binding_sig = bytesToB64(signBind(args.seed, signPubHex, nonce, epoch));
+    return fetchImpl(`${base}/bind`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fingerprint: args.fingerprint,
-        sign_pubkey: signPubHex,
-        nonce: String(nonce),
+        sig_pubkey: signPubHex,
+        nonce,
         epoch,
-        signature: bytesToB64(signature),
+        binding_sig,
       }),
     });
-    return post.ok;
+  };
+
+  try {
+    let res = await postBind(0); // client-local epoch init 0
+    if (res.status === 409) {
+      const current = await parseStaleEpoch(res);
+      if (current === null) return false; // 409 but not a parseable stale-epoch (e.g. nonce-reuse) ⇒ fail-closed
+      res = await postBind(current); // adopt satellite's current epoch, re-sign (fresh nonce), retry once
+    }
+    return res.ok; // 200 { status: "bound" }
   } catch {
     return false;
+  }
+}
+
+/** Parse the satellite's 409 "stale epoch (current=N)" detail → N (int ≥ 0), or null if unparseable. */
+async function parseStaleEpoch(res: Response): Promise<number | null> {
+  try {
+    const body = await res.json();
+    const m = /current=(\d+)/.exec(String(body?.detail ?? ''));
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
   }
 }
 

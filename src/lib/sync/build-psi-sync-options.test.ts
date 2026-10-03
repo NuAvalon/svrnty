@@ -64,41 +64,71 @@ test('buildPsiSyncOptions signFn prefixes svrnty-psi-auth: onto {fp}:{unix}', as
   assert.equal(ed25519.verify(sig, preimage, signPub), true);
 });
 
-test('runBindCeremony GET challenge → POST signed bind body', async () => {
-  const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+test('runBindCeremony POST-direct: new fields {sig_pubkey,nonce,epoch=0,binding_sig}, binds on 200, NO GET', async () => {
+  const calls: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input);
-    const method = init?.method || 'GET';
-    let body: unknown;
-    if (init?.body && typeof init.body === 'string') body = JSON.parse(init.body);
-    calls.push({ url, method, body });
-    if (method === 'GET') {
-      return new Response(JSON.stringify({ nonce: 'n1', epoch: 3 }), {
-        status: 200,
+    calls.push({
+      url: String(input),
+      method: init?.method || 'GET',
+      body: init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : {},
+    });
+    return new Response(JSON.stringify({ status: 'bound' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  const ok = await runBindCeremony({ satelliteUrl: 'https://satellite.test', fingerprint, seed, signPub, fetchImpl });
+  assert.equal(ok, true);
+  assert.equal(calls.length, 1); // POST-direct — the vestigial GET challenge is gone
+  assert.equal(calls[0].method, 'POST');
+  assert.match(calls[0].url, /\/bind$/);
+  const b = calls[0].body;
+  assert.equal(b.fingerprint, fingerprint);
+  assert.equal(b.sig_pubkey, bytesToHex(signPub)); // NEW satellite field name
+  assert.equal(b.epoch, 0); // client-local init 0
+  assert.match(String(b.nonce), /^[0-9a-f]+$/); // fresh lowercase-hex
+  assert.equal(String(b.nonce).length % 2, 0); // even length (satellite nonce guard)
+  assert.equal('sign_pubkey' in b, false); // old field gone
+  assert.equal('signature' in b, false); // old field gone
+  // binding_sig = identity seed signing its OWN pubkey over the tag#2 preimage (self-bind)
+  const preimage = new TextEncoder().encode(`svrnty-bind:${b.sig_pubkey}:${b.nonce}:${b.epoch}`);
+  assert.equal(ed25519.verify(Buffer.from(String(b.binding_sig), 'base64'), preimage, signPub), true);
+});
+
+test('runBindCeremony adopts satellite epoch on 409 "stale epoch (current=N)" + retries ONCE (fresh nonce)', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : {};
+    bodies.push(body);
+    if (body.epoch === 0) {
+      return new Response(JSON.stringify({ detail: 'stale epoch (current=7)' }), {
+        status: 409,
         headers: { 'Content-Type': 'application/json' },
       });
     }
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    return new Response(JSON.stringify({ status: 'bound' }), { status: 200 });
   }) as typeof fetch;
 
-  const ok = await runBindCeremony({
-    satelliteUrl: 'https://satellite.test',
-    fingerprint,
-    seed,
-    signPub,
-    fetchImpl,
-  });
+  const ok = await runBindCeremony({ satelliteUrl: 'https://satellite.test', fingerprint, seed, signPub, fetchImpl });
   assert.equal(ok, true);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].method, 'GET');
-  assert.match(calls[0].url, /\/bind\?fingerprint=/);
-  assert.equal(calls[1].method, 'POST');
-  const posted = calls[1].body as Record<string, unknown>;
-  assert.equal(posted.fingerprint, fingerprint);
-  assert.equal(posted.sign_pubkey, bytesToHex(signPub));
-  assert.equal(posted.nonce, 'n1');
-  assert.equal(posted.epoch, 3);
-  assert.equal(typeof posted.signature, 'string');
+  assert.equal(bodies.length, 2);
+  assert.equal(bodies[0].epoch, 0);
+  assert.equal(bodies[1].epoch, 7); // adopted from the satellite's 409 detail (never registration)
+  assert.notEqual(bodies[0].nonce, bodies[1].nonce); // fresh nonce on the retry
+  const preimage = new TextEncoder().encode(`svrnty-bind:${bodies[1].sig_pubkey}:${bodies[1].nonce}:7`);
+  assert.equal(ed25519.verify(Buffer.from(String(bodies[1].binding_sig), 'base64'), preimage, signPub), true);
+});
+
+test('runBindCeremony fails CLOSED on a 409 that is not a parseable stale-epoch (e.g. nonce-reuse) — no blind retry', async () => {
+  let n = 0;
+  const fetchImpl = (async () => {
+    n++;
+    return new Response(JSON.stringify({ detail: 'nonce already used' }), { status: 409 });
+  }) as typeof fetch;
+  const ok = await runBindCeremony({ satelliteUrl: 'https://satellite.test', fingerprint, seed, signPub, fetchImpl });
+  assert.equal(ok, false); // no adoptable epoch ⇒ fail-closed, no PSI
+  assert.equal(n, 1); // did not blindly retry
 });
 
 // ── FE-WIRING (b): buildPsiSyncOptions fetches + anti-swap-verifies the satellite key → populates pqWrap ──
