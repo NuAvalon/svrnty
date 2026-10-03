@@ -110,6 +110,74 @@ unaffected — identities still work end-to-end via self-certifying ids and the 
 
 ---
 
+## Security hardening
+
+- **Run behind Caddy as shipped.** The image already runs as a non-root `nextjs` user on an
+  internal port; only Caddy publishes 80/443. Don't expose the app's port 3000 publicly —
+  the TLS + header discipline lives at the Caddy edge.
+- **Secrets stay server-side.** `RESEND_API_KEY` and any future operator secrets must never
+  be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
+  secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
+- **The relay learns nothing by design — keep it that way.** Don't add logging of drop
+  contents, depositors, or mailbox ids beyond what the code emits. The blind-relay property
+  (the server can't read drops or map who-talks-to-whom) is a product invariant, and an
+  operator who weakens it weakens every user's privacy on that instance.
+- **Rebuild on updates** (`git pull && docker compose up -d --build`) so `NEXT_PUBLIC_*`
+  args and dependencies refresh together; verify `https://your-domain/api/version` reports
+  the commit you expect.
+
+## Backups
+
+- **What must survive:** `caddy_data` (TLS certs — losing it just re-issues), and on the
+  nursery profile `registration_data` (the slug registry — losing it loses every claimed
+  slug's binding). Back up both volumes; `registration_data` is the only one that isn't
+  reconstructible.
+- **What you do NOT need to back up:** the app's code/config (rebuild from git + `.env`),
+  and the in-memory relay (drops are single-use, 15-minute TTL — transient by design).
+- A self-hoster's *identity* is never on this server — it lives in the user's `.svrnty`
+  vault under their password. Server backup is about *service continuity*, not key custody.
+
+## Build best practices
+
+- **Pinned, reproducible:** `npm ci` everywhere (the Dockerfile does; CI does). Never
+  `npm install` inside the image.
+- **Build args are provenance, not config:** `GIT_SHA`/`GIT_BRANCH`/`BUILD_TIME` stamp
+  `/api/version`; `NEXT_PUBLIC_*` bake the domain into the client. Rebuild when either
+  changes — see the warning box above.
+- **Image stays lean by design:** the runner stage carries prod `node_modules` only
+  (`npm prune --omit=dev`); keep dev tooling out of the runtime stage.
+
+---
+
+## Migrating a mailbox to another relay
+
+Your mailbox (where peers deposit envelopes for you) is **advertised, not glued**: peers
+find it via a signed *mailbox pointer* you publish — changing relays means publishing a
+newer pointer, not moving identity. Your durable id and DID are untouched by a move.
+
+Conceptually, for each identity you host:
+
+1. **Create the new mailbox** on the destination relay (`POST /mailbox/register` there —
+   same owner-proof flow as the first registration).
+2. **Publish the rotation** — a signed pointer with `pointerEpoch = previous + 1`, sealed
+   to each peer's *current* mailbox keys (`publishMailboxPointer` in
+   `src/lib/trust/mailbox-pointer-transport.ts`). Peers resolve the highest-epoch valid
+   pointer, so the newest wins monotonically; a stale pointer can't roll you back.
+3. **Keep the overlap window.** Your old mailbox's decapsulation key must stay valid until
+   peers confirm receipt — a peer who sealed a deposit to the old mailbox before seeing the
+   pointer still needs you able to open it. Don't retire the old mailbox the moment the new
+   one exists.
+4. **Verify, then retire.** Once pointer propagation is confirmed, drain the old mailbox
+   and let it lapse. Nothing on the old relay can act as you — it only ever held envelopes
+   it couldn't read.
+
+> Harness status: the pointer rotation machinery is built and tested; an end-to-end
+> scripted migration is tracked in `docs/FEDERATION_QA.md` (scenario S4). Until the
+> fed-qa harness proves it green, treat this runbook as the protocol shape, not a
+> verified click-path — and say so wherever you document it.
+
+---
+
 ## Troubleshooting
 
 - **No certificate / TLS errors on first load.** Confirm DNS points at this server and that
