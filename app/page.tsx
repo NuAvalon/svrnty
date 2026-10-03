@@ -684,11 +684,25 @@ export default function Home() {
                 }}
                 onTrustToggle={async (edge) => {
                   const nextTrusted = !edge.trusted;
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
                   await updateContact(edge.id, {
                     trust_level: nextTrusted ? 'trusted' : 'unverified',
                     trusted: nextTrusted,
                     trusted_since: nextTrusted ? new Date().toISOString() : null,
                     verified_at: nextTrusted ? new Date().toISOString() : undefined,
+                    // #111 (survivor-safety): untrusting clears open_visibility (TrustMap path)
+                    // — reveal consent is trust-gated, so dropping trust drops the reveal flag.
+                    ...(!nextTrusted && {
+                      metadata: {
+                        ...recMeta,
+                        share_settings: {
+                          ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
+                          open_visibility: false,
+                        },
+                      },
+                    }),
                   } as any);
                   await refreshContacts();
                 }}
@@ -700,6 +714,7 @@ export default function Home() {
                 onBlockContact={async (edge, blocked) => {
                   const records = await getAllContacts(identity.identity.fingerprint);
                   const rec = records.find((r) => r.id === edge.id);
+                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
                   await updateContact(edge.id, {
                     blocked,
                     // Block clears local Trust — no trusted+blocked half-state.
@@ -711,8 +726,19 @@ export default function Home() {
                         }
                       : {}),
                     metadata: {
-                      ...((rec as any)?.metadata || {}),
+                      ...recMeta,
                       blocked,
+                      // #111 (survivor-safety): block clears open_visibility (TrustMap path)
+                      // so the peer leaves every PSI reveal set — mirrors the ContactManagement
+                      // handler; read side is fail-closed too (ownerEdges !blocked).
+                      ...(blocked
+                        ? {
+                            share_settings: {
+                              ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
+                              open_visibility: false,
+                            },
+                          }
+                        : {}),
                     },
                   } as any);
                   await refreshContacts();
