@@ -26,7 +26,8 @@
 // buildPsiSyncOptions (scalar-extracted Ed25519 seed, in-memory only) and passed into the trigger.
 
 import { decryptKey, readPrivateKey } from 'openpgp';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { verifySatelliteKey, PINNED_SATELLITE_MAILBOX_FP_DEV } from '@/lib/crypto/psi-wire-seal';
 import {
   getAllContacts,
   loadKey,
@@ -42,6 +43,7 @@ import {
   type OrchestratorDeps,
   type PSISyncOptions,
   type PSIKeypair,
+  type PsiPqWrapConfig,
 } from '@/lib/trust/mutual-trust-sync';
 
 // ── Store seam (injectable for tests; defaults to the real IndexedDB client-store) ───────────────
@@ -364,6 +366,8 @@ export async function buildPsiSyncOptions(
     satelliteUrl?: string;
     fetchImpl?: typeof fetch;
     skipBind?: boolean;
+    /** Per-satellite anti-swap pin for the mailbox key (dev default; prod/self-host supplies its own). */
+    pinnedFp?: string;
   } = {},
 ): Promise<PSISyncOptions | null> {
   const fp = ownerFingerprintOf(identity);
@@ -391,6 +395,7 @@ export async function buildPsiSyncOptions(
   }
 
   const satelliteUrl = (deps.satelliteUrl ?? SATELLITE_BROWSER_BASE).replace(/\/$/, '');
+  let pqWrap: PsiPqWrapConfig | undefined;
   if (!deps.skipBind) {
     const bound = await runBindCeremony({
       satelliteUrl,
@@ -400,13 +405,46 @@ export async function buildPsiSyncOptions(
       fetchImpl: deps.fetchImpl,
     });
     if (!bound) return null;
+
+    // FE-WIRING (b): the deployed satellite ENFORCES sealed PSI (an unsealed body is rejected
+    // "invalid PSI envelope"). Fetch its mailbox key, anti-swap-verify vs the pin, and populate pqWrap
+    // so the KNOW-sync seals (mutual-trust-sync consumes options.pqWrap). FAIL-CLOSED: no reachable /
+    // verifiable key ⇒ no pqWrap ⇒ null — proceeding unsealed is pointless (satellite would 400) AND
+    // would put the blinded set on the wire in clear. The primitive (verifySatelliteKey/sealPsiToSatellite)
+    // is piece-1; this is the wiring that makes the real client actually use it at flip.
+    const satelliteKeys = await fetchAndVerifySatelliteKey(satelliteUrl, deps.pinnedFp, deps.fetchImpl);
+    if (!satelliteKeys) return null;
+    pqWrap = { satelliteKeys };
   }
 
   return {
     satelliteUrl,
     myFingerprint: fp,
     signFn: (data: Uint8Array) => signPsiAuthWrapped(seed, data),
+    ...(pqWrap ? { pqWrap } : {}),
   };
+}
+
+/**
+ * Fetch the deployed satellite mailbox key (GET {satelliteUrl}/trust/psi/satellite-key — the live
+ * psi-namespaced alias), anti-swap-verify the hex pubkeys against the pin, and return the verified
+ * MailboxPublicKeys to seal to. Null (fail-closed) on any network miss, malformed body, or pin mismatch
+ * — a swapped/wrong key is REJECTED, never sealed to.
+ */
+async function fetchAndVerifySatelliteKey(
+  satelliteBase: string,
+  pinnedFp: string = PINNED_SATELLITE_MAILBOX_FP_DEV,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ReturnType<typeof verifySatelliteKey>> {
+  try {
+    const res = await fetchImpl(`${satelliteBase}/trust/psi/satellite-key`);
+    if (!res.ok) return null;
+    const rec = (await res.json()) as { x25519_pk?: unknown; mlkem1024_pk?: unknown };
+    if (typeof rec.x25519_pk !== 'string' || typeof rec.mlkem1024_pk !== 'string') return null;
+    return verifySatelliteKey(hexToBytes(rec.x25519_pk), hexToBytes(rec.mlkem1024_pk), pinnedFp);
+  } catch {
+    return null;
+  }
 }
 
 /**
