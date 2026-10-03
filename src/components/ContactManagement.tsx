@@ -46,6 +46,7 @@ import {
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
+import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
@@ -511,7 +512,20 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setError(null);
+      // #572 part 2 (6th invariant-exit, Flint seal #157713): contact-REMOVE is a reveal-set exit too —
+      // and a survivor's most intuitive "cut them off" is DELETE, not Block. Capture the peer fp BEFORE
+      // removeContact (the record is gone after), then reconcile its satellite allowed_senders row to
+      // "gone" (all-false consent → unconditional DELETE), closing the same stale-row discovery hole as
+      // block. Fire-and-forget + fail-soft (gated dark pre-flip). removeContact does NO satellite call.
+      const removedFp = contacts.find((c) => c.id === contactId)?.fingerprint;
       await removeContact(contactId);
+      if (removedFp) {
+        void reconcileAllowedOnConsentChange({
+          ownerFp: fingerprint,
+          senderFp: removedFp,
+          consent: { trusted: false, openVisibility: false, blocked: false },
+        });
+      }
       setShowDetailDialog(false);
       setShowEditDialog(false);
       await loadContacts();
@@ -574,6 +588,19 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           blocked: selectedContact.blocked,
         });
       }
+      // #572 part 2 (flip-blocker b): mirror the POST-change reveal invariant to the satellite
+      // allowed_senders row. Untrust drops trust → DELETE; (re)trust → ADD iff still open-vis ∩ !blocked.
+      // Fire-and-forget + fail-soft (gated dark pre-flip) — never blocks or breaks the local trust toggle.
+      const psiTrusted = newLevel === 'trusted';
+      void reconcileAllowedOnConsentChange({
+        ownerFp: fingerprint,
+        senderFp: contact.fingerprint,
+        consent: {
+          trusted: psiTrusted,
+          openVisibility: psiTrusted && contact.metadata?.share_settings?.open_visibility === true,
+          blocked: isContactBlocked(contact),
+        },
+      });
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trust');
@@ -626,6 +653,18 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         },
       } as any);
       setShowDetailDialog(false);
+      // #572 part 2 (flip-blocker b + #111 satellite-completeness): block → DELETE the allowed_senders
+      // row so a blocked adversary's stale row can't keep the mutual-gate open (their client would still
+      // discover the survivor). Unblock does NOT re-add — trust + open-vis must be re-granted explicitly.
+      void reconcileAllowedOnConsentChange({
+        ownerFp: fingerprint,
+        senderFp: contact.fingerprint,
+        consent: {
+          trusted: blocked ? false : isTrusted(contact),
+          openVisibility: !blocked && contact.metadata?.share_settings?.open_visibility === true,
+          blocked,
+        },
+      });
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
@@ -939,6 +978,17 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     setSelectedContact({
       ...selectedContact,
       metadata: { ...selectedContact.metadata, share_settings: next },
+    });
+    // #572 part 2 (flip-blocker b): go-private (open_visibility→false) → DELETE; go-open (→true, while
+    // trusted ∩ !blocked) → ADD. Reconcile mirrors whichever way the open-visibility axis just moved.
+    void reconcileAllowedOnConsentChange({
+      ownerFp: fingerprint,
+      senderFp: selectedContact.fingerprint,
+      consent: {
+        trusted: isTrusted(selectedContact),
+        openVisibility: next.open_visibility === true,
+        blocked: isContactBlocked(selectedContact),
+      },
     });
     await loadContacts();
   };

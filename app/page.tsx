@@ -17,6 +17,7 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   loadMethodHistory,
@@ -704,11 +705,37 @@ export default function Home() {
                       },
                     }),
                   } as any);
+                  // #572 part 2 (flip-blocker b, TrustMap path): mirror POST-change trust to the
+                  // satellite allowed_senders row. Untrust → DELETE; retrust → ADD iff still open-vis ∩
+                  // !blocked. Fire-and-forget + fail-soft (gated dark pre-flip).
+                  void reconcileAllowedOnConsentChange({
+                    ownerFp: identity.identity.fingerprint,
+                    senderFp: edge.peer_fingerprint,
+                    consent: {
+                      trusted: nextTrusted,
+                      openVisibility:
+                        nextTrusted &&
+                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
+                          ?.open_visibility === true,
+                      blocked: edge.blocked === true,
+                    },
+                  });
                   await refreshContacts();
                 }}
                 onRemoveContact={async (edge) => {
                   const { removeContact } = await import('@/lib/identity/client-store');
+                  // #572 part 2 (6th invariant-exit, Flint seal #157713): contact-REMOVE is a reveal-set
+                  // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
+                  // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
+                  const removedFp = edge.peer_fingerprint;
                   await removeContact(edge.id);
+                  if (removedFp) {
+                    void reconcileAllowedOnConsentChange({
+                      ownerFp: identity.identity.fingerprint,
+                      senderFp: removedFp,
+                      consent: { trusted: false, openVisibility: false, blocked: false },
+                    });
+                  }
                   await refreshContacts();
                 }}
                 onBlockContact={async (edge, blocked) => {
@@ -741,6 +768,21 @@ export default function Home() {
                         : {}),
                     },
                   } as any);
+                  // #572 part 2 (flip-blocker b + #111 satellite-completeness, TrustMap path): block →
+                  // DELETE the allowed_senders row (close the stale-row adversary-discovery hole).
+                  // Unblock does NOT re-add — trust + open-vis must be re-granted explicitly.
+                  void reconcileAllowedOnConsentChange({
+                    ownerFp: identity.identity.fingerprint,
+                    senderFp: edge.peer_fingerprint,
+                    consent: {
+                      trusted: blocked ? false : edge.trusted === true,
+                      openVisibility:
+                        !blocked &&
+                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
+                          ?.open_visibility === true,
+                      blocked,
+                    },
+                  });
                   await refreshContacts();
                 }}
                 onAcceptIntro={async (edge) => {
