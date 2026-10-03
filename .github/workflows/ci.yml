@@ -44,10 +44,12 @@ jobs:
       - name: Typecheck — ratchet (fails if error count grows; lower scripts/ci-baseline.json when draining)
         run: |
           BASE=$(node -p "require('./scripts/ci-baseline.json').tsc_errors")
-          ACTUAL=$(npx --no-install tsc --noEmit 2>&1 | grep -c 'error TS' || true)
+          npx --no-install tsc --noEmit 2>&1 | tee /tmp/tsc.log | grep -c 'error TS' > /tmp/tsc.count || true
+          ACTUAL=$(cat /tmp/tsc.count)
           echo "tsc errors: $ACTUAL (baseline $BASE)"
           if [ "$ACTUAL" -gt "$BASE" ]; then
             echo "::error::tsc errors grew $BASE -> $ACTUAL — fix the new errors or raise the baseline with justification"
+            grep 'error TS' /tmp/tsc.log | head -30
             exit 1
           fi
           if [ "$ACTUAL" -lt "$BASE" ]; then
@@ -56,10 +58,12 @@ jobs:
       - name: Lint — ratchet (fails if error count grows)
         run: |
           BASE=$(node -p "require('./scripts/ci-baseline.json').lint_errors")
-          ACTUAL=$(npm run lint 2>&1 | grep -c '  Error:' || true)
+          npm run lint 2>&1 | tee /tmp/lint.log | grep -c '  Error:' > /tmp/lint.count || true
+          ACTUAL=$(cat /tmp/lint.count)
           echo "lint errors: $ACTUAL (baseline $BASE)"
           if [ "$ACTUAL" -gt "$BASE" ]; then
             echo "::error::lint errors grew $BASE -> $ACTUAL — fix the new errors or raise the baseline with justification"
+            grep '  Error:' /tmp/lint.log | head -40
             exit 1
           fi
           if [ "$ACTUAL" -lt "$BASE" ]; then
