@@ -1,0 +1,68 @@
+# infra/fed-qa/compose.fed-qa.yml — single-box federation QA stack.
+# Three svrnty app instances = three sovereign domains + a mailbox-registry TEST-DOUBLE
+# + a runner. In-compose networking only (domains resolve as service aliases); for
+# browser-level runs also add hosts.fed-qa to /etc/hosts and use the published ports.
+# Spec: docs/FEDERATION_QA.md.
+
+services:
+  app-a: # the managed "svrnty.is" stand-in
+    build:
+      context: ../..
+      args:
+        NEXT_PUBLIC_SVRNTY_DOMAIN: svrnty.is
+        NEXT_PUBLIC_SVRNTY_BASE_URL: http://app-a:3000
+    image: svrnty-fedqa:app-a
+    networks:
+      fed:
+        aliases: [svrnty.is]
+    ports: ["3000:3000"]
+
+  app-b: # single-mailbox self-host (cap 1)
+    build:
+      context: ../..
+      args:
+        NEXT_PUBLIC_SVRNTY_DOMAIN: relay-b.test
+        NEXT_PUBLIC_SVRNTY_BASE_URL: http://app-b:3000
+    image: svrnty-fedqa:app-b
+    environment:
+      RELAY_MAILBOX_CAP: "1"
+    networks:
+      fed:
+        aliases: [relay-b.test]
+    ports: ["3001:3000"]
+
+  app-c: # multi-mailbox relay
+    build:
+      context: ../..
+      args:
+        NEXT_PUBLIC_SVRNTY_DOMAIN: relay-c.test
+        NEXT_PUBLIC_SVRNTY_BASE_URL: http://app-c:3000
+    image: svrnty-fedqa:app-c
+    environment:
+      RELAY_MAILBOX_CAP: "1000"
+    networks:
+      fed:
+        aliases: [relay-c.test]
+    ports: ["3002:3000"]
+
+  registry: # mailbox-registry TEST-DOUBLE — POST /mailbox/register, GET /mailbox/{fp}
+    image: node:22-alpine
+    working_dir: /work
+    volumes: ["./registry-stub.mjs:/work/registry-stub.mjs:ro"]
+    command: ["node", "registry-stub.mjs"]
+    networks:
+      fed:
+        aliases: [registry.test]
+    ports: ["8100:8100"]
+
+  runner:
+    image: node:22-bookworm-slim # glibc — can exec the repo's host-built node_modules via tsx
+    working_dir: /repo
+    volumes: ["../../:/repo"]
+    command: ["sh", "-c", "sleep infinity"]
+    networks: [fed]
+    depends_on: [app-a, app-b, app-c, registry]
+    profiles: ["manual"] # exec-driven: `docker compose exec runner node ...`
+
+networks:
+  fed:
