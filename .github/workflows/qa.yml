@@ -7,6 +7,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Least privilege (restored — "examinee can't tamper the exam" class, #110/#112):
+# PR-triggered jobs check out + run PR-modifiable test code, so the GITHUB_TOKEN must
+# NOT fall back to the repo default (read/WRITE). No job here needs write (no gh/api/
+# push/comment). A future write-needing job grants it narrowly at the job level, never
+# a blanket default.
+permissions:
+  contents: read
+
 # One job, one unified runner.
 #
 # - Gate (BLOCKING): every src/**/*.test.ts EXCEPT files in qa/quarantine.json must pass.
