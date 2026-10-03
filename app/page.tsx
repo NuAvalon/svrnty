@@ -684,11 +684,21 @@ export default function Home() {
                 }}
                 onTrustToggle={async (edge) => {
                   const nextTrusted = !edge.trusted;
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
                   await updateContact(edge.id, {
                     trust_level: nextTrusted ? 'trusted' : 'unverified',
                     trusted: nextTrusted,
                     trusted_since: nextTrusted ? new Date().toISOString() : null,
                     verified_at: nextTrusted ? new Date().toISOString() : undefined,
+                    // #111 (survivor-safety): untrusting clears open_visibility (TrustMap path)
+                    // — reveal consent is trust-gated, so dropping trust drops the reveal flag.
+                    ...(!nextTrusted && {
+                      metadata: {
+                        ...((rec as any)?.metadata || {}),
+                        share_settings: { ...((rec as any)?.metadata?.share_settings || {}), open_visibility: false },
+                      },
+                    }),
                   } as any);
                   await refreshContacts();
                 }}
@@ -713,6 +723,12 @@ export default function Home() {
                     metadata: {
                       ...((rec as any)?.metadata || {}),
                       blocked,
+                      // #111 (survivor-safety): block clears open_visibility (TrustMap path)
+                      // so the peer leaves every PSI reveal set — mirrors the ContactManagement
+                      // handler; read side is fail-closed too (ownerEdges !blocked).
+                      ...(blocked
+                        ? { share_settings: { ...((rec as any)?.metadata?.share_settings || {}), open_visibility: false } }
+                        : {}),
                     },
                   } as any);
                   await refreshContacts();
