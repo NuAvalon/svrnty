@@ -246,15 +246,14 @@ test('getTrustedPeers returns the trusted, non-decayed subset', async () => {
   assert.deepEqual(trusted, ['trusted-fresh']);
 });
 
-test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/blocked/group labels', async () => {
+test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/group labels', async () => {
   const contacts = [
     rec({
       id: 'p1',
       fingerprint: 'peer-open-1',
       open_visibility: true,
       tags: ['family', 'secret-group'],
-      blocked: true,
-      metadata: { tags: ['family'], blocked: true, notes: 'stay off the wire' },
+      metadata: { tags: ['family'], notes: 'stay off the wire' },
     } as Partial<ContactRecord>),
   ];
   const { store } = fakeStore(contacts);
@@ -263,9 +262,32 @@ test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/blocked/g
   assert.equal(known.length, 1);
   assert.deepEqual(Object.keys(known[0]).sort(), ['fingerprint', 'lastSync']);
   assert.equal('tags' in known[0], false);
-  assert.equal('blocked' in known[0], false);
   assert.equal(JSON.stringify(known).includes('family'), false);
   assert.equal(JSON.stringify(known).includes('secret-group'), false);
+});
+
+// ── Chaos #111 (Flint survivor-safety ruling): a BLOCKED peer must NEVER enter the PSI reveal set ────
+// Regression lock on the exact survivor-catastrophe: a survivor blocks an adversary who had
+// open_visibility=true; the adversary must drop OUT of getKnownPeers immediately, by construction —
+// NOT linger until some handler happens to clear open_visibility. Covers both blocked shapes
+// (top-level `blocked` and `metadata.blocked`) since isContactBlocked() honors both.
+test('getKnownPeers EXCLUDES a blocked peer even with open_visibility=true (Chaos #111)', async () => {
+  const contacts = [
+    rec({ id: 'ok', fingerprint: 'peer-open', open_visibility: true }),
+    // blocked via the top-level field — still open_visible (handler did not clear it)
+    rec({ id: 'b1', fingerprint: 'peer-blocked-top', open_visibility: true, blocked: true } as Partial<ContactRecord>),
+    // blocked via metadata.blocked — the other shape isContactBlocked() honors
+    rec({ id: 'b2', fingerprint: 'peer-blocked-meta', open_visibility: true, metadata: { blocked: true } }),
+  ];
+  const { store } = fakeStore(contacts);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+
+  const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint);
+  assert.deepEqual(fps, ['peer-open']); // both blocked peers excluded, regardless of open_visibility
+  // Belt-and-suspenders: a blocked peer must not reach the TRUST reveal path either.
+  const trustedFps = (await deps.getTrustedPeers()).map((p) => p.fingerprint);
+  assert.equal(trustedFps.includes('peer-blocked-top'), false);
+  assert.equal(trustedFps.includes('peer-blocked-meta'), false);
 });
 
 // ── PSI initiator completion (Option A wire-in): the initiator half that was never wired ──────────

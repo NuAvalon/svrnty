@@ -67,6 +67,13 @@ async function ownerEdges(store: KnowOverlayStore, ownerFingerprint: string): Pr
   return contacts
     .filter((c) => typeof c.fingerprint === 'string' && c.fingerprint.length > 0)
     .filter((c) => c.metadata?.grow_gate !== true) // Gate arrivals must never enter PSI
+    // Chaos #111 (Flint survivor-safety ruling): a BLOCKED peer must NEVER enter any PSI reveal path —
+    // fail-closed BY CONSTRUCTION at the single projection source, so neither getKnownPeers (the
+    // open_visibility reveal set) nor getTrustedPeers can leak a blocked peer regardless of whether a
+    // revoke handler happened to clear open_visibility/trusted. Mirrors isContactBlocked()
+    // (trust-actions.ts): blocked lives on the record (or metadata.blocked); inlined to avoid a
+    // lib→components import. A survivor who blocks an adversary drops them from discovery here, now.
+    .filter((c) => !(c.blocked || c.metadata?.blocked))
     .map(contactRecordToEdge);
 }
 
