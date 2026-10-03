@@ -19,6 +19,14 @@ on:
   push:
     branches: [main]
 
+# Least privilege (same class as qa.yml, Flint ruling #157350): PR-triggered jobs
+# check out + run PR-modifiable code, so the GITHUB_TOKEN must NOT fall back to the
+# repo default (read/WRITE). No job here needs write (no gh/api/push/comment — the
+# docker job builds only, never pushes). A future write-needing job grants it
+# narrowly at the job level, never a blanket default.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
