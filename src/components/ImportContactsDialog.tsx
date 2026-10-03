@@ -22,6 +22,7 @@ import { dedupeContacts, type DedupPlan } from '@/lib/contacts/import-dedup';
 import { applyImportPlan } from '@/lib/contacts/import-apply';
 import { mergeProvenance, type ChannelChange } from '@/lib/contacts/import-diff';
 import { getAllContacts, addContact, updateContact } from '@/lib/identity/client-store';
+import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 
 interface ImportContactsDialogProps {
   ownerFingerprint: string;
@@ -117,7 +118,26 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
         await addContact(ownerFingerprint, edgeToRecordFields(add) as any);
       }
       for (const up of ops.updates) {
-        await updateContact(up.id, edgeToRecordFields(up.survivor) as any);
+        // #572 (B) trust-integrity: an import merges CONTACT-INFO only — never the trust decision.
+        // Strip trust_level so updateContact's partial-merge PRESERVES the existing trusted/open-vis
+        // (livingWinsMerge already kept them on the survivor; edgeToRecordFields hardcodes 'unverified',
+        // which would CLOBBER an existing trusted peer → spurious untrust). Fresh ADDs correctly stay unverified.
+        const infoFields = edgeToRecordFields(up.survivor);
+        delete (infoFields as { trust_level?: string }).trust_level;
+        await updateContact(up.id, infoFields as any);
+        // #572 (A) 7th invariant-exit: an import-merge is a mutation path → reconcile the satellite
+        // allowed_senders row to the post-merge reveal invariant (ADD iff trusted∩open_vis∩!blocked, else
+        // DELETE). With (B) preserving trust, the survivor's consent == the stored state. Fire-and-forget,
+        // fail-soft, gated dark pre-flip.
+        void reconcileAllowedOnConsentChange({
+          ownerFp: ownerFingerprint,
+          senderFp: up.survivor.peer_fingerprint,
+          consent: {
+            trusted: up.survivor.trusted === true,
+            openVisibility: up.survivor.open_visibility === true,
+            blocked: up.survivor.blocked === true,
+          },
+        });
       }
       setImportedCount(ops.adds.length + ops.updates.length);
       onImported();

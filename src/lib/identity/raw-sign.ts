@@ -77,6 +77,40 @@ export function signPsiAuth(
 }
 
 /**
+ * /allowed add|remove preimages (byte-exact to satellite.py _allowed_add_preimage :700 /
+ * _allowed_remove_preimage :706). Signed by the BOUND sig key (self-bind model = the identity seed);
+ * the satellite re-verifies vs the stored bound sig_pubkey and REQUIRES a bound identity (:815).
+ * sender-bound so a generic psi-auth liveness sig can't be replayed onto /allowed, and the {add,remove}
+ * domain-separation means an add sig can't authorize a remove (or vice-versa). All 3 fields are
+ * `:`-free by validation (fps = lowercase-hex, unix = int) → injective, no delimiter-collision.
+ */
+export function allowedAddPreimage(ownerFp: string, senderFp: string, unixSeconds: string | number): Uint8Array {
+  return utf8(`svrnty-allowed-add:${ownerFp}:${senderFp}:${unixSeconds}`);
+}
+
+export function allowedRemovePreimage(ownerFp: string, senderFp: string, unixSeconds: string | number): Uint8Array {
+  return utf8(`svrnty-allowed-remove:${ownerFp}:${senderFp}:${unixSeconds}`);
+}
+
+export function signAllowedAdd(
+  seed: Uint8Array,
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return rawSign(allowedAddPreimage(ownerFp, senderFp, unixSeconds), seed);
+}
+
+export function signAllowedRemove(
+  seed: Uint8Array,
+  ownerFp: string,
+  senderFp: string,
+  unixSeconds: string | number,
+): Uint8Array {
+  return rawSign(allowedRemovePreimage(ownerFp, senderFp, unixSeconds), seed);
+}
+
+/**
  * PSI orchestrator currently signs utf8("{fp}:{unix}"). Prefix that wrapped
  * payload so the bytes under the signature are exactly svrnty-psi-auth:{fp}:{unix}.
  * If the orchestrator already passes the full preimage, sign it as-is.
