@@ -26,7 +26,8 @@
 // buildPsiSyncOptions (scalar-extracted Ed25519 seed, in-memory only) and passed into the trigger.
 
 import { decryptKey, readPrivateKey } from 'openpgp';
-import { bytesToHex } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { verifySatelliteKey, PINNED_SATELLITE_MAILBOX_FP_DEV } from '@/lib/crypto/psi-wire-seal';
 import {
   getAllContacts,
   loadKey,
@@ -42,6 +43,7 @@ import {
   type OrchestratorDeps,
   type PSISyncOptions,
   type PSIKeypair,
+  type PsiPqWrapConfig,
 } from '@/lib/trust/mutual-trust-sync';
 
 // ── Store seam (injectable for tests; defaults to the real IndexedDB client-store) ───────────────
@@ -67,6 +69,13 @@ async function ownerEdges(store: KnowOverlayStore, ownerFingerprint: string): Pr
   return contacts
     .filter((c) => typeof c.fingerprint === 'string' && c.fingerprint.length > 0)
     .filter((c) => c.metadata?.grow_gate !== true) // Gate arrivals must never enter PSI
+    // Chaos #111 (Flint survivor-safety ruling): a BLOCKED peer must NEVER enter any PSI reveal path —
+    // fail-closed BY CONSTRUCTION at the single projection source, so neither getKnownPeers (the
+    // open_visibility reveal set) nor getTrustedPeers can leak a blocked peer regardless of whether a
+    // revoke handler happened to clear open_visibility/trusted. Mirrors isContactBlocked()
+    // (trust-actions.ts): blocked lives on the record (or metadata.blocked); inlined to avoid a
+    // lib→components import. A survivor who blocks an adversary drops them from discovery here, now.
+    .filter((c) => !(c.blocked || c.metadata?.blocked))
     .map(contactRecordToEdge);
 }
 
@@ -101,10 +110,14 @@ export function buildKnowOverlayDeps(
 
     getKnownPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
-      // The open-visible (consented) subset — NOT the whole book. This IS the consent gate (both
-      // roles) + minimization boundary. Empty ⇒ fail-closed (sync no-ops, reveals nothing).
+      // The reveal set = the user's ACTUAL consent: trusted ∩ open_visibility ∩ !blocked (blocked
+      // already dropped at ownerEdges). The UI consents "open visibility for TRUSTED contacts", so a
+      // merely open-visible but UNtrusted edge (drift/legacy) is NOT consented and must not reveal.
+      // `&& e.trusted` is the by-construction guard for the break-case (untrust alone drops discovery
+      // even if a handler forgot to clear open_visibility) — parallel to the ownerEdges !blocked guard
+      // for the block-case (Chaos #111, Archie). Empty ⇒ fail-closed (sync no-ops, reveals nothing).
       return edges
-        .filter((e) => e.open_visibility === true)
+        .filter((e) => e.open_visibility === true && e.trusted)
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 
@@ -297,10 +310,24 @@ function bytesToB64(bytes: Uint8Array): string {
 }
 
 /**
- * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth).
- * Challenge: GET /bind?fingerprint= → { nonce, epoch } or { bound: true }.
- * Complete: POST /bind { fingerprint, sign_pubkey, nonce, epoch, signature }.
- * Returns false on any misshape / network miss — caller stays fail-closed (no PSI).
+ * Bind the raw sign pubkey at the satellite (prerequisite for PSI auth tag#3).
+ *
+ * POST-DIRECT (the deployed satellite /bind is POST-only + self-nonce'd — the old GET-challenge is
+ * vestigial, satellite.py). The deployed BindRequest (satellite.py) requires exactly:
+ *   { fingerprint, sig_pubkey, nonce, epoch, binding_sig }
+ *   binding_sig = base64 Ed25519(IDENTITY seed, "svrnty-bind:{sig_pubkey_hex}:{nonce}:{epoch}")
+ * The identity seed signs its OWN pubkey into the sig_pubkey slot (self-bind — the current sole-key
+ * model; operational-key separation is a tracked key-hygiene fast-follow, NOT flip-blocking per Flint's
+ * ruling). The satellite re-verifies binding_sig against the STORED identity public_key, so this is safe
+ * even when reachable (gated-A).
+ *
+ * NONCE: a fresh client-generated lowercase-hex nonce per attempt — the satellite's single-use
+ * bind_nonces floor rejects any reuse (409), so a fresh nonce is the client half of the replay floor.
+ * EPOCH: client-local, init 0, ADOPT-ON-409. If the satellite's current epoch ≠ 0 it answers 409
+ * "stale epoch (current=N)"; we adopt N (satellite-sourced, NEVER registration — sovereignty:
+ * client → FE-proxy → satellite, zero registration dependency) and retry once.
+ *
+ * Returns false on any non-ok / network miss — caller stays fail-closed (no PSI).
  */
 export async function runBindCeremony(args: {
   satelliteUrl: string;
@@ -311,33 +338,47 @@ export async function runBindCeremony(args: {
 }): Promise<boolean> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const base = args.satelliteUrl.replace(/\/$/, '');
-  try {
-    const challengeRes = await fetchImpl(
-      `${base}/bind?fingerprint=${encodeURIComponent(args.fingerprint)}`,
-    );
-    if (!challengeRes.ok) return false;
-    const challenge = await challengeRes.json();
-    if (challenge && challenge.bound === true) return true;
-    const nonce = challenge?.nonce;
-    const epoch = challenge?.epoch;
-    if (typeof nonce !== 'string' && typeof nonce !== 'number') return false;
-    if (typeof epoch !== 'string' && typeof epoch !== 'number') return false;
-    const signPubHex = bytesToHex(args.signPub);
-    const signature = signBind(args.seed, signPubHex, String(nonce), epoch);
-    const post = await fetchImpl(`${base}/bind`, {
+  const signPubHex = bytesToHex(args.signPub);
+
+  const postBind = (epoch: number): Promise<Response> => {
+    const nonce = bytesToHex(crypto.getRandomValues(new Uint8Array(16))); // fresh lowercase-hex, even length
+    const binding_sig = bytesToB64(signBind(args.seed, signPubHex, nonce, epoch));
+    return fetchImpl(`${base}/bind`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         fingerprint: args.fingerprint,
-        sign_pubkey: signPubHex,
-        nonce: String(nonce),
+        sig_pubkey: signPubHex,
+        nonce,
         epoch,
-        signature: bytesToB64(signature),
+        binding_sig,
       }),
     });
-    return post.ok;
+  };
+
+  try {
+    let res = await postBind(0); // client-local epoch init 0
+    if (res.status === 409) {
+      const current = await parseStaleEpoch(res);
+      if (current === null) return false; // 409 but not a parseable stale-epoch (e.g. nonce-reuse) ⇒ fail-closed
+      res = await postBind(current); // adopt satellite's current epoch, re-sign (fresh nonce), retry once
+    }
+    return res.ok; // 200 { status: "bound" }
   } catch {
     return false;
+  }
+}
+
+/** Parse the satellite's 409 "stale epoch (current=N)" detail → N (int ≥ 0), or null if unparseable. */
+async function parseStaleEpoch(res: Response): Promise<number | null> {
+  try {
+    const body = await res.json();
+    const m = /current=(\d+)/.exec(String(body?.detail ?? ''));
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isInteger(n) && n >= 0 ? n : null;
+  } catch {
+    return null;
   }
 }
 
@@ -353,6 +394,8 @@ export async function buildPsiSyncOptions(
     satelliteUrl?: string;
     fetchImpl?: typeof fetch;
     skipBind?: boolean;
+    /** Per-satellite anti-swap pin for the mailbox key (dev default; prod/self-host supplies its own). */
+    pinnedFp?: string;
   } = {},
 ): Promise<PSISyncOptions | null> {
   const fp = ownerFingerprintOf(identity);
@@ -380,6 +423,7 @@ export async function buildPsiSyncOptions(
   }
 
   const satelliteUrl = (deps.satelliteUrl ?? SATELLITE_BROWSER_BASE).replace(/\/$/, '');
+  let pqWrap: PsiPqWrapConfig | undefined;
   if (!deps.skipBind) {
     const bound = await runBindCeremony({
       satelliteUrl,
@@ -389,13 +433,46 @@ export async function buildPsiSyncOptions(
       fetchImpl: deps.fetchImpl,
     });
     if (!bound) return null;
+
+    // FE-WIRING (b): the deployed satellite ENFORCES sealed PSI (an unsealed body is rejected
+    // "invalid PSI envelope"). Fetch its mailbox key, anti-swap-verify vs the pin, and populate pqWrap
+    // so the KNOW-sync seals (mutual-trust-sync consumes options.pqWrap). FAIL-CLOSED: no reachable /
+    // verifiable key ⇒ no pqWrap ⇒ null — proceeding unsealed is pointless (satellite would 400) AND
+    // would put the blinded set on the wire in clear. The primitive (verifySatelliteKey/sealPsiToSatellite)
+    // is piece-1; this is the wiring that makes the real client actually use it at flip.
+    const satelliteKeys = await fetchAndVerifySatelliteKey(satelliteUrl, deps.pinnedFp, deps.fetchImpl);
+    if (!satelliteKeys) return null;
+    pqWrap = { satelliteKeys };
   }
 
   return {
     satelliteUrl,
     myFingerprint: fp,
     signFn: (data: Uint8Array) => signPsiAuthWrapped(seed, data),
+    ...(pqWrap ? { pqWrap } : {}),
   };
+}
+
+/**
+ * Fetch the deployed satellite mailbox key (GET {satelliteUrl}/trust/psi/satellite-key — the live
+ * psi-namespaced alias), anti-swap-verify the hex pubkeys against the pin, and return the verified
+ * MailboxPublicKeys to seal to. Null (fail-closed) on any network miss, malformed body, or pin mismatch
+ * — a swapped/wrong key is REJECTED, never sealed to.
+ */
+async function fetchAndVerifySatelliteKey(
+  satelliteBase: string,
+  pinnedFp: string = PINNED_SATELLITE_MAILBOX_FP_DEV,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ReturnType<typeof verifySatelliteKey>> {
+  try {
+    const res = await fetchImpl(`${satelliteBase}/trust/psi/satellite-key`);
+    if (!res.ok) return null;
+    const rec = (await res.json()) as { x25519_pk?: unknown; mlkem1024_pk?: unknown };
+    if (typeof rec.x25519_pk !== 'string' || typeof rec.mlkem1024_pk !== 'string') return null;
+    return verifySatelliteKey(hexToBytes(rec.x25519_pk), hexToBytes(rec.mlkem1024_pk), pinnedFp);
+  } catch {
+    return null;
+  }
 }
 
 /**
