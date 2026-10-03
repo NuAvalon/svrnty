@@ -123,6 +123,24 @@ test('each invariant EXIT → DELETE (/allowed/{owner}/{sender}) — the #111 sa
   }
 });
 
+test('contact-REMOVE (6th exit): all-false "peer gone" consent → unconditional DELETE', async () => {
+  const { calls, fetchImpl } = recordingFetch();
+  const res = await reconcileAllowedOnConsentChange({
+    ownerFp,
+    senderFp,
+    // removeContact passes {false,false,false} — the peer no longer exists, so nothing is revealed and
+    // the row must not exist. allowedRowShouldExist=false → DELETE regardless of prior trust/open-vis.
+    consent: { trusted: false, openVisibility: false, blocked: false },
+    gate: () => true,
+    loadKeyImpl: loadKeyOk,
+    fetchImpl,
+  });
+  assert.deepEqual(res, { action: 'delete', ok: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'DELETE');
+  assert.ok(calls[0].url.endsWith(`/api/satellite/allowed/${ownerFp}/${senderFp}`), calls[0].url);
+});
+
 test('FAIL-SOFT: a decrypt/extract failure returns skipped:error, never throws', async () => {
   const res = await reconcileAllowedOnConsentChange({
     ownerFp,

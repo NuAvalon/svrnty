@@ -512,7 +512,20 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setError(null);
+      // #572 part 2 (6th invariant-exit, Flint seal #157713): contact-REMOVE is a reveal-set exit too —
+      // and a survivor's most intuitive "cut them off" is DELETE, not Block. Capture the peer fp BEFORE
+      // removeContact (the record is gone after), then reconcile its satellite allowed_senders row to
+      // "gone" (all-false consent → unconditional DELETE), closing the same stale-row discovery hole as
+      // block. Fire-and-forget + fail-soft (gated dark pre-flip). removeContact does NO satellite call.
+      const removedFp = contacts.find((c) => c.id === contactId)?.fingerprint;
       await removeContact(contactId);
+      if (removedFp) {
+        void reconcileAllowedOnConsentChange({
+          ownerFp: fingerprint,
+          senderFp: removedFp,
+          consent: { trusted: false, openVisibility: false, blocked: false },
+        });
+      }
       setShowDetailDialog(false);
       setShowEditDialog(false);
       await loadContacts();

@@ -724,7 +724,18 @@ export default function Home() {
                 }}
                 onRemoveContact={async (edge) => {
                   const { removeContact } = await import('@/lib/identity/client-store');
+                  // #572 part 2 (6th invariant-exit, Flint seal #157713): contact-REMOVE is a reveal-set
+                  // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
+                  // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
+                  const removedFp = edge.peer_fingerprint;
                   await removeContact(edge.id);
+                  if (removedFp) {
+                    void reconcileAllowedOnConsentChange({
+                      ownerFp: identity.identity.fingerprint,
+                      senderFp: removedFp,
+                      consent: { trusted: false, openVisibility: false, blocked: false },
+                    });
+                  }
                   await refreshContacts();
                 }}
                 onBlockContact={async (edge, blocked) => {
