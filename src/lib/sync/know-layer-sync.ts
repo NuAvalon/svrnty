@@ -67,6 +67,13 @@ async function ownerEdges(store: KnowOverlayStore, ownerFingerprint: string): Pr
   return contacts
     .filter((c) => typeof c.fingerprint === 'string' && c.fingerprint.length > 0)
     .filter((c) => c.metadata?.grow_gate !== true) // Gate arrivals must never enter PSI
+    // Chaos #111 (Flint survivor-safety ruling): a BLOCKED peer must NEVER enter any PSI reveal path —
+    // fail-closed BY CONSTRUCTION at the single projection source, so neither getKnownPeers (the
+    // open_visibility reveal set) nor getTrustedPeers can leak a blocked peer regardless of whether a
+    // revoke handler happened to clear open_visibility/trusted. Mirrors isContactBlocked()
+    // (trust-actions.ts): blocked lives on the record (or metadata.blocked); inlined to avoid a
+    // lib→components import. A survivor who blocks an adversary drops them from discovery here, now.
+    .filter((c) => !(c.blocked || c.metadata?.blocked))
     .map(contactRecordToEdge);
 }
 
@@ -101,10 +108,14 @@ export function buildKnowOverlayDeps(
 
     getKnownPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
-      // The open-visible (consented) subset — NOT the whole book. This IS the consent gate (both
-      // roles) + minimization boundary. Empty ⇒ fail-closed (sync no-ops, reveals nothing).
+      // The reveal set = the user's ACTUAL consent: trusted ∩ open_visibility ∩ !blocked (blocked
+      // already dropped at ownerEdges). The UI consents "open visibility for TRUSTED contacts", so a
+      // merely open-visible but UNtrusted edge (drift/legacy) is NOT consented and must not reveal.
+      // `&& e.trusted` is the by-construction guard for the break-case (untrust alone drops discovery
+      // even if a handler forgot to clear open_visibility) — parallel to the ownerEdges !blocked guard
+      // for the block-case (Chaos #111, Archie). Empty ⇒ fail-closed (sync no-ops, reveals nothing).
       return edges
-        .filter((e) => e.open_visibility === true)
+        .filter((e) => e.open_visibility === true && e.trusted)
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 
