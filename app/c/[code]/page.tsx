@@ -4,11 +4,14 @@
 // parse goes through the SHARED parseInviteUrl boundary (INV-4) — the same one the in-page
 // paste field (JoinByCode) and the QR camera use — so route/button/camera never diverge
 // (one parser, gate-3 as code). The fragment (key) never reaches the server: the
-// whole exchange decrypts locally. All ceremony/import logic lives in JoinerCeremony.
+// All ceremony/import logic lives in JoinerCeremony while isConnectAddLogicLive()
+// is false. When Apollo flips that gate, this route mounts ConnectOneStep instead.
 "use client";
 
 import { useEffect, useState } from 'react';
 import { JoinerCeremony } from '@/components/JoinerCeremony';
+import { ConnectOneStep } from '@/components/connect/ConnectOneStep';
+import { isConnectAddLogicLive } from '@/lib/claim-gates';
 import { parseInviteUrl, type ParsedInvite } from '@/lib/invite/parseInviteUrl';
 
 export default function RelayCeremonyPage({ params }: { params: Promise<{ code: string }> }) {
@@ -42,6 +45,19 @@ export default function RelayCeremonyPage({ params }: { params: Promise<{ code: 
         incomplete.{' '}
         <a href="/" style={{ color: '#34d399', textDecoration: 'underline' }}>Go to SVRNTY</a>
       </Centered>
+    );
+  }
+
+  // Live joins stay on JoinerCeremony until Apollo flips the add-logic gate.
+  if (isConnectAddLogicLive()) {
+    return (
+      <div style={{ minHeight: '100vh', padding: 24, background: '#0f0a06' }}>
+        <ConnectOneStep
+          hasIdentity
+          initialCode={invite.code}
+          initialKeyFragment={invite.keyFragment}
+        />
+      </div>
     );
   }
 

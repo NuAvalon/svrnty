@@ -67,6 +67,8 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 
 **BUILD-SCOPE:** UI shell + flow + `/c/{code}` resolve wired against the add-logic INTERFACE (typed stub). Do NOT implement the grow-link gen/resolve crypto or the add-to-gate/known logic — Apollo wires those post-flip. Thin render-glass over the interface; never modify crypto/gate/trust hooks.
 
+**Glass status:** one-step paste + Gate card chrome ships against `isConnectAddLogicLive()` (false). `/c/{code}` still mounts the live JoinerCeremony until Apollo flips that gate. Persist / resolve crypto are the stub — do not treat the shell as a live add.
+
 **NON-GOALS:** not bulk-import / auto-add-without-consent; not a mutual-edge fabricator; the grow-link is an invitation (card + add-me-if-you-want), NOT a bearer-capability granting more. No multi-step ceremony.
 
 **Acceptance:** paste a grow-link → newcomer appears in GATE (not Known) with their card → one tap → promoted to Known, trust-level = user's explicit choice. No-account → create → land-in-GATE works as one flow. All 5 invariants hold. Copy matches Hypatia's ledger. One PR into the canonical branch.
