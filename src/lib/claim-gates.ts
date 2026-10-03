@@ -41,12 +41,24 @@ export function isPQSignLive(): boolean {
 }
 
 /**
- * Post-quantum protection is FULLY live — BOTH the ML-KEM encryption AND the ML-DSA signature paths
- * are wired + verified. Use for a blanket "post-quantum protected" claim. Where a surface is specific,
- * prefer the granular gate: `isPQEncapLive` for encryption claims, `isPQSignLive` for signature claims.
+ * Post-quantum TRANSPORT WIRE for PSI DISCOVERY is live — the /initiate exchange rides an
+ * ML-KEM-1024 + X25519 hybrid envelope. psi-wire-seal.ts wraps every PSI body BY CONSTRUCTION (no gate);
+ * apex-proven-live on the deployed edge (session 836a17cd — satellite mandates a 1568B ML-KEM key,
+ * decaps+opens every exchange). Use this ONLY for the "PQ-blinded mutual discovery" claim.
+ *
+ * Tied to `isPSIDiscoveryLive` so the PQ-discovery CLAIM graduates ATOMICALLY with the discovery feature
+ * (never advertised while discovery is dark) — the single flip (isPSIDiscoveryLive false→true) lights
+ * both; there is NO second runtime flag. (A flipper must update BOTH test assertions — see claim-gates.test.ts.)
+ *
+ * NOT a blanket "post-quantum protected" claim. MESSAGING PQ (encrypt-to-contact + card-sign) is SEPARATE
+ * and HELD — `isPQEncapLive` / `isPQSignLive` (both false). A future blanket messaging-PQ claim must
+ * compute `isPQEncapLive() && isPQSignLive()` directly, NOT this gate. Decoupled from that messaging AND
+ * per the #572/apex claim-gate review (Flint/Archie/Hypatia): the old `encap && sign` derivation was a
+ * conflation trap — it would have under-claimed the real, live discovery-wire PQ, or tempted a messaging
+ * over-claim to light it. This gate claims exactly what's proven: the discovery transport wire is PQ.
  */
 export function isPQWireLive(): boolean {
-  return isPQEncapLive() && isPQSignLive();
+  return isPSIDiscoveryLive();
 }
 
 /**

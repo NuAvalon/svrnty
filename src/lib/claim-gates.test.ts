@@ -17,8 +17,12 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isPQSignLive(), false);
   });
 
-  it('isPQWireLive is false unless BOTH encap and sign are live', () => {
+  it('isPQWireLive (PSI-discovery transport PQ) tracks isPSIDiscoveryLive — dark today; decoupled from the messaging encap/sign gates', () => {
+    // The discovery /initiate wire is PQ by construction (apex-proven), but the CLAIM only lights WHEN
+    // discovery is live. isPSIDiscoveryLive() is false today → this stays false. At the flip, whoever
+    // flips isPSIDiscoveryLive true MUST update BOTH this assertion and the isPSIDiscoveryLive one.
     assert.equal(isPQWireLive(), false);
+    assert.equal(isPQWireLive(), isPSIDiscoveryLive());
   });
 
   it('isBiometricSeamLive is re-exported and false until the WebAuthn/PRF seam is wired', () => {
