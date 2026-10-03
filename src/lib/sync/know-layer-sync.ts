@@ -108,10 +108,14 @@ export function buildKnowOverlayDeps(
 
     getKnownPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
-      // The open-visible (consented) subset — NOT the whole book. This IS the consent gate (both
-      // roles) + minimization boundary. Empty ⇒ fail-closed (sync no-ops, reveals nothing).
+      // The reveal set = the user's ACTUAL consent: trusted ∩ open_visibility ∩ !blocked (blocked
+      // already dropped at ownerEdges). The UI consents "open visibility for TRUSTED contacts", so a
+      // merely open-visible but UNtrusted edge (drift/legacy) is NOT consented and must not reveal.
+      // `&& e.trusted` is the by-construction guard for the break-case (untrust alone drops discovery
+      // even if a handler forgot to clear open_visibility) — parallel to the ownerEdges !blocked guard
+      // for the block-case (Chaos #111, Archie). Empty ⇒ fail-closed (sync no-ops, reveals nothing).
       return edges
-        .filter((e) => e.open_visibility === true)
+        .filter((e) => e.open_visibility === true && e.trusted)
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 

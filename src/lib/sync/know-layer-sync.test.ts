@@ -177,29 +177,30 @@ test('applyMutualResult fail-closes (no write) on malformed input / unknown peer
 
 // ── getKnownPeers — the open_visibility SUBSET; empty ⇒ fail-closed ─────────────────────────────────
 
-test('getKnownPeers returns only the open_visibility subset (with real fingerprints)', async () => {
+test('getKnownPeers returns only the trusted ∩ open_visibility subset (with real fingerprints)', async () => {
   const contacts = [
-    rec({ id: 'p1', fingerprint: 'peer-open-1', open_visibility: true }),
-    rec({ id: 'p2', fingerprint: 'peer-open-2', metadata: { share_settings: { open_visibility: true } } }),
-    rec({ id: 'p3', fingerprint: 'peer-closed', open_visibility: false }),
+    rec({ id: 'p1', fingerprint: 'peer-open-1', trusted: true, open_visibility: true }),
+    rec({ id: 'p2', fingerprint: 'peer-open-2', trusted: true, metadata: { share_settings: { open_visibility: true } } }),
+    rec({ id: 'p3', fingerprint: 'peer-closed', trusted: true, open_visibility: false }), // trusted but NOT open-vis ⇒ out
     rec({ id: 'p4', fingerprint: 'peer-default' }), // no consent field ⇒ closed
     // keyless / gray contact that somehow carries a consent flag — must NOT leak (no real fingerprint)
-    rec({ id: 'p5', fingerprint: '', open_visibility: true }),
+    rec({ id: 'p5', fingerprint: '', trusted: true, open_visibility: true }),
   ];
   const { store } = fakeStore(contacts);
   const deps = buildKnowOverlayDeps(OWNER, store);
 
   const known = await deps.getKnownPeers();
   const fps = known.map((p) => p.fingerprint).sort();
-  assert.deepEqual(fps, ['peer-open-1', 'peer-open-2']); // both consent shapes, no closed, no keyless
+  assert.deepEqual(fps, ['peer-open-1', 'peer-open-2']); // both consent shapes; trusted-but-closed, default, keyless all out
 });
 
 test('getKnownPeers excludes grow_gate rows even if open_visibility leaked on', async () => {
   const contacts = [
-    rec({ id: 'p1', fingerprint: 'peer-open', open_visibility: true }),
+    rec({ id: 'p1', fingerprint: 'peer-open', trusted: true, open_visibility: true }),
     rec({
       id: 'g1',
       fingerprint: 'peer-gate',
+      trusted: true,
       open_visibility: true,
       metadata: { grow_gate: true },
     }),
@@ -251,6 +252,7 @@ test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/group lab
     rec({
       id: 'p1',
       fingerprint: 'peer-open-1',
+      trusted: true,
       open_visibility: true,
       tags: ['family', 'secret-group'],
       metadata: { tags: ['family'], notes: 'stay off the wire' },
@@ -271,20 +273,23 @@ test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/group lab
 // open_visibility=true; the adversary must drop OUT of getKnownPeers immediately, by construction —
 // NOT linger until some handler happens to clear open_visibility. Covers both blocked shapes
 // (top-level `blocked` and `metadata.blocked`) since isContactBlocked() honors both.
-test('getKnownPeers EXCLUDES a blocked peer even with open_visibility=true (Chaos #111)', async () => {
+test('getKnownPeers reveal set = trusted ∩ open_visibility ∩ !blocked (Chaos #111)', async () => {
   const contacts = [
-    rec({ id: 'ok', fingerprint: 'peer-open', open_visibility: true }),
-    // blocked via the top-level field — still open_visible (handler did not clear it)
-    rec({ id: 'b1', fingerprint: 'peer-blocked-top', open_visibility: true, blocked: true } as Partial<ContactRecord>),
-    // blocked via metadata.blocked — the other shape isContactBlocked() honors
-    rec({ id: 'b2', fingerprint: 'peer-blocked-meta', open_visibility: true, metadata: { blocked: true } }),
+    // the honest path — trusted + open-visible + not blocked ⇒ revealed (Flint co-verify case 4)
+    rec({ id: 'ok', fingerprint: 'peer-open', trusted: true, open_visibility: true }),
+    // blocked via top-level, else fully revealable (trusted + open_vis) ⇒ blocked is the SOLE reason it drops (case 2)
+    rec({ id: 'b1', fingerprint: 'peer-blocked-top', trusted: true, open_visibility: true, blocked: true } as Partial<ContactRecord>),
+    // blocked via metadata.blocked — the other shape isContactBlocked() honors (|| not ??)
+    rec({ id: 'b2', fingerprint: 'peer-blocked-meta', trusted: true, open_visibility: true, metadata: { blocked: true } }),
+    // untrusted but open-visible (drift/legacy) ⇒ NOT the consented set ⇒ excluded (Archie case 5)
+    rec({ id: 'u1', fingerprint: 'peer-untrusted-open', trusted: false, open_visibility: true }),
   ];
   const { store } = fakeStore(contacts);
   const deps = buildKnowOverlayDeps(OWNER, store);
 
   const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint);
-  assert.deepEqual(fps, ['peer-open']); // both blocked peers excluded, regardless of open_visibility
-  // Belt-and-suspenders: a blocked peer must not reach the TRUST reveal path either.
+  assert.deepEqual(fps, ['peer-open']); // blocked (both shapes) AND untrusted-open all excluded; only the consented peer reveals
+  // Belt-and-suspenders: a blocked peer must not reach the TRUST reveal path either (ownerEdges single point).
   const trustedFps = (await deps.getTrustedPeers()).map((p) => p.fingerprint);
   assert.equal(trustedFps.includes('peer-blocked-top'), false);
   assert.equal(trustedFps.includes('peer-blocked-meta'), false);
