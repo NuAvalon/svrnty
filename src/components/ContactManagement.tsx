@@ -534,6 +534,15 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         trusted: newLevel === 'trusted',
         trusted_since: newLevel === 'trusted' ? new Date().toISOString() : null,
         ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
+        // #111 (survivor-safety): untrusting clears open_visibility — the UI gates
+        // open-visibility on TRUSTED contacts, so dropping trust must drop the reveal
+        // consent with it (reveal set = trusted ∩ open_vis ∩ !blocked, by construction).
+        ...(newLevel === 'unverified' && {
+          metadata: {
+            ...(contact.metadata || {}),
+            share_settings: { ...(contact.metadata?.share_settings || {}), open_visibility: false },
+          },
+        }),
       } as any);
       // Satellite trust commitment (blind — satellite never sees who you're trusting)
       if (contact.fingerprint) {
@@ -607,6 +616,13 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         metadata: {
           ...(contact.metadata || {}),
           blocked,
+          // #111 (survivor-safety): blocking clears open_visibility so the peer leaves
+          // every PSI reveal set — a blocked peer must never keep discovering you via a
+          // stale open_vis flag. The read side is fail-closed too (ownerEdges !blocked);
+          // this keeps the STORED state honest so the re-assert fires on local read.
+          ...(blocked
+            ? { share_settings: { ...(contact.metadata?.share_settings || {}), open_visibility: false } }
+            : {}),
         },
       } as any);
       setShowDetailDialog(false);
