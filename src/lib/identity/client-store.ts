@@ -10,6 +10,7 @@ import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+import { ownerHasVerified } from '../trust/trust-recipe';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -671,6 +672,16 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   // so multiple grays coexist. Normalize the logical record the same way (absent fp/pk = keyless).
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
   if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
+  // pt5 verify-before-trust (SINK gate, CREATE path — mirrors updateContact's promotion gate): never
+  // CREATE a contact already-trusted without a real owner-verification, so no path (add OR update)
+  // reaches trusted-unverified. Normal adds are unverified → unaffected; a verified add (e.g. in-person
+  // sample) passes. Fail-closed.
+  {
+    const addTrusted = record.trust_level === 'trusted' || record.trust_level === 'verified' || (record as { trusted?: boolean }).trusted === true;
+    if (addTrusted && !ownerHasVerified(record as Parameters<typeof ownerHasVerified>[0])) {
+      throw new Error('verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
+    }
+  }
   const stored = await buildStoredContact(record);
   // enc-b B4: recompute the book manifest over the POST-insert set (existing owner contacts + this new
   // record) and write it in the SAME tx as the record. Decrypt-all + MAC happen BEFORE the tx (the
@@ -715,6 +726,20 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
     sig_public_key: next.pq_sig_public_key,
   }))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
+  }
+  // pt5 verify-before-trust (survivor-safety SINK gate — Flint seal-criteria #158146 / Archie #92153):
+  // block the unverified/known → trusted PROMOTION unless a REAL owner-verification backs it. Every
+  // promotion path (bulk-select Trust, TrustMap toggle, card dialog, import-update, future) funnels
+  // through updateContact, so gating here is by-construction — no caller can bypass. Reads the REAL
+  // owner-verify (ownerHasVerified → owner_verified_at w/ in_person|other_channel), NEVER the top-level
+  // trusted-since stamp. Fail-closed. Non-regression: only the TRANSITION is gated (re-saving an already-
+  // trusted contact, or un-trusting, passes). This is Peter's pt5 "resistance between known and trusted".
+  {
+    const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
+    const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
+    if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
+      throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
+    }
   }
   const stored = await buildStoredContact(next);
   // enc-b B4: manifest over the post-update set (this id's version replaced) in the SAME tx as the
