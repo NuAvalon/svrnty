@@ -14,6 +14,22 @@
 import type { TrustEdge } from './types';
 
 /**
+ * The ONE "is this edge trusted?" predicate (piece-1 ★★ TRUSTED-DEFINITION CONSISTENCY, Athena #158853).
+ * Exported + shared so the reveal (contactRecordToEdge below), the H1 clamp (ContactManagement),
+ * the §G legacy sweep (client-store) and the H2 disable (ContactDetailDialog) all derive "trusted"
+ * from ONE definition and cannot silently drift (Flint's before-flip reliability finding #158889 —
+ * it was 4 verbatim hand-copies + 2 test copies; now a single source).
+ *
+ * `??` semantics (the non-obvious part): an explicit `c.trusted === false` WINS over trust_level —
+ * `??` only falls back to the trust_level check when `c.trusted` is null/undefined, so a
+ * {trusted:false, trust_level:'trusted'} edge is NOT trusted. The reveal HIDES such an edge, so every
+ * gate MUST agree or a {trusted:false,...} edge slips a clamp/sweep while the reveal hides it (the gap).
+ */
+export function edgeTrusted(c: { trusted?: boolean; trust_level?: string }): boolean {
+  return (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+}
+
+/**
  * Project a stored contact record onto a TrustEdge for display / trust-graph / encryption use.
  * Accepts the open-bag ContactRecord (or an already-edge-shaped object) via `peer_X || X` fallbacks.
  *
@@ -31,7 +47,9 @@ export function contactRecordToEdge(c: any): TrustEdge {
     peer_name: c.peer_name || c.name,
     peer_email: c.peer_email || c.email || '',
     peer_public_key: c.peer_public_key || c.public_key || '',
-    trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
+    // Routes through the shared edgeTrusted predicate (above) so reveal ≡ clamp ≡ sweep ≡ disable
+    // by construction — a single edit to the trusted-definition propagates to every gate.
+    trusted: edgeTrusted(c),
     trusted_since: c.trusted_since || c.verified_at || null,
     last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
     decay_days: c.decay_days || 730,

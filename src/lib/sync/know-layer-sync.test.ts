@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import type { OrchestratorDeps, PSISyncOptions } from '@/lib/trust/mutual-trust-sync';
+import { edgeTrusted } from '@/lib/trust/contact-edge';
 import {
   buildKnowOverlayDeps,
   runKnowLayerSyncTick,
@@ -339,16 +340,18 @@ test('piece-1 getKnownPeers: per_contact_private is the SOLE reason an open-visi
 // ── piece-1 §G: #111-LEGACY SWEEP (migratePerContactPrivacyOnUnlock, client-store.ts) ─────────────────
 // The sweep fn itself is IndexedDB + session-key gated (txGetAll / updateContact / decryptContactIfNeeded,
 // not exported) → not directly runnable under node:test. We test (a) its exact per-record decision
-// predicate — the ★★ edgeTrusted `??` derivation (explicit c.trusted===false WINS over trust_level) + the
-// open_visibility clear — mirrored VERBATIM from the source fn, and (b) the integration: a swept (cleared)
-// record drops OUT of getKnownPeers, a trusted-open record is UNTOUCHED, and a 2nd pass writes nothing
-// (idempotent). NOTE: predicate is replicated here, not imported (source is browser-coupled).
+// predicate — the ★★ shared edgeTrusted derivation (explicit c.trusted===false WINS over trust_level) + the
+// open_visibility clear, and (b) the integration: a swept (cleared) record drops OUT of getKnownPeers, a
+// trusted-open record is UNTOUCHED, and a 2nd pass writes nothing (idempotent). NOTE: the predicate is the
+// SHARED edgeTrusted (imported from contact-edge.ts — pure, not browser-coupled, so no drift vs the source);
+// only the sweep FN itself is browser-coupled (IndexedDB/session-key), so sweepClear mirrors just its
+// open_visibility-clear logic around that shared predicate.
 
-// Verbatim mirror of migratePerContactPrivacyOnUnlock's per-record core. Returns the clearing patch when a
-// NON-trusted edge carries open_visibility=true, else null (no write).
+// Mirror of migratePerContactPrivacyOnUnlock's per-record core (clear logic only; the trusted predicate is
+// the shared edgeTrusted). Returns the clearing patch when a NON-trusted edge carries open_visibility=true,
+// else null (no write).
 function sweepClear(c: { trust_level?: string; trusted?: boolean; metadata?: any }): { metadata: any } | null {
-  const trusted = ((c as { trusted?: boolean }).trusted
-    ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+  const trusted = edgeTrusted(c);
   const md = (c.metadata as Record<string, unknown>) ?? {};
   const ss = (md.share_settings as { open_visibility?: boolean }) ?? {};
   if (!trusted && ss.open_visibility === true) {

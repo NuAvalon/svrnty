@@ -27,7 +27,7 @@ import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookLi
 import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
-import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { contactRecordToEdge, edgeTrusted } from '@/lib/trust/contact-edge';
 import { ownerHasVerified, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import {
@@ -113,14 +113,11 @@ function isTrusted(contact: Contact): boolean {
   return contact.trust_level === 'verified' || contact.trust_level === 'trusted';
 }
 
-// piece-1 ★★ TRUSTED-DEFINITION CONSISTENCY (Athena #158853): the SET-path clamp (H1) MUST test "trusted"
-// with the REVEAL's derivation (contact-edge.ts: `c.trusted ?? (trust_level verified|trusted)`), NOT the
-// trust_level-only isTrusted() above — an explicit `c.trusted === false` WINS over trust_level (?? short-
-// circuits on the explicit false). This makes clamp-trusted ≡ reveal-trusted by construction, so a
-// {trusted:false, trust_level:'trusted'} edge (which getKnownPeers HIDES) can never slip the clamp.
-function edgeTrusted(c: { trusted?: boolean; trust_level?: string }): boolean {
-  return (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
-}
+// piece-1 ★★ TRUSTED-DEFINITION CONSISTENCY (Athena #158853): the SET-path clamp (H1) tests "trusted" with
+// the REVEAL's derivation via the shared `edgeTrusted` (imported from contact-edge.ts), NOT the trust_level-
+// only isTrusted() above — an explicit `c.trusted === false` WINS over trust_level. clamp-trusted ≡ reveal-
+// trusted by construction (one source), so a {trusted:false, trust_level:'trusted'} edge (which getKnownPeers
+// HIDES) can never slip the clamp.
 
 function trustLabel(contact: Contact): string {
   return isTrusted(contact) ? 'Trusted' : 'Known';
