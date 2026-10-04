@@ -11,12 +11,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { contactRecordToEdge } from './contact-edge';
+import { contactRecordToEdge, edgeTrusted } from './contact-edge';
 
-// The exact predicate defined (verbatim) in all 3 piece-1 locations: client-store.ts
-// migratePerContactPrivacyOnUnlock (G), ContactManagement.tsx (H1), ContactDetailDialog.tsx (H2).
-const edgeTrusted = (c: { trusted?: boolean; trust_level?: string }): boolean =>
-  (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+// edgeTrusted is now the ONE shared predicate (contact-edge.ts) — imported here, and by the reveal
+// (contactRecordToEdge), the §G sweep (client-store), the H1 clamp (ContactManagement) and the H2
+// disable (ContactDetailDialog) alike. So all four gates ≡ the reveal by construction (no hand-copies
+// left to drift). This test now guards (a) the shared helper's semantics across shapes and (b) that
+// contactRecordToEdge still routes `trusted` through edgeTrusted (test #2 — would catch a re-inline).
 
 // The H1 clamp expression (ContactManagement.handleShareSettingsChange): open_visibility forced false
 // on a NON-edgeTrusted edge; pcp is NOT clamped.
