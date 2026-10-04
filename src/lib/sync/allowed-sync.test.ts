@@ -83,12 +83,16 @@ test('removeAllowedSender DELETEs /{owner}/{sender} with X-Signature svrnty-allo
   assert.equal(ed25519.verify(b64ToBytes(b64sig), addPre, PUB), false);
 });
 
-test('reconcileAllowedForPeer: ADD iff trusted∩open_vis∩!blocked, else DELETE (all 3 exits)', async () => {
+// piece-1 (Flint seal #158892): KNOWN reveal = open_vis ∩ !blocked ∩ !per_contact_private — the trusted
+// term DROPPED to the trust layer (piece-2). So untrust is NO LONGER a known-exit; the exits are
+// go-private, block, and per_contact_private (new). Was: 'ADD iff trusted∩open_vis∩!blocked'.
+test('reconcileAllowedForPeer: ADD iff open_vis∩!blocked∩!pcp (piece-1; trusted dropped), else DELETE', async () => {
   const cases: Array<{ consent: PeerConsent; action: 'add' | 'delete'; method: string }> = [
-    { consent: { trusted: true, openVisibility: true, blocked: false }, action: 'add', method: 'POST' }, // full invariant → ADD
-    { consent: { trusted: false, openVisibility: true, blocked: false }, action: 'delete', method: 'DELETE' }, // untrust exit
-    { consent: { trusted: true, openVisibility: false, blocked: false }, action: 'delete', method: 'DELETE' }, // go-private exit
-    { consent: { trusted: true, openVisibility: true, blocked: true }, action: 'delete', method: 'DELETE' }, // block exit
+    { consent: { trusted: true, openVisibility: true, blocked: false, perContactPrivate: false }, action: 'add', method: 'POST' }, // full invariant → ADD
+    { consent: { trusted: false, openVisibility: true, blocked: false, perContactPrivate: false }, action: 'add', method: 'POST' }, // untrust: NO LONGER a known-exit (trusted→trust layer, piece-2) → ADD
+    { consent: { trusted: true, openVisibility: false, blocked: false, perContactPrivate: false }, action: 'delete', method: 'DELETE' }, // go-private exit
+    { consent: { trusted: true, openVisibility: true, blocked: true, perContactPrivate: false }, action: 'delete', method: 'DELETE' }, // block exit
+    { consent: { trusted: true, openVisibility: true, blocked: false, perContactPrivate: true }, action: 'delete', method: 'DELETE' }, // per_contact_private exit (new, piece-1)
   ];
   for (const c of cases) {
     const { fetchImpl, calls } = capturingFetch(200);
@@ -121,9 +125,96 @@ test('fail-closed: non-2xx → false, network throw → false', async () => {
   );
 });
 
-test('allowedRowShouldExist = the full consent invariant', () => {
-  assert.equal(allowedRowShouldExist({ trusted: true, openVisibility: true, blocked: false }), true);
-  assert.equal(allowedRowShouldExist({ trusted: false, openVisibility: true, blocked: false }), false);
-  assert.equal(allowedRowShouldExist({ trusted: true, openVisibility: false, blocked: false }), false);
-  assert.equal(allowedRowShouldExist({ trusted: true, openVisibility: true, blocked: true }), false);
+test('allowedRowShouldExist = open_vis ∩ !blocked ∩ !pcp (piece-1, Flint seal #158892; trusted dropped)', () => {
+  assert.equal(allowedRowShouldExist({ trusted: true, openVisibility: true, blocked: false, perContactPrivate: false }), true);
+  // untrusted + open_vis + !blocked + !pcp → NOW TRUE (the trusted term moved to the trust layer, piece-2)
+  assert.equal(allowedRowShouldExist({ trusted: false, openVisibility: true, blocked: false, perContactPrivate: false }), true);
+  assert.equal(allowedRowShouldExist({ trusted: true, openVisibility: false, blocked: false, perContactPrivate: false }), false);
+  assert.equal(allowedRowShouldExist({ trusted: true, openVisibility: true, blocked: true, perContactPrivate: false }), false);
+});
+
+// ── piece-1 (§F case 2): KNOWN reveal = open_vis ∩ !blocked ∩ !per_contact_private. trusted DROPPED;
+// per_contact_private is a TRUTHY-exclusion AND-term (fail-closed). ──────────────────────────────────
+test('piece-1 allowedRowShouldExist: trusted DROPPED; per_contact_private truthy-excludes (fail-closed)', () => {
+  // untrusted but open-visible ∩ !blocked ∩ !pcp → NOW TRUE (the trusted term moved to the trust layer)
+  assert.equal(
+    allowedRowShouldExist({ trusted: false, openVisibility: true, blocked: false, perContactPrivate: false }),
+    true,
+  );
+  // per_contact_private set → row must NOT exist (excluded from the reveal set)
+  assert.equal(
+    allowedRowShouldExist({ trusted: false, openVisibility: true, blocked: false, perContactPrivate: true }),
+    false,
+  );
+  // LOAD-BEARING: a MALFORMED TRUTHY pcp must fail-CLOSED (exclude). `!c.perContactPrivate` returns false
+  // here; a `=== true` check would have wrongly fail-OPENed (included it).
+  assert.equal(
+    allowedRowShouldExist({
+      trusted: true,
+      openVisibility: true,
+      blocked: false,
+      perContactPrivate: 'yes' as unknown as boolean,
+    }),
+    false,
+  );
+});
+
+// ── piece-1 (§F case 3): the pcp toggle is a reveal-set entry/exit — clearing pcp ADDs, setting pcp
+// DELETEs (when open_vis ∩ !blocked). ────────────────────────────────────────────────────────────────
+test('piece-1 reconcile: pcp true→false → ADD (open_vis∩!blocked); false→true → DELETE', async () => {
+  // pcp cleared (false) while open-visible ∩ !blocked → becomes revealable → ADD (POST)
+  {
+    const { fetchImpl, calls } = capturingFetch(200);
+    const r = await reconcileAllowedForPeer({
+      ownerFp: OWNER,
+      senderFp: SENDER,
+      seed: SEED,
+      consent: { trusted: true, openVisibility: true, blocked: false, perContactPrivate: false },
+      fetchImpl,
+      nowUnixSeconds: FIXED_UNIX,
+    });
+    assert.equal(r.action, 'add');
+    assert.equal(r.ok, true);
+    assert.equal(calls[0].method, 'POST');
+  }
+  // pcp set (true) → goes private → DELETE (the #111-style revoke leg)
+  {
+    const { fetchImpl, calls } = capturingFetch(200);
+    const r = await reconcileAllowedForPeer({
+      ownerFp: OWNER,
+      senderFp: SENDER,
+      seed: SEED,
+      consent: { trusted: true, openVisibility: true, blocked: false, perContactPrivate: true },
+      fetchImpl,
+      nowUnixSeconds: FIXED_UNIX,
+    });
+    assert.equal(r.action, 'delete');
+    assert.equal(r.ok, true);
+    assert.equal(calls[0].method, 'DELETE');
+  }
+});
+
+// ── piece-1 (§F case 5): re-importing a pcp'd contact must NOT re-add it to the reveal set. ────────────
+test('piece-1 import-preserve: a re-imported pcp survivor is NOT re-added to the reveal set (DELETE)', async () => {
+  // ImportContactsDialog (§D3) builds consent from up.survivor.per_contact_private; a survivor still
+  // carrying pcp → allowedRowShouldExist=false → reconcile DELETE, never a re-ADD.
+  assert.equal(
+    allowedRowShouldExist({ trusted: true, openVisibility: true, blocked: false, perContactPrivate: true }),
+    false,
+  );
+  const { fetchImpl, calls } = capturingFetch(200);
+  const r = await reconcileAllowedForPeer({
+    ownerFp: OWNER,
+    senderFp: SENDER,
+    seed: SEED,
+    consent: { trusted: true, openVisibility: true, blocked: false, perContactPrivate: true },
+    fetchImpl,
+    nowUnixSeconds: FIXED_UNIX,
+  });
+  assert.equal(r.action, 'delete'); // re-import of a pcp'd peer → DELETE, not ADD
+  assert.equal(r.ok, true);
+  assert.equal(calls[0].method, 'DELETE');
+  // NOTE: the record-level PRESERVE (updateContact's shallow merge leaving
+  // metadata.share_settings.per_contact_private untouched so up.survivor carries it) is a client-store
+  // property confirmed by inspection in PATCH §D3 — outside this sync unit layer, so not unit-tested here.
 });

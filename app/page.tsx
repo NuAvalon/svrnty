@@ -718,6 +718,9 @@ export default function Home() {
                         (recMeta.share_settings as { open_visibility?: boolean } | undefined)
                           ?.open_visibility === true,
                       blocked: edge.blocked === true,
+                      perContactPrivate:
+                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
+                          ?.per_contact_private === true,
                     },
                   });
                   await refreshContacts();
@@ -733,7 +736,7 @@ export default function Home() {
                     void reconcileAllowedOnConsentChange({
                       ownerFp: identity.identity.fingerprint,
                       senderFp: removedFp,
-                      consent: { trusted: false, openVisibility: false, blocked: false },
+                      consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
                     });
                   }
                   await refreshContacts();
@@ -781,6 +784,9 @@ export default function Home() {
                         (recMeta.share_settings as { open_visibility?: boolean } | undefined)
                           ?.open_visibility === true,
                       blocked,
+                      perContactPrivate:
+                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
+                          ?.per_contact_private === true,
                     },
                   });
                   await refreshContacts();

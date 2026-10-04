@@ -113,6 +113,15 @@ function isTrusted(contact: Contact): boolean {
   return contact.trust_level === 'verified' || contact.trust_level === 'trusted';
 }
 
+// piece-1 ★★ TRUSTED-DEFINITION CONSISTENCY (Athena #158853): the SET-path clamp (H1) MUST test "trusted"
+// with the REVEAL's derivation (contact-edge.ts: `c.trusted ?? (trust_level verified|trusted)`), NOT the
+// trust_level-only isTrusted() above — an explicit `c.trusted === false` WINS over trust_level (?? short-
+// circuits on the explicit false). This makes clamp-trusted ≡ reveal-trusted by construction, so a
+// {trusted:false, trust_level:'trusted'} edge (which getKnownPeers HIDES) can never slip the clamp.
+function edgeTrusted(c: { trusted?: boolean; trust_level?: string }): boolean {
+  return (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+}
+
 function trustLabel(contact: Contact): string {
   return isTrusted(contact) ? 'Trusted' : 'Known';
 }
@@ -523,7 +532,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         void reconcileAllowedOnConsentChange({
           ownerFp: fingerprint,
           senderFp: removedFp,
-          consent: { trusted: false, openVisibility: false, blocked: false },
+          consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
         });
       }
       setShowDetailDialog(false);
@@ -599,6 +608,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           trusted: psiTrusted,
           openVisibility: psiTrusted && contact.metadata?.share_settings?.open_visibility === true,
           blocked: isContactBlocked(contact),
+          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
         },
       });
       await loadContacts();
@@ -663,6 +673,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           trusted: blocked ? false : isTrusted(contact),
           openVisibility: !blocked && contact.metadata?.share_settings?.open_visibility === true,
           blocked,
+          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
         },
       });
       await loadContacts();
@@ -972,22 +983,32 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   const handleShareSettingsChange = async (next: ContactShareSettings) => {
     if (!selectedContact || !fingerprint) return;
     if (!isSvrnNetworkContact(selectedContact)) return;
+    // piece-1 SET-path clamp (survivor-safety, by-construction): open_visibility is a TRUSTED-only reveal
+    // gate in v1. getKnownPeers reads the RECORD, so an unclamped untrusted-open record would REVEAL (B1
+    // drops &&trusted) + get an allowed_senders row (C2 drops trusted). Clamp open_vis→false on a
+    // non-trusted edge at the WRITE so no untrusted-open edge is ever created — regardless of the toggle
+    // UI. (pcp is NOT clamped: it's a privacy control valid on any edge.) piece-2 removes this to go live.
+    // ★★ trusted via edgeTrusted (reveal derivation), NOT isTrusted(@112 trust_level-only) — #158853.
+    const clamped = edgeTrusted(selectedContact) ? next : { ...next, open_visibility: false };
     await updateContact(selectedContact.id, {
-      metadata: { ...selectedContact.metadata, share_settings: next },
+      metadata: { ...selectedContact.metadata, share_settings: clamped },
     } as any);
     setSelectedContact({
       ...selectedContact,
-      metadata: { ...selectedContact.metadata, share_settings: next },
+      metadata: { ...selectedContact.metadata, share_settings: clamped },
     });
     // #572 part 2 (flip-blocker b): go-private (open_visibility→false) → DELETE; go-open (→true, while
     // trusted ∩ !blocked) → ADD. Reconcile mirrors whichever way the open-visibility axis just moved.
+    // Consent is built from `clamped` (NOT `next`) so the allowed_senders mirror matches the record (H1
+    // supersedes the D1 edit that used `next`). pcp is unclamped, so clamped.per_contact_private === next's.
     void reconcileAllowedOnConsentChange({
       ownerFp: fingerprint,
       senderFp: selectedContact.fingerprint,
       consent: {
         trusted: isTrusted(selectedContact),
-        openVisibility: next.open_visibility === true,
+        openVisibility: clamped.open_visibility === true,
         blocked: isContactBlocked(selectedContact),
+        perContactPrivate: clamped.per_contact_private === true,
       },
     });
     await loadContacts();

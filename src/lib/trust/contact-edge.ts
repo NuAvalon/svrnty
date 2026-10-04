@@ -63,6 +63,10 @@ export function contactRecordToEdge(c: any): TrustEdge {
     open_visibility: !!(
       c.open_visibility ?? c.metadata?.share_settings?.open_visibility
     ),
+    // piece-1: per-contact-private (owner-local, mirrors open_visibility's storage in share_settings).
+    per_contact_private: !!(
+      c.per_contact_private ?? c.metadata?.share_settings?.per_contact_private
+    ),
     // Living-book glass phases (local / demo metadata — fleet fills receipts later).
     metadata: c.metadata
       ? {

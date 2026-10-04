@@ -84,6 +84,11 @@ export interface TrustEdge {
    * how Sally↔Joe becomes visible on the glass.
    */
   open_visibility?: boolean;
+  /**
+   * Owner-local: go-private scoped to THIS edge (piece-1). Excludes this peer from every PSI
+   * reveal set + allowed_senders projection. NEVER publish / PSI-sync (like open_visibility/blocked).
+   */
+  per_contact_private?: boolean;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys
