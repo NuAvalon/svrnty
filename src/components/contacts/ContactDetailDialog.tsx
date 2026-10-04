@@ -48,6 +48,7 @@ import {
   safeHandleLink,
 } from '@/lib/contacts/safe-contact-link';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import { edgeTrusted } from '@/lib/trust/contact-edge';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { VerifySheet } from '@/components/verify/VerifySheet';
@@ -183,10 +184,9 @@ export function ContactDetailDialog({
   const share = contact ? readShareSettings(contact) : defaultShareSettings();
   // piece-1 H2 (honest-UX): disable the open_visibility toggle on a NOT-trusted edge — the label already
   // says "for trusted contacts" and H1 clamps it away regardless. ★★ TRUSTED-DEFINITION CONSISTENCY
-  // (#158853): derive trusted via the REVEAL's edgeTrusted predicate on `contact` (c.trusted ?? trust_level
-  // verified|trusted — explicit false wins), NOT trust_level-only, so disable ≡ clamp ≡ reveal.
-  const edgeTrusted = (c: { trusted?: boolean; trust_level?: string }): boolean =>
-    (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+  // (#158853): derive trusted via the shared `edgeTrusted` predicate (imported from contact-edge.ts —
+  // c.trusted ?? trust_level verified|trusted, explicit false wins), NOT trust_level-only, so
+  // disable ≡ clamp ≡ reveal by construction.
   const contactIsTrusted = contact ? edgeTrusted(contact) : false;
   const groupChoices = Array.from(new Set([...availableGroups, ...tags])).sort();
 

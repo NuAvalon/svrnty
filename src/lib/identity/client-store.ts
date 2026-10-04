@@ -11,6 +11,10 @@ import type { VaultContents } from '../sync/vault';
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { ownerHasVerified } from '../trust/trust-recipe';
+// ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
+// reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
+// no browser coupling, safe to import here).
+import { edgeTrusted } from '../trust/contact-edge';
 
 const DB_NAME = 'svrnty';
 const DB_VERSION = 3;
@@ -918,9 +922,8 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
   for (const rec of stored) {
     try {
       const c = await decryptContactIfNeeded(rec);
-      // ★★ edgeTrusted (reveal derivation): explicit c.trusted===false WINS over trust_level (?? semantics).
-      const trusted = ((c as { trusted?: boolean }).trusted
-        ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+      // ★★ edgeTrusted (shared reveal derivation): explicit c.trusted===false WINS over trust_level (?? semantics).
+      const trusted = edgeTrusted(c as { trusted?: boolean; trust_level?: string });
       const md = (c.metadata as Record<string, unknown>) ?? {};
       const ss = (md.share_settings as { open_visibility?: boolean }) ?? {};
       if (!trusted && ss.open_visibility === true) {
