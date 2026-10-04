@@ -181,6 +181,13 @@ export function ContactDetailDialog({
   const handles = contact?.contact_info?.handles || {};
   const classicalExtras = contact ? readClassicalExtras(contact) : null;
   const share = contact ? readShareSettings(contact) : defaultShareSettings();
+  // piece-1 H2 (honest-UX): disable the open_visibility toggle on a NOT-trusted edge — the label already
+  // says "for trusted contacts" and H1 clamps it away regardless. ★★ TRUSTED-DEFINITION CONSISTENCY
+  // (#158853): derive trusted via the REVEAL's edgeTrusted predicate on `contact` (c.trusted ?? trust_level
+  // verified|trusted — explicit false wins), NOT trust_level-only, so disable ≡ clamp ≡ reveal.
+  const edgeTrusted = (c: { trusted?: boolean; trust_level?: string }): boolean =>
+    (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+  const contactIsTrusted = contact ? edgeTrusted(contact) : false;
   const groupChoices = Array.from(new Set([...availableGroups, ...tags])).sort();
 
   const patchShare = (patch: Partial<ContactShareSettings>) => {
@@ -398,6 +405,7 @@ export function ContactDetailDialog({
                           ['share_trusted_circle', 'Share trusted-circle membership'],
                           ['share_groups', 'Share overlapping groups I name'],
                           ['open_visibility', 'Open visibility for trusted contacts'],
+                          ['per_contact_private', 'Keep this contact out of your network'],
                         ] as const
                       ).map(([key, label]) => (
                         <label
@@ -414,6 +422,7 @@ export function ContactDetailDialog({
                           <input
                             type="checkbox"
                             checked={!!share[key]}
+                            disabled={key === 'open_visibility' && !contactIsTrusted}
                             onChange={(e) => patchShare({ [key]: e.target.checked })}
                           />
                           {label}

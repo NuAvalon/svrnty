@@ -106,6 +106,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
   // sets a corrupt flag for the recovery UI rather than raising).
   await migrateAndVerifyContactsOnUnlock();
+  // piece-1 #111-legacy sweep (Archie do-no-harm #158835): clear open_visibility on every NON-trusted
+  // contact so B1's `&& e.trusted` drop has zero transitional-reveal. Must run WITH the mask-drop. Best-effort.
+  await migratePerContactPrivacyOnUnlock();
   // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
   // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
   await eagerMigrateIdentityStoresOnUnlock();
@@ -892,6 +895,44 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
     }
   } catch (e) {
     console.warn('[enc-b] contact manifest establish/verify skipped this unlock', e);
+  }
+}
+
+/**
+ * piece-1 / #111-LEGACY sweep (survivor-safety, Archie do-no-harm ruling #158835). The two-layer reveal
+ * drops `&& e.trusted` from getKnownPeers — FIX B's read-side mask over legacy untrusted-open edges
+ * (#111 FIX A was handler-only, no migration → pre-FIX-A untrust left open_visibility SET). Without this,
+ * the drop REVEALS them = unhonored-severance surfacing. This clears open_visibility on every NON-trusted
+ * contact → "no untrusted-open edge" true-by-construction → the drop has zero transitional-reveal. Must
+ * land WITH the drop. Idempotent (re-run clears nothing new), best-effort (never throws into unlock).
+ *
+ * ★★ TRUSTED-DEFINITION CONSISTENCY (Athena #158853): `trusted` here MUST match the REVEAL's derivation
+ * (contact-edge.ts: `c.trusted ?? (trust_level === 'verified' || 'trusted')`), NOT trust_level-only — an
+ * explicit `c.trusted === false` WINS over trust_level (?? short-circuits on the explicit false), so a
+ * {trusted:false, trust_level:'trusted'} edge (which the reveal HIDES) is swept and no clamp/reveal gap reopens.
+ */
+async function migratePerContactPrivacyOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return;
+  let stored: Array<Record<string, unknown>>;
+  try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
+  for (const rec of stored) {
+    try {
+      const c = await decryptContactIfNeeded(rec);
+      // ★★ edgeTrusted (reveal derivation): explicit c.trusted===false WINS over trust_level (?? semantics).
+      const trusted = ((c as { trusted?: boolean }).trusted
+        ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+      const md = (c.metadata as Record<string, unknown>) ?? {};
+      const ss = (md.share_settings as { open_visibility?: boolean }) ?? {};
+      if (!trusted && ss.open_visibility === true) {
+        // Honor the severance: a non-trusted contact must not carry open_visibility (two-layer: UI only
+        // sets open_vis on trusted; any untrusted-open edge is legacy #111 drift). Preserve other share_settings.
+        await updateContact(c.id, {
+          metadata: { ...md, share_settings: { ...ss, open_visibility: false } },
+        } as Partial<ContactRecord>);
+      }
+    } catch (e) {
+      console.warn('[piece-1] #111-legacy privacy sweep skipped a record (retries next unlock)', e);
+    }
   }
 }
 

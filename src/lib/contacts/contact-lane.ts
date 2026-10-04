@@ -25,6 +25,12 @@ export type ContactShareSettings = {
    * PSI / they_trust) — consented disclosure, never inferred from tags.
    */
   open_visibility: boolean;
+  /**
+   * Per-contact private (piece-1): go-private scoped to THIS one edge. When true, this contact
+   * is EXCLUDED from every PSI reveal set + allowed_senders projection (fail-closed AND-term in
+   * both layers). Owner-local, never a wire field (rides share_settings like open_visibility).
+   */
+  per_contact_private: boolean;
 };
 
 export type ClassicalExtras = {
@@ -67,6 +73,7 @@ export function defaultShareSettings(
     share_trusted_circle: partial?.share_trusted_circle ?? false,
     share_groups: partial?.share_groups ?? false,
     open_visibility: partial?.open_visibility ?? false,
+    per_contact_private: partial?.per_contact_private ?? false,
   };
 }
 
