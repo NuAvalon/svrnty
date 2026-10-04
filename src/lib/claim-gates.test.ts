@@ -17,11 +17,11 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isPQSignLive(), false);
   });
 
-  it('isPQWireLive (PSI-discovery transport PQ) tracks isPSIDiscoveryLive — dark today; decoupled from the messaging encap/sign gates', () => {
-    // The discovery /initiate wire is PQ by construction (apex-proven), but the CLAIM only lights WHEN
-    // discovery is live. isPSIDiscoveryLive() is false today → this stays false. At the flip, whoever
-    // flips isPSIDiscoveryLive true MUST update BOTH this assertion and the isPSIDiscoveryLive one.
-    assert.equal(isPQWireLive(), false);
+  it('isPQWireLive (PSI-discovery transport PQ) tracks isPSIDiscoveryLive — LIVE as of the dev flip; decoupled from the messaging encap/sign gates', () => {
+    // The discovery /initiate wire is PQ by construction (apex-proven); the CLAIM lights WITH discovery.
+    // isPSIDiscoveryLive() is true as of the dev flip → this is true. Both move together (one flag);
+    // the messaging encap/sign gates stay false (decoupled).
+    assert.equal(isPQWireLive(), true);
     assert.equal(isPQWireLive(), isPSIDiscoveryLive());
   });
 
@@ -29,7 +29,7 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isBiometricSeamLive(), false);
   });
 
-  it('isPSIDiscoveryLive is false until the PSI wire-in passes e2e verify + Flint at-rest co-verify (do-not-advertise)', () => {
-    assert.equal(isPSIDiscoveryLive(), false);
+  it('isPSIDiscoveryLive is TRUE as of the dev flip (e2e verify + Flint at-rest co-verify + Peter informed reconfirm) — direct-block-only scope', () => {
+    assert.equal(isPSIDiscoveryLive(), true);
   });
 });
