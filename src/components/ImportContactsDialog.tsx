@@ -136,6 +136,7 @@ export function ImportContactsDialog({ ownerFingerprint, open, onOpenChange, onI
             trusted: up.survivor.trusted === true,
             openVisibility: up.survivor.open_visibility === true,
             blocked: up.survivor.blocked === true,
+            perContactPrivate: up.survivor.per_contact_private === true,
           },
         });
       }

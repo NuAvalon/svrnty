@@ -40,7 +40,7 @@ function recordingFetch() {
   return { calls, fetchImpl };
 }
 
-const FULL_INVARIANT = { trusted: true, openVisibility: true, blocked: false };
+const FULL_INVARIANT = { trusted: true, openVisibility: true, blocked: false, perContactPrivate: false };
 
 test('GATE dark (isPSIDiscoveryLive=false): skips entirely — no loadKey, no fetch', async () => {
   const { calls, fetchImpl } = recordingFetch();
@@ -102,11 +102,14 @@ test('full invariant (trusted ∩ open_vis ∩ !blocked) + unlocked → ADD (POS
   assert.ok(calls[0].url.endsWith(`/api/satellite/allowed/${ownerFp}`), calls[0].url);
 });
 
+// piece-1 (Flint seal #158892): KNOWN-reveal exits = go-private, block, per_contact_private (new). UNTRUST
+// is NO LONGER a known-exit (trusted dropped to the trust layer, piece-2) → removed here; it's covered as
+// an ADD in allowed-sync.test.ts. (The all-false contact-REMOVE 6th-exit is the test below.)
 test('each invariant EXIT → DELETE (/allowed/{owner}/{sender}) — the #111 satellite revoke', async () => {
   const exits = [
-    { name: 'untrust', consent: { trusted: false, openVisibility: true, blocked: false } },
-    { name: 'go-private', consent: { trusted: true, openVisibility: false, blocked: false } },
-    { name: 'block', consent: { trusted: false, openVisibility: false, blocked: true } },
+    { name: 'go-private', consent: { trusted: true, openVisibility: false, blocked: false, perContactPrivate: false } },
+    { name: 'block', consent: { trusted: false, openVisibility: false, blocked: true, perContactPrivate: false } },
+    { name: 'per_contact_private', consent: { trusted: true, openVisibility: true, blocked: false, perContactPrivate: true } },
   ];
   for (const { name, consent } of exits) {
     const { calls, fetchImpl } = recordingFetch();
@@ -130,7 +133,7 @@ test('contact-REMOVE (6th exit): all-false "peer gone" consent → unconditional
     senderFp,
     // removeContact passes {false,false,false} — the peer no longer exists, so nothing is revealed and
     // the row must not exist. allowedRowShouldExist=false → DELETE regardless of prior trust/open-vis.
-    consent: { trusted: false, openVisibility: false, blocked: false },
+    consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
     gate: () => true,
     loadKeyImpl: loadKeyOk,
     fetchImpl,

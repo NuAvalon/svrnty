@@ -110,14 +110,14 @@ export function buildKnowOverlayDeps(
 
     getKnownPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
-      // The reveal set = the user's ACTUAL consent: trusted ∩ open_visibility ∩ !blocked (blocked
-      // already dropped at ownerEdges). The UI consents "open visibility for TRUSTED contacts", so a
-      // merely open-visible but UNtrusted edge (drift/legacy) is NOT consented and must not reveal.
-      // `&& e.trusted` is the by-construction guard for the break-case (untrust alone drops discovery
-      // even if a handler forgot to clear open_visibility) — parallel to the ownerEdges !blocked guard
-      // for the block-case (Chaos #111, Archie). Empty ⇒ fail-closed (sync no-ops, reveals nothing).
+      // KNOWN reveal set (two-layer model, piece-1) = open_visibility ∩ !blocked ∩ !per_contact_private
+      // (blocked already dropped at ownerEdges). KNOWN = contacts you've ADDED + opted open-visible
+      // (incl unverified) — the && trusted term moved to the TRUSTED layer (piece-2). The known-layer
+      // EXITS that still drop a peer: go-private (open_vis→false), block (ownerEdges), per_contact_private
+      // (new, piece-1), remove. `!e.per_contact_private` is TRUTHY-exclusion = fail-closed (a malformed/
+      // truthy pcp EXCLUDES; undefined = not-private = included). Empty ⇒ fail-closed (reveals nothing).
       return edges
-        .filter((e) => e.open_visibility === true && e.trusted)
+        .filter((e) => e.open_visibility === true && !e.per_contact_private)
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 

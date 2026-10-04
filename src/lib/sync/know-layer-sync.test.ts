@@ -273,7 +273,12 @@ test('NEGATIVE: PSI peer list is fingerprint+lastSync only — no tags/group lab
 // open_visibility=true; the adversary must drop OUT of getKnownPeers immediately, by construction —
 // NOT linger until some handler happens to clear open_visibility. Covers both blocked shapes
 // (top-level `blocked` and `metadata.blocked`) since isContactBlocked() honors both.
-test('getKnownPeers reveal set = trusted ∩ open_visibility ∩ !blocked (Chaos #111)', async () => {
+// piece-1 (Flint seal #158892): the trusted term DROPPED from the reveal (→ trust layer, piece-2), so an
+// untrusted-open edge NOW reveals in the known layer. The Chaos #111 survivor-guard is UNCHANGED and
+// PRESERVED: a BLOCKED peer (either shape) still NEVER reveals (dropped at ownerEdges). In live data the
+// SET-path clamp (H1) + legacy sweep (G) prevent an untrusted-open RECORD from existing; this fixture
+// exercises the reveal LOGIC directly.
+test('getKnownPeers reveal set: blocked (both shapes) NEVER reveals (Chaos #111 guard preserved); untrusted-open NOW reveals (trusted dropped — piece-1)', async () => {
   const contacts = [
     // the honest path — trusted + open-visible + not blocked ⇒ revealed (Flint co-verify case 4)
     rec({ id: 'ok', fingerprint: 'peer-open', trusted: true, open_visibility: true }),
@@ -281,19 +286,129 @@ test('getKnownPeers reveal set = trusted ∩ open_visibility ∩ !blocked (Chaos
     rec({ id: 'b1', fingerprint: 'peer-blocked-top', trusted: true, open_visibility: true, blocked: true } as Partial<ContactRecord>),
     // blocked via metadata.blocked — the other shape isContactBlocked() honors (|| not ??)
     rec({ id: 'b2', fingerprint: 'peer-blocked-meta', trusted: true, open_visibility: true, metadata: { blocked: true } }),
-    // untrusted but open-visible (drift/legacy) ⇒ NOT the consented set ⇒ excluded (Archie case 5)
+    // untrusted but open-visible ⇒ NOW REVEALED (two-layer: trusted moved to the trust layer, piece-1 §B1)
     rec({ id: 'u1', fingerprint: 'peer-untrusted-open', trusted: false, open_visibility: true }),
   ];
   const { store } = fakeStore(contacts);
   const deps = buildKnowOverlayDeps(OWNER, store);
 
-  const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint);
-  assert.deepEqual(fps, ['peer-open']); // blocked (both shapes) AND untrusted-open all excluded; only the consented peer reveals
+  const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint).sort();
+  // ★ blocked (both shapes) STILL excluded = Chaos #111 survivor-guard PRESERVED; untrusted-open NOW revealed (trusted dropped)
+  assert.deepEqual(fps, ['peer-open', 'peer-untrusted-open']);
   // Belt-and-suspenders: a blocked peer must not reach the TRUST reveal path either (ownerEdges single point).
   const trustedFps = (await deps.getTrustedPeers()).map((p) => p.fingerprint);
   assert.equal(trustedFps.includes('peer-blocked-top'), false);
   assert.equal(trustedFps.includes('peer-blocked-meta'), false);
 });
+
+// ── piece-1: KNOWN reveal = open_visibility ∩ !blocked ∩ !per_contact_private (the &&trusted term DROPPED
+// to the TRUSTED layer, piece-2). §F case 1 — an open-visible UNtrusted edge is now REVEALED;
+// per_contact_private is the new fail-closed AND-term; blocked + go-private still drop as before. ──────
+test('piece-1 getKnownPeers: open-visible UNtrusted REVEALS; pcp / blocked / go-private all drop', async () => {
+  const contacts = [
+    // open-visible but UNTRUSTED → now REVEALED (was dropped by the old &&trusted term)
+    rec({ id: 'u', fingerprint: 'peer-untrusted-open', trusted: false, open_visibility: true }),
+    // open-visible + trusted, but per_contact_private → EXCLUDED (new AND-term, truthy-exclusion)
+    rec({ id: 'pcp', fingerprint: 'peer-pcp', trusted: true, open_visibility: true, per_contact_private: true }),
+    // open-visible + trusted, but blocked → EXCLUDED (ownerEdges !blocked, unchanged by piece-1)
+    rec({ id: 'b', fingerprint: 'peer-blocked', trusted: true, open_visibility: true, blocked: true }),
+    // go-private: open_visibility=false → EXCLUDED (unchanged)
+    rec({ id: 'gp', fingerprint: 'peer-goprivate', trusted: true, open_visibility: false }),
+  ];
+  const { store } = fakeStore(contacts);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint).sort();
+  // ONLY the open-visible untrusted edge reveals; pcp + blocked + go-private all excluded
+  assert.deepEqual(fps, ['peer-untrusted-open']);
+});
+
+test('piece-1 getKnownPeers: per_contact_private is the SOLE reason an open-visible edge drops (fail-closed)', async () => {
+  // Same edge, pcp the only differentiator: set → excluded (truthy-exclusion, fail-closed); clear → revealed.
+  const withPcp = fakeStore([
+    rec({ id: 'x', fingerprint: 'peer-x', trusted: true, open_visibility: true, per_contact_private: true }),
+  ]);
+  const withoutPcp = fakeStore([
+    rec({ id: 'x', fingerprint: 'peer-x', trusted: true, open_visibility: true, per_contact_private: false }),
+  ]);
+  const depsWith = buildKnowOverlayDeps(OWNER, withPcp.store);
+  const depsWithout = buildKnowOverlayDeps(OWNER, withoutPcp.store);
+  assert.deepEqual((await depsWith.getKnownPeers()).map((p) => p.fingerprint), []); // pcp EXCLUDES
+  assert.deepEqual((await depsWithout.getKnownPeers()).map((p) => p.fingerprint), ['peer-x']); // not-private reveals
+});
+
+// ── piece-1 §G: #111-LEGACY SWEEP (migratePerContactPrivacyOnUnlock, client-store.ts) ─────────────────
+// The sweep fn itself is IndexedDB + session-key gated (txGetAll / updateContact / decryptContactIfNeeded,
+// not exported) → not directly runnable under node:test. We test (a) its exact per-record decision
+// predicate — the ★★ edgeTrusted `??` derivation (explicit c.trusted===false WINS over trust_level) + the
+// open_visibility clear — mirrored VERBATIM from the source fn, and (b) the integration: a swept (cleared)
+// record drops OUT of getKnownPeers, a trusted-open record is UNTOUCHED, and a 2nd pass writes nothing
+// (idempotent). NOTE: predicate is replicated here, not imported (source is browser-coupled).
+
+// Verbatim mirror of migratePerContactPrivacyOnUnlock's per-record core. Returns the clearing patch when a
+// NON-trusted edge carries open_visibility=true, else null (no write).
+function sweepClear(c: { trust_level?: string; trusted?: boolean; metadata?: any }): { metadata: any } | null {
+  const trusted = ((c as { trusted?: boolean }).trusted
+    ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+  const md = (c.metadata as Record<string, unknown>) ?? {};
+  const ss = (md.share_settings as { open_visibility?: boolean }) ?? {};
+  if (!trusted && ss.open_visibility === true) {
+    return { metadata: { ...md, share_settings: { ...ss, open_visibility: false } } };
+  }
+  return null;
+}
+
+// Run the sweep loop over an in-memory book; returns the post-sweep book + the write count.
+function runSweep(book: ContactRecord[]): { book: ContactRecord[]; writes: number } {
+  let writes = 0;
+  const out = book.map((c) => {
+    const patch = sweepClear(c);
+    if (patch) { writes++; return { ...c, ...patch } as ContactRecord; }
+    return c;
+  });
+  return { book: out, writes };
+}
+
+test('piece-1 §G sweep: untrusted-open → open_visibility cleared + dropped from getKnownPeers; verified-open UNTOUCHED; idempotent', async () => {
+  const seed = [
+    rec({ id: 'u', fingerprint: 'peer-untrusted-open', trust_level: 'unverified', metadata: { share_settings: { open_visibility: true } } }),
+    rec({ id: 'v', fingerprint: 'peer-verified-open', trust_level: 'verified', metadata: { share_settings: { open_visibility: true } } }),
+  ];
+
+  // first pass clears exactly the one untrusted-open record
+  const pass1 = runSweep(seed);
+  assert.equal(pass1.writes, 1);
+
+  const swept = pass1.book;
+  const u = swept.find((c) => c.id === 'u')!;
+  const v = swept.find((c) => c.id === 'v')!;
+  assert.equal((u.metadata as any).share_settings.open_visibility, false); // untrusted-open → cleared
+  assert.equal((v.metadata as any).share_settings.open_visibility, true);  // verified-open → UNTOUCHED
+
+  // integration: the swept book's known set no longer contains the untrusted edge; verified-open still reveals
+  const { store } = fakeStore(swept);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  const fps = (await deps.getKnownPeers()).map((p) => p.fingerprint).sort();
+  assert.deepEqual(fps, ['peer-verified-open']);
+
+  // idempotent: a 2nd pass over the already-swept book writes nothing
+  const pass2 = runSweep(swept);
+  assert.equal(pass2.writes, 0);
+});
+
+test('piece-1 §G sweep predicate: explicit c.trusted===false WINS over trust_level (★★ reveal derivation)', () => {
+  // {trusted:false, trust_level:'trusted'} is NON-trusted per the reveal (?? short-circuits on the explicit
+  // false) → its open_visibility IS swept. A trust_level-only test (isTrusted@112) would WRONGLY skip it.
+  assert.notEqual(
+    sweepClear({ trusted: false, trust_level: 'trusted', metadata: { share_settings: { open_visibility: true } } }),
+    null,
+  );
+  // trusted (explicit true, or trust_level verified/trusted) → NOT swept
+  assert.equal(sweepClear({ trusted: true, trust_level: 'unverified', metadata: { share_settings: { open_visibility: true } } }), null);
+  assert.equal(sweepClear({ trust_level: 'verified', metadata: { share_settings: { open_visibility: true } } }), null);
+});
+
+// §F case 4 (block≡offline integration: a pcp'd peer's /initiate → sinkhole ≡ offline) is SATELLITE-side
+// (satellite.py allowed_senders gate) — OUT OF SCOPE for these TS client unit tests; not faked here.
 
 // ── PSI initiator completion (Option A wire-in): the initiator half that was never wired ──────────
 // (syncMutualTrust returned `initiated` but the tick discarded it → completeTrustSync had zero callers

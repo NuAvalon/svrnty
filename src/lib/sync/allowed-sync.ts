@@ -8,9 +8,10 @@
 // module POSTs the signed add / DELETEs the signed revoke through the #189 proxy (/api/satellite/allowed).
 //
 // THE INVARIANT (Archie/Flint): the allowed_senders row exists IFF the client's own consent invariant
-// holds — trusted ∩ open_visibility ∩ !blocked (the SAME set getKnownPeers reveals). So:
-//   • ADD    on invariant-ENTRY (becomes trusted ∧ open_vis ∧ !blocked)
-//   • DELETE on ANY invariant-EXIT — untrust, block, AND go-private (open_vis→false)
+// holds — open_visibility ∩ !blocked ∩ !per_contact_private (the KNOWN reveal getKnownPeers surfaces; trusted⊆known v1, mutuality via the bidirectional gate). So:
+//   • ADD    on invariant-ENTRY (becomes open_vis ∧ !blocked ∧ !per_contact_private)
+//   • DELETE on ANY invariant-EXIT — block, go-private (open_vis→false), per_contact_private, remove
+//     (untrust is NO LONGER a known-exit → it exits the TRUSTED layer only, piece-2)
 // The DELETE is the #111-satellite-completeness leg: client fix#2 only stops the SURVIVOR's client from
 // revealing; without the satellite revoke, a blocked adversary's stale row keeps the mutual-gate open so
 // THEIR client still discovers the survivor. One-sided DELETE suffices (Flint: /initiate needs BOTH rows,
@@ -29,11 +30,16 @@ export interface PeerConsent {
   trusted: boolean;
   openVisibility: boolean;
   blocked: boolean;
+  /** piece-1: per-contact-private AND-term. true ⇒ excluded from the reveal set (fail-closed). REQUIRED. */
+  perContactPrivate: boolean;
 }
 
 /** allowed_senders row should exist IFF the full consent invariant holds. */
 export function allowedRowShouldExist(c: PeerConsent): boolean {
-  return c.trusted === true && c.openVisibility === true && c.blocked !== true;
+  // piece-1: KNOWN reveal = open_vis ∩ !blocked ∩ !per_contact_private. DROP trusted (trusted⊆known v1;
+  // mutuality enforced by the bidirectional gate, not a FE term). `!c.perContactPrivate` = truthy-exclusion
+  // (fail-closed: a malformed truthy pcp EXCLUDES — NOT `!== true`, which would fail-OPEN).
+  return c.openVisibility === true && c.blocked !== true && !c.perContactPrivate;
 }
 
 interface AllowedOpArgs {
