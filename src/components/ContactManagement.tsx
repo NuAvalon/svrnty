@@ -47,6 +47,7 @@ import {
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { toVCardFile } from '@/lib/contacts/vcard';
@@ -673,6 +674,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
         },
       });
+      // Piece-2 (#579): block ALSO populates the durable owner-local suppression RECORD (the load-bearing
+      // emit-side source; the `blocked` flag set above is defense-in-depth). Fire-and-forget + fail-closed —
+      // never reduces suppression on doubt, never throws (the block still holds). DARK until emit is wired.
+      void applyBlockSuppression(fingerprint, contact.fingerprint, blocked);
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
