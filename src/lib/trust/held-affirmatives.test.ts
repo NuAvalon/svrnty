@@ -19,6 +19,8 @@ import {
   pruneExpired,
   type HeldAffirmatives,
 } from './held-affirmatives.js';
+import { witnessedPeerChords } from './peer-trust-chords.js';
+import type { TrustEdge } from './types.js';
 
 const CAROL = 'c'.repeat(64);
 const DAVE = 'd'.repeat(64);
@@ -139,6 +141,48 @@ test('(EDGE GATE peer_mutual) the third theyTrustSet source is gated too', () =>
   // null held ⇒ peer_mutual empties too (fail-closed across ALL sources).
   const [gatedNull] = gateEdgeTransitiveSets([edge], null, NOW);
   assert.deepEqual(gatedNull.peer_mutual, [], 'null held ⇒ peer_mutual empty (fail-closed, all sources)');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════
+// (§F3 OUTCOME TRIPWIRE — Flint ruling #159736 / KB#92284) — assert through the REAL READER
+// (witnessedPeerChords), not just that today's 3 fields are emptied. A field-based tripwire can miss a
+// future source added to theyTrustSet/theyKnowSet; routing the gated edges through the actual chord reader
+// catches ANY source the gate fails to empty. (The structural fix — a POSITIVE gate computing chords over
+// only-affirmed contacts — is the pre-LIVE fast-follow per Flint's ruling; this is the interim hardening.)
+// ════════════════════════════════════════════════════════════════════════════════════════════════════
+test('(§F3 OUTCOME) witnessedPeerChords(gate(all-sources, null)) === [] through the real reader', () => {
+  // Two of MY contacts (Carol, Dave) who are open-visibility-mutual AND list EACH OTHER across EVERY
+  // transitive source the reader consults — trust: they_trust + metadata.they_trust + peer_mutual;
+  // know: disclosed_circle + metadata.disclosed_circle. Un-gated this MUST draw a chord, so an empty
+  // gated outcome is a real suppression, not a vacuous pass.
+  const mkEdge = (self: string, other: string) => ({
+    peer_fingerprint: self,
+    trusted: true,
+    mutual: { reciprocal: true, they_trust_me: true },
+    open_visibility: true,
+    they_trust: [other],
+    disclosed_circle: [other],
+    peer_mutual: [{ peer_fingerprint: other }],
+    metadata: { they_trust: [other], disclosed_circle: [other], share_settings: { open_visibility: true } },
+  });
+  const edges = [mkEdge(CAROL, DAVE), mkEdge(DAVE, CAROL)];
+
+  // POSITIVE CONTROL (non-vacuous): un-gated, the real reader DOES draw the Carol↔Dave chord.
+  assert.equal(witnessedPeerChords(edges as unknown as TrustEdge[]).length, 1, 'un-gated: a chord forms (test is non-vacuous)');
+
+  // POSITIVE CONTROL through the gate: BOTH parties affirmed ⇒ the chord survives gating.
+  const bothAffirmed = held({ [CAROL]: { validUntil: NOW + 100, epoch: 1 }, [DAVE]: { validUntil: NOW + 100, epoch: 1 } });
+  const gatedFresh = gateEdgeTransitiveSets(edges, bothAffirmed, NOW) as unknown as TrustEdge[];
+  assert.equal(witnessedPeerChords(gatedFresh).length, 1, 'both affirmed ⇒ chord survives the gate');
+
+  // ★ §F3: null held ⇒ the gate empties EVERY source ⇒ the real reader draws NOTHING.
+  const gatedNull = gateEdgeTransitiveSets(edges, null, NOW) as unknown as TrustEdge[];
+  assert.deepEqual(witnessedPeerChords(gatedNull), [], 'null held ⇒ NO chord for any un-affirmed party (all sources)');
+
+  // ★ one-sided affirmative ⇒ the MUTUAL chord still cannot form (AND-gate — both ends must be fresh).
+  const oneAffirmed = held({ [CAROL]: { validUntil: NOW + 100, epoch: 1 } });
+  const gatedOne = gateEdgeTransitiveSets(edges, oneAffirmed, NOW) as unknown as TrustEdge[];
+  assert.deepEqual(witnessedPeerChords(gatedOne), [], 'one-sided affirmative ⇒ no chord (both ends required)');
 });
 
 // ── shape guard + housekeeping ────────────────────────────────────────────────────────────────────────
