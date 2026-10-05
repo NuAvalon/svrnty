@@ -105,7 +105,13 @@ async function encPubFromOpenPgpKey(key: { getEncryptionKey?: () => Promise<any>
   return strip0x40(asU8(q, 'enc'));
 }
 
-function signPubFromOpenPgpPublic(key: { keyPacket?: { publicParams?: { A?: unknown; Q?: unknown } } }): Uint8Array {
+/**
+ * Extract the raw 32-byte Ed25519 signing pubkey from a parsed OpenPGP PUBLIC key (readKey result).
+ * Strips the algo-22 0x40 native-point prefix. Exported so the piece-2 receive path can resolve a peer's
+ * CURRENT signing key from their stored `public_key` to verify a visible-affirm (§F2 pinned-current-key;
+ * the full authority-commitment lineage-walk is the deferred §F2 fast-follow — its absence under-reveals).
+ */
+export function signPubFromOpenPgpPublic(key: { keyPacket?: { publicParams?: { A?: unknown; Q?: unknown } } }): Uint8Array {
   const q = key.keyPacket?.publicParams?.A ?? key.keyPacket?.publicParams?.Q;
   return strip0x40(asU8(q, 'sign'));
 }
