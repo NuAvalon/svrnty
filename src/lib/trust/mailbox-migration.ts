@@ -171,6 +171,13 @@ export interface MigrateMailboxResult {
   /** Holders skipped because they carried no current seal target (fail-closed under-reveal). */
   skippedNoSealTarget: number;
   overlapExpiresAt: number;
+  /**
+   * true ONLY when this call RESUMED an in-flight migration via the flip-done path — i.e. it RE-FANNED
+   * the already-current mailbox at the recorded epoch rather than rotating to a fresh one (Flint honesty
+   * ask). A caller/UI must not report a coalesced re-fan as a fresh rekey. false for a genuine rotation
+   * (fresh start OR a flip-not-done resume, both of which mint + publish a new mailbox).
+   */
+  resumed: boolean;
 }
 
 /**
@@ -282,7 +289,7 @@ async function rotateFrom(
   await deps.saveEpoch(epoch);
 
   const f = await fanOutMailbox(deps, publish, newKp, epoch);
-  return { oldMailboxFp: currentFp, newMailboxFp, epoch, ...f, overlapExpiresAt: expiresAt };
+  return { oldMailboxFp: currentFp, newMailboxFp, epoch, ...f, overlapExpiresAt: expiresAt, resumed: false };
 }
 
 /**
@@ -333,6 +340,7 @@ export async function migrateMailbox(deps: MigrateMailboxDeps): Promise<MigrateM
         epoch: inProgress.epoch,
         ...f,
         overlapExpiresAt: inProgress.expiresAt,
+        resumed: true, // coalesced re-fan of an in-flight migration, NOT a fresh rotation (Flint honesty)
       };
     }
     if (currentFp === inProgress.oldMailboxFp) {

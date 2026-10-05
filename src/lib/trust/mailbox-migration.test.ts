@@ -131,6 +131,7 @@ test('end-to-end: rekey → non-blocked holder resolves MY new mailbox at the bu
 
   // epoch bumped monotonically; device_mailbox flipped to the new keypair
   assert.equal(result.epoch, 5);
+  assert.equal(result.resumed, false); // a fresh rotation, not a resume
   assert.equal(store._state.epoch, 5);
   assert.equal(result.oldMailboxFp, mailboxFpOf(oldKp));
   assert.notEqual(result.newMailboxFp, result.oldMailboxFp); // unlinkable: fresh keypair
@@ -328,6 +329,7 @@ test('resume: flip-done → re-fans current keypair at recorded epoch, no re-rot
 
   const result = await migrateMailbox(baseDeps(store, relay, [peer.target]));
 
+  assert.equal(result.resumed, true); // coalesced re-fan, NOT a fresh rotation (honesty flag)
   assert.equal(mailboxFpOf(store._state.mailbox!), Bfp); // did NOT re-rotate — device still B
   assert.equal(result.newMailboxFp, Bfp);
   assert.equal(result.epoch, 9);
@@ -355,6 +357,7 @@ test('resume: flip-not-done → rotates from original A to a fresh new; A stays 
   const result = await migrateMailbox(baseDeps(store, relay, [peer.target]));
 
   assert.equal(result.oldMailboxFp, mailboxFpOf(A)); // A preserved as old
+  assert.equal(result.resumed, false); // flip-not-done resume IS a genuine rotation (new keypair minted)
   assert.equal(result.epoch, 3); // reused the already-chosen epoch (no double-bump)
   assert.notEqual(result.newMailboxFp, mailboxFpOf(discardedB)); // a FRESH keypair, not the lost B
   assert.equal(mailboxFpOf(store._state.mailbox!), result.newMailboxFp); // device flipped to the fresh new
