@@ -114,6 +114,8 @@ From the Galaxy, focus a KNOWN (dashed) contact → **Verify** → guided compar
 
 ## 5. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [render-glass]
 
+**STATUS:** the append is already on main in `peerMeshLegend` (PR #170). `src/lib/trust/` is CODEOWNERS-fenced, so this follow-up only adds the missing test assertion on the render-glass side (TrustMap source lock + Galaxy e2e). Please re-green the legend copy and close #106.
+
 _Non-urgent (the peer-mesh is dormant / go-live-gated — nothing renders live). Completes PR #170: the tooltip copy is already Hypatia-GREEN; this is the 2nd half of her spec. Prefer amending the existing draft **PR #170**; else a tiny follow-up PR._
 
 **Task (copy-only):** append ONE clause to the peer-mesh legend string `peerMeshLegend` (`src/lib/trust/trust-recipe.ts`, rendered in `TrustMap.tsx`) so the legend carries the explicit anti-surveillance negation, not just the positive consent.
