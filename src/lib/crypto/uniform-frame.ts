@@ -77,20 +77,29 @@ export const FRAME_MAX_PAYLOAD = FRAME_BYTES - HEADER_BYTES;
 /** The kinds that share the uniform channel. The kind is carried ONLY inside the device-sealed cell — it is
  *  never a wire-legible tag (type-opacity). Distinct byte codes; 0 is reserved-invalid so an all-zero buffer
  *  never unframes to a valid kind. `cover` is the K3/§8b uniform-baseline cover traffic (defined here so the
- *  channel's type space is complete; its emitter is K3). */
-export type FrameType = 'consent-delta' | 'message' | 'distress' | 'cover';
+ *  channel's type space is complete; its emitter is K3). `visible-affirm` is piece-2's mutual-block
+ *  held-affirmative (#579) — it rides this SAME uniform channel (same 2048B cell, same /onion path, swapped
+ *  into a cover slot) so its presence is cadence-indistinguishable from any other kind (§F5). Its emit path
+ *  is the shared onion transport (src/lib/sync/onion-transport.ts). */
+export type FrameType = 'consent-delta' | 'message' | 'distress' | 'cover' | 'visible-affirm';
 
+// TYPE_TO_CODE and CODE_TO_TYPE are hand-maintained mirrors — a new kind MUST be added to BOTH (frameUniform
+// reads TYPE_TO_CODE and throws on an unknown type; unframeUniform reads CODE_TO_TYPE and returns null on an
+// unknown code). Codes are append-only: never renumber an existing kind (the code is pinned into the wire by
+// FRAME_VERSION), only add the next free integer.
 const TYPE_TO_CODE: Record<FrameType, number> = {
   'consent-delta': 1,
   message: 2,
   distress: 3,
   cover: 4,
+  'visible-affirm': 5,
 };
 const CODE_TO_TYPE: Record<number, FrameType> = {
   1: 'consent-delta',
   2: 'message',
   3: 'distress',
   4: 'cover',
+  5: 'visible-affirm',
 };
 
 /**
