@@ -53,6 +53,18 @@
  * round-trips in unit tests with an in-memory relay and zero IndexedDB, and NOTHING here is wired to
  * app-load. The real encrypted overlap/epoch persistence is an additive client-store v4->v5 schema add
  * (Athena's lane) that satisfies these dep signatures.
+ *
+ * WIRE-TIME GATES (Flint co-verify, KB#92358) — acceptance criteria for the REAL injected deps; DI stubs
+ * cannot prove these, so they are verified when the deps are wired. NONE blocks this DARK orchestrator:
+ *   G1 mailbox_overlap persistence MUST encrypt the old SECRET keypair at rest + zeroize on retire
+ *      (Blocker-C bar, same as device_mailbox) — NOT a plain object store. [Athena store lane]
+ *   G2 recoveryFloorEpoch MUST come from an AUTHORITATIVE high-water-mark (satellite per-mailbox epoch
+ *      floor, or a durable backup of the last-published epoch), NEVER a client guess — a too-low floor
+ *      republishes a stale-low epoch that highest-epoch-wins IGNORES = silent loss. The source is the hinge.
+ *   G3 listFanoutTargets MUST compute getAllContacts ∩ ¬blocked ∩ has-device-mailbox; isBlockedTripwire is
+ *      a BACKSTOP (must read 0), not the filter — blocked-minus is only as strong as this set.
+ *   G4 overlap retirement MUST be a reliable scheduled sweep firing at expiresAt (not best-effort): an
+ *      un-retired overlap coalesces all rekeys into a re-fan, so a stalled GC = permanent rekey-lockout.
  */
 import type { TrustRelay } from './trust-rendezvous.js';
 import { publishMailboxPointer } from './mailbox-pointer-transport.js';
