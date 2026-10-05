@@ -1,6 +1,6 @@
 // Same-origin proxy for the satellite /route/{route_id} POLL endpoint (S6 consent-delta / #558 keystone).
 //
-// The recipient's client (httpOnionRelay.poll, src/lib/sync/consent-delta-transport.ts) GETs the inner
+// The recipient's client (httpOnionRelay.poll, src/lib/sync/onion-transport.ts) GETs the inner
 // cells buffered at a blinded, rotating route_id (K1 route-ratchet: deriveRouteId = 128-bit tag = 32 hex
 // chars, route-ratchet.ts:14/63/105). The satellite returns the device-sealed, mailbox_fp-STRIPPED inner
 // cells for that route_id (KB#91430: return-by-route_id; K0-1 blinding already applied server-side). The
