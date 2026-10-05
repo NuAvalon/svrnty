@@ -117,6 +117,30 @@ test('(EDGE GATE §F3) null held ⇒ every transitive set empties', () => {
   assert.deepEqual(gated.they_trust, [], 'null held ⇒ they_trust empty');
 });
 
+// ════════════════════════════════════════════════════════════════════════════════════════════════════
+// (EDGE GATE — ALL 3 theyTrustSet SOURCES, Flint §F3 KB#92271) — the gate must filter the THIRD source
+// peer_mutual[].peer_fingerprint, not just they_trust + metadata.they_trust. TRIPWIRE: a new theyTrustSet/
+// theyKnowSet source added without being added to gateEdgeTransitiveSets must break this. We assert the
+// gate's output, THEN the real reader (witnessedPeerChords) sees nothing un-affirmed across all sources.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════
+test('(EDGE GATE peer_mutual) the third theyTrustSet source is gated too', () => {
+  const edge = {
+    disclosed_circle: [CAROL],
+    they_trust: [DAVE],
+    peer_mutual: [{ peer_fingerprint: CAROL }, { peer_fingerprint: DAVE }],
+    metadata: { they_trust: [EVE] },
+  };
+  // Only CAROL affirmed. DAVE expired, EVE absent.
+  const h = held({ [CAROL]: { validUntil: NOW + 100, epoch: 1 }, [DAVE]: { validUntil: NOW - 1, epoch: 1 } });
+  const [gated] = gateEdgeTransitiveSets([edge], h, NOW);
+  assert.deepEqual(gated.peer_mutual, [{ peer_fingerprint: CAROL }], 'peer_mutual filtered to only the affirmed fp (Carol; Dave expired)');
+  assert.deepEqual(gated.disclosed_circle, [CAROL], 'disclosed_circle gated (Carol affirmed)');
+  assert.deepEqual(gated.they_trust, [], 'they_trust = [Dave]+meta[Eve], neither affirmed ⇒ empty');
+  // null held ⇒ peer_mutual empties too (fail-closed across ALL sources).
+  const [gatedNull] = gateEdgeTransitiveSets([edge], null, NOW);
+  assert.deepEqual(gatedNull.peer_mutual, [], 'null held ⇒ peer_mutual empty (fail-closed, all sources)');
+});
+
 // ── shape guard + housekeeping ────────────────────────────────────────────────────────────────────────
 test('isHeldAffirmatives rejects malformed maps; pruneExpired drops expired', () => {
   assert.equal(isHeldAffirmatives(null), false);

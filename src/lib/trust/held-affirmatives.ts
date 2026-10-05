@@ -112,19 +112,28 @@ export function gateEdgeTransitiveSets<
   T extends {
     disclosed_circle?: string[];
     they_trust?: string[];
+    peer_mutual?: Array<{ peer_fingerprint: string }> | null;
     metadata?: ({ disclosed_circle?: string[]; they_trust?: string[] } & Record<string, unknown>) | null;
   },
 >(edges: readonly T[], held: HeldAffirmatives | null, now: number): T[] {
   return edges.map((e) => {
     const disclosed = affirmGateCircle([...(e.disclosed_circle ?? []), ...(e.metadata?.disclosed_circle ?? [])], held, now);
     const theyTrust = affirmGateCircle([...(e.they_trust ?? []), ...(e.metadata?.they_trust ?? [])], held, now);
+    // ★ peer_mutual is the THIRD source theyTrustSet unions (peer-trust-chords.ts:39 — Flint §F3 KB#92271):
+    // filter it by the SAME affirmative gate so no theyTrustSet source is un-gated. Dormant today
+    // (contactRecordToEdge drops peer_mutual) but gated explicitly so the reveal never rests on that
+    // incidental drop. Array-shaped (not string[]) → filter entries, don't affirmGateCircle. (See the
+    // all-sources tripwire test — adding a NEW theyTrustSet/theyKnowSet source MUST be added here too.)
+    const peerMutual = Array.isArray(e.peer_mutual)
+      ? e.peer_mutual.filter((p) => p && holdsFreshAffirmative(held, p.peer_fingerprint, now))
+      : e.peer_mutual;
     let metadata = e.metadata;
     if (metadata && typeof metadata === 'object') {
       metadata = { ...metadata };
       delete (metadata as Record<string, unknown>).disclosed_circle; // close the metadata-fallback bypass
       delete (metadata as Record<string, unknown>).they_trust;
     }
-    return { ...e, disclosed_circle: disclosed, they_trust: theyTrust, metadata };
+    return { ...e, disclosed_circle: disclosed, they_trust: theyTrust, peer_mutual: peerMutual, metadata };
   });
 }
 
