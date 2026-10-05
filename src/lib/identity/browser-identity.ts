@@ -34,6 +34,7 @@ import {
   storeVault,
   loadVault,
   storeShards,
+  initDeviceMailboxAtGenesis,
   setActiveFingerprint,
   getActiveFingerprint,
   hasIdentity,
@@ -44,6 +45,10 @@ import {
   lockSession,
   type SovereignBackup,
 } from './client-store';
+// piece-2: run-once-at-mint hook registry. generateIdentity fires registered genesis hooks (e.g. the
+// spine's empty-suppression-record init) synchronously in the mint flow — see identity-genesis-hooks.ts.
+import { runGenesisHooks } from './identity-genesis-hooks';
+import type { DeviceMailboxPublic } from './device-mailbox';
 import {
   encryptBackup,
   decryptBackup,
@@ -89,6 +94,9 @@ interface IdentityData {
     epoch: number;
     next_authority_commitment: string;
   };
+  /** piece-2: PUBLIC device-mailbox block (onion seal-target), cached on the wrapper so the card builder
+   *  can carry it. Secrets live in the encrypted device_mailbox store, never here. Absent pre-feature. */
+  device_mailbox?: DeviceMailboxPublic;
 }
 
 interface ExportData {
@@ -216,9 +224,20 @@ export class BrowserIdentity {
     // Zero master secret
     masterSecret.fill(0);
 
+    // piece-2: generate + vault-persist the long-lived device mailbox (onion receive keys) and cache its
+    // PUBLIC block on the identity wrapper so the signed card can carry the seal-target. ONCE, at genesis,
+    // session already unlocked (storeKey above would have thrown otherwise). Secrets stay in the encrypted
+    // device_mailbox store; only these public keys + content-fp are published (via the signed card).
+    identity.device_mailbox = await initDeviceMailboxAtGenesis(fingerprint);
+
     // Store identity
     await storeIdentity(fingerprint, identity);
     await setActiveFingerprint(fingerprint);
+
+    // piece-2: fire run-once genesis hooks SYNCHRONOUSLY in the mint flow (positive genesis EVENT, not a
+    // flag read). The spine hangs its empty-suppression-record init here; on `main` this is a no-op. Must
+    // run AFTER the identity is persisted so a hook keyed to the fingerprint sees a committed identity.
+    await runGenesisHooks(fingerprint);
 
     return { identity, fingerprint, seedPhrase, shards, vault };
   }
