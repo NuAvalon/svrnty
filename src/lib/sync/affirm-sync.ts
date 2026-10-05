@@ -396,6 +396,14 @@ export interface AffirmSyncHandle {
  * startKnowLayerSync. EMIT enqueues onto a CadenceEmitter that is itself started on the §F5 cover cadence, so
  * real cells trickle (never burst). This exists so the mechanism is drivable + reviewable; wiring it always-on
  * for all users (and the uniform cover baseline it rides) is the ship-time Flint §8 + Peter call — NOT done here.
+ *
+ * ★ SEED LIFECYCLE (Flint ruling-3): the ctx holds the raw owner seed (AffirmSyncContext.ownerSeed). The seed
+ * must NOT outlive the unlocked session. stop() SEVERS the runner's own hold on the ctx (nulls its reference,
+ * so the tick loop + cover builder can no longer touch the seed), which is why the INTEGRATION CONTRACT is:
+ * call handle.stop() AND drop your own ctx reference on session lock/logout — then the context (and the seed
+ * reference it carries) is GC-eligible. The seed is a REFERENCE into the decrypted OpenPGP key (raw-sign.ts:
+ * "do NOT zero" — zeroing would corrupt the shared key object), so discard = drop-the-reference, owned jointly
+ * by this stop() and the session-unlock lifecycle that tears down the decrypted key. We never persist/log it.
  */
 export function startAffirmSync(
   ctx: AffirmSyncContext,
@@ -409,17 +417,25 @@ export function startAffirmSync(
 ): AffirmSyncHandle {
   const deps = opts.deps ?? defaultAffirmSyncDeps();
   const intervalMs = opts.intervalMs ?? DEFAULT_AFFIRM_SYNC_INTERVAL_MS;
-  const cadence = new CadenceEmitter({ makeCover: () => makeAffirmCover(ctx) });
+  // Hold ctx behind a nullable ref so stop() can RELEASE the seed-holding context (Flint ruling-3). After
+  // stop(), the tick loop short-circuits and the cover builder throws (drainSlot swallows → emits nothing).
+  let liveCtx: AffirmSyncContext | null = ctx;
+  const cadence = new CadenceEmitter({
+    makeCover: () => {
+      if (!liveCtx) throw new Error('affirm-sync: stopped (ctx released)'); // drainSlot catches → no emit
+      return makeAffirmCover(liveCtx);
+    },
+  });
   cadence.start({ periodMs: opts.cadencePeriodMs, jitterMs: opts.cadenceJitterMs });
 
   let stopped = false;
   let inFlight = false;
   const tick = async () => {
-    if (stopped || inFlight) return;
+    if (stopped || inFlight || !liveCtx) return;
     inFlight = true;
     try {
-      await runAffirmEmitTick(ctx, cadence, deps);
-      await runAffirmReceiveTick(ctx, deps);
+      await runAffirmEmitTick(liveCtx, cadence, deps);
+      await runAffirmReceiveTick(liveCtx, deps);
     } catch (err) {
       // local-only diagnostic; one bad tick must not wedge the loop. Nothing leaks (fail-closed throughout).
       console.error('[affirm-sync] tick failed (will retry):', err);
@@ -436,6 +452,7 @@ export function startAffirmSync(
       stopped = true;
       if (timer !== null) clearInterval(timer);
       cadence.stop();
+      liveCtx = null; // ★ release the runner's hold on the seed-holding context (Flint ruling-3)
     },
   };
 }
