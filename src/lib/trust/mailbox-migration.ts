@@ -128,6 +128,14 @@ export interface MigrateMailboxDeps {
   saveEpoch: (epoch: number) => Promise<void>;
   /** Persist the old keypair + window (ENCRYPTED at rest). Written BEFORE the device_mailbox flip. */
   saveOverlap: (rec: MailboxOverlapRecord) => Promise<void>;
+  /**
+   * The current UN-RETIRED overlap record for this fingerprint, or null. The resume-guard (Flint KB#92350)
+   * reads it on entry: an un-retired overlap means a prior migration crashed mid-flight, and its
+   * oldMailboxFp is the SOURCE OF TRUTH for the true original mailbox — so a retry resumes from it rather
+   * than re-deriving "old" from the (possibly already-flipped) live device, which would orphan the original
+   * + its in-flight mail (the mid-transfer survivor betrayal fail-safe #3 guards).
+   */
+  loadOverlap: () => Promise<MailboxOverlapRecord | null>;
   /** Non-blocked holders of my old mailbox, blocked-minus BY CONSTRUCTION (fail-safe #1). */
   listFanoutTargets: () => Promise<MigrationFanoutTarget[]>;
 
@@ -192,59 +200,16 @@ export function nextMailboxEpoch(loaded: number | null, recoveryFloor?: number):
 }
 
 /**
- * SAME-RELAY mailbox rekey. Rotates my device mailbox to a fresh keypair and fans the new mailbox out to
- * every non-blocked holder as a signed, per-peer-sealed pointer over the blind rendezvous. Returns an
- * accounting of the fan-out. Idempotent-friendly at the pointer layer (re-deposits collide harmlessly;
- * resolve takes highest-epoch-wins), but see the ordering note below for crash semantics.
- *
- * ORDERING (crash-safety): overlap(old) is persisted BEFORE the device_mailbox flip so the old secrets
- * are never lost; the epoch is persisted AFTER the flip. A crash between flip and saveEpoch leaves
- * loadEpoch at the old value → a re-run bumps to the SAME nextEpoch and re-fans (harmless: same keys,
- * highest-epoch-wins). A crash before the flip leaves everything on the old mailbox (safe no-op).
+ * Fan the advertised mailbox out to every non-blocked holder as a signed, per-peer-sealed pointer over the
+ * blind rendezvous. Shared by the fresh-rotation and flip-done-resume paths. Enforces fail-safe #1
+ * (blocked-minus: the defense-in-depth tripwire SKIPs, never seals) + the fail-closed no-seal-target skip.
  */
-export async function migrateMailbox(deps: MigrateMailboxDeps): Promise<MigrateMailboxResult> {
-  const generate = deps.generateKeypair ?? generateMailboxKeypair;
-  const publish = deps.publishPointer ?? publishMailboxPointer;
-
-  // 1. Load the CURRENT (old) mailbox. Absent => this identity has no mailbox to rotate — fail-closed.
-  const oldKp = await deps.loadCurrentMailbox();
-  if (!oldKp) {
-    throw new Error('mailbox-migration: no current device mailbox to rotate (absent) — fail-closed');
-  }
-  const oldMailboxFp = mailboxFpOf(oldKp);
-
-  // 2. Epoch: monotonic bump with floor-on-recovery (fail-safe #2).
-  const loadedEpoch = await deps.loadEpoch();
-  const epoch = nextMailboxEpoch(loadedEpoch, deps.recoveryFloorEpoch);
-
-  // 3. Fresh random mailbox keypair (no derivation, no backref — unlinkable by construction).
-  const newKp = generate();
-  const newMailboxFp = mailboxFpOf(newKp);
-  if (newMailboxFp === oldMailboxFp) {
-    // CSPRNG collision is cryptographically impossible; a match means a broken/stubbed keygen.
-    throw new Error('mailbox-migration: new mailbox fp == old — refusing (broken keygen?) — fail-closed');
-  }
-
-  // 4. Persist OLD into the overlap record BEFORE flipping (old secrets must survive the flip so
-  //    in-flight mail sealed to the old mailbox still drains through the window — fail-safe #3).
-  const openedAt = deps.now();
-  const expiresAt = openedAt + deps.windowMs;
-  await deps.saveOverlap({
-    fingerprint: deps.ownerFp, // store keyPath = 'fingerprint', aligned with device_mailbox (Athena #160726)
-    oldKeypair: serializeMailboxKeypair(oldKp),
-    oldMailboxFp,
-    newMailboxFp,
-    epoch,
-    openedAt,
-    expiresAt,
-    ackedPeerDids: [],
-  });
-
-  // 5. Flip the live mailbox to NEW, then persist the new epoch (ordering note above).
-  await deps.storeNewMailbox(newKp);
-  await deps.saveEpoch(epoch);
-
-  // 6. Fan out the new mailbox to every non-blocked holder (blocked-minus BY CONSTRUCTION — fail-safe #1).
+async function fanOutMailbox(
+  deps: MigrateMailboxDeps,
+  publish: typeof publishMailboxPointer,
+  advertiseKp: MailboxKeypair,
+  epoch: number,
+): Promise<Pick<MigrateMailboxResult, 'fanned' | 'blockedTripwireHits' | 'skippedNoSealTarget'>> {
   const targets = await deps.listFanoutTargets();
   const fanned: Array<{ peerDid: string; deposited: boolean }> = [];
   let blockedTripwireHits = 0;
@@ -269,22 +234,122 @@ export async function migrateMailbox(deps: MigrateMailboxDeps): Promise<MigrateM
       peerDid: t.peerDid,
       sealTarget: t.sealTarget,
       sealTargetFp: t.sealTargetFp,
-      myMailboxX25519Pub: newKp.x25519Pub, // ADVERTISE the new mailbox (goes inside the signed pointer)
-      myMailboxMlkemEk: newKp.mlkem1024Pub,
+      myMailboxX25519Pub: advertiseKp.x25519Pub, // ADVERTISE this mailbox (goes inside the signed pointer)
+      myMailboxMlkemEk: advertiseKp.mlkem1024Pub,
       pointerEpoch: epoch,
     });
     fanned.push({ peerDid: t.peerDid, deposited: res.deposited });
   }
+  return { fanned, blockedTripwireHits, skippedNoSealTarget };
+}
 
-  return {
-    oldMailboxFp,
+/**
+ * Rotate from `current` — which IS the true original mailbox to preserve — to a fresh keypair: stash the
+ * current keypair as the overlap's OLD *before* flipping (so in-flight mail to it still drains — fail-safe
+ * #3), flip the live mailbox, persist epoch, fan out. Used by the fresh path and the flip-NOT-done resume
+ * path; in both, `current` is the mailbox that must be preserved, so no intermediate is ever stashed as
+ * "old". The drain window starts now (current stops being live at the flip).
+ */
+async function rotateFrom(
+  deps: MigrateMailboxDeps,
+  publish: typeof publishMailboxPointer,
+  generate: () => MailboxKeypair,
+  current: MailboxKeypair,
+  currentFp: string,
+  epoch: number,
+): Promise<MigrateMailboxResult> {
+  const newKp = generate();
+  const newMailboxFp = mailboxFpOf(newKp);
+  if (newMailboxFp === currentFp) {
+    // CSPRNG collision is cryptographically impossible; a match means a broken/stubbed keygen.
+    throw new Error('mailbox-migration: new mailbox fp == old — refusing (broken keygen?) — fail-closed');
+  }
+
+  const openedAt = deps.now();
+  const expiresAt = openedAt + deps.windowMs;
+  await deps.saveOverlap({
+    fingerprint: deps.ownerFp, // store keyPath = 'fingerprint', aligned with device_mailbox (Athena #160726)
+    oldKeypair: serializeMailboxKeypair(current),
+    oldMailboxFp: currentFp,
     newMailboxFp,
     epoch,
-    fanned,
-    blockedTripwireHits,
-    skippedNoSealTarget,
-    overlapExpiresAt: expiresAt,
-  };
+    openedAt,
+    expiresAt,
+    ackedPeerDids: [],
+  });
+
+  await deps.storeNewMailbox(newKp);
+  await deps.saveEpoch(epoch);
+
+  const f = await fanOutMailbox(deps, publish, newKp, epoch);
+  return { oldMailboxFp: currentFp, newMailboxFp, epoch, ...f, overlapExpiresAt: expiresAt };
+}
+
+/**
+ * SAME-RELAY mailbox rekey. Rotates my device mailbox to a fresh keypair and fans the new mailbox out to
+ * every non-blocked holder as a signed, per-peer-sealed pointer over the blind rendezvous.
+ *
+ * CRASH-SAFETY — RESUME-GUARD (Flint co-verify, load-bearing). Writes are ordered saveOverlap(old) → flip
+ * → saveEpoch → fan-out, but fan-out is NETWORK (cannot live inside an IndexedDB transaction), so making
+ * the store writes atomic alone does NOT make a crashed run safe to retry: once the flip commits,
+ * device_mailbox = NEW (B), and a NAIVE retry would read loadCurrentMailbox()=B, treat B as "old",
+ * re-rotate B→C and OVERWRITE the original A's overlap → A + its in-flight mail orphaned (the mid-transfer
+ * survivor betrayal fail-safe #3 exists to prevent). Note generate() mints a FRESH keypair every run, so a
+ * re-run does NOT reproduce B — it rotates onward and loses A. The guard closes this: on entry, an
+ * un-retired overlap record is the SOURCE OF TRUTH for the original mailbox, and we resume from it rather
+ * than re-deriving "old" from the live device:
+ *   • device == overlap.new  → flip already happened (crash at/after flip, maybe mid-fan-out): re-fan the
+ *     CURRENT keypair at overlap.epoch; do NOT re-rotate, do NOT touch the overlap (A stays old).
+ *   • device == overlap.old  → flip had NOT happened (crash after saveOverlap, before flip): the live
+ *     mailbox is still the original A (== current), so rotate from A — A stays old, window refreshes
+ *     (A only now stops being live). Because current == A, nothing intermediate is stashed as "old".
+ *   • device matches NEITHER → inconsistent (device rotated out-of-band vs an un-retired overlap): refuse,
+ *     surface for recovery rather than risk orphaning A (fail-closed).
+ * (a) single-transaction store writes [Athena's lane] are valuable hardening on top — they remove the
+ * epoch/device desync class — but (b) this resume-guard is the piece that makes retry correct.
+ */
+export async function migrateMailbox(deps: MigrateMailboxDeps): Promise<MigrateMailboxResult> {
+  const generate = deps.generateKeypair ?? generateMailboxKeypair;
+  const publish = deps.publishPointer ?? publishMailboxPointer;
+
+  // Load the CURRENT live mailbox. Absent => this identity has no mailbox to rotate — fail-closed.
+  const current = await deps.loadCurrentMailbox();
+  if (!current) {
+    throw new Error('mailbox-migration: no current device mailbox to rotate (absent) — fail-closed');
+  }
+  const currentFp = mailboxFpOf(current);
+
+  // RESUME-GUARD: an un-retired overlap means a prior migration crashed mid-flight — resume it from the
+  // overlap's recorded original, never re-derive "old" from the (possibly already-flipped) live device.
+  const inProgress = await deps.loadOverlap();
+  if (inProgress) {
+    if (currentFp === inProgress.newMailboxFp) {
+      // FLIP ALREADY DONE — re-fan the current keypair at the recorded epoch; overlap untouched (A=old).
+      await deps.saveEpoch(inProgress.epoch); // idempotent: ensure the persisted epoch matches the device
+      const f = await fanOutMailbox(deps, publish, current, inProgress.epoch);
+      return {
+        oldMailboxFp: inProgress.oldMailboxFp,
+        newMailboxFp: inProgress.newMailboxFp,
+        epoch: inProgress.epoch,
+        ...f,
+        overlapExpiresAt: inProgress.expiresAt,
+      };
+    }
+    if (currentFp === inProgress.oldMailboxFp) {
+      // FLIP NOT DONE — the live mailbox is still the original A (== current). Rotate from A at the
+      // already-chosen epoch; A stays old (current == A), window refreshes (A stops being live now).
+      return rotateFrom(deps, publish, generate, current, currentFp, inProgress.epoch);
+    }
+    // device matches neither the overlap's old nor its new → inconsistent; refuse rather than orphan A.
+    throw new Error(
+      'mailbox-migration: un-retired overlap matches neither the current device mailbox nor its recorded ' +
+        'new mailbox — inconsistent state, refusing to rekey (manual recovery) — fail-closed',
+    );
+  }
+
+  // No in-progress overlap → a fresh rotation. Epoch = monotonic bump + floor-on-recovery (fail-safe #2).
+  const epoch = nextMailboxEpoch(await deps.loadEpoch(), deps.recoveryFloorEpoch);
+  return rotateFrom(deps, publish, generate, current, currentFp, epoch);
 }
 
 /**

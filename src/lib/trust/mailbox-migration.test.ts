@@ -13,6 +13,7 @@ import {
   mailboxFpOf,
   toPublicKeys,
   toSecretKeys,
+  serializeMailboxKeypair,
   deserializeMailboxKeypair,
   type MailboxKeypair,
 } from '../crypto/mailbox-keys.js';
@@ -88,6 +89,7 @@ function fakeStore(initialKp: MailboxKeypair | null, initialEpoch: number | null
     loadEpoch: async () => s.epoch,
     saveEpoch: async (e: number) => { s.epoch = e; },
     saveOverlap: async (rec: MailboxOverlapRecord) => { s.overlap = rec; },
+    loadOverlap: async () => s.overlap,
     _state: s,
   };
 }
@@ -107,6 +109,7 @@ function baseDeps(store: ReturnType<typeof fakeStore>, relay: TrustRelay, target
     loadEpoch: store.loadEpoch,
     saveEpoch: store.saveEpoch,
     saveOverlap: store.saveOverlap,
+    loadOverlap: store.loadOverlap,
     listFanoutTargets: async () => targets,
     now: () => NOW_MS,
     windowMs: WINDOW_MS,
@@ -219,6 +222,9 @@ test('fail-safe #2: sequential rekeys bump the epoch strictly', async () => {
   const store = fakeStore(generateMailboxKeypair(), 0);
   const B = makePeer(0x42, 'bbbb');
   const r1 = await migrateMailbox(baseDeps(store, relay, [B.target]));
+  // Lifecycle: a new rekey can't begin until the prior overlap RETIRES (resume-guard treats an un-retired
+  // overlap as an in-flight migration to resume). Simulate the window elapsing + GC before the next rekey.
+  store._state.overlap = null;
   const r2 = await migrateMailbox(baseDeps(store, relay, [B.target]));
   assert.equal(r1.epoch, 1);
   assert.equal(r2.epoch, 2);
@@ -289,4 +295,85 @@ test('fail-closed: holder missing a seal target is skipped, not sealed', async (
   const result = await migrateMailbox(baseDeps(store, relay, [B.target, noTarget]));
   assert.equal(result.skippedNoSealTarget, 1);
   assert.deepEqual(result.fanned.map((f) => f.peerDid), [B.did]);
+});
+
+// ── RESUME-GUARD (Flint co-verify, crash-atomicity): fan-out is network → atomic store writes can't make
+//    a crashed run safe to retry; an un-retired overlap is the source-of-truth for the original mailbox. ──
+
+// helper: an un-retired overlap record for an in-flight migration old=A → new=`newFp`.
+function makeOverlap(A: MailboxKeypair, newFp: string, epoch: number, openedAt = NOW_MS): MailboxOverlapRecord {
+  return {
+    fingerprint: OWNER_A,
+    oldKeypair: serializeMailboxKeypair(A),
+    oldMailboxFp: mailboxFpOf(A),
+    newMailboxFp: newFp,
+    epoch,
+    openedAt,
+    expiresAt: openedAt + WINDOW_MS,
+    ackedPeerDids: [],
+  };
+}
+
+// 7. RESUME — flip DONE (crash at/after flip, before fan-out completed): device == overlap.new.
+//    Retry RE-FANS the current keypair (B) at the recorded epoch — does NOT re-rotate — and leaves the
+//    overlap (old=A) untouched so A stays drainable. (A naive retry would re-rotate B→C and orphan A.)
+test('resume: flip-done → re-fans current keypair at recorded epoch, no re-rotate, A stays old+drainable', async () => {
+  const relay = memRelay();
+  const A = generateMailboxKeypair();
+  const B = generateMailboxKeypair();
+  const Bfp = mailboxFpOf(B);
+  const store = fakeStore(B, 9); // device already flipped to B
+  store._state.overlap = makeOverlap(A, Bfp, 9); // un-retired overlap old=A new=B epoch=9
+  const peer = makePeer(0x42, 'bbbb');
+
+  const result = await migrateMailbox(baseDeps(store, relay, [peer.target]));
+
+  assert.equal(mailboxFpOf(store._state.mailbox!), Bfp); // did NOT re-rotate — device still B
+  assert.equal(result.newMailboxFp, Bfp);
+  assert.equal(result.epoch, 9);
+  assert.equal(result.oldMailboxFp, mailboxFpOf(A));
+  assert.equal(store._state.overlap!.oldMailboxFp, mailboxFpOf(A)); // A preserved, not overwritten
+  // peer now resolves B (the completed-but-unfanned mailbox)
+  const got = await peer.resolveMine(relay);
+  assert.equal(got!.mailboxFp, Bfp);
+  assert.equal(got!.epoch, 9);
+  // A still drainable from the overlap
+  assert.equal(mailboxFpOf(deserializeMailboxKeypair(store._state.overlap!.oldKeypair)), mailboxFpOf(A));
+});
+
+// 8. RESUME — flip NOT done (crash after saveOverlap, before flip): device == overlap.old (still A).
+//    Retry rotates from the ORIGINAL A to a FRESH keypair (not the discarded first-run new), keeps A as
+//    old, and refreshes the drain window (A only now stops being live).
+test('resume: flip-not-done → rotates from original A to a fresh new; A stays old; window refreshes', async () => {
+  const relay = memRelay();
+  const A = generateMailboxKeypair();
+  const discardedB = generateMailboxKeypair(); // first-run new keypair, lost on crash
+  const store = fakeStore(A, 2); // device still A (flip never happened); pre-migration epoch 2 persisted
+  store._state.overlap = makeOverlap(A, mailboxFpOf(discardedB), 3, NOW_MS - 1000); // epoch 3 chosen, older window
+  const peer = makePeer(0x42, 'bbbb');
+
+  const result = await migrateMailbox(baseDeps(store, relay, [peer.target]));
+
+  assert.equal(result.oldMailboxFp, mailboxFpOf(A)); // A preserved as old
+  assert.equal(result.epoch, 3); // reused the already-chosen epoch (no double-bump)
+  assert.notEqual(result.newMailboxFp, mailboxFpOf(discardedB)); // a FRESH keypair, not the lost B
+  assert.equal(mailboxFpOf(store._state.mailbox!), result.newMailboxFp); // device flipped to the fresh new
+  assert.equal(store._state.overlap!.oldMailboxFp, mailboxFpOf(A)); // overlap old still A
+  assert.equal(store._state.overlap!.newMailboxFp, result.newMailboxFp); // overlap new updated
+  assert.equal(store._state.overlap!.expiresAt, NOW_MS + WINDOW_MS); // window refreshed to now
+  assert.equal(mailboxFpOf(deserializeMailboxKeypair(store._state.overlap!.oldKeypair)), mailboxFpOf(A));
+  assert.equal((await peer.resolveMine(relay))!.epoch, 3);
+});
+
+// 9. RESUME — inconsistent: device matches NEITHER the overlap's old nor new → fail-closed throw
+//    (rather than guess and risk orphaning the original).
+test('resume: device matches neither overlap old nor new → fail-closed throw', async () => {
+  const relay = memRelay();
+  const A = generateMailboxKeypair();
+  const B = generateMailboxKeypair();
+  const other = generateMailboxKeypair(); // device is a third mailbox, unrelated to the overlap
+  const store = fakeStore(other, 5);
+  store._state.overlap = makeOverlap(A, mailboxFpOf(B), 6);
+  const peer = makePeer(0x42, 'bbbb');
+  await assert.rejects(migrateMailbox(baseDeps(store, relay, [peer.target])), /inconsistent state/);
 });
