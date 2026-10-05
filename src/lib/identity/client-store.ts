@@ -17,9 +17,27 @@ import { ownerHasVerified } from '../trust/trust-recipe';
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
 import { edgeTrusted } from '../trust/contact-edge';
+// piece-2 device-mailbox lifecycle: the card-borne receiver keypair (generated once at genesis,
+// vault-persisted, secrets never leave the device). mailbox-keys is a leaf crypto util (like the
+// fingerprint import above). device-mailbox is PURE helpers (no back-import of this file → no cycle);
+// we take only its public-block builder (runtime) + its public-block type (erased).
+import {
+  generateMailboxKeypair,
+  serializeMailboxKeypair,
+  deserializeMailboxKeypair,
+  toPublicKeys,
+  toSecretKeys,
+  type MailboxKeypair,
+} from '../crypto/mailbox-keys';
+import { deriveMailboxFp, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope';
+import { mailboxPublicOf, type DeviceMailboxPublic } from './device-mailbox';
 
 const DB_NAME = 'svrnty';
-const DB_VERSION = 3;
+// v4: device_mailbox store (piece-2). One record per identity (keyed by fingerprint), holding the
+// vault-encrypted serialized mailbox keypair — the long-lived onion receive keys. Additive: a v3→v4
+// upgrade only CREATES the new store (existing stores untouched), and a pre-feature identity lazily
+// gets a mailbox on next unlock (ensureDeviceMailboxesOnUnlock).
+const DB_VERSION = 4;
 
 // ── Session key management (F1 fix: encrypt keys at rest in IndexedDB) ──
 // The session key is a non-extractable CryptoKey held in memory.
@@ -118,6 +136,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
   // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
   await eagerMigrateIdentityStoresOnUnlock();
+  // piece-2: lazily ensure every identity has a device mailbox (heals pre-v4 identities). Best-effort,
+  // never throws into unlock; regenerates only on genuine absence, never on a decrypt-fail (see fn).
+  await ensureDeviceMailboxesOnUnlock();
 }
 
 /** Check if the session is unlocked (key available in memory). */
@@ -196,6 +217,11 @@ export interface ContactRecord {
   // an unauthenticated pq_kem is NEVER stored. Both are projected → TrustEdge.peer_pq_*.
   pq_sig_public_key?: string;   // ML-DSA base64
   pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
+  // ── piece-2 device-mailbox (onion seal-target) ──────────────────────────────
+  // The peer's PUBLIC device-mailbox block (fp + x25519/ml-kem pubkeys, hex). Stored ONLY from a card
+  // whose signature VERIFIED (classifyImportedCard branch 4) — a seal-target is as MITM-sensitive as
+  // pq_kem, so a no/invalid-signature card drops it (emit under-reveals). Read via peerDeviceMailbox().
+  device_mailbox?: DeviceMailboxPublic;
   trust_level: string;
   added_at: string;
   metadata?: any;
@@ -303,6 +329,13 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('held_shards')) {
         const heldStore = db.createObjectStore('held_shards', { keyPath: 'id' });
         heldStore.createIndex('holder', 'holder_fingerprint', { unique: false });
+      }
+      // v4: device_mailbox — MY long-lived onion receive keypair (one per identity, keyed by
+      // fingerprint). The serialized keypair is key material → encrypted at rest like the vault
+      // (storeDeviceMailbox is Blocker-C fail-closed). Public keys + content-fp are published via the
+      // SIGNED identity card, never a relay index (/mailbox/register stays unwired — blind-binding gate).
+      if (!db.objectStoreNames.contains('device_mailbox')) {
+        db.createObjectStore('device_mailbox', { keyPath: 'fingerprint' });
       }
     };
 
@@ -602,6 +635,121 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
   }
 
   return record.vault ?? null;
+}
+
+// ── Device-mailbox operations (piece-2 onion receive keys) ───────
+// MY long-lived mailbox keypair: generated once at genesis, vault-persisted (secrets never leave the
+// device), published as PUBLIC keys inside the SIGNED identity card. Key material → encrypted at rest
+// exactly like the vault (Blocker-C fail-closed: refuse rather than write plaintext). The store is NEW
+// in DB v4, so there is NO legacy-plaintext record to migrate — a record that is present but not
+// enc_version is corrupt and THROWS (never silently treated as absent, which would regenerate-overwrite).
+
+/** Persist (encrypted) the serialized mailbox keypair for one of my identities. Fail-closed when locked. */
+export async function storeDeviceMailbox(
+  fingerprint: string,
+  serialized: ReturnType<typeof serializeMailboxKeypair>,
+): Promise<void> {
+  // Blocker-C fail-closed: the mailbox SECRET keys are key material → never plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store device-mailbox key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
+  }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(serialized), passphrase: '' });
+  await txPut('device_mailbox', { fingerprint, ...encrypted });
+}
+
+/**
+ * Load the mailbox keypair for `fingerprint`. Returns null ONLY when the record is genuinely ABSENT
+ * (no identity-mint ran this feature yet → caller lazy-inits). THROWS when a record exists but cannot be
+ * decrypted or is malformed — the caller MUST NOT treat that as absent (regenerating on a transient
+ * decrypt-fail would churn mailbox_fp + orphan undelivered mail; worse, silently discard recoverable key
+ * material). Fail-closed: null ⇒ absent (safe to init); throw ⇒ present-but-unreadable (surface, don't overwrite).
+ */
+export async function loadDeviceMailbox(fingerprint: string): Promise<MailboxKeypair | null> {
+  const record = await txGet<any>('device_mailbox', fingerprint);
+  if (!record) return null; // genuinely absent
+  if (record.enc_version !== ENC_VERSION) {
+    // No legacy-plaintext form ever existed for this v4 store → a non-enc record is corrupt, not legacy.
+    throw new Error('device_mailbox record malformed (missing enc_version) — refusing to treat as absent');
+  }
+  const decrypted = await decryptKeyData(record as EncryptedKeyRecord); // throws on decrypt-fail
+  return deserializeMailboxKeypair(JSON.parse(decrypted.privateKey));    // throws on malformed length
+}
+
+/**
+ * MY own device mailbox — the RECEIVE side (secrets to open onion-delivered mail) + the seal-target I
+ * publish — for `fingerprint` (default: the active identity). null when no identity is active or the
+ * mailbox is absent (heals on next unlock via ensureDeviceMailboxesOnUnlock). Propagates a decrypt-fail
+ * throw from loadDeviceMailbox (surface, don't silently churn). The onion RECEIVE accessor Apollo's
+ * emit/receive layer consumes (KB#92278).
+ */
+export async function getMyDeviceMailbox(
+  fingerprint?: string,
+): Promise<{ secrets: MailboxSecretKeys; publicKeys: MailboxPublicKeys; fp: string } | null> {
+  const fp = (fingerprint || (await getActiveFingerprint()) || '').trim();
+  if (!fp) return null;
+  const kp = await loadDeviceMailbox(fp);
+  if (!kp) return null;
+  return {
+    secrets: toSecretKeys(kp),
+    publicKeys: toPublicKeys(kp),
+    fp: deriveMailboxFp(kp.x25519Pub, kp.mlkem1024Pub),
+  };
+}
+
+/**
+ * Generate + persist a fresh device mailbox at identity GENESIS and return its PUBLIC block for the
+ * caller to stamp onto the IdentityData wrapper (so the card builder can read it later). Called ONCE,
+ * synchronously inside browser-identity.generateIdentity, after the session is unlocked. Fail-closed via
+ * storeDeviceMailbox. The keypair is random (NO derivation from any identity/pair secret) — a device-
+ * mailbox compromise reads only inbound mail, never the identity key.
+ */
+export async function initDeviceMailboxAtGenesis(fingerprint: string): Promise<DeviceMailboxPublic> {
+  const kp = generateMailboxKeypair();
+  await storeDeviceMailbox(fingerprint, serializeMailboxKeypair(kp));
+  return mailboxPublicOf(toPublicKeys(kp));
+}
+
+/**
+ * On unlock, lazily ensure every identity has a device mailbox — heals PRE-FEATURE identities (minted
+ * before v4) by generating one and stamping its public block onto the IdentityData wrapper. Best-effort:
+ * NEVER throws into the unlock path. Regenerates ONLY on genuine ABSENCE (loadDeviceMailbox===null); on a
+ * decrypt-fail/malformed throw it SKIPS (never overwrites possibly-recoverable key material, never churns
+ * mailbox_fp on a transient fault). A regenerated mailbox changes mailbox_fp → peers under-reveal to the
+ * stale card until a re-exchange (fail-closed liveness fallback; NEVER a re-expose). Does NOT touch any
+ * suppression record (that is the spine's genesis-FLOW-only init — a separate store, separate concern).
+ */
+async function ensureDeviceMailboxesOnUnlock(): Promise<void> {
+  if (!_sessionKey) return; // guard; never called locked
+  let identities: IdentityRecord[];
+  try {
+    identities = await listIdentities();
+  } catch {
+    return;
+  }
+  for (const idRec of identities) {
+    const fp = idRec.fingerprint;
+    try {
+      const existing = await loadDeviceMailbox(fp); // null = absent; throw = present-but-unreadable
+      if (existing) continue; // already has a readable mailbox — nothing to do
+      // Absent → lazy-init: generate, persist, and cache the public block on the identity wrapper so
+      // the card builder (buildSignedIdentityCard) can carry it without reaching into this store.
+      const pub = await initDeviceMailboxAtGenesis(fp);
+      try {
+        const data = await loadIdentity(fp);
+        if (data) {
+          data.device_mailbox = pub;
+          await storeIdentity(fp, data);
+        }
+      } catch (e) {
+        // The secret is persisted; only the public-block cache failed → card build omits until next
+        // unlock heals it (under-reveal, fail-closed). Non-fatal.
+        console.warn('[device-mailbox] public-block cache write skipped', fp, e);
+      }
+    } catch (e) {
+      // present-but-unreadable (decrypt-fail/malformed) → do NOT overwrite; surface for recovery.
+      console.warn('[device-mailbox] ensure skipped (present but unreadable — not overwriting)', fp, e);
+    }
+  }
 }
 
 // ── Shard operations (social recovery — "the tear") ──────────────
@@ -1071,6 +1219,10 @@ export interface SovereignBackup {
   pq_keys?: any;
   vault?: any;
   shards?: ShardsData;
+  // piece-2: the serialized device-mailbox keypair (secrets) — carried under includePrivateKeys so a
+  // restore preserves onion mailbox continuity (no mailbox_fp churn on migration). Optional/absent on
+  // pre-feature backups; a malformed value is skipped on import (a fresh mailbox inits on unlock).
+  device_mailbox?: ReturnType<typeof serializeMailboxKeypair>;
   contacts: ContactRecord[];
 }
 
@@ -1090,6 +1242,14 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
     backup.pq_keys = await loadPQKeys(fingerprint) ?? undefined;
     backup.vault = await loadVault(fingerprint) ?? undefined;
     backup.shards = await loadShards(fingerprint) ?? undefined;
+    // Device mailbox is a liveness nicety, not a launch-blocker — a corrupt one must NOT fail the
+    // whole (critical-key) backup, so guard the read rather than letting a decrypt-fail throw propagate.
+    try {
+      const dmbKp = await loadDeviceMailbox(fingerprint);
+      if (dmbKp) backup.device_mailbox = serializeMailboxKeypair(dmbKp);
+    } catch (e) {
+      console.warn('[export] device-mailbox skipped (present but unreadable)', e);
+    }
   }
 
   return backup;
@@ -1202,6 +1362,18 @@ export async function importAll(backup: SovereignBackup): Promise<PlaintextImpor
   }
   if (backup.shards) {
     await storeShards(fingerprint, backup.shards);
+  }
+  if (backup.device_mailbox) {
+    // Validate the untrusted serialized shape BEFORE persisting — a malformed value would store fine
+    // but fail every later decrypt (present-but-unreadable → ensure won't overwrite → a soft-lock). On
+    // a bad shape, SILENTLY SKIP (this import region is log-free by invariant — skips surface via the
+    // returned report, not console): a fresh mailbox inits on next unlock (under-reveal, fail-closed).
+    try {
+      deserializeMailboxKeypair(backup.device_mailbox);
+      await storeDeviceMailbox(fingerprint, backup.device_mailbox);
+    } catch {
+      /* malformed backup mailbox — skip; a fresh one inits on next unlock (fail-closed under-reveal) */
+    }
   }
 
   // Same persistence gate as importVaultContents: never raw-put a contact from

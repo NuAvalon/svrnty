@@ -782,6 +782,9 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       const pqFields = d.pq
         ? { pq_kem_public_key: d.pq.pq_kem_public_key, pq_sig_public_key: d.pq.pq_sig_public_key }
         : {};
+      // piece-2: carry the authenticated device-mailbox (onion seal-target) ONLY when present under a
+      // valid signature (classifyImportedCard sets it non-null in branch 4 only). Threaded exactly like pq.
+      const mailboxField = d.deviceMailbox ? { device_mailbox: d.deviceMailbox } : {};
 
       const existing = await getContactByFingerprint(fingerprint, contactIdentity.fingerprint);
       if (existing) {
@@ -790,9 +793,10 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         // (that's a deliberate, lineage-tracked rotation, not a re-import side effect).
         if (d.alarm === 'loud') {
           setExchangeResult({ success: false, message: `A card for "${displayName}" could not be verified — possible tampering. Your existing contact is unchanged; ask them to re-share over a secure link.` });
-        } else if (d.pq && !existing.pq_kem_public_key) {
-          await updateContact(existing.id, pqFields);
-          setExchangeResult({ success: true, message: `Updated "${displayName}" — their post-quantum key is now stored.` });
+        } else if ((d.pq && !existing.pq_kem_public_key) || (d.deviceMailbox && !existing.device_mailbox)) {
+          // Back-fill authenticated pq and/or the device-mailbox onto a known edge that lacks them.
+          await updateContact(existing.id, { ...pqFields, ...mailboxField });
+          setExchangeResult({ success: true, message: `Updated "${displayName}" — their key material is now stored.` });
         } else {
           setExchangeResult({ success: true, message: `You already have "${displayName}".` });
         }
@@ -805,6 +809,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           trust_level: 'unverified',
           metadata: { connection_method: 'manual' as const },
           ...pqFields, // present ONLY on branch 4b (authenticated pq); dropped on 2/3/4a/4c
+          ...mailboxField, // present ONLY under a valid signature (branch 4); dropped on 1/2/3
         } as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>);
         // Message tracks the pq disposition — loud only on a present-but-invalid signature (branch 3).
         const message =
