@@ -10,6 +10,8 @@ import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
+import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -460,6 +462,83 @@ export async function getActiveFingerprint(): Promise<string | null> {
 
 export async function setActiveFingerprint(fingerprint: string): Promise<void> {
   await txPut('settings', { key: 'active_fingerprint', value: fingerprint });
+}
+
+// ── Piece-2 mutual-block: durable owner-local SUPPRESSION record (§F2/§F3, spec KB#92246) ──────────
+// F's emit-side "whom I've gone private to" set {global, groups, persons(durable_id)} (suppression.ts).
+// Encrypted at rest via the SAME AAD-bound contact-crypto path, domain-separated by a RESERVED id — so a
+// suppression blob can't be transplanted onto a contact row or another owner (the GCM tag binds id+owner).
+// Owner-local, NEVER on the wire (§C firewall). person entries are rotation-stable durable_ids → the set
+// survives key-rotation / mailbox-rebuild / relay-transfer (it's F's vault data, not key-derived).
+const SUPPRESSION_RECORD_ID = 'piece2:suppression'; // reserved AAD id (contacts use random UUIDs — never this)
+function suppressionSettingKey(ownerFingerprint: string): string {
+  return `suppression:${ownerFingerprint}`;
+}
+
+/**
+ * Read F's durable suppression record. ★ FAIL-CLOSED (§F3): returns null on ANY doubt — session locked,
+ * record ABSENT, decrypt/tag failure, or a malformed/legacy shape. The emit path treats null as SUPPRESS-ALL
+ * (emit to no one) — we never un-suppress a survivor because the store couldn't be read. A genuinely
+ * never-suppressed user is made discoverable by an EXPLICIT empty record (setSuppressionRecord, written at
+ * unlock/genesis — emit-path integration), NOT by this returning an empty set on absence.
+ */
+export async function getSuppressionRecord(ownerFingerprint: string): Promise<SuppressionRecord | null> {
+  if (!_sessionKey) return null; // locked ⇒ fail-closed
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', suppressionSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null; // absent ⇒ fail-closed (the store can't tell never-had from lost)
+    const rec = await decryptContactRecord<unknown>(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, row.value);
+    return isSuppressionRecord(rec) ? rec : null; // malformed ⇒ fail-closed
+  } catch {
+    return null; // decrypt/tag failure ⇒ fail-closed
+  }
+}
+
+/** Persist F's suppression record, encrypted at rest (fail-closed: throws if locked — never write plaintext). */
+export async function setSuppressionRecord(ownerFingerprint: string, rec: SuppressionRecord): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store suppression record unencrypted (§C/enc-b fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, rec);
+  await txPut('settings', { key: suppressionSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
+// Anna's received+verified affirmatives {signer durable_id → {validUntil,epoch}} (held-affirmatives.ts).
+// The reveal AND-gate (trust map) READS this; the receive-path (next layer, over Athena's /onion transport)
+// WRITES it. Encrypted at rest via the same AAD-bound path (reserved domain id). Owner-local; derived from
+// wire-received payloads but never re-serialized outbound.
+const HELD_AFFIRMS_RECORD_ID = 'piece2:held-affirms'; // reserved AAD id
+function heldAffirmsSettingKey(ownerFingerprint: string): string {
+  return `held_affirms:${ownerFingerprint}`;
+}
+
+/**
+ * Read Anna's held-affirmatives map. ★ FAIL-CLOSED (§F3): null on ANY doubt (locked / absent / decrypt-fail
+ * / malformed). The reveal gate treats null as "surface nothing transitive" (affirmGateCircle(_, null, _) =
+ * []) — under-reveal, never surface on a guess. Absent is simply "no affirmatives held yet" → the gate
+ * surfaces nothing, which is the correct DARK-until-receive state; returning null here is equivalent for the
+ * gate (both ⇒ surface nothing), so absent→null is safe (unlike suppression, where absent vs empty differs).
+ */
+export async function getHeldAffirmatives(ownerFingerprint: string): Promise<HeldAffirmatives | null> {
+  if (!_sessionKey) return null;
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', heldAffirmsSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null;
+    const map = await decryptContactRecord<unknown>(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, row.value);
+    return isHeldAffirmatives(map) ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist Anna's held-affirmatives map, encrypted at rest (fail-closed: throws if locked). Receive-path only. */
+export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAffirmatives): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
+  await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {

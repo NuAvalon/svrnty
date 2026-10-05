@@ -18,6 +18,7 @@ import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   loadMethodHistory,
@@ -789,6 +790,9 @@ export default function Home() {
                           ?.per_contact_private === true,
                     },
                   });
+                  // Piece-2 (#579): block ALSO populates the durable suppression RECORD (load-bearing
+                  // emit-side source; the `blocked` flag is defense-in-depth). Fire-and-forget + fail-closed.
+                  void applyBlockSuppression(identity.identity.fingerprint, edge.peer_fingerprint, blocked);
                   await refreshContacts();
                 }}
                 onAcceptIntro={async (edge) => {

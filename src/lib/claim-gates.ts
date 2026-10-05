@@ -75,3 +75,23 @@ export function isPQWireLive(): boolean {
 export function isPSIDiscoveryLive(): boolean {
   return true;
 }
+
+/**
+ * PSI MUTUAL-MEDIATED / TRANSITIVE block (#156420) — "piece-2 mutual-block" — is wired end-to-end and live.
+ *
+ * FALSE today: the spine MECHANISM (visible-affirm §F1 payload, durable durable_id-keyed suppression-record,
+ * viewer-side held-affirmatives + the read-time reveal AND-gate) is BUILT + unit-green, but the emit/poll
+ * transport (Athena's shared /onion module) + the receive-path are NOT wired — so no affirmatives flow, the
+ * gate is INERT and under-reveals BY CONSTRUCTION. isPSIDiscoveryLive's scope stays honest: block≡offline is
+ * DIRECT-block only; the TRANSITIVE/mutual-mediated block graduates on THIS flag. The reveal AND-gate in the
+ * trust map is applied ONLY when this is true (flag-off ⇒ current ungated behavior, no regression).
+ *
+ * Flip to true ONLY when: emit+receive land over the shared transport, the §F3 churn-test matrix is GREEN
+ * (Flint co-verify: zero-emit-to-suppressed across {rotation,rebuild,transfer}×{person,group,global} +
+ * positive control), Hypatia's claims-contract holds (cadence-indistinguishable / latency ≤ 20min /
+ * no-re-assert-to-suppressed), and Peter GOs. (A flipper MUST update claim-gates.test.ts.) Copy: "stops
+ * newly surfacing you, including through mutual friends" only when true — until then, "blocked directly."
+ */
+export function isPiece2MutualBlockLive(): boolean {
+  return false;
+}

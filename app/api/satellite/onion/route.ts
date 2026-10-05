@@ -1,6 +1,6 @@
 // Same-origin proxy for the satellite /onion DEPOSIT endpoint (S6 consent-delta / #558 keystone).
 //
-// The client (httpOnionRelay.deposit, src/lib/sync/consent-delta-transport.ts) POSTs ONE onion-sealed
+// The client (httpOnionRelay.deposit, src/lib/sync/onion-transport.ts) POSTs ONE onion-sealed
 // OUTER cell — a MailboxEnvelopePackage {v,alg,mailbox_fp,epk,kem_ct,nonce,ct} (mailbox-envelope.ts, via
 // sealOnion). The satellite peels the OUTER with its OWN routing keypair and buckets the (still
 // device-sealed) inner by the route_id it finds inside (KB#91430: peel → deposit-by-route_id,
