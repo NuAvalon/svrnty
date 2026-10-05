@@ -167,6 +167,17 @@ export interface IdentityCard {
     pq_sig_public_key: string;      // base64(ML-DSA pubkey)
     pq_kem_public_key: string;      // base64(ML-KEM pubkey) — the field the signature protects
     next_authority_commitment: string; // 64-hex authority pin; '' for pre-mint/legacy cards
+    // ── piece-2 device-mailbox (onion seal-target) ──────────────────────────────────────────────
+    // The sender's PUBLIC device-mailbox: content-fp + x25519/ml-kem public keys (hex). Under identity.*
+    // so identityCardSigningInput (top-level exclude only) COVERS them → the signature authenticates the
+    // seal-target against the fp-bound classical key, exactly as it protects pq_kem (a swapped mailbox =
+    // a swapped seal-target = the same MITM an unsigned carrier allows). OPTIONAL + byte-preserving:
+    // ABSENT (OMITTED, never null — canonicalize rejects null) on legacy/pre-feature cards → the card
+    // canonicalizes identically to before, so legacy cards still verify. Import stores them ONLY under a
+    // VALID signature (classifyImportedCard branch 4) + a content-fp self-consistency check.
+    mailbox_fp?: string;            // 64 hex — SHA256(x25519_pub ‖ mlkem1024_pub)
+    mailbox_x25519_pk?: string;     // 64 hex — 32B X25519 public
+    mailbox_mlkem1024_pk?: string;  // 3136 hex — 1568B ML-KEM-1024 encapsulation key
   };
   // Self-attested entity type, bound in the signed card (identityCardSigningInput canonicalizes the whole
   // card minus signature/pq_signature, so a top-level entity_type IS signed) → immutable for the identity's

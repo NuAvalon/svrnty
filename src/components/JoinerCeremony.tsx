@@ -39,6 +39,7 @@ import {
 import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { TrustMap } from '@/components/TrustMap';
 import { useCeremony } from '@/lib/ceremony/useCeremony';
 import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/ceremony/machine';
@@ -83,6 +84,9 @@ interface PeerCard {
   email: string;
   // Authenticated pq (branch 4b) or null; alarm drives the import banner (branch-3 loud / 4c soft-info).
   pq: { pq_kem_public_key: string; pq_sig_public_key: string } | null;
+  // piece-2: authenticated device-mailbox (onion seal-target), non-null ONLY under a valid signature
+  // (classifyImportedCard branch 4). Threaded into the direct persist paths exactly like pq.
+  deviceMailbox: DeviceMailboxPublic | null;
   alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
@@ -216,6 +220,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             publicKey: p.public_key || p.publicKey || '',
             email: p.email || '',
             pq: d.pq,
+            deviceMailbox: d.deviceMailbox,
             alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
           });
         }
@@ -257,12 +262,14 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       const pqFields = peer.pq
         ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
         : {};
+      // piece-2: authenticated device-mailbox (onion seal-target), present ONLY under a valid signature.
+      const mailboxFields = peer.deviceMailbox ? { device_mailbox: peer.deviceMailbox } : {};
       if (existing) {
-        // Upgrade-on-re-exchange (§7#5): back-fill authenticated pq onto a known edge that has
-        // none — no duplicate; never silently replace a different stored pq (rotation is a separate,
-        // deliberate, lineage-tracked path, not a re-import side effect).
-        if (peer.pq && !existing.pq_kem_public_key) {
-          await updateContact(existing.id, pqFields);
+        // Upgrade-on-re-exchange (§7#5): back-fill authenticated pq and/or the device-mailbox onto a known
+        // edge that lacks them — no duplicate; never silently replace a different stored key (rotation is
+        // a separate, deliberate, lineage-tracked path, not a re-import side effect).
+        if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox)) {
+          await updateContact(existing.id, { ...pqFields, ...mailboxFields });
         }
         setAlreadyKnown(true);
         edgeId = existing.id;
@@ -270,6 +277,11 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         const plan = joinerPersistPlan(presence, false);
         if (plan === 'need-presence') return;
         if (plan === 'enqueue-gate') {
+          // NOTE (piece-2 coverage boundary): the device-mailbox is NOT threaded through the holding-room
+          // gate pipeline (GateArrival → admit) yet — a remote joiner admitted from the holding room lands
+          // WITHOUT a mailbox until a re-exchange back-fills it (safe: emit under-reveals, fail-closed). The
+          // DIRECT paths (in-person admit below + ContactManagement + re-exchange back-fill above) DO carry
+          // it. Threading the gate pipeline is a tracked fast-follow (co-owned with Apollo's emit UI work).
           await enqueueGateArrival(ownerFp, {
             fingerprint: peer.fingerprint,
             displayName: clampArrivalName(peer.name),
@@ -310,6 +322,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             ...rec,
             email: peer.email,
             ...pqFields,
+            ...mailboxFields, // piece-2: onion seal-target, present ONLY under a valid signature
           } as any);
           edgeId = contact.id;
         }
