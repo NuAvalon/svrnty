@@ -11,6 +11,7 @@ import type { VaultContents } from '../sync/vault';
 // returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
+import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -467,6 +468,44 @@ export async function setSuppressionRecord(ownerFingerprint: string, rec: Suppre
   if (!_sessionKey) throw new Error('Session locked — refusing to store suppression record unencrypted (§C/enc-b fail-closed)');
   const payload = await encryptContactRecord(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, rec);
   await txPut('settings', { key: suppressionSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
+// Anna's received+verified affirmatives {signer durable_id → {validUntil,epoch}} (held-affirmatives.ts).
+// The reveal AND-gate (trust map) READS this; the receive-path (next layer, over Athena's /onion transport)
+// WRITES it. Encrypted at rest via the same AAD-bound path (reserved domain id). Owner-local; derived from
+// wire-received payloads but never re-serialized outbound.
+const HELD_AFFIRMS_RECORD_ID = 'piece2:held-affirms'; // reserved AAD id
+function heldAffirmsSettingKey(ownerFingerprint: string): string {
+  return `held_affirms:${ownerFingerprint}`;
+}
+
+/**
+ * Read Anna's held-affirmatives map. ★ FAIL-CLOSED (§F3): null on ANY doubt (locked / absent / decrypt-fail
+ * / malformed). The reveal gate treats null as "surface nothing transitive" (affirmGateCircle(_, null, _) =
+ * []) — under-reveal, never surface on a guess. Absent is simply "no affirmatives held yet" → the gate
+ * surfaces nothing, which is the correct DARK-until-receive state; returning null here is equivalent for the
+ * gate (both ⇒ surface nothing), so absent→null is safe (unlike suppression, where absent vs empty differs).
+ */
+export async function getHeldAffirmatives(ownerFingerprint: string): Promise<HeldAffirmatives | null> {
+  if (!_sessionKey) return null;
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', heldAffirmsSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null;
+    const map = await decryptContactRecord<unknown>(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, row.value);
+    return isHeldAffirmatives(map) ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist Anna's held-affirmatives map, encrypted at rest (fail-closed: throws if locked). Receive-path only. */
+export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAffirmatives): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
+  await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {

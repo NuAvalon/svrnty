@@ -95,6 +95,40 @@ export function affirmGateCircle(
 }
 
 /**
+ * ★ EDGE-LEVEL REVEAL GATE — apply the AND-gate to a batch of edges' TRANSITIVE sets, at the display
+ * boundary (TrustMap's visibleContacts). For each edge, filter disclosed_circle AND they_trust (UNIONing the
+ * top-level + metadata fallbacks the readers consult — peer-trust-chords.ts:38/95, constellation.ts:75 —
+ * then CLEARING metadata.{disclosed_circle,they_trust} so the readers' metadata fallback cannot re-admit an
+ * ungated entry). Gating HERE (upstream of witnessedPeerChords) closes BOTH the drawn-chord leak AND the
+ * node-POSITION leak (mutualBonds → relaxGraphNodes springs two nodes together even with no visible line).
+ *
+ * This is TRANSITIVE-ONLY by construction: it touches only disclosed_circle/they_trust, never the edge's own
+ * identity (peer_fingerprint/name/trusted/blocked) — a directly-added contact is unaffected (piece-1's lane).
+ * ★ FAIL-CLOSED: held === null ⇒ every transitive set empties (surface nothing). Returns NEW edge objects
+ * (shallow copy; never mutates the caller's records). Call ONLY behind isPiece2MutualBlockLive() — flag-off
+ * ⇒ caller passes the edges through ungated (current behavior, no regression).
+ */
+export function gateEdgeTransitiveSets<
+  T extends {
+    disclosed_circle?: string[];
+    they_trust?: string[];
+    metadata?: ({ disclosed_circle?: string[]; they_trust?: string[] } & Record<string, unknown>) | null;
+  },
+>(edges: readonly T[], held: HeldAffirmatives | null, now: number): T[] {
+  return edges.map((e) => {
+    const disclosed = affirmGateCircle([...(e.disclosed_circle ?? []), ...(e.metadata?.disclosed_circle ?? [])], held, now);
+    const theyTrust = affirmGateCircle([...(e.they_trust ?? []), ...(e.metadata?.they_trust ?? [])], held, now);
+    let metadata = e.metadata;
+    if (metadata && typeof metadata === 'object') {
+      metadata = { ...metadata };
+      delete (metadata as Record<string, unknown>).disclosed_circle; // close the metadata-fallback bypass
+      delete (metadata as Record<string, unknown>).they_trust;
+    }
+    return { ...e, disclosed_circle: disclosed, they_trust: theyTrust, metadata };
+  });
+}
+
+/**
  * Record a received+verified affirmative (receive-path — next layer). MONOTONIC: only overwrite if the new
  * epoch is strictly higher (anti-rollback — a replayed older affirmative never shortens/extends the held one;
  * the receive-path also enforces this at verify, this is defense-in-depth). Returns a NEW map.

@@ -14,6 +14,7 @@ import {
   isHeldAffirmatives,
   holdsFreshAffirmative,
   affirmGateCircle,
+  gateEdgeTransitiveSets,
   recordAffirmative,
   pruneExpired,
   type HeldAffirmatives,
@@ -83,6 +84,37 @@ test('(MONOTONIC) recordAffirmative keeps the higher epoch', () => {
   h = recordAffirmative(h, CAROL, { validUntil: NOW + 200, epoch: 6 });
   assert.equal(h[CAROL].epoch, 6);
   assert.equal(h[CAROL].validUntil, NOW + 200);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════════
+// (EDGE GATE) — gateEdgeTransitiveSets gates disclosed_circle + they_trust at the display boundary, UNIONs
+// the metadata fallback then CLEARS metadata.* (so a reader's metadata fallback can't re-admit an ungated
+// party), leaves the edge's own identity untouched, and fail-closes on null held.
+// ════════════════════════════════════════════════════════════════════════════════════════════════════
+test('(EDGE GATE) filters disclosed_circle/they_trust (incl. metadata fallback) and clears metadata.*', () => {
+  const edge = {
+    peer_fingerprint: 'self',
+    trusted: true,
+    disclosed_circle: [CAROL, DAVE],              // Carol fresh, Dave expired
+    they_trust: [EVE],                            // Eve: no affirmative
+    metadata: { disclosed_circle: [EVE], note: 'keep-me' }, // metadata fallback would re-admit Eve
+  };
+  const h = held({ [CAROL]: { validUntil: NOW + 100, epoch: 1 }, [DAVE]: { validUntil: NOW - 1, epoch: 1 } });
+  const [gated] = gateEdgeTransitiveSets([edge], h, NOW);
+  assert.deepEqual(gated.disclosed_circle, [CAROL], 'only fresh Carol survives (Dave expired, Eve unaffirmed)');
+  assert.deepEqual(gated.they_trust, [], 'Eve has no affirmative ⇒ dropped');
+  assert.equal(gated.metadata?.disclosed_circle, undefined, 'metadata.disclosed_circle CLEARED (no bypass)');
+  assert.equal((gated.metadata as any)?.note, 'keep-me', 'unrelated metadata preserved');
+  assert.equal(gated.peer_fingerprint, 'self', 'edge identity untouched — transitive-only');
+  assert.notEqual(gated, edge, 'returns a new object, does not mutate input');
+  assert.deepEqual(edge.disclosed_circle, [CAROL, DAVE], 'input edge unmutated');
+});
+
+test('(EDGE GATE §F3) null held ⇒ every transitive set empties', () => {
+  const edge = { disclosed_circle: [CAROL], they_trust: [DAVE], metadata: { they_trust: [EVE] } };
+  const [gated] = gateEdgeTransitiveSets([edge], null, NOW);
+  assert.deepEqual(gated.disclosed_circle, [], 'null held ⇒ disclosed empty');
+  assert.deepEqual(gated.they_trust, [], 'null held ⇒ they_trust empty');
 });
 
 // ── shape guard + housekeeping ────────────────────────────────────────────────────────────────────────

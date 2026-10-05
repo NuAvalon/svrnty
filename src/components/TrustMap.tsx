@@ -28,9 +28,11 @@ import {
 } from '@/lib/trust/trust-map-layout';
 import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
+import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
+import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
-import { loadGateArrivals } from '@/lib/identity/client-store';
+import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import {
   applyLayoutMemory,
@@ -264,11 +266,36 @@ export function TrustMap({
     };
   }, [fullscreen]);
 
+  // Piece-2 mutual-block reveal AND-gate (DARK until isPiece2MutualBlockLive): when live, the viewer's
+  // held-affirmatives gate the TRANSITIVE sets (disclosed_circle/they_trust) at this SINGLE chokepoint —
+  // visibleContacts feeds chords, mutualBonds (node positions) and the layout, so a suppressed party
+  // surfaces via NEITHER a drawn filament NOR a positional spring. Flag-off ⇒ passthrough (no regression).
+  // Fail-closed: null held ⇒ transitive sets empty. (held is written by the receive-path — next layer.)
+  const [heldAffirms, setHeldAffirms] = useState<HeldAffirmatives | null>(null);
+  const [affirmNow, setAffirmNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    if (!isPiece2MutualBlockLive() || !ownerFingerprint) return;
+    let cancelled = false;
+    const refresh = async () => {
+      let held: HeldAffirmatives | null = null;
+      try { held = await getHeldAffirmatives(ownerFingerprint); } catch { held = null; }
+      if (!cancelled) { setHeldAffirms(held); setAffirmNow(Math.floor(Date.now() / 1000)); }
+    };
+    void refresh();
+    const unsub = subscribeContactChanges(() => void refresh());
+    // Refresh ≪ TTL (20min) so an expired affirmative stops surfacing well within the block-latency bound.
+    const poll = window.setInterval(() => void refresh(), 30_000);
+    return () => { cancelled = true; unsub(); window.clearInterval(poll); };
+  }, [ownerFingerprint]);
+
   // Blocked contacts stay off the lattice (local owner filter — not a disclosure gate).
-  const visibleContacts = useMemo(
-    () => contacts.filter((c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } })),
-    [contacts],
-  );
+  const visibleContacts = useMemo(() => {
+    const filtered = contacts.filter(
+      (c) => !isContactBlocked(c as EdgeExtras & { blocked?: boolean; metadata?: { blocked?: boolean } }),
+    );
+    // Gate the transitive reveal upstream of every surfacing reader (chords / positions / layout).
+    return isPiece2MutualBlockLive() ? gateEdgeTransitiveSets(filtered, heldAffirms, affirmNow) : filtered;
+  }, [contacts, heldAffirms, affirmNow]);
   const starKey = visibleContacts.map((c) => c.peer_fingerprint).join('\n');
 
   useEffect(() => {
