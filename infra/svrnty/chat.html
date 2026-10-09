@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>svrnty messenger</title>
+<script src="https://cdn.jsdelivr.net/npm/tweetnacl@1.0.3/nacl-fast.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tweetnacl-util@0.15.1/nacl-util.min.js"></script>
+<style>
+:root { --bg: #0a0a0f; --card: #12121a; --border: #1e1e2e; --text: #e0e0e0; --dim: #888; --accent: #6366f1; --green: #22c55e; --red: #ef4444; --pq: #a855f7; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'SF Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+.header { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 1rem; }
+.header h1 { font-size: 1rem; font-weight: 600; }
+.header .status { font-size: 0.75rem; color: var(--dim); }
+.header .status.online { color: var(--green); }
+.container { display: flex; flex: 1; overflow: hidden; }
+.sidebar { width: 220px; border-right: 1px solid var(--border); padding: 0.5rem; overflow-y: auto; }
+.contact { padding: 0.5rem 0.75rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; }
+.contact:hover { background: var(--card); }
+.contact.active { background: var(--accent); color: white; }
+.contact .badge { background: var(--red); color: white; border-radius: 10px; padding: 0 6px; font-size: 0.7rem; }
+.contact .type { font-size: 0.65rem; color: var(--dim); margin-left: 4px; }
+.chat { flex: 1; display: flex; flex-direction: column; }
+.messages { flex: 1; overflow-y: auto; padding: 1rem; }
+.msg { margin-bottom: 0.75rem; max-width: 70%; }
+.msg.sent { margin-left: auto; }
+.msg .bubble { padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.85rem; line-height: 1.4; }
+.msg.sent .bubble { background: var(--accent); color: white; }
+.msg.recv .bubble { background: var(--card); border: 1px solid var(--border); }
+.msg .meta { font-size: 0.65rem; color: var(--dim); margin-top: 2px; padding: 0 4px; }
+.msg.sent .meta { text-align: right; }
+.input-bar { padding: 0.75rem 1rem; border-top: 1px solid var(--border); display: flex; gap: 0.5rem; }
+.input-bar input { flex: 1; background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 0.5rem 0.75rem; border-radius: 6px; font-family: inherit; font-size: 0.85rem; }
+.input-bar input:focus { outline: none; border-color: var(--accent); }
+.input-bar button { background: var(--accent); color: white; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 0.85rem; }
+.input-bar button:hover { opacity: 0.9; }
+.setup { max-width: 480px; margin: 4rem auto; padding: 2rem; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+.setup h2 { font-size: 1rem; margin-bottom: 1rem; }
+.setup label { display: block; font-size: 0.8rem; color: var(--dim); margin-bottom: 0.25rem; margin-top: 0.75rem; }
+.setup input, .setup select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 0.5rem; border-radius: 6px; font-family: inherit; font-size: 0.85rem; }
+.setup button { margin-top: 1.5rem; width: 100%; background: var(--accent); color: white; border: none; padding: 0.75rem; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+.setup .or { text-align: center; color: var(--dim); font-size: 0.8rem; margin: 1rem 0; }
+.setup .small { font-size: 0.7rem; color: var(--dim); margin-top: 0.5rem; }
+.pq-badge { font-size: 0.65rem; color: var(--pq); padding: 2px 6px; border: 1px solid var(--pq); border-radius: 4px; }
+#groups-section { padding: 0.5rem; border-top: 1px solid var(--border); margin-top: 0.5rem; }
+#groups-section h3 { font-size: 0.75rem; color: var(--dim); margin-bottom: 0.25rem; }
+.loading-overlay { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 100; flex-direction: column; gap: 1rem; }
+.loading-overlay p { color: var(--dim); font-size: 0.85rem; }
+.request-item { padding: 0.4rem 0.5rem; border-radius: 6px; font-size: 0.8rem; background: var(--card); border: 1px solid var(--border); margin-bottom: 0.25rem; }
+.request-item .name { color: var(--pq); font-weight: 600; }
+.request-item .actions { display: flex; gap: 0.25rem; margin-top: 0.25rem; }
+.request-item button { font-size: 0.7rem; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-family: inherit; border: none; }
+.request-item .accept { background: var(--green); color: #000; }
+.request-item .ignore { background: var(--card); color: var(--dim); border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<div id="loading" class="loading-overlay">
+  <h2 style="color:var(--pq)">Loading post-quantum crypto...</h2>
+  <p>XWing (X25519 + ML-KEM-768) via @noble/post-quantum</p>
+</div>
+
+<!-- Setup screen -->
+<div id="setup-screen" class="setup" style="display:none">
+  <h2>svrnty messenger</h2>
+  <p style="font-size:0.8rem; color:var(--pq); margin-bottom:0.5rem">Post-quantum encrypted (XWing: X25519 + ML-KEM-768)</p>
+  <p style="font-size:0.8rem; color:var(--dim); margin-bottom:1rem">Your keys never leave this browser.</p>
+
+  <label>Your name</label>
+  <input id="setup-name" placeholder="your name" />
+
+  <label>Identity type</label>
+  <select id="setup-type">
+    <option value="human">Human</option>
+    <option value="agent">AI Agent</option>
+  </select>
+
+  <label>Password (encrypts your vault)</label>
+  <input id="setup-password" type="password" placeholder="Strong password for your .svrnty vault" />
+
+  <label>Anti-phishing safeword</label>
+  <input id="setup-safeword" placeholder="A word only you know (shown before password entry)" />
+
+  <button onclick="generateKeys()">Generate post-quantum keys</button>
+
+  <div class="or">or load existing vault</div>
+
+  <input type="file" id="vault-file" accept=".svrnty" style="display:none" onchange="loadVaultFile(event)" />
+  <button onclick="document.getElementById('vault-file').click()" style="background:var(--card);border:1px solid var(--border);color:var(--text)">Load .svrnty file</button>
+
+  <div id="vault-safeword-check" style="display:none; margin-top:1rem; padding:1rem; background:var(--bg); border:1px solid var(--border); border-radius:8px;">
+    <p style="font-size:0.8rem; color:var(--dim)">Your safeword:</p>
+    <p id="vault-safeword-display" style="font-size:1.2rem; color:var(--green); margin:0.5rem 0"></p>
+    <p style="font-size:0.7rem; color:var(--dim)">If this doesn't match what you set, this site may be compromised.</p>
+    <label style="margin-top:0.75rem">Enter password to unlock</label>
+    <input id="vault-unlock-password" type="password" placeholder="Your vault password" />
+    <button onclick="unlockVault()" style="margin-top:0.75rem">Unlock vault</button>
+  </div>
+
+  <div class="small">Your keys are stored in an encrypted .svrnty vault file. Keep it safe — it's your identity.</div>
+</div>
+
+<!-- Chat screen -->
+<div id="chat-screen" style="display:none; flex:1; flex-direction:column;">
+  <div class="header">
+    <h1>svrnty</h1>
+    <span class="pq-badge">PQ-hybrid encrypted</span>
+    <span id="conn-status" class="status">connecting...</span>
+    <a href="/" style="margin-left:auto; font-size:0.75rem; color:var(--accent); text-decoration:none;">&#8592; svrnty.is</a>
+    <button onclick="exportVault()" style="font-size:0.7rem; background:var(--card); border:1px solid var(--border); color:var(--dim); padding:3px 8px; border-radius:4px; cursor:pointer;" title="Download your encrypted vault file">Export vault</button>
+    <span style="font-size:0.75rem; color:var(--dim)" id="my-identity"></span>
+  </div>
+  <div class="container">
+    <div class="sidebar">
+      <div id="requests-section" style="display:none; padding:0.5rem; border-bottom:1px solid var(--border); margin-bottom:0.25rem;">
+        <h3 style="font-size:0.75rem; color:var(--pq); margin-bottom:0.25rem;">Contact Requests</h3>
+        <div id="request-list"></div>
+      </div>
+      <div id="contacts"></div>
+      <div id="groups-section">
+        <h3>Groups</h3>
+        <div id="group-list"></div>
+        <div class="contact" onclick="createGroup()" style="color:var(--accent); margin-top:0.25rem">+ New group</div>
+      </div>
+    </div>
+    <div class="chat">
+      <div class="messages" id="messages"></div>
+      <div class="input-bar">
+        <input id="msg-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter')sendMessage()" />
+        <button onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+// ── Load post-quantum crypto ──
+import { ml_kem768 } from 'https://cdn.jsdelivr.net/npm/@noble/post-quantum@0.5.4/+esm';
+import { x25519 } from 'https://cdn.jsdelivr.net/npm/@noble/curves@1.8.2/+esm';
+import { chacha20poly1305 } from 'https://cdn.jsdelivr.net/npm/@noble/ciphers@1.2.1/+esm';
+import { argon2id } from 'https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/+esm';
+
+// Expose to global scope for onclick handlers
+window._pq = { ml_kem768, x25519 };
+
+const SATELLITE = window.location.origin;
+let myKeys = null;  // { signKp, xwingSk, xwingPk, x25519Sk, x25519Pk, mlkemSk, mlkemPk }
+let myName = '';
+let myFingerprint = '';
+let contacts = {};
+let activeChat = null;
+let chatHistory = {};
+let pendingRequests = [];  // People who added me but I haven't added back
+let pollInterval = null;
+
+// ── Utility ──
+
+function toB64(uint8) { return nacl.util.encodeBase64(uint8); }
+function fromB64(s) { return nacl.util.decodeBase64(s); }
+
+async function sha256(data) {
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return new Uint8Array(buf);
+}
+
+async function sha256hex(data) {
+  const hash = await sha256(data);
+  return Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ── Hybrid XWing-like key exchange ──
+// XWing = X25519 + ML-KEM-768 hybrid KEM
+// Sender: encapsulate with recipient's public keys → (ct_mlkem, ct_x25519, shared_secret)
+// Recipient: decapsulate with their secret keys
+
+function hybridEncapsulate(recipientMlkemPk, recipientX25519Pk) {
+  // ML-KEM-768 encapsulate
+  const { cipherText: ctMlkem, sharedSecret: ssMlkem } = ml_kem768.encapsulate(recipientMlkemPk);
+
+  // X25519 ephemeral DH
+  const ephSk = x25519.utils.randomPrivateKey();
+  const ephPk = x25519.getPublicKey(ephSk);
+  const ssX25519 = x25519.getSharedSecret(ephSk, recipientX25519Pk);
+
+  // Combine: SHA-256(ss_mlkem || ss_x25519)
+  const combined = new Uint8Array(ssMlkem.length + ssX25519.length);
+  combined.set(ssMlkem);
+  combined.set(ssX25519, ssMlkem.length);
+
+  return {
+    ctMlkem,
+    ephPk,
+    combined  // Will be hashed to derive AES key
+  };
+}
+
+function hybridDecapsulate(ctMlkem, ephPk, myMlkemSk, myX25519Sk) {
+  // ML-KEM-768 decapsulate
+  const ssMlkem = ml_kem768.decapsulate(ctMlkem, myMlkemSk);
+
+  // X25519 DH
+  const ssX25519 = x25519.getSharedSecret(myX25519Sk, ephPk);
+
+  // Combine: same as encapsulate
+  const combined = new Uint8Array(ssMlkem.length + ssX25519.length);
+  combined.set(ssMlkem);
+  combined.set(ssX25519, ssMlkem.length);
+
+  return combined;
+}
+
+// ── AES-256-GCM via WebCrypto ──
+
+async function aesEncrypt(sharedSecretRaw, plaintext) {
+  const keyMaterial = await sha256(sharedSecretRaw);
+  const key = await crypto.subtle.importKey('raw', keyMaterial, 'AES-GCM', false, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+  return { iv: toB64(iv), ciphertext: toB64(new Uint8Array(ct)) };
+}
+
+async function aesDecrypt(sharedSecretRaw, ivB64, ciphertextB64) {
+  const keyMaterial = await sha256(sharedSecretRaw);
+  const key = await crypto.subtle.importKey('raw', keyMaterial, 'AES-GCM', false, ['decrypt']);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(ivB64) }, key, fromB64(ciphertextB64));
+  return new TextDecoder().decode(pt);
+}
+
+// ── Two-Layer Vault ──
+// Layer 1: device fingerprint → safeword (anti-phishing)
+// Layer 2: password → keys (access control)
+
+async function getDeviceFingerprint() {
+  // Stable-ish browser fingerprint for Layer 1
+  const data = [navigator.userAgent, navigator.language, screen.width, screen.height, new Date().getTimezoneOffset()].join('|');
+  return await sha256hex(new TextEncoder().encode(data));
+}
+
+async function deriveKey(password, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: fromB64(salt), iterations: 600000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+  );
+}
+
+async function vaultEncrypt(key, plaintext) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext));
+  return { iv: toB64(iv), ct: toB64(new Uint8Array(ct)) };
+}
+
+async function vaultDecrypt(key, ivB64, ctB64) {
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(ivB64) }, key, fromB64(ctB64));
+  return new TextDecoder().decode(pt);
+}
+
+async function createVault(keysJson, password, safeword) {
+  const salt1 = toB64(crypto.getRandomValues(new Uint8Array(16)));
+  const salt2 = toB64(crypto.getRandomValues(new Uint8Array(16)));
+
+  // Layer 1: encrypt safeword with device fingerprint
+  const deviceFp = await getDeviceFingerprint();
+  const key1 = await deriveKey(deviceFp, salt1);
+  const layer1 = await vaultEncrypt(key1, safeword);
+
+  // Layer 2: encrypt keys with password
+  const key2 = await deriveKey(password, salt2);
+  const layer2 = await vaultEncrypt(key2, JSON.stringify(keysJson));
+
+  return {
+    version: 'svrnty-vault-v1',
+    layer1: { salt: salt1, ...layer1 },  // safeword, keyed to device
+    layer2: { salt: salt2, ...layer2 },  // keys, keyed to password
+    fingerprint: keysJson.fingerprint,
+    created: new Date().toISOString()
+  };
+}
+
+function downloadVault(vault, name) {
+  const blob = new Blob([JSON.stringify(vault, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name}.svrnty`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+let pendingVault = null;  // Holds loaded vault awaiting password
+
+window.loadVaultFile = async function(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    pendingVault = JSON.parse(text);
+
+    if (pendingVault.format === 'svrnty-identity-v2') {
+      // v2 PQ identity file — no safeword layer, direct password prompt
+      document.getElementById('vault-safeword-display').textContent = '(v2 identity — no safeword layer)';
+      document.getElementById('vault-safeword-display').style.color = 'var(--pq)';
+      document.getElementById('vault-safeword-check').style.display = 'block';
+    } else if (pendingVault.version === 'svrnty-vault-v1') {
+      // v1 vault — existing safeword flow
+      try {
+        const deviceFp = await getDeviceFingerprint();
+        const key1 = await deriveKey(deviceFp, pendingVault.layer1.salt);
+        const safeword = await vaultDecrypt(key1, pendingVault.layer1.iv, pendingVault.layer1.ct);
+        document.getElementById('vault-safeword-display').textContent = safeword;
+      } catch {
+        document.getElementById('vault-safeword-display').textContent = '(different device — safeword unavailable)';
+        document.getElementById('vault-safeword-display').style.color = 'var(--dim)';
+      }
+      document.getElementById('vault-safeword-check').style.display = 'block';
+    } else {
+      alert('Unknown vault format');
+      pendingVault = null;
+    }
+  } catch (e) { alert('Invalid vault file: ' + e.message); }
+};
+
+window.unlockVault = async function() {
+  if (!pendingVault) return;
+  const password = document.getElementById('vault-unlock-password').value;
+  if (!password) { alert('Enter password'); return; }
+
+  try {
+    let keysJson;
+    let totpSeed = null;
+
+    if (pendingVault.format === 'svrnty-identity-v2') {
+      // v2 decryption: Argon2id -> ChaCha20-Poly1305
+      const enc = pendingVault.encryption;
+      const salt = fromB64(enc.salt);
+      const nonce = fromB64(enc.nonce);
+      const ciphertext = fromB64(enc.ciphertext);
+
+      const derivedKey = await argon2id({
+        password: password,
+        salt: salt,
+        parallelism: enc.kdf_params.parallelism,
+        iterations: enc.kdf_params.iterations,
+        memorySize: enc.kdf_params.memory_kb,
+        hashLength: 32,
+        outputType: 'binary',
+      });
+
+      const cipher = chacha20poly1305(new Uint8Array(derivedKey), nonce);
+      const plaintext = cipher.decrypt(ciphertext);
+      const payload = JSON.parse(new TextDecoder().decode(plaintext));
+
+      totpSeed = payload.totp_seed ? fromB64(payload.totp_seed) : null;
+
+      // Convert v2 Ed25519 PKCS8 to NaCl 64-byte format
+      const sk64 = await ed25519Pkcs8ToNacl(fromB64(payload.ed25519.private_key_pkcs8));
+
+      keysJson = {
+        sign_sk: toB64(sk64),
+        sign_pk: payload.ed25519.public_key,
+        mlkem_sk: payload.mlkem768.secret_key,
+        mlkem_pk: payload.mlkem768.public_key,
+        x25519_sk: payload.x25519.secret_key,
+        x25519_pk: payload.x25519.public_key,
+        fingerprint: pendingVault.fingerprint,
+        name: payload.name || pendingVault.fingerprint.slice(0, 8),
+      };
+    } else {
+      // v1 decryption: PBKDF2 -> AES-GCM
+      const key2 = await deriveKey(password, pendingVault.layer2.salt);
+      keysJson = JSON.parse(await vaultDecrypt(key2, pendingVault.layer2.iv, pendingVault.layer2.ct));
+    }
+
+    // TOTP verification (if seed present in v2 file)
+    if (totpSeed) {
+      const totpOk = await promptAndVerifyTOTP(totpSeed);
+      if (!totpOk) {
+        alert('Invalid TOTP code. Access denied.');
+        return;
+      }
+    }
+
+    // Load keys into memory
+    const signKp = nacl.sign.keyPair.fromSecretKey(fromB64(keysJson.sign_sk));
+    myKeys = {
+      signKp,
+      mlkemSk: fromB64(keysJson.mlkem_sk),
+      mlkemPk: fromB64(keysJson.mlkem_pk),
+      x25519Sk: fromB64(keysJson.x25519_sk),
+      x25519Pk: fromB64(keysJson.x25519_pk)
+    };
+    myName = keysJson.name;
+    myFingerprint = keysJson.fingerprint;
+
+    // Cache in localStorage for this session
+    localStorage.setItem('svrnty_keys', JSON.stringify(keysJson));
+
+    pendingVault = null;
+    enterChat();
+  } catch (e) {
+    alert('Wrong password or corrupted vault');
+  }
+};
+
+// ── TOTP verification (RFC 6238 / RFC 4226) ──
+
+async function computeHOTP(seed, counter) {
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setBigUint64(0, BigInt(counter));
+  const key = await crypto.subtle.importKey(
+    'raw', seed, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
+  );
+  const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+  const offset = hmac[19] & 0x0f;
+  const code = ((hmac[offset] & 0x7f) << 24 |
+                hmac[offset+1] << 16 |
+                hmac[offset+2] << 8 |
+                hmac[offset+3]) % 1000000;
+  return code.toString().padStart(6, '0');
+}
+
+async function verifyTOTP(seed, code, windowSize = 1) {
+  const counter = Math.floor(Date.now() / 1000 / 30);
+  for (let i = -windowSize; i <= windowSize; i++) {
+    const expected = await computeHOTP(seed, counter + i);
+    if (expected === code) return true;
+  }
+  return false;
+}
+
+function promptAndVerifyTOTP(seed) {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:9999';
+    modal.innerHTML = `
+      <div style="background:var(--card);padding:2rem;border-radius:12px;max-width:320px;text-align:center;border:1px solid var(--border)">
+        <h3 style="margin:0 0 0.5rem;color:var(--text);font-size:0.95rem">Two-Factor Authentication</h3>
+        <p style="color:var(--dim);font-size:0.8rem;margin-bottom:1rem">Enter the 6-digit code from your TOTP app</p>
+        <input type="text" id="totp-input" maxlength="6" pattern="[0-9]*" inputmode="numeric" autocomplete="one-time-code"
+          style="font-size:1.5rem;text-align:center;letter-spacing:0.5rem;width:8rem;padding:0.5rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit" />
+        <div style="margin-top:1rem;display:flex;gap:0.5rem;justify-content:center">
+          <button id="totp-cancel" style="padding:0.5rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--dim);cursor:pointer;font-family:inherit">Cancel</button>
+          <button id="totp-verify" style="padding:0.5rem 1rem;background:var(--accent);border:none;border-radius:6px;color:#fff;cursor:pointer;font-family:inherit">Verify</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    const input = document.getElementById('totp-input');
+    input.focus();
+
+    async function verify() {
+      const code = input.value.trim();
+      if (code.length !== 6 || !/^\d{6}$/.test(code)) return;
+      const valid = await verifyTOTP(seed, code);
+      document.body.removeChild(modal);
+      resolve(valid);
+    }
+    document.getElementById('totp-verify').onclick = verify;
+    document.getElementById('totp-cancel').onclick = () => { document.body.removeChild(modal); resolve(false); };
+    input.onkeydown = (e) => { if (e.key === 'Enter') verify(); };
+  });
+}
+
+// ── Ed25519 PKCS8 to NaCl conversion ──
+
+function fromB64url(b64url) {
+  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = b64.length % 4 === 0 ? '' : '='.repeat(4 - (b64.length % 4));
+  return fromB64(b64 + pad);
+}
+
+async function ed25519Pkcs8ToNacl(pkcs8Bytes) {
+  const cryptoKey = await crypto.subtle.importKey(
+    'pkcs8', pkcs8Bytes, { name: 'Ed25519' }, true, ['sign']
+  );
+  const jwk = await crypto.subtle.exportKey('jwk', cryptoKey);
+  const sk32 = fromB64url(jwk.d);
+  const kp = nacl.sign.keyPair.fromSeed(sk32);
+  const sk64 = new Uint8Array(64);
+  sk64.set(sk32);
+  sk64.set(kp.publicKey, 32);
+  return sk64;
+}
+
+// ── Key management ──
+
+window.generateKeys = async function() {
+  const name = document.getElementById('setup-name').value.trim();
+  const password = document.getElementById('setup-password').value;
+  const safeword = document.getElementById('setup-safeword').value.trim();
+  if (!name) { alert('Enter a name'); return; }
+  if (!password || password.length < 8) { alert('Password must be at least 8 characters'); return; }
+  if (!safeword) { alert('Enter a safeword — this protects you from phishing'); return; }
+  const type = document.getElementById('setup-type').value;
+
+  // Ed25519 signing
+  const signKp = nacl.sign.keyPair();
+
+  // ML-KEM-768
+  const { publicKey: mlkemPk, secretKey: mlkemSk } = ml_kem768.keygen();
+
+  // X25519
+  const x25519Sk = x25519.utils.randomPrivateKey();
+  const x25519Pk = x25519.getPublicKey(x25519Sk);
+
+  myKeys = { signKp, mlkemSk, mlkemPk, x25519Sk, x25519Pk };
+  myName = name;
+  myFingerprint = await sha256hex(signKp.publicKey);
+
+  const keysJson = {
+    name, type,
+    sign_sk: toB64(signKp.secretKey),
+    sign_pk: toB64(signKp.publicKey),
+    mlkem_sk: toB64(mlkemSk),
+    mlkem_pk: toB64(mlkemPk),
+    x25519_sk: toB64(x25519Sk),
+    x25519_pk: toB64(x25519Pk),
+    fingerprint: myFingerprint,
+    crypto_version: 'xwing-v1'
+  };
+
+  // Create and download the vault
+  const vault = await createVault(keysJson, password, safeword);
+  downloadVault(vault, name);
+
+  // Cache in localStorage for this session
+  localStorage.setItem('svrnty_keys', JSON.stringify(keysJson));
+
+  enterChat();
+};
+
+window.importKeys = async function() {
+  const name = document.getElementById('setup-name').value.trim();
+  const xwingSkB64 = document.getElementById('setup-xwing-sk').value.trim();
+  const signSkB64 = document.getElementById('setup-sign-sk').value.trim();
+  if (!name || !signSkB64) { alert('Fill name and signing key at minimum'); return; }
+  const type = document.getElementById('setup-type').value;
+
+  try {
+    const signKp = nacl.sign.keyPair.fromSecretKey(fromB64(signSkB64));
+
+    // If XWing key provided, parse it; otherwise generate fresh
+    let mlkemSk, mlkemPk, x25519Sk, x25519Pk;
+    if (xwingSkB64) {
+      // XWing secret key is mlkem_sk + x25519_sk concatenated
+      const xwingSk = fromB64(xwingSkB64);
+      mlkemSk = xwingSk.slice(0, 2400);  // ML-KEM-768 sk is 2400 bytes
+      x25519Sk = xwingSk.slice(2400, 2432);  // X25519 sk is 32 bytes
+      // Derive public keys
+      const mlkemKp = ml_kem768.keygen(mlkemSk);
+      mlkemPk = mlkemKp.publicKey;
+      x25519Pk = x25519.getPublicKey(x25519Sk);
+    } else {
+      const kp = ml_kem768.keygen();
+      mlkemSk = kp.secretKey;
+      mlkemPk = kp.publicKey;
+      x25519Sk = x25519.utils.randomPrivateKey();
+      x25519Pk = x25519.getPublicKey(x25519Sk);
+    }
+
+    myKeys = { signKp, mlkemSk, mlkemPk, x25519Sk, x25519Pk };
+    myName = name;
+    myFingerprint = await sha256hex(signKp.publicKey);
+
+    localStorage.setItem('svrnty_keys', JSON.stringify({
+      name, type,
+      sign_sk: toB64(signKp.secretKey),
+      sign_pk: toB64(signKp.publicKey),
+      mlkem_sk: toB64(mlkemSk),
+      mlkem_pk: toB64(mlkemPk),
+      x25519_sk: toB64(x25519Sk),
+      x25519_pk: toB64(x25519Pk),
+      fingerprint: myFingerprint,
+      crypto_version: 'xwing-v1'
+    }));
+
+    enterChat();
+  } catch (e) {
+    alert('Invalid keys: ' + e.message);
+  }
+};
+
+async function loadKeys() {
+  const saved = localStorage.getItem('svrnty_keys');
+  if (!saved) return false;
+  try {
+    const k = JSON.parse(saved);
+    if (k.crypto_version !== 'xwing-v1') {
+      // Old keys — clear and re-setup
+      localStorage.removeItem('svrnty_keys');
+      return false;
+    }
+    const signKp = nacl.sign.keyPair.fromSecretKey(fromB64(k.sign_sk));
+    myKeys = {
+      signKp,
+      mlkemSk: fromB64(k.mlkem_sk),
+      mlkemPk: fromB64(k.mlkem_pk),
+      x25519Sk: fromB64(k.x25519_sk),
+      x25519Pk: fromB64(k.x25519_pk)
+    };
+    myName = k.name;
+    myFingerprint = k.fingerprint;
+    return true;
+  } catch { return false; }
+}
+
+// ── Encrypt/Decrypt messages ──
+
+async function encryptFor(recipientMlkemPk, recipientX25519Pk, plaintext) {
+  const { ctMlkem, ephPk, combined } = hybridEncapsulate(recipientMlkemPk, recipientX25519Pk);
+  const { iv, ciphertext } = await aesEncrypt(combined, plaintext);
+
+  // Sign the encrypted payload
+  const sigData = nacl.util.decodeUTF8(JSON.stringify({ ct_mlkem: toB64(ctMlkem), eph_pk: toB64(ephPk), iv, ciphertext }));
+  const signature = nacl.sign.detached(sigData, myKeys.signKp.secretKey);
+
+  return {
+    version: 'xwing-v1',
+    ct_mlkem: toB64(ctMlkem),
+    eph_pk: toB64(ephPk),
+    iv,
+    ciphertext,
+    sender_sign_pk: toB64(myKeys.signKp.publicKey),
+    sender_mlkem_pk: toB64(myKeys.mlkemPk),
+    sender_x25519_pk: toB64(myKeys.x25519Pk),
+    signature: toB64(signature)
+  };
+}
+
+async function decryptMsg(payload) {
+  const ctMlkem = fromB64(payload.ct_mlkem);
+  const ephPk = fromB64(payload.eph_pk);
+  const combined = hybridDecapsulate(ctMlkem, ephPk, myKeys.mlkemSk, myKeys.x25519Sk);
+  return await aesDecrypt(combined, payload.iv, payload.ciphertext);
+}
+
+// ── Auth ──
+
+async function makeAuthSignature() {
+  // Sign: Ed25519(sk, fingerprint:timestamp_minute)
+  // The satellite verifies this to prove we hold the private key
+  const tsMinute = Math.floor(Date.now() / 1000 / 60);
+  const message = myFingerprint + ':' + tsMinute;
+  const msgBytes = nacl.util.decodeUTF8(message);
+  const sig = nacl.sign.detached(msgBytes, myKeys.signKp.secretKey);
+  return toB64(sig);
+}
+
+// ── API ──
+
+async function apiSend(to_fp, encPayload) {
+  const body = {
+    sender_fingerprint: myFingerprint,
+    recipient: to_fp,
+    encrypted_blob: JSON.stringify(encPayload)
+  };
+  const r = await fetch(SATELLITE + '/send', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+async function apiReceive() {
+  const sig = await makeAuthSignature();
+  const r = await fetch(SATELLITE + '/retrieve/' + myFingerprint, {
+    headers: { 'X-Signature': sig }
+  });
+  if (!r.ok) return [];
+  const data = await r.json();
+  return data.messages || [];
+}
+
+async function apiIdentities() {
+  const r = await fetch(SATELLITE + '/identities');
+  if (!r.ok) return [];
+  const data = await r.json();
+  return data.identities || [];
+}
+
+async function apiInboundRequests() {
+  const sig = await makeAuthSignature();
+  const r = await fetch(SATELLITE + '/allowed/' + myFingerprint + '/inbound', {
+    headers: { 'X-Signature': sig }
+  });
+  if (!r.ok) return [];
+  const data = await r.json();
+  return data.pending || [];
+}
+
+async function apiAddAllowed(senderFingerprint) {
+  const sig = await makeAuthSignature();
+  const r = await fetch(SATELLITE + '/allowed/' + myFingerprint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sender_fingerprint: senderFingerprint, signature: sig })
+  });
+  return r.json();
+}
+
+async function registerWithSatellite() {
+  const body = {
+    fingerprint: myFingerprint,
+    public_key: toB64(myKeys.signKp.publicKey),
+    display_name: myName,
+    encryption_pk: JSON.stringify({
+      mlkem_pk: toB64(myKeys.mlkemPk),
+      x25519_pk: toB64(myKeys.x25519Pk),
+      version: 'xwing-v1'
+    }),
+    identity_type: JSON.parse(localStorage.getItem('svrnty_keys')).type || 'human'
+  };
+  const r = await fetch(SATELLITE + '/register', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  return r.json();
+}
+
+// ── UI ──
+
+function enterChat() {
+  document.getElementById('setup-screen').style.display = 'none';
+  document.getElementById('chat-screen').style.display = 'flex';
+  document.getElementById('my-identity').textContent = myName + ' [' + myFingerprint.slice(0, 8) + '...]';
+
+  registerWithSatellite().then(() => {
+    document.getElementById('conn-status').textContent = 'online';
+    document.getElementById('conn-status').className = 'status online';
+  }).catch(() => {
+    document.getElementById('conn-status').textContent = 'offline';
+  });
+
+  refreshContacts();
+  refreshRequests();
+  pollInterval = setInterval(() => { pollMessages(); refreshContacts(); refreshRequests(); }, 3000);
+}
+
+async function refreshContacts() {
+  try {
+    const ids = await apiIdentities();
+    const el = document.getElementById('contacts');
+    el.innerHTML = '';
+    for (const id of ids) {
+      if (id.fingerprint === myFingerprint) continue;
+
+      // Parse encryption_pk — may be JSON (xwing-v1) or plain base64 (legacy)
+      let mlkemPk = null, x25519Pk = null;
+      try {
+        const encKeys = JSON.parse(id.encryption_pk);
+        if (encKeys.version === 'xwing-v1') {
+          mlkemPk = fromB64(encKeys.mlkem_pk);
+          x25519Pk = fromB64(encKeys.x25519_pk);
+        }
+      } catch {
+        // Legacy: plain base64 NaCl box key — can't PQ-encrypt to them
+      }
+
+      contacts[id.fingerprint] = {
+        name: id.name,
+        signing_pk: id.signing_pk ? fromB64(id.signing_pk) : null,
+        mlkem_pk: mlkemPk,
+        x25519_pk: x25519Pk,
+        type: id.identity_type || 'unknown',
+        pq: !!mlkemPk
+      };
+
+      const unread = (chatHistory[id.fingerprint] || []).filter(m => m.unread).length;
+      const div = document.createElement('div');
+      div.className = 'contact' + (activeChat === id.fingerprint ? ' active' : '');
+      const pqIcon = mlkemPk ? '<span style="color:var(--pq);font-size:0.6rem" title="Post-quantum">PQ</span>' : '';
+      div.innerHTML = `${escapeHtml(id.name)} ${pqIcon}<span class="type">${escapeHtml(id.identity_type || '')}</span>${unread ? '<span class="badge">' + unread + '</span>' : ''}`;
+      div.onclick = () => selectChat(id.fingerprint);
+      el.appendChild(div);
+    }
+  } catch (e) { console.error('refresh contacts:', e); }
+}
+
+async function refreshRequests() {
+  try {
+    pendingRequests = await apiInboundRequests();
+    const section = document.getElementById('requests-section');
+    const list = document.getElementById('request-list');
+
+    if (pendingRequests.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'block';
+    list.innerHTML = '';
+    for (const req of pendingRequests) {
+      const div = document.createElement('div');
+      div.className = 'request-item';
+      div.innerHTML = `
+        <div><span class="name">${escapeHtml(req.name)}</span> <span style="color:var(--dim);font-size:0.65rem">${escapeHtml(req.identity_type || '')}</span></div>
+        <div style="font-size:0.65rem;color:var(--dim)">${req.fingerprint.slice(0, 16)}...</div>
+        <div class="actions">
+          <button class="accept" data-fp="${escapeHtml(req.fingerprint)}">Accept</button>
+          <button class="ignore" data-fp="${escapeHtml(req.fingerprint)}">Ignore</button>
+        </div>
+      `;
+      div.querySelector('.accept').onclick = () => acceptRequest(req.fingerprint);
+      div.querySelector('.ignore').onclick = () => ignoreRequest(req.fingerprint);
+      list.appendChild(div);
+    }
+  } catch (e) { console.error('refresh requests:', e); }
+}
+
+window.acceptRequest = async function(fp) {
+  try {
+    await apiAddAllowed(fp);
+    pendingRequests = pendingRequests.filter(r => r.fingerprint !== fp);
+    refreshRequests();
+    refreshContacts();
+  } catch (e) { alert('Failed to accept: ' + e.message); }
+};
+
+window.ignoreRequest = function(fp) {
+  // Just hide it locally — doesn't block them, just dismisses the notification
+  pendingRequests = pendingRequests.filter(r => r.fingerprint !== fp);
+  refreshRequests();
+};
+
+function selectChat(fp) {
+  activeChat = fp;
+  if (chatHistory[fp]) chatHistory[fp].forEach(m => m.unread = false);
+  renderMessages();
+  refreshContacts();
+  document.getElementById('msg-input').focus();
+}
+
+function renderMessages() {
+  const el = document.getElementById('messages');
+  const msgs = chatHistory[activeChat] || [];
+  el.innerHTML = msgs.map(m => `
+    <div class="msg ${m.from === myFingerprint ? 'sent' : 'recv'}">
+      <div class="bubble">${escapeHtml(m.text)}</div>
+      <div class="meta">${m.from === myFingerprint ? 'you' : escapeHtml(contacts[m.from]?.name || m.from.slice(0,8))} &middot; ${new Date(m.ts).toLocaleTimeString()}</div>
+    </div>
+  `).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+window.sendMessage = async function() {
+  const input = document.getElementById('msg-input');
+  const text = input.value.trim();
+  if (!text || !activeChat) return;
+
+  const contact = contacts[activeChat];
+  if (!contact || !contact.mlkem_pk || !contact.x25519_pk) {
+    alert('Recipient does not have post-quantum keys. They need to re-register with PQ-enabled client.');
+    return;
+  }
+
+  try {
+    const enc = await encryptFor(contact.mlkem_pk, contact.x25519_pk, text);
+    await apiSend(activeChat, enc);
+    if (!chatHistory[activeChat]) chatHistory[activeChat] = [];
+    chatHistory[activeChat].push({ from: myFingerprint, text, ts: Date.now(), unread: false });
+    input.value = '';
+    renderMessages();
+  } catch (e) { alert('Send failed: ' + e.message); }
+};
+
+async function pollMessages() {
+  try {
+    const msgs = await apiReceive();
+    for (const m of msgs) {
+      const senderFp = m.sender;
+
+      try {
+        const payload = JSON.parse(m.encrypted_blob);
+
+        // Handle system notifications (mutual contact, PSI, etc.)
+        if (senderFp === 'satellite:system' || senderFp === 'satellite:contact' || senderFp === 'satellite:psi') {
+          if (payload.type === 'mutual_contact') {
+            // Mutual connection established — refresh contacts and requests
+            const partnerFp = payload.partner;
+            const partnerName = payload.partner_name || partnerFp.slice(0, 8);
+            if (!chatHistory[partnerFp]) chatHistory[partnerFp] = [];
+            chatHistory[partnerFp].push({
+              from: 'system',
+              text: '\u{1f91d} Mutual connection established with ' + partnerName,
+              ts: m.queued_at ? new Date(m.queued_at).getTime() : Date.now(),
+              unread: activeChat !== partnerFp
+            });
+            refreshRequests();
+          }
+          continue;
+        }
+
+        let plaintext;
+        if (payload.version === 'xwing-v1') {
+          plaintext = await decryptMsg(payload);
+        } else {
+          // Legacy NaCl box — skip (can't decrypt with new keys)
+          console.warn('Legacy message from', senderFp, '— skipping');
+          continue;
+        }
+
+        if (!plaintext) continue;
+
+        // Update contact info from sender's included keys
+        if (payload.sender_sign_pk && payload.sender_mlkem_pk && payload.sender_x25519_pk) {
+          if (!contacts[senderFp]) contacts[senderFp] = {};
+          contacts[senderFp].mlkem_pk = fromB64(payload.sender_mlkem_pk);
+          contacts[senderFp].x25519_pk = fromB64(payload.sender_x25519_pk);
+          contacts[senderFp].pq = true;
+        }
+
+        if (!chatHistory[senderFp]) chatHistory[senderFp] = [];
+        chatHistory[senderFp].push({
+          from: senderFp,
+          text: plaintext,
+          ts: m.queued_at ? new Date(m.queued_at).getTime() : Date.now(),
+          unread: activeChat !== senderFp
+        });
+      } catch (e) { console.error('decrypt failed:', e); }
+    }
+    if (activeChat) renderMessages();
+    refreshContacts();
+  } catch (e) { console.error('poll:', e); }
+}
+
+window.exportVault = async function() {
+  const password = prompt('Enter a password for your vault:');
+  if (!password || password.length < 8) { alert('Password must be at least 8 characters'); return; }
+  const safeword = prompt('Enter your anti-phishing safeword:');
+  if (!safeword) { alert('Safeword required'); return; }
+
+  const keysJson = JSON.parse(localStorage.getItem('svrnty_keys'));
+  const vault = await createVault(keysJson, password, safeword);
+  downloadVault(vault, myName);
+};
+
+window.createGroup = function() {
+  const name = prompt('Group name:');
+  if (!name) return;
+  alert('Group creation coming soon');
+};
+
+// ── Boot ──
+document.getElementById('loading').remove();
+if (await loadKeys()) {
+  enterChat();
+} else {
+  document.getElementById('setup-screen').style.display = 'block';
+}
+</script>
+</body>
+</html>
