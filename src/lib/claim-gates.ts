@@ -69,8 +69,9 @@ export function isPQWireLive(): boolean {
  * forward-revocation on retract) is active. LIVE SCOPE: only the KNOW-layer is live-TRIGGERED —
  * runKnowLayerSyncTick passes 'know' (ContactManagement is the only mounted trigger). The TRUST-layer
  * reveal PREDICATE (two-layer applyMutualResult + edgeTrusted) is BUILT but NOT live-triggered: no
- * mounted 'trust'-layer sync initiation exists, so they_trust is never populated live (the :40
- * mutual-trust reveal does NOT fire live — it is the post-launch wiring step). Graduated (KNOW-layer)
+ * mounted 'trust'-layer sync initiation exists, so they_trust is never populated live (the
+ * mutual-trust reveal — see the trust-model section — does NOT fire live; it is the post-launch
+ * wiring step). Graduated (KNOW-layer)
  * on: flip-gate #1 closed, the e2e verify (determinism / unlinkability / set-change→new-session /
  * stateless-reload), Flint's at-rest-blinder co-verify, and Peter's informed reconfirm.
  * SCOPE (honest): block≡offline is DIRECT-block only; mutual-mediated/transitive block (#156420) is
