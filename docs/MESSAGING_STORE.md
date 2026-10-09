@@ -10,6 +10,16 @@
 
 Do not add a `messages` object store to `svrnty`. Cross-link by `peer_fingerprint` / `thread_id` only.
 
+## Backup
+
+The contact-book export (`exportAll`, `version: '1.0'`) is identity, keys, and contacts. It does not include notes.
+
+Notes backup is a different file, `svrnty-notes.json`, version `notes-1`. It holds threads, note bodies, and local ring state from `svrnty-notes` only. A book file is rejected. The Hive action is **Back up notes**. The file is the notes themselves — keep it like a diary.
+
+A note that has been sealed is not unsent or rewritten. Removing someone from a ring stops later notes. Notes they already opened stay with them.
+
+Adding someone bumps the epoch. The default is **new notes only**. **Earlier notes too** reseals up to 100 notes this device still holds, to that one person, as a single ratchet packet. Old epoch ciphertexts were never sealed to them, so this is a fresh copy, not a grant of the old blobs.
+
 ## Schema (v1)
 
 **Database:** `svrnty-notes`, version `1`

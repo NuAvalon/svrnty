@@ -1227,6 +1227,8 @@ export interface SovereignBackup {
 }
 
 export async function exportAll(fingerprint: string, includePrivateKeys: boolean = false): Promise<SovereignBackup> {
+  // Notes stay in IndexedDB `svrnty-notes` and in a notes-1 file. Never fold them
+  // into this contact-book backup — a long thread would bloat the book.
   const identity = await loadIdentity(fingerprint);
   if (!identity) throw new Error('Identity not found');
 
