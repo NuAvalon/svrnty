@@ -576,8 +576,18 @@ export function downloadVault(data: ArrayBuffer, name?: string) {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  // The anchor MUST be in the DOM before click() — Firefox / Safari / mobile NO-OP a download from a
+  // detached anchor (Chrome tolerates it). Every OTHER export helper in this app appendChilds (own-vcard,
+  // SecureImportExportDialogs); downloadVault was the lone exception, which is why the vault backup
+  // "spins then stops, nothing downloads" on a non-Chrome / mobile browser (#166207). Defer remove +
+  // revoke a tick so a synchronous revokeObjectURL cannot cancel the download before the browser has
+  // read the (large, Argon2id-packed) vault blob.
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, 1500);
 }
 
 /**
