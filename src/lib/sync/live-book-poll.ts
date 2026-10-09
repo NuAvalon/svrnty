@@ -44,7 +44,10 @@ import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam } from './consume-mailbox';
+import type { JoinerResponseSeam, NoteResponseSeam } from './consume-mailbox';
+import { acceptInboundNote } from '@/lib/messaging/transport';
+import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
 
 /** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
 export const DEFAULT_POLL_INTERVAL_MS = 1_500;
@@ -123,6 +126,34 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
   };
 }
 
+/**
+ * Build the over-wire NOTE seam bound to this owner (consume-mailbox NoteResponseSeam). The mailbox is
+ * shared by contact.updates + joiner-responses + over-wire notes — all the SAME openpgp envelope — so
+ * WITHOUT this seam the always-on living-book poll decrypts a note via the contact-update path, fails
+ * its `envelope.fingerprint` shape-check, and SILENTLY ack-DELETES it (the silent-loss). This routes a
+ * note by its own type-checked decryptor to acceptInboundNote (authn-then-admit, fail-closed) → the
+ * notes store. Exported for unit tests.
+ */
+export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
+  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  return {
+    // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
+    // the type-check inside noteOpenpgpDecryptor is the discriminator, so this never eats a non-note.
+    verify: (blob: string) => decryptNote(blob),
+    accept: async (wire) => {
+      // acceptInboundNote: verifyNoteSender (authn — public_key↔from_fingerprint + sig) THEN admit
+      // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
+      // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
+      // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
+      const rec = await acceptInboundNote({
+        wire,
+        isAdmitted: async (fp) => (await getContactByFingerprint(owner.fingerprint, fp)) != null,
+      });
+      return rec ? { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint } : null;
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -152,11 +183,24 @@ export async function buildConsumeDeps(
   // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects
   // codes minted since the last poll. loadIssuedCodeMap prunes expired entries.
   const codes: IssuedCodeMap = await loadIssuedCodeMap();
+  // Unlock the notes store so received over-wire notes PERSIST on arrival (not just once /msg is open).
+  // Same unlock passphrase the vault uses (store.ts initNotesStore, separate salt); the poll only runs
+  // for an UNLOCKED identity, so the credential is already in memory — no new trust boundary crossed.
+  // Guarded (idempotent) + fail-soft: if it can't unlock, the note seam's putNote throws → the note is
+  // held as retryable in the mailbox (never ack-deleted-unseen), so there is still no silent-loss.
+  if (!isNotesStoreUnlocked()) {
+    try {
+      await initNotesStore(key.passphrase);
+    } catch {
+      /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
+    }
+  }
   return {
     owner,
     decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase),
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes),
+    note: buildNoteSeam(owner),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     fetchImpl: opts.fetchImpl,
   };

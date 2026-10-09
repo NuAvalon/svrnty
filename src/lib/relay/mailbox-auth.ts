@@ -27,6 +27,11 @@ import { mailboxConfig } from './mailbox-config';
 // replayed as an ack (or vice-versa): different domain → different signed bytes (sign-envelope LP).
 export const DOMAIN_MAILBOX_POLL = 'svrnty:mailbox-poll:v1';
 export const DOMAIN_MAILBOX_ACK = 'svrnty:mailbox-ack:v1';
+// Layer (A) beta-access claim (format §3): proves the claimer controls the key behind token.sub, by
+// signing the SAME {mailbox_id, nonce, ts} claim as a poll under a DISTINCT domain — so a captured
+// poll-auth can never be replayed as a claim (and vice-versa). This is what makes a beta-access token
+// non-transferable: only deriveMailboxId(sub)'s key-holder can redeem it.
+export const DOMAIN_MAILBOX_CLAIM = 'svrnty:mailbox-claim:v1';
 
 /** The HTTP header carrying the base64url(JSON) owner-auth bundle for both poll (GET) and ack (POST). */
 export const OWNER_AUTH_HEADER = 'x-svrnty-owner-auth';
@@ -201,6 +206,33 @@ function bundleFrom(
   return b;
 }
 
+/**
+ * Build the owner-auth header for a beta-access CLAIM of `mailboxId` (format §3). Binds the SAME
+ * {mailbox_id, nonce, ts} claim as a poll, but under DOMAIN_MAILBOX_CLAIM — domain-separated so a
+ * captured poll-auth can never be replayed as a claim (and vice-versa). Proves the claimer controls
+ * the key behind the mailbox = the token's `sub` (non-transferability). Classical sig (like poll/ack);
+ * the PQ pubkeys ride the bundle for canonical-fp binding.
+ */
+export async function signMailboxClaimRequest(args: {
+  mailboxId: string;
+  fingerprint: string;
+  publicKeyArmored: string;
+  privateKeyArmored: string;
+  passphrase: string;
+  now: number;
+  kemPublicKey?: string;
+  sigPublicKey?: string;
+}): Promise<Record<string, string>> {
+  const nonce = randomNonce();
+  const sig = await signWithEnvelope(
+    DOMAIN_MAILBOX_CLAIM,
+    pollSigningInput({ mailbox_id: args.mailboxId, nonce, ts: args.now }),
+    args.privateKeyArmored,
+    args.passphrase,
+  );
+  return { [OWNER_AUTH_HEADER]: encodeBundle(bundleFrom(args, nonce, sig)) };
+}
+
 // ── SERVER (Next API route): verify a poll / ack request is from the mailbox owner ──
 // Verified BEFORE any store access → a non-owner never reaches the store (I-4 anti-oracle). Returns
 // false, never throws — a verifier refuses.
@@ -222,6 +254,18 @@ export async function verifyMailboxAckAuth(
   if (!bundle) return false;
   const input = ackSigningInput({ mailbox_id: mailboxId, envelope_ids: envelopeIds, nonce: bundle.nonce, ts: bundle.ts });
   return verifyOwner(bundle, DOMAIN_MAILBOX_ACK, input, mailboxId, now);
+}
+
+/**
+ * Verify a beta-access CLAIM request is from the mailbox owner (format §3 step 2) — the proof that
+ * makes a token non-transferable. Same {mailbox_id, nonce, ts} binding as a poll, under
+ * DOMAIN_MAILBOX_CLAIM. Verified BEFORE any claim-registry write. Returns false, never throws.
+ */
+export async function verifyMailboxClaimAuth(request: Request, mailboxId: string, now: number): Promise<boolean> {
+  const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
+  if (!bundle) return false;
+  const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
+  return verifyOwner(bundle, DOMAIN_MAILBOX_CLAIM, input, mailboxId, now);
 }
 
 async function verifyOwner(
