@@ -8,26 +8,7 @@ Work top-down: the top task first, then the next. Build to spec. Open **ONE PR p
 
 ---
 
-## 1. Over-wire SEND / INBOX UI (render-glass; crypto = call-only, DO NOT reimplement)
-
-**FLOW**
-1. COMPOSE/SEND → call `sendNoteToPeer({ sender, senderPublicKeyArmored, senderPrivateKeyArmored, passphrase, senderPqKemPublicKey, senderPqSigPublicKey, peerFingerprint, peerPublicKeyArmored, body, threadId? })` (`src/lib/messaging/transport.ts`) → `{ note_id, thread_id, deposited }`. Render the sent note as **"Sent · unconfirmed."**
-2. RECEIVE (ALREADY WIRED — do NOT re-implement) → the app-shell's `startLiveBookPolling` (`src/lib/sync/live-book-poll.ts`) now routes inbound notes through the merged note-aware consume → `acceptInboundNote` persists them to the notes store. The INBOX UI just READS the store (`listThreads()` + note records, `src/lib/messaging/store.ts`) and repaints when the `emitNote` / contact-events seam fires.
-3. READ THREAD → `listThreads()` + note records (encrypted-at-rest; unlock = the vault passphrase, already loaded in session).
-4. YOUR SENT ITEMS → the local outbound `NoteRecord`s (body readable to you; stored by `sendNoteToPeer`).
-
-**INVARIANTS + TEST-ANCHORS**
-- ★ Senders MUST be CANONICAL-minted identities — the relay rejects classical 40-hex (res1 gate). Your UI's identities must be canonical.
-- ★ STATUS = **"Sent · unconfirmed" ONLY**. NO "Delivered"/"Read"/"Expired". There is NO sender-side delivery-status query on the blind dumb mailbox (`/api/relay/msg/status` does NOT exist there — that is the keystone smart-mailbox path; do NOT poll it). Delivery-receipts = post-beta, not built.
-- RECEIVE = persisted (no-silent-loss): a note is delivered-or-held, never lost. A non-contact / unsigned / forged note is DROPPED SILENTLY; the sender is NEVER told they're not admitted (anti-harassment; admit-status hidden — sender sees only "unconfirmed").
-- CRYPTO = CALL-ONLY: `sendNoteToPeer` / `acceptInboundNote` / `noteOpenpgpDecryptor` are imported + called, NEVER reimplemented. (Flint signs the crypto-call surface at review.)
-
-**LIVE-STATUS**
-- SEND: proven (DAG-A round-trip + forgery-reject + confidentiality). RECEIVE: merged + co-verified GREEN (PR#212), persists on arrival. Live-inbox-repaint: the `emitNote` seam exists — wire the repaint-on-arrival. Use the honest copy strings from task #3 for all surfaced text.
-
----
-
-## 2. Beta-messaging UI copy (BETA surface only — NOT the public README)
+## 1. Beta-messaging UI copy (BETA surface only — NOT the public README)
 
 > Verbatim copy for the beta-surface screens. The README stays messaging-free. ★ The Unlock/redeem screen (below) renders ONLY when the beta gate is ON (issuer provisioned) — NOT in the gate-OFF dogfood gap. Every line is scoped to co-verified built-state; do not add a capability claim beyond these.
 
