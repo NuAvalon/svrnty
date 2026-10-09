@@ -69,7 +69,7 @@ parameterises it.
 |---|----------|---------|
 | S1 | Mint K identities on `svrnty.is` (headless `mintHeadlessAgent`, proven path) | cards sign, Invariant-1 (`fp ≡ H(pubkey)`) holds for all K |
 | S2 | Each identity registers a mailbox on its home relay | `POST /mailbox/register` owner-proof accepted; `GET /mailbox/{fp}` serves pubkeys only (never `owner_identity_fp`) |
-| S3 | Cross-domain contact exchange | `/c/<code>` dead-drop round-trip works a→b, a→c (single-use, TTL) |
+| S3 | Cross-domain contact exchange | `/c/<code>` dead-drop round-trip works a→b, a→c (multi-use within the code TTL — serves until expiry, never consume-on-view; join cap `GROW_INVITE_CAP`) |
 | S4 | **Mailbox migration** b → c | `publishMailboxPointer` with `pointerEpoch ≥ 1` propagates; peers resolve latest valid pointer (monotonic); `rehydrateTrustBeacons` re-derives R + re-deposits beacons onto relay-c; old mailbox stops receiving new envelopes; identity durable_id/did unchanged |
 | S5 | Multi-mailbox relay | relay-c hosts N owner mailboxes; per-mailbox cap → uniform 429; deposit/poll isolation between mailboxes |
 | S6 | Failure modes | relay down mid-migration → pointer retry; stale pointer (lower epoch) rejected; wrong-signature pointer rejected |

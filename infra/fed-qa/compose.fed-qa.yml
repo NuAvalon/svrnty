@@ -16,6 +16,12 @@ services:
       fed:
         aliases: [svrnty.is]
     ports: ["3000:3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   app-b: # single-mailbox self-host (cap 1)
     build:
@@ -30,6 +36,12 @@ services:
       fed:
         aliases: [relay-b.test]
     ports: ["3001:3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   app-c: # multi-mailbox relay
     build:
@@ -44,6 +56,12 @@ services:
       fed:
         aliases: [relay-c.test]
     ports: ["3002:3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/version').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
 
   registry: # mailbox-registry TEST-DOUBLE — POST /mailbox/register, GET /mailbox/{fp}
     image: node:22-alpine
@@ -54,6 +72,12 @@ services:
       fed:
         aliases: [registry.test]
     ports: ["8100:8100"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8100/mailbox/nope').then(r=>process.exit(r.status===404?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
   runner:
     image: node:22-bookworm-slim # glibc — can exec the repo's host-built node_modules via tsx
