@@ -8,6 +8,8 @@ import { TrustMap } from '@/components/TrustMap';
 import { GrowSurface } from '@/components/GrowSurface';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
 import { NotesInbox } from '@/components/notes/NotesInbox';
+import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
+import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gate-on';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
@@ -78,6 +80,7 @@ export default function Home() {
   const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  const betaMessagingOn = isBetaIssuerProvisioned();
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
     kind: MethodKind;
@@ -860,7 +863,11 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="notes">
-              <NotesInbox identity={identity} />
+              {betaMessagingOn ? (
+                <BetaMessagingTab identity={identity} />
+              ) : (
+                <NotesInbox identity={identity} />
+              )}
             </TabsContent>
           </Tabs>
         )}
