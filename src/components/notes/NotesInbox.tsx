@@ -18,7 +18,7 @@ import {
   type NoteThread,
 } from '@/lib/messaging';
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
-import { emitNoteArrival, subscribeNoteArrivals } from './note-events';
+import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { toNoteableContacts, type NoteableContact } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY } from './notes-copy';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
