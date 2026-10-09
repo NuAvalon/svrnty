@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{DISPLAY_NAME}} — svrnty</title>
+<meta property="og:title" content="{{DISPLAY_NAME}} on svrnty">
+<meta property="og:description" content="Sovereign identity. No passwords. No tracking. Just keys.">
+<meta property="og:url" content="https://svrnty.is/u/{{SLUG}}">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: #0a0a1a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  .container { max-width: 480px; width: 100%; }
+  .card {
+    background: #12122a;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+  .display-name {
+    font-size: 2rem;
+    color: #c9a227;
+    margin-bottom: 0.25rem;
+    letter-spacing: 1px;
+    word-break: break-word;
+  }
+  .slug-line {
+    color: #666;
+    font-size: 0.85rem;
+    margin-bottom: 1.5rem;
+  }
+  .identity-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 1.5rem;
+  }
+  .identity-badge.human { background: #1a2a1a; color: #6bffb8; border: 1px solid #2a4a2a; }
+  .identity-badge.agent { background: #1a1a2a; color: #6bb8ff; border: 1px solid #2a2a4a; }
+  .identity-badge.hybrid { background: #2a1a2a; color: #d4a0ff; border: 1px solid #4a2a4a; }
+  .qr-container {
+    margin: 1.5rem auto;
+    padding: 1rem;
+    background: #fff;
+    border-radius: 8px;
+    display: inline-block;
+    line-height: 0;
+  }
+  .qr-container svg { width: 200px; height: 200px; }
+  .fingerprint-section {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #2a2a4a;
+  }
+  .fingerprint-label {
+    color: #666;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-bottom: 0.5rem;
+  }
+  .fingerprint-value {
+    font-size: 1.1rem;
+    color: #c9a227;
+    letter-spacing: 3px;
+    cursor: pointer;
+    transition: color 0.2s;
+    user-select: all;
+  }
+  .fingerprint-value:hover { color: #d4b33c; }
+  .copy-hint {
+    color: #444;
+    font-size: 0.7rem;
+    margin-top: 0.25rem;
+    transition: color 0.3s;
+  }
+  .copy-hint.copied { color: #6bffb8; }
+  .qr-toggle {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  .qr-toggle button {
+    background: transparent;
+    color: #666;
+    border: 1px solid #2a2a4a;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-family: inherit;
+    font-size: 0.7rem;
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    transition: all 0.2s;
+  }
+  .qr-toggle button.active {
+    color: #c9a227;
+    border-color: #c9a227;
+  }
+  .qr-toggle button:hover { color: #c9a227; border-color: #c9a227; }
+  .qr-label {
+    color: #555;
+    font-size: 0.65rem;
+    margin-top: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .meta {
+    margin-top: 1rem;
+    color: #555;
+    font-size: 0.75rem;
+  }
+  .actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    font-weight: bold;
+    cursor: pointer;
+    text-align: center;
+    text-decoration: none;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .btn-primary {
+    background: #c9a227;
+    color: #0a0a1a;
+    border: none;
+  }
+  .btn-primary:hover { background: #d4b33c; }
+  .btn-outline {
+    background: transparent;
+    color: #c9a227;
+    border: 1px solid #c9a227;
+  }
+  .btn-outline:hover { background: #1a1a2a; border-color: #d4b33c; }
+  footer {
+    margin-top: 2rem;
+    color: #444;
+    font-size: 0.75rem;
+    text-align: center;
+  }
+  footer a { color: #666; text-decoration: none; }
+  footer a:hover { color: #c9a227; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="card">
+    <div class="display-name">{{DISPLAY_NAME}}</div>
+    <div class="slug-line">svrnty.is/u/{{SLUG}}</div>
+    <span class="identity-badge {{IDENTITY_TYPE}}">{{IDENTITY_TYPE}}</span>
+
+    <div class="qr-container" id="qrProfile">
+      {{QR_SVG}}
+    </div>
+    <div class="qr-container" id="qrIdentity" style="display:none;">
+      {{QR_IDENTITY_SVG}}
+    </div>
+    <div class="qr-label" id="qrLabel">scan to view profile</div>
+    <div class="qr-toggle">
+      <button class="active" id="btnQrProfile" onclick="showQR('profile')">Profile</button>
+      <button id="btnQrIdentity" onclick="showQR('identity')">Key Exchange</button>
+    </div>
+
+    <div class="fingerprint-section">
+      <div class="fingerprint-label">fingerprint</div>
+      <div class="fingerprint-value" onclick="copyFingerprint()" title="Click to copy">{{FINGERPRINT}}</div>
+      <div class="copy-hint" id="copyHint">click to copy</div>
+    </div>
+
+    <div class="meta">joined {{JOINED_DATE}}</div>
+  </div>
+
+  <div class="actions">
+    <button class="btn btn-primary" onclick="exportPublicKey()">Export public key</button>
+    <button class="btn btn-outline" onclick="copyPublicKey(this)">Copy public key</button>
+    <a href="/u/{{SLUG}}/contact.vcf" class="btn btn-outline">Add to contacts</a>
+    <button class="btn btn-outline" onclick="shareProfile(this)">Share this profile</button>
+    <a href="https://svrnty.is/" class="btn btn-outline" style="font-size:0.85rem;">Create your own identity</a>
+  </div>
+</div>
+
+<footer>
+  <a href="https://svrnty.is">svrnty</a> &mdash; sovereign identity for a sovereign web
+</footer>
+
+<script>
+function copyFingerprint() {
+  navigator.clipboard.writeText('{{FINGERPRINT}}').then(function() {
+    var hint = document.getElementById('copyHint');
+    hint.textContent = 'copied!';
+    hint.classList.add('copied');
+    setTimeout(function() {
+      hint.textContent = 'click to copy';
+      hint.classList.remove('copied');
+    }, 2000);
+  });
+}
+
+function shareProfile(btn) {
+  var url = 'https://svrnty.is/u/{{SLUG}}';
+  if (navigator.share) {
+    navigator.share({ title: '{{DISPLAY_NAME}} on svrnty', url: url });
+  } else {
+    navigator.clipboard.writeText(url).then(function() {
+      btn.textContent = 'Link copied!';
+      setTimeout(function() { btn.textContent = 'Share this profile'; }, 2000);
+    });
+  }
+}
+
+function showQR(mode) {
+  var profile = document.getElementById('qrProfile');
+  var identity = document.getElementById('qrIdentity');
+  var label = document.getElementById('qrLabel');
+  var btnP = document.getElementById('btnQrProfile');
+  var btnI = document.getElementById('btnQrIdentity');
+  if (mode === 'identity') {
+    profile.style.display = 'none';
+    identity.style.display = 'inline-block';
+    label.textContent = 'scan to exchange keys';
+    btnP.classList.remove('active');
+    btnI.classList.add('active');
+  } else {
+    profile.style.display = 'inline-block';
+    identity.style.display = 'none';
+    label.textContent = 'scan to view profile';
+    btnI.classList.remove('active');
+    btnP.classList.add('active');
+  }
+}
+
+function exportPublicKey() {
+  fetch('/u/{{SLUG}}/keys')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '{{SLUG}}_public_keys.json';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+}
+
+function copyPublicKey(btn) {
+  fetch('/u/{{SLUG}}/keys')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var text = 'svrnty identity: ' + data.display_name + '\n'
+        + 'fingerprint: ' + data.fingerprint + '\n'
+        + 'ed25519: ' + data.keys.ed25519 + '\n'
+        + 'profile: ' + data.profile_url;
+      navigator.clipboard.writeText(text).then(function() {
+        btn.textContent = 'Copied!';
+        setTimeout(function() { btn.textContent = 'Copy public key'; }, 2000);
+      });
+    });
+}
+</script>
+</body>
+</html>
