@@ -229,6 +229,6 @@ test('empty mailbox → no-op summary', async () => {
   const summary = await consumeInboundContactUpdates(baseDeps({
     fetchImpl: recordingFetch([], ackLog),
   }));
-  assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, dropped: 0, acked: 0 });
+  assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, notes: 0, dropped: 0, acked: 0 });
   assert.deepEqual(ackLog, []);
 });
