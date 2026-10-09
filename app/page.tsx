@@ -7,6 +7,7 @@ import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { GrowSurface } from '@/components/GrowSurface';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
+import { NotesInbox } from '@/components/notes/NotesInbox';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
@@ -585,7 +586,7 @@ export default function Home() {
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
-              className="w-full max-w-2xl mx-auto mb-8"
+              className="w-full max-w-3xl mx-auto mb-8"
               style={{
                 background: 'rgba(30,20,10,.55)',
                 border: `1px solid ${E.border}`,
@@ -623,6 +624,15 @@ export default function Home() {
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Encrypt
+              </TabsTrigger>
+              <TabsTrigger
+                value="notes"
+                aria-label="Notes"
+                data-testid="tab-notes"
+                className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Notes
               </TabsTrigger>
             </TabsList>
 
@@ -847,6 +857,10 @@ export default function Home() {
 
             <TabsContent value="encrypt-decrypt">
               <EncryptDecryptTab identity={identity} />
+            </TabsContent>
+
+            <TabsContent value="notes">
+              <NotesInbox identity={identity} />
             </TabsContent>
           </Tabs>
         )}
