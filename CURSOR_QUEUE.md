@@ -8,35 +8,7 @@ Work top-down: the top task first, then the next. Build to spec. Open **ONE PR p
 
 ---
 
-## 1. Trust-state visual — pending vs mutual UNMISTAKABLY distinct (render-glass; reads one honest phase)
-
-> ★ PETER REPORTED THIS: trusting one-way makes a connection render WHITE (reads "mutual/connected") with no visible difference from an actual mutual bond. The DATA already distinguishes them — this is a render-only bug. The GATE on this task = **PETER SEES pending ≠ mutual at a glance** on-screen (he reported the miss; he verifies the fix). Build to "unmistakable," not "we think it's distinct."
-
-**FLOW**
-1. For each edge, call the EXISTING pure derivation `livingEdgeStatus(edge)` (`src/lib/trust/living-edge-status.ts`) → `{ trust: 'none'|'outbound'|'inbound'|'mutual', connection: 'classical'|'pending'|'linked', statusLine, detailLine, ... }`; chip via `livingStatusChip(status)`. This is SHIPPED, pure, fail-closed — **READ it, never recompute trust from raw `edge.trusted`/`edge.mutual`**.
-2. Map `.trust` → visual through ONE single-source phase→visual map that ALL consumers read — render `TrustMapGalaxy`, `MasterAddressBookList`, AND `ContactManagement` from THIS one map (no per-consumer re-derivation; a 4th consumer must inherit it):
-   - `trust==='none'` → **Known**: dim/outline, no fill.
-   - `trust==='outbound'` (I trust them, not yet reciprocated) → **Trust-sent (pending)**: dashed/hollow shape + muted/desaturated color + label **"Awaiting mutual"**. ★ NEVER white/solid/lit.
-   - `trust==='inbound'` (they trust me, I haven't) → **Trust-received**: distinct + actionable, label **"Trusts you · trust back?"**.
-   - `trust==='mutual'` (reciprocal) → **Mutual**: solid/filled shape + full/lit color + label **"Mutual"**. ★ the ONLY white/lit bond.
-   - BLOCKED → **Blocked**: muted/struck (keep distinct).
-   - `ownerHasVerified(edge)` → **Verified** overlay: a mark ON the bond (orthogonal, NOT a tier/phase).
-3. Render `connection` (`'pending'` = the intro-handshake) as a SEPARATE axis — do NOT conflate the intro `connection==='pending'` with the bond `trust==='outbound'`.
-
-**INVARIANTS + TEST-ANCHORS**
-- ★★ WHITE/LIT IFF `trust === 'mutual'`. An `outbound` edge MUST NOT render white/lit. TEST: an `outbound` edge asserts the pending treatment (dashed/hollow/muted + "Awaiting mutual"); a `mutual` edge asserts white/solid + "Mutual".
-- ★ pending↔mutual UNMISTAKABLE, MULTI-CHANNEL. TEST: they differ on ≥2 channels (SHAPE + COLOR) AND carry distinct LABELS — NOT a fill-shade/opacity-only diff (the faint 0.28-vs-0.16 opacity is exactly what read as "no difference"). The LABEL is the strongest honesty-channel — lead with it, shape+color reinforce.
-- Verify is ORTHOGONAL. TEST: a verified-but-`outbound` edge shows the pending bond + the verify-mark — verification NEVER promotes it to mutual/white.
-- No name-overload. TEST: an intro `connection==='pending'` edge and a `trust==='outbound'` edge render DISTINCTLY — add a derived `trust-sent` bond-state; do NOT reuse `isPending`.
-- RENDER-ONLY. The change touches node/edge visual derivation + the single phase→visual map; `livingEdgeStatus` / trust-graph primitives are UNCHANGED (team-owned; Apollo co-verifies the derivation render). A once-mutual-then-revoked edge auto-drops white by construction (its phase flips `reciprocal→false` → render follows).
-
-**LIVE-STATUS**
-- `livingEdgeStatus` EXISTS + is pure + fail-closed + SHIPPED; `.trust` already distinguishes outbound/mutual correctly. The bug is render-only — 3 consumers inconsistent (`MasterAddressBookList.chipColor` honest ✓ / `TrustMapGalaxy` node-color over-claims outbound→white ✗ / `ContactManagement` to confirm). Fix = unify all on `livingEdgeStatus.trust`.
-- GATES: Apollo co-verifies the derivation render (white IFF mutual) · Archie gates display-honesty · ★ PETER-SEES-IT on-screen = the acceptance gate. (Self-test note: `trust==='mutual'` only flips when reciprocity is genuinely established — a fleet-owned probe — so after the fix a one-way trust correctly STAYS outbound/pending until mutual is real.)
-
----
-
-## 2. Over-wire SEND / INBOX UI (render-glass; crypto = call-only, DO NOT reimplement)
+## 1. Over-wire SEND / INBOX UI (render-glass; crypto = call-only, DO NOT reimplement)
 
 **FLOW**
 1. COMPOSE/SEND → call `sendNoteToPeer({ sender, senderPublicKeyArmored, senderPrivateKeyArmored, passphrase, senderPqKemPublicKey, senderPqSigPublicKey, peerFingerprint, peerPublicKeyArmored, body, threadId? })` (`src/lib/messaging/transport.ts`) → `{ note_id, thread_id, deposited }`. Render the sent note as **"Sent · unconfirmed."**
@@ -55,7 +27,7 @@ Work top-down: the top task first, then the next. Build to spec. Open **ONE PR p
 
 ---
 
-## 3. Beta-messaging UI copy (BETA surface only — NOT the public README)
+## 2. Beta-messaging UI copy (BETA surface only — NOT the public README)
 
 > Verbatim copy for the beta-surface screens. The README stays messaging-free. ★ The Unlock/redeem screen (below) renders ONLY when the beta gate is ON (issuer provisioned) — NOT in the gate-OFF dogfood gap. Every line is scoped to co-verified built-state; do not add a capability claim beyond these.
 
