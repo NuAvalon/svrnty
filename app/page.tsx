@@ -7,8 +7,8 @@ import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { GrowSurface } from '@/components/GrowSurface';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
+import { NotesInbox } from '@/components/notes/NotesInbox';
 import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
-import { BETA_COPY } from '@/components/beta-messaging/beta-messaging-copy';
 import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gate-on';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
@@ -589,7 +589,7 @@ export default function Home() {
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
-              className="w-full max-w-2xl mx-auto mb-8"
+              className="w-full max-w-3xl mx-auto mb-8"
               style={{
                 background: 'rgba(30,20,10,.55)',
                 border: `1px solid ${E.border}`,
@@ -628,17 +628,15 @@ export default function Home() {
               >
                 Encrypt
               </TabsTrigger>
-              {betaMessagingOn && (
-                <TabsTrigger
-                  value="notes"
-                  aria-label={BETA_COPY.tabLabel}
-                  data-testid="tab-beta-messaging"
-                  className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
-                  style={{ color: E.muted, fontFamily: E.fontSans }}
-                >
-                  {BETA_COPY.tabLabel}
-                </TabsTrigger>
-              )}
+              <TabsTrigger
+                value="notes"
+                aria-label="Notes"
+                data-testid="tab-notes"
+                className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Notes
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="identity">
@@ -864,11 +862,13 @@ export default function Home() {
               <EncryptDecryptTab identity={identity} />
             </TabsContent>
 
-            {betaMessagingOn && (
-              <TabsContent value="notes">
+            <TabsContent value="notes">
+              {betaMessagingOn ? (
                 <BetaMessagingTab identity={identity} />
-              </TabsContent>
-            )}
+              ) : (
+                <NotesInbox identity={identity} />
+              )}
+            </TabsContent>
           </Tabs>
         )}
 
