@@ -83,7 +83,7 @@ export function SoulSeedReveal({
           Write this down.
         </h1>
         <p style={{ color: E.muted, fontSize: 13, lineHeight: 1.5, margin: '0 0 16px', textAlign: 'center' }}>
-          Your recovery code. Write it down and keep it somewhere safe you&apos;ll still have if you lose your passphrase. If you lose your passphrase, the recovery code restores your identity without it. Shown once — this is <strong style={{ color: E.text }}>not</strong> your everyday passphrase.
+          Your recovery code. Write it down and keep it somewhere safe you&apos;ll still have if you lose your passphrase. If you lose your passphrase, the recovery code restores your identity without it. Keep your .svrnty backup file safe too — this recovery code opens that file, it can&apos;t rebuild you alone. Shown once — this is <strong style={{ color: E.text }}>not</strong> your everyday passphrase.
         </p>
         <p style={{ color: E.dim, fontSize: 12, lineHeight: 1.45, margin: '0 0 16px', textAlign: 'center' }}>
           Social-recovery shards ({threshold}-of-{shardCount}) stay local for the tear ceremony.
