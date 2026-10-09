@@ -1,9 +1,13 @@
 # svrnty — self-host compose.
 #
-#   Minimal (default): the app + Caddy (automatic HTTPS). Identity is self-certifying;
-#     relay, vault, and contact exchange all work with NO external backend.
-#   Full nursery (optional): add `--profile nursery` to also run the registration
-#     backend, which enables vanity slugs (id.example.com/alice) on YOUR domain.
+#   Default (a full sovereign node): the app + Caddy (automatic HTTPS) + the registration
+#     satellite backend — all brought up by `docker compose up`. Relay, vault, contact
+#     exchange, PSI discovery, onion-route, and trust-sync run on YOUR domain; the one
+#     exception is the global vanity-slug registry (id.example.com/alice), which stays on
+#     svrnty.is and degrades gracefully.
+#   Relay-only (advanced opt-out): drop the `registration` service for a blind dead-drop —
+#     only /api/relay/* survives (the 7 /api/satellite/* routes 502). Not a usable sovereign
+#     unit on its own; most self-hosters want the default.
 #
 # Quick start:
 #   cp .env.example .env      # then edit .env
