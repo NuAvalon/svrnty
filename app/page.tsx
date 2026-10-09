@@ -7,6 +7,9 @@ import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { GrowSurface } from '@/components/GrowSurface';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
+import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
+import { BETA_COPY } from '@/components/beta-messaging/beta-messaging-copy';
+import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gate-on';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
@@ -77,6 +80,7 @@ export default function Home() {
   const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  const betaMessagingOn = isBetaIssuerProvisioned();
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
     kind: MethodKind;
@@ -624,6 +628,17 @@ export default function Home() {
               >
                 Encrypt
               </TabsTrigger>
+              {betaMessagingOn && (
+                <TabsTrigger
+                  value="notes"
+                  aria-label={BETA_COPY.tabLabel}
+                  data-testid="tab-beta-messaging"
+                  className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                  style={{ color: E.muted, fontFamily: E.fontSans }}
+                >
+                  {BETA_COPY.tabLabel}
+                </TabsTrigger>
+              )}
             </TabsList>
 
             <TabsContent value="identity">
@@ -848,6 +863,12 @@ export default function Home() {
             <TabsContent value="encrypt-decrypt">
               <EncryptDecryptTab identity={identity} />
             </TabsContent>
+
+            {betaMessagingOn && (
+              <TabsContent value="notes">
+                <BetaMessagingTab identity={identity} />
+              </TabsContent>
+            )}
           </Tabs>
         )}
 
