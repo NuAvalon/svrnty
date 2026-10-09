@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>svrnty — sovereign identity</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: #0a0a1a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  .container { max-width: 480px; width: 100%; }
+  h1 {
+    font-size: 2.5rem;
+    color: #c9a227;
+    margin-bottom: 0.5rem;
+    letter-spacing: 2px;
+  }
+  .tagline {
+    color: #888;
+    margin-bottom: 2rem;
+    font-size: 0.9rem;
+  }
+  .card {
+    background: #12122a;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+  }
+  .step { display: none; }
+  .step.active { display: block; }
+  label {
+    display: block;
+    color: #888;
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  input {
+    width: 100%;
+    padding: 12px 16px;
+    background: #1a1a3a;
+    border: 1px solid #3a3a5a;
+    border-radius: 8px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input:focus { border-color: #c9a227; }
+  input.otp {
+    font-size: 2rem;
+    text-align: center;
+    letter-spacing: 12px;
+    padding: 16px;
+  }
+  button {
+    width: 100%;
+    padding: 14px;
+    background: #c9a227;
+    color: #0a0a1a;
+    border: none;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #d4b33c; }
+  button:disabled { background: #4a4a4a; cursor: not-allowed; }
+  .status {
+    text-align: center;
+    padding: 1rem;
+    margin-top: 1rem;
+    border-radius: 8px;
+    display: none;
+  }
+  .status.error { display: block; background: #2a1020; color: #ff6b6b; border: 1px solid #4a2030; }
+  .status.success { display: block; background: #102a20; color: #6bffb8; border: 1px solid #204a30; }
+  .status.info { display: block; background: #10202a; color: #6bb8ff; border: 1px solid #20304a; }
+  .key-display {
+    background: #1a1a3a;
+    border: 1px solid #3a3a5a;
+    border-radius: 8px;
+    padding: 1rem;
+    word-break: break-all;
+    font-size: 0.75rem;
+    color: #c9a227;
+    margin: 1rem 0;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  .fingerprint {
+    font-size: 1.2rem;
+    color: #c9a227;
+    text-align: center;
+    padding: 1rem;
+    letter-spacing: 2px;
+  }
+  .warning {
+    background: #2a2010;
+    border: 1px solid #4a3020;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+    color: #ffa040;
+    font-size: 0.85rem;
+  }
+  footer {
+    margin-top: 2rem;
+    color: #444;
+    font-size: 0.75rem;
+    text-align: center;
+  }
+  footer a { color: #666; }
+  .principles {
+    margin-top: 2rem;
+    padding: 1.5rem;
+    border-top: 1px solid #2a2a4a;
+  }
+  .principles p {
+    color: #555;
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+    padding-left: 1rem;
+    border-left: 2px solid #2a2a4a;
+  }
+  .passphrase-section {
+    margin: 1rem 0;
+    padding: 1rem;
+    background: #1a1a2a;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+  }
+  .passphrase-section input { margin-bottom: 0.5rem; }
+  .passphrase-hint {
+    font-size: 0.75rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+  }
+  .totp-section {
+    margin: 1.5rem 0;
+    padding: 1rem;
+    background: #1a1a2a;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    text-align: center;
+  }
+  .totp-section canvas { margin: 1rem auto; display: block; }
+  .totp-secret {
+    font-size: 0.8rem;
+    color: #c9a227;
+    letter-spacing: 3px;
+    margin: 0.5rem 0;
+    word-break: break-all;
+  }
+  .key-version-badge {
+    display: inline-block;
+    font-size: 0.65rem;
+    color: #6bffb8;
+    border: 1px solid #204a30;
+    border-radius: 4px;
+    padding: 2px 6px;
+    margin-left: 0.5rem;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>svrnty <span class="key-version-badge">v2 PQ</span></h1>
+  <p class="tagline">your key is you — now quantum-resistant</p>
+
+  <!-- Step 1: Email -->
+  <div class="card">
+    <div id="step1" class="step active">
+      <label>Email address</label>
+      <input type="email" id="email" placeholder="you@example.com" autocomplete="email">
+      <button onclick="window._requestOTP()">Create identity</button>
+      <div id="status1" class="status"></div>
+    </div>
+
+    <!-- Step 2: OTP -->
+    <div id="step2" class="step">
+      <label>Verification code (check your email)</label>
+      <input type="text" id="otp" class="otp" maxlength="6" placeholder="000000" autocomplete="one-time-code">
+      <button onclick="window._verifyOTP()">Next</button>
+      <div id="status2" class="status"></div>
+    </div>
+
+    <!-- Step 2b: Passphrase (after OTP, before key generation) -->
+    <div id="step2b" class="step">
+      <label>Choose a passphrase to encrypt your identity file</label>
+      <div class="passphrase-section">
+        <input type="password" id="passphrase1" placeholder="Strong passphrase" autocomplete="new-password">
+        <input type="password" id="passphrase2" placeholder="Confirm passphrase" autocomplete="new-password">
+        <p class="passphrase-hint">This encrypts your .svrnty file. Without it, your keys are unrecoverable. There is no reset.</p>
+      </div>
+      <button onclick="window._generateAndRegister()">Generate identity</button>
+      <div id="status2b" class="status"></div>
+    </div>
+
+    <!-- Step 3: Identity created — TOTP + claim -->
+    <div id="step3" class="step">
+      <div id="status3" class="status success">Your identity has been created. 4 keypairs generated. Quantum-resistant.</div>
+      <label>Your fingerprint</label>
+      <div id="fingerprint" class="fingerprint"></div>
+
+      <!-- TOTP setup -->
+      <div class="totp-section" id="totpSection">
+        <label>Two-factor authentication (scan with Aegis or any TOTP app)</label>
+        <canvas id="totpQR" width="200" height="200"></canvas>
+        <div class="totp-secret" id="totpSecret"></div>
+        <p class="passphrase-hint">This TOTP seed is inside your encrypted .svrnty file. If you lose the file, you lose 2FA.</p>
+      </div>
+
+      <div class="warning">
+        An encrypted .svrnty file has been downloaded to your device.
+        It contains 4 keypairs (Ed25519 + X25519 + ML-DSA-65 + ML-KEM-768) and your TOTP seed,
+        encrypted with your passphrase via Argon2id + ChaCha20-Poly1305.
+        No password reset. No server that can recover your account &mdash; or be forced to surrender it. Your recovery is yours to hold: keep your encrypted backup safe. This is sovereignty.
+      </div>
+      <div style="margin-top:1.5rem; padding-top:1.5rem; border-top:1px solid #2a2a4a;">
+        <label>Claim your URL</label>
+        <div style="display:flex; align-items:center; gap:0; margin-bottom:0.5rem;">
+          <span style="color:#666; font-size:0.9rem; white-space:nowrap; padding:12px 0 12px 16px; background:#1a1a3a; border:1px solid #3a3a5a; border-right:none; border-radius:8px 0 0 8px;">svrnty.is/u/</span>
+          <input type="text" id="slug" placeholder="yourname" autocomplete="off"
+            style="border-radius:0 8px 8px 0; margin-bottom:0; border-left:none;"
+            pattern="[a-z0-9][a-z0-9_-]*" minlength="3" maxlength="32"
+            oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9_-]/g,'')">
+        </div>
+        <div id="slugAvail" style="font-size:0.75rem; color:#666; min-height:1.2em; margin-bottom:0.75rem;"></div>
+        <button onclick="window._claimSlug()">Claim &amp; view profile</button>
+      </div>
+      <div style="margin-top:0.75rem;">
+        <button onclick="window._skipSlug()" style="background:transparent; color:#666; border:1px solid #2a2a4a; font-size:0.85rem;">Skip for now</button>
+      </div>
+      <div id="status3b" class="status"></div>
+    </div>
+  </div>
+
+  <div class="principles">
+    <p>Your identity lives on your device, not our servers.</p>
+    <p>We verify your email once. After that, your key is you.</p>
+    <p>No passwords. No accounts. No tracking.</p>
+    <p>4 keypairs: classical + post-quantum. Ready for what's next.</p>
+    <p><a href="/about" style="color:#666;">How does this work? &rarr;</a></p>
+  </div>
+</div>
+
+<footer>
+  svrnty &mdash; sovereign identity for a sovereign web<br>
+  <a href="/about">about</a>
+</footer>
+
+<script type="module">
+// ── CDN imports (noble ecosystem + hash-wasm, all pure JS) ──
+import { ml_dsa65 } from 'https://cdn.jsdelivr.net/npm/@noble/post-quantum@0.5.4/+esm';
+import { ml_kem768 } from 'https://cdn.jsdelivr.net/npm/@noble/post-quantum@0.5.4/+esm';
+import { x25519 } from 'https://cdn.jsdelivr.net/npm/@noble/curves@1.8.0/ed25519/+esm';
+import { chacha20poly1305 } from 'https://cdn.jsdelivr.net/npm/@noble/ciphers@1.2.1/+esm';
+import { argon2id } from 'https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/+esm';
+
+const API = '';
+let generatedKeys = null;
+let totpSeed = null;
+
+// ── Helpers ──
+
+function showStatus(id, msg, type) {
+  const el = document.getElementById(id);
+  el.className = 'status ' + type;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function showStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById('step' + n).classList.add('active');
+}
+
+function uint8ToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+function base64ToUint8(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function hexFromBytes(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// ── Key generation ──
+
+async function generateEd25519() {
+  const keyPair = await crypto.subtle.generateKey(
+    { name: 'Ed25519' },
+    true,
+    ['sign', 'verify']
+  );
+  const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+  const privateKeyPkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', publicKeyRaw);
+  const fingerprint = hexFromBytes(new Uint8Array(hashBuffer)).slice(0, 16);
+  return {
+    publicKey: hexFromBytes(new Uint8Array(publicKeyRaw)),
+    privateKeyPkcs8: privateKeyPkcs8,
+    fingerprint: fingerprint,
+    keyPair: keyPair
+  };
+}
+
+async function generateAllKeypairs() {
+  // 1. Ed25519 (classical signing)
+  const ed = await generateEd25519();
+
+  // 2. X25519 (classical encryption / key agreement)
+  const x25519_sk = x25519.utils.randomPrivateKey();
+  const x25519_pk = x25519.getPublicKey(x25519_sk);
+
+  // 3. ML-DSA-65 (post-quantum signing, FIPS 204)
+  const mldsa = ml_dsa65.keygen();
+
+  // 4. ML-KEM-768 (post-quantum encryption, FIPS 203)
+  const mlkem = ml_kem768.keygen();
+
+  return {
+    ed25519: ed,
+    x25519: {
+      publicKey: uint8ToBase64(x25519_pk),
+      secretKey: uint8ToBase64(x25519_sk),
+    },
+    mldsa65: {
+      publicKey: uint8ToBase64(mldsa.publicKey),
+      secretKey: uint8ToBase64(mldsa.secretKey),
+    },
+    mlkem768: {
+      publicKey: uint8ToBase64(mlkem.publicKey),
+      secretKey: uint8ToBase64(mlkem.secretKey),
+    },
+    fingerprint: ed.fingerprint,
+  };
+}
+
+// ── TOTP seed generation ──
+
+function generateTOTPSeed() {
+  // 20 bytes = 160 bits, standard for TOTP
+  const seed = crypto.getRandomValues(new Uint8Array(20));
+  return seed;
+}
+
+function base32Encode(bytes) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const b of bytes) bits += b.toString(2).padStart(8, '0');
+  let result = '';
+  for (let i = 0; i < bits.length; i += 5) {
+    const chunk = bits.slice(i, i + 5).padEnd(5, '0');
+    result += alphabet[parseInt(chunk, 2)];
+  }
+  return result;
+}
+
+function drawTOTPQR(canvas, otpauthURI) {
+  // Minimal QR code renderer — uses qr-creator pattern (inline)
+  // For now, use a simple text display + manual entry
+  // TODO: integrate qrcode-generator CDN for proper QR
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#1a1a2a';
+  ctx.fillRect(0, 0, 200, 200);
+  ctx.fillStyle = '#666';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('Scan not available yet', 100, 90);
+  ctx.fillText('Enter secret manually', 100, 110);
+  ctx.fillText('in Aegis / TOTP app', 100, 130);
+}
+
+// ── Encryption (.svrnty v2 file) ──
+
+async function encryptIdentityFile(keys, totpSeedBytes, passphrase) {
+  // Derive key with Argon2id
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const derivedKey = await argon2id({
+    password: passphrase,
+    salt: salt,
+    parallelism: 1,
+    iterations: 3,
+    memorySize: 65536, // 64 MB
+    hashLength: 32,
+    outputType: 'binary',
+  });
+
+  // Build plaintext payload
+  const payload = {
+    ed25519: {
+      public_key: keys.ed25519.publicKey,
+      private_key_pkcs8: uint8ToBase64(new Uint8Array(keys.ed25519.privateKeyPkcs8)),
+    },
+    x25519: {
+      public_key: keys.x25519.publicKey,
+      secret_key: keys.x25519.secretKey,
+    },
+    mldsa65: {
+      public_key: keys.mldsa65.publicKey,
+      secret_key: keys.mldsa65.secretKey,
+    },
+    mlkem768: {
+      public_key: keys.mlkem768.publicKey,
+      secret_key: keys.mlkem768.secretKey,
+    },
+    totp_seed: uint8ToBase64(totpSeedBytes),
+  };
+
+  const plaintext = new TextEncoder().encode(JSON.stringify(payload));
+
+  // Encrypt with ChaCha20-Poly1305
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const cipher = chacha20poly1305(new Uint8Array(derivedKey), nonce);
+  const ciphertext = cipher.encrypt(plaintext);
+
+  // Build .svrnty v2 file (JSON envelope — encrypted inner)
+  const file = {
+    format: 'svrnty-identity-v2',
+    version: 2,
+    fingerprint: keys.fingerprint,
+    // Public keys (not sensitive — also stored on relay)
+    public_keys: {
+      ed25519: keys.ed25519.publicKey,
+      x25519: keys.x25519.publicKey,
+      mldsa65: keys.mldsa65.publicKey,
+      mlkem768: keys.mlkem768.publicKey,
+    },
+    // Encrypted private keys + TOTP seed
+    encryption: {
+      algorithm: 'chacha20-poly1305',
+      kdf: 'argon2id',
+      kdf_params: { parallelism: 1, iterations: 3, memory_kb: 65536 },
+      salt: uint8ToBase64(salt),
+      nonce: uint8ToBase64(nonce),
+      ciphertext: uint8ToBase64(ciphertext),
+    },
+    created_at: new Date().toISOString(),
+  };
+
+  return file;
+}
+
+// ── Flow handlers ──
+
+window._requestOTP = async function() {
+  const email = document.getElementById('email').value.trim();
+  if (!email || !email.includes('@')) {
+    showStatus('status1', 'Please enter a valid email address', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(API + '/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showStep(2);
+    } else {
+      showStatus('status1', data.detail || 'Something went wrong', 'error');
+    }
+  } catch (e) {
+    showStatus('status1', 'Connection failed — try again', 'error');
+  }
+};
+
+window._verifyOTP = async function() {
+  const otp = document.getElementById('otp').value.trim();
+  if (otp.length !== 6) {
+    showStatus('status2', 'Enter the 6-digit code from your email', 'error');
+    return;
+  }
+  // OTP verified client-side step — show passphrase prompt
+  showStep('2b');
+};
+
+window._generateAndRegister = async function() {
+  const email = document.getElementById('email').value.trim();
+  const otp = document.getElementById('otp').value.trim();
+  const p1 = document.getElementById('passphrase1').value;
+  const p2 = document.getElementById('passphrase2').value;
+
+  if (!p1 || p1.length < 8) {
+    showStatus('status2b', 'Passphrase must be at least 8 characters', 'error');
+    return;
+  }
+  if (p1 !== p2) {
+    showStatus('status2b', 'Passphrases do not match', 'error');
+    return;
+  }
+
+  showStatus('status2b', 'Generating 4 keypairs (this takes a moment)...', 'info');
+
+  try {
+    // Generate all keypairs
+    generatedKeys = await generateAllKeypairs();
+
+    // Generate TOTP seed
+    totpSeed = generateTOTPSeed();
+
+    showStatus('status2b', 'Registering with relay...', 'info');
+
+    // Register with server
+    const res = await fetch(API + '/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        otp,
+        fingerprint: generatedKeys.fingerprint,
+        public_key: generatedKeys.ed25519.publicKey,
+        x25519_pk: generatedKeys.x25519.publicKey,
+        mldsa65_pk: generatedKeys.mldsa65.publicKey,
+        mlkem768_pk: generatedKeys.mlkem768.publicKey,
+        key_version: 2,
+        display_name: email.split('@')[0]
+      })
+    });
+    const data = await res.json();
+
+    if (res.ok) {
+      showStatus('status2b', 'Encrypting identity file...', 'info');
+
+      // Encrypt and download .svrnty v2 file
+      const encryptedFile = await encryptIdentityFile(generatedKeys, totpSeed, p1);
+      const blob = new Blob([JSON.stringify(encryptedFile, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${generatedKeys.fingerprint}.svrnty`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      // Show TOTP QR
+      const totpB32 = base32Encode(totpSeed);
+      const issuer = 'svrnty';
+      const account = email;
+      const otpauthURI = `otpauth://totp/${issuer}:${account}?secret=${totpB32}&issuer=${issuer}&algorithm=SHA1&digits=6&period=30`;
+      document.getElementById('totpSecret').textContent = totpB32;
+      drawTOTPQR(document.getElementById('totpQR'), otpauthURI);
+
+      // Show fingerprint
+      document.getElementById('fingerprint').textContent = generatedKeys.fingerprint;
+      const suggested = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
+      if (suggested.length >= 3) {
+        document.getElementById('slug').value = suggested;
+        document.getElementById('slug').dispatchEvent(new Event('input'));
+      }
+      showStep(3);
+    } else {
+      showStatus('status2b', data.detail || 'Registration failed', 'error');
+    }
+  } catch (e) {
+    if (e.name === 'NotSupportedError') {
+      showStatus('status2b', 'Your browser does not support Ed25519. Try Chrome 113+ or Firefox 130+.', 'error');
+    } else {
+      showStatus('status2b', 'Error: ' + e.message, 'error');
+    }
+  }
+};
+
+// ── Slug handling ──
+
+let slugTimer = null;
+const slugInput = document.getElementById('slug');
+if (slugInput) {
+  slugInput.addEventListener('input', function() {
+    clearTimeout(slugTimer);
+    const val = this.value.trim();
+    const avail = document.getElementById('slugAvail');
+    if (val.length < 3) {
+      avail.textContent = val.length > 0 ? '3 characters minimum' : '';
+      avail.style.color = '#666';
+      return;
+    }
+    avail.textContent = 'checking...';
+    avail.style.color = '#666';
+    slugTimer = setTimeout(() => {
+      fetch(API + '/slug/' + encodeURIComponent(val))
+        .then(r => r.json())
+        .then(data => {
+          if (data.available) {
+            avail.textContent = 'svrnty.is/u/' + val + ' is available';
+            avail.style.color = '#6bffb8';
+          } else {
+            avail.textContent = 'already taken';
+            avail.style.color = '#ff6b6b';
+          }
+        })
+        .catch(() => { avail.textContent = ''; });
+    }, 400);
+  });
+}
+
+window._claimSlug = async function() {
+  const slug = document.getElementById('slug').value.trim().toLowerCase();
+  if (slug.length < 3) {
+    showStatus('status3b', 'URL must be at least 3 characters', 'error');
+    return;
+  }
+  if (!generatedKeys) {
+    showStatus('status3b', 'No identity found — refresh and try again', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(API + '/slug/' + encodeURIComponent(slug) + '/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fingerprint: generatedKeys.fingerprint })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      window.location.href = '/u/' + slug;
+    } else {
+      showStatus('status3b', data.detail || 'Could not claim URL', 'error');
+    }
+  } catch (e) {
+    showStatus('status3b', 'Connection failed — try again', 'error');
+  }
+};
+
+window._skipSlug = function() {
+  if (generatedKeys) {
+    showStatus('status3b', 'Your fingerprint: ' + generatedKeys.fingerprint + '. You can claim a URL later.', 'info');
+  }
+};
+
+// Auto-focus
+document.getElementById('email').focus();
+</script>
+</body>
+</html>
