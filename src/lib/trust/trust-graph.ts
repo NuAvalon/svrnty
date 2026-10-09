@@ -309,40 +309,6 @@ export class TrustGraphManager {
   }
 
   /**
-   * Process decay for all edges. Call periodically (e.g., on app open).
-   * Returns edges that just decayed.
-   */
-  async processDecay(): Promise<TrustEdge[]> {
-    const graph = await this.loadGraph();
-    const decayed: TrustEdge[] = [];
-    const now = new Date().toISOString();
-
-    for (const edge of graph.edges) {
-      if (edge.trusted && isDecayed(edge)) {
-        // Check if we already recorded this decay
-        const lastEvent = edge.trust_history[edge.trust_history.length - 1];
-        if (lastEvent?.action !== 'decay') {
-          edge.trusted = false;
-          edge.trusted_since = null;
-          edge.trust_history.push({
-            timestamp: now,
-            action: 'decay',
-            reason: `No interaction for ${edge.decay_days} days`,
-            initiated_by: 'system',
-          });
-          decayed.push(edge);
-        }
-      }
-    }
-
-    if (decayed.length > 0) {
-      await this.saveGraph(graph);
-    }
-
-    return decayed;
-  }
-
-  /**
    * Reverify — any meaningful interaction resets the decay clock.
    * Can also restore trust after decay.
    */

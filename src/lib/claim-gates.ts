@@ -66,9 +66,13 @@ export function isPQWireLive(): boolean {
  *
  * TRUE as of the dev flip (2026-10-04): startKnowLayerSync runs; the client wire-in (per-peer blinder
  * persisted on the contact record → initiator completes on a later tick → mutual set applied;
- * forward-revocation on retract) is active. Graduated on: piece-1 two-layer reveal + edgeTrusted
- * single-helper (flip-gate #1 closed), the e2e verify (determinism / unlinkability / set-change→
- * new-session / stateless-reload), Flint's at-rest-blinder co-verify, and Peter's informed reconfirm.
+ * forward-revocation on retract) is active. LIVE SCOPE: only the KNOW-layer is live-TRIGGERED —
+ * runKnowLayerSyncTick passes 'know' (ContactManagement is the only mounted trigger). The TRUST-layer
+ * reveal PREDICATE (two-layer applyMutualResult + edgeTrusted) is BUILT but NOT live-triggered: no
+ * mounted 'trust'-layer sync initiation exists, so they_trust is never populated live (the :40
+ * mutual-trust reveal does NOT fire live — it is the post-launch wiring step). Graduated (KNOW-layer)
+ * on: flip-gate #1 closed, the e2e verify (determinism / unlinkability / set-change→new-session /
+ * stateless-reload), Flint's at-rest-blinder co-verify, and Peter's informed reconfirm.
  * SCOPE (honest): block≡offline is DIRECT-block only; mutual-mediated/transitive block (#156420) is
  * piece-2, NOT yet live — copy says "blocked directly," not "fully blocked." PROD stays separately gated.
  */
