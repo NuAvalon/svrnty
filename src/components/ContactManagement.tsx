@@ -30,6 +30,7 @@ import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { contactRecordToEdge, edgeTrusted } from '@/lib/trust/contact-edge';
 import { ownerHasVerified, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
+import { visualForEdge } from '@/components/trust/trust-phase-visual';
 import {
   buildLinkToSvrntyUpdate,
   isPendingSvrntyContact,
@@ -107,6 +108,11 @@ interface Contact {
     extras?: Array<{ label: string; value: string }>;
   };
   connection_status?: string;
+  /** Forwarded so livingEdgeStatus can see reciprocity (not a trust recompute). */
+  trusted?: boolean;
+  mutual?: { they_trust_me?: boolean | null; last_sync?: string | null; reciprocal?: boolean };
+  verification?: { method: string; verified_at: string | null };
+  pending_intro?: unknown;
 }
 
 // Map legacy API values to binary trust
@@ -120,8 +126,11 @@ function isTrusted(contact: Contact): boolean {
 // trusted by construction (one source), so a {trusted:false, trust_level:'trusted'} edge (which getKnownPeers
 // HIDES) can never slip the clamp.
 
-function trustLabel(contact: Contact): string {
-  return isTrusted(contact) ? 'Trusted' : 'Known';
+function visualForContact(contact: Contact) {
+  return visualForEdge(contactRecordToEdge(contact), {
+    blocked: isContactBlocked(contact),
+    verified: ownerHasVerified(contactRecordToEdge(contact)),
+  });
 }
 
 interface ContactsProps {
@@ -132,31 +141,36 @@ interface ContactsProps {
 // --- Helpers ---
 
 function TrustBadge({ contact }: { contact: Contact }) {
-  const trusted = isTrusted(contact);
+  const visual = visualForContact(contact);
   return (
     <Badge
       className="border font-medium"
+      data-testid="contact-trust-badge"
+      data-bond-state={visual.bondState}
       style={{
         fontFamily: E.fontMono,
         letterSpacing: '0.06em',
-        background: trusted
-          ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
-          : 'color-mix(in srgb, var(--se-dim) 12%, transparent)',
-        color: trusted ? E.accent : E.dim,
-        borderColor: trusted ? E.borderLit : E.border,
+        background: visual.lit
+          ? 'color-mix(in srgb, var(--se-accent2) 12%, transparent)'
+          : visual.bondState === 'trust-sent'
+            ? 'transparent'
+            : 'color-mix(in srgb, var(--se-dim) 12%, transparent)',
+        color: visual.chipColorCss,
+        borderColor: visual.lit ? E.borderLit : visual.bondState === 'trust-sent' ? E.muted : E.border,
+        borderStyle: visual.shape === 'dashed-hollow' ? 'dashed' : 'solid',
       }}
     >
-      {trustLabel(contact)}
+      {visual.label}
     </Badge>
   );
 }
 
 function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; className?: string }) {
-  const trusted = isTrusted(contact);
-  if (trusted) {
-    return <ShieldCheck className={className} style={{ color: E.accent }} />;
+  const visual = visualForContact(contact);
+  if (visual.lit) {
+    return <ShieldCheck className={className} style={{ color: E.accent2 }} />;
   }
-  return <Eye className={className} style={{ color: E.dim }} />;
+  return <Eye className={className} style={{ color: visual.chipColorCss }} />;
 }
 
 // Convert IndexedDB ContactRecord to component Contact type
@@ -175,6 +189,10 @@ function recordToContact(r: ContactRecord): Contact {
     metadata: r.metadata,
     contact_info: r.contact_info, // vCard-imported phones/emails/urls
     connection_status: (r as any).connection_status,
+    trusted: (r as { trusted?: boolean }).trusted,
+    mutual: (r as { mutual?: Contact['mutual'] }).mutual,
+    verification: (r as { verification?: Contact['verification'] }).verification,
+    pending_intro: (r as { pending_intro?: unknown }).pending_intro || r.metadata?.pending_intro,
   };
 }
 
