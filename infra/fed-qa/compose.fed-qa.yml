@@ -45,15 +45,22 @@ services:
         aliases: [relay-c.test]
     ports: ["3002:3000"]
 
-  registry: # mailbox-registry TEST-DOUBLE — POST /mailbox/register, GET /mailbox/{fp}
-    image: node:22-alpine
-    working_dir: /work
-    volumes: ["./registry-stub.mjs:/work/registry-stub.mjs:ro"]
-    command: ["node", "registry-stub.mjs"]
+  keystone: # REAL satellite keystone (full mode) — swapped in for the registry test-double.
+    # Builds from the vendored OSS keystone source (infra/svrnty). Serves the full
+    # /mailbox · /register · /retrieve · /ack · /msg/status · /onion · /trust-psi plane.
+    # The app instances proxy /api/satellite/* here via their default SATELLITE_URL
+    # (http://registration:8101); the adversarial cells target it directly.
+    build:
+      context: ../svrnty
+      dockerfile: Dockerfile
+    image: svrnty-keystone:fedqa
+    environment:
+      SATELLITE_MODE: "full"
+      SATELLITE_ADMIN_KEY: "fedqa-satellite-admin-key-nonsecret" # 20+ chars (keystone startup guard); QA-only, not a secret — for /msg/cleanup force-expiry (S7-a)
     networks:
       fed:
-        aliases: [registry.test]
-    ports: ["8100:8100"]
+        aliases: [keystone, registration, registry.test]
+    ports: ["8101:8101"]
 
   runner:
     image: node:22-bookworm-slim # glibc — can exec the repo's host-built node_modules via tsx
@@ -61,7 +68,7 @@ services:
     volumes: ["../../:/repo"]
     command: ["sh", "-c", "sleep infinity"]
     networks: [fed]
-    depends_on: [app-a, app-b, app-c, registry]
+    depends_on: [app-a, app-b, app-c, keystone]
     profiles: ["manual"] # exec-driven: `docker compose exec runner node ...`
 
 networks:
