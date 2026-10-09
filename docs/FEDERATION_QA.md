@@ -143,6 +143,24 @@ Supporting (not ledger rows): `fed-multi-mailbox` claim when S5 green;
 `fed-adversarial` claim only with Flint's stress results attached, scoped wording
 ("stress-tested against <list>", never "secure").
 
+## Launch acceptance gates (G1–G7, fleet-set)
+
+The fleet's launch bar maps onto the harness — the S-scenarios are the proof
+substrate; a gate is DONE only when its mapped scenario(s) run green end-to-end:
+
+| Gate | Launch requirement | Harness coverage |
+|------|-------------------|------------------|
+| G1 | PSI + blocking rock-solid | **GAP** — not fed-qa's lane; needs its own suite against the flipped `isPSIDiscoveryLive` + mutual-block graduates (piece-2 §F3 churn matrix exists DARK — target: wire into `qa.yml` or a dedicated gate job) |
+| G2 | Transfer away from primary relay + self-host | S2+S3 (mailbox register on a foreign domain + cross-domain exchange) |
+| G3 | 30-day mailbox expiry → rebuild → work again | **NEW SCENARIO NEEDED** (S8): force-expire a mailbox (TTL env or clock injection), assert GC destroys it, then `rehydrateTrustBeacons` + pointer publish rebuild it and peers resume sealing |
+| G4 | Transfer to a different relay, then still receive updates | S4 (migration + pointer propagation + beacon rehydration) |
+| G5 | Primary relay down + mailboxes gone → full-loss recovery from clients | S6 extended: kill relay-b mid-run, assert client-side rehydration rebuilds the mailbox (manual `rehydrateTrustBeacons` invocation — the unwired primitive, per W7 two-tier model) |
+| G6 | No silent message loss | Cross-cutting invariant on every scenario: every envelope deposited is either polled, expired-by-TTL, or an explicit failure — never silently dropped (assert ack-loop + TTL-death audit trail) |
+| G7 | Resource / resiliency / anti-spam | S7 adversarial + S5 cap tests (per-mailbox 429 uniformity, rate-limit evasion attempts, registry hot-key) |
+
+G-gates are the fleet's words; where they out-scope fed-qa (G1 PSI depth, G6 as a
+product-wide property) the table says so rather than pretending coverage.
+
 ## Open questions for the fleet
 
 1. **Satellite image** — publish the real `infra/svrnty` registration/mailbox service,
