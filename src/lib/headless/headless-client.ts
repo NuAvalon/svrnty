@@ -27,6 +27,7 @@ import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
 import { acceptTrustAffirm } from '@/lib/trust/trust-affirm-consume';
 import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
+import { admitContact } from '@/lib/trust/admit-contact';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore } from './headless-store';
 import type { NoteWireV0, NoteRecord, NoteThread, ParticipantKind } from '@/lib/messaging/types';
@@ -91,7 +92,7 @@ function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: (
       acceptTrustAffirm({
         wire,
         ownerFingerprint: owner.fingerprint,
-        isAdmitted: async (fp) => store.getContactByFingerprint(fp) != null, // FALSE-MUTUAL gate (in-book)
+        isAdmitted: async (fp) => admitContact(store.getContactByFingerprint(fp)), // FALSE-MUTUAL gate: in-book AND not-blocked (P1#2)
         applyMutual: async (fromFp, trusts) => {
           const rec = store.getContactByFingerprint(fromFp);
           if (!rec) throw new Error('headless applyMutual: contact vanished between admit and apply');
