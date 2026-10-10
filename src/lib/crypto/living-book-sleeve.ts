@@ -25,7 +25,7 @@ import {
   openMailboxEnvelope,
   type MailboxSecretKeys,
 } from './mailbox-envelope';
-import { armorMailboxEnvelope, dearmorMailboxEnvelope } from './contact-message';
+import { asMailboxEnvelopePackage } from '@/lib/sync/hybrid-dual-read';
 import { base64ToUint8 } from './pq';
 import { encPubFromArmoredPublicKey, KEM_PUB_LEN } from '../identity/fingerprint';
 
@@ -53,7 +53,11 @@ export async function sealLivingBookHybrid(
     throw new Error(`sealLivingBookHybrid: recipient ML-KEM pub must be ${KEM_PUB_LEN}B, got ${mlkem1024Pub.length}`);
   }
   const pkg = await sealToMailbox(plaintextBytes, { x25519Pub, mlkem1024Pub });
-  return armorMailboxEnvelope(pkg);
+  // RAW JSON on the wire (NOT armored): the consume dual-read discriminator (hybrid-dual-read.ts
+  // asMailboxEnvelopePackage) is JSON.parse — a hybrid blob is the {v:1,epk,kem_ct,nonce,ct} JSON,
+  // a classical blob is armored PGP. Armoring here would make every hybrid blob read as "classical"
+  // → fall through → silent-loss. One canonical format; one discriminator. (Flint seam-fix 2026-10-10.)
+  return JSON.stringify(pkg);
 }
 
 /**
@@ -67,7 +71,7 @@ export async function openLivingBookHybrid(
   mySecrets: MailboxSecretKeys,
   myFp: string,
 ): Promise<Uint8Array | null> {
-  const pkg = dearmorMailboxEnvelope(blob);
+  const pkg = asMailboxEnvelopePackage(blob); // ONE discriminator (JSON.parse): raw-JSON pkg vs armored-PGP classical
   if (!pkg) return null; // not a hybrid package → caller falls back to the classical decryptor
   return openMailboxEnvelope(pkg, mySecrets, myFp);
 }
