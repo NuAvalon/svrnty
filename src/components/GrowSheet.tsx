@@ -20,6 +20,7 @@ import {
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { GROW_INVITE_MAX, clampGrowCap, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { GATE_COPY } from '@/lib/trust/grow-gate';
 import {
@@ -232,10 +233,12 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
                       This lens has no extra channels yet.
                     </p>
                   )}
-                  <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.45 }}>
-                    Same key. This is the lens you intend to hand them. Extra channels stay on this
-                    device until the living card schema carries them.
-                  </p>
+                  <div style={{ marginTop: 8 }}>
+                    <FirstVisitHint id="grow-lens" label="Same key · this lens">
+                      Same key. This is the lens you intend to hand them. Extra channels stay on this
+                      device until the living card schema carries them.
+                    </FirstVisitHint>
+                  </div>
                 </div>
               );
             })()}

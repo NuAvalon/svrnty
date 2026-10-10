@@ -45,6 +45,7 @@ import {
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { CardMenuItem } from '@/components/ui/CardActionMenu';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
 import {
@@ -1342,10 +1343,19 @@ export function TrustMap({
           <p style={{ margin: 0, fontSize: 15, color: T.label, letterSpacing: '0.04em' }}>
             Grow your galaxy
           </p>
-          <p style={{ margin: '6px 0 0', fontSize: 11, color: T.caption, lineHeight: 1.4 }}>
-            In person they can become a star you Know. Remote, they wait at the Gate.
-            Trust is mutual, after you make sure it&apos;s them.
-          </p>
+          <div style={{ marginTop: 6 }}>
+            <FirstVisitHint id="galaxy-empty" label="How this grows">
+              <p style={{ margin: 0 }}>
+                In person they can become a star you Know. Remote, they wait at the Gate.
+                Trust is mutual, after you make sure it&apos;s them.
+              </p>
+              {onLoadSample ? (
+                <p style={{ margin: '8px 0 0' }}>
+                  Sample people on this device — demo names, no real keys.
+                </p>
+              ) : null}
+            </FirstVisitHint>
+          </div>
           <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
             {onGrow ? (
               <button
@@ -1392,11 +1402,6 @@ export function TrustMap({
               </button>
             ) : null}
           </div>
-          {onLoadSample ? (
-            <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              Sample people on this device — demo names, no real keys.
-            </p>
-          ) : null}
         </div>
       )}
 
@@ -1675,30 +1680,19 @@ export function TrustMap({
             fontFamily: E.fontSans,
           }}
         >
-        <p
-          style={{
-            margin: 0,
-            fontSize: 11,
-            color: E.text,
-            lineHeight: 1.4,
-          }}
-        >
-          Every visible line consented — none inferred.
-        </p>
-        {!focusNode && (
-          <p
-            data-testid="trust-map-legend"
-            style={{
-              margin: '6px 0 0',
-              fontSize: 10,
-              color: E.dim,
-              lineHeight: 1.45,
-            }}
+          <FirstVisitHint
+            id="galaxy-consent"
+            label="Every visible line consented — none inferred."
+            testId="trust-map-consent-hint"
           >
-            {TRUST_RECIPE_COPY.peerMeshLegend}
-          </p>
-        )}
-      </div>
+            <p
+              data-testid="trust-map-legend"
+              style={{ margin: 0, color: E.dim }}
+            >
+              {TRUST_RECIPE_COPY.peerMeshLegend}
+            </p>
+          </FirstVisitHint>
+        </div>
 
       <VerifySheet
         open={verifyOpen && !!focusEdge}

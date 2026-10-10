@@ -26,6 +26,7 @@ import { BOOK_SORTS, sortBookContacts, type BookSort } from '@/components/contac
 import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { CardMenuItem } from '@/components/ui/CardActionMenu';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
 import { safeEmailLink, safePhoneLink } from '@/lib/contacts/safe-contact-link';
 import { VerifySheet } from '@/components/verify/VerifySheet';
@@ -1669,9 +1670,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             {bulkGroupNote ? (
               <p style={{ margin: 0, fontSize: 11, color: E.ok, fontFamily: E.fontSans }}>{bulkGroupNote}</p>
             ) : (
-              <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans }}>
+              <FirstVisitHint id="book-groups" label="Groups stay on this device">
                 Groups are local private tags (stripped on the wire). Introduce / resync / privacy need fleet.
-              </p>
+              </FirstVisitHint>
             )}
           </div>
         )}

@@ -7,6 +7,7 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import {
   OWNER_METHOD_KINDS,
   addOwnerLens,
@@ -339,10 +340,10 @@ export function OwnerCardStudio({
         </button>
       </div>
 
-      <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans, lineHeight: 1.45 }}>
+      <FirstVisitHint id="identity-lenses" label="What a lens is">
         The share link is still you — one key. A lens is the default profile you intend to hand them.
         Extra methods stay on this device until the living card schema carries them.
-      </p>
+      </FirstVisitHint>
     </div>
   );
 }

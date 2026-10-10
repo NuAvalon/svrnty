@@ -28,6 +28,7 @@ import {
   type NoteThread,
 } from '@/lib/messaging';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
@@ -638,9 +639,11 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                 style={{ ...areaStyle, marginTop: 8 }}
               />
             </label>
-            <p style={{ margin: '6px 0 8px', fontSize: 11, color: E.dim }}>
-              {NOTES_COPY.composeHint}
-            </p>
+            <div style={{ margin: '6px 0 8px' }}>
+              <FirstVisitHint id="chat-compose" label="Send keys">
+                {NOTES_COPY.composeHint}
+              </FirstVisitHint>
+            </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
               <button
                 type="button"
