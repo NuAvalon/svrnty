@@ -16,6 +16,13 @@ ARG NEXT_PUBLIC_SVRNTY_DOMAIN=svrnty.is
 ARG NEXT_PUBLIC_SVRNTY_BASE_URL=
 ENV NEXT_PUBLIC_SVRNTY_DOMAIN=${NEXT_PUBLIC_SVRNTY_DOMAIN}
 ENV NEXT_PUBLIC_SVRNTY_BASE_URL=${NEXT_PUBLIC_SVRNTY_BASE_URL}
+# DEV-ONLY biometric dev-test-enable (Athena — completes Flint's recipe #169066 / @7b68eaf).
+# Also a build-time-inlined NEXT_PUBLIC_* (biometricDevTestEnabled() reads it in the client).
+# Default 0 => prod build never enables it (biometric stays coming-soon, claim honest); the dev
+# compose passes NEXT_PUBLIC_BIOMETRIC_DEVTEST=1 to run the real-device PRF try WITHOUT flipping
+# isBiometricSeamLive (hardcoded-false — the live flip is a separate code PR, Flint-authored).
+ARG NEXT_PUBLIC_BIOMETRIC_DEVTEST=0
+ENV NEXT_PUBLIC_BIOMETRIC_DEVTEST=${NEXT_PUBLIC_BIOMETRIC_DEVTEST}
 # Build provenance (git commit / branch / build time). Unlike the NEXT_PUBLIC_* vars
 # above, these are NOT inlined into the bundle — /api/version reads them from
 # process.env at runtime (that route is force-dynamic). NuAvalon/svrnty is a PUBLIC
