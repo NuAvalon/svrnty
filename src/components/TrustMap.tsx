@@ -34,7 +34,7 @@ import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
-import { offsetSpokePair, halfFillToward } from '@/components/trust/trust-spoke-paint';
+import { offsetSpokePair, halfFillVertical } from '@/components/trust/trust-spoke-paint';
 import {
   applyLayoutMemory,
   glassStateSignature,
@@ -1180,8 +1180,6 @@ export function TrustMap({
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
                   glassPop={glassPop.has(n.id)}
-                  towardX={layout.self.x}
-                  towardY={layout.self.y}
                   onSelect={handleNodeClick}
                 />
               );
@@ -1652,10 +1650,11 @@ export function TrustMap({
 
       {!isEmpty && !focusNode && (
         <div
+          data-testid="trust-lifecycle-legend"
           style={{
             display: 'flex',
             flexWrap: 'wrap',
-            gap: 8,
+            gap: '6px 12px',
             marginTop: 8,
             fontFamily: E.fontSans,
             fontSize: 10,
@@ -1663,26 +1662,16 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span
-            data-testid="trust-lifecycle-legend"
-            style={{ color: E.text, width: '100%', letterSpacing: '0.06em' }}
-          >
-            One-way → Mutual. Break returns to one-way or Known. Remove leaves the map.
-          </span>
-          <span style={{ color: E.accent2 }}>⬡ Mutual · white light</span>
-          <span style={{ color: E.muted }}>⬡ Awaiting mutual · half hex · dual line</span>
-          <span style={{ color: E.accent }}>⬡ Trusts you · gold</span>
-          <span>⬡ Known · dim outline</span>
+          <span style={{ color: E.accent2 }}>Mutual · full</span>
+          <span style={{ color: E.muted }}>Awaiting · half</span>
+          <span style={{ color: E.accent }}>Trusts you</span>
+          <span>Known</span>
         </div>
       )}
         <div
           data-testid="trust-map-consent-legend"
           style={{
             marginTop: 8,
-            padding: '8px 10px',
-            borderRadius: 10,
-            border: `1px solid ${E.border}`,
-            background: 'color-mix(in srgb, var(--se-bg) 70%, transparent)',
             fontFamily: E.fontSans,
           }}
         >
@@ -1694,9 +1683,7 @@ export function TrustMap({
             lineHeight: 1.4,
           }}
         >
-          {focusNode
-            ? 'Every visible line consented — none inferred.'
-            : TRUST_RECIPE_COPY.peerMeshLegend}
+          Every visible line consented — none inferred.
         </p>
         {!focusNode && (
           <p
@@ -1705,10 +1692,10 @@ export function TrustMap({
               margin: '6px 0 0',
               fontSize: 10,
               color: E.dim,
-              lineHeight: 1.4,
+              lineHeight: 1.45,
             }}
           >
-            Pinch to zoom · Fit recenters · pull the map for updates.
+            {TRUST_RECIPE_COPY.peerMeshLegend}
           </p>
         )}
       </div>
@@ -1816,8 +1803,6 @@ function ContactNode({
   distress,
   ignite,
   glassPop,
-  towardX,
-  towardY,
   onSelect,
 }: {
   node: LaidOutNode;
@@ -1829,8 +1814,6 @@ function ContactNode({
   distress: boolean;
   ignite: boolean;
   glassPop: boolean;
-  towardX: number;
-  towardY: number;
   onSelect: (id: string, multi: boolean) => void;
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
@@ -1903,7 +1886,7 @@ function ContactNode({
       {visual.shape === 'half-filled' && (
         <g data-testid="trust-node-awaiting" style={{ pointerEvents: 'none' }}>
           <clipPath id={`half-hex-${node.id}`}>
-            <polygon points={halfFillToward(node.x, node.y, r + 1, towardX, towardY).points} />
+            <polygon points={halfFillVertical(node.x, node.y, r + 1).points} />
           </clipPath>
           <polygon
             points={hexagonPoints(node.x, node.y, r)}

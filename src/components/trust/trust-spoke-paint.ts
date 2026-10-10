@@ -26,27 +26,17 @@ export function offsetSpokePair(
   ];
 }
 
-/** Clip rect covering the half of a node toward a point (usually you). */
-export function halfFillToward(
+/**
+ * Bottom half of a node — horizontal cut through the center.
+ * One-way hexes fill like a glass, not a diagonal slice toward you.
+ */
+export function halfFillVertical(
   cx: number,
   cy: number,
   r: number,
-  towardX: number,
-  towardY: number,
-): { points: string; rotateDeg: number } {
-  const ang = Math.atan2(towardY - cy, towardX - cx);
-  const px = Math.cos(ang);
-  const py = Math.sin(ang);
-  const qx = -py;
-  const qy = px;
+): { points: string } {
   const ext = r * 1.45;
-  const along = r * 1.45;
-  const a = `${cx + qx * ext},${cy + qy * ext}`;
-  const b = `${cx - qx * ext},${cy - qy * ext}`;
-  const c = `${cx - qx * ext + px * along},${cy - qy * ext + py * along}`;
-  const d = `${cx + qx * ext + px * along},${cy + qy * ext + py * along}`;
   return {
-    points: `${a} ${b} ${c} ${d}`,
-    rotateDeg: (ang * 180) / Math.PI,
+    points: `${cx - ext},${cy} ${cx + ext},${cy} ${cx + ext},${cy + ext} ${cx - ext},${cy + ext}`,
   };
 }

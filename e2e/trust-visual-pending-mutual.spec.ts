@@ -53,10 +53,11 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(frank).not.toHaveAttribute('data-light', 'white');
   await expect(frank).toHaveAttribute('data-bond-state', 'known');
 
-  await expect(page.getByText('Mutual · white light')).toBeVisible();
-  await expect(page.getByText('Awaiting mutual · half hex · dual line')).toBeVisible();
-  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/one-way/i);
-  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/remove leaves the map/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Mutual · full/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Awaiting · half/i);
+  await expect(page.getByTestId('trust-map-consent-legend')).toContainText(
+    /Every visible line consented — none inferred/,
+  );
 
   await alan.click({ force: true });
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Awaiting mutual');
