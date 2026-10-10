@@ -20,6 +20,37 @@
 
 import { verifyTrustAffirmSender, type TrustAffirmWireV0 } from './trust-affirm';
 
+/** Clock-skew tolerance on a sender's signed sent_at before it is treated as implausibly future.
+ *  A finite-but-lying future ts would ratchet the monotonic cursor forward and get legit later affirms
+ *  dropped — so we reject anything beyond now + this skew (fail-safe). 5 minutes. */
+export const AFFIRM_MAX_FUTURE_SKEW_MS = 5 * 60_000;
+
+/**
+ * Per-sender monotonic ordering decision (anti-rollback #3 / Flint #169539, hardened for the NaN +
+ * future-ts exploits Flint traced + Hypatia gated on, #169647). Returns true iff an affirmation with
+ * `incomingSentAt` should be APPLIED given the last-applied `lastAffirmAt` for this sender. FAIL-CLOSED
+ * on a malformed / implausibly-future timestamp, because in the survivor-safety threat model THE SENDER
+ * IS THE ADVERSARY — a hostile in-book sender must not be able to defeat OR poison the cursor:
+ *   • `incomingSentAt` must parse to a FINITE epoch. A garbage ts (Date.parse → NaN) is rejected: NaN
+ *     comparisons are always false, so an unguarded compare would both let the malformed affirm through
+ *     AND poison the stored cursor (every later `x < NaN` is false ⇒ monotonic defeated ⇒ rollback-open).
+ *   • `incomingSentAt` must not exceed now + skew. A lying-future ts would ratchet the cursor forward so
+ *     genuine later affirms get dropped — reject it (fail-safe: no false state change, never a false-Mutual).
+ *   • Otherwise APPLY iff NOT strictly older than the last applied — equal re-applies idempotently (a
+ *     replay carries the SAME signed content, since sent_at is bound in the signing preimage). A non-finite
+ *     STORED cursor self-heals: a valid incoming proceeds and overwrites the poisoned value.
+ * Pure + shared so BOTH affirm seams (FE live-book-poll + headless) decide identically — no inline fork.
+ */
+export function affirmShouldApply(incomingSentAt: string, lastAffirmAt: string | undefined, nowMs: number): boolean {
+  const t = Date.parse(incomingSentAt);
+  if (!Number.isFinite(t)) return false;                    // malformed sent_at → drop (never advances the cursor)
+  if (t > nowMs + AFFIRM_MAX_FUTURE_SKEW_MS) return false;  // implausibly-future → drop (cannot ratchet the cursor)
+  if (lastAffirmAt === undefined) return true;              // first affirm for this sender
+  const prev = Date.parse(lastAffirmAt);
+  if (!Number.isFinite(prev)) return true;                  // legacy/poisoned stored cursor → let a valid affirm self-heal
+  return t >= prev;                                         // strictly-older dropped; equal / newer applied
+}
+
 /** The result of applying a verified+admitted affirmation to the recipient's store. */
 export interface MutualApplyResult {
   /** The applied contact's local record id — for the live-repaint emit (reuses the contact beat). */
@@ -40,8 +71,16 @@ export interface AcceptTrustAffirmDeps {
    * bind-to-me + admit all pass. MUST resolve before the caller acks (ack-follows-persist): a throw
    * propagates → the consume loop leaves the envelope for retry (at-least-once; the apply is idempotent
    * on (fromFingerprint, trusts)).
+   *
+   * `sentAt` is the affirmation's SIGNED `sent_at` (bound in the signing preimage → tamper-proof). The
+   * sink enforces PER-SENDER MONOTONICITY with it (anti-rollback #3 / Flint #169539): an affirmation
+   * NOT strictly newer than the last one applied for this sender is STALE — a replayed older "I trust
+   * you" must never overwrite a newer "I broke trust" (a false-Mutual revival). The sink returns `null`
+   * for such a stale replay → acceptTrustAffirm drops it TERMINALLY (ack-delete; retrying a superseded
+   * affirmation is futile). The monotonic cursor MUST be persisted ATOMICALLY with the they_trust_me
+   * write (same store tx) — else a crash between the compare and the write re-opens the replay window.
    */
-  applyMutual: (fromFingerprint: string, trusts: boolean) => Promise<MutualApplyResult>;
+  applyMutual: (fromFingerprint: string, trusts: boolean, sentAt: string) => Promise<MutualApplyResult | null>;
 }
 
 /** What a persisted affirmation surfaces for the trust-repaint (null = dropped). */
@@ -54,8 +93,8 @@ export interface AcceptedTrustAffirm {
 
 /**
  * Accept an inbound trust-affirmation. Returns the applied result for the repaint, or null if DROPPED
- * (unsigned / forged / misaddressed / stranger — silent I-1/I-2, terminal). THROWS only if applyMutual
- * throws (a store I/O failure) → the caller treats it as retryable.
+ * (unsigned / forged / misaddressed / stranger / blocked / STALE-replay — silent I-1/I-2, terminal).
+ * THROWS only if applyMutual throws (a store I/O failure) → the caller treats it as retryable.
  */
 export async function acceptTrustAffirm(deps: AcceptTrustAffirmDeps): Promise<AcceptedTrustAffirm | null> {
   const { wire, ownerFingerprint, isAdmitted, applyMutual } = deps;
@@ -75,7 +114,11 @@ export async function acceptTrustAffirm(deps: AcceptTrustAffirmDeps): Promise<Ac
 
   // (4) APPLY — persist the flip (they_trust_me = trusts; reciprocal = own-trust && trusts). A throw
   //     propagates to the caller as retryable (ack-follows-persist). Idempotent on redelivery.
-  const applied = await applyMutual(wire.from_fingerprint, wire.trusts);
+  //     A `null` return = STALE per the per-sender monotonic cursor (a replayed older affirmation after
+  //     a newer one already applied): DROP terminally (ack-delete) — same custody as a forged/stranger
+  //     drop (no flip, no echo), NOT left-for-retry, because retrying a superseded affirmation is futile.
+  const applied = await applyMutual(wire.from_fingerprint, wire.trusts, wire.sent_at);
+  if (!applied) return null;
   return {
     id: applied.id,
     from_fingerprint: wire.from_fingerprint,
