@@ -16,7 +16,7 @@ import { ml_dsa87 } from '@noble/post-quantum/ml-dsa.js';
 import { buildSignedBytes, SUITE_HYBRID } from '../crypto/sign-envelope';
 import { DOMAIN_ROTATION } from '../format/envelope';
 import { extractRawSign, strip0x40 } from './raw-sign';
-import { sign as pqSign, verify as pqVerify, encapsulate as pqEncapsulate, decapsulate as pqDecapsulate } from '../crypto/pq';
+import { sign as pqSign, verify as pqVerify, encapsulate as pqEncapsulate, decapsulate as pqDecapsulate, uint8ToBase64 } from '../crypto/pq';
 
 /** Raw lengths for the sign-only rotation-authority hybrid (ed25519 + ML-DSA-87). */
 export const AUTH_ED25519_PUB_BYTES = 32;
@@ -349,11 +349,10 @@ export async function buildSatelliteRegisterFields(identity: {
 }): Promise<{
   fingerprint: string;
   public_key: string;
-  name?: string;
-  sign_pub: string;
-  enc_pub: string;
-  kem_pub: string;
-  sig_pub: string;
+  encryption_pk: string;
+  pq_kem_pk: string;
+  pq_sig_pk: string;
+  crypto_version: string;
 } | null> {
   const fp = identity?.identity?.fingerprint;
   const publicKey = identity?.identity?.public_key;
@@ -362,14 +361,20 @@ export async function buildSatelliteRegisterFields(identity: {
   if (!fp || !publicKey || !kem || !sig) return null;
   try {
     const pubs = await canonicalPubsFromArmoredPublicKey(publicKey, kem, sig);
+    // Satellite /register (satellite.py RegisterRequest) b64decodes each field and re-derives the
+    // canonical DID = SHA256(signPub‖encPub‖kemPub‖sigPub), then prefix-matches `fingerprint`.
+    // Send the SAME fp-preimage bytes as raw STANDARD base64 under the satellite's field names.
+    // Prior bug (400 "Invalid public_key encoding"): public_key was OpenPGP-armored (fails
+    // b64decode) and the typed keys were hex-encoded under wrong names (sign_pub/enc_pub/…),
+    // so even past the armored 400 the fp re-derivation would miss. Lengths 32/32/1568/2592
+    // (I-6 injectivity) are enforced satellite-side.
     return {
       fingerprint: pubs.fingerprint,
-      public_key: publicKey,
-      ...(identity.identity?.name ? { name: identity.identity.name } : {}),
-      sign_pub: bytesToHex(pubs.signPub),
-      enc_pub: bytesToHex(pubs.encPub),
-      kem_pub: bytesToHex(pubs.kemPub),
-      sig_pub: bytesToHex(pubs.sigPub),
+      public_key: uint8ToBase64(pubs.signPub),
+      encryption_pk: uint8ToBase64(pubs.encPub),
+      pq_kem_pk: uint8ToBase64(pubs.kemPub),
+      pq_sig_pk: uint8ToBase64(pubs.sigPub),
+      crypto_version: 'hybrid-v1',
     };
   } catch {
     return null;
