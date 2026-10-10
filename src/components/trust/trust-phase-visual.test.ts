@@ -12,6 +12,7 @@ import {
   TRUST_VISUAL_WHITE_CORE,
   TRUST_VISUAL_WHITE_HALO,
   TRUST_VISUAL_WHITE_SPOKE,
+  TRUST_SENT_PRE_WIRE_LABEL,
   trustPhaseVisual,
   trustVisualLane,
   type TrustPhaseVisual,
@@ -64,13 +65,15 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.svgDasharray, undefined);
   });
 
-  it('outbound is dashed-hollow, muted, never white, labeled Awaiting mutual', () => {
+  it('outbound is dashed-hollow, muted, never white; PRE-WIRE label is "Trusted" (gated), NOT "Awaiting mutual"', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
     assert.equal(v.bondState, 'trust-sent');
     assert.equal(v.lit, false);
     assert.equal(v.white, false);
-    assert.equal(v.shape, 'dashed-hollow');
-    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-sent']);
+    assert.equal(v.shape, 'dashed-hollow'); // affordance UNCHANGED by the gate — only the label is gated
+    // isMutualTrustWireLive() is false (default) → the one-way bond must NOT label "Awaiting mutual".
+    assert.equal(v.label, TRUST_SENT_PRE_WIRE_LABEL);
+    assert.notEqual(v.label, TRUST_VISUAL_LABELS['trust-sent']);
     assert.equal(v.coreFill, null);
     assert.equal(v.spokeGlow, false);
     assert.equal(v.svgFill, 'transparent');
@@ -87,7 +90,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.notEqual(outbound.label, mutual.label);
     assert.equal(outbound.shape, 'dashed-hollow');
     assert.equal(mutual.shape, 'solid-filled');
-    assert.equal(outbound.label, 'Awaiting mutual');
+    assert.equal(outbound.label, 'Trusted'); // pre-wire (gated); post-wire flips to "Awaiting mutual"
     assert.equal(mutual.label, 'Mutual');
   });
 
@@ -114,7 +117,8 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(intro.bondState, 'known');
     assert.equal(sent.bondState, 'trust-sent');
     assert.equal(intro.label, TRUST_VISUAL_LABELS.introPending);
-    assert.equal(sent.label, TRUST_VISUAL_LABELS['trust-sent']);
+    assert.equal(sent.label, TRUST_SENT_PRE_WIRE_LABEL); // pre-wire (gated); "Awaiting mutual" post-wire
+    assert.notEqual(sent.label, intro.label); // trust-sent lane still distinct from intro-pending
     assert.notEqual(intro.svgDasharray, sent.svgDasharray);
     assert.equal(intro.svgDasharray, INTRO_PENDING_DASH);
     assert.equal(trustVisualLane(intro, false), 'pending');
@@ -189,6 +193,9 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(mutVis.bondState, 'mutual');
     assert.equal(outVis.white, false);
     assert.equal(mutVis.white, true);
+    // Real edge→visual path: pre-wire the one-way bond labels "Trusted" (gated), never "Awaiting mutual".
+    assert.equal(outVis.label, TRUST_SENT_PRE_WIRE_LABEL);
+    assert.equal(mutVis.label, 'Mutual');
   });
 });
 
