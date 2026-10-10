@@ -358,32 +358,18 @@ button[data-slot="button"]:active:not(:disabled) {
   }
 }
 
-/* Thread Field — galaxy-native notes (not Slack chrome). */
+/* Thread Field — Chat window only (app header / menu / footer stay outside). */
 .notes-field-shell {
   max-width: 1100px;
   margin: 0 auto;
-  padding: 18px 14px 28px;
+  padding: 0;
   font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif;
   color: var(--se-text);
-}
-.notes-field-mast {
-  max-width: 720px;
-  margin: 0 auto 16px;
-}
-.notes-field-how {
-  margin: 0;
-  font-size: 12px;
-  color: var(--se-muted);
-}
-.notes-field-how summary {
-  cursor: pointer;
-  letter-spacing: 0.04em;
-  color: var(--se-dim);
 }
 .notes-field {
   display: grid;
   grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  min-height: min(70vh, 760px);
+  min-height: min(72vh, 780px);
   border: 1px solid var(--se-border);
   border-radius: 18px;
   overflow: hidden;

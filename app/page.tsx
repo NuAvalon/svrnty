@@ -686,15 +686,15 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="notes"
-                aria-label="Notes"
+                aria-label="Chat"
                 data-testid="tab-notes"
                 className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
-                Notes
+                Chat
                 <TabActivityEmber
                   on={notesActivity}
-                  label="New notes arrived"
+                  label="New messages"
                   testId="tab-notes-activity"
                 />
               </TabsTrigger>

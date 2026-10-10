@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Thread Field — galaxy-native 1:1 notes. People rail + ember conversation.
+ * Thread Field — Chat window. People rail + ember conversation.
  * Calls fleet sendNoteToPeer / listThreads / listNotesForThread. Does not reimplement crypto.
  * Receive persist is already in the app-shell live-book poll; this glass re-reads the store.
  */
@@ -379,42 +379,8 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
   const sendDisabled = busy || !sender?.canonical || rows.length === 0 || !selected;
 
   return (
-    <section data-testid="notes-inbox" className="notes-field-shell">
-      <header className="notes-field-mast">
-        <h2
-          style={{
-            fontFamily: E.fontSans,
-            fontSize: 18,
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            color: E.accent,
-            margin: '0 0 8px',
-          }}
-        >
-          {NOTES_COPY.tabLabel}
-        </h2>
-        <p
-          data-testid="notes-heading"
-          style={{ margin: '0 0 8px', fontSize: 16, color: E.text, lineHeight: 1.4 }}
-        >
-          {NOTES_COPY.heading}
-        </p>
-        <p data-testid="notes-receiving" style={{ margin: '0 0 8px', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
-          {NOTES_COPY.receiving}
-        </p>
-        <details className="notes-field-how">
-          <summary>{NOTES_COPY.howNotesTravel}</summary>
-          <p style={{ margin: '8px 0 8px', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-            {NOTES_COPY.whatItIs}
-          </p>
-          <p style={{ margin: '0 0 6px', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
-            {NOTES_COPY.sending}
-          </p>
-          <p style={{ margin: 0, fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
-            {NOTES_COPY.sendingWait}
-          </p>
-        </details>
-      </header>
+    <section data-testid="notes-inbox" className="notes-field-shell" aria-label={NOTES_COPY.tabLabel}>
+      <h2 className="sr-only">{NOTES_COPY.heading}</h2>
 
       {!sender && fp ? (
         <p role="alert" style={{ color: E.danger, fontSize: 13, margin: '0 0 12px' }}>

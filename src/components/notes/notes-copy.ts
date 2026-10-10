@@ -1,48 +1,41 @@
-// Fixed copy for the over-wire Notes inbox (CURSOR_QUEUE SEND/INBOX).
-// Status floor is "Sent · unconfirmed." — never Delivered / Read / Expired.
-// Beta unlock/redeem chrome is the NEXT queue item (gate-ON only) — not this surface.
+// Fixed copy for the Chat surface (over-wire SEND / INBOX).
+// The Chat tab is the window — no essay masthead. Status floor is
+// "Sent · unconfirmed." — never Delivered / Read / Expired.
+// Essay claims ("encrypted messages…", "How notes travel") stay off this glass.
+// A Delivered confirmation is coming — do not render Delivered as live status.
 
 export const NOTES_COPY = {
-  tabLabel: 'Notes',
-  heading: 'Encrypted messages, with the people you trust',
-  whatItIs:
-    'Send and receive end-to-end encrypted messages with your contacts. Every message is sealed on your device — the relay only ever moves sealed blobs, and never learns who you talk to.',
-  sending:
-    'When you send, you’ll see Sent — your message left your device sealed and reached the relay. (A Delivered confirmation is coming.)',
-  sendingWait:
-    'If they have not joined yet, your message waits for them. The moment they join and unlock their book, it delivers. A message to someone who never joins will eventually expire.',
-  receiving:
-    'You receive messages from your contacts. A message arrives sealed and is saved to this device — if it doesn’t appear in your inbox live yet, it’s there when you open your messages.',
+  tabLabel: 'Chat',
+  heading: 'Chat',
   sentUnconfirmed: 'Sent · unconfirmed.',
   notSent: 'Not sent. Saved on this device.',
   sendAction: 'Send',
   sendingAction: 'Sending…',
-  composeLabel: 'Note',
-  composePlaceholder: 'Write a note…',
+  composeLabel: 'Message',
+  composePlaceholder: 'Write a message…',
   pickerLabel: 'To',
   pickerPlaceholder: 'Choose a contact',
   inboxLabel: 'Inbox',
-  threadEmpty: 'No notes in this thread yet.',
-  inboxEmpty: 'No notes yet. Pick a contact to write one.',
+  threadEmpty: 'No messages yet.',
+  inboxEmpty: 'No conversations yet. Pick a contact to write one.',
   noSendableContacts:
     'No contacts to write to. Import a signed svrnty card first. Keyless contacts cannot receive a sealed note.',
   noContactSelected: 'Pick a contact first.',
-  emptyBody: 'Write a note first.',
+  emptyBody: 'Write a message first.',
   identityLocked: 'Unlock your identity first.',
   identityKeysMissing: 'This identity is missing the keys a note needs.',
   needCanonical:
-    'Notes over the wire need a current svrnty identity. This book cannot send yet.',
-  sendFailed: 'The note could not be sent.',
+    'Chat over the wire needs a current svrnty identity. This book cannot send yet.',
+  sendFailed: 'The message could not be sent.',
   contactNotSendable: 'This contact cannot receive a sealed note.',
   fieldPeople: 'Conversations',
   fieldBack: 'Chats',
   fieldPick: 'Pick someone to open a conversation.',
-  fieldPreviewEmpty: 'No notes yet',
+  fieldPreviewEmpty: 'No messages yet',
   composeHint: 'Enter to send · Shift+Enter for a new line',
   searchLabel: 'Search',
-  searchPlaceholder: 'Search who you wrote to…',
+  searchPlaceholder: 'Search conversations…',
   searchEmpty: 'No conversations match.',
-  howNotesTravel: 'How notes travel',
 } as const;
 
 export const NOTES_BOUNDS = {

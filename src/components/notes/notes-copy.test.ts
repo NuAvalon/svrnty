@@ -31,15 +31,14 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.equal(blob.includes('unreachable'), false);
   });
 
-  it('receiving copy says saved / there when you open — not appears live', () => {
-    assert.match(NOTES_COPY.receiving, /saved to this device/i);
-    assert.match(NOTES_COPY.receiving, /there when you open/i);
-    assert.doesNotMatch(NOTES_COPY.receiving, /appears live/i);
-  });
-
-  it('uses the queue what-it-is heading', () => {
-    assert.equal(NOTES_COPY.heading, 'Encrypted messages, with the people you trust');
+  it('Chat tab is the window — no essay masthead', () => {
+    assert.equal(NOTES_COPY.tabLabel, 'Chat');
+    assert.equal(NOTES_COPY.heading, 'Chat');
     assert.equal(NOTES_COPY.sendAction, 'Send');
+    const blob = JSON.stringify(NOTES_COPY);
+    assert.doesNotMatch(blob, /Encrypted messages/);
+    assert.doesNotMatch(blob, /How notes travel/);
+    assert.doesNotMatch(blob, /end-to-end encrypted/i);
   });
 
   it('inbox source never renders Delivered/Read/Expired as a live status', () => {
@@ -50,6 +49,11 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.match(inbox, /NOTES_COPY\.sentUnconfirmed/);
     assert.doesNotMatch(inbox, /dangerouslySetInnerHTML/);
     assert.doesNotMatch(inbox, /\/api\/relay\/msg\/status/);
+    assert.doesNotMatch(inbox, /notes-field-mast/);
+    assert.doesNotMatch(inbox, /notes-heading/);
+    assert.doesNotMatch(inbox, /notes-receiving/);
+    assert.doesNotMatch(inbox, /How notes travel/);
+    assert.doesNotMatch(inbox, /Encrypted messages/);
     assert.match(copy, /A Delivered confirmation is coming/);
     assert.doesNotMatch(status, /Delivered confirmation/);
     const liveStatus = [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');

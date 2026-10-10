@@ -4,9 +4,9 @@ import { seedSampleGalaxy, SAMPLE_TESLA_FP } from './helpers/seed-sample-galaxy'
 test.describe.configure({ mode: 'serial' });
 
 /**
- * Notes inbox — glass + honest copy. Proves the tab mounts, send status
- * is Sent · unconfirmed (never Delivered/Read/Expired as a live status),
- * and empty-book fails loud. Crypto round-trip is fleet sendNoteToPeer.
+ * Chat inbox — window only + honest send status. Proves the tab mounts,
+ * essay masthead is gone, send status is Sent · unconfirmed (never
+ * Delivered/Read/Expired as a live status), and empty-book fails loud.
  */
 test('notes inbox is over-wire glass with honest send status', async ({ page }) => {
   test.setTimeout(90_000);
@@ -24,15 +24,16 @@ test('notes inbox is over-wire glass with honest send status', async ({ page }) 
 
   const notesTab = page.getByTestId('tab-notes');
   await expect(notesTab).toBeVisible();
+  await expect(notesTab).toHaveText(/Chat/i);
   await notesTab.click();
 
   const panel = page.getByTestId('notes-inbox');
   await expect(panel).toBeVisible();
-  await expect(panel.getByTestId('notes-heading')).toHaveText(
-    'Encrypted messages, with the people you trust',
-  );
-  await expect(panel.getByTestId('notes-receiving')).toContainText(/saved to this device/i);
-  await expect(panel.getByTestId('notes-receiving')).toContainText(/there when you open/i);
+  await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
+  await expect(panel.getByText(/Encrypted messages/i)).toHaveCount(0);
+  await expect(panel.getByText(/How notes travel/i)).toHaveCount(0);
+  await expect(panel.getByText(/saved to this device/i)).toHaveCount(0);
+  await expect(panel.getByTestId('notes-field')).toBeVisible();
   await expect(panel.getByTestId('notes-empty-book')).toBeVisible();
   await expect(panel.getByTestId('notes-send-btn')).toBeVisible();
   await expect(panel.getByTestId('notes-send-btn')).toHaveText(/^Send$/i);
@@ -46,7 +47,7 @@ test('notes inbox is over-wire glass with honest send status', async ({ page }) 
   await expect(panel.getByTestId('notes-search')).toBeVisible();
 });
 
-test('galaxy star Note opens that conversation in the Thread Field', async ({ page }) => {
+test('galaxy star Chat opens that conversation in the Thread Field', async ({ page }) => {
   test.setTimeout(90_000);
 
   await page.goto('/');

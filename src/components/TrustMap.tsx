@@ -124,7 +124,7 @@ interface TrustMapProps {
   onDistressWent?: (edge: TrustEdge) => void | Promise<void>;
   /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. */
   onRefresh?: () => void | Promise<void>;
-  /** Open this star's 1:1 notes conversation (parent switches to the Notes tab). */
+  /** Open this star's 1:1 conversation (parent switches to the Chat tab). */
   onOpenNote?: (edge: TrustEdge) => void;
 }
 
@@ -1596,7 +1596,7 @@ export function TrustMap({
                       cursor: 'pointer',
                     }}
                   >
-                    Note
+                    Chat
                   </button>
                 )}
                 <CardActionMenu open={actionsOpen} onOpenChange={setActionsOpen}>
