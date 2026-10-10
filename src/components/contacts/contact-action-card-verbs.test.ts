@@ -14,6 +14,7 @@ describe('contact card verbs share one size', () => {
     assert.match(card, /alignItems: 'stretch'/);
     assert.match(menu, /export function cardVerbBtnStyle/);
     assert.match(menu, /minHeight: 40/);
+    assert.match(menu, /flex: '1 1 0'/);
     assert.match(menu, /return cardVerbBtnStyle\(\{ open \}\)/);
   });
 });

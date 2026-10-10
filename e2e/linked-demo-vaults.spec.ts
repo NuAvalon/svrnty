@@ -42,6 +42,10 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   await expect(classical.getByTestId('classical-no-fingerprint')).toBeVisible();
   await expect(classical.getByTestId('galaxy-open-note')).toHaveCount(0);
   await expect(classical.getByTestId('card-actions-toggle')).toBeVisible();
+  await page.screenshot({
+    path: '/opt/cursor/artifacts/screenshots/classical-card-no-key.png',
+    fullPage: true,
+  });
 
   await page.getByTestId('contact-row').filter({ hasText: 'River Vale' }).click();
   const living = page.getByTestId('contact-action-card');
@@ -57,7 +61,11 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   expect(chatBox, 'Chat button box').toBeTruthy();
   expect(actBox, 'Actions button box').toBeTruthy();
   expect(Math.abs((chatBox?.height || 0) - (actBox?.height || 0))).toBeLessThan(2);
-  expect(Math.abs((chatBox?.width || 0) - (actBox?.width || 0))).toBeLessThan(8);
+  expect(Math.abs((chatBox?.width || 0) - (actBox?.width || 0))).toBeLessThan(2);
+  await page.screenshot({
+    path: '/opt/cursor/artifacts/screenshots/living-card-equal-verbs.png',
+    fullPage: true,
+  });
 
   await page.getByTestId('lock-now-btn').click();
   await expect(page.getByTestId('switch-identity')).toBeVisible({ timeout: 15_000 });
@@ -66,4 +74,8 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   await expect(
     page.getByTestId('switch-identity-option').filter({ hasText: 'River Vale' }).getByTestId('switch-identity-seal'),
   ).toBeVisible();
+  await page.screenshot({
+    path: '/opt/cursor/artifacts/screenshots/switch-identity-linked-vaults.png',
+    fullPage: true,
+  });
 });

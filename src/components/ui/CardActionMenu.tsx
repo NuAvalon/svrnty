@@ -44,7 +44,7 @@ export function CardActionMenu({
   }, [open, onOpenChange]);
 
   return (
-    <div ref={root} style={{ position: 'relative', flex: 1 }}>
+    <div ref={root} style={{ position: 'relative', flex: '1 1 0', minWidth: 0 }}>
       <button
         type="button"
         data-testid={testId}
@@ -126,7 +126,8 @@ export function cardVerbBtnStyle(opts?: {
   open?: boolean;
 }): CSSProperties {
   return {
-    flex: 1,
+    flex: '1 1 0',
+    minWidth: 0,
     width: '100%',
     minHeight: 40,
     boxSizing: 'border-box',
