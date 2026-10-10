@@ -20,21 +20,21 @@ describe('biometric-seam stubs', () => {
     assert.equal(isBiometricSeamLive(), false);
   });
 
-  it('getBiometricEnrollment is never enrolled under stub', async () => {
+  it('getBiometricEnrollment is not enrolled when no wrap is stored', async () => {
     const state = await getBiometricEnrollment('abc123');
     assert.equal(state.enrolled, false);
   });
 
-  it('enrollBiometric returns stub-not-live (no PRF invent)', async () => {
+  it('enrollBiometric reports unsupported with no WebAuthn authenticator (node env)', async () => {
     const r = await enrollBiometric({ fingerprint: 'abc123', passphrase: 'x'.repeat(12) });
     assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.reason, 'stub-not-live');
+    if (!r.ok) assert.equal(r.reason, 'unsupported');
   });
 
-  it('unlockWithBiometric returns stub-not-live', async () => {
+  it('unlockWithBiometric reports unsupported with no WebAuthn authenticator (node env)', async () => {
     const r = await unlockWithBiometric('abc123');
     assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.reason, 'stub-not-live');
+    if (!r.ok) assert.equal(r.reason, 'unsupported');
   });
 
   it('enroll preference is local UI-only', () => {
