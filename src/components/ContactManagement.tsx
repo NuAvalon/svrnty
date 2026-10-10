@@ -61,6 +61,7 @@ import {
 } from '@/components/contacts/ClassicalFieldsEditor';
 import type { TrustEdge } from '@/lib/trust/types';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
+import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
 import {
   applyTrustAction,
   isContactBlocked,
@@ -627,6 +628,38 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
         },
       });
+      // Mutual-trust wire (L1 deposit-hook): deposit a SIGNED affirmation to the peer's blind
+      // mailbox so THEIR edge learns we (un)trust them (flips their they_trust_me on consume —
+      // Apollo's trust-affirm-consume). Fire-and-forget + fail-soft (mirrors the satellite commit
+      // above): a deposit failure (peer offline / missing key) must NEVER block or break the local
+      // trust toggle. SVRNTY peers only (needs their fingerprint + pubkey).
+      // Survivor-safety: this is the TRUST/BREAK path ONLY — BLOCK stays silent (handleSetBlocked
+      // deposits nothing) = the go-dark path. The user-facing COPY stays the honest pre-wire roadmap
+      // until isMutualTrustWireLive flips (the two-seat e2e proving this loop is that gated flip).
+      if (contact.fingerprint && contact.public_key && identity?.identity?.public_key) {
+        const peerFp = contact.fingerprint;
+        const peerPub = contact.public_key;
+        const trusts = newLevel === 'trusted';
+        void (async () => {
+          try {
+            const key = await loadKey(fingerprint);
+            if (!key?.privateKey) return;
+            await sendTrustAffirmToPeer({
+              senderFingerprint: fingerprint,
+              senderPublicKeyArmored: identity.identity.public_key,
+              senderPrivateKeyArmored: key.privateKey,
+              passphrase: key.passphrase,
+              senderPqKemPublicKey: identity?.post_quantum?.kem_public_key,
+              senderPqSigPublicKey: identity?.post_quantum?.sig_public_key,
+              peerFingerprint: peerFp,
+              peerPublicKeyArmored: peerPub,
+              trusts,
+            });
+          } catch {
+            /* peer mailbox offline / missing key — local trust holds; re-deposits on next toggle */
+          }
+        })();
+      }
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trust');
