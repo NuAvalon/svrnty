@@ -129,6 +129,26 @@ const KNOWN_STATUS: LivingEdgeStatus = {
   decayFreshness: 1,
 };
 
+function legendStatus(trust: LivingTrustPhase): LivingEdgeStatus {
+  return {
+    ...KNOWN_STATUS,
+    trust,
+    connection: 'linked',
+    canCommunicate: trust !== 'none',
+  };
+}
+
+/** Galaxy legend rows — same paint tokens as the stars. Labels follow the wire gate. */
+export function trustLifecycleLegendItems(): Array<{
+  visual: TrustPhaseVisual;
+  label: string;
+}> {
+  return (['none', 'outbound', 'mutual'] as const).map((trust) => {
+    const visual = trustPhaseVisual({ status: legendStatus(trust) });
+    return { visual, label: visual.label };
+  });
+}
+
 /**
  * Map a living-edge status onto paint tokens. Fail closed: missing/unknown
  * trust paints Known (outline, not lit).

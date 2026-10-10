@@ -67,6 +67,12 @@ test('Galaxy: one-way trust is not white; Mutual trust is the only white light',
   await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Known/i);
   await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Trusted/i);
   await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Mutual trust/i);
+  await expect(page.getByTestId('trust-legend-glyph-known')).toBeVisible();
+  await expect(page.getByTestId('trust-legend-glyph-trust-sent')).toBeVisible();
+  await expect(page.getByTestId('trust-legend-glyph-mutual')).toBeVisible();
+  await expect(page.getByTestId('trust-legend-glyph-known').locator('polygon')).toHaveCount(1);
+  await expect(page.getByTestId('trust-legend-core-mutual')).toHaveCount(1);
+  await expect(page.getByTestId('trust-legend-glyph-trust-sent').locator('circle')).toHaveCount(0);
   await expect(page.getByTestId('trust-lifecycle-legend')).not.toContainText(
     /outer|half|awaiting|unverified|Trust pending/i,
   );

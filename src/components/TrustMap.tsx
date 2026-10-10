@@ -29,7 +29,7 @@ import {
 import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
-import { isPiece2MutualBlockLive, isMutualTrustWireLive } from '@/lib/claim-gates';
+import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
@@ -77,8 +77,7 @@ import {
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import {
   ONE_WAY_SPOKE_WIDTH,
-  TRUST_SENT_PRE_WIRE_LABEL,
-  TRUST_VISUAL_LABELS,
+  trustLifecycleLegendItems,
   trustVisualLane,
   visualForEdge,
   type TrustPhaseVisual,
@@ -1655,7 +1654,8 @@ export function TrustMap({
           style={{
             display: 'flex',
             flexWrap: 'wrap',
-            gap: '6px 12px',
+            alignItems: 'center',
+            gap: '8px 16px',
             marginTop: 8,
             fontFamily: E.fontSans,
             fontSize: 10,
@@ -1663,13 +1663,9 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span>{TRUST_VISUAL_LABELS.known}</span>
-          <span style={{ color: E.accent }}>
-            {isMutualTrustWireLive()
-              ? TRUST_VISUAL_LABELS['trust-sent']
-              : TRUST_SENT_PRE_WIRE_LABEL}
-          </span>
-          <span style={{ color: E.accent2 }}>{TRUST_VISUAL_LABELS.mutual}</span>
+          {trustLifecycleLegendItems().map(({ visual, label }) => (
+            <TrustLegendItem key={visual.bondState} visual={visual} label={label} />
+          ))}
         </div>
       )}
         <div
@@ -1913,6 +1909,58 @@ function ContactNode({
         </>
       )}
     </g>
+  );
+}
+
+function legendLabelColor(visual: TrustPhaseVisual): string {
+  if (visual.bondState === 'mutual') return E.accent2;
+  if (visual.bondState === 'trust-sent' || visual.bondState === 'trust-received') return E.accent;
+  return E.dim;
+}
+
+/** Mini hex painted from the same tokens as the star — not a unicode stand-in. */
+function TrustLegendItem({ visual, label }: { visual: TrustPhaseVisual; label: string }) {
+  const r = 7.4;
+  const cx = 10;
+  const cy = 10;
+  return (
+    <span
+      data-testid={`trust-legend-item-${visual.bondState}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        color: legendLabelColor(visual),
+      }}
+    >
+      <svg
+        data-testid={`trust-legend-glyph-${visual.bondState}`}
+        data-bond-state={visual.bondState}
+        data-shape={visual.shape}
+        width={20}
+        height={20}
+        viewBox="0 0 20 20"
+        aria-hidden="true"
+      >
+        <polygon
+          points={hexagonPoints(cx, cy, r)}
+          fill={visual.svgFill}
+          stroke={visual.svgStroke}
+          strokeWidth={visual.svgStrokeWidth}
+          strokeDasharray={visual.svgDasharray}
+        />
+        {visual.coreFill ? (
+          <circle
+            data-testid={`trust-legend-core-${visual.bondState}`}
+            cx={cx}
+            cy={cy}
+            r={2.3}
+            fill={visual.coreFill}
+          />
+        ) : null}
+      </svg>
+      {label}
+    </span>
   );
 }
 

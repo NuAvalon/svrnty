@@ -12,6 +12,7 @@ import {
   TRUST_VISUAL_WHITE_HALO,
   TRUST_VISUAL_WHITE_SPOKE,
   TRUST_SENT_PRE_WIRE_LABEL,
+  trustLifecycleLegendItems,
   trustPhaseVisual,
   trustVisualLane,
   visualForEdge,
@@ -265,6 +266,30 @@ describe('trust-phase visual map — consumers inherit the one map', () => {
       assert.match(src, /trustPhaseVisual|visualForEdge/);
       assert.match(src, /from '@\/components\/trust\/trust-phase-visual'/);
     }
+  });
+
+  it('lifecycle legend items reuse the same paints as the stars', () => {
+    const items = trustLifecycleLegendItems();
+    assert.equal(items.length, 3);
+    assert.deepEqual(items.map((i) => i.visual.bondState), ['known', 'trust-sent', 'mutual']);
+    assert.equal(items[0].label, TRUST_VISUAL_LABELS.known);
+    assert.equal(items[0].visual.shape, 'outline');
+    assert.equal(items[0].visual.coreFill, null);
+    assert.equal(items[1].label, TRUST_SENT_PRE_WIRE_LABEL);
+    assert.equal(items[1].visual.shape, 'solid-filled');
+    assert.equal(items[1].visual.coreFill, null);
+    assert.equal(items[1].visual.svgFill, items[2].visual.svgFill);
+    assert.equal(items[2].label, TRUST_VISUAL_LABELS.mutual);
+    assert.equal(items[2].visual.coreFill, TRUST_VISUAL_WHITE_CORE);
+  });
+
+  it('TrustMap paints those hexes in the legend, not text-only labels', () => {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const map = readFileSync(join(dir, '..', 'TrustMap.tsx'), 'utf8');
+    assert.match(map, /trustLifecycleLegendItems/);
+    assert.match(map, /trust-legend-glyph-/);
+    assert.match(map, /hexagonPoints/);
+    assert.doesNotMatch(map, /⬡/);
   });
 
   it('TrustMap SVG no longer paints white light from node.state === trusted', () => {
