@@ -60,7 +60,7 @@ function mockRelay() {
 test('headless SEND (hybrid): peer HAS pq_kem → deposits a RAW-JSON MailboxEnvelopePackage, not armored PGP', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();
-  const aStore = new HeadlessStore();
+  const aStore = new HeadlessStore({ allowPlaintext: true });
 
   const sent = await sendNoteFromHeadless({
     owner: owner(A),
@@ -97,7 +97,7 @@ test('headless SEND (hybrid): peer HAS pq_kem → deposits a RAW-JSON MailboxEnv
 test('headless SEND (fail-closed): peer has NO pq_kem → NOT deposited (never downgrade), local copy kept as not-sent', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();
-  const aStore = new HeadlessStore();
+  const aStore = new HeadlessStore({ allowPlaintext: true });
 
   const sent = await sendNoteFromHeadless({
     owner: owner(A),

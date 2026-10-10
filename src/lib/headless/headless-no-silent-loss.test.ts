@@ -91,7 +91,7 @@ function mockRelay() {
 test('FLIP-GATE: hybrid note to a kem-advertising headless owner with NO secret → LEFT FOR RETRY, never silent-ack-drop', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();
-  const bStore = new HeadlessStore();
+  const bStore = new HeadlessStore({ allowPlaintext: true });
   const mailboxB = deriveMailboxId(B.fp);
 
   // A hybrid-seals a note to B (B advertises a kem pub, so the send goes PQ-hybrid — my send-swap).
@@ -101,7 +101,7 @@ test('FLIP-GATE: hybrid note to a kem-advertising headless owner with NO secret 
     peerPublicKeyArmored: B.pub,
     peerPqKemPublicKey: B.kem,
     body: 'inbound hybrid to an agent that cannot yet open it',
-    store: new HeadlessStore(),
+    store: new HeadlessStore({ allowPlaintext: true }),
     relayBase: RELAY,
     fetchImpl,
   });
@@ -124,7 +124,7 @@ test('FLIP-GATE: hybrid note to a kem-advertising headless owner with NO secret 
 test('FLIP-GATE (happy path, post-①): hybrid note to a headless owner WITH its kem secret → OPENS + persists + acks (never retryable-forever)', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();
-  const bStore = new HeadlessStore();
+  const bStore = new HeadlessStore({ allowPlaintext: true });
   bStore.upsertContact(asContact(A)); // A in B's book so an opened note is admitted + persisted
   const mailboxB = deriveMailboxId(B.fp);
 
@@ -134,7 +134,7 @@ test('FLIP-GATE (happy path, post-①): hybrid note to a headless owner WITH its
     peerPublicKeyArmored: B.pub,
     peerPqKemPublicKey: B.kem,
     body: 'hybrid hello an agent CAN open',
-    store: new HeadlessStore(),
+    store: new HeadlessStore({ allowPlaintext: true }),
     relayBase: RELAY,
     fetchImpl,
   });

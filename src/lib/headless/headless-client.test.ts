@@ -74,7 +74,7 @@ function mockRelay() {
 test('headless RECEIVE: A affirms trust → B polls → reciprocal flips (B already trusts A) → MUTUAL', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl } = mockRelay();
-  const bStore = new HeadlessStore();
+  const bStore = new HeadlessStore({ allowPlaintext: true });
   bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted' })); // A in B's book, B trusts A
 
   // A deposits "I trust B" to B's mailbox (headless send).
@@ -99,7 +99,7 @@ test('headless RECEIVE: A affirms trust → B polls → reciprocal flips (B alre
 test('headless RECEIVE: in-book affirm but I do NOT trust them → they_trust_me set, reciprocal FALSE (inbound)', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl } = mockRelay();
-  const bStore = new HeadlessStore();
+  const bStore = new HeadlessStore({ allowPlaintext: true });
   bStore.upsertContact(asContact(A, { trusted: false, trust_level: 'known' })); // in book, NOT trusted
 
   await sendTrustAffirmToPeer({
@@ -117,7 +117,7 @@ test('headless RECEIVE: in-book affirm but I do NOT trust them → they_trust_me
 test('headless RECEIVE: a STRANGER affirmation flips nothing (FALSE-MUTUAL gate, in-book admit)', async () => {
   const [B, C] = [await mint(), await mint()]; // C is NOT in B's book
   const { fetchImpl } = mockRelay();
-  const bStore = new HeadlessStore(); // empty book
+  const bStore = new HeadlessStore({ allowPlaintext: true }); // empty book
 
   await sendTrustAffirmToPeer({
     senderFingerprint: C.fp, senderPublicKeyArmored: C.pub, senderPrivateKeyArmored: C.priv, passphrase: C.kpass,
@@ -135,8 +135,8 @@ test('headless RECEIVE: a STRANGER affirmation flips nothing (FALSE-MUTUAL gate,
 test('headless RECEIVE + SEND: A sends a note → B polls → note persisted in the headless store', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl } = mockRelay();
-  const aStore = new HeadlessStore();
-  const bStore = new HeadlessStore();
+  const aStore = new HeadlessStore({ allowPlaintext: true });
+  const bStore = new HeadlessStore({ allowPlaintext: true });
   bStore.upsertContact(asContact(A, { trust_level: 'known' })); // A in B's book (admit)
 
   const sent = await sendNoteFromHeadless({

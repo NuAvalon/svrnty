@@ -62,7 +62,7 @@ test('at-rest: an encrypted file with NO key supplied THROWS (refuses to clobber
   a.upsertContact(contact('carol'));
 
   assert.throws(
-    () => new HeadlessStore({ path }),
+    () => new HeadlessStore({ path, allowPlaintext: true }),
     /encrypted at rest but no atRestKey/,
   );
   rmSync(path, { force: true });
@@ -70,18 +70,28 @@ test('at-rest: an encrypted file with NO key supplied THROWS (refuses to clobber
 
 test('at-rest: no key → plaintext JSON (dev/test parity, backward compatible)', () => {
   const path = tmpBook();
-  const a = new HeadlessStore({ path });
+  const a = new HeadlessStore({ path, allowPlaintext: true });
   a.upsertContact(contact('dave'));
   const env = JSON.parse(readFileSync(path, 'utf8'));
   assert.equal(env.svrnty_at_rest, undefined, 'no key → plaintext HeadlessData, not an envelope');
   assert.ok(Array.isArray(env.contacts));
-  const b = new HeadlessStore({ path });
+  const b = new HeadlessStore({ path, allowPlaintext: true });
   assert.equal(b.getContactByFingerprint('dave')?.id, 'id-dave');
   rmSync(path, { force: true });
 });
 
 test('at-rest: a 32-byte key is required (AES-256)', () => {
   assert.throws(() => new HeadlessStore({ atRestKey: new Uint8Array(16) }), /32 bytes/);
+});
+
+test('no-silent-plaintext: key-less store THROWS unless allowPlaintext is EXPLICIT (prod wiring-bug guard)', () => {
+  // no key + no explicit allowPlaintext → refuse (a prod bug that drops the key must not silent-downgrade)
+  assert.throws(() => new HeadlessStore(), /refusing to operate without at-rest encryption/);
+  assert.throws(() => new HeadlessStore({ path: tmpBook() }), /refusing to operate without at-rest encryption/);
+  // explicit opt-in (dev/test) is allowed
+  assert.doesNotThrow(() => new HeadlessStore({ allowPlaintext: true }));
+  // a key, of course, is allowed (prod)
+  assert.doesNotThrow(() => new HeadlessStore({ atRestKey: deriveAtRestKey(new Uint8Array(randomBytes(32))) }));
 });
 
 test('deriveAtRestKey: deterministic 32B, domain-separated, re-derived key re-opens the store', () => {
@@ -103,7 +113,7 @@ test('deriveAtRestKey: deterministic 32B, domain-separated, re-derived key re-op
 test('at-rest: plaintext file + key = migration — loads, then next flush re-writes encrypted', () => {
   const path = tmpBook();
   // Write a plaintext book (legacy).
-  new HeadlessStore({ path }).upsertContact(contact('erin'));
+  new HeadlessStore({ path, allowPlaintext: true }).upsertContact(contact('erin'));
   assert.equal(JSON.parse(readFileSync(path, 'utf8')).svrnty_at_rest, undefined);
 
   // Open with a key → reads the plaintext legacy book, and the write-on-mutate re-writes it encrypted.

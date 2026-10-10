@@ -105,11 +105,19 @@ export class HeadlessStore {
   private readonly path: string | null;
   private readonly atRestKey: Uint8Array | null;
 
-  constructor(opts: { path?: string; atRestKey?: Uint8Array } = {}) {
+  constructor(opts: { path?: string; atRestKey?: Uint8Array; allowPlaintext?: boolean } = {}) {
     this.path = opts.path ?? null;
     this.atRestKey = opts.atRestKey ?? null;
     if (this.atRestKey && this.atRestKey.length !== 32) {
       throw new Error('HeadlessStore atRestKey must be 32 bytes (AES-256-GCM)');
+    }
+    // No-silent-plaintext (Flint #169034 + Athena #169022): a key-LESS store is plaintext-at-rest, which is
+    // a device/cloud-backup leak. Plaintext is allowed ONLY via an EXPLICIT allowPlaintext (dev/test) — never
+    // by mere key-absence. So a prod wiring bug that drops the key THROWS here instead of silently downgrading.
+    if (!this.atRestKey && !opts.allowPlaintext) {
+      throw new Error(
+        'HeadlessStore: refusing to operate without at-rest encryption — pass atRestKey (prod) or allowPlaintext:true (dev/test only)',
+      );
     }
     if (this.path && existsSync(this.path)) {
       let obj: unknown;
