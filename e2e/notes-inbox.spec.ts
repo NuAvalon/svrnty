@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { seedSampleGalaxy, SAMPLE_TESLA_FP } from './helpers/seed-sample-galaxy';
 
+test.describe.configure({ mode: 'serial' });
+
 /**
  * Notes inbox — glass + honest copy. Proves the tab mounts, send status
  * is Sent · unconfirmed (never Delivered/Read/Expired as a live status),

@@ -29,7 +29,7 @@ export type ContactRow = {
   peer_fingerprint?: string | null;
   peer_name?: string | null;
   blocked?: boolean;
-  metadata?: { blocked?: boolean } | null;
+  metadata?: { blocked?: boolean; sample_fingerprint?: string } | null;
 };
 
 function isBlocked(row: ContactRow): boolean {

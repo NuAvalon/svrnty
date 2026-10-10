@@ -81,6 +81,7 @@ export default function Home() {
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
   const [notesPeerFp, setNotesPeerFp] = useState('');
+  const [notesPeerName, setNotesPeerName] = useState('');
   const betaMessagingOn = isBetaIssuerProvisioned();
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
@@ -856,6 +857,7 @@ export default function Home() {
                   const peer = String(edge.peer_fingerprint || '').trim();
                   if (!peer) return;
                   setNotesPeerFp(peer);
+                  setNotesPeerName(String(edge.peer_name || '').trim());
                   setMainTab('notes');
                 }}
               />
@@ -873,7 +875,11 @@ export default function Home() {
               {betaMessagingOn ? (
                 <BetaMessagingTab identity={identity} />
               ) : (
-                <NotesInbox identity={identity} focusFingerprint={notesPeerFp} />
+                <NotesInbox
+                  identity={identity}
+                  focusFingerprint={notesPeerFp}
+                  focusName={notesPeerName}
+                />
               )}
             </TabsContent>
           </Tabs>

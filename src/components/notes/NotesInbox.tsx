@@ -52,6 +52,8 @@ type Props = {
   } | null;
   /** Galaxy star hop — open this peer's conversation. */
   focusFingerprint?: string;
+  /** Display name from the star sheet (book may not have a key-bound fingerprint). */
+  focusName?: string;
 };
 
 const fieldStyle: CSSProperties = {
@@ -92,7 +94,9 @@ function bookNames(records: ContactRow[]): FieldName[] {
   const out: FieldName[] = [];
   const seen = new Set<string>();
   for (const row of records) {
-    const fingerprint = normalizeFingerprintHex(String(row.fingerprint || row.peer_fingerprint || ''));
+    const fingerprint = normalizeFingerprintHex(
+      String(row.fingerprint || row.peer_fingerprint || row.metadata?.sample_fingerprint || ''),
+    );
     if (fingerprint.length < 16 || seen.has(fingerprint)) continue;
     seen.add(fingerprint);
     out.push({
@@ -103,7 +107,7 @@ function bookNames(records: ContactRow[]): FieldName[] {
   return out;
 }
 
-export function NotesInbox({ identity, focusFingerprint }: Props) {
+export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
   const fp = identity?.identity?.fingerprint || '';
   const [book, setBook] = useState<ContactRow[]>([]);
   const [threads, setThreads] = useState<NoteThread[]>([]);
@@ -283,11 +287,12 @@ export function NotesInbox({ identity, focusFingerprint }: Props) {
         sendable,
         previews,
         extraFp: selectedFp || wantFocus || undefined,
+        extraName: focusName,
       }),
-    [fp, threads, names, sendable, previews, selectedFp, wantFocus],
+    [fp, threads, names, sendable, previews, selectedFp, wantFocus, focusName],
   );
 
-  const peerName = displayNameFor(selectedFp, names);
+  const peerName = displayNameFor(selectedFp, names, focusName);
 
   const onPickContact = (nextFp: string) => {
     setSelectedFp(nextFp);

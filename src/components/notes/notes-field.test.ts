@@ -51,6 +51,19 @@ describe('thread field people', () => {
     assert.equal(people[0].sendable, false);
   });
 
+  it('uses the star-sheet name when the book has no key-bound fingerprint', () => {
+    const people = mergeFieldPeople({
+      ownerFp: 'owner',
+      threads: [],
+      names: [],
+      sendable: new Set(),
+      previews: {},
+      extraFp: '7e51a00000000000000000000000000000000008',
+      extraName: 'Nikola Tesla',
+    });
+    assert.equal(people[0].name, 'Nikola Tesla');
+  });
+
   it('does not invent unread counts or presence in the preview', () => {
     assert.equal(previewLine('  a sealed note  '), 'a sealed note');
     assert.doesNotMatch(previewLine('a sealed note'), /\b\d+\b/);
