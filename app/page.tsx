@@ -736,6 +736,19 @@ export default function Home() {
                   seedDemoMethodHistory(fp);
                   setMethodHistoryTick((t) => t + 1);
                   try {
+                    const { seedLinkedDemo } = await import('@/components/demo/seed-linked-demo');
+                    await seedLinkedDemo({
+                      name: identity.identity.name,
+                      email: identity.identity.email || '',
+                      fingerprint: fp,
+                      public_key: identity.identity.public_key || '',
+                      pq_kem_public_key: identity.post_quantum?.kem_public_key,
+                      pq_sig_public_key: identity.post_quantum?.sig_public_key,
+                    });
+                  } catch {
+                    /* living vaults optional — keyless sample still loads */
+                  }
+                  try {
                     const key = await loadKey(fp);
                     if (key?.passphrase) {
                       const { seedDemoNotes } = await import('@/components/notes/seed-demo-notes');

@@ -1351,7 +1351,9 @@ export function TrustMap({
               </p>
               {onLoadSample ? (
                 <p style={{ margin: '8px 0 0' }}>
-                  Sample people on this device — demo names, no real keys.
+                  Sample people on this device. Classical cards have no key.
+                  River Vale and Sage Quinn are living SVRNTY cards — bound keys
+                  — and extra vaults under Switch identity.
                 </p>
               ) : null}
             </FirstVisitHint>

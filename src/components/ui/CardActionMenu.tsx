@@ -120,26 +120,39 @@ export function CardMenuItem({
   );
 }
 
-function toggleStyle(open: boolean): CSSProperties {
+/** Shared Chat / Send update / Actions size — one verb row, one height. */
+export function cardVerbBtnStyle(opts?: {
+  muted?: boolean;
+  open?: boolean;
+}): CSSProperties {
   return {
+    flex: 1,
     width: '100%',
+    minHeight: 40,
+    boxSizing: 'border-box',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     fontFamily: E.fontSans,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: 600,
-    letterSpacing: '0.04em',
-    padding: '10px 12px',
+    letterSpacing: 0,
+    padding: '8px 10px',
     borderRadius: 10,
-    border: `1px solid ${E.borderLit}`,
-    background: open
+    border: `1px solid ${opts?.muted ? E.border : E.borderLit}`,
+    background: opts?.open
       ? 'color-mix(in srgb, var(--se-accent) 16%, transparent)'
-      : 'color-mix(in srgb, var(--se-accent) 10%, transparent)',
-    color: E.accent,
+      : opts?.muted
+        ? 'transparent'
+        : 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+    color: opts?.muted ? E.muted : E.accent,
     cursor: 'pointer',
   };
+}
+
+function toggleStyle(open: boolean): CSSProperties {
+  return cardVerbBtnStyle({ open });
 }
 
 const menuStyle: CSSProperties = {

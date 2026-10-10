@@ -9,7 +9,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
-import { CardActionMenu } from '@/components/ui/CardActionMenu';
+import { CardActionMenu, cardVerbBtnStyle } from '@/components/ui/CardActionMenu';
 
 export function ContactActionCard({
   testId = 'contact-action-card',
@@ -154,13 +154,13 @@ export function ContactActionCard({
       {edit}
 
       {!edit ? (
-        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'stretch' }}>
           {canChat && onChat ? (
             <button
               type="button"
               data-testid="galaxy-open-note"
               onClick={onChat}
-              style={chatBtn}
+              style={cardVerbBtnStyle()}
             >
               Chat
             </button>
@@ -170,7 +170,7 @@ export function ContactActionCard({
               type="button"
               data-testid="contact-send-update"
               onClick={onSendUpdate}
-              style={updateBtn}
+              style={cardVerbBtnStyle({ muted: true })}
             >
               Send update
             </button>
@@ -201,23 +201,3 @@ const iconBtn: CSSProperties = {
   flexShrink: 0,
 };
 
-const chatBtn: CSSProperties = {
-  flex: 1,
-  fontSize: 12,
-  fontFamily: E.fontSans,
-  fontWeight: 600,
-  padding: '8px 10px',
-  borderRadius: 10,
-  border: `1px solid ${E.borderLit}`,
-  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-  color: E.accent,
-  cursor: 'pointer',
-};
-
-const updateBtn: CSSProperties = {
-  ...chatBtn,
-  background: 'transparent',
-  border: `1px solid ${E.border}`,
-  color: E.muted,
-  fontWeight: 500,
-};
