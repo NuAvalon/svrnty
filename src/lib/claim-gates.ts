@@ -95,3 +95,37 @@ export function isPSIDiscoveryLive(): boolean {
 export function isPiece2MutualBlockLive(): boolean {
   return false;
 }
+
+/**
+ * MUTUAL-TRUST AFFIRMATION WIRE (deposit → consume → reciprocal-flip) is live end-to-end.
+ *
+ * FALSE today: the crypto/transport is BUILT + unit-proven on BOTH sides (trust-affirm.ts core +
+ * trust-affirm-seal + trust-affirm-consume + trust-affirm-transport; consume-mailbox 4th seam;
+ * buildTrustAffirmSeam → updateContact({mutual})), but the capability is NOT live until (a) the FE
+ * deposit-hook calls sendTrustAffirmToPeer on trust/break AND (b) a two-seat Playwright e2e proves
+ * deposit→consume→the edge visibly flips "awaiting mutual"→"Mutual" in a real browser (desktop/dev
+ * class — relay-content, NOT the Vanadium hardened-mobile class). Until then no affirmation is ever
+ * deposited → reciprocal/they_trust_me stay false BY CONSTRUCTION (the only client writer is the consume
+ * applyMutual, which needs the deposit-hook) → the UI must NOT imply a transient "awaiting mutual" wait
+ * for a structurally-unreachable state (that implication is the source of Peter's "seems broken").
+ *
+ * COPY this gates (Hypatia svrnty_mutual_trust_state_copy_v1): FALSE → a one-way edge reads "Trusted" +
+ * "Mutual confirmation coming" (roadmap); TRUE → "Trusted · awaiting mutual" (a real in-flight wait) and
+ * a reciprocal edge → "Mutual". Only the 'outbound' phase is reachable pre-wire (inbound/mutual both
+ * require they_trust_me/reciprocal, unreachable without the deposit-hook), so this gates exactly that.
+ *
+ * FALSIFIER-INDEPENDENCE (Hypatia KB#90782) — TWO distinct guard layers (her #167596 correction, being
+ * honest about what a source-scanner can and can't reach):
+ *   • LAYER 1 (build-code presence — the sweep CAN gate this): the mutual strings are a gated claim whose
+ *     wireSignal is the deposit-hook's build-presence (sendTrustAffirmToPeer / buildTrustAffirmSeam). Wire
+ *     code absent from the build → strings BLOCKED (must use the hedged "Mutual confirmation coming").
+ *     Hypatia adds this to the sweep + substrate-map WHEN this wire merges. Catches "strings without code."
+ *   • LAYER 2 (runtime flip — the sweep CANNOT see this): once the wire code is in the build, the source
+ *     sweep passes — but this boolean could still be flipped TRUE before the e2e is green (a runtime state
+ *     no scanner sees). So the runtime guard is DISCIPLINE, not the sweep: flip to true ONLY on the
+ *     two-seat e2e GREEN + deposit-hook-wired, @Flint-reviewed (same as isPQEncapLive), and the flipper
+ *     MUST update claim-gates.test.ts (that lockstep turns a premature flip RED).
+ */
+export function isMutualTrustWireLive(): boolean {
+  return false;
+}
