@@ -1,12 +1,14 @@
 // src/lib/trust/slug-claim.ts
 // F6 real-fix — a slug claim must PROVE possession of the private key behind `public_key`.
 //
-// The pre-fix flow (SoverentityFrontend handleClaimUrl → POST /slug/:slug/claim { fingerprint })
-// sent only a fingerprint; PR#1 additionally sent a public_key. NEITHER proves the claimant holds
-// the matching private key — so anyone could claim a slug for someone else's fingerprint/key. That
-// is the "F6 false-closed" gap: presenting a public key is not authenticating with it.
+// The identity UI used to POST /slug/:slug/claim with only { fingerprint }
+// (and, earlier, a bare public_key). Neither proves the claimant holds the matching
+// private key — anyone could claim a slug for someone else's fingerprint. That is the
+// "F6 false-closed" gap: presenting a public key is not authenticating with it.
+// That UI path is gone. This app has no public directory.
 //
-// The fix: the claimant SIGNS the SlugClaim under the slug-claim domain, and the verifier checks
+// The signed reference, if a registrar is ever wired: the claimant SIGNS the SlugClaim
+// under the slug-claim domain, and the verifier checks
 //   (a) the signature verifies against the presented public_key, AND
 //   (b) fingerprint === H(public_key)   (fingerprintMatchesKey — Canon Invariant-1)
 // Together these prove: "the holder of the private key for THIS key — whose fingerprint is the one
@@ -14,10 +16,10 @@
 // fingerprint with the victim's key but no private key; (a) alone lets an attacker sign with their
 // own key under a fingerprint that isn't theirs. Both together close it.
 //
-// The authoritative server-side check runs on the satellite (Python, live svrnty.is) and must
-// mirror the byte-exact envelope in src/lib/crypto/sign-envelope.ts. This module is the TypeScript
-// reference: the client uses signSlugClaim to sign, and tests use verifySignedSlugClaim to pin the
-// envelope so the two implementations cannot drift. Design: KB#85978.
+// A satellite (not in this repo) would have to mirror the byte-exact envelope in
+// src/lib/crypto/sign-envelope.ts. This module is the TypeScript reference: signSlugClaim
+// signs, and tests use verifySignedSlugClaim to pin the envelope so the two sides cannot
+// drift. Design: KB#85978. The UI does not call signSlugClaim.
 
 import type { SlugClaim } from '../format/envelope';
 import { DOMAIN_SLUG_CLAIM, slugClaimSigningInput } from '../format/envelope';

@@ -1,4 +1,5 @@
-// middleware.ts — Rewrite /username → /u/username for public profiles
+// middleware.ts — Rewrite /:name → /u/:name.
+// There is no public directory; the page says so. Reserved names stay put.
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
