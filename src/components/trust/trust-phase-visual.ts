@@ -17,6 +17,7 @@ import {
   type LivingTrustPhase,
 } from '@/lib/trust/living-edge-status';
 import type { TrustEdge } from '@/lib/trust/types';
+import { isMutualTrustWireLive } from '@/lib/claim-gates';
 
 export type TrustBondState =
   | 'known'
@@ -42,6 +43,16 @@ export const TRUST_VISUAL_LABELS = {
   blocked: 'Blocked',
   introPending: 'Pending intro',
 } as const;
+
+/**
+ * PRE-WIRE label for the one-way (trust-sent) bond while isMutualTrustWireLive() is false — the primary
+ * node/chip/badge label (this map is the ONE paint source; a livingEdgeStatus-only gate would be BYPASSED
+ * here). The affirmation flow isn't deposited yet, so "Trust pending" / "Awaiting mutual" over-claim
+ * a wait for a state that can't arrive (built≠wired). Reuses Hypatia's approved pre-wire word
+ * "Trusted". Flips to TRUST_VISUAL_LABELS['trust-sent'] ("Trust pending") WITH the wire.
+ * (@Hypatia — confirm/adjust this terse node word; "Trusted" mirrors the edge statusLine pre-wire.)
+ */
+export const TRUST_SENT_PRE_WIRE_LABEL = 'Trusted';
 
 /** Cream-white core — mutual bonds only. Never paint this on outbound. */
 export const TRUST_VISUAL_WHITE_CORE = '#fffef8';
@@ -98,13 +109,12 @@ function bondStateOf(
   return 'known';
 }
 
-function displayLabel(
-  bond: TrustBondState,
-  introPending: boolean,
-  trust: LivingTrustPhase,
-): string {
+function displayLabel(bond: TrustBondState, introPending: boolean, trust: LivingTrustPhase, wireLive: boolean): string {
   if (bond === 'blocked') return TRUST_VISUAL_LABELS.blocked;
   if (introPending && trust === 'none') return TRUST_VISUAL_LABELS.introPending;
+  // Pre-wire: the one-way bond must NOT label "Awaiting mutual" (a transient wait for an unreachable
+  // state). The dashed-hollow affordance is unchanged; ONLY the label is gated (claim-gates.isMutualTrustWireLive).
+  if (bond === 'trust-sent' && !wireLive) return TRUST_SENT_PRE_WIRE_LABEL;
   return TRUST_VISUAL_LABELS[bond];
 }
 
@@ -132,7 +142,10 @@ export function trustPhaseVisual(input: {
   const introPending = input.status.connection === 'pending';
   const bond = bondStateOf(trust, input.blocked === true);
   const lit = bond === 'mutual';
-  const label = displayLabel(bond, introPending, trust);
+  // Single flag, read once here (claim-gates.isMutualTrustWireLive); gates ONLY the trust-sent LABEL.
+  // white/lit stays `bond === 'mutual'` — structurally unreachable pre-wire (reciprocal can't flip without
+  // the deposit-hook), so the white-gate needs no flag; only the one-way COPY would over-claim pre-wire.
+  const label = displayLabel(bond, introPending, trust, isMutualTrustWireLive());
 
   if (bond === 'blocked') {
     return {

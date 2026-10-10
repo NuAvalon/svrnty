@@ -29,7 +29,12 @@ describe('beta-messaging copy — claim-honesty', () => {
     assert.equal(BETA_COPY.whatItIsHeading, 'Encrypted messages, with the people you trust');
     assert.match(BETA_COPY.whatItIs, /end-to-end encrypted messages with your contacts/);
     assert.match(BETA_COPY.whatItIs, /relay only ever moves sealed blobs/);
-    assert.match(BETA_COPY.whatItIs, /never learns who you talk to/);
+    // claim-honesty (Hypatia #167343 / GPT / Peter #167278): the relay still sees
+    // mailbox-id + timing + size + IP = communication metadata, so we must NEVER claim
+    // it can't tell who you talk to — only that it can't READ messages (confidentiality,
+    // supportable). Lock the honest claim; regression-guard the metadata over-claim.
+    assert.match(BETA_COPY.whatItIs, /can'?t read your messages/i);
+    assert.doesNotMatch(BETA_COPY.whatItIs, /who you talk to|communication relationships|never learns who/i);
     assert.match(BETA_COPY.sending, /you'll see Sent/);
     assert.match(BETA_COPY.sending, /A Delivered confirmation is coming/);
     assert.match(BETA_COPY.sendingWait, /waits for them/);

@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
 import {
   getTrustActionCopy,
@@ -40,7 +41,7 @@ export function TrustActionConfirmDialog({
 
   const copy = getTrustActionCopy(kind, target);
 
-  return (
+  const dialog = (
     <div
       role="presentation"
       data-testid="trust-action-confirm-overlay"
@@ -49,6 +50,9 @@ export function TrustActionConfirmDialog({
         position: 'fixed',
         inset: 0,
         zIndex: 80,
+        // Radix modal dialogs scroll-lock: body gets pointer-events:none and only the dialog's
+        // own portal shard is re-enabled. A body-level portal must re-enable it explicitly.
+        pointerEvents: 'auto',
         background: 'rgba(8, 5, 3, 0.72)',
         display: 'flex',
         alignItems: 'center',
@@ -161,6 +165,10 @@ export function TrustActionConfirmDialog({
       </div>
     </div>
   );
+
+  return typeof document === 'undefined'
+    ? dialog
+    : createPortal(dialog, document.body);
 }
 
 function btnStyle(primary: boolean, danger: boolean): React.CSSProperties {

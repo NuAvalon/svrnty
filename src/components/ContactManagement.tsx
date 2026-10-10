@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
@@ -228,9 +227,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   const [newContactForm, setNewContactForm] = useState({
     name: '', email: '', fingerprint: '', public_key: '',
   });
-  const [lookupInput, setLookupInput] = useState('');
-  const [lookupLoading, setLookupLoading] = useState(false);
-  const [lookupMessage, setLookupMessage] = useState<string | null>(null);
   const [editContactForm, setEditContactForm] = useState({
     id: '', name: '', email: '', fingerprint: '', public_key: '',
     notes: '',
@@ -413,48 +409,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
 
 
   // --- Handlers ---
-
-  const handleLookup = async () => {
-    if (!lookupInput.trim()) return;
-    setLookupLoading(true);
-    setLookupMessage(null);
-    setError(null);
-    try {
-      // Strip URL prefix if given
-      let slug = lookupInput.trim();
-      slug = slug.replace(/^https?:\/\//, '').replace(/^(www\.)?svrnty\.is\/?/, '').replace(/^\/?(u\/)?/, '');
-      if (!slug) throw new Error('Enter a slug or fingerprint');
-
-      // Try slug lookup first
-      const res = await fetch(`/slug/${slug}`);
-      if (!res.ok) throw new Error(`Not found: ${slug}`);
-      const slugData = await res.json();
-
-      if (slugData.available) throw new Error(`No identity found for "${slug}"`);
-
-      // Fetch full identity from /u/ endpoint
-      const idRes = await fetch(`/u/${slug}`);
-      if (!idRes.ok) throw new Error(`Could not load identity for "${slug}"`);
-
-      // The /u/ page returns HTML, so use the registration API
-      const regRes = await fetch(`/api/auth/slug/${slug}`);
-      if (!regRes.ok) throw new Error(`Could not load identity for "${slug}"`);
-      const data = await regRes.json();
-
-      setNewContactForm({
-        name: data.display_name || slug,
-        email: data.email || '',
-        fingerprint: data.fingerprint || '',
-        public_key: data.public_key || '',
-      });
-      setLookupMessage(`Found: ${data.display_name || slug}`);
-    } catch (err) {
-      setLookupMessage(null);
-      setError(err instanceof Error ? err.message : 'Lookup failed');
-    } finally {
-      setLookupLoading(false);
-    }
-  };
 
     const handleAddContact = async () => {
     if (!fingerprint) return;
@@ -2000,22 +1954,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             </DialogHeader>
             {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
             <div className="space-y-4 py-4">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Look up by URL</label>
-                <div className="flex gap-2">
-                  <Input
-                    value={lookupInput}
-                    onChange={e => setLookupInput(e.target.value)}
-                    placeholder={`${SVRNTY_DOMAIN}/name or slug`}
-                    onKeyDown={e => e.key === 'Enter' && handleLookup()}
-                  />
-                  <Button variant="outline" onClick={handleLookup} disabled={lookupLoading || !lookupInput.trim()}>
-                    {lookupLoading ? 'Looking up...' : 'Lookup'}
-                  </Button>
-                </div>
-                {lookupMessage && <p className="text-xs text-green-500">{lookupMessage}</p>}
-                <p className="text-xs text-muted-foreground">Or fill in manually below</p>
-              </div>
               <div className="space-y-1.5">
                 <label htmlFor="name" className="text-sm font-medium">Name</label>
                 <Input id="name" value={newContactForm.name} onChange={e => setNewContactForm(p => ({ ...p, name: e.target.value }))} placeholder="Contact name" />

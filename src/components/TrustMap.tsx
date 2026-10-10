@@ -29,7 +29,7 @@ import {
 import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
-import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
+import { isPiece2MutualBlockLive, isMutualTrustWireLive } from '@/lib/claim-gates';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
@@ -77,6 +77,8 @@ import {
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import {
   ONE_WAY_SPOKE_WIDTH,
+  TRUST_SENT_PRE_WIRE_LABEL,
+  TRUST_VISUAL_LABELS,
   trustVisualLane,
   visualForEdge,
   type TrustPhaseVisual,
@@ -1661,9 +1663,13 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span>Known</span>
-          <span style={{ color: E.accent }}>Trust pending</span>
-          <span style={{ color: E.accent2 }}>Mutual trust</span>
+          <span>{TRUST_VISUAL_LABELS.known}</span>
+          <span style={{ color: E.accent }}>
+            {isMutualTrustWireLive()
+              ? TRUST_VISUAL_LABELS['trust-sent']
+              : TRUST_SENT_PRE_WIRE_LABEL}
+          </span>
+          <span style={{ color: E.accent2 }}>{TRUST_VISUAL_LABELS.mutual}</span>
         </div>
       )}
         <div

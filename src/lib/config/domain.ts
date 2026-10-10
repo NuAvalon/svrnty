@@ -3,7 +3,7 @@
 //
 // Self-host (packaging / git-infra §3 dumb-relay-exportable-container): set
 //   NEXT_PUBLIC_SVRNTY_DOMAIN=id.example.com
-// and every share link, claimed-slug URL, and display string points at YOUR domain — no
+// and every share link and display string points at YOUR domain — no
 // code fork, no protocol fork. Default = svrnty.is (the managed nursery). "The tree in the
 // seed": svrnty.is is a DEFAULT, not a dependency; a self-certifying durable_id needs no
 // permission from svrnty.is to relocate.
@@ -34,9 +34,4 @@ export function shareUrl(code: string, keyFragment: string): string {
 /** A scheme-less share link for display, e.g. 'svrnty.is/c/ABC123' (optionally with key). */
 export function shareUrlShort(code: string, keyFragment?: string): string {
   return keyFragment ? `${SVRNTY_DOMAIN}/c/${code}#${keyFragment}` : `${SVRNTY_DOMAIN}/c/${code}`;
-}
-
-/** A scheme-less claimed-slug URL for display, e.g. 'svrnty.is/alice'. */
-export function slugUrlShort(slug: string): string {
-  return `${SVRNTY_DOMAIN}/${slug}`;
 }
