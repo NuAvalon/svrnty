@@ -10,7 +10,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, hkdfSync } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore } from '@/lib/sync/consume-mailbox';
@@ -80,6 +80,18 @@ function decryptAtRest(env: AtRestEnvelope, key: Uint8Array): string {
 
 function isAtRestEnvelope(obj: unknown): obj is AtRestEnvelope {
   return !!obj && typeof obj === 'object' && (obj as { svrnty_at_rest?: unknown }).svrnty_at_rest === 1;
+}
+
+/**
+ * Derive the 32-byte at-rest key for the headless book from the agent's ROOT secret (the custody
+ * master-secret the serve-daemon unlocks). HKDF-SHA256, domain-separated ('svrnty-headless-at-rest-v1')
+ * so it's INDEPENDENT of the vault key and any wire key — one's compromise is not the other's. The daemon
+ * derives this ONCE at unlock → new HeadlessStore({ path, atRestKey }). Deterministic: same rootSecret →
+ * same key → the store re-opens across respawns (durable). Pure (no I/O).
+ */
+export function deriveAtRestKey(rootSecret: Uint8Array): Uint8Array {
+  if (!rootSecret || rootSecret.length === 0) throw new Error('deriveAtRestKey: empty rootSecret');
+  return new Uint8Array(hkdfSync('sha256', rootSecret, new Uint8Array(0), 'svrnty-headless-at-rest-v1', 32));
 }
 
 /**

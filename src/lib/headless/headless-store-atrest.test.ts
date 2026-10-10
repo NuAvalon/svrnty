@@ -12,7 +12,7 @@ import { readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { HeadlessStore, type HeadlessContact } from './headless-store';
+import { HeadlessStore, deriveAtRestKey, type HeadlessContact } from './headless-store';
 
 function tmpBook(): string {
   const dir = mkdtempSync(join(tmpdir(), 'hs-atrest-'));
@@ -82,6 +82,22 @@ test('at-rest: no key → plaintext JSON (dev/test parity, backward compatible)'
 
 test('at-rest: a 32-byte key is required (AES-256)', () => {
   assert.throws(() => new HeadlessStore({ atRestKey: new Uint8Array(16) }), /32 bytes/);
+});
+
+test('deriveAtRestKey: deterministic 32B, domain-separated, re-derived key re-opens the store', () => {
+  const root = new Uint8Array(randomBytes(32));
+  const k1 = deriveAtRestKey(root);
+  assert.equal(k1.length, 32, '32-byte AES key');
+  assert.deepEqual([...k1], [...deriveAtRestKey(root)], 'deterministic — same root → same key (durable across respawns)');
+  assert.notDeepEqual([...k1], [...deriveAtRestKey(new Uint8Array(randomBytes(32)))], 'different root → different key');
+  assert.throws(() => deriveAtRestKey(new Uint8Array(0)), /empty rootSecret/);
+
+  // round-trips as a real at-rest key: a freshly re-derived key re-opens the encrypted book.
+  const path = tmpBook();
+  new HeadlessStore({ path, atRestKey: k1 }).upsertContact(contact('zoe'));
+  const reopened = new HeadlessStore({ path, atRestKey: deriveAtRestKey(root) });
+  assert.equal(reopened.getContactByFingerprint('zoe')?.id, 'id-zoe', 're-derived key re-opens the store across respawns');
+  rmSync(path, { force: true });
 });
 
 test('at-rest: plaintext file + key = migration — loads, then next flush re-writes encrypted', () => {
