@@ -156,6 +156,25 @@ test('headless RECEIVE + SEND: A sends a note → B polls → note persisted in 
   assert.equal(bStore.listThreads().length, 1, 'a thread was created');
 });
 
+test('headless RECEIVE: a BLOCKED in-book sender note is NOT persisted — block must block on the agent note-path (P1#2 survivor-safety)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const { fetchImpl } = mockRelay();
+  const aStore = new HeadlessStore();
+  const bStore = new HeadlessStore();
+  bStore.upsertContact(asContact(A, { trust_level: 'known', blocked: true })); // A in B's book but BLOCKED
+
+  const sent = await sendNoteFromHeadless({
+    owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub,
+    body: 'note from a blocked sender', store: aStore, relayBase: RELAY, fetchImpl,
+  });
+  assert.equal(sent.deposited, true); // the sender CAN deposit; the RECEIVER's admission must drop it
+
+  const summary = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(summary.notes, 0, 'a blocked sender note is NOT persisted');
+  assert.equal(bStore.listNotes().length, 0, 'nothing in the inbox from a blocked sender');
+  assert.equal(bStore.listThreads().length, 0, 'no thread created for a blocked sender');
+});
+
 test('headless SEND: deposits to the peer fp-derived mailbox (relay-independent addressing)', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();

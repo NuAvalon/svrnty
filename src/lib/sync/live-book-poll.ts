@@ -42,6 +42,7 @@ import {
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
+import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
@@ -151,7 +152,7 @@ export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
       const rec = await acceptInboundNote({
         wire,
-        isAdmitted: async (fp) => (await getContactByFingerprint(owner.fingerprint, fp)) != null,
+        isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
       });
       return rec ? { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint } : null;
     },
@@ -186,7 +187,7 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseS
         wire,
         ownerFingerprint: owner.fingerprint,
         // whitelist-on-fetch admit (I-2, the FALSE-MUTUAL gate): flip ONLY for an in-book sender.
-        isAdmitted: async (fp) => (await getContactByFingerprint(owner.fingerprint, fp)) != null,
+        isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
         // apply sink — persist the flip into the CLIENT store. A LOCKED store makes updateContact throw
         // → propagates as RETRYABLE (the affirmation waits in the mailbox, never ack-deleted-unseen).
         applyMutual: async (fromFp, trusts) => {
