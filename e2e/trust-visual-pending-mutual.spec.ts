@@ -44,7 +44,8 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(alan).toHaveAttribute('data-bond-state', 'trust-sent');
   await expect(alan).not.toHaveAttribute('data-light', 'white');
   await expect(alan).toHaveAttribute('data-mutual', 'false');
-  await expect(alan).toHaveAttribute('data-shape', 'hex-dashed');
+  await expect(alan).toHaveAttribute('data-shape', 'hex-half');
+  await expect(alan).toHaveAttribute('data-spoke-style', 'dual-thin');
   await expect(page.locator('[data-testid="trust-node-awaiting"]').first()).toBeVisible();
 
   // Intro handshake is a separate axis from trust-sent (Frank is not one-way trust).
@@ -53,7 +54,7 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(frank).toHaveAttribute('data-bond-state', 'known');
 
   await expect(page.getByText('Mutual · white light')).toBeVisible();
-  await expect(page.getByText('Awaiting mutual · dashed hollow')).toBeVisible();
+  await expect(page.getByText('Awaiting mutual · half hex · dual line')).toBeVisible();
   await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/one-way pending/i);
   await expect(page.getByText('Broken · dim ring')).toBeVisible();
 

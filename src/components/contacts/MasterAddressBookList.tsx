@@ -248,7 +248,9 @@ export function MasterAddressBookList({
                     color: visual.chipColorCss,
                     fontWeight: visual.lit ? 600 : 500,
                     borderBottom:
-                      visual.bondState === 'trust-sent' ? `1px dashed ${visual.chipColorCss}` : undefined,
+                      visual.spokeStyle === 'dual-thin'
+                        ? `2px double ${visual.chipColorCss}`
+                        : undefined,
                   }}
                 >
                   {chip}

@@ -28,9 +28,12 @@ export type TrustBondState =
 export type TrustBondShape =
   | 'outline'
   | 'dashed-hollow'
-  | 'actionable'
+  | 'half-filled'
   | 'solid-filled'
   | 'struck';
+
+/** Spoke paint. One-way is a dual thin pair — never a dash, never the mutual glow. */
+export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
 
 export const TRUST_VISUAL_LABELS = {
   known: 'Known',
@@ -51,18 +54,19 @@ export const TRUST_VISUAL_WHITE_SPOKE = '#fff6e8';
 const MUTED_STROKE = '#8f7550';
 const MUTED_FILL = 'rgba(143,117,80,0.10)';
 const INBOUND_STROKE = '#f9a825';
-const INBOUND_FILL = 'rgba(249,168,37,0.14)';
 const MUTUAL_FILL = 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
 const MUTUAL_CANVAS_FILL = 'rgba(255,122,26,0.55)';
 const KNOWN_STROKE = 'rgba(249,168,37,0.55)';
 const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 
-/** Intro-handshake dash — must not equal the trust-sent dash. */
+/** Intro-handshake dash — connection axis only. One-way trust is never dashed. */
 export const INTRO_PENDING_DASH = '3 2';
-/** Trust-sent (outbound, not yet mutual) dash. */
-export const TRUST_SENT_DASH = '8 5';
-/** Local break — dimmer and gappier than one-way pending. */
+/** Local break — dimmer and gappier than known. */
 export const TRUST_BROKEN_DASH = '2 6';
+/** Half-hex fill for one-way (not a flowing core). */
+export const ONE_WAY_HALF_FILL = 'rgba(143,117,80,0.42)';
+export const ONE_WAY_INBOUND_HALF_FILL = 'rgba(249,168,37,0.40)';
+export const ONE_WAY_SPOKE_WIDTH = 0.85;
 
 export type TrustPhaseVisual = {
   bondState: TrustBondState;
@@ -87,6 +91,7 @@ export type TrustPhaseVisual = {
   haloStroke: string | null;
   spokeStroke: string;
   spokeDasharray: string | undefined;
+  spokeStyle: TrustSpokeStyle;
   spokeGlow: boolean;
   chipColorCss: string;
 };
@@ -179,6 +184,7 @@ export function trustPhaseVisual(input: {
       haloStroke: null,
       spokeStroke: BLOCKED_STROKE,
       spokeDasharray: '2 3',
+      spokeStyle: 'single',
       spokeGlow: false,
       chipColorCss: 'var(--se-danger)',
     };
@@ -205,6 +211,7 @@ export function trustPhaseVisual(input: {
       haloStroke: BLOCKED_STROKE,
       spokeStroke: BLOCKED_STROKE,
       spokeDasharray: TRUST_BROKEN_DASH,
+      spokeStyle: 'single',
       spokeGlow: false,
       chipColorCss: 'var(--se-dim)',
     };
@@ -231,6 +238,7 @@ export function trustPhaseVisual(input: {
       haloStroke: TRUST_VISUAL_WHITE_HALO,
       spokeStroke: TRUST_VISUAL_WHITE_SPOKE,
       spokeDasharray: undefined,
+      spokeStyle: 'thick-bright',
       spokeGlow: true,
       chipColorCss: 'var(--se-accent2)',
     };
@@ -243,20 +251,21 @@ export function trustPhaseVisual(input: {
       label,
       lit: false,
       white: false,
-      shape: 'dashed-hollow',
+      shape: 'half-filled',
       introPending,
       verifiedMark: input.verified === true,
-      svgFill: 'transparent',
+      svgFill: ONE_WAY_HALF_FILL,
       svgStroke: MUTED_STROKE,
-      svgStrokeWidth: 1.45,
-      svgDasharray: TRUST_SENT_DASH,
-      canvasFill: null,
+      svgStrokeWidth: 1.25,
+      svgDasharray: undefined,
+      canvasFill: ONE_WAY_HALF_FILL,
       canvasStroke: MUTED_STROKE,
-      canvasDash: [8, 5],
+      canvasDash: null,
       coreFill: null,
       haloStroke: MUTED_STROKE,
       spokeStroke: MUTED_STROKE,
-      spokeDasharray: TRUST_SENT_DASH,
+      spokeDasharray: undefined,
+      spokeStyle: 'dual-thin',
       spokeGlow: false,
       chipColorCss: 'var(--se-muted)',
     };
@@ -269,20 +278,21 @@ export function trustPhaseVisual(input: {
       label,
       lit: false,
       white: false,
-      shape: 'actionable',
+      shape: 'half-filled',
       introPending,
       verifiedMark: input.verified === true,
-      svgFill: INBOUND_FILL,
+      svgFill: ONE_WAY_INBOUND_HALF_FILL,
       svgStroke: INBOUND_STROKE,
-      svgStrokeWidth: 1.5,
+      svgStrokeWidth: 1.25,
       svgDasharray: undefined,
-      canvasFill: INBOUND_FILL,
+      canvasFill: ONE_WAY_INBOUND_HALF_FILL,
       canvasStroke: INBOUND_STROKE,
       canvasDash: null,
       coreFill: null,
       haloStroke: INBOUND_STROKE,
       spokeStroke: INBOUND_STROKE,
       spokeDasharray: undefined,
+      spokeStyle: 'dual-thin',
       spokeGlow: false,
       chipColorCss: 'var(--se-accent)',
     };
@@ -310,6 +320,7 @@ export function trustPhaseVisual(input: {
     haloStroke: null,
     spokeStroke: pendingIntroPaint ? '#f9a825' : 'rgba(249,168,37,0.42)',
     spokeDasharray: pendingIntroPaint ? '5 4' : undefined,
+    spokeStyle: 'single',
     spokeGlow: false,
     chipColorCss: pendingIntroPaint ? 'var(--se-accent)' : 'var(--se-dim)',
   };

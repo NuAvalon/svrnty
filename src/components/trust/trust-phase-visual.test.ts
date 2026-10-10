@@ -8,7 +8,6 @@ import type { TrustEdge } from '../../lib/trust/types';
 import {
   INTRO_PENDING_DASH,
   TRUST_BROKEN_DASH,
-  TRUST_SENT_DASH,
   TRUST_VISUAL_LABELS,
   TRUST_VISUAL_WHITE_CORE,
   TRUST_VISUAL_WHITE_HALO,
@@ -67,18 +66,18 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.svgDasharray, undefined);
   });
 
-  it('outbound is dashed-hollow, muted, never white, labeled Awaiting mutual', () => {
+  it('outbound is half-filled, dual-thin, never white, labeled Awaiting mutual', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
     assert.equal(v.bondState, 'trust-sent');
     assert.equal(v.lit, false);
     assert.equal(v.white, false);
-    assert.equal(v.shape, 'dashed-hollow');
+    assert.equal(v.shape, 'half-filled');
+    assert.equal(v.spokeStyle, 'dual-thin');
     assert.equal(v.label, TRUST_VISUAL_LABELS['trust-sent']);
     assert.equal(v.coreFill, null);
     assert.equal(v.spokeGlow, false);
-    assert.equal(v.svgFill, 'transparent');
-    assert.equal(v.canvasFill, null);
-    assert.equal(v.svgDasharray, TRUST_SENT_DASH);
+    assert.equal(v.svgDasharray, undefined);
+    assert.equal(v.spokeDasharray, undefined);
     assert.equal(usesWhite(v), false);
   });
 
@@ -88,8 +87,10 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.notEqual(outbound.shape, mutual.shape);
     assert.notEqual(outbound.svgStroke, mutual.svgStroke);
     assert.notEqual(outbound.label, mutual.label);
-    assert.equal(outbound.shape, 'dashed-hollow');
+    assert.equal(outbound.shape, 'half-filled');
     assert.equal(mutual.shape, 'solid-filled');
+    assert.equal(outbound.spokeStyle, 'dual-thin');
+    assert.equal(mutual.spokeStyle, 'thick-bright');
     assert.equal(outbound.label, 'Awaiting mutual');
     assert.equal(mutual.label, 'Mutual');
   });
@@ -124,10 +125,12 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(trustVisualLane(sent, false), 'trust-sent');
   });
 
-  it('inbound is actionable, not white, with the trust-back label', () => {
+  it('inbound is half-filled dual-thin, not white, with the trust-back label', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
     assert.equal(v.bondState, 'trust-received');
-    assert.equal(v.shape, 'actionable');
+    assert.equal(v.shape, 'half-filled');
+    assert.equal(v.spokeStyle, 'dual-thin');
+    assert.equal(v.coreFill, null);
     assert.equal(v.lit, false);
     assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
     assert.equal(usesWhite(v), false);
@@ -200,7 +203,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.label, TRUST_VISUAL_LABELS.broken);
     assert.equal(v.lit, false);
     assert.equal(v.svgDasharray, TRUST_BROKEN_DASH);
-    assert.notEqual(v.svgDasharray, TRUST_SENT_DASH);
+    assert.notEqual(v.shape, 'half-filled');
     assert.equal(trustVisualLane(v, false), 'broken');
   });
 

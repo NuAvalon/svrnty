@@ -34,6 +34,7 @@ import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
+import { offsetSpokePair, halfFillToward } from '@/components/trust/trust-spoke-paint';
 import {
   applyLayoutMemory,
   glassStateSignature,
@@ -75,6 +76,7 @@ import {
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
 import {
+  ONE_WAY_SPOKE_WIDTH,
   trustVisualLane,
   visualForEdge,
   type TrustPhaseVisual,
@@ -1017,6 +1019,7 @@ export function TrustMap({
                 : visual.verifiedMark
                   ? 'tm-edge tm-spoke-verified'
                   : 'tm-edge tm-spoke-known';
+              const delay = { ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` };
               return (
                 <g key={`e-${n.id}`}>
                   {visual.spokeGlow && (
@@ -1032,21 +1035,43 @@ export function TrustMap({
                       style={{ ['--tm-o' as string]: 0.85, animationDelay: `${0.08 + i * 0.02}s` }}
                     />
                   )}
-                  <line
-                    className={spokeClass}
-                    data-testid="trust-edge"
-                    data-spoke={lane}
-                    data-bond-state={visual.bondState}
-                    x1={layout.self.x}
-                    y1={layout.self.y}
-                    x2={n.x}
-                    y2={n.y}
-                    stroke={visual.spokeStroke}
-                    strokeOpacity={visual.lit ? 0.95 : visual.bondState === 'trust-sent' ? 0.7 : visual.verifiedMark ? 0.58 : 0.48}
-                    strokeWidth={visual.lit ? 2.4 : visual.bondState === 'trust-sent' ? 1.55 : visual.verifiedMark ? 1.25 : 1.05}
-                    strokeDasharray={visual.spokeDasharray || (n.state === 'decayed' ? '3 3' : undefined)}
-                    style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` }}
-                  />
+                  {visual.spokeStyle === 'dual-thin'
+                    ? offsetSpokePair(layout.self.x, layout.self.y, n.x, n.y).map((seg, si) => (
+                        <line
+                          key={`dual-${si}`}
+                          className={spokeClass}
+                          data-testid={si === 0 ? 'trust-edge' : 'trust-edge-pair'}
+                          data-spoke={lane}
+                          data-bond-state={visual.bondState}
+                          data-spoke-style="dual-thin"
+                          x1={seg.x1}
+                          y1={seg.y1}
+                          x2={seg.x2}
+                          y2={seg.y2}
+                          stroke={visual.spokeStroke}
+                          strokeOpacity={0.78}
+                          strokeWidth={ONE_WAY_SPOKE_WIDTH}
+                          style={delay}
+                        />
+                      ))
+                    : (
+                    <line
+                      className={spokeClass}
+                      data-testid="trust-edge"
+                      data-spoke={lane}
+                      data-bond-state={visual.bondState}
+                      data-spoke-style={visual.spokeStyle}
+                      x1={layout.self.x}
+                      y1={layout.self.y}
+                      x2={n.x}
+                      y2={n.y}
+                      stroke={visual.spokeStroke}
+                      strokeOpacity={visual.lit ? 0.95 : visual.verifiedMark ? 0.58 : 0.48}
+                      strokeWidth={visual.lit ? 2.4 : visual.verifiedMark ? 1.25 : 1.05}
+                      strokeDasharray={visual.spokeDasharray || (n.state === 'decayed' ? '3 3' : undefined)}
+                      style={delay}
+                    />
+                  )}
                 </g>
               );
             })}
@@ -1113,6 +1138,8 @@ export function TrustMap({
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
                   glassPop={glassPop.has(n.id)}
+                  towardX={layout.self.x}
+                  towardY={layout.self.y}
                   onSelect={handleNodeClick}
                 />
               );
@@ -1327,7 +1354,7 @@ export function TrustMap({
             One-way pending → Mutual → Broken (or one-way again if they still hold)
           </span>
           <span style={{ color: E.accent2 }}>⬡ Mutual · white light</span>
-          <span style={{ color: E.muted }}>⬡ Awaiting mutual · dashed hollow</span>
+          <span style={{ color: E.muted }}>⬡ Awaiting mutual · half hex · dual line</span>
           <span style={{ color: E.accent }}>⬡ Trusts you · gold</span>
           <span style={{ color: E.dim }}>⬡ Broken · dim ring</span>
           <span>⬡ Known · dim outline</span>
@@ -1928,6 +1955,8 @@ function ContactNode({
   distress,
   ignite,
   glassPop,
+  towardX,
+  towardY,
   onSelect,
 }: {
   node: LaidOutNode;
@@ -1939,6 +1968,8 @@ function ContactNode({
   distress: boolean;
   ignite: boolean;
   glassPop: boolean;
+  towardX: number;
+  towardY: number;
   onSelect: (id: string, multi: boolean) => void;
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
@@ -1980,18 +2011,6 @@ function ContactNode({
           style={{ pointerEvents: 'none' }}
         />
       )}
-      {visual.bondState === 'trust-sent' && visual.haloStroke && (
-        <polygon
-          data-testid="trust-node-awaiting"
-          points={hexagonPoints(node.x, node.y, r + 4)}
-          fill="none"
-          stroke={visual.haloStroke}
-          strokeOpacity={0.85}
-          strokeWidth={1.2}
-          strokeDasharray={visual.svgDasharray}
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
       {visual.bondState === 'broken' && visual.haloStroke && (
         <polygon
           data-testid="trust-node-broken"
@@ -2014,24 +2033,35 @@ function ContactNode({
         data-mutual={visual.lit ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
-        data-shape={visual.shape === 'dashed-hollow' ? 'hex-dashed' : 'hex'}
+        data-shape={
+          visual.shape === 'half-filled'
+            ? 'hex-half'
+            : visual.shape === 'dashed-hollow'
+              ? 'hex-dashed'
+              : 'hex'
+        }
+        data-spoke-style={visual.spokeStyle}
         data-glass={lane}
         data-light={visual.lit ? 'white' : visual.verifiedMark ? 'ember' : 'none'}
         points={hexagonPoints(node.x, node.y, r)}
-        fill={visual.svgFill}
+        fill={visual.shape === 'half-filled' ? 'transparent' : visual.svgFill}
         stroke={picked ? E.accent : selected ? T.selfDot : visual.svgStroke}
         strokeWidth={picked || visual.lit ? 1.85 : visual.svgStrokeWidth}
         strokeDasharray={visual.svgDasharray || (node.state === 'decayed' ? '2 2' : undefined)}
       >
         <title>{`${node.name} — ${visual.label}`}</title>
       </polygon>
-      {visual.bondState === 'trust-received' && (
-        <polygon
-          points={hexagonPoints(node.x, node.y, Math.max(2.4, r * 0.38))}
-          fill={visual.svgStroke}
-          opacity={0.9}
-          style={{ pointerEvents: 'none' }}
-        />
+      {visual.shape === 'half-filled' && (
+        <g data-testid="trust-node-awaiting" style={{ pointerEvents: 'none' }}>
+          <clipPath id={`half-hex-${node.id}`}>
+            <polygon points={halfFillToward(node.x, node.y, r + 1, towardX, towardY).points} />
+          </clipPath>
+          <polygon
+            points={hexagonPoints(node.x, node.y, r)}
+            fill={visual.svgFill}
+            clipPath={`url(#half-hex-${node.id})`}
+          />
+        </g>
       )}
       {visual.verifiedMark && (
         <circle

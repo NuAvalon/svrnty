@@ -158,6 +158,10 @@ function TrustBadge({ contact }: { contact: Contact }) {
         color: visual.chipColorCss,
         borderColor: visual.lit ? E.borderLit : visual.bondState === 'trust-sent' ? E.muted : E.border,
         borderStyle: visual.shape === 'dashed-hollow' ? 'dashed' : 'solid',
+        backgroundImage:
+          visual.shape === 'half-filled'
+            ? `linear-gradient(90deg, ${visual.chipColorCss} 50%, transparent 50%)`
+            : undefined,
       }}
     >
       {visual.label}
