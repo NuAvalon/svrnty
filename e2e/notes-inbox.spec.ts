@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import { seedSampleGalaxy, SAMPLE_TESLA_FP } from './helpers/seed-sample-galaxy';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -48,7 +47,7 @@ test('notes inbox is over-wire glass with honest send status', async ({ page }) 
 });
 
 test('galaxy star Chat opens that conversation in the Thread Field', async ({ page }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
 
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
@@ -62,11 +61,20 @@ test('galaxy star Chat opens that conversation in the Thread Field', async ({ pa
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 20_000 });
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
   await expect(page.getByTestId('trust-map')).toBeVisible();
-  await seedSampleGalaxy(page);
+  const load = page.getByTestId('trust-map-load-sample');
+  await load.click();
+  await expect(load).toBeHidden({ timeout: 150_000 });
 
-  const star = page.locator(
-    `[data-testid="trust-node"][data-fingerprint="${SAMPLE_TESLA_FP}"]`,
-  );
+  await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
+  await page.getByTestId('contact-row').filter({ hasText: 'River Vale' }).click();
+  const living = page.getByTestId('contact-action-card');
+  await expect(living.getByTestId('galaxy-open-note')).toBeVisible();
+  const fpRaw = await living.getByTestId('living-fingerprint').innerText();
+  const fp = fpRaw.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  expect(fp.length).toBeGreaterThanOrEqual(16);
+
+  await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+  const star = page.locator(`[data-testid="trust-node"][data-fingerprint="${fp}"]`);
   await expect(star).toBeVisible({ timeout: 15_000 });
   await star.click();
   await expect(page.getByTestId('trust-node-detail')).toBeVisible();
@@ -74,11 +82,11 @@ test('galaxy star Chat opens that conversation in the Thread Field', async ({ pa
 
   const panel = page.getByTestId('notes-inbox');
   await expect(panel).toBeVisible();
-  await expect(panel.getByTestId('notes-field-peer')).toContainText(/Nikola Tesla/i);
+  await expect(panel.getByTestId('notes-field-peer')).toContainText(/River Vale/i);
   await panel.getByTestId('notes-search').fill('zzzz-no-match');
   await expect(panel.getByTestId('notes-search-empty')).toBeVisible();
-  await panel.getByTestId('notes-search').fill('Tesla');
-  await expect(panel.getByText(/Nikola Tesla/i).first()).toBeVisible();
+  await panel.getByTestId('notes-search').fill('River');
+  await expect(panel.getByText(/River Vale/i).first()).toBeVisible();
   await expect(panel.getByTestId('notes-send-btn')).toHaveText(/^Send$/i);
   await expect(panel.getByText(/^Delivered$/)).toHaveCount(0);
   await expect(panel.getByText(/post-quantum/i)).toHaveCount(0);
@@ -86,5 +94,5 @@ test('galaxy star Chat opens that conversation in the Thread Field', async ({ pa
   await panel.getByTestId('notes-field-peer').click();
   await expect(page.getByTestId('trust-map')).toBeVisible();
   await expect(page.getByTestId('trust-node-detail')).toBeVisible();
-  await expect(page.getByTestId('trust-node-detail')).toContainText(/Nikola Tesla/i);
+  await expect(page.getByTestId('trust-node-detail')).toContainText(/River Vale/i);
 });

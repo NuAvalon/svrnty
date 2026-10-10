@@ -38,14 +38,16 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   await page.getByTestId('contact-row').filter({ hasText: 'Hypatia' }).click();
   const classical = page.getByTestId('contact-action-card');
   await expect(classical).toBeVisible();
-  await expect(classical.getByText('no key')).toBeVisible();
+  await expect(classical.getByTestId('classical-no-key')).toBeVisible();
+  await expect(classical.getByTestId('classical-no-fingerprint')).toBeVisible();
   await expect(classical.getByTestId('galaxy-open-note')).toHaveCount(0);
   await expect(classical.getByTestId('card-actions-toggle')).toBeVisible();
 
   await page.getByTestId('contact-row').filter({ hasText: 'River Vale' }).click();
   const living = page.getByTestId('contact-action-card');
   await expect(living).toBeVisible();
-  await expect(living.getByText('no key')).toHaveCount(0);
+  await expect(living.getByTestId('classical-no-key')).toHaveCount(0);
+  await expect(living.getByTestId('living-fingerprint')).toBeVisible();
   const chat = living.getByTestId('galaxy-open-note');
   const actions = living.getByTestId('card-actions-toggle');
   await expect(chat).toBeVisible();

@@ -86,6 +86,7 @@ export function ContactActionCard({
           </span>
         ) : (
           <div
+            data-testid="classical-no-key"
             style={{
               width: 36,
               height: 36,

@@ -48,6 +48,7 @@ import { CardMenuItem } from '@/components/ui/CardActionMenu';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
+import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import {
   safeEmailLink,
   safePhoneLink,
@@ -1409,13 +1410,17 @@ export function TrustMap({
 
       {focusNode && focusEdge && (() => {
         const vis = visualOf(focusEdge, ownerHasVerified(focusEdge));
-        const canNote = !!(onOpenNote && String(focusEdge.peer_fingerprint || '').replace(/[^0-9a-fA-F]/g, '').length >= 16);
+        const living = isSvrnNetworkContact({
+          fingerprint: focusEdge.peer_fingerprint,
+          public_key: focusEdge.peer_public_key,
+        });
+        const canNote = !!(onOpenNote && living);
         const closeMenu = () => setActionsOpen(false);
         return (
           <ContactActionCard
             testId="trust-node-detail"
             name={focusEdge.peer_name || focusNode.name}
-            fingerprint={focusEdge.peer_fingerprint}
+            fingerprint={living ? focusEdge.peer_fingerprint : undefined}
             bondLabel={describeAlive(focusNode, focusEdge)}
             bondColor={vis.lit ? E.accent2 : vis.introPending ? E.accent : vis.bondState === 'trust-sent' ? E.muted : E.dim}
             lit={vis.lit}

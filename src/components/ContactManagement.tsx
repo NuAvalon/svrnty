@@ -1756,7 +1756,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
           const verified = ownerHasVerified(edge);
           const trusted = isTrusted(focused);
           const fp = String(edge.peer_fingerprint || focused.fingerprint || '').replace(/[^0-9a-fA-F]/g, '');
-          const canChat = !!onOpenChat && fp.length >= 16;
+          const canChat = !!onOpenChat && svrn && fp.length >= 16;
           const closeMenu = () => setBookActionsOpen(false);
           const tags = focused.metadata?.tags || [];
           const groupChoices = Array.from(new Set([...contacts.flatMap((c) => c.metadata?.tags || []), ...tags])).sort();
@@ -1766,7 +1766,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             <ContactActionCard
               testId="contact-action-card"
               name={focused.name}
-              fingerprint={fp || undefined}
+              fingerprint={svrn ? (fp || undefined) : undefined}
               bondLabel={vis.label}
               bondColor={vis.chipColorCss}
               lit={vis.lit}
