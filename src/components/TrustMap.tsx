@@ -1920,9 +1920,11 @@ function legendLabelColor(visual: TrustPhaseVisual): string {
 
 /** Mini hex painted from the same tokens as the star — not a unicode stand-in. */
 function TrustLegendItem({ visual, label }: { visual: TrustPhaseVisual; label: string }) {
-  const r = 7.4;
-  const cx = 10;
-  const cy = 10;
+  const r = 9;
+  const cx = 12;
+  const cy = 12;
+  const fill =
+    visual.shape === 'solid-filled' && visual.canvasFill ? visual.canvasFill : visual.svgFill;
   return (
     <span
       data-testid={`trust-legend-item-${visual.bondState}`}
@@ -1937,14 +1939,14 @@ function TrustLegendItem({ visual, label }: { visual: TrustPhaseVisual; label: s
         data-testid={`trust-legend-glyph-${visual.bondState}`}
         data-bond-state={visual.bondState}
         data-shape={visual.shape}
-        width={20}
-        height={20}
-        viewBox="0 0 20 20"
+        width={24}
+        height={24}
+        viewBox="0 0 24 24"
         aria-hidden="true"
       >
         <polygon
           points={hexagonPoints(cx, cy, r)}
-          fill={visual.svgFill}
+          fill={fill}
           stroke={visual.svgStroke}
           strokeWidth={visual.svgStrokeWidth}
           strokeDasharray={visual.svgDasharray}
@@ -1954,7 +1956,7 @@ function TrustLegendItem({ visual, label }: { visual: TrustPhaseVisual; label: s
             data-testid={`trust-legend-core-${visual.bondState}`}
             cx={cx}
             cy={cy}
-            r={2.3}
+            r={2.8}
             fill={visual.coreFill}
           />
         ) : null}
