@@ -34,7 +34,7 @@ import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
-import { offsetSpokePair, halfFillVertical } from '@/components/trust/trust-spoke-paint';
+import { offsetSpokePair } from '@/components/trust/trust-spoke-paint';
 import {
   applyLayoutMemory,
   glassStateSignature,
@@ -1662,8 +1662,8 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span style={{ color: E.accent2 }}>Mutual · full</span>
-          <span style={{ color: E.accent }}>Awaiting · outer</span>
+          <span style={{ color: E.accent2 }}>Mutual · core</span>
+          <span style={{ color: E.accent }}>Awaiting</span>
           <span style={{ color: E.accent }}>Trusts you</span>
           <span>Known</span>
         </div>
@@ -1855,18 +1855,6 @@ function ContactNode({
           style={{ pointerEvents: 'none' }}
         />
       )}
-      {visual.shape === 'outer-ring' && visual.haloStroke ? (
-        <polygon
-          data-testid="trust-node-awaiting"
-          data-ring="outer"
-          points={hexagonPoints(node.x, node.y, r + 4)}
-          fill="none"
-          stroke={visual.haloStroke}
-          strokeOpacity={0.92}
-          strokeWidth={1.7}
-          style={{ pointerEvents: 'none' }}
-        />
-      ) : null}
       <polygon
         data-testid="trust-node"
         data-fingerprint={node.id}
@@ -1877,38 +1865,18 @@ function ContactNode({
         data-mutual={visual.lit ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
-        data-shape={
-          visual.shape === 'half-filled'
-            ? 'hex-half'
-            : visual.shape === 'outer-ring'
-              ? 'hex-ring'
-              : visual.shape === 'dashed-hollow'
-                ? 'hex-dashed'
-                : 'hex'
-        }
+        data-shape={visual.shape === 'dashed-hollow' ? 'hex-dashed' : 'hex'}
         data-spoke-style={visual.spokeStyle}
         data-glass={lane}
         data-light={visual.lit ? 'white' : visual.verifiedMark ? 'ember' : 'none'}
         points={hexagonPoints(node.x, node.y, r)}
-        fill={visual.shape === 'half-filled' || visual.shape === 'outer-ring' ? 'transparent' : visual.svgFill}
+        fill={visual.svgFill}
         stroke={picked ? E.accent : selected ? T.selfDot : visual.svgStroke}
         strokeWidth={picked || visual.lit ? 1.85 : visual.svgStrokeWidth}
         strokeDasharray={visual.svgDasharray || (node.state === 'decayed' ? '2 2' : undefined)}
       >
         <title>{`${node.name} — ${visual.label}`}</title>
       </polygon>
-      {visual.shape === 'half-filled' && (
-        <g data-testid="trust-node-inbound-half" style={{ pointerEvents: 'none' }}>
-          <clipPath id={`half-hex-${node.id}`}>
-            <polygon points={halfFillVertical(node.x, node.y, r + 1).points} />
-          </clipPath>
-          <polygon
-            points={hexagonPoints(node.x, node.y, r)}
-            fill={visual.svgFill}
-            clipPath={`url(#half-hex-${node.id})`}
-          />
-        </g>
-      )}
       {visual.verifiedMark && (
         <circle
           cx={node.x + r * 0.62}

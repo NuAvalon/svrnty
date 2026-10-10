@@ -30,23 +30,14 @@ function status(p: Partial<LivingEdgeStatus> & Pick<LivingEdgeStatus, 'trust'>):
   };
 }
 
-function whitesOf(v: TrustPhaseVisual): string[] {
-  return [v.svgFill, v.svgStroke, v.canvasFill, v.canvasStroke, v.coreFill, v.haloStroke, v.spokeStroke]
-    .filter((c): c is string => typeof c === 'string' && c.length > 0);
-}
-
+/** White light = core / spoke / halo. Shared hex chrome may reuse the cream stroke. */
 function usesWhite(v: TrustPhaseVisual): boolean {
-  const blob = whitesOf(v).join(' ').toLowerCase();
   return (
     v.white ||
     v.lit ||
     v.coreFill === TRUST_VISUAL_WHITE_CORE ||
-    blob.includes(TRUST_VISUAL_WHITE_CORE.toLowerCase()) ||
-    blob.includes(TRUST_VISUAL_WHITE_HALO.toLowerCase()) ||
-    blob.includes(TRUST_VISUAL_WHITE_SPOKE.toLowerCase()) ||
-    blob.includes('#fff') ||
-    blob.includes('255,255,255') ||
-    blob.includes('251,234,210')
+    v.haloStroke === TRUST_VISUAL_WHITE_HALO ||
+    v.spokeStroke === TRUST_VISUAL_WHITE_SPOKE
   );
 }
 
@@ -64,34 +55,41 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.svgDasharray, undefined);
   });
 
-  it('outbound lights the outer ring only — inner core and Known spoke stay dim', () => {
+  it('outbound shares the mutual hex — no core, Known spoke unchanged', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
+    const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
     assert.equal(v.bondState, 'trust-sent');
     assert.equal(v.lit, false);
     assert.equal(v.white, false);
-    assert.equal(v.shape, 'outer-ring');
+    assert.equal(v.shape, 'solid-filled');
+    assert.equal(v.shape, mutual.shape);
+    assert.equal(v.svgFill, mutual.svgFill);
+    assert.equal(v.svgStroke, mutual.svgStroke);
+    assert.equal(v.svgStrokeWidth, mutual.svgStrokeWidth);
+    assert.equal(v.canvasFill, mutual.canvasFill);
     assert.equal(v.spokeStyle, 'single');
     assert.equal(v.label, TRUST_VISUAL_LABELS['trust-sent']);
     assert.equal(v.coreFill, null);
-    assert.equal(v.haloStroke, '#f9a825');
-    assert.equal(v.svgFill, 'transparent');
+    assert.equal(v.haloStroke, null);
+    assert.notEqual(v.coreFill, mutual.coreFill);
     assert.equal(v.spokeGlow, false);
     assert.equal(v.svgDasharray, undefined);
     assert.equal(v.spokeDasharray, undefined);
     assert.equal(usesWhite(v), false);
-    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
     assert.equal(v.spokeStyle, known.spokeStyle);
     assert.equal(v.spokeStroke, known.spokeStroke);
   });
 
-  it('pending vs mutual differ on shape AND color AND label', () => {
+  it('one-way and mutual share the hex; only mutual has the core and the lit bond', () => {
     const outbound = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
     const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
-    assert.notEqual(outbound.shape, mutual.shape);
-    assert.notEqual(outbound.svgStroke, mutual.svgStroke);
+    assert.equal(outbound.shape, mutual.shape);
+    assert.equal(outbound.svgFill, mutual.svgFill);
+    assert.equal(outbound.svgStroke, mutual.svgStroke);
     assert.notEqual(outbound.label, mutual.label);
-    assert.equal(outbound.shape, 'outer-ring');
-    assert.equal(mutual.shape, 'solid-filled');
+    assert.equal(outbound.coreFill, null);
+    assert.equal(mutual.coreFill, TRUST_VISUAL_WHITE_CORE);
     assert.equal(outbound.spokeStyle, 'single');
     assert.equal(mutual.spokeStyle, 'thick-bright');
     assert.equal(outbound.label, 'Awaiting mutual');
@@ -128,11 +126,15 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(trustVisualLane(sent, false), 'trust-sent');
   });
 
-  it('inbound is half-filled dual-thin, not white, with the trust-back label', () => {
+  it('inbound shares the mutual hex — no core, Known spoke, trust-back label', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
+    const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
     assert.equal(v.bondState, 'trust-received');
-    assert.equal(v.shape, 'half-filled');
-    assert.equal(v.spokeStyle, 'dual-thin');
+    assert.equal(v.shape, 'solid-filled');
+    assert.equal(v.svgFill, mutual.svgFill);
+    assert.equal(v.spokeStyle, known.spokeStyle);
+    assert.equal(v.spokeStroke, known.spokeStroke);
     assert.equal(v.coreFill, null);
     assert.equal(v.lit, false);
     assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
@@ -211,7 +213,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
     assert.equal(v.bondState, 'trust-received');
     assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
-    assert.equal(v.shape, 'half-filled');
+    assert.equal(v.shape, 'solid-filled');
   });
 
   it('trust_history does not invent a broken paint — live boolean only', () => {
@@ -268,5 +270,8 @@ describe('trust-phase visual map — consumers inherit the one map', () => {
     );
     assert.match(map, /data-bond-state=\{visual\.bondState\}/);
     assert.match(map, /data-light=\{visual\.lit \? 'white'/);
+    assert.doesNotMatch(map, /halfFillVertical|half-filled|hex-half|hex-ring|outer-ring/);
+    const galaxy = readFileSync(join(dir, '..', 'TrustMapGalaxy.tsx'), 'utf8');
+    assert.doesNotMatch(galaxy, /half-filled|outer-ring/);
   });
 });

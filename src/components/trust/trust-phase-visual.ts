@@ -7,6 +7,7 @@
  * `edge.trusted` / `edge.mutual`.
  *
  * WHITE / LIT if and only if `trust === 'mutual'`.
+ * One-way trust shares the mutual hex chrome — no core, Known spoke unchanged.
  */
 
 import {
@@ -27,8 +28,6 @@ export type TrustBondState =
 export type TrustBondShape =
   | 'outline'
   | 'dashed-hollow'
-  | 'half-filled'
-  | 'outer-ring'
   | 'solid-filled'
   | 'struck';
 
@@ -49,21 +48,15 @@ export const TRUST_VISUAL_WHITE_CORE = '#fffef8';
 export const TRUST_VISUAL_WHITE_HALO = '#fff8ee';
 export const TRUST_VISUAL_WHITE_SPOKE = '#fff6e8';
 
-const MUTED_STROKE = '#8f7550';
 const MUTED_FILL = 'rgba(143,117,80,0.10)';
-const INBOUND_STROKE = '#f9a825';
 const MUTUAL_FILL = 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
 const MUTUAL_CANVAS_FILL = 'rgba(255,122,26,0.55)';
 const KNOWN_STROKE = 'rgba(249,168,37,0.55)';
 const KNOWN_SPOKE = 'rgba(249,168,37,0.42)';
-const ONE_WAY_OUTER = '#f9a825';
 const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 
 /** Intro-handshake dash — connection axis only. One-way trust is never dashed. */
 export const INTRO_PENDING_DASH = '3 2';
-/** Half-hex fill for one-way (not a flowing core). */
-export const ONE_WAY_HALF_FILL = 'rgba(143,117,80,0.42)';
-export const ONE_WAY_INBOUND_HALF_FILL = 'rgba(249,168,37,0.40)';
 export const ONE_WAY_SPOKE_WIDTH = 0.85;
 
 export type TrustPhaseVisual = {
@@ -195,57 +188,30 @@ export function trustPhaseVisual(input: {
     };
   }
 
-  if (bond === 'trust-sent') {
+  if (bond === 'trust-sent' || bond === 'trust-received') {
     return {
       bondState: bond,
       connection: input.status.connection,
       label,
       lit: false,
       white: false,
-      shape: 'outer-ring',
+      shape: 'solid-filled',
       introPending,
       verifiedMark: input.verified === true,
-      svgFill: 'transparent',
-      svgStroke: KNOWN_STROKE,
-      svgStrokeWidth: 1.05,
+      svgFill: MUTUAL_FILL,
+      svgStroke: TRUST_VISUAL_WHITE_HALO,
+      svgStrokeWidth: 1.85,
       svgDasharray: undefined,
-      canvasFill: null,
-      canvasStroke: KNOWN_STROKE,
+      canvasFill: MUTUAL_CANVAS_FILL,
+      canvasStroke: TRUST_VISUAL_WHITE_HALO,
       canvasDash: null,
       coreFill: null,
-      haloStroke: ONE_WAY_OUTER,
+      haloStroke: null,
       spokeStroke: KNOWN_SPOKE,
       spokeDasharray: undefined,
       spokeStyle: 'single',
       spokeGlow: false,
-      chipColorCss: 'var(--se-accent)',
-    };
-  }
-
-  if (bond === 'trust-received') {
-    return {
-      bondState: bond,
-      connection: input.status.connection,
-      label,
-      lit: false,
-      white: false,
-      shape: 'half-filled',
-      introPending,
-      verifiedMark: input.verified === true,
-      svgFill: ONE_WAY_INBOUND_HALF_FILL,
-      svgStroke: INBOUND_STROKE,
-      svgStrokeWidth: 1.25,
-      svgDasharray: undefined,
-      canvasFill: ONE_WAY_INBOUND_HALF_FILL,
-      canvasStroke: INBOUND_STROKE,
-      canvasDash: null,
-      coreFill: null,
-      haloStroke: INBOUND_STROKE,
-      spokeStroke: INBOUND_STROKE,
-      spokeDasharray: undefined,
-      spokeStyle: 'dual-thin',
-      spokeGlow: false,
-      chipColorCss: 'var(--se-accent)',
+      chipColorCss: bond === 'trust-received' ? 'var(--se-accent)' : 'var(--se-muted)',
     };
   }
 
