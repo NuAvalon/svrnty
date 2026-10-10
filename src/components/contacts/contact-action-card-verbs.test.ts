@@ -29,5 +29,6 @@ describe('classical cards do not get Chat', () => {
     assert.match(book, /fingerprint=\{svrn \? \(fp \|\| undefined\) : undefined\}/);
     assert.match(galaxy, /const canNote = !!\(onOpenNote && living\)/);
     assert.match(galaxy, /fingerprint=\{living \? focusEdge\.peer_fingerprint : undefined\}/);
+    assert.match(galaxy, /label="Give a piece"/);
   });
 });

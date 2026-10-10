@@ -77,6 +77,7 @@ import {
   type MethodRevision,
 } from '@/components/identity/method-history';
 import { VerifySheet } from '@/components/verify/VerifySheet';
+import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import {
   ONE_WAY_SPOKE_WIDTH,
   trustLifecycleLegendItems,
@@ -540,6 +541,7 @@ export function TrustMap({
   const verifiedForTrust = useRef(false);
   const [sampleBusy, setSampleBusy] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(true);
+  const [shardGiveOpen, setShardGiveOpen] = useState(false);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -557,6 +559,7 @@ export function TrustMap({
   const clearFocus = useCallback(() => {
     setFocusId(null);
     setEditing(false);
+    setShardGiveOpen(false);
     setActionsOpen(false);
     setShowHistory(false);
     setActionNote(null);
@@ -1516,6 +1519,15 @@ export function TrustMap({
                       }}
                     />
                   )}
+                  {living ? (
+                    <CardMenuItem
+                      label="Give a piece"
+                      onClick={() => {
+                        setShardGiveOpen(true);
+                        closeMenu();
+                      }}
+                    />
+                  ) : null}
                   {contactHasDistress(focusEdge) && onDistressWent && (
                     <CardMenuItem
                       label={DISTRESS_COPY.went}
@@ -1701,6 +1713,29 @@ export function TrustMap({
           </FirstVisitHint>
         </div>
 
+      <ShardGiveDialog
+        open={
+          shardGiveOpen &&
+          !!focusEdge &&
+          isSvrnNetworkContact({
+            fingerprint: focusEdge.peer_fingerprint,
+            public_key: focusEdge.peer_public_key,
+          })
+        }
+        onClose={() => setShardGiveOpen(false)}
+        ownerFingerprint={ownerFingerprint}
+        ownerName={ownerName}
+        contact={
+          focusEdge
+            ? {
+                id: focusEdge.id,
+                name: focusEdge.peer_name || focusNode?.name || 'Unnamed',
+                fingerprint: focusEdge.peer_fingerprint,
+              }
+            : null
+        }
+      />
+
       <VerifySheet
         open={verifyOpen && !!focusEdge}
         onClose={() => {
@@ -1859,6 +1894,7 @@ function ContactNode({
       <polygon
         data-testid="trust-node"
         data-fingerprint={node.id}
+        data-name={node.name}
         data-trust-state={visual.introPending ? 'pending' : node.state}
         data-bond-state={visual.bondState}
         data-intro-pending={visual.introPending ? 'true' : 'false'}

@@ -67,6 +67,20 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
     fullPage: true,
   });
 
+  await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+  const riverStar = page.locator('[data-testid="trust-node"][data-name="River Vale"]');
+  await expect(riverStar).toBeVisible({ timeout: 15_000 });
+  await riverStar.click({ force: true });
+  const galaxyCard = page.getByTestId('trust-node-detail');
+  await expect(galaxyCard.getByTestId('galaxy-open-note')).toBeVisible();
+  await expect(galaxyCard.getByTestId('contact-send-update')).toBeVisible();
+  await galaxyCard.getByTestId('card-actions-toggle').click();
+  await expect(page.getByRole('menuitem', { name: 'Give a piece' })).toBeVisible();
+  await page.screenshot({
+    path: '/opt/cursor/artifacts/screenshots/galaxy-river-living-verbs.png',
+    fullPage: true,
+  });
+
   await page.getByTestId('top-nav-menu-btn').click();
   await page.getByTestId('nav-lock-menu').click();
   await expect(page.getByTestId('switch-identity')).toBeVisible({ timeout: 15_000 });
