@@ -3,6 +3,7 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
+import { onSessionLock } from '@/lib/identity/client-store';
 
 const DB_NAME = 'svrnty-notes';
 const DB_VERSION = 1;
@@ -162,6 +163,13 @@ export function lockNotesStore(): void {
   _notesKey = null;
   _notesSalt = null;
 }
+
+// P1#1 (cross-identity notes-leak): drop the notes key on every session-lock AND identity-switch.
+// client-store fires its session-lock hooks from BOTH lockSession and setActiveFingerprint (the true
+// switch chokepoint); we register INWARD (messaging → client-store) so identity-core never imports
+// this feature module. Runs once when this module first loads (notes-init at unlock) — before any
+// lock/switch; if notes were never opened there is no _notesKey to leak.
+onSessionLock(lockNotesStore);
 
 type ThreadRow = { thread_id: string; enc: EncryptedBlob };
 type NoteRow = { note_id: string; thread_id: string; enc: EncryptedBlob };
