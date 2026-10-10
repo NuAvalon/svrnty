@@ -16,19 +16,30 @@ async function genesis(page: Page) {
 
 test('Settings → Relay validates and never auto-switches', async ({ page }) => {
   test.setTimeout(90_000);
-  await page.route('https://your-relay.example:8100/health', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ status: 'online', service: 'satellite', mode: 'full' }),
-    });
-  });
-  await page.route('https://reg.example:8101/health', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ status: 'online', service: 'registration' }),
-    });
+  await page.route('**/*', async (route) => {
+    const url = route.request().url();
+    const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
+    if (route.request().method() === 'OPTIONS' && url.includes('/health')) {
+      await route.fulfill({ status: 204, headers: cors });
+      return;
+    }
+    if (url.startsWith('https://reg.example:8101/health')) {
+      await route.fulfill({
+        status: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'online', service: 'registration' }),
+      });
+      return;
+    }
+    if (url.startsWith('https://your-relay.example:8100/health')) {
+      await route.fulfill({
+        status: 200,
+        headers: { ...cors, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'online', service: 'satellite', mode: 'full' }),
+      });
+      return;
+    }
+    await route.continue();
   });
 
   await genesis(page);
@@ -57,4 +68,8 @@ test('Settings → Relay validates and never auto-switches', async ({ page }) =>
   await expect(page.getByTestId('relay-result')).not.toContainText(/You're now on/i);
   await expect(page.getByTestId('relay-result')).not.toContainText(/^done$/i);
   await expect(page.getByTestId('relay-current')).not.toContainText('your-relay.example');
+  await page.screenshot({
+    path: '/opt/cursor/artifacts/screenshots/relay-settings-valid.png',
+    fullPage: true,
+  });
 });
