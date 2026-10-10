@@ -43,6 +43,7 @@ import {
   storeIdentity,
   loadGateArrivals,
 } from '@/lib/identity/client-store';
+import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
@@ -446,21 +447,19 @@ export default function Home() {
           textAlign: 'center' as const,
           backdropFilter: 'blur(20px)',
         }}>
-          <div style={{
-            width: '64px',
-            height: '64px',
-            borderRadius: '50%',
-            background: 'rgba(249, 168, 37, 0.06)',
-            border: `1px solid ${E.borderLit}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '0 auto 20px',
-          }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={E.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
+          <div
+            data-testid="unlock-identity-seal"
+            data-fingerprint={lockedIdentity.fingerprint}
+            style={{
+              width: 72,
+              height: 72,
+              margin: '0 auto 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <IdentitySeal fingerprint={lockedIdentity.fingerprint} size={72} />
           </div>
 
           <h1 style={{
@@ -578,22 +577,35 @@ export default function Home() {
                   <button
                     key={o.fingerprint}
                     data-testid="switch-identity-option"
+                    data-fingerprint={o.fingerprint}
                     onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
                     style={{
                       width: '100%',
                       background: 'rgba(255,190,120,0.03)',
                       border: `1px solid ${E.border}`,
                       borderRadius: '8px',
-                      padding: '10px 14px',
+                      padding: '8px 12px',
                       color: E.text,
                       fontSize: '13px',
                       fontFamily: E.fontSans,
                       textAlign: 'left' as const,
                       cursor: 'pointer',
                       marginBottom: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
                     }}
                   >
-                    {o.name}
+                    <span
+                      data-testid="switch-identity-seal"
+                      data-fingerprint={o.fingerprint}
+                      style={{ display: 'inline-flex', flexShrink: 0 }}
+                    >
+                      <IdentitySeal fingerprint={o.fingerprint} size={32} />
+                    </span>
+                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {o.name}
+                    </span>
                   </button>
                 ))}
               </div>

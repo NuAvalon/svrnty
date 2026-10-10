@@ -46,6 +46,10 @@ test('device unlock is coming-soon, not a live action, while the seam is stubbed
 
   await page.getByTestId('lock-now-btn').click();
   await expect(page.getByRole('heading', { name: /welcome back/i })).toBeVisible();
+  const heroSeal = page.getByTestId('unlock-identity-seal');
+  await expect(heroSeal).toBeVisible();
+  await expect(heroSeal).toHaveAttribute('data-fingerprint', /[0-9a-f]{16,}/i);
+  await expect(heroSeal.locator('svg[role="img"]')).toBeVisible();
   await expect(page.getByPlaceholder('Enter passphrase')).toBeVisible();
   await expect(page.getByRole('button', { name: /^UNLOCK$/i })).toBeVisible();
   await expect(page.getByTestId('device-unlock-coming-soon')).toBeVisible();
