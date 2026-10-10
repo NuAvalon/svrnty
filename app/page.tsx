@@ -88,7 +88,7 @@ export default function Home() {
   const [notesPeerName, setNotesPeerName] = useState('');
   const [galaxyPeerFp, setGalaxyPeerFp] = useState('');
   const betaMessagingOn = isBetaIssuerProvisioned();
-  // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
+  // CUR-1 — revise/send from Galaxy / book "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
     kind: MethodKind;
     preselected: string[];
@@ -964,6 +964,14 @@ export default function Home() {
                   setNotesPeerFp(fp);
                   setNotesPeerName(String(peer.name || '').trim());
                   setMainTab('notes');
+                }}
+                onSendMethodUpdate={(peer) => {
+                  const fp = String(peer.fingerprint || '').trim();
+                  if (!fp) return;
+                  setMapRevise({
+                    kind: 'email',
+                    preselected: [fp],
+                  });
                 }}
               />
             </TabsContent>

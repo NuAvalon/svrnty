@@ -144,6 +144,8 @@ interface ContactsProps {
   onContactsChange?: () => void;
   /** Same hop as Galaxy → Chat. */
   onOpenChat?: (contact: { fingerprint: string; name: string }) => void;
+  /** Same hop as Galaxy → Send update (revise a method for this peer). */
+  onSendMethodUpdate?: (contact: { fingerprint: string; name: string }) => void;
 }
 
 // Convert IndexedDB ContactRecord to component Contact type
@@ -171,7 +173,7 @@ function recordToContact(r: ContactRecord): Contact {
 
 // --- Main Component ---
 
-export function ContactManagement({ identity, onContactsChange, onOpenChat }: ContactsProps) {
+export function ContactManagement({ identity, onContactsChange, onOpenChat, onSendMethodUpdate }: ContactsProps) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   // Live-beat: contact ids whose latest repaint came from a peer's incoming apply (reason:'live-apply') → data-live="push".
   const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
@@ -180,7 +182,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
   const [searchQuery, setSearchQuery] = useState('');
   const [bookSort, setBookSort] = useState<BookSort>('name-asc');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
-  const [bookSheetExpanded, setBookSheetExpanded] = useState(false);
+  const [bookSheetExpanded, setBookSheetExpanded] = useState(true);
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
   const bookCardRef = useRef<HTMLDivElement>(null);
   const [verifyOpen, setVerifyOpen] = useState(false);
@@ -1783,7 +1785,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
                   const contact = contacts.find((c) => c.id === id);
                   if (!contact) return;
                   setSelectedContact(contact);
-                  setBookSheetExpanded(false);
+                  setBookSheetExpanded(true);
                   setBookActionsOpen(false);
                   setShowDetailDialog(false);
                 }}
@@ -1823,6 +1825,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
               }}
               canChat={canChat}
               onChat={() => onOpenChat?.({ fingerprint: fp, name: focused.name })}
+              canSendUpdate={!!onSendMethodUpdate && fp.length >= 16}
+              onSendUpdate={() => onSendMethodUpdate?.({ fingerprint: fp, name: focused.name })}
               actionsOpen={bookActionsOpen}
               onActionsOpenChange={setBookActionsOpen}
               actionsSide="up"

@@ -128,6 +128,11 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(card.getByTestId('card-actions-toggle-menu')).toBeVisible();
     await expect(card.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
     await actions.click();
+    await expect(card.getByTestId('star-sheet-expand')).toHaveText(/Less/i);
+    await expect(card.getByTestId('classical-no-fingerprint')).toBeVisible();
+    await card.getByTestId('star-sheet-expand').click();
+    await expect(card.getByTestId('star-sheet-expand')).toHaveText(/More/i);
+    await expect(card.getByTestId('classical-no-fingerprint')).toHaveCount(0);
     await card.getByTestId('star-sheet-expand').click();
     await expect(card.getByTestId('classical-no-fingerprint')).toBeVisible();
   });

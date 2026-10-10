@@ -536,7 +536,7 @@ export function TrustMap({
   const [trustAfterVerify, setTrustAfterVerify] = useState(false);
   const verifiedForTrust = useRef(false);
   const [sampleBusy, setSampleBusy] = useState(false);
-  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [sheetExpanded, setSheetExpanded] = useState(true);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -547,7 +547,7 @@ export function TrustMap({
   const isEmpty = visibleContacts.length === 0;
 
   useEffect(() => {
-    setSheetExpanded(false);
+    setSheetExpanded(!!focusId);
     setActionsOpen(false);
   }, [focusId]);
 
@@ -1418,6 +1418,8 @@ export function TrustMap({
             onClose={clearFocus}
             canChat={canNote}
             onChat={() => onOpenNote?.(focusEdge)}
+            canSendUpdate={canNote && !!onSendMethodUpdate}
+            onSendUpdate={() => onSendMethodUpdate?.(focusEdge)}
             actionsOpen={actionsOpen}
             onActionsOpenChange={setActionsOpen}
             banner={contactHasDistress(focusEdge) && sheetExpanded ? <VivreBurn /> : null}
@@ -1510,14 +1512,6 @@ export function TrustMap({
                     label="Version history"
                     onClick={() => {
                       setShowHistory((v) => !v);
-                      closeMenu();
-                    }}
-                  />
-                  <CardMenuItem
-                    label="Send update"
-                    onClick={() => {
-                      if (onSendMethodUpdate) onSendMethodUpdate(focusEdge);
-                      else setActionNote('Send updated contact method — open from Your Card → revise (CUR-1).');
                       closeMenu();
                     }}
                   />

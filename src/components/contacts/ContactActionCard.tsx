@@ -2,7 +2,7 @@
 
 /**
  * Shared contact card — Galaxy sheet and Living Address Book use the same chrome.
- * List vs graph is the view; Chat / Actions / More stay one object.
+ * List vs graph is the view; Chat / Send update / More-Less stay one object.
  */
 
 import type { CSSProperties, ReactNode } from 'react';
@@ -25,6 +25,8 @@ export function ContactActionCard({
   onClose,
   canChat = false,
   onChat,
+  canSendUpdate = false,
+  onSendUpdate,
   actionsOpen,
   onActionsOpenChange,
   actionsSide = 'up',
@@ -46,6 +48,8 @@ export function ContactActionCard({
   onClose?: () => void;
   canChat?: boolean;
   onChat?: () => void;
+  canSendUpdate?: boolean;
+  onSendUpdate?: () => void;
   actionsOpen: boolean;
   onActionsOpenChange: (open: boolean) => void;
   actionsSide?: 'up' | 'down';
@@ -161,6 +165,16 @@ export function ContactActionCard({
               Chat
             </button>
           ) : null}
+          {canSendUpdate && onSendUpdate ? (
+            <button
+              type="button"
+              data-testid="contact-send-update"
+              onClick={onSendUpdate}
+              style={updateBtn}
+            >
+              Send update
+            </button>
+          ) : null}
           <CardActionMenu open={actionsOpen} onOpenChange={onActionsOpenChange} side={actionsSide}>
             {actions}
           </CardActionMenu>
@@ -198,4 +212,12 @@ const chatBtn: CSSProperties = {
   background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
   color: E.accent,
   cursor: 'pointer',
+};
+
+const updateBtn: CSSProperties = {
+  ...chatBtn,
+  background: 'transparent',
+  border: `1px solid ${E.border}`,
+  color: E.muted,
+  fontWeight: 500,
 };
