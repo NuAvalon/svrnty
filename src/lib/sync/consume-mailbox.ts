@@ -47,6 +47,14 @@ export interface OwnerIdentity {
   // can recompute the 64-hex canonical fingerprint. Absent for a classical identity (40-hex fp).
   kemPublicKey?: string;
   sigPublicKey?: string;
+  // HNDL receive (custody ①, Peter #168173): the owner's ML-KEM-1024 SECRET (base64). The FE path
+  // (buildConsumeDeps) instead sources this from loadPQKeys(fp) because the browser vault holds it;
+  // a HEADLESS agent has no IndexedDB, so its custody→HeadlessOwner adapter MUST carry the secret
+  // HERE (from MintSecret.mlkem1024Sec, uint8ToBase64) so buildHeadlessConsumeDeps can derive the
+  // hybrid open-material (deriveOwnerHybridSecrets) and open inbound PQ-hybrid mail. Absent for a
+  // classical identity → classical-only openers (per the loud-not-silent invariant: advertising a
+  // kem PUB while this is absent must error LOUD, never silently ack+drop a hybrid blob).
+  kemSecretKey?: string;
 }
 
 /** Decrypt an opaque relay blob to a SignedContactUpdate, or null if it isn't for us / is corrupt. */
