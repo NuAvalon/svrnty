@@ -173,6 +173,7 @@ function MethodRow({
       </div>
       <button
         type="button"
+        className="ember-act"
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();

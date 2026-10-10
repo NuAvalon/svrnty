@@ -314,3 +314,46 @@ html[data-appearance="light"] .stars {
 
 .border-amber { border-color: rgba(200, 168, 78, 0.2); }
 .bg-amber-subtle { background: rgba(200, 168, 78, 0.08); }
+
+/* Inline-styled ember buttons have no :active unless we class them.
+   Press darkens; data-flash=ok is the done state so a click is obvious. */
+button.ember-act {
+  transition:
+    background-color 90ms ease,
+    border-color 90ms ease,
+    color 90ms ease,
+    box-shadow 90ms ease,
+    transform 90ms ease,
+    filter 90ms ease;
+}
+button.ember-act:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+button.ember-act:active:not(:disabled) {
+  transform: scale(0.97);
+  filter: brightness(0.72);
+  background-color: color-mix(in srgb, var(--se-accent) 28%, #1a1008) !important;
+}
+button.ember-act[data-flash="busy"]:not(:disabled) {
+  filter: brightness(0.88);
+}
+button.ember-act[data-flash="ok"] {
+  background-color: color-mix(in srgb, var(--se-ok) 22%, transparent) !important;
+  border-color: color-mix(in srgb, var(--se-ok) 50%, var(--se-border)) !important;
+  color: var(--se-ok) !important;
+  filter: none;
+}
+button[data-slot="button"]:active:not(:disabled) {
+  filter: brightness(0.78);
+  transform: scale(0.98);
+}
+@media (prefers-reduced-motion: reduce) {
+  button.ember-act,
+  button[data-slot="button"] {
+    transition: none;
+  }
+  button.ember-act:active:not(:disabled),
+  button[data-slot="button"]:active:not(:disabled) {
+    transform: none;
+  }
+}

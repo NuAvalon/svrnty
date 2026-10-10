@@ -50,6 +50,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
   const [uses, setUses] = useState(1);
   const [channel, setChannel] = useState<GrowMintChannel>('remote');
   const [spent, setSpent] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [mintNonce, setMintNonce] = useState(0);
   const usesRef = useRef(uses);
   const channelRef = useRef(channel);
@@ -61,6 +62,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
     setBusy(true);
     setError(null);
     setSpent(false);
+    setCopied(false);
     try {
       const fp = identity.identity.fingerprint;
       const key = await loadKey(fp);
@@ -165,6 +167,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
             type="button"
             data-testid="grow-channel-in-person"
             aria-pressed={channel === 'in_person'}
+            className="ember-act"
             onClick={() => pickChannel('in_person')}
             style={channelBtn(channel === 'in_person')}
           >
@@ -174,6 +177,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
             type="button"
             data-testid="grow-channel-remote"
             aria-pressed={channel === 'remote'}
+            className="ember-act"
             onClick={() => pickChannel('remote')}
             style={channelBtn(channel === 'remote')}
           >
@@ -247,20 +251,30 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
             </code>
             <button
               type="button"
-              onClick={() => navigator.clipboard?.writeText(relay.url)}
+              className="ember-act"
+              data-flash={copied ? 'ok' : undefined}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard?.writeText(relay.url);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 1600);
+                } catch {
+                  /* clipboard blocked — the link is still selectable */
+                }
+              }}
               style={{
                 marginTop: 14,
                 width: '100%',
                 padding: '10px 14px',
                 borderRadius: 8,
-                border: `1px solid ${E.borderLit}`,
-                background: 'transparent',
-                color: E.text,
+                border: `1px solid ${copied ? 'color-mix(in srgb, var(--se-ok) 50%, var(--se-border))' : E.borderLit}`,
+                background: copied ? 'color-mix(in srgb, var(--se-ok) 18%, transparent)' : 'transparent',
+                color: copied ? E.ok : E.text,
                 cursor: 'pointer',
                 fontFamily: E.fontSans,
               }}
             >
-              Copy link
+              {copied ? 'Copied' : 'Copy link'}
             </button>
           </>
         )}

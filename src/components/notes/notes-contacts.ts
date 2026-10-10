@@ -12,6 +12,8 @@ export type NoteableContact = {
   name: string;
   fingerprint: string;
   publicKeyArmored: string;
+  pqKemPublicKey?: string;
+  pqSigPublicKey?: string;
 };
 
 export type ContactRow = {
@@ -19,7 +21,11 @@ export type ContactRow = {
   name?: string | null;
   fingerprint?: string | null;
   public_key?: string | null;
+  pq_kem_public_key?: string | null;
+  pq_sig_public_key?: string | null;
   peer_public_key?: string | null;
+  peer_pq_kem_public_key?: string | null;
+  peer_pq_sig_public_key?: string | null;
   peer_fingerprint?: string | null;
   peer_name?: string | null;
   blocked?: boolean;
@@ -36,11 +42,19 @@ function noteableFromRow(row: ContactRow): NoteableContact | null {
   const fingerprint = normalizeFingerprintHex(String(row.fingerprint || row.peer_fingerprint || ''));
   if (!publicKeyArmored || fingerprint.length < 16) return null;
   if (!isSvrnNetworkContact({ fingerprint, public_key: publicKeyArmored })) return null;
+  const pqKem = String((row as { pq_kem_public_key?: string; peer_pq_kem_public_key?: string }).pq_kem_public_key
+    || (row as { peer_pq_kem_public_key?: string }).peer_pq_kem_public_key
+    || '').trim();
+  const pqSig = String((row as { pq_sig_public_key?: string; peer_pq_sig_public_key?: string }).pq_sig_public_key
+    || (row as { peer_pq_sig_public_key?: string }).peer_pq_sig_public_key
+    || '').trim();
   return {
     id: String(row.id || fingerprint),
     name: boundDisplayText(row.name || row.peer_name) || `Contact ${fingerprint.slice(0, 8)}`,
     fingerprint,
     publicKeyArmored,
+    pqKemPublicKey: pqKem || undefined,
+    pqSigPublicKey: pqSig || undefined,
   };
 }
 

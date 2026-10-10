@@ -149,6 +149,17 @@ export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
       const rec = await acceptInboundNote({
         wire,
         isAdmitted: async (fp) => (await getContactByFingerprint(owner.fingerprint, fp)) != null,
+        openRatchet: async (fromFp, body) => {
+          const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
+          const { openDirectNote } = await import('@/lib/messaging/direct-session');
+          const self = await loadOwnerRatchetIdentity(owner.fingerprint, {
+            identity: { fingerprint: owner.fingerprint, public_key: owner.publicKeyArmored },
+            post_quantum: { kem_public_key: owner.kemPublicKey, sig_public_key: owner.sigPublicKey },
+          });
+          const peer = await loadPeerRatchet(owner.fingerprint, fromFp);
+          if (!self || !peer) return null;
+          return openDirectNote(fromFp, body, self, peer);
+        },
       });
       return rec ? { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint } : null;
     },

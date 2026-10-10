@@ -234,8 +234,11 @@ export function NotesInbox({ identity }: Props) {
       );
       const result = await sendNoteFromInbox({
         sender,
+        ownerIdentity: identity,
         peerFingerprint: selected.fingerprint,
         peerPublicKeyArmored: selected.publicKeyArmored,
+        peerPqKemPublicKey: selected.pqKemPublicKey,
+        peerPqSigPublicKey: selected.pqSigPublicKey,
         body,
         threadId: existing?.thread_id,
       });
@@ -475,6 +478,8 @@ export function NotesInbox({ identity }: Props) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
           <button
             type="button"
+            className="ember-act"
+            data-flash={busy ? 'busy' : undefined}
             data-testid="notes-send-btn"
             onClick={() => void onSend()}
             disabled={busy || !sender?.canonical || rows.length === 0}

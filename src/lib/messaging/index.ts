@@ -17,9 +17,12 @@ export {
   deleteThread,
   putRingChannel,
   listRingChannels,
+  putRatchetSession,
+  getRatchetSession,
   newNoteId,
   newThreadId,
 } from './store';
+export { isTripleRatchetBody, sealDirectNote, openDirectNote, TRIPLE_RATCHET_BODY } from './direct-session';
 export {
   sendNoteToPeer,
   acceptInboundNote,

@@ -302,6 +302,8 @@ export function SoverentityFrontend({
   >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
+  const [passphraseFlash, setPassphraseFlash] = useState(false);
+  const [backupFlash, setBackupFlash] = useState(false);
   const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
   const [claimSlug, setClaimSlug] = useState('');
   const [claimStatus, setClaimStatus] = useState<'idle' | 'checking' | 'claiming' | 'success' | 'taken' | 'error'>('idle');
@@ -399,7 +401,14 @@ export function SoverentityFrontend({
       }
       setPassphraseSuccess(true);
       setPassphraseError('');
-      setTimeout(() => { setShowPassphraseDialog(false); setPassphraseSuccess(false); setNewPassphrase(''); setConfirmPassphrase(''); }, 1500);
+      setTimeout(() => {
+        setShowPassphraseDialog(false);
+        setPassphraseSuccess(false);
+        setNewPassphrase('');
+        setConfirmPassphrase('');
+        setPassphraseFlash(true);
+        setTimeout(() => setPassphraseFlash(false), 1600);
+      }, 900);
     } catch { setPassphraseError('Failed to set unlock passphrase'); }
   };
 
@@ -1951,6 +1960,9 @@ export function SoverentityFrontend({
               </div>
             )}
             <button
+              type="button"
+              className="ember-act"
+              data-flash={backupFlash ? 'ok' : undefined}
               onClick={() => setShowVaultExportDialog(true)}
               data-testid="full-backup-open"
               style={{
@@ -1959,15 +1971,15 @@ export function SoverentityFrontend({
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
-                background: 'rgba(249, 168, 37, 0.08)',
-                borderColor: 'rgba(249, 168, 37, 0.35)',
-                color: SE.accent,
+                background: backupFlash ? 'color-mix(in srgb, var(--se-ok) 18%, transparent)' : 'rgba(249, 168, 37, 0.08)',
+                borderColor: backupFlash ? 'color-mix(in srgb, var(--se-ok) 50%, var(--se-border))' : 'rgba(249, 168, 37, 0.35)',
+                color: backupFlash ? SE.ok : SE.accent,
               }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SE.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
-              Full Backup (Encrypted)
+              {backupFlash ? 'Vault downloaded' : 'Full Backup (Encrypted)'}
             </button>
             <div style={{ display: 'flex', gap: '10px' }}>
               <button
@@ -2021,13 +2033,16 @@ export function SoverentityFrontend({
         {identity && (
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
             <button
+              type="button"
+              className="ember-act"
+              data-flash={passphraseFlash ? 'ok' : undefined}
               onClick={() => setShowPassphraseDialog(true)}
               style={{
-                background: 'none',
-                border: '1px solid rgba(249, 168, 37, 0.15)',
+                background: passphraseFlash ? 'color-mix(in srgb, var(--se-ok) 18%, transparent)' : 'none',
+                border: `1px solid ${passphraseFlash ? 'color-mix(in srgb, var(--se-ok) 50%, var(--se-border))' : 'rgba(249, 168, 37, 0.15)'}`,
                 borderRadius: '8px',
                 padding: '10px 20px',
-                color: 'rgba(249, 168, 37, 0.6)',
+                color: passphraseFlash ? 'var(--se-ok)' : 'rgba(249, 168, 37, 0.6)',
                 fontSize: '11px',
                 fontFamily: "'Space Grotesk', sans-serif",
                 letterSpacing: '1px',
@@ -2041,7 +2056,7 @@ export function SoverentityFrontend({
                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
-              Set Passphrase
+              {passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
             </button>
             {claimedUrl ? (
               <span style={{
@@ -2172,6 +2187,9 @@ export function SoverentityFrontend({
                     <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>{passphraseError}</p>
                   )}
                   <button
+                    type="button"
+                    className="ember-act"
+                    data-flash={passphraseSuccess ? 'ok' : undefined}
                     onClick={handleSetPassphrase}
                     disabled={!newPassphrase || !confirmPassphrase}
                     style={{
@@ -2188,7 +2206,7 @@ export function SoverentityFrontend({
                       marginTop: '8px',
                     }}
                   >
-                    SET PASSPHRASE
+                    {passphraseSuccess ? 'PASSPHRASE SET' : 'SET PASSPHRASE'}
                   </button>
                 </>
               )}
@@ -2301,6 +2319,10 @@ export function SoverentityFrontend({
           open={showVaultExportDialog}
           onClose={() => setShowVaultExportDialog(false)}
           fingerprint={identity?.identity?.fingerprint || ''}
+          onDownloaded={() => {
+            setBackupFlash(true);
+            setTimeout(() => setBackupFlash(false), 2000);
+          }}
           onSessionLocked={() => {
             window.location.reload();
           }}
