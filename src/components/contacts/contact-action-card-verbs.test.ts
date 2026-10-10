@@ -11,7 +11,8 @@ describe('contact card verbs share one size', () => {
     const menu = readFileSync(join(dir, '..', 'ui', 'CardActionMenu.tsx'), 'utf8');
     assert.match(card, /cardVerbBtnStyle\(\)/);
     assert.match(card, /cardVerbBtnStyle\(\{ muted: true \}\)/);
-    assert.match(card, /alignItems: 'stretch'/);
+    assert.match(card, /gridTemplateColumns/);
+    assert.match(card, /minmax\(0, 1fr\)/);
     assert.match(menu, /export function cardVerbBtnStyle/);
     assert.match(menu, /minHeight: 40/);
     assert.match(menu, /flex: '1 1 0'/);

@@ -44,7 +44,7 @@ export function CardActionMenu({
   }, [open, onOpenChange]);
 
   return (
-    <div ref={root} style={{ position: 'relative', flex: '1 1 0', minWidth: 0 }}>
+    <div ref={root} style={{ position: 'relative', flex: '1 1 0', minWidth: 0, width: '100%' }}>
       <button
         type="button"
         data-testid={testId}
@@ -139,6 +139,7 @@ export function cardVerbBtnStyle(opts?: {
     fontSize: 12,
     fontWeight: 600,
     letterSpacing: 0,
+    whiteSpace: 'nowrap',
     padding: '8px 10px',
     borderRadius: 10,
     border: `1px solid ${opts?.muted ? E.border : E.borderLit}`,

@@ -155,7 +155,17 @@ export function ContactActionCard({
       {edit}
 
       {!edit ? (
-        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'stretch' }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${
+              (canChat && onChat ? 1 : 0) + (canSendUpdate && onSendUpdate ? 1 : 0) + 1
+            }, minmax(0, 1fr))`,
+            gap: 8,
+            marginTop: 10,
+            alignItems: 'stretch',
+          }}
+        >
           {canChat && onChat ? (
             <button
               type="button"
