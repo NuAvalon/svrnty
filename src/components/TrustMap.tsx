@@ -120,6 +120,8 @@ interface TrustMapProps {
   onDistressWent?: (edge: TrustEdge) => void | Promise<void>;
   /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. */
   onRefresh?: () => void | Promise<void>;
+  /** Open this star's 1:1 notes conversation (parent switches to the Notes tab). */
+  onOpenNote?: (edge: TrustEdge) => void;
 }
 
 // Solar Ember via CSS vars — follows light/dark appearance.
@@ -219,6 +221,7 @@ export function TrustMap({
   onMethodHistoryChange,
   onDistressWent,
   onRefresh,
+  onOpenNote,
 }: TrustMapProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const {
@@ -1626,6 +1629,14 @@ export function TrustMap({
               gap: 10,
             }}
           >
+            {onOpenNote && String(focusEdge.peer_fingerprint || '').replace(/[^0-9a-fA-F]/g, '').length >= 16 && (
+              <ActionBtn
+                testId="galaxy-open-note"
+                label="Note"
+                primary
+                onClick={() => onOpenNote(focusEdge)}
+              />
+            )}
             {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
               <ActionBtn
                 testId="galaxy-verify"

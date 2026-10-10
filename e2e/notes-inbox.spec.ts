@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { seedSampleGalaxy, SAMPLE_TESLA_FP } from './helpers/seed-sample-galaxy';
 
 /**
  * Notes inbox — glass + honest copy. Proves the tab mounts, send status
@@ -38,5 +39,39 @@ test('notes inbox is over-wire glass with honest send status', async ({ page }) 
   await expect(panel.getByText(/^Read$/)).toHaveCount(0);
   await expect(panel.getByText(/^Expired$/)).toHaveCount(0);
   await expect(panel.getByText(/you're not allowed/i)).toHaveCount(0);
+  await expect(panel.getByText(/post-quantum/i)).toHaveCount(0);
+  await expect(panel.getByTestId('notes-field')).toBeVisible();
+});
+
+test('galaxy star Note opens that conversation in the Thread Field', async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
+  await page.getByPlaceholder('Your name').fill('Galaxy Note E2E');
+  await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
+  await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
+  await page.getByRole('button', { name: /^start$/i }).click();
+  await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
+  await page.getByRole('button', { name: /i have it/i }).click();
+
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+  await expect(page.getByTestId('trust-map')).toBeVisible();
+  await seedSampleGalaxy(page);
+
+  const star = page.locator(
+    `[data-testid="trust-node"][data-fingerprint="${SAMPLE_TESLA_FP}"]`,
+  );
+  await expect(star).toBeVisible({ timeout: 15_000 });
+  await star.click();
+  await expect(page.getByTestId('trust-node-detail')).toBeVisible();
+  await page.getByTestId('galaxy-open-note').click();
+
+  const panel = page.getByTestId('notes-inbox');
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId('notes-field-peer')).toContainText(/Nikola Tesla/i);
+  await expect(panel.getByTestId('notes-send-btn')).toHaveText(/^Send$/i);
+  await expect(panel.getByText(/^Delivered$/)).toHaveCount(0);
   await expect(panel.getByText(/post-quantum/i)).toHaveCount(0);
 });

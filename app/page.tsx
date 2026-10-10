@@ -80,6 +80,7 @@ export default function Home() {
   const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  const [notesPeerFp, setNotesPeerFp] = useState('');
   const betaMessagingOn = isBetaIssuerProvisioned();
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
@@ -851,6 +852,12 @@ export default function Home() {
                     preselected: [edge.peer_fingerprint],
                   });
                 }}
+                onOpenNote={(edge) => {
+                  const peer = String(edge.peer_fingerprint || '').trim();
+                  if (!peer) return;
+                  setNotesPeerFp(peer);
+                  setMainTab('notes');
+                }}
               />
             </TabsContent>
 
@@ -866,7 +873,7 @@ export default function Home() {
               {betaMessagingOn ? (
                 <BetaMessagingTab identity={identity} />
               ) : (
-                <NotesInbox identity={identity} />
+                <NotesInbox identity={identity} focusFingerprint={notesPeerFp} />
               )}
             </TabsContent>
           </Tabs>
