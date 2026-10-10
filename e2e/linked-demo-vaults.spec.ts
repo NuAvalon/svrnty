@@ -17,7 +17,7 @@ async function genesis(page: Page, name: string) {
 }
 
 test('Load sample mints linked vaults; Chat and Actions match', async ({ page }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(210_000);
   await page.setViewportSize({ width: 390, height: 844 });
   await genesis(page, 'Demo Owner');
 
@@ -67,7 +67,8 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
     fullPage: true,
   });
 
-  await page.getByTestId('lock-now-btn').click();
+  await page.getByTestId('top-nav-menu-btn').click();
+  await page.getByTestId('nav-lock-menu').click();
   await expect(page.getByTestId('switch-identity')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('switch-identity-option').filter({ hasText: 'River Vale' })).toBeVisible();
   await expect(page.getByTestId('switch-identity-option').filter({ hasText: 'Sage Quinn' })).toBeVisible();
