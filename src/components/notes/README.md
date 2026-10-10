@@ -2,7 +2,7 @@
 
 Render-glass for CURSOR_QUEUE item 1 (Over-wire SEND / INBOX). Compose calls fleet `sendNoteToPeer`. The inbox **reads** `listThreads()` / `listNotesForThread()`. Receive persist is already in the app-shell live-book poll (`acceptInboundNote`) — this tab does not reimplement consume.
 
-The glass is the **Thread Field**: a people rail (recomputed seals in hex chips + last-note preview, no unread counts) and an ember conversation (outbound glow / inbound dim). Galaxy stars hop here via **Note** on the star sheet (`onOpenNote` → `focusFingerprint`).
+The glass is the **Thread Field**: a Signal/WhatsApp-style conversation list (one row per person you wrote to, last-note preview, search, no unread counts) and an ember thread (outbound glow / inbound dim). Galaxy stars hop here via **Note** on the star sheet (`onOpenNote` → `focusFingerprint`).
 
 ## Files
 - `NotesInbox.tsx` — Thread Field + honest send status

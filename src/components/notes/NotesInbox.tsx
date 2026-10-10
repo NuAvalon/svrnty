@@ -34,10 +34,12 @@ import { toNoteableContacts, type ContactRow } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY } from './notes-copy';
 import {
   displayNameFor,
+  filterFieldPeople,
   formatNoteClock,
   formatNoteDay,
   mergeFieldPeople,
   previewLine,
+  sortFieldPeople,
   type FieldName,
 } from './notes-field';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
@@ -123,6 +125,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
   const [mobilePane, setMobilePane] = useState<'people' | 'thread'>('people');
+  const [query, setQuery] = useState('');
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const previewSig = useRef('');
 
@@ -293,6 +296,10 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
   );
 
   const peerName = displayNameFor(selectedFp, names, focusName);
+  const visiblePeople = useMemo(
+    () => filterFieldPeople(sortFieldPeople(people), query),
+    [people, query],
+  );
 
   const onPickContact = (nextFp: string) => {
     setSelectedFp(nextFp);
@@ -392,18 +399,21 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
         >
           {NOTES_COPY.heading}
         </p>
-        <p style={{ margin: '0 0 10px', fontSize: 14, color: E.muted, lineHeight: 1.5 }}>
-          {NOTES_COPY.whatItIs}
-        </p>
-        <p style={{ margin: '0 0 6px', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
-          {NOTES_COPY.sending}
-        </p>
-        <p style={{ margin: '0 0 6px', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
-          {NOTES_COPY.sendingWait}
-        </p>
-        <p data-testid="notes-receiving" style={{ margin: 0, fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
+        <p data-testid="notes-receiving" style={{ margin: '0 0 8px', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
           {NOTES_COPY.receiving}
         </p>
+        <details className="notes-field-how">
+          <summary>{NOTES_COPY.howNotesTravel}</summary>
+          <p style={{ margin: '8px 0 8px', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
+            {NOTES_COPY.whatItIs}
+          </p>
+          <p style={{ margin: '0 0 6px', fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
+            {NOTES_COPY.sending}
+          </p>
+          <p style={{ margin: 0, fontSize: 12, color: E.muted, lineHeight: 1.5 }}>
+            {NOTES_COPY.sendingWait}
+          </p>
+        </details>
       </header>
 
       {!sender && fp ? (
@@ -432,13 +442,38 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
             {NOTES_COPY.fieldPeople}
           </p>
 
+          <label
+            style={{
+              display: 'block',
+              fontSize: 11,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              color: E.muted,
+            }}
+          >
+            {NOTES_COPY.searchLabel}
+            <input
+              data-testid="notes-search"
+              type="search"
+              value={query}
+              maxLength={NOTES_BOUNDS.name}
+              placeholder={NOTES_COPY.searchPlaceholder}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ ...fieldStyle, marginTop: 8 }}
+            />
+          </label>
+
           {threads.length === 0 && people.length === 0 ? (
             <p data-testid="notes-inbox-empty" style={{ color: E.muted, fontSize: 13, margin: 0 }}>
               {NOTES_COPY.inboxEmpty}
             </p>
+          ) : visiblePeople.length === 0 ? (
+            <p data-testid="notes-search-empty" style={{ color: E.muted, fontSize: 13, margin: 0 }}>
+              {NOTES_COPY.searchEmpty}
+            </p>
           ) : (
-            <ul data-testid="notes-thread-list" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
-              {people.map((person) => {
+            <ul data-testid="notes-thread-list" className="notes-chat-list">
+              {visiblePeople.map((person) => {
                 const active = person.fingerprint === selectedFp;
                 return (
                   <li key={person.fingerprint}>
@@ -453,15 +488,15 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
                         <IdentitySeal fingerprint={person.fingerprint} size={28} />
                       </span>
                       <span style={{ minWidth: 0, flex: 1 }}>
-                        <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: E.text }}>
+                        <span style={{ display: 'block', fontSize: 15, fontWeight: 600, color: E.text }}>
                           {person.name}
                         </span>
-                        <span style={{ display: 'block', fontSize: 12, color: E.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        <span style={{ display: 'block', fontSize: 13, color: E.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {person.preview || NOTES_COPY.fieldPreviewEmpty}
                         </span>
                       </span>
                       {person.lastAt ? (
-                        <span style={{ fontSize: 10, color: E.dim, flexShrink: 0 }}>
+                        <span style={{ fontSize: 11, color: E.dim, flexShrink: 0 }}>
                           {formatNoteClock(person.lastAt)}
                         </span>
                       ) : null}

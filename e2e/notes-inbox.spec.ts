@@ -43,6 +43,7 @@ test('notes inbox is over-wire glass with honest send status', async ({ page }) 
   await expect(panel.getByText(/you're not allowed/i)).toHaveCount(0);
   await expect(panel.getByText(/post-quantum/i)).toHaveCount(0);
   await expect(panel.getByTestId('notes-field')).toBeVisible();
+  await expect(panel.getByTestId('notes-search')).toBeVisible();
 });
 
 test('galaxy star Note opens that conversation in the Thread Field', async ({ page }) => {
@@ -73,6 +74,10 @@ test('galaxy star Note opens that conversation in the Thread Field', async ({ pa
   const panel = page.getByTestId('notes-inbox');
   await expect(panel).toBeVisible();
   await expect(panel.getByTestId('notes-field-peer')).toContainText(/Nikola Tesla/i);
+  await panel.getByTestId('notes-search').fill('zzzz-no-match');
+  await expect(panel.getByTestId('notes-search-empty')).toBeVisible();
+  await panel.getByTestId('notes-search').fill('Tesla');
+  await expect(panel.getByText(/Nikola Tesla/i).first()).toBeVisible();
   await expect(panel.getByTestId('notes-send-btn')).toHaveText(/^Send$/i);
   await expect(panel.getByText(/^Delivered$/)).toHaveCount(0);
   await expect(panel.getByText(/post-quantum/i)).toHaveCount(0);

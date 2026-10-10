@@ -187,6 +187,8 @@ export function BiometricSettingsPanel({
         }}
       >
         Keys stay on this device. Device unlock never sends your passphrase or keys to a server.
+        When the crypto seam is live, Android fingerprint and iOS Face ID / passcode will unlock
+        through WebAuthn on this device. That seam is not live yet — passphrase remains your unlock.
       </p>
 
       {look === 'disable' ? (

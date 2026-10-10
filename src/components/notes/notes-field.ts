@@ -106,3 +106,25 @@ export function mergeFieldPeople(args: {
 export function boundPeerName(raw: string | null | undefined): string {
   return boundDisplayText(raw, NOTES_BOUNDS.name);
 }
+
+/** Conversations first (recent activity), then unused people by name — Signal/WhatsApp list, not a flat log. */
+export function sortFieldPeople(people: FieldPerson[]): FieldPerson[] {
+  return [...people].sort((a, b) => {
+    const aActive = a.lastAt ? 1 : 0;
+    const bActive = b.lastAt ? 1 : 0;
+    if (aActive !== bActive) return bActive - aActive;
+    if (a.lastAt && b.lastAt && a.lastAt !== b.lastAt) return b.lastAt.localeCompare(a.lastAt);
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+}
+
+/** Search by recipient name or fingerprint. Bound + NFC; no unread/presence. */
+export function filterFieldPeople(people: FieldPerson[], query: string): FieldPerson[] {
+  const q = boundDisplayText(query).toLowerCase();
+  if (!q) return people;
+  return people.filter((person) => {
+    const name = person.name.toLowerCase();
+    const fp = person.fingerprint.toLowerCase();
+    return name.includes(q) || fp.includes(q);
+  });
+}

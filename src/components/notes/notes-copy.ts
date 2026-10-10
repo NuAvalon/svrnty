@@ -34,11 +34,15 @@ export const NOTES_COPY = {
     'Notes over the wire need a current svrnty identity. This book cannot send yet.',
   sendFailed: 'The note could not be sent.',
   contactNotSendable: 'This contact cannot receive a sealed note.',
-  fieldPeople: 'People',
-  fieldBack: 'People',
+  fieldPeople: 'Conversations',
+  fieldBack: 'Chats',
   fieldPick: 'Pick someone to open a conversation.',
   fieldPreviewEmpty: 'No notes yet',
   composeHint: 'Enter to send · Shift+Enter for a new line',
+  searchLabel: 'Search',
+  searchPlaceholder: 'Search who you wrote to…',
+  searchEmpty: 'No conversations match.',
+  howNotesTravel: 'How notes travel',
 } as const;
 
 export const NOTES_BOUNDS = {

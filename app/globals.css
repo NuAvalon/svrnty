@@ -370,9 +370,19 @@ button[data-slot="button"]:active:not(:disabled) {
   max-width: 720px;
   margin: 0 auto 16px;
 }
+.notes-field-how {
+  margin: 0;
+  font-size: 12px;
+  color: var(--se-muted);
+}
+.notes-field-how summary {
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  color: var(--se-dim);
+}
 .notes-field {
   display: grid;
-  grid-template-columns: minmax(232px, 292px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
   min-height: min(70vh, 760px);
   border: 1px solid var(--se-border);
   border-radius: 18px;
@@ -423,6 +433,13 @@ button[data-slot="button"]:active:not(:disabled) {
   border-top: 1px solid var(--se-border);
   background: color-mix(in srgb, var(--se-bg) 42%, transparent);
 }
+.notes-chat-list {
+  list-style: none;
+  margin: 0 -12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
 .notes-person {
   width: 100%;
   display: flex;
@@ -432,19 +449,18 @@ button[data-slot="button"]:active:not(:disabled) {
   font-family: inherit;
   color: var(--se-text);
   background: transparent;
-  border: 1px solid var(--se-border);
-  border-radius: 12px;
-  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--se-border);
+  border-radius: 0;
+  padding: 12px 14px;
   cursor: pointer;
 }
 .notes-person:hover {
-  border-color: var(--se-border-lit);
   background: color-mix(in srgb, var(--se-accent) 8%, transparent);
 }
 .notes-person[data-active='true'] {
-  border-color: var(--se-border-lit);
   background: color-mix(in srgb, var(--se-accent) 14%, transparent);
-  box-shadow: 0 0 16px color-mix(in srgb, var(--se-accent) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--se-accent);
 }
 .notes-hex {
   width: 40px;

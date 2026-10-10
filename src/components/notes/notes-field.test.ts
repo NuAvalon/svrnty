@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NoteThread } from '../../lib/messaging/types';
-import { mergeFieldPeople, previewLine, threadPeerFp } from './notes-field';
+import { filterFieldPeople, mergeFieldPeople, previewLine, sortFieldPeople, threadPeerFp } from './notes-field';
 
 function thread(peer: string, id: string, name = 'Ada'): NoteThread {
   return {
@@ -71,5 +71,42 @@ describe('thread field people', () => {
 
   it('resolves the peer fingerprint on a direct thread', () => {
     assert.equal(threadPeerFp(thread('peer-1', 't'), 'owner'), 'peer-1');
+  });
+
+  it('sorts conversations by last note, then unused people by name', () => {
+    const older = thread('aaa', 't1', 'Ada');
+    older.last_activity_at = '2026-01-01T00:00:00.000Z';
+    const newer = thread('ccc', 't2', 'Cara');
+    newer.last_activity_at = '2026-02-01T00:00:00.000Z';
+    const people = mergeFieldPeople({
+      ownerFp: 'owner',
+      threads: [older, newer],
+      names: [
+        { fingerprint: 'aaa', name: 'Ada' },
+        { fingerprint: 'bbb', name: 'Bob' },
+        { fingerprint: 'ccc', name: 'Cara' },
+      ],
+      sendable: new Set(['aaa', 'bbb', 'ccc']),
+      previews: {},
+    });
+    const sorted = sortFieldPeople(people);
+    assert.deepEqual(sorted.map((p) => p.name), ['Cara', 'Ada', 'Bob']);
+  });
+
+  it('search matches recipient name, not a message dump', () => {
+    const people = mergeFieldPeople({
+      ownerFp: 'owner',
+      threads: [thread('aaa', 't1'), thread('bbb', 't2', 'Bob')],
+      names: [
+        { fingerprint: 'aaa', name: 'Ada' },
+        { fingerprint: 'bbb', name: 'Bob' },
+      ],
+      sendable: new Set(['aaa', 'bbb']),
+      previews: { t1: 'hello', t2: 'later' },
+    });
+    const hit = filterFieldPeople(people, '  ada  ');
+    assert.equal(hit.length, 1);
+    assert.equal(hit[0].name, 'Ada');
+    assert.equal(filterFieldPeople(people, 'zzz').length, 0);
   });
 });
