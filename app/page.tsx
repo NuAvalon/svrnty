@@ -1083,8 +1083,8 @@ export default function Home() {
       )}
 
       <footer
-        className="mt-6 text-center sm:mt-16"
-        style={{ fontFamily: E.fontSans, paddingBottom: 16 }}
+        className="mt-6 text-center sm:mt-10"
+        style={{ fontFamily: E.fontSans, paddingBottom: 20 }}
       >
         <p
           style={{
@@ -1098,34 +1098,24 @@ export default function Home() {
         </p>
         <p
           style={{
-            margin: '10px auto 0',
+            margin: '8px auto 0',
             maxWidth: 420,
-            fontSize: 14,
-            lineHeight: 1.5,
-            color: E.text,
+            fontSize: 13,
+            lineHeight: 1.45,
+            color: E.muted,
           }}
         >
           {TRUST_RECIPE_COPY.manifestoKeep}
         </p>
         <p
           style={{
-            margin: '12px 0 0',
+            margin: '8px 0 0',
             fontSize: 10,
-            letterSpacing: '0.12em',
-            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
             color: E.dim,
           }}
         >
           {TRUST_RECIPE_COPY.manifestoAxes}
-        </p>
-        <p
-          style={{
-            margin: '8px 0 0',
-            fontSize: 12,
-            color: E.muted,
-          }}
-        >
-          {TRUST_RECIPE_COPY.manifestoCloser}
         </p>
       </footer>
     </div>
