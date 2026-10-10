@@ -50,7 +50,7 @@ import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam } fr
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
-import { acceptTrustAffirm } from '@/lib/trust/trust-affirm-consume';
+import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
 import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
 
@@ -197,13 +197,14 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseS
             // report reciprocal:false and let the ack clean up (the edge no longer exists to show mutual).
             throw new Error('trust-affirm applyMutual: contact vanished between admit and apply');
           }
-          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539): drop a replayed affirmation that
-          // is NOT strictly newer than the last one applied for this sender — a stale "I trust you" must
-          // never overwrite a newer "I broke trust" (a false-Mutual revival). The cursor (last_affirm_at
-          // = the sender's SIGNED sent_at) lives INSIDE `mutual`, so it advances in the SAME updateContact
-          // tx as they_trust_me (crash-safe: no compare-then-separate-write window). `null` ⇒ terminal drop.
+          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539 + NaN/future hardening #169647): apply
+          // only if the sender's SIGNED sent_at is a plausible timestamp AND not strictly older than the
+          // last applied for this sender — a stale/replayed/back-dated "I trust you" must never overwrite a
+          // newer "I broke trust" (false-Mutual revival), and a garbage/future ts must not defeat or poison
+          // the ordering. The cursor (last_affirm_at) lives INSIDE `mutual`, so it advances in the SAME
+          // updateContact tx as they_trust_me (crash-safe). `null` ⇒ terminal drop.
           const prevAffirmAt = (rec.mutual as { last_affirm_at?: string } | undefined)?.last_affirm_at;
-          if (prevAffirmAt && Date.parse(sentAt) < Date.parse(prevAffirmAt)) return null;
+          if (!affirmShouldApply(sentAt, prevAffirmAt, Date.now())) return null;
           const iTrustThem = edgeTrusted(rec);
           const mutual = {
             they_trust_me: trusts,

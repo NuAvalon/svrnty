@@ -24,7 +24,7 @@ import { noteOpenpgpDecryptor, sealNoteTo } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
-import { acceptTrustAffirm } from '@/lib/trust/trust-affirm-consume';
+import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
 import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -96,12 +96,13 @@ function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: (
         applyMutual: async (fromFp, trusts, sentAt) => {
           const rec = store.getContactByFingerprint(fromFp);
           if (!rec) throw new Error('headless applyMutual: contact vanished between admit and apply');
-          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539): drop a replayed affirmation not
-          // strictly newer than the last applied for this sender (a stale "I trust you" must not overwrite
-          // a newer "I broke trust"). last_affirm_at (the sender's SIGNED sent_at) rides INSIDE `mutual`,
-          // persisted in the same updateContact as they_trust_me (crash-safe). `null` ⇒ terminal drop.
+          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539 + NaN/future hardening #169647): apply
+          // only if the sender's SIGNED sent_at is plausible AND not strictly older than the last applied
+          // for this sender — a stale/replayed/back-dated "I trust you" must not overwrite a newer "I broke
+          // trust", and a garbage/future ts must not defeat or poison the ordering. last_affirm_at rides
+          // INSIDE `mutual`, persisted in the same updateContact as they_trust_me (crash-safe). `null` ⇒ drop.
           const prevAffirmAt = (rec.mutual as { last_affirm_at?: string } | undefined)?.last_affirm_at;
-          if (prevAffirmAt && Date.parse(sentAt) < Date.parse(prevAffirmAt)) return null;
+          if (!affirmShouldApply(sentAt, prevAffirmAt, Date.now())) return null;
           const iTrustThem = edgeTrusted(rec); // reciprocal reads MY existing trusted state — no wire promotion
           const mutual = { they_trust_me: trusts, last_sync: now(), reciprocal: iTrustThem && trusts, last_affirm_at: sentAt };
           store.updateContact(rec.id, { mutual });

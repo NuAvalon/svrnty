@@ -10,7 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { signTrustAffirm, TRUST_AFFIRM_WIRE_TYPE, type TrustAffirmWireV0 } from './trust-affirm';
-import { acceptTrustAffirm, type MutualApplyResult } from './trust-affirm-consume';
+import { acceptTrustAffirm, affirmShouldApply, AFFIRM_MAX_FUTURE_SKEW_MS, type MutualApplyResult } from './trust-affirm-consume';
 
 type Signer = { fp: string; pub: string; priv: string; kpass: string; kem: string; sig: string };
 async function signerFromMint(): Promise<Signer> {
@@ -131,4 +131,29 @@ test('STALE-REPLAY (#3 monotonic): the SIGNED sent_at is forwarded, and a null (
   });
   assert.equal(out, null, 'a stale/superseded affirmation is dropped terminally — not left-for-retry');
   assert.equal(seenSentAt, '2026-10-10T03:20:00.000Z', 'the SIGNED sent_at reaches the monotonic sink');
+});
+
+test('affirmShouldApply: monotonic ordering + NaN/future fail-closed (survivor-safety #3 hardening, Flint/Hypatia #169647)', () => {
+  const NOW = Date.parse('2026-10-10T12:00:00.000Z');
+  const T1 = '2026-10-10T10:00:00.000Z';
+  const T2 = '2026-10-10T11:00:00.000Z';
+
+  // Ordering: first-for-sender applies; newer applies; equal re-applies idempotently; strictly-older DROPS.
+  assert.equal(affirmShouldApply(T1, undefined, NOW), true, 'first affirm for a sender applies');
+  assert.equal(affirmShouldApply(T2, T1, NOW), true, 'strictly newer applies');
+  assert.equal(affirmShouldApply(T1, T1, NOW), true, 'equal re-applies idempotently (same signed content)');
+  assert.equal(affirmShouldApply(T1, T2, NOW), false, 'strictly OLDER is dropped — anti-rollback');
+
+  // NaN exploit (THE bug the hardening closes): a garbage/empty sent_at must be DROPPED, never applied,
+  // so it can neither revive trust nor become the stored cursor (which would then defeat every compare).
+  assert.equal(affirmShouldApply('not-a-timestamp', T2, NOW), false, 'malformed sent_at dropped (no cursor poison)');
+  assert.equal(affirmShouldApply('', undefined, NOW), false, 'empty sent_at dropped even as the first affirm');
+
+  // Future exploit: a lying-future ts beyond skew must be DROPPED (cannot ratchet the cursor forward);
+  // genuine small clock-drift (within skew) still applies.
+  assert.equal(affirmShouldApply(new Date(NOW + AFFIRM_MAX_FUTURE_SKEW_MS + 60_000).toISOString(), T1, NOW), false, 'implausibly-future dropped');
+  assert.equal(affirmShouldApply(new Date(NOW + AFFIRM_MAX_FUTURE_SKEW_MS - 1_000).toISOString(), T1, NOW), true, 'within-skew clock drift still applies');
+
+  // Self-heal: a poisoned (non-finite) STORED cursor must not permanently lock out a valid affirm.
+  assert.equal(affirmShouldApply(T2, 'garbage-cursor', NOW), true, 'a valid affirm self-heals a poisoned stored cursor');
 });

@@ -20,6 +20,37 @@
 
 import { verifyTrustAffirmSender, type TrustAffirmWireV0 } from './trust-affirm';
 
+/** Clock-skew tolerance on a sender's signed sent_at before it is treated as implausibly future.
+ *  A finite-but-lying future ts would ratchet the monotonic cursor forward and get legit later affirms
+ *  dropped — so we reject anything beyond now + this skew (fail-safe). 5 minutes. */
+export const AFFIRM_MAX_FUTURE_SKEW_MS = 5 * 60_000;
+
+/**
+ * Per-sender monotonic ordering decision (anti-rollback #3 / Flint #169539, hardened for the NaN +
+ * future-ts exploits Flint traced + Hypatia gated on, #169647). Returns true iff an affirmation with
+ * `incomingSentAt` should be APPLIED given the last-applied `lastAffirmAt` for this sender. FAIL-CLOSED
+ * on a malformed / implausibly-future timestamp, because in the survivor-safety threat model THE SENDER
+ * IS THE ADVERSARY — a hostile in-book sender must not be able to defeat OR poison the cursor:
+ *   • `incomingSentAt` must parse to a FINITE epoch. A garbage ts (Date.parse → NaN) is rejected: NaN
+ *     comparisons are always false, so an unguarded compare would both let the malformed affirm through
+ *     AND poison the stored cursor (every later `x < NaN` is false ⇒ monotonic defeated ⇒ rollback-open).
+ *   • `incomingSentAt` must not exceed now + skew. A lying-future ts would ratchet the cursor forward so
+ *     genuine later affirms get dropped — reject it (fail-safe: no false state change, never a false-Mutual).
+ *   • Otherwise APPLY iff NOT strictly older than the last applied — equal re-applies idempotently (a
+ *     replay carries the SAME signed content, since sent_at is bound in the signing preimage). A non-finite
+ *     STORED cursor self-heals: a valid incoming proceeds and overwrites the poisoned value.
+ * Pure + shared so BOTH affirm seams (FE live-book-poll + headless) decide identically — no inline fork.
+ */
+export function affirmShouldApply(incomingSentAt: string, lastAffirmAt: string | undefined, nowMs: number): boolean {
+  const t = Date.parse(incomingSentAt);
+  if (!Number.isFinite(t)) return false;                    // malformed sent_at → drop (never advances the cursor)
+  if (t > nowMs + AFFIRM_MAX_FUTURE_SKEW_MS) return false;  // implausibly-future → drop (cannot ratchet the cursor)
+  if (lastAffirmAt === undefined) return true;              // first affirm for this sender
+  const prev = Date.parse(lastAffirmAt);
+  if (!Number.isFinite(prev)) return true;                  // legacy/poisoned stored cursor → let a valid affirm self-heal
+  return t >= prev;                                         // strictly-older dropped; equal / newer applied
+}
+
 /** The result of applying a verified+admitted affirmation to the recipient's store. */
 export interface MutualApplyResult {
   /** The applied contact's local record id — for the live-repaint emit (reuses the contact beat). */
