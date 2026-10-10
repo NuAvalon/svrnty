@@ -525,3 +525,22 @@ export function biometricStatusLine(args: {
 export function isBiometricSeamLive(): boolean {
   return false;
 }
+
+/**
+ * DEV-TEST enable (NOT a claim gate). Build-time, prod-SAFE: true only when the build sets
+ * `NEXT_PUBLIC_BIOMETRIC_DEVTEST=1` (dev/beta deploy only — NEVER the prod build). It lets a real
+ * authenticator exercise the enroll/unlock PRF round-trip on a dev/beta device BEFORE the live flip,
+ * breaking the coming-soon chicken-and-egg (the mock can't prove a real PRF).
+ *
+ * CRITICAL — this does NOT touch `isBiometricSeamLive()`: the claim gate stays FALSE, so all
+ * user-facing CLAIM copy + the CI claim-sweep remain honest. This predicate is OR'd ONLY into the
+ * presentation `seamLive` (the LOOK/ACTION), never into a claim or the status-line copy. Prod build
+ * (env unset) ⇒ false ⇒ biometric stays coming-soon. The flip to real-live is still the lockstep
+ * isBiometricSeamLive + claim-gates.test change, gated on the device-proof this flag lets us run.
+ */
+export function biometricDevTestEnabled(): boolean {
+  return (
+    typeof process !== 'undefined' &&
+    process.env?.NEXT_PUBLIC_BIOMETRIC_DEVTEST === '1'
+  );
+}

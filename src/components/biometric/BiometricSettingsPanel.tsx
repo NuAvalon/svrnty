@@ -10,6 +10,7 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { DeviceUnlockComingSoon } from './DeviceUnlockComingSoon';
 import { settingsDeviceUnlockLook } from './device-unlock-presentation';
 import {
+  biometricDevTestEnabled,
   biometricStatusLine,
   disableBiometric,
   enrollBiometric,
@@ -57,6 +58,9 @@ export function BiometricSettingsPanel({
   const [error, setError] = useState<string | null>(null);
 
   const seamLive = isBiometricSeamLive();
+  // LOOK/ENROLL-action gate only: claim gate OR prod-safe dev-test flag (dev/beta build).
+  // `seamLive` (claim) still drives the status-line COPY — the dev flag never changes a claim.
+  const seamLiveForLook = seamLive || biometricDevTestEnabled();
 
   useEffect(() => {
     let cancelled = false;
@@ -79,7 +83,7 @@ export function BiometricSettingsPanel({
       : biometricStatusLine({ capability, enrollment, seamLive });
 
   const look = settingsDeviceUnlockLook({
-    seamLive,
+    seamLive: seamLiveForLook,
     enrolled: enrollment.enrolled,
     capabilityAvailable: capability?.status === 'available',
   });

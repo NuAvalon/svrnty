@@ -13,6 +13,7 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { DeviceUnlockComingSoon } from './DeviceUnlockComingSoon';
 import { lockScreenDeviceUnlockLook } from './device-unlock-presentation';
 import {
+  biometricDevTestEnabled,
   isBiometricSeamLive,
   unlockWithBiometric,
   type UnlockWithBiometricResult,
@@ -55,9 +56,11 @@ export function BiometricUnlockButton({
 }: BiometricUnlockButtonProps) {
   const [busy, setBusy] = useState(false);
 
+  // seamLive for the LOOK only: claim gate OR the prod-safe dev-test flag (dev/beta build).
+  // isBiometricSeamLive() alone governs all CLAIM copy — the dev flag never flips a claim.
   const look = lockScreenDeviceUnlockLook({
     visible,
-    seamLive: isBiometricSeamLive(),
+    seamLive: isBiometricSeamLive() || biometricDevTestEnabled(),
   });
   if (look === 'hidden') return null;
   if (look === 'coming-soon') return <DeviceUnlockComingSoon />;
