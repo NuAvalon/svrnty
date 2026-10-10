@@ -79,6 +79,19 @@ services:
       retries: 12
       start_period: 5s
 
+  registry-ttl: # same stub, short TTL — stands in for the satellite's 30-day GC (S8/G3)
+    image: node:22-alpine
+    working_dir: /work
+    volumes: ["./registry-stub.mjs:/work/registry-stub.mjs:ro"]
+    command: ["node", "registry-stub.mjs"]
+    environment:
+      MAILBOX_TTL_MS: "3000"
+    networks:
+      fed:
+        aliases: [registry-ttl.test]
+    ports: ["8101:8100"]
+    profiles: ["s8"] # only `docker compose --profile s8 up` or `run.sh s8`
+
   runner:
     image: node:22-bookworm-slim # glibc — can exec the repo's host-built node_modules via tsx
     working_dir: /repo

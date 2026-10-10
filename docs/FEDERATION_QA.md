@@ -74,15 +74,21 @@ parameterises it.
 | S5 | Multi-mailbox relay | relay-c hosts N owner mailboxes; per-mailbox cap → uniform 429; deposit/poll isolation between mailboxes |
 | S6 | Failure modes | relay down mid-migration → pointer retry; stale pointer (lower epoch) rejected; wrong-signature pointer rejected |
 | S7 | Adversarial (Flint's agent) | pointer substitution, replayed envelopes, registry poisoning, R_e probing, rate-limit bypass, cross-instance metadata leakage — see "Adversarial pass" |
+| S8 | **Mailbox expiry → rebuild** (G3) | `run.sh s8` against `registry-ttl` (`MAILBOX_TTL_MS=3000` standing in for the satellite's 30-day GC): register → GET 200 → TTL sweep → GET 404 → re-register same fp → GET 200. Wire-level proof an expired mailbox is gone *and* rebuildable; pointer-republish + `rehydrateTrustBeacons` against the rebuilt box ride the S4 node-level path (the unwired primitive, per W7 two-tier model) |
 
 ## Key contracts the harness depends on
 
 - `POST /mailbox/register`, `GET /mailbox/{fp}` — served by the **satellite**, which is
   NOT in this repo (`infra/svrnty` is referenced by `docs/SELF_HOSTING.md` but not
   vendored). Until the image is published, `infra/fed-qa/registry-stub.mjs` implements
-  exactly the documented wire shape (see `src/lib/crypto/mailbox-registry-client.ts`)
-  as a **TEST-DOUBLE** — marked as such; it proves client behaviour, not satellite
-  correctness.
+  the documented wire shape AND its two verification MUSTs (see
+  `src/lib/crypto/mailbox-registry-client.ts`): `mailbox_fp ≡ SHA256(x25519_pub ‖
+  mlkem1024_pub)` over raw bytes (400 on mismatch), and Ed25519 `owner_sig` over
+  `svrnty-mailbox-reg-v1:{owner}:{fp}:{epoch}` (403 on bad/unknown owner — owners
+  are seeded via the test-only `PUT /_test/identity/{fp}`, stub scaffolding that is
+  NOT wire shape; the real satellite resolves owner keys from its identity registry).
+  `MAILBOX_TTL_MS` env models the 30-day GC for S8. Still a **TEST-DOUBLE** — it
+  proves client behaviour, not satellite correctness.
 - `publishMailboxPointer` / `selectLatestValidPointer` (`src/lib/trust/mailbox-pointer-transport.ts`)
   — the real migration primitive: bootstrap epoch 0 sealed to identity-enc keys,
   rotations epoch ≥1 sealed to the peer's current mailbox.
@@ -152,7 +158,7 @@ substrate; a gate is DONE only when its mapped scenario(s) run green end-to-end:
 |------|-------------------|------------------|
 | G1 | PSI + blocking rock-solid | **GAP** — not fed-qa's lane; needs its own suite against the flipped `isPSIDiscoveryLive` + mutual-block graduates (piece-2 §F3 churn matrix exists DARK — target: wire into `qa.yml` or a dedicated gate job) |
 | G2 | Transfer away from primary relay + self-host | S2+S3 (mailbox register on a foreign domain + cross-domain exchange) |
-| G3 | 30-day mailbox expiry → rebuild → work again | **NEW SCENARIO NEEDED** (S8): force-expire a mailbox (TTL env or clock injection), assert GC destroys it, then `rehydrateTrustBeacons` + pointer publish rebuild it and peers resume sealing |
+| G3 | 30-day mailbox expiry → rebuild → work again | S8 — `run.sh s8` (green): short-TTL registry sweeps the mailbox (GET 404), re-register rebuilds it (GET 200). Partial coverage: wire-level expiry+rebuild proven on the stub; the *client-side* rebuild (pointer epoch+1 republish + `rehydrateTrustBeacons` re-deposit) still needs the S4 node-level path and the real satellite's TTL config |
 | G4 | Transfer to a different relay, then still receive updates | S4 (migration + pointer propagation + beacon rehydration) |
 | G5 | Primary relay down + mailboxes gone → full-loss recovery from clients | S6 extended: kill relay-b mid-run, assert client-side rehydration rebuilds the mailbox (manual `rehydrateTrustBeacons` invocation — the unwired primitive, per W7 two-tier model) |
 | G6 | No silent message loss | Cross-cutting invariant on every scenario: every envelope deposited is either polled, expired-by-TTL, or an explicit failure — never silently dropped (assert ack-loop + TTL-death audit trail) |
