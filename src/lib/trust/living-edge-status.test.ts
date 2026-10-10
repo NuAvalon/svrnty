@@ -79,6 +79,26 @@ test('linked known can communicate; trust outbound distinct from mutual', () => 
   assert.equal(livingStatusChip(mutual), 'Mutual');
 });
 
+test('PRE-WIRE (isMutualTrustWireLive false): a one-way edge reads the roadmap copy, NEVER "awaiting mutual"', () => {
+  // The mutual-trust wire is not yet live end-to-end (deposit-hook + two-seat e2e). While the gate is
+  // false, a trusted one-way edge must NOT imply a transient "awaiting mutual" wait for a state that
+  // cannot arrive (built≠wired). It reads the honest roadmap copy instead (Hypatia v1). The phase stays
+  // 'outbound' (the dashed/muted PR#215 affordance is unchanged); only the copy is gated.
+  const outbound = livingEdgeStatus(
+    edge({
+      peer_fingerprint: 'a3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      peer_public_key: 'PK',
+      trusted: true,
+      mutual: { they_trust_me: false, last_sync: null, reciprocal: false },
+      connection_status: 'accepted',
+    } as TrustEdge),
+  );
+  assert.equal(outbound.trust, 'outbound', 'phase unchanged — affordance still one-way');
+  assert.equal(outbound.statusLine, 'Trusted', 'pre-wire status is "Trusted", NOT "Trusted · awaiting mutual"');
+  assert.equal(outbound.detailLine, 'Mutual confirmation coming', 'pre-wire detail is the roadmap line');
+  assert.ok(!/awaiting mutual/i.test(outbound.statusLine), 'never implies a transient mutual wait pre-wire');
+});
+
 test('undelivered method update surfaces on detail', () => {
   const s = livingEdgeStatus(
     edge({

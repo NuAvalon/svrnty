@@ -8,6 +8,7 @@
 import type { TrustEdge } from '@/lib/trust/types';
 import { daysUntilDecay, isDecayed } from '@/lib/trust/types';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import { isMutualTrustWireLive } from '@/lib/claim-gates';
 
 export type LivingConnectionPhase = 'classical' | 'pending' | 'one-way' | 'linked';
 export type LivingTrustPhase = 'none' | 'outbound' | 'inbound' | 'mutual';
@@ -103,11 +104,19 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
     e.metadata?.last_moment_at || e.mutual?.last_sync || e.last_interaction || e.trusted_since;
   const lastMoment = relativeMoment(lastAt);
 
+  // MUTUAL-TRUST WIRE honesty gate (claim-gates.isMutualTrustWireLive). Pre-wire the affirmation flow
+  // isn't deposited by any FE path → reciprocal/they_trust_me can't flip (only the consume applyMutual
+  // writes them), so 'inbound'/'mutual' are structurally unreachable and ONLY 'outbound' is reachable.
+  // Pre-wire an 'outbound' edge must NOT read "awaiting mutual" (implies a transient wait for a state
+  // that can't arrive yet = the built≠wired over-claim); it reads the roadmap copy instead. The switch
+  // flips WITH the wire (deposit-hook + two-seat e2e green) — see claim-gates.ts. (Copy: Hypatia v1.)
+  const wireLive = isMutualTrustWireLive();
+
   let statusLine: string;
   if (connection === 'classical') statusLine = 'Classical book';
   else if (connection === 'pending') statusLine = 'Pending · not linked yet';
   else if (trust === 'mutual') statusLine = 'Mutual trust';
-  else if (trust === 'outbound') statusLine = 'Trusted · awaiting mutual';
+  else if (trust === 'outbound') statusLine = wireLive ? 'Trusted · awaiting mutual' : 'Trusted';
   else if (trust === 'inbound') statusLine = 'They trust you · you have not';
   else if (canCommunicate) statusLine = 'Linked · can communicate';
   else statusLine = 'Known';
@@ -119,6 +128,9 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
     detailLine = 'Method update did not get an ack';
   } else if (methodDelivery === 'acked') {
     detailLine = 'Method update acknowledged';
+  } else if (trust === 'outbound' && !wireLive) {
+    // Pre-wire: no affirmation flow yet, so "awaiting"/"signal sent" would over-claim. Roadmap copy.
+    detailLine = 'Mutual confirmation coming';
   } else if (trust === 'outbound' && e.metadata?.trust_probe === 'no-ack') {
     detailLine = 'Trust signal sent · no reciprocity ack yet';
   } else if (trust === 'outbound') {

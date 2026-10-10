@@ -6,7 +6,7 @@
 // components/biometric/biometric-seam.test.ts ("seam is not live until Flint wires PRF").
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive } from './claim-gates';
+import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive } from './claim-gates';
 
 describe('claim-gates — honest until wired (flip WITH the wire, never ahead)', () => {
   it('isPQEncapLive is false until hybridEncapsulate has a real caller (classical seal today)', () => {
@@ -35,5 +35,9 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
 
   it('isPiece2MutualBlockLive is FALSE until emit/receive transport + §F3 churn-matrix land (spine mechanism built but inert — transitive block not yet live)', () => {
     assert.equal(isPiece2MutualBlockLive(), false);
+  });
+
+  it('isMutualTrustWireLive is FALSE until the FE deposit-hook + the two-seat e2e land (crypto built both sides, consume wired, but no FE deposit path yet — flip WITH the e2e-green proof)', () => {
+    assert.equal(isMutualTrustWireLive(), false);
   });
 });
