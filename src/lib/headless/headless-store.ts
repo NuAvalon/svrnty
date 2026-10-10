@@ -28,7 +28,7 @@ export interface HeadlessContact {
   version?: number;
   pq_sig_public_key?: string; // base64
   pq_kem_public_key?: string; // base64
-  mutual?: { they_trust_me: boolean | null; last_sync: string | null; reciprocal: boolean };
+  mutual?: { they_trust_me: boolean | null; last_sync: string | null; reciprocal: boolean; last_affirm_at?: string };
   [key: string]: unknown;
 }
 
