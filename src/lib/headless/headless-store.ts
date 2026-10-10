@@ -10,6 +10,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore } from '@/lib/sync/consume-mailbox';
@@ -39,6 +40,49 @@ interface HeadlessData {
 }
 
 /**
+ * At-rest encryption envelope for the headless book. When the agent supplies an at-rest key (32 bytes,
+ * derived ONCE upstream from its custody master-secret), the on-disk file is an AES-256-GCM envelope
+ * instead of plaintext JSON — closing the device-at-rest + cloud-backup-exfil leak (a headless agent's
+ * notes/contacts must not sit plaintext on a volume that iCloud/Android auto-backup can exfiltrate; Flint
+ * #168811). Symmetric + SYNCHRONOUS (node:crypto) so flush() stays sync (no ripple into the consume seams);
+ * the key is already KDF-derived upstream, this is not a per-flush KDF. No key → plaintext JSON (dev/test
+ * parity). The HNDL hybrid envelope is a WIRE concern and is stripped on receive — at rest we keep ONE
+ * symmetric key, not per-message hybrid (Peter #168761 / Flint #168811 / Archie: keep-at-rest-enc).
+ */
+interface AtRestEnvelope {
+  svrnty_at_rest: 1;
+  alg: 'aes-256-gcm';
+  iv: string; // base64, 12 bytes
+  ct: string; // base64 ciphertext
+  tag: string; // base64, 16-byte GCM auth tag
+}
+
+function encryptAtRest(plaintext: string, key: Uint8Array): AtRestEnvelope {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  return {
+    svrnty_at_rest: 1,
+    alg: 'aes-256-gcm',
+    iv: Buffer.from(iv).toString('base64'),
+    ct: ct.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+  };
+}
+
+function decryptAtRest(env: AtRestEnvelope, key: Uint8Array): string {
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(env.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(env.tag, 'base64'));
+  // GCM auth failure (wrong key / tampered file) THROWS here — the caller must not swallow it into a
+  // fresh-start, or the agent silently loses its book. decryptAtRest never returns garbage.
+  return Buffer.concat([decipher.update(Buffer.from(env.ct, 'base64')), decipher.final()]).toString('utf8');
+}
+
+function isAtRestEnvelope(obj: unknown): obj is AtRestEnvelope {
+  return !!obj && typeof obj === 'object' && (obj as { svrnty_at_rest?: unknown }).svrnty_at_rest === 1;
+}
+
+/**
  * In-memory book with optional JSON-file persistence. Not concurrency-safe across processes (a headless
  * agent is single-process); within a process all mutations are synchronous + flush atomically-enough for
  * an agent's scale. The consume core (consume-mailbox.ts) drives this ONLY through asContactStore() + the
@@ -47,19 +91,33 @@ interface HeadlessData {
 export class HeadlessStore {
   private data: HeadlessData = { contacts: [], notes: [], threads: [] };
   private readonly path: string | null;
+  private readonly atRestKey: Uint8Array | null;
 
-  constructor(opts: { path?: string } = {}) {
+  constructor(opts: { path?: string; atRestKey?: Uint8Array } = {}) {
     this.path = opts.path ?? null;
+    this.atRestKey = opts.atRestKey ?? null;
+    if (this.atRestKey && this.atRestKey.length !== 32) {
+      throw new Error('HeadlessStore atRestKey must be 32 bytes (AES-256-GCM)');
+    }
     if (this.path && existsSync(this.path)) {
+      let obj: unknown;
       try {
-        const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<HeadlessData>;
-        this.data = {
-          contacts: parsed.contacts ?? [],
-          notes: parsed.notes ?? [],
-          threads: parsed.threads ?? [],
-        };
+        obj = JSON.parse(readFileSync(this.path, 'utf8'));
       } catch {
-        /* corrupt file → start fresh (don't crash the agent on a bad book) */
+        return; /* genuinely unparseable → start fresh (don't crash the agent on a bad book) */
+      }
+      if (isAtRestEnvelope(obj)) {
+        // Encrypted file. Refuse to clobber it: no key, or a wrong key (GCM auth throws), must NOT
+        // silently start-fresh — that would delete the agent's book. Surface the error to the caller.
+        if (!this.atRestKey) {
+          throw new Error('HeadlessStore: file is encrypted at rest but no atRestKey was supplied');
+        }
+        const parsed = JSON.parse(decryptAtRest(obj, this.atRestKey)) as Partial<HeadlessData>;
+        this.data = { contacts: parsed.contacts ?? [], notes: parsed.notes ?? [], threads: parsed.threads ?? [] };
+      } else {
+        const parsed = obj as Partial<HeadlessData>;
+        this.data = { contacts: parsed.contacts ?? [], notes: parsed.notes ?? [], threads: parsed.threads ?? [] };
+        // plaintext file + atRestKey present = legacy/migration → the next flush() re-writes it encrypted.
       }
     }
   }
@@ -67,7 +125,9 @@ export class HeadlessStore {
   private flush(): void {
     if (!this.path) return;
     mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(this.data, null, 2));
+    const json = JSON.stringify(this.data, null, 2);
+    // at-rest: encrypt when a key is present (prod agents MUST pass one); plaintext only for dev/test parity.
+    writeFileSync(this.path, this.atRestKey ? JSON.stringify(encryptAtRest(json, this.atRestKey)) : json);
   }
 
   // --- contacts ---
