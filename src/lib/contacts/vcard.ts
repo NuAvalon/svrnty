@@ -74,6 +74,10 @@ export function toVCard(edge: TrustEdge): string {
     }
   }
 
+  // Apollo §2 / gap-freeze KB#87571 — tags, blocked, and group-cluster labels are
+  // device-local. NEVER emit CATEGORIES (or blocked) on export. fromVCard may still
+  // *read* CATEGORIES into local tags on import; that stays on-device.
+
   lines.push('END:VCARD');
   return lines.join('\r\n');
 }
