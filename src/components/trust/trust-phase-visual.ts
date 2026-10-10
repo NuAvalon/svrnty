@@ -7,6 +7,7 @@
  * `edge.trusted` / `edge.mutual`.
  *
  * WHITE / LIT if and only if `trust === 'mutual'`.
+ * One-way trust shares the mutual hex chrome — no core, Known spoke unchanged.
  */
 
 import {
@@ -28,15 +29,17 @@ export type TrustBondState =
 export type TrustBondShape =
   | 'outline'
   | 'dashed-hollow'
-  | 'actionable'
   | 'solid-filled'
   | 'struck';
 
+/** Spoke paint. Mutual is the only thick-bright line. Outbound uses the dim Known spoke. */
+export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
+
 export const TRUST_VISUAL_LABELS = {
   known: 'Known',
-  'trust-sent': 'Awaiting mutual',
-  'trust-received': 'Trusts you · trust back?',
-  mutual: 'Mutual',
+  'trust-sent': 'Trust pending',
+  'trust-received': 'Trust pending',
+  mutual: 'Mutual trust',
   blocked: 'Blocked',
   introPending: 'Pending intro',
 } as const;
@@ -44,9 +47,9 @@ export const TRUST_VISUAL_LABELS = {
 /**
  * PRE-WIRE label for the one-way (trust-sent) bond while isMutualTrustWireLive() is false — the primary
  * node/chip/badge label (this map is the ONE paint source; a livingEdgeStatus-only gate would be BYPASSED
- * here). The affirmation flow isn't deposited yet, so "Awaiting mutual" over-claims a transient wait for a
- * state that can't arrive (built≠wired). Reuses Hypatia's approved pre-wire word "Trusted" (the terse
- * node/chip form of the gated edge statusLine). Flips to TRUST_VISUAL_LABELS['trust-sent'] WITH the wire.
+ * here). The affirmation flow isn't deposited yet, so "Trust pending" / "Awaiting mutual" over-claim
+ * a wait for a state that can't arrive (built≠wired). Reuses Hypatia's approved pre-wire word
+ * "Trusted". Flips to TRUST_VISUAL_LABELS['trust-sent'] ("Trust pending") WITH the wire.
  * (@Hypatia — confirm/adjust this terse node word; "Trusted" mirrors the edge statusLine pre-wire.)
  */
 export const TRUST_SENT_PRE_WIRE_LABEL = 'Trusted';
@@ -56,19 +59,16 @@ export const TRUST_VISUAL_WHITE_CORE = '#fffef8';
 export const TRUST_VISUAL_WHITE_HALO = '#fff8ee';
 export const TRUST_VISUAL_WHITE_SPOKE = '#fff6e8';
 
-const MUTED_STROKE = '#8f7550';
 const MUTED_FILL = 'rgba(143,117,80,0.10)';
-const INBOUND_STROKE = '#f9a825';
-const INBOUND_FILL = 'rgba(249,168,37,0.14)';
 const MUTUAL_FILL = 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
 const MUTUAL_CANVAS_FILL = 'rgba(255,122,26,0.55)';
 const KNOWN_STROKE = 'rgba(249,168,37,0.55)';
+const KNOWN_SPOKE = 'rgba(249,168,37,0.42)';
 const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 
-/** Intro-handshake dash — must not equal the trust-sent dash. */
+/** Intro-handshake dash — connection axis only. Not unverified. One-way trust is never dashed. */
 export const INTRO_PENDING_DASH = '3 2';
-/** Trust-sent (outbound, not yet mutual) dash. */
-export const TRUST_SENT_DASH = '8 5';
+export const ONE_WAY_SPOKE_WIDTH = 0.85;
 
 export type TrustPhaseVisual = {
   bondState: TrustBondState;
@@ -93,6 +93,7 @@ export type TrustPhaseVisual = {
   haloStroke: string | null;
   spokeStroke: string;
   spokeDasharray: string | undefined;
+  spokeStyle: TrustSpokeStyle;
   spokeGlow: boolean;
   chipColorCss: string;
 };
@@ -127,6 +128,26 @@ const KNOWN_STATUS: LivingEdgeStatus = {
   lastMoment: null,
   decayFreshness: 1,
 };
+
+function legendStatus(trust: LivingTrustPhase): LivingEdgeStatus {
+  return {
+    ...KNOWN_STATUS,
+    trust,
+    connection: 'linked',
+    canCommunicate: trust !== 'none',
+  };
+}
+
+/** Galaxy legend rows — same paint tokens as the stars. Labels follow the wire gate. */
+export function trustLifecycleLegendItems(): Array<{
+  visual: TrustPhaseVisual;
+  label: string;
+}> {
+  return (['none', 'outbound', 'mutual'] as const).map((trust) => {
+    const visual = trustPhaseVisual({ status: legendStatus(trust) });
+    return { visual, label: visual.label };
+  });
+}
 
 /**
  * Map a living-edge status onto paint tokens. Fail closed: missing/unknown
@@ -167,6 +188,7 @@ export function trustPhaseVisual(input: {
       haloStroke: null,
       spokeStroke: BLOCKED_STROKE,
       spokeDasharray: '2 3',
+      spokeStyle: 'single',
       spokeGlow: false,
       chipColorCss: 'var(--se-danger)',
     };
@@ -193,60 +215,36 @@ export function trustPhaseVisual(input: {
       haloStroke: TRUST_VISUAL_WHITE_HALO,
       spokeStroke: TRUST_VISUAL_WHITE_SPOKE,
       spokeDasharray: undefined,
+      spokeStyle: 'thick-bright',
       spokeGlow: true,
       chipColorCss: 'var(--se-accent2)',
     };
   }
 
-  if (bond === 'trust-sent') {
+  if (bond === 'trust-sent' || bond === 'trust-received') {
     return {
       bondState: bond,
       connection: input.status.connection,
       label,
       lit: false,
       white: false,
-      shape: 'dashed-hollow',
+      shape: 'solid-filled',
       introPending,
       verifiedMark: input.verified === true,
-      svgFill: 'transparent',
-      svgStroke: MUTED_STROKE,
-      svgStrokeWidth: 1.45,
-      svgDasharray: TRUST_SENT_DASH,
-      canvasFill: null,
-      canvasStroke: MUTED_STROKE,
-      canvasDash: [8, 5],
-      coreFill: null,
-      haloStroke: MUTED_STROKE,
-      spokeStroke: MUTED_STROKE,
-      spokeDasharray: TRUST_SENT_DASH,
-      spokeGlow: false,
-      chipColorCss: 'var(--se-muted)',
-    };
-  }
-
-  if (bond === 'trust-received') {
-    return {
-      bondState: bond,
-      connection: input.status.connection,
-      label,
-      lit: false,
-      white: false,
-      shape: 'actionable',
-      introPending,
-      verifiedMark: input.verified === true,
-      svgFill: INBOUND_FILL,
-      svgStroke: INBOUND_STROKE,
-      svgStrokeWidth: 1.5,
+      svgFill: MUTUAL_FILL,
+      svgStroke: TRUST_VISUAL_WHITE_HALO,
+      svgStrokeWidth: 1.85,
       svgDasharray: undefined,
-      canvasFill: INBOUND_FILL,
-      canvasStroke: INBOUND_STROKE,
+      canvasFill: MUTUAL_CANVAS_FILL,
+      canvasStroke: TRUST_VISUAL_WHITE_HALO,
       canvasDash: null,
       coreFill: null,
-      haloStroke: INBOUND_STROKE,
-      spokeStroke: INBOUND_STROKE,
+      haloStroke: null,
+      spokeStroke: KNOWN_SPOKE,
       spokeDasharray: undefined,
+      spokeStyle: 'single',
       spokeGlow: false,
-      chipColorCss: 'var(--se-accent)',
+      chipColorCss: bond === 'trust-received' ? 'var(--se-accent)' : 'var(--se-muted)',
     };
   }
 
@@ -272,6 +270,7 @@ export function trustPhaseVisual(input: {
     haloStroke: null,
     spokeStroke: pendingIntroPaint ? '#f9a825' : 'rgba(249,168,37,0.42)',
     spokeDasharray: pendingIntroPaint ? '5 4' : undefined,
+    spokeStyle: 'single',
     spokeGlow: false,
     chipColorCss: pendingIntroPaint ? 'var(--se-accent)' : 'var(--se-dim)',
   };

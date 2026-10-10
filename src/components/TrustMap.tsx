@@ -12,7 +12,7 @@
 "use client";
 
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import { ChevronDown, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import { Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
 import { useGraphViewport } from '@/lib/trust/use-graph-viewport';
 import { boundsOf, hitTestNodes } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
@@ -29,11 +29,12 @@ import {
 import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
-import { isPiece2MutualBlockLive, isMutualTrustWireLive } from '@/lib/claim-gates';
+import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
+import { offsetSpokePair } from '@/components/trust/trust-spoke-paint';
 import {
   applyLayoutMemory,
   glassStateSignature,
@@ -43,8 +44,11 @@ import {
 } from '@/lib/trust/layout-memory';
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
-import { IdentitySeal } from '@/components/identity/IdentitySeal';
+import { CardMenuItem } from '@/components/ui/CardActionMenu';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
+import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
+import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import {
   safeEmailLink,
   safePhoneLink,
@@ -65,7 +69,7 @@ import {
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
 import { ownerLocalBadge } from '@/lib/trust/grow-gate';
-import { VivreBurn, StarEmber, VivreCaution } from '@/components/VivreBurn';
+import { StarEmber, VivreCaution } from '@/components/VivreBurn';
 import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
   loadMethodHistory,
@@ -73,8 +77,10 @@ import {
   type MethodRevision,
 } from '@/components/identity/method-history';
 import { VerifySheet } from '@/components/verify/VerifySheet';
-import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
+import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import {
+  ONE_WAY_SPOKE_WIDTH,
+  trustLifecycleLegendItems,
   trustVisualLane,
   visualForEdge,
   type TrustPhaseVisual,
@@ -98,6 +104,8 @@ interface TrustMapProps {
   contacts: TrustEdge[];
   /** Empty galaxy CTA — opens Grow (share / in-person). */
   onGrow?: () => void;
+  /** Demo mesh + local notes. No-op when a living book already exists. */
+  onLoadSample?: () => void | Promise<void>;
   /** Assign a local group label (tag) to selected peers */
   onAssignGroup?: (fingerprints: string[], groupName: string) => void | Promise<void>;
   onTrustToggle?: (edge: TrustEdge) => void | Promise<void>;
@@ -120,6 +128,10 @@ interface TrustMapProps {
   onDistressWent?: (edge: TrustEdge) => void | Promise<void>;
   /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. */
   onRefresh?: () => void | Promise<void>;
+  /** Open this star's 1:1 conversation (parent switches to the Chat tab). */
+  onOpenNote?: (edge: TrustEdge) => void;
+  /** Chat name hop — focus this star when Galaxy opens. */
+  focusFingerprint?: string;
 }
 
 // Solar Ember via CSS vars — follows light/dark appearance.
@@ -207,6 +219,7 @@ export function TrustMap({
   ownerName,
   contacts,
   onGrow,
+  onLoadSample,
   onAssignGroup,
   onTrustToggle,
   onRemoveContact,
@@ -219,6 +232,8 @@ export function TrustMap({
   onMethodHistoryChange,
   onDistressWent,
   onRefresh,
+  onOpenNote,
+  focusFingerprint,
 }: TrustMapProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const {
@@ -434,6 +449,13 @@ export function TrustMap({
     fittedOnce.current = false;
   }, [fullscreen]);
 
+  // Empty → first stars: refit so the sample mesh is not left off-camera.
+  const lastFitCount = useRef(layout.nodes.length);
+  useEffect(() => {
+    if (lastFitCount.current === 0 && layout.nodes.length > 0) fittedOnce.current = false;
+    lastFitCount.current = layout.nodes.length;
+  }, [layout.nodes.length]);
+
   useEffect(() => {
     const el = viewportElRef.current;
     const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
@@ -515,6 +537,11 @@ export function TrustMap({
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const [trustAfterVerify, setTrustAfterVerify] = useState(false);
+  const verifiedForTrust = useRef(false);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sheetExpanded, setSheetExpanded] = useState(true);
+  const [shardGiveOpen, setShardGiveOpen] = useState(false);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -524,14 +551,23 @@ export function TrustMap({
 
   const isEmpty = visibleContacts.length === 0;
 
+  useEffect(() => {
+    setSheetExpanded(!!focusId);
+    setActionsOpen(false);
+  }, [focusId]);
+
   const clearFocus = useCallback(() => {
     setFocusId(null);
     setEditing(false);
+    setShardGiveOpen(false);
     setActionsOpen(false);
     setShowHistory(false);
     setActionNote(null);
     setConfirmKind(null);
     setVerifyOpen(false);
+    setSheetExpanded(false);
+    setTrustAfterVerify(false);
+    verifiedForTrust.current = false;
   }, []);
 
   const confirmTarget: TrustActionTarget | null = focusEdge
@@ -600,7 +636,23 @@ export function TrustMap({
     setShowHistory(false);
     setActionNote(null);
     setVerifyOpen(false);
+    setTrustAfterVerify(false);
+    verifiedForTrust.current = false;
   }, [edgeByFp]);
+
+  const appliedChatFocus = useRef('');
+  useEffect(() => {
+    const want = String(focusFingerprint || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+    if (want.length < 16 || appliedChatFocus.current === want) return;
+    for (const id of edgeByFp.keys()) {
+      const have = String(id).replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+      if (have === want || have.startsWith(want) || want.startsWith(have)) {
+        appliedChatFocus.current = want;
+        openFocus(id);
+        return;
+      }
+    }
+  }, [focusFingerprint, edgeByFp, openFocus]);
 
   const handleNodeClick = useCallback((id: string, multi: boolean) => {
     openFocus(id);
@@ -860,6 +912,7 @@ export function TrustMap({
         </div>
       </div>
 
+      <div style={{ position: 'relative' }}>
       <div
         ref={viewportElRef}
         data-testid="trust-map"
@@ -1014,6 +1067,7 @@ export function TrustMap({
                 : visual.verifiedMark
                   ? 'tm-edge tm-spoke-verified'
                   : 'tm-edge tm-spoke-known';
+              const delay = { ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` };
               return (
                 <g key={`e-${n.id}`}>
                   {visual.spokeGlow && (
@@ -1029,21 +1083,43 @@ export function TrustMap({
                       style={{ ['--tm-o' as string]: 0.85, animationDelay: `${0.08 + i * 0.02}s` }}
                     />
                   )}
-                  <line
-                    className={spokeClass}
-                    data-testid="trust-edge"
-                    data-spoke={lane}
-                    data-bond-state={visual.bondState}
-                    x1={layout.self.x}
-                    y1={layout.self.y}
-                    x2={n.x}
-                    y2={n.y}
-                    stroke={visual.spokeStroke}
-                    strokeOpacity={visual.lit ? 0.95 : visual.bondState === 'trust-sent' ? 0.7 : visual.verifiedMark ? 0.58 : 0.48}
-                    strokeWidth={visual.lit ? 2.4 : visual.bondState === 'trust-sent' ? 1.55 : visual.verifiedMark ? 1.25 : 1.05}
-                    strokeDasharray={visual.spokeDasharray || (n.state === 'decayed' ? '3 3' : undefined)}
-                    style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` }}
-                  />
+                  {visual.spokeStyle === 'dual-thin'
+                    ? offsetSpokePair(layout.self.x, layout.self.y, n.x, n.y).map((seg, si) => (
+                        <line
+                          key={`dual-${si}`}
+                          className={spokeClass}
+                          data-testid={si === 0 ? 'trust-edge' : 'trust-edge-pair'}
+                          data-spoke={lane}
+                          data-bond-state={visual.bondState}
+                          data-spoke-style="dual-thin"
+                          x1={seg.x1}
+                          y1={seg.y1}
+                          x2={seg.x2}
+                          y2={seg.y2}
+                          stroke={visual.spokeStroke}
+                          strokeOpacity={0.78}
+                          strokeWidth={ONE_WAY_SPOKE_WIDTH}
+                          style={delay}
+                        />
+                      ))
+                    : (
+                    <line
+                      className={spokeClass}
+                      data-testid="trust-edge"
+                      data-spoke={lane}
+                      data-bond-state={visual.bondState}
+                      data-spoke-style={visual.spokeStyle}
+                      x1={layout.self.x}
+                      y1={layout.self.y}
+                      x2={n.x}
+                      y2={n.y}
+                      stroke={visual.spokeStroke}
+                      strokeOpacity={visual.lit ? 0.95 : visual.verifiedMark ? 0.58 : 0.48}
+                      strokeWidth={visual.lit ? 2.4 : visual.verifiedMark ? 1.25 : 1.05}
+                      strokeDasharray={visual.spokeDasharray || (n.state === 'decayed' ? '3 3' : undefined)}
+                      style={delay}
+                    />
+                  )}
                 </g>
               );
             })}
@@ -1236,54 +1312,6 @@ export function TrustMap({
           </span>
         </div>
 
-        {isEmpty && (
-          <div
-            data-testid="trust-map-empty"
-            style={{
-              position: 'absolute',
-              left: 16,
-              right: 16,
-              bottom: 104,
-              textAlign: 'center',
-              pointerEvents: 'none',
-              fontFamily: E.fontSans,
-              zIndex: 7,
-            }}
-          >
-            <p style={{ margin: 0, fontSize: 16, color: T.label, letterSpacing: '0.04em' }}>
-              Grow your galaxy
-            </p>
-            <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              In person they can become a star you Know. Remote, they wait at the Gate.
-            </p>
-            <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
-              Trust is mutual, after you make sure it&apos;s them.
-            </p>
-            {onGrow ? (
-              <button
-                type="button"
-                data-testid="trust-map-grow"
-                onClick={onGrow}
-                style={{
-                  pointerEvents: 'auto',
-                  marginTop: 14,
-                  fontFamily: E.fontSans,
-                  fontSize: 12,
-                  letterSpacing: '0.08em',
-                  color: T.myEdge,
-                  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                  border: `1px solid ${T.dimStroke}`,
-                  borderRadius: 8,
-                  padding: '8px 14px',
-                  cursor: 'pointer',
-                }}
-              >
-                Grow
-              </button>
-            ) : null}
-          </div>
-        )}
-
         <GalaxyGateMembrane count={gateCount} sparkIds={gateSparks} onOpen={() => setGateOpen(true)} />
 
         {gateOpen && ownerFingerprint ? (
@@ -1303,472 +1331,303 @@ export function TrustMap({
         ) : null}
       </div>
 
-      {/* Legend */}
-      {!isEmpty && (
+      {isEmpty && (
         <div
+          data-testid="trust-map-empty"
           style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 12,
             marginTop: 10,
+            padding: '10px 12px',
+            textAlign: 'center',
             fontFamily: E.fontSans,
-            fontSize: 10,
-            color: E.dim,
-            letterSpacing: '0.04em',
+            borderRadius: 12,
+            border: `1px solid ${E.border}`,
+            background: 'color-mix(in srgb, var(--se-bg) 70%, transparent)',
           }}
         >
-          <span style={{ color: E.accent2 }}>⬡ Mutual · white light</span>
-          <span style={{ color: E.muted }}>{isMutualTrustWireLive() ? '⬡ Awaiting mutual — dashed hollow' : '⬡ Trusted · mutual confirmation coming — dashed hollow'}</span>
-          <span style={{ color: E.accent }}>⬡ Trusts you · gold</span>
-          <span>⬡ Known · dim outline</span>
-          <span style={{ color: E.text }}>⬡ you · larger + light</span>
-          <span style={{ color: E.accent2 }}>═ {TRUST_RECIPE_COPY.peerTrustChord}</span>
-          <span>─ {TRUST_RECIPE_COPY.peerKnowChord}</span>
-          <span style={{ color: E.accent }}>∪ known sphere</span>
-          <span style={{ color: E.accent }}>⊙ Gate</span>
-          <span style={{ color: E.accent }}>◌ pending intro</span>
-          <span>- - group</span>
+          <p style={{ margin: 0, fontSize: 15, color: T.label, letterSpacing: '0.04em' }}>
+            Grow your galaxy
+          </p>
+          <div style={{ marginTop: 6 }}>
+            <FirstVisitHint id="galaxy-empty" label="How this grows">
+              <p style={{ margin: 0 }}>
+                In person they can become a star you Know. Remote, they wait at the Gate.
+                Trust is mutual, after you make sure it&apos;s them.
+              </p>
+              {onLoadSample ? (
+                <p style={{ margin: '8px 0 0' }}>
+                  Sample people on this device. Classical cards have no key.
+                  River Vale and Sage Quinn are living SVRNTY cards — bound keys
+                  — and extra vaults under Switch identity.
+                </p>
+              ) : null}
+            </FirstVisitHint>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            {onGrow ? (
+              <button
+                type="button"
+                data-testid="trust-map-grow"
+                onClick={onGrow}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  letterSpacing: '0.08em',
+                  color: T.myEdge,
+                  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                  border: `1px solid ${T.dimStroke}`,
+                  borderRadius: 8,
+                  padding: '8px 14px',
+                  cursor: 'pointer',
+                }}
+              >
+                Grow
+              </button>
+            ) : null}
+            {onLoadSample ? (
+              <button
+                type="button"
+                data-testid="trust-map-load-sample"
+                disabled={sampleBusy}
+                onClick={() => {
+                  setSampleBusy(true);
+                  void Promise.resolve(onLoadSample()).finally(() => setSampleBusy(false));
+                }}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  letterSpacing: '0.08em',
+                  color: T.myEdge,
+                  background: 'transparent',
+                  border: `1px solid ${T.dimStroke}`,
+                  borderRadius: 8,
+                  padding: '8px 14px',
+                  cursor: sampleBusy ? 'wait' : 'pointer',
+                }}
+              >
+                {sampleBusy ? 'Loading…' : 'Load sample circle'}
+              </button>
+            ) : null}
+          </div>
         </div>
       )}
-      <div
-        data-testid="trust-map-consent-legend"
-        style={{
-          marginTop: 10,
-          padding: '10px 12px',
-          borderRadius: 10,
-          border: `1px solid ${E.border}`,
-          background: 'color-mix(in srgb, var(--se-bg) 70%, transparent)',
-          fontFamily: E.fontSans,
-        }}
-      >
-        <p
-          style={{
-            margin: 0,
-            fontSize: 11,
-            color: E.text,
-            lineHeight: 1.45,
-          }}
-        >
-          {TRUST_RECIPE_COPY.peerMeshLegend}
-        </p>
-        <p
-          data-testid="trust-map-legend"
-          style={{
-            margin: '8px 0 0',
-            fontSize: 11,
-            color: E.dim,
-            lineHeight: 1.45,
-          }}
-        >
-          Wheel or pinch to zoom · Fit recenters · pull the top of the map for updates.
-          Spokes go to you. Verify is a private ember — nobody else sees a badge.
-          The U is your known sphere; the hole is the Gate.
-        </p>
-      </div>
 
-      {/* Contact sheet — alive contacts: seal + info + actions */}
-      {focusNode && focusEdge && (
-        <div
-          data-testid="trust-node-detail"
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            marginTop: 14,
-            padding: 16,
-            borderRadius: 14,
-            background: E.surfaceSolid,
-            border: `1px solid ${
-              contactHasDistress(focusEdge)
-                ? E.accent2
-                : visualOf(focusEdge, ownerHasVerified(focusEdge)).lit ||
-                    visualOf(focusEdge, ownerHasVerified(focusEdge)).introPending
-                  ? E.borderLit
-                  : E.border
-            }`,
-            boxShadow: 'var(--se-glass-shadow)',
-            fontFamily: E.fontSans,
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-        >
-          {contactHasDistress(focusEdge) && <VivreBurn />}
-          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-            {focusEdge.peer_fingerprint ? (
-              <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
-            ) : (
-              <div
-                style={{
-                  width: 72,
-                  height: 72,
-                  borderRadius: 12,
-                  border: `1px dashed ${E.border}`,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: E.dim,
-                  fontSize: 10,
-                  fontFamily: E.fontSans,
-                  textAlign: 'center',
-                  padding: 8,
-                }}
-              >
-                no key yet
-              </div>
-            )}
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
-                <div>
-                  <p style={{ margin: 0, fontSize: 16, fontWeight: 600, color: E.text }}>
-                    {focusEdge.peer_name || focusNode.name}
-                  </p>
-                  <p
-                    data-testid="trust-node-bond-label"
-                    style={{
-                      margin: '4px 0 0',
-                      fontSize: 12,
-                      color: visualOf(focusEdge, ownerHasVerified(focusEdge)).lit
-                        ? E.accent2
-                        : visualOf(focusEdge, ownerHasVerified(focusEdge)).introPending
-                          ? E.accent
-                          : visualOf(focusEdge, ownerHasVerified(focusEdge)).bondState === 'trust-sent'
-                            ? E.muted
-                            : E.dim,
-                      fontWeight: visualOf(focusEdge, ownerHasVerified(focusEdge)).lit ? 600 : 500,
-                    }}
-                  >
-                    {describeAlive(focusNode, focusEdge)}
-                  </p>
-                  {(() => {
-                    const mark = ownerLocalBadge({
-                      mintChannel: focusEdge.metadata?.grow_mint_channel as string | undefined,
-                      verified: ownerHasVerified(focusEdge),
-                    });
-                    if (!mark.kind) return null;
-                    return (
-                      <p
-                        data-testid="star-provenance"
-                        data-kind={mark.kind}
-                        style={{
-                          margin: '6px 0 0',
-                          fontSize: 11,
-                          letterSpacing: '0.08em',
-                          textTransform: 'lowercase',
-                          color: mark.kind === 'verified' ? E.accent2 : E.muted,
-                        }}
-                      >
-                        {mark.label}
-                      </p>
-                    );
-                  })()}
-                </div>
-                <button
-                  type="button"
-                  onClick={clearFocus}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: E.dim,
-                    cursor: 'pointer',
-                    fontSize: 12,
-                    fontFamily: E.fontSans,
-                  }}
-                >
-                  Close
-                </button>
-              </div>
-
-              {!editing && (
-                <>
-                  {focusEdge.peer_email && (
-                    <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted }}>
-                      <ContactMethodLink
-                        safe={safeEmailLink(focusEdge.peer_email)}
-                        style={{ color: E.muted }}
-                      />
-                    </p>
-                  )}
-                  {focusEdge.contact_info?.phones?.[0] && (
-                    <p style={{ margin: '4px 0 0', fontSize: 13, color: E.muted }}>
-                      <ContactMethodLink
-                        safe={safePhoneLink(focusEdge.contact_info.phones[0])}
-                        style={{ color: E.muted }}
-                      />
-                    </p>
-                  )}
-                  {focusEdge.contact_info?.handles &&
-                    Object.entries(focusEdge.contact_info.handles).map(([k, v]) => (
-                      <p key={k} style={{ margin: '4px 0 0', fontSize: 12, color: E.muted }}>
-                        {k} ·{' '}
-                        <ContactMethodLink
-                          safe={safeHandleLink(k, v)}
-                          style={{ color: E.muted }}
-                        />
-                      </p>
-                    ))}
-                  {focusEdge.contact_info?.urls?.[0] && (
-                    <p style={{ margin: '4px 0 0', fontSize: 12, color: E.accent }}>
-                      <ContactMethodLink
-                        safe={safeUrlLink(focusEdge.contact_info.urls[0])}
-                        style={{ color: E.accent }}
-                      />
-                    </p>
-                  )}
-                  {focusEdge.peer_fingerprint && (
-                    <p
-                      style={{
-                        margin: '10px 0 0',
-                        fontSize: 11,
-                        color: E.dim,
-                        fontFamily: E.fontMono,
-                        letterSpacing: '0.04em',
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {formatFingerprintForVerify(focusEdge.peer_fingerprint)}
-                    </p>
-                  )}
-                  {contactHasDistress(focusEdge) && <VivreCaution />}
-                  {focusEdge.notes && (
-                    <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, fontStyle: 'italic' }}>
-                      {focusEdge.notes}
-                    </p>
-                  )}
-                  {isPending(focusEdge) && focusEdge.pending_intro && (
-                    <p
-                      style={{
-                        margin: '10px 0 0',
-                        fontSize: 12,
-                        color: E.accent,
-                        padding: '8px 10px',
-                        borderRadius: 8,
-                        border: `1px dashed ${E.borderLit}`,
-                        background: 'color-mix(in srgb, var(--se-accent) 8%, transparent)',
-                      }}
-                    >
-                      {focusEdge.pending_intro.context ||
-                        `${focusEdge.pending_intro.introduced_by} introduced you`}
-                      . Both sides stay pending until you accept — that is knowing, not trusting.
-                    </p>
-                  )}
-                </>
-              )}
-
-              {editing && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-                  <input
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    placeholder="Name"
-                    style={fieldStyle()}
-                  />
-                  <input
-                    value={editEmail}
-                    onChange={(e) => setEditEmail(e.target.value)}
-                    placeholder="Email"
-                    style={fieldStyle()}
-                  />
-                  <input
-                    value={editPhone}
-                    onChange={(e) => setEditPhone(e.target.value)}
-                    placeholder="Phone"
-                    style={fieldStyle()}
-                  />
-                  <textarea
-                    value={editNotes}
-                    onChange={(e) => setEditNotes(e.target.value)}
-                    placeholder="Private notes"
-                    rows={2}
-                    style={{ ...fieldStyle(), resize: 'vertical' as const }}
-                  />
-                </div>
-              )}
-
-              <p
-                style={{
-                  margin: '10px 0 0',
-                  fontSize: 11,
-                  color: E.dim,
-                  lineHeight: 1.45,
-                }}
-              >
-                Read the fingerprint aloud. Verify is you making sure it&apos;s them — in the world, not a badge.
-              </p>
-              {focusEdge.tags?.length > 0 && (
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
-                  {focusEdge.tags.map((t) => (
-                    <span
-                      key={t}
-                      style={{
-                        fontSize: 10,
-                        letterSpacing: '0.06em',
-                        padding: '3px 8px',
-                        borderRadius: 6,
-                        border: `1px solid ${E.border}`,
-                        color: E.accent,
-                        background: 'color-mix(in srgb, var(--se-accent) 8%, transparent)',
-                      }}
-                    >
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Actions — nested; the card itself is name, key, notes */}
-          <div
-            style={{
-              marginTop: 14,
-              paddingTop: 12,
-              borderTop: `1px solid ${E.border}`,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-            }}
-          >
-            {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
-              <ActionBtn
-                testId="galaxy-verify"
-                label={VERIFY_SHEET_COPY.title}
-                primary
-                onClick={() => setVerifyOpen(true)}
-              />
-            )}
-            <ActionBtn
-              label="Actions"
-              primary
-              onClick={() => setActionsOpen((v) => !v)}
-              trailing={
-                <ChevronDown
-                  size={14}
-                  style={{
-                    transform: actionsOpen ? 'rotate(180deg)' : undefined,
-                    transition: 'transform 120ms ease',
-                  }}
+      {focusNode && focusEdge && (() => {
+        const vis = visualOf(focusEdge, ownerHasVerified(focusEdge));
+        const living = isSvrnNetworkContact({
+          fingerprint: focusEdge.peer_fingerprint,
+          public_key: focusEdge.peer_public_key,
+        });
+        const canNote = !!(onOpenNote && living);
+        const closeMenu = () => setActionsOpen(false);
+        return (
+          <ContactActionCard
+            testId="trust-node-detail"
+            name={focusEdge.peer_name || focusNode.name}
+            fingerprint={living ? focusEdge.peer_fingerprint : undefined}
+            bondLabel={describeAlive(focusNode, focusEdge)}
+            bondColor={vis.lit ? E.accent2 : vis.introPending ? E.accent : vis.bondState === 'trust-sent' ? E.muted : E.dim}
+            lit={vis.lit}
+            distress={contactHasDistress(focusEdge)}
+            introPending={vis.introPending}
+            expanded={sheetExpanded || editing}
+            onToggleExpand={() => setSheetExpanded((v) => !v)}
+            onClose={clearFocus}
+            canChat={canNote}
+            onChat={() => onOpenNote?.(focusEdge)}
+            canSendUpdate={
+              canNote &&
+              !!onSendMethodUpdate &&
+              !isPending(focusEdge) &&
+              String(focusEdge.peer_public_key || '').length > 0
+            }
+            onSendUpdate={() => onSendMethodUpdate?.(focusEdge)}
+            actionsOpen={actionsOpen}
+            onActionsOpenChange={setActionsOpen}
+            banner={null}
+            edit={editing ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+                <input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Name" style={fieldStyle()} />
+                <input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} placeholder="Email" style={fieldStyle()} />
+                <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} placeholder="Phone" style={fieldStyle()} />
+                <textarea
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  placeholder="Private notes"
+                  rows={2}
+                  style={{ ...fieldStyle(), resize: 'vertical' as const }}
                 />
-              }
-            />
-            {actionsOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {isPending(focusEdge) && onAcceptIntro && (
+                <div style={{ display: 'flex', gap: 8 }}>
                   <ActionBtn
-                    label={busy ? '…' : 'Accept connection'}
+                    label={busy ? '…' : 'Save'}
                     primary
                     onClick={() =>
-                      void runAction(
-                        () => onAcceptIntro(focusEdge),
-                        'Connection accepted — they are known. Trust is still yours to grant.'
-                      )
+                      void runAction(async () => {
+                        await onUpdateContact?.(focusEdge, {
+                          name: editName.trim(),
+                          email: editEmail.trim(),
+                          notes: editNotes,
+                          phones: editPhone.trim() ? [editPhone.trim()] : undefined,
+                        });
+                        setEditing(false);
+                      }, 'Contact updated.')
                     }
                   />
-                )}
-                {!editing && (
-                  <ActionBtn
+                  <ActionBtn label="Cancel" onClick={() => setEditing(false)} />
+                </div>
+              </div>
+            ) : null}
+            actions={(
+              <>
+                  {isPending(focusEdge) && onAcceptIntro && (
+                    <CardMenuItem
+                      label={busy ? '…' : 'Accept connection'}
+                      primary
+                      onClick={() => {
+                        void runAction(
+                          () => onAcceptIntro(focusEdge),
+                          'Connection accepted — they are known. Trust is still yours to grant.'
+                        );
+                        closeMenu();
+                      }}
+                    />
+                  )}
+                  <CardMenuItem
                     label="Edit"
                     onClick={() => {
                       setEditing(true);
-                      setActionsOpen(false);
+                      setSheetExpanded(true);
+                      closeMenu();
                     }}
                   />
-                )}
-                {!isPending(focusEdge) && onTrustToggle && (
-                  <ActionBtn
-                    label={
-                      busy
-                        ? '…'
-                        : focusEdge.trusted
-                          ? 'Remove trust'
-                          : ownerHasVerified(focusEdge)
-                            ? 'TRUST'
-                            : 'Verify first, then Trust'
-                    }
-                    primary={!focusEdge.trusted && ownerHasVerified(focusEdge)}
-                    danger={!!focusEdge.trusted}
+                  {!isPending(focusEdge) && onTrustToggle && (
+                    <CardMenuItem
+                      testId={focusEdge.trusted ? 'galaxy-trust-remove' : 'galaxy-trust'}
+                      label={focusEdge.trusted ? 'Remove trust' : busy ? '…' : 'Trust'}
+                      primary={!focusEdge.trusted}
+                      danger={!!focusEdge.trusted}
+                      onClick={() => {
+                        if (focusEdge.trusted) {
+                          setConfirmKind('break');
+                        } else if (!ownerHasVerified(focusEdge)) {
+                          verifiedForTrust.current = false;
+                          setTrustAfterVerify(true);
+                          setVerifyOpen(true);
+                        } else {
+                          setConfirmKind('trust');
+                        }
+                        closeMenu();
+                      }}
+                    />
+                  )}
+                  {living ? (
+                    <CardMenuItem
+                      label="Give a piece"
+                      onClick={() => {
+                        setShardGiveOpen(true);
+                        closeMenu();
+                      }}
+                    />
+                  ) : null}
+                  {contactHasDistress(focusEdge) && onDistressWent && (
+                    <CardMenuItem
+                      label={DISTRESS_COPY.went}
+                      onClick={() => {
+                        void onDistressWent(focusEdge);
+                        setActionNote(DISTRESS_COPY.wentHint);
+                        closeMenu();
+                      }}
+                    />
+                  )}
+                  <CardMenuItem
+                    label="Version history"
                     onClick={() => {
-                      if (focusEdge.trusted) {
-                        setConfirmKind('break');
-                        return;
-                      }
-                      if (!ownerHasVerified(focusEdge)) {
-                        setVerifyOpen(true);
-                        return;
-                      }
-                      setConfirmKind('trust');
+                      setShowHistory((v) => !v);
+                      closeMenu();
                     }}
                   />
-                )}
-                {contactHasDistress(focusEdge) && onDistressWent && (
-                  <ActionBtn
-                    label={DISTRESS_COPY.went}
+                  {onBlockContact && (
+                    <CardMenuItem
+                      label="Block"
+                      danger
+                      onClick={() => {
+                        setConfirmKind('block');
+                        closeMenu();
+                      }}
+                    />
+                  )}
+                  {onRemoveContact && (
+                    <CardMenuItem
+                      label="Remove"
+                      danger
+                      onClick={() => {
+                        setConfirmKind('remove');
+                        closeMenu();
+                      }}
+                    />
+                  )}
+                  <CardMenuItem
+                    label={picked.has(focusEdge.peer_fingerprint) ? 'Selected' : 'Select'}
                     onClick={() => {
-                      void onDistressWent(focusEdge);
-                      setActionNote(DISTRESS_COPY.wentHint);
+                      togglePick(focusEdge.peer_fingerprint);
+                      closeMenu();
                     }}
                   />
-                )}
-                <ActionBtn
-                  label="Version history"
-                  onClick={() => setShowHistory((v) => !v)}
-                />
-                <ActionBtn
-                  label="Send update"
-                  onClick={() => {
-                    if (onSendMethodUpdate) {
-                      onSendMethodUpdate(focusEdge);
-                      return;
-                    }
-                    setActionNote(
-                      'Send updated contact method — open from Your Card → revise (CUR-1).'
-                    );
-                  }}
-                />
-                {onBlockContact && (
-                  <ActionBtn
-                    label="Block"
-                    danger
-                    onClick={() => setConfirmKind('block')}
-                  />
-                )}
-                {onRemoveContact && (
-                  <ActionBtn
-                    label="Remove"
-                    danger
-                    onClick={() => setConfirmKind('remove')}
-                  />
-                )}
-                <ActionBtn
-                  label={picked.has(focusEdge.peer_fingerprint) ? 'Selected' : 'Select'}
-                  onClick={() => togglePick(focusEdge.peer_fingerprint)}
-                />
-              </div>
+              </>
             )}
-            {editing && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                <ActionBtn
-                  label={busy ? '…' : 'Save'}
-                  primary
-                  onClick={() =>
-                    void runAction(async () => {
-                      await onUpdateContact?.(focusEdge, {
-                        name: editName.trim(),
-                        email: editEmail.trim(),
-                        notes: editNotes,
-                        phones: editPhone.trim() ? [editPhone.trim()] : undefined,
-                      });
-                      setEditing(false);
-                    }, 'Contact updated.')
-                  }
-                />
-                <ActionBtn label="Cancel" onClick={() => setEditing(false)} />
+            more={(
+              <>
+            {contactHasDistress(focusEdge) && <VivreCaution />}
+            {isPending(focusEdge) && focusEdge.pending_intro && (
+              <p style={{ margin: '8px 0 0', fontSize: 11, color: E.accent }}>
+                {focusEdge.pending_intro.context ||
+                  `${focusEdge.pending_intro.introduced_by} introduced you`}
+              </p>
+            )}
+            {!editing && (
+              <div style={{ marginTop: 8, fontSize: 12, color: E.muted, lineHeight: 1.35 }}>
+                {(() => {
+                  const mark = ownerLocalBadge({
+                    mintChannel: focusEdge.metadata?.grow_mint_channel as string | undefined,
+                    verified: ownerHasVerified(focusEdge),
+                  });
+                  if (!mark.kind) return null;
+                  return (
+                    <p
+                      data-testid="star-provenance"
+                      data-kind={mark.kind}
+                      style={{
+                        margin: '0 0 4px',
+                        fontSize: 10,
+                        letterSpacing: '0.08em',
+                        textTransform: 'lowercase',
+                        color: mark.kind === 'verified' ? E.accent2 : E.muted,
+                      }}
+                    >
+                      {mark.label}
+                    </p>
+                  );
+                })()}
+                {focusEdge.peer_email && (
+                  <ContactMethodLink safe={safeEmailLink(focusEdge.peer_email)} style={{ color: E.muted }} />
+                )}
+                {focusEdge.contact_info?.phones?.[0] && (
+                  <span>
+                    {focusEdge.peer_email ? ' · ' : ''}
+                    <ContactMethodLink
+                      safe={safePhoneLink(focusEdge.contact_info.phones[0])}
+                      style={{ color: E.muted }}
+                    />
+                  </span>
+                )}
               </div>
             )}
             {!isPending(focusEdge) && ownerHasVerified(focusEdge) && !focusEdge.trusted && (
-              <p style={{ margin: 0, fontSize: 11, color: E.dim, lineHeight: 1.45 }}>
+              <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
                 {TRUST_RECIPE_COPY.verifiedHere}
               </p>
             )}
 
-            {showHistory && focusEdge && (
+            {showHistory && (
               <MethodHistoryPanel
                 ownerFingerprint={ownerFingerprint}
                 peerFingerprint={focusEdge.peer_fingerprint}
@@ -1785,9 +1644,8 @@ export function TrustMap({
               />
             )}
 
-
             {picked.size > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 8 }}>
                 <span style={{ fontSize: 12, color: E.muted }}>{picked.size} selected</span>
                 <input
                   type="text"
@@ -1805,23 +1663,94 @@ export function TrustMap({
               </div>
             )}
             {(groupNote || actionNote) && (
-              <p style={{ margin: 0, fontSize: 11, color: E.ok }}>{groupNote || actionNote}</p>
+              <p style={{ margin: '6px 0 0', fontSize: 11, color: E.ok }}>{groupNote || actionNote}</p>
             )}
-            <p style={{ margin: 0, fontSize: 11, color: E.dim }}>
-              Tip: shift-click nodes to multi-select · groups form clusters on the map
-            </p>
-          </div>
+              </>
+            )}
+          />
+        );
+      })()}
+      </div>
+
+      {!isEmpty && !focusNode && (
+        <div
+          data-testid="trust-lifecycle-legend"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '8px 16px',
+            marginTop: 8,
+            fontFamily: E.fontSans,
+            fontSize: 10,
+            color: E.dim,
+            letterSpacing: '0.04em',
+          }}
+        >
+          {trustLifecycleLegendItems().map(({ visual, label }) => (
+            <TrustLegendItem key={visual.bondState} visual={visual} label={label} />
+          ))}
         </div>
       )}
+        <div
+          data-testid="trust-map-consent-legend"
+          style={{
+            marginTop: 8,
+            fontFamily: E.fontSans,
+          }}
+        >
+          <FirstVisitHint
+            id="galaxy-consent"
+            label="Every visible line consented — none inferred."
+            testId="trust-map-consent-hint"
+          >
+            <p
+              data-testid="trust-map-legend"
+              style={{ margin: 0, color: E.dim }}
+            >
+              {TRUST_RECIPE_COPY.peerMeshLegend}
+            </p>
+          </FirstVisitHint>
+        </div>
+
+      <ShardGiveDialog
+        open={
+          shardGiveOpen &&
+          !!focusEdge &&
+          isSvrnNetworkContact({
+            fingerprint: focusEdge.peer_fingerprint,
+            public_key: focusEdge.peer_public_key,
+          })
+        }
+        onClose={() => setShardGiveOpen(false)}
+        ownerFingerprint={ownerFingerprint}
+        ownerName={ownerName}
+        contact={
+          focusEdge
+            ? {
+                id: focusEdge.id,
+                name: focusEdge.peer_name || focusNode?.name || 'Unnamed',
+                fingerprint: focusEdge.peer_fingerprint,
+              }
+            : null
+        }
+      />
 
       <VerifySheet
         open={verifyOpen && !!focusEdge}
-        onClose={() => setVerifyOpen(false)}
+        onClose={() => {
+          const continueTrust = trustAfterVerify && verifiedForTrust.current;
+          setVerifyOpen(false);
+          setTrustAfterVerify(false);
+          verifiedForTrust.current = false;
+          if (continueTrust) setConfirmKind('trust');
+        }}
         displayName={focusEdge?.peer_name || focusNode?.name || ''}
         fingerprint={focusEdge?.peer_fingerprint || ''}
         onConfirm={async (method) => {
           if (!focusEdge || !onOwnerVerify) return;
           await onOwnerVerify(focusEdge, method);
+          verifiedForTrust.current = true;
           setActionNote('Saved here only.');
         }}
       />
@@ -1962,21 +1891,10 @@ function ContactNode({
           style={{ pointerEvents: 'none' }}
         />
       )}
-      {visual.bondState === 'trust-sent' && visual.haloStroke && (
-        <polygon
-          data-testid="trust-node-awaiting"
-          points={hexagonPoints(node.x, node.y, r + 4)}
-          fill="none"
-          stroke={visual.haloStroke}
-          strokeOpacity={0.85}
-          strokeWidth={1.2}
-          strokeDasharray={visual.svgDasharray}
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
       <polygon
         data-testid="trust-node"
         data-fingerprint={node.id}
+        data-name={node.name}
         data-trust-state={visual.introPending ? 'pending' : node.state}
         data-bond-state={visual.bondState}
         data-intro-pending={visual.introPending ? 'true' : 'false'}
@@ -1985,6 +1903,7 @@ function ContactNode({
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
         data-shape={visual.shape === 'dashed-hollow' ? 'hex-dashed' : 'hex'}
+        data-spoke-style={visual.spokeStyle}
         data-glass={lane}
         data-light={visual.lit ? 'white' : visual.verifiedMark ? 'ember' : 'none'}
         points={hexagonPoints(node.x, node.y, r)}
@@ -1995,14 +1914,6 @@ function ContactNode({
       >
         <title>{`${node.name} — ${visual.label}`}</title>
       </polygon>
-      {visual.bondState === 'trust-received' && (
-        <polygon
-          points={hexagonPoints(node.x, node.y, Math.max(2.4, r * 0.38))}
-          fill={visual.svgStroke}
-          opacity={0.9}
-          style={{ pointerEvents: 'none' }}
-        />
-      )}
       {visual.verifiedMark && (
         <circle
           cx={node.x + r * 0.62}
@@ -2035,6 +1946,60 @@ function ContactNode({
         </>
       )}
     </g>
+  );
+}
+
+function legendLabelColor(visual: TrustPhaseVisual): string {
+  if (visual.bondState === 'mutual') return E.accent2;
+  if (visual.bondState === 'trust-sent' || visual.bondState === 'trust-received') return E.accent;
+  return E.dim;
+}
+
+/** Mini hex painted from the same tokens as the star — not a unicode stand-in. */
+function TrustLegendItem({ visual, label }: { visual: TrustPhaseVisual; label: string }) {
+  const r = 9;
+  const cx = 12;
+  const cy = 12;
+  const fill =
+    visual.shape === 'solid-filled' && visual.canvasFill ? visual.canvasFill : visual.svgFill;
+  return (
+    <span
+      data-testid={`trust-legend-item-${visual.bondState}`}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        color: legendLabelColor(visual),
+      }}
+    >
+      <svg
+        data-testid={`trust-legend-glyph-${visual.bondState}`}
+        data-bond-state={visual.bondState}
+        data-shape={visual.shape}
+        width={24}
+        height={24}
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <polygon
+          points={hexagonPoints(cx, cy, r)}
+          fill={fill}
+          stroke={visual.svgStroke}
+          strokeWidth={visual.svgStrokeWidth}
+          strokeDasharray={visual.svgDasharray}
+        />
+        {visual.coreFill ? (
+          <circle
+            data-testid={`trust-legend-core-${visual.bondState}`}
+            cx={cx}
+            cy={cy}
+            r={2.8}
+            fill={visual.coreFill}
+          />
+        ) : null}
+      </svg>
+      {label}
+    </span>
   );
 }
 

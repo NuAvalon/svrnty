@@ -100,27 +100,45 @@ export function TrustMapGalaxy({
       const mem = lit.get(n.id);
       const kind = mem ? constellationLinkKind(mem) : null;
       const dim = focusId && !isLit;
-      ctx.beginPath();
-      ctx.moveTo(self.x, self.y);
-      ctx.lineTo(p.x, p.y);
+      const spokeVis = livingById?.get(n.id)
+        ? trustPhaseVisual({ status: livingById.get(n.id)! })
+        : null;
+      const oneWay = spokeVis?.spokeStyle === 'dual-thin';
+      const mutualSpoke = spokeVis?.spokeStyle === 'thick-bright';
+      const drawSpoke = (x1: number, y1: number, x2: number, y2: number) => {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      };
+      if (oneWay && !dim) {
+        ctx.strokeStyle = spokeVis?.canvasStroke || 'rgba(143,117,80,0.78)';
+        ctx.lineWidth = 0.85;
+        ctx.setLineDash([]);
+        const dx = p.x - self.x;
+        const dy = p.y - self.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ox = (-dy / len) * 1.35;
+        const oy = (dx / len) * 1.35;
+        drawSpoke(self.x + ox, self.y + oy, p.x + ox, p.y + oy);
+        drawSpoke(self.x - ox, self.y - oy, p.x - ox, p.y - oy);
+        continue;
+      }
       if (focusId === n.id) {
-        const focusVis = livingById?.get(n.id)
-          ? trustPhaseVisual({ status: livingById.get(n.id)! })
-          : null;
-        const focusLit = focusVis?.lit === true;
-        ctx.strokeStyle = focusLit ? 'rgba(255,122,26,0.72)' : 'rgba(249,168,37,0.35)';
-        ctx.lineWidth = focusLit ? 2.4 : 1.2;
+        ctx.strokeStyle = mutualSpoke ? 'rgba(255,122,26,0.72)' : 'rgba(249,168,37,0.35)';
+        ctx.lineWidth = mutualSpoke ? 2.4 : 1.2;
       } else if (kind === 'witnessed-trust') {
         ctx.strokeStyle = 'rgba(255,122,26,0.22)';
         ctx.lineWidth = 1.0;
-      } else if (livingById?.get(n.id) && trustPhaseVisual({ status: livingById.get(n.id)! }).lit) {
+      } else if (mutualSpoke) {
         ctx.strokeStyle = dim ? 'rgba(255,122,26,0.03)' : 'rgba(255,122,26,0.22)';
         ctx.lineWidth = isLit ? 1.4 : 0.7;
       } else {
         ctx.strokeStyle = dim ? 'rgba(249,168,37,0.02)' : 'rgba(249,168,37,0.10)';
         ctx.lineWidth = 0.45;
       }
-      ctx.stroke();
+      ctx.setLineDash([]);
+      drawSpoke(self.x, self.y, p.x, p.y);
     }
 
     // Witnessed peer-trust filaments — when lamped, only chords involving the lamp stay.
@@ -231,7 +249,7 @@ export function TrustMapGalaxy({
       const vis = st ? trustPhaseVisual({ status: st }) : null;
       const decay = st?.decayFreshness ?? 1;
       const mutualAlive = vis?.lit === true;
-      const outboundTrust = vis?.bondState === 'trust-sent';
+      const solidHex = vis?.shape === 'solid-filled';
       const rBase =
         (isFocus || isPick || isHover || linkKind === 'witnessed-trust' || mutualAlive
           ? n.radius + 2
@@ -252,21 +270,13 @@ export function TrustMapGalaxy({
         }
       }
 
-      // Mutual = double ring; outbound trust sent = single directed tick (not mutual)
+      // Mutual = extra breath ring. One-way shares the hex fill, not this ring.
       if (mutualAlive && !dim) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 7, 0, Math.PI * 2);
         ctx.strokeStyle = `rgba(255,122,26,${0.55 + 0.3 * breath})`;
         ctx.lineWidth = 2.0;
         ctx.stroke();
-      } else if (outboundTrust && !dim) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
-        ctx.strokeStyle = vis?.canvasStroke || '#8f7550';
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash(vis?.canvasDash || [8, 5]);
-        ctx.stroke();
-        ctx.setLineDash([]);
       } else if (linkKind === 'witnessed-trust' && !dim) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 6, 0, Math.PI * 2);
@@ -291,29 +301,21 @@ export function TrustMapGalaxy({
         ctx.stroke();
       }
 
-      if (vis?.lit) {
+      if (solidHex) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(255,122,26,${(dim ? 0.04 : 0.16) * alphaMul})`;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = vis.canvasFill || `rgba(255,122,26,${(dim ? 0.15 : 0.55) * alphaMul})`;
+        ctx.fillStyle = vis?.canvasFill || `rgba(255,122,26,${(dim ? 0.15 : 0.55) * alphaMul})`;
         ctx.fill();
-        if (vis.coreFill) {
+        if (vis?.lit && vis.coreFill) {
           ctx.beginPath();
           ctx.arc(p.x, p.y, Math.max(2.1, r * 0.28), 0, Math.PI * 2);
           ctx.fillStyle = vis.coreFill;
           ctx.fill();
         }
-      } else if (vis?.bondState === 'trust-sent') {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = vis.canvasStroke;
-        ctx.lineWidth = 1.45;
-        ctx.setLineDash(vis.canvasDash || [8, 5]);
-        ctx.stroke();
-        ctx.setLineDash([]);
       } else if (living.has(n.id)) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);

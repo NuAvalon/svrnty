@@ -7,12 +7,14 @@
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import {
   OWNER_METHOD_KINDS,
   addOwnerLens,
   addOwnerMethod,
   hydrateOwnerCard,
   methodKindLabel,
+  patchLensProfile,
   patchOwnerLens,
   removeOwnerLens,
   removeOwnerMethod,
@@ -23,6 +25,7 @@ import {
   type OwnerCardBag,
   type OwnerMethodKind,
 } from '@/components/identity/owner-card';
+import { OwnerLensPicker } from '@/components/identity/OwnerLensPicker';
 import { saveLocalMethods } from '@/components/identity/local-methods';
 
 export function OwnerCardStudio({
@@ -30,22 +33,36 @@ export function OwnerCardStudio({
   email,
   onEmailChange,
   onBagChange,
+  selectedLensId,
+  onSelectedLensIdChange,
 }: {
   fingerprint: string;
   email?: string;
   onEmailChange?: (email: string) => void;
   onBagChange?: (bag: OwnerCardBag) => void;
+  selectedLensId?: string;
+  onSelectedLensIdChange?: (id: string) => void;
 }) {
   const [bag, setBag] = useState<OwnerCardBag>(() => hydrateOwnerCard(fingerprint, email));
   const [addKind, setAddKind] = useState<OwnerMethodKind>('phone');
   const [newLensName, setNewLensName] = useState('');
-  const [activeLensId, setActiveLensId] = useState(bag.defaultLensId || bag.lenses[0]?.id);
+  const [localLensId, setLocalLensId] = useState(bag.defaultLensId || bag.lenses[0]?.id);
+  const activeLensId = selectedLensId || localLensId;
+  const setActiveLensId = (id: string | undefined) => {
+    if (!id) return;
+    setLocalLensId(id);
+    onSelectedLensIdChange?.(id);
+  };
 
   useEffect(() => {
     const next = hydrateOwnerCard(fingerprint, email);
     setBag(next);
-    setActiveLensId(next.defaultLensId || next.lenses[0]?.id);
-  }, [fingerprint, email]);
+    const keep =
+      (selectedLensId && next.lenses.some((l) => l.id === selectedLensId) && selectedLensId) ||
+      next.defaultLensId ||
+      next.lenses[0]?.id;
+    setLocalLensId(keep);
+  }, [fingerprint, email, selectedLensId]);
 
   const persist = (next: OwnerCardBag) => {
     setBag(next);
@@ -126,6 +143,7 @@ export function OwnerCardStudio({
       <div style={{ display: 'flex', gap: 8 }}>
         <select
           value={addKind}
+          data-testid="owner-card-add-kind"
           onChange={(e) => setAddKind(e.target.value as OwnerMethodKind)}
           style={{ ...inp(0), width: 120 }}
         >
@@ -166,34 +184,18 @@ export function OwnerCardStudio({
           Lenses
         </p>
         <p style={{ margin: '6px 0 10px', fontSize: 12, color: E.dim, fontFamily: E.fontSans, lineHeight: 1.45 }}>
-          Same you, same QR. Business gets work email; festival friends get Instagram. The star is
-          the preferred way to reach you on that face.
+          Same you, same key, same seal. Each lens is a profile — a name and the channels that lens
+          shows. Grow picks which lens you hand them.
         </p>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {bag.lenses.map((l) => (
-          <button
-            key={l.id}
-            type="button"
-            onClick={() => setActiveLensId(l.id)}
-            style={{
-              fontSize: 11,
-              fontFamily: E.fontSans,
-              padding: '6px 10px',
-              borderRadius: 8,
-              cursor: 'pointer',
-              border: `1px solid ${l.id === lens?.id ? E.borderLit : E.border}`,
-              background:
-                l.id === lens?.id ? 'color-mix(in srgb, var(--se-accent) 14%, transparent)' : 'transparent',
-              color: E.accent,
-            }}
-          >
-            {l.name}
-            {l.id === bag.defaultLensId ? ' · default' : ''}
-          </button>
-        ))}
-      </div>
+      <OwnerLensPicker
+        lenses={bag.lenses}
+        selectedId={lens?.id}
+        defaultId={bag.defaultLensId}
+        onSelect={setActiveLensId}
+        testId="studio-lens-picker"
+      />
 
       {lens ? (
         <div
@@ -212,6 +214,31 @@ export function OwnerCardStudio({
             onChange={(e) => persist(patchOwnerLens(bag, lens.id, { name: e.target.value }))}
             style={inp(0)}
             aria-label="Lens name"
+            placeholder="Lens name — Business, Festival…"
+          />
+          <input
+            value={lens.profile?.displayName || ''}
+            onChange={(e) => persist(patchLensProfile(bag, lens.id, { displayName: e.target.value }))}
+            style={inp(0)}
+            aria-label="Profile name on this lens"
+            data-testid="owner-lens-display-name"
+            placeholder="Name on this card (leave blank to use your signed name)"
+          />
+          <input
+            value={lens.profile?.handle || ''}
+            onChange={(e) => persist(patchLensProfile(bag, lens.id, { handle: e.target.value }))}
+            style={inp(0)}
+            aria-label="Handle on this lens"
+            data-testid="owner-lens-handle"
+            placeholder="Handle on this lens — optional"
+          />
+          <input
+            value={lens.profile?.note || ''}
+            onChange={(e) => persist(patchLensProfile(bag, lens.id, { note: e.target.value }))}
+            style={inp(0)}
+            aria-label="Note on this lens"
+            data-testid="owner-lens-note"
+            placeholder="Short line under the name — optional"
           />
           {bag.methods.length === 0 ? (
             <p style={{ margin: 0, fontSize: 12, color: E.dim }}>Add a method above first.</p>
@@ -234,6 +261,7 @@ export function OwnerCardStudio({
                 >
                   <input
                     type="checkbox"
+                    data-testid={`owner-lens-include-${m.id}`}
                     checked={on}
                     onChange={() => persist(toggleLensMethod(bag, lens.id, m.id))}
                   />
@@ -312,10 +340,10 @@ export function OwnerCardStudio({
         </button>
       </div>
 
-      <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans, lineHeight: 1.45 }}>
-        The share link is still you — one key. A lens is the default face you intend to hand them.
+      <FirstVisitHint id="identity-lenses" label="What a lens is">
+        The share link is still you — one key. A lens is the default profile you intend to hand them.
         Extra methods stay on this device until the living card schema carries them.
-      </p>
+      </FirstVisitHint>
     </div>
   );
 }

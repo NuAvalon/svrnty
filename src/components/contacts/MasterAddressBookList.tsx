@@ -7,6 +7,7 @@
 import type { CSSProperties } from 'react';
 import { Check } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import {
   livingEdgeStatus,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/trust/living-edge-status';
 import type { TrustEdge } from '@/lib/trust/types';
 import { trustPhaseVisual } from '@/components/trust/trust-phase-visual';
+import { VivreBurn } from '@/components/VivreBurn';
 
 export type MasterBookRow = {
   id: string;
@@ -30,6 +32,8 @@ export type MasterBookRow = {
   /** Precomputed living status (from contactRecordToEdge projection). */
   living?: LivingEdgeStatus;
   lastMoment?: string | null;
+  /** Witnessed inbound distress — paints the vivre. */
+  distress?: boolean;
 };
 
 export type MasterAddressBookListProps = {
@@ -39,6 +43,8 @@ export type MasterAddressBookListProps = {
   onToggleSelect: (id: string) => void;
   onOpen: (id: string) => void;
   liveIds?: Set<string>;
+  /** Row whose shared card is open — list highlight only, not multi-select. */
+  openId?: string;
 };
 
 function statusForRow(row: MasterBookRow): LivingEdgeStatus {
@@ -89,6 +95,7 @@ export function MasterAddressBookList({
   onToggleSelect,
   onOpen,
   liveIds,
+  openId,
 }: MasterAddressBookListProps) {
   if (rows.length === 0) return null;
 
@@ -97,6 +104,7 @@ export function MasterAddressBookList({
       {rows.map((row) => {
         const svrn = isSvrnNetworkContact(row);
         const selected = selectedIds.has(row.id);
+        const opened = !selectionMode && openId === row.id;
         const live = liveIds?.has(row.id) === true;
         const status = statusForRow(row);
         const visual = trustPhaseVisual({
@@ -110,28 +118,47 @@ export function MasterAddressBookList({
               type="button"
               data-testid="contact-row"
               data-master-book-row="1"
+              data-open={opened ? '1' : undefined}
+              aria-expanded={opened}
               data-svrn={svrn ? '1' : '0'}
               data-live={live ? 'push' : undefined}
               data-living-trust={status.trust}
               data-bond-state={visual.bondState}
               data-can-communicate={status.canCommunicate ? '1' : '0'}
+              data-distress={row.distress ? '1' : '0'}
               onClick={() => {
                 if (selectionMode) onToggleSelect(row.id);
                 else onOpen(row.id);
               }}
               style={{
                 ...rowBtn,
-                borderColor: selected || live ? E.borderLit : E.border,
-                background: selected || live
-                  ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
-                  : E.surfaceSolid,
-                boxShadow: live
-                  ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
-                  : visual.lit
-                    ? '0 0 12px color-mix(in srgb, var(--se-accent2) 16%, transparent)'
-                    : undefined,
+                position: 'relative',
+                overflow: row.distress ? 'hidden' : undefined,
+                borderColor: row.distress
+                  ? E.accent2
+                  : selected || opened || live
+                    ? E.borderLit
+                    : E.border,
+                background: opened
+                  ? 'color-mix(in srgb, var(--se-accent) 16%, transparent)'
+                  : selected || live
+                    ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                    : E.surfaceSolid,
+                boxShadow: opened
+                  ? 'inset 3px 0 0 var(--se-accent)'
+                  : live
+                    ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
+                    : visual.lit
+                      ? '0 0 12px color-mix(in srgb, var(--se-accent2) 16%, transparent)'
+                      : undefined,
               }}
             >
+              {row.distress ? <VivreBurn compact /> : null}
+              {row.fingerprint ? (
+                <span className="contact-hex" aria-hidden="true">
+                  <IdentitySeal fingerprint={row.fingerprint} size={24} />
+                </span>
+              ) : null}
               {selectionMode ? (
                 <span
                   aria-hidden
@@ -248,7 +275,9 @@ export function MasterAddressBookList({
                     color: visual.chipColorCss,
                     fontWeight: visual.lit ? 600 : 500,
                     borderBottom:
-                      visual.bondState === 'trust-sent' ? `1px dashed ${visual.chipColorCss}` : undefined,
+                      visual.spokeStyle === 'dual-thin'
+                        ? `2px double ${visual.chipColorCss}`
+                        : undefined,
                   }}
                 >
                   {chip}

@@ -5,7 +5,7 @@
  * Solar Ember UI only. Wire broadcast is the seam (see contact-method-send.ts).
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -68,6 +68,7 @@ export function ContactMethodReviseDialog({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<ContactMethodSendResult | null>(null);
   const [localNote, setLocalNote] = useState<string | null>(null);
+  const primed = useRef(false);
 
   const sorted = useMemo(() => {
     return [...contacts]
@@ -86,7 +87,14 @@ export function ContactMethodReviseDialog({
   }, [contacts]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      primed.current = false;
+      return;
+    }
+    // Prime once per open. A successful save updates the card, which would
+    // otherwise wipe the Saved/Sent flash via initialValue/contacts changing.
+    if (primed.current) return;
+    primed.current = true;
     setValue(initialValue);
     setStatus(null);
     setLocalNote(null);
@@ -163,10 +171,8 @@ export function ContactMethodReviseDialog({
     try {
       await onLocalSave(kind, value.trim());
       recordHistory([]);
-      // Persist succeeded — close so the card is the confirmation (a quiet
-      // inline note with the dialog still open reads as "didn't save").
+      setLocalNote('Saved on this device.');
       setBusy(false);
-      onClose();
     } catch (e) {
       setLocalNote(e instanceof Error ? e.message : 'Could not save locally.');
       setBusy(false);
@@ -187,8 +193,8 @@ export function ContactMethodReviseDialog({
         recipientFingerprints: recipients,
       });
       if (result.ok) {
+        setStatus(result);
         setBusy(false);
-        onClose();
         return;
       }
       setStatus(result);
@@ -419,11 +425,13 @@ export function ContactMethodReviseDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:gap-2">
-          <button type="button" onClick={onClose} disabled={busy} style={ghostBtnWide}>
+          <button type="button" className="ember-act" onClick={onClose} disabled={busy} style={ghostBtnWide}>
             Close
           </button>
           <button
             type="button"
+            className="ember-act"
+            data-flash={busy ? 'busy' : status?.ok ? 'ok' : undefined}
             onClick={() => void handleSend()}
             disabled={busy || selected.size === 0 || !value.trim()}
             title={
@@ -436,10 +444,12 @@ export function ContactMethodReviseDialog({
               opacity: busy || selected.size === 0 || !value.trim() ? 0.45 : 1,
             }}
           >
-            {busy ? '…' : 'Send update'}
+            {busy ? 'Sending…' : status?.ok ? 'Sent' : 'Send update'}
           </button>
           <button
             type="button"
+            className="ember-act"
+            data-flash={busy ? 'busy' : localNote ? 'ok' : undefined}
             onClick={() => void handleSaveLocal()}
             disabled={busy || !value.trim()}
             style={{
@@ -447,7 +457,7 @@ export function ContactMethodReviseDialog({
               opacity: busy || !value.trim() ? 0.6 : 1,
             }}
           >
-            {busy ? '…' : 'Save locally'}
+            {busy ? 'Saving…' : localNote ? 'Saved' : 'Save locally'}
           </button>
         </DialogFooter>
       </DialogContent>

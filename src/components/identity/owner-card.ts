@@ -1,10 +1,12 @@
 /**
  * Owner card methods + lenses — local-only disclosure faces.
  *
- * One identity (one fingerprint, one QR/link). A lens is an assortment of
- * YOUR methods with a preferred channel — "business email" vs "festival Instagram".
- * Extra methods are NOT on the signed identity-exchange card yet (fleet schema).
- * Glass stores intent here; share still carries signed name+key+email.
+ * One identity (one fingerprint, one QR/link, one seal). A lens is a PROFILE
+ * you author for a face: display name, handle, note, and which of YOUR methods
+ * that face shows — "work email as Peter" vs "festival Instagram as Archie".
+ * Extra methods / per-lens names are NOT on the signed identity-exchange card
+ * yet (fleet schema). Glass stores intent here; Grow/share still carry the
+ * signed name+key. The card you SEE is the face; the key does not change.
  */
 
 import { loadLocalMethods } from '@/components/identity/local-methods';
@@ -27,11 +29,30 @@ export type OwnerMethod = {
   label?: string;
 };
 
+/** How you appear on one face. All optional — empty falls back to the signed identity. */
+export type OwnerLensProfile = {
+  displayName?: string;
+  handle?: string;
+  note?: string;
+};
+
 export type OwnerLens = {
   id: string;
   name: string;
   methodIds: string[];
   preferredMethodId?: string;
+  profile?: OwnerLensProfile;
+};
+
+/** Resolved card face for render — never a second key. */
+export type OwnerLensFace = {
+  lensId: string;
+  lensName: string;
+  isDefault: boolean;
+  displayName: string;
+  handle?: string;
+  note?: string;
+  methods: OwnerMethod[];
 };
 
 export type OwnerCardBag = {
@@ -216,6 +237,100 @@ export function methodsForLens(bag: OwnerCardBag, lensId?: string): OwnerMethod[
   if (!lens) return [];
   const byId = new Map(bag.methods.map((m) => [m.id, m]));
   return lens.methodIds.map((id) => byId.get(id)).filter((m): m is OwnerMethod => !!m && !!m.value.trim());
+}
+
+export function patchLensProfile(
+  bag: OwnerCardBag,
+  id: string,
+  patch: Partial<OwnerLensProfile>,
+): OwnerCardBag {
+  return {
+    ...bag,
+    lenses: bag.lenses.map((l) => {
+      if (l.id !== id) return l;
+      const merged = { ...(l.profile || {}), ...patch };
+      const profile: OwnerLensProfile = {};
+      const displayName = (merged.displayName || '').trim();
+      const handle = (merged.handle || '').trim();
+      const note = (merged.note || '').trim();
+      if (displayName) profile.displayName = displayName;
+      if (handle) profile.handle = handle;
+      if (note) profile.note = note;
+      return { ...l, profile: Object.keys(profile).length ? profile : undefined };
+    }),
+  };
+}
+
+export function ownerLensFace(
+  bag: OwnerCardBag,
+  lensId: string | undefined,
+  fallback: { displayName?: string; handle?: string } = {},
+): OwnerLensFace {
+  const lens =
+    bag.lenses.find((l) => l.id === lensId) ||
+    bag.lenses.find((l) => l.id === bag.defaultLensId) ||
+    bag.lenses[0];
+  const displayName =
+    (lens?.profile?.displayName || '').trim() || (fallback.displayName || '').trim();
+  const handle = (lens?.profile?.handle || '').trim() || (fallback.handle || '').trim() || undefined;
+  const note = (lens?.profile?.note || '').trim() || undefined;
+  return {
+    lensId: lens?.id || '',
+    lensName: lens?.name || 'Everyone',
+    isDefault: !!lens && lens.id === bag.defaultLensId,
+    displayName,
+    handle,
+    note,
+    methods: lens ? methodsForLens(bag, lens.id) : [],
+  };
+}
+
+export type CardFaceMethod = {
+  id?: string;
+  kind: OwnerMethodKind | string;
+  label: string;
+  value?: string;
+};
+
+/**
+ * Methods to paint on YOUR card for a face.
+ * Default lens keeps the classic email / Signal / site rows (even empty) so
+ * Revise still has a home. Named lenses show only what that profile includes.
+ */
+export function cardMethodsForFace(
+  bag: OwnerCardBag,
+  face: OwnerLensFace,
+  fallback: { email?: string; signal?: string; site?: string } = {},
+): CardFaceMethod[] {
+  const fromLens: CardFaceMethod[] = face.methods.map((m) => ({
+    id: m.id,
+    kind: m.kind,
+    label: m.kind === 'custom' ? m.label || 'Custom' : methodKindLabel(m.kind),
+    value: m.value,
+  }));
+  if (!face.isDefault) return fromLens;
+
+  const haveKind = new Set(fromLens.map((m) => m.kind));
+  const classic: Array<{ kind: 'email' | 'signal' | 'site'; value?: string }> = [
+    { kind: 'email', value: fallback.email },
+    { kind: 'signal', value: fallback.signal },
+    { kind: 'site', value: fallback.site },
+  ];
+  const extras: CardFaceMethod[] = [];
+  for (const row of classic) {
+    if (haveKind.has(row.kind)) continue;
+    extras.push({
+      kind: row.kind,
+      label: methodKindLabel(row.kind),
+      value: row.value,
+    });
+  }
+  const order = ['email', 'signal', 'site'];
+  return [...extras, ...fromLens].sort((a, b) => {
+    const ai = order.indexOf(String(a.kind));
+    const bi = order.indexOf(String(b.kind));
+    return (ai === -1 ? 50 : ai) - (bi === -1 ? 50 : bi);
+  });
 }
 
 export function preferredMethod(bag: OwnerCardBag, lensId?: string): OwnerMethod | undefined {

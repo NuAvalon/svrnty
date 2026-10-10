@@ -19,11 +19,66 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
   test('Identity: add a field and a named lens', async ({ page }) => {
     await genesis(page, 'Lens Owner');
     await page.getByRole('tab', { name: 'Identity' }).click();
+    await page.getByTestId('identity-lens-picker-edit').click();
     await expect(page.getByTestId('owner-card-studio')).toBeVisible();
     await page.getByTestId('owner-card-add-field').click();
     await page.getByPlaceholder('New lens name — Business, Festival…').fill('Festival');
     await page.getByTestId('owner-card-add-lens').click();
-    await expect(page.getByRole('button', { name: /^Festival/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Festival/ }).first()).toBeVisible();
+  });
+
+  test('each lens has its own card; Grow picks a lens', async ({ page }) => {
+    test.setTimeout(90_000);
+    await genesis(page, 'Peter Card');
+    await page.getByRole('tab', { name: 'Identity' }).click();
+
+    await expect(page.getByTestId('identity-card-name')).toHaveText('Peter Card');
+    await expect(page.getByTestId('identity-lens-picker')).toBeVisible();
+
+    await page.getByTestId('identity-lens-picker-edit').click();
+    await expect(page.getByTestId('owner-card-studio')).toBeVisible();
+
+    await page.getByTestId('owner-card-add-kind').selectOption('instagram');
+    await page.getByTestId('owner-card-add-field').click();
+    const instagram = page.getByPlaceholder('Instagram').last();
+    await instagram.fill('@archie.fest');
+
+    await page.getByPlaceholder('New lens name — Business, Festival…').fill('Festival');
+    await page.getByTestId('owner-card-add-lens').click();
+    await expect(page.getByTestId('studio-lens-picker-chip').filter({ hasText: 'Festival' })).toBeVisible();
+
+    await page.getByTestId('owner-lens-display-name').fill('Archie');
+    await page.getByTestId('owner-lens-handle').fill('archie.fest');
+    await page.getByTestId('owner-lens-note').fill('festival face');
+    await page
+      .getByTestId('owner-card-studio')
+      .locator('label')
+      .filter({ hasText: 'Instagram' })
+      .getByRole('checkbox')
+      .check();
+
+    await page.getByTestId('identity-vault-toggle').click();
+
+    await page.getByTestId('identity-lens-picker-chip').filter({ hasText: 'Festival' }).click();
+    await expect(page.getByTestId('identity-card-name')).toHaveText('Archie');
+    await expect(page.getByTestId('identity-card-face')).toHaveAttribute('data-lens-name', 'Festival');
+    await expect(page.getByTestId('identity-card-note')).toHaveText('festival face');
+    await expect(page.getByTestId('identity-card-methods')).toContainText('Instagram');
+    await expect(page.getByTestId('identity-card-methods')).not.toContainText('Email');
+
+    await page.getByTestId('identity-lens-picker-chip').filter({ hasText: 'Everyone' }).click();
+    await expect(page.getByTestId('identity-card-name')).toHaveText('Peter Card');
+    await expect(page.getByTestId('identity-card-methods')).toContainText('Email');
+    await expect(page.getByTestId('identity-card-methods')).toContainText('Instagram');
+
+    await page.getByTestId('nav-grow').click();
+    const grow = page.getByTestId('grow-surface');
+    await expect(grow).toBeVisible();
+    await expect(grow.getByTestId('grow-lens-picker')).toBeVisible();
+    await grow.getByTestId('grow-lens-picker-chip').filter({ hasText: 'Festival' }).click();
+    await expect(grow.getByTestId('grow-lens-face-name')).toHaveText('Archie');
+    await expect(grow.getByTestId('grow-lens-face')).toContainText('festival face');
+    await expect(grow.getByTestId('grow-lens-face')).toContainText('@archie.fest');
   });
 
   test('Contacts: sample Hypatia is classical (no fingerprint)', async ({ page }) => {
@@ -32,6 +87,18 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
     await seedSampleGalaxy(page);
     await page.getByRole('tab', { name: 'Contacts' }).click();
+
+    const scroller = page.getByTestId('contacts-book-scroll');
+    await expect(scroller).toBeVisible();
+    await expect
+      .poll(async () => scroller.evaluate((el) => getComputedStyle(el).overflowY))
+      .toMatch(/auto|scroll/);
+
+    const bookRow = scroller.locator('[data-testid="contact-row"][data-master-book-row="1"]');
+    await expect(bookRow.first()).toContainText('Ada');
+    await page.getByTestId('contacts-book-sort').selectOption('name-desc');
+    await expect(bookRow.first()).toContainText('Nikola');
+    await page.getByTestId('contacts-book-sort').selectOption('name-asc');
 
     // Scope to master-book rows (not any other contact-row surface).
     // Today's sample-circle seed writes public_key:'' for every demo row, so after
@@ -46,7 +113,27 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(hypatia).toHaveAttribute('data-svrn', '0');
 
     await hypatia.click();
-    await page.getByRole('tab', { name: 'Card' }).click();
-    await expect(page.getByTestId('classical-no-fingerprint')).toBeVisible();
+    await expect(hypatia).toHaveAttribute('data-open', '1');
+    const card = page.locator('.contacts-book-pane [data-testid="contact-action-card"]');
+    await expect(card).toBeVisible();
+    await expect
+      .poll(async () => card.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return r.top < window.innerHeight && r.bottom > 0;
+      }))
+      .toBe(true);
+    const actions = card.getByTestId('card-actions-toggle');
+    await actions.scrollIntoViewIfNeeded();
+    await actions.click({ timeout: 10_000 });
+    await expect(card.getByTestId('card-actions-toggle-menu')).toBeVisible();
+    await expect(card.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
+    await actions.click();
+    await expect(card.getByTestId('star-sheet-expand')).toHaveText(/Less/i);
+    await expect(card.getByTestId('classical-no-fingerprint')).toBeVisible();
+    await card.getByTestId('star-sheet-expand').click();
+    await expect(card.getByTestId('star-sheet-expand')).toHaveText(/More/i);
+    await expect(card.getByTestId('classical-no-fingerprint')).toHaveCount(0);
+    await card.getByTestId('star-sheet-expand').click();
+    await expect(card.getByTestId('classical-no-fingerprint')).toBeVisible();
   });
 });
