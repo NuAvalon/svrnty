@@ -29,7 +29,7 @@ import {
 import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
-import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
+import { isPiece2MutualBlockLive, isMutualTrustWireLive } from '@/lib/claim-gates';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
@@ -1318,7 +1318,7 @@ export function TrustMap({
           }}
         >
           <span style={{ color: E.accent2 }}>⬡ Mutual · white light</span>
-          <span style={{ color: E.muted }}>⬡ Awaiting mutual · dashed hollow</span>
+          <span style={{ color: E.muted }}>{isMutualTrustWireLive() ? '⬡ Awaiting mutual — dashed hollow' : '⬡ Trusted · mutual confirmation coming — dashed hollow'}</span>
           <span style={{ color: E.accent }}>⬡ Trusts you · gold</span>
           <span>⬡ Known · dim outline</span>
           <span style={{ color: E.text }}>⬡ you · larger + light</span>
