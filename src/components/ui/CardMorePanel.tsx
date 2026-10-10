@@ -21,7 +21,7 @@ export function CardMorePanel({
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    rootRef.current?.scrollIntoView({ behavior: 'auto', block: 'start' });
   }, [open]);
 
   return (
