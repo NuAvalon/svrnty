@@ -1418,7 +1418,12 @@ export function TrustMap({
             onClose={clearFocus}
             canChat={canNote}
             onChat={() => onOpenNote?.(focusEdge)}
-            canSendUpdate={canNote && !!onSendMethodUpdate}
+            canSendUpdate={
+              canNote &&
+              !!onSendMethodUpdate &&
+              !isPending(focusEdge) &&
+              String(focusEdge.peer_public_key || '').length > 0
+            }
             onSendUpdate={() => onSendMethodUpdate?.(focusEdge)}
             actionsOpen={actionsOpen}
             onActionsOpenChange={setActionsOpen}

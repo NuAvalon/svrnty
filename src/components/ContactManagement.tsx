@@ -1825,7 +1825,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               }}
               canChat={canChat}
               onChat={() => onOpenChat?.({ fingerprint: fp, name: focused.name })}
-              canSendUpdate={!!onSendMethodUpdate && fp.length >= 16}
+              canSendUpdate={!!onSendMethodUpdate && svrn && !pending && fp.length >= 16}
               onSendUpdate={() => onSendMethodUpdate?.({ fingerprint: fp, name: focused.name })}
               actionsOpen={bookActionsOpen}
               onActionsOpenChange={setBookActionsOpen}
