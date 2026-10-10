@@ -1,0 +1,66 @@
+name: android
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  twa:
+    name: Build TWA (APK + AAB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.1.0" "platform-tools"
+
+      - name: Restore signing keystore (when secrets exist)
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            echo "$ANDROID_KEYSTORE_B64" | base64 -d > android/svrnty-twa.keystore
+          fi
+
+      - name: Build APK + AAB
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew app:assembleRelease app:bundleRelease --console=plain
+
+      - name: Sign APK + AAB (when keystore present)
+        working-directory: android
+        if: hashFiles('android/svrnty-twa.keystore') != ''
+        env:
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
+        run: |
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks svrnty-twa.keystore --ks-key-alias svrnty \
+            --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --out svrnty-signed.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore svrnty-twa.keystore \
+            -storepass:env KS_PASS -keypass:env KEY_PASS \
+            app/build/outputs/bundle/release/app-release.aab svrnty
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: svrnty-twa
+          path: |
+            android/svrnty-signed.apk
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+          if-no-files-found: warn
