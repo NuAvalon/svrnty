@@ -118,3 +118,17 @@ test('ACK-FOLLOWS-PERSIST: applyMutual throwing propagates (caller leaves it ret
     'a store failure propagates → the consume loop treats it as retryable, not acked',
   );
 });
+
+test('STALE-REPLAY (#3 monotonic): the SIGNED sent_at is forwarded, and a null (superseded) apply → DROPPED terminally', async () => {
+  const [A, B] = [await signerFromMint(), await signerFromMint()];
+  const wire = await signedAffirm(A, B.fp, true); // sent_at = '2026-10-10T03:20:00.000Z'
+  let seenSentAt: string | undefined;
+  const out = await acceptTrustAffirm({
+    wire, ownerFingerprint: B.fp, isAdmitted: async () => true,
+    // The seam's per-sender monotonic cursor returns null when sent_at is not newer than the last applied —
+    // acceptTrustAffirm must forward the signed sent_at and treat null as a TERMINAL drop (no flip, acked).
+    applyMutual: async (_fp, _trusts, sentAt) => { seenSentAt = sentAt; return null; },
+  });
+  assert.equal(out, null, 'a stale/superseded affirmation is dropped terminally — not left-for-retry');
+  assert.equal(seenSentAt, '2026-10-10T03:20:00.000Z', 'the SIGNED sent_at reaches the monotonic sink');
+});

@@ -156,6 +156,43 @@ test('headless RECEIVE + SEND: A sends a note → B polls → note persisted in 
   assert.equal(bStore.listThreads().length, 1, 'a thread was created');
 });
 
+test('headless RECEIVE anti-rollback (#3 monotonic): a replayed STALE "trust" cannot revive a newer "break" (no false-Mutual)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const { fetchImpl } = mockRelay();
+  const bStore = new HeadlessStore();
+  bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted' })); // B trusts A → an affirm can reach mutual
+
+  const OLD = '2026-10-10T10:00:00.000Z';
+  const NEW = '2026-10-10T11:00:00.000Z';
+  const base = {
+    senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
+    senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, relayBase: RELAY, fetchImpl,
+  };
+
+  // 1) A affirms trust (OLD) → B applies → they_trust_me TRUE.
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 'af_trust_old', sentAt: OLD });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, true, 'trust applied');
+
+  // 2) A BREAKS trust (NEW > OLD) → B applies → they_trust_me FALSE (the survivor revokes).
+  await sendTrustAffirmToPeer({ ...base, trusts: false, affirmId: 'af_break_new', sentAt: NEW });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, false, 'break applied — trust revoked');
+
+  // 3) REPLAY the stale OLD "trust" (sent_at=OLD < last-applied NEW, back-dated or captured-and-replayed).
+  //    MUST be dropped — a superseded affirmation can never resurrect revoked trust.
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 'af_trust_old_replay', sentAt: OLD });
+  const summary = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+
+  assert.equal(summary.affirmed, 0, 'the stale replayed trust is NOT applied');
+  assert.equal(summary.dropped, 1, 'it is dropped terminally (superseded by the newer break)');
+  assert.equal(summary.acked, 1, 'and acked away — not left to replay forever');
+  const a = bStore.getContactByFingerprint(A.fp)!;
+  assert.equal(a.mutual?.they_trust_me, false, 'ANTI-ROLLBACK: a replayed stale affirmation cannot resurrect broken trust');
+  assert.equal(a.mutual?.last_affirm_at, NEW, 'the per-sender monotonic cursor stayed at the newest applied affirm');
+});
+
 test('headless SEND: deposits to the peer fp-derived mailbox (relay-independent addressing)', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();

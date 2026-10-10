@@ -93,11 +93,17 @@ function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: (
         wire,
         ownerFingerprint: owner.fingerprint,
         isAdmitted: async (fp) => admitContact(store.getContactByFingerprint(fp)), // FALSE-MUTUAL gate: in-book AND not-blocked (P1#2)
-        applyMutual: async (fromFp, trusts) => {
+        applyMutual: async (fromFp, trusts, sentAt) => {
           const rec = store.getContactByFingerprint(fromFp);
           if (!rec) throw new Error('headless applyMutual: contact vanished between admit and apply');
+          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539): drop a replayed affirmation not
+          // strictly newer than the last applied for this sender (a stale "I trust you" must not overwrite
+          // a newer "I broke trust"). last_affirm_at (the sender's SIGNED sent_at) rides INSIDE `mutual`,
+          // persisted in the same updateContact as they_trust_me (crash-safe). `null` ⇒ terminal drop.
+          const prevAffirmAt = (rec.mutual as { last_affirm_at?: string } | undefined)?.last_affirm_at;
+          if (prevAffirmAt && Date.parse(sentAt) < Date.parse(prevAffirmAt)) return null;
           const iTrustThem = edgeTrusted(rec); // reciprocal reads MY existing trusted state — no wire promotion
-          const mutual = { they_trust_me: trusts, last_sync: now(), reciprocal: iTrustThem && trusts };
+          const mutual = { they_trust_me: trusts, last_sync: now(), reciprocal: iTrustThem && trusts, last_affirm_at: sentAt };
           store.updateContact(rec.id, { mutual });
           return { id: rec.id, reciprocal: mutual.reciprocal };
         },

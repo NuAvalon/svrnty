@@ -40,8 +40,16 @@ export interface AcceptTrustAffirmDeps {
    * bind-to-me + admit all pass. MUST resolve before the caller acks (ack-follows-persist): a throw
    * propagates → the consume loop leaves the envelope for retry (at-least-once; the apply is idempotent
    * on (fromFingerprint, trusts)).
+   *
+   * `sentAt` is the affirmation's SIGNED `sent_at` (bound in the signing preimage → tamper-proof). The
+   * sink enforces PER-SENDER MONOTONICITY with it (anti-rollback #3 / Flint #169539): an affirmation
+   * NOT strictly newer than the last one applied for this sender is STALE — a replayed older "I trust
+   * you" must never overwrite a newer "I broke trust" (a false-Mutual revival). The sink returns `null`
+   * for such a stale replay → acceptTrustAffirm drops it TERMINALLY (ack-delete; retrying a superseded
+   * affirmation is futile). The monotonic cursor MUST be persisted ATOMICALLY with the they_trust_me
+   * write (same store tx) — else a crash between the compare and the write re-opens the replay window.
    */
-  applyMutual: (fromFingerprint: string, trusts: boolean) => Promise<MutualApplyResult>;
+  applyMutual: (fromFingerprint: string, trusts: boolean, sentAt: string) => Promise<MutualApplyResult | null>;
 }
 
 /** What a persisted affirmation surfaces for the trust-repaint (null = dropped). */
@@ -54,8 +62,8 @@ export interface AcceptedTrustAffirm {
 
 /**
  * Accept an inbound trust-affirmation. Returns the applied result for the repaint, or null if DROPPED
- * (unsigned / forged / misaddressed / stranger — silent I-1/I-2, terminal). THROWS only if applyMutual
- * throws (a store I/O failure) → the caller treats it as retryable.
+ * (unsigned / forged / misaddressed / stranger / blocked / STALE-replay — silent I-1/I-2, terminal).
+ * THROWS only if applyMutual throws (a store I/O failure) → the caller treats it as retryable.
  */
 export async function acceptTrustAffirm(deps: AcceptTrustAffirmDeps): Promise<AcceptedTrustAffirm | null> {
   const { wire, ownerFingerprint, isAdmitted, applyMutual } = deps;
@@ -75,7 +83,11 @@ export async function acceptTrustAffirm(deps: AcceptTrustAffirmDeps): Promise<Ac
 
   // (4) APPLY — persist the flip (they_trust_me = trusts; reciprocal = own-trust && trusts). A throw
   //     propagates to the caller as retryable (ack-follows-persist). Idempotent on redelivery.
-  const applied = await applyMutual(wire.from_fingerprint, wire.trusts);
+  //     A `null` return = STALE per the per-sender monotonic cursor (a replayed older affirmation after
+  //     a newer one already applied): DROP terminally (ack-delete) — same custody as a forged/stranger
+  //     drop (no flip, no echo), NOT left-for-retry, because retrying a superseded affirmation is futile.
+  const applied = await applyMutual(wire.from_fingerprint, wire.trusts, wire.sent_at);
+  if (!applied) return null;
   return {
     id: applied.id,
     from_fingerprint: wire.from_fingerprint,
