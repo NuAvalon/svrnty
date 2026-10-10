@@ -1687,7 +1687,7 @@ export function TrustMap({
       })()}
       </div>
 
-      {!isEmpty && (
+      {!isEmpty && !focusNode && (
         <div
           style={{
             display: 'flex',
@@ -1728,22 +1728,26 @@ export function TrustMap({
             margin: 0,
             fontSize: 11,
             color: E.text,
-            lineHeight: 1.45,
-          }}
-        >
-          {TRUST_RECIPE_COPY.peerMeshLegend}
-        </p>
-        <p
-          data-testid="trust-map-legend"
-          style={{
-            margin: '6px 0 0',
-            fontSize: 10,
-            color: E.dim,
             lineHeight: 1.4,
           }}
         >
-          Pinch to zoom · Fit recenters · pull the map for updates.
+          {focusNode
+            ? 'Every visible line consented — none inferred.'
+            : TRUST_RECIPE_COPY.peerMeshLegend}
         </p>
+        {!focusNode && (
+          <p
+            data-testid="trust-map-legend"
+            style={{
+              margin: '6px 0 0',
+              fontSize: 10,
+              color: E.dim,
+              lineHeight: 1.4,
+            }}
+          >
+            Pinch to zoom · Fit recenters · pull the map for updates.
+          </p>
+        )}
       </div>
 
       <VerifySheet

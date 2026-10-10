@@ -999,8 +999,8 @@ export default function Home() {
       )}
 
       <footer
-        className="mt-16 text-center"
-        style={{ fontFamily: E.fontSans, paddingBottom: 40 }}
+        className="mt-6 text-center sm:mt-16"
+        style={{ fontFamily: E.fontSans, paddingBottom: 16 }}
       >
         <p
           style={{
