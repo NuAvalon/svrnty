@@ -75,7 +75,6 @@ import {
   type MethodRevision,
 } from '@/components/identity/method-history';
 import { VerifySheet } from '@/components/verify/VerifySheet';
-import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
 import {
   ONE_WAY_SPOKE_WIDTH,
   trustVisualLane,
@@ -531,6 +530,8 @@ export function TrustMap({
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const [trustAfterVerify, setTrustAfterVerify] = useState(false);
+  const verifiedForTrust = useRef(false);
   const [sampleBusy, setSampleBusy] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(false);
 
@@ -556,6 +557,8 @@ export function TrustMap({
     setConfirmKind(null);
     setVerifyOpen(false);
     setSheetExpanded(false);
+    setTrustAfterVerify(false);
+    verifiedForTrust.current = false;
   }, []);
 
   const confirmTarget: TrustActionTarget | null = focusEdge
@@ -624,6 +627,8 @@ export function TrustMap({
     setShowHistory(false);
     setActionNote(null);
     setVerifyOpen(false);
+    setTrustAfterVerify(false);
+    verifiedForTrust.current = false;
   }, [edgeByFp]);
 
   const handleNodeClick = useCallback((id: string, multi: boolean) => {
@@ -1608,17 +1613,6 @@ export function TrustMap({
                       }}
                     />
                   )}
-                  {!isPending(focusEdge) && onOwnerVerify && !ownerHasVerified(focusEdge) && (
-                    <CardMenuItem
-                      testId="galaxy-verify"
-                      label={VERIFY_SHEET_COPY.title}
-                      primary
-                      onClick={() => {
-                        setVerifyOpen(true);
-                        closeMenu();
-                      }}
-                    />
-                  )}
                   <CardMenuItem
                     label="Edit"
                     onClick={() => {
@@ -1629,21 +1623,16 @@ export function TrustMap({
                   />
                   {!isPending(focusEdge) && onTrustToggle && (
                     <CardMenuItem
-                      label={
-                        busy
-                          ? '…'
-                          : focusEdge.trusted
-                            ? 'Remove trust'
-                            : ownerHasVerified(focusEdge)
-                              ? 'TRUST'
-                              : 'Verify first, then Trust'
-                      }
-                      primary={!focusEdge.trusted && ownerHasVerified(focusEdge)}
+                      testId={focusEdge.trusted ? 'galaxy-trust-remove' : 'galaxy-trust'}
+                      label={focusEdge.trusted ? 'Remove trust' : busy ? '…' : 'Trust'}
+                      primary={!focusEdge.trusted}
                       danger={!!focusEdge.trusted}
                       onClick={() => {
                         if (focusEdge.trusted) {
                           setConfirmKind('break');
                         } else if (!ownerHasVerified(focusEdge)) {
+                          verifiedForTrust.current = false;
+                          setTrustAfterVerify(true);
                           setVerifyOpen(true);
                         } else {
                           setConfirmKind('trust');
@@ -1826,12 +1815,19 @@ export function TrustMap({
 
       <VerifySheet
         open={verifyOpen && !!focusEdge}
-        onClose={() => setVerifyOpen(false)}
+        onClose={() => {
+          const continueTrust = trustAfterVerify && verifiedForTrust.current;
+          setVerifyOpen(false);
+          setTrustAfterVerify(false);
+          verifiedForTrust.current = false;
+          if (continueTrust) setConfirmKind('trust');
+        }}
         displayName={focusEdge?.peer_name || focusNode?.name || ''}
         fingerprint={focusEdge?.peer_fingerprint || ''}
         onConfirm={async (method) => {
           if (!focusEdge || !onOwnerVerify) return;
           await onOwnerVerify(focusEdge, method);
+          verifiedForTrust.current = true;
           setActionNote('Saved here only.');
         }}
       />
