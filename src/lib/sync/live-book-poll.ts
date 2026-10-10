@@ -255,7 +255,7 @@ export async function buildConsumeDeps(
   // held as retryable in the mailbox (never ack-deleted-unseen), so there is still no silent-loss.
   if (!isNotesStoreUnlocked()) {
     try {
-      await initNotesStore(key.passphrase);
+      await initNotesStore(key.passphrase, fingerprint); // owner-scope: per-identity notes DB (P1#1)
     } catch {
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
