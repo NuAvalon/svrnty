@@ -1268,54 +1268,6 @@ export function TrustMap({
           </span>
         </div>
 
-        {isEmpty && (
-          <div
-            data-testid="trust-map-empty"
-            style={{
-              position: 'absolute',
-              left: 16,
-              right: 16,
-              bottom: 104,
-              textAlign: 'center',
-              pointerEvents: 'none',
-              fontFamily: E.fontSans,
-              zIndex: 7,
-            }}
-          >
-            <p style={{ margin: 0, fontSize: 16, color: T.label, letterSpacing: '0.04em' }}>
-              Grow your galaxy
-            </p>
-            <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              In person they can become a star you Know. Remote, they wait at the Gate.
-            </p>
-            <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
-              Trust is mutual, after you make sure it&apos;s them.
-            </p>
-            {onGrow ? (
-              <button
-                type="button"
-                data-testid="trust-map-grow"
-                onClick={onGrow}
-                style={{
-                  pointerEvents: 'auto',
-                  marginTop: 14,
-                  fontFamily: E.fontSans,
-                  fontSize: 12,
-                  letterSpacing: '0.08em',
-                  color: T.myEdge,
-                  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                  border: `1px solid ${T.dimStroke}`,
-                  borderRadius: 8,
-                  padding: '8px 14px',
-                  cursor: 'pointer',
-                }}
-              >
-                Grow
-              </button>
-            ) : null}
-          </div>
-        )}
-
         <GalaxyGateMembrane count={gateCount} sparkIds={gateSparks} onOpen={() => setGateOpen(true)} />
 
         {gateOpen && ownerFingerprint ? (
@@ -1334,6 +1286,50 @@ export function TrustMap({
           />
         ) : null}
       </div>
+
+      {isEmpty && (
+        <div
+          data-testid="trust-map-empty"
+          style={{
+            marginTop: 10,
+            padding: '10px 12px',
+            textAlign: 'center',
+            fontFamily: E.fontSans,
+            borderRadius: 12,
+            border: `1px solid ${E.border}`,
+            background: 'color-mix(in srgb, var(--se-bg) 70%, transparent)',
+          }}
+        >
+          <p style={{ margin: 0, fontSize: 15, color: T.label, letterSpacing: '0.04em' }}>
+            Grow your galaxy
+          </p>
+          <p style={{ margin: '6px 0 0', fontSize: 11, color: T.caption, lineHeight: 1.4 }}>
+            In person they can become a star you Know. Remote, they wait at the Gate.
+            Trust is mutual, after you make sure it&apos;s them.
+          </p>
+          {onGrow ? (
+            <button
+              type="button"
+              data-testid="trust-map-grow"
+              onClick={onGrow}
+              style={{
+                marginTop: 10,
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                letterSpacing: '0.08em',
+                color: T.myEdge,
+                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                border: `1px solid ${T.dimStroke}`,
+                borderRadius: 8,
+                padding: '8px 14px',
+                cursor: 'pointer',
+              }}
+            >
+              Grow
+            </button>
+          ) : null}
+        </div>
+      )}
 
       {focusNode && focusEdge && (() => {
         const vis = visualOf(focusEdge, ownerHasVerified(focusEdge));
