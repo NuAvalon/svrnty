@@ -35,10 +35,10 @@ We speak through **dumb, interchangeable pipes** that are not allowed to read wh
 `svrnty.is` is not your landlord. It is:
 
 - an **open-source PWA** you can run yourself  
-- **default plumbing** (relay, nursery, docs) you can replace  
+- **default plumbing** (relay, nursery, docs), built to be replaceable  
 - a **rendezvous**, never a source of truth for your relationships  
 
-Leave, self-host, friend-host, rent a container, move house.
+Built so you can leave, self-host, friend-host, move house — the migration flow lands with S4.
 If the important bits don’t come with you, we failed.
 
 ---

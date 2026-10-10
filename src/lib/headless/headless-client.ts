@@ -27,6 +27,7 @@ import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
 import { acceptTrustAffirm } from '@/lib/trust/trust-affirm-consume';
 import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
+import { admitContact } from '@/lib/trust/admit-contact';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore } from './headless-store';
 import type { NoteWireV0, NoteRecord, NoteThread, ParticipantKind } from '@/lib/messaging/types';
@@ -47,7 +48,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
       if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
-      if (!store.getContactByFingerprint(wire.from_fingerprint)) return null; // stranger — silent drop (I-2)
+      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return null; // in-book AND not-blocked — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety)
       const sent_at = wire.sent_at || now();
       const rec: NoteRecord = {
         note_id: wire.note_id,
@@ -91,7 +92,7 @@ function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: (
       acceptTrustAffirm({
         wire,
         ownerFingerprint: owner.fingerprint,
-        isAdmitted: async (fp) => store.getContactByFingerprint(fp) != null, // FALSE-MUTUAL gate (in-book)
+        isAdmitted: async (fp) => admitContact(store.getContactByFingerprint(fp)), // FALSE-MUTUAL gate: in-book AND not-blocked (P1#2)
         applyMutual: async (fromFp, trusts) => {
           const rec = store.getContactByFingerprint(fromFp);
           if (!rec) throw new Error('headless applyMutual: contact vanished between admit and apply');
