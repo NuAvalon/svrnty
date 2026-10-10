@@ -24,7 +24,7 @@ async function genesis(page: Page, name: string) {
   });
 }
 
-test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white light', async ({
+test('Galaxy: Trust pending is not white; Mutual trust is the only white light', async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -62,20 +62,21 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(frank).not.toHaveAttribute('data-light', 'white');
   await expect(frank).toHaveAttribute('data-bond-state', 'known');
 
-  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Mutual · core/i);
-  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Awaiting/i);
-  await expect(page.getByTestId('trust-lifecycle-legend')).not.toContainText(/outer|half/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Known/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Trust pending/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Mutual trust/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).not.toContainText(/outer|half|awaiting|unverified/i);
   await expect(page.getByTestId('trust-map-consent-legend')).toContainText(
     /Every visible line consented — none inferred/,
   );
 
   await alan.click({ force: true });
-  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Awaiting mutual');
+  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Trust pending');
   await ada.click({ force: true });
-  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual');
+  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual trust');
 });
 
-test('Address book chips: Ada Mutual, Alan Awaiting mutual', async ({ page }) => {
+test('Address book chips: Ada Mutual trust, Alan Trust pending', async ({ page }) => {
   test.setTimeout(90_000);
   await genesis(page, 'Book Visual');
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
@@ -84,8 +85,8 @@ test('Address book chips: Ada Mutual, Alan Awaiting mutual', async ({ page }) =>
 
   const adaRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Ada Lovelace' });
   const alanRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Alan Turing' });
-  await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual');
+  await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual trust');
   await expect(adaRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'mutual');
-  await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Awaiting mutual');
+  await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Trust pending');
   await expect(alanRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'trust-sent');
 });

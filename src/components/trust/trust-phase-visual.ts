@@ -36,9 +36,9 @@ export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
 
 export const TRUST_VISUAL_LABELS = {
   known: 'Known',
-  'trust-sent': 'Awaiting mutual',
-  'trust-received': 'Trusts you · trust back?',
-  mutual: 'Mutual',
+  'trust-sent': 'Trust pending',
+  'trust-received': 'Trust pending',
+  mutual: 'Mutual trust',
   blocked: 'Blocked',
   introPending: 'Pending intro',
 } as const;
@@ -55,7 +55,7 @@ const KNOWN_STROKE = 'rgba(249,168,37,0.55)';
 const KNOWN_SPOKE = 'rgba(249,168,37,0.42)';
 const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 
-/** Intro-handshake dash — connection axis only. One-way trust is never dashed. */
+/** Intro-handshake dash — connection axis only. Not unverified. One-way trust is never dashed. */
 export const INTRO_PENDING_DASH = '3 2';
 export const ONE_WAY_SPOKE_WIDTH = 0.85;
 

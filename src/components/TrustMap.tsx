@@ -1661,10 +1661,9 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span style={{ color: E.accent2 }}>Mutual · core</span>
-          <span style={{ color: E.accent }}>Awaiting</span>
-          <span style={{ color: E.accent }}>Trusts you</span>
           <span>Known</span>
+          <span style={{ color: E.accent }}>Trust pending</span>
+          <span style={{ color: E.accent2 }}>Mutual trust</span>
         </div>
       )}
         <div

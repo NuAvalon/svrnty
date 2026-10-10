@@ -42,7 +42,7 @@ function usesWhite(v: TrustPhaseVisual): boolean {
 }
 
 describe('trust-phase visual map — white IFF mutual', () => {
-  it('mutual is the only white/lit solid bond and labels Mutual', () => {
+  it('mutual is the only white/lit solid bond and labels Mutual trust', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
     assert.equal(v.bondState, 'mutual');
     assert.equal(v.lit, true);
@@ -92,8 +92,8 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(mutual.coreFill, TRUST_VISUAL_WHITE_CORE);
     assert.equal(outbound.spokeStyle, 'single');
     assert.equal(mutual.spokeStyle, 'thick-bright');
-    assert.equal(outbound.label, 'Awaiting mutual');
-    assert.equal(mutual.label, 'Mutual');
+    assert.equal(outbound.label, 'Trust pending');
+    assert.equal(mutual.label, 'Mutual trust');
   });
 
   it('verified overlay never promotes outbound to mutual/white', () => {
@@ -126,7 +126,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(trustVisualLane(sent, false), 'trust-sent');
   });
 
-  it('inbound shares the mutual hex — no core, Known spoke, trust-back label', () => {
+  it('inbound shares the mutual hex — no core, Known spoke, Trust pending', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
     const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
     const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
