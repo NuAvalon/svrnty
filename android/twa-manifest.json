@@ -11,7 +11,7 @@
   "navigationDividerColor": "#000000",
   "navigationDividerColorDark": "#000000",
   "backgroundColor": "#0A0A0F",
-  "enableNotifications": true,
+  "enableNotifications": false,
   "startUrl": "/",
   "iconUrl": "https://svrnty.is/icon-512.png",
   "maskableIconUrl": "https://svrnty.is/icon-512-maskable.png",
@@ -21,7 +21,7 @@
     "alias": "svrnty"
   },
   "appVersionName": "1.0.0",
-  "appVersionCode": 1,
+  "appVersionCode": 2,
   "shortcuts": [],
   "generatorApp": "bubblewrap-cli",
   "webManifestUrl": "https://svrnty.is/manifest.json",

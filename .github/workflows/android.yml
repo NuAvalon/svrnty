@@ -46,7 +46,7 @@ jobs:
           KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASS: ${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}
         run: |
-          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+          $ANDROID_HOME/build-tools/36.1.0/apksigner sign \
             --ks svrnty-twa.keystore --ks-key-alias svrnty \
             --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
             --out svrnty-signed.apk \

@@ -23,8 +23,6 @@
     package="is.svrnty.app">
 
     
-        <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    
 
     
 
@@ -174,26 +172,6 @@
                 android:resource="@xml/filepaths" />
         </provider>
 
-        <service
-            android:name=".DelegationService"
-            android:enabled="@bool/enableNotification"
-            android:exported="@bool/enableNotification">
-
-            
-                <meta-data
-                    android:name="android.support.customtabs.trusted.SMALL_ICON"
-                    android:resource="@drawable/ic_notification_icon" />
-            
-
-            <intent-filter>
-                <action android:name="android.support.customtabs.trusted.TRUSTED_WEB_ACTIVITY_SERVICE"/>
-                <category android:name="android.intent.category.DEFAULT"/>
-            </intent-filter>
-        </service>
-
-        
-            <activity android:name="com.google.androidbrowserhelper.trusted.NotificationPermissionRequestActivity" />
-        
 
         
     </application>

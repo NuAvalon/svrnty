@@ -29,7 +29,8 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 Sign with the release keystore (see below):
 
 ```sh
-$ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+# use the build-tools version you installed (CI installs 36.1.0):
+$ANDROID_HOME/build-tools/36.1.0/apksigner sign \
   --ks svrnty-twa.keystore --ks-key-alias svrnty \
   --ks-pass env:KS_PASS --key-pass env:KS_PASS \
   --out svrnty-1.apk app/build/outputs/apk/release/app-release-unsigned.apk
@@ -67,5 +68,8 @@ ships with the site's deploy — if the domain or signing cert changes, update i
 - No geolocation permission — svrnty is I-4 reachability-not-location; the
   wrapper must not request what the product refuses to render.
 - `display: standalone` — app chrome/status bar preserved.
+- `enableNotifications: false` — the web app requests no Notification/push
+  APIs, so the POST_NOTIFICATIONS permission + delegation service were stripped
+  rather than shipped as dead surface.
 - Icons generated from `public/icon-512.png` / `icon-512-maskable.png`
   (committed under `public/`).
