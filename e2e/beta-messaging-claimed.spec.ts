@@ -16,6 +16,12 @@ import { test, expect } from '@playwright/test';
  * crypto is unit-tested separately; this spec isolates the composition.
  */
 test('gate-ON + claimed renders the working Notes inbox, not explainer-only', async ({ page }) => {
+  // The gate inlines into the dev-server build, not the test — skip when this playwright run
+  // was launched without it (the scoped gate-ON CI step sets it; the main run does not).
+  test.skip(
+    !process.env.NEXT_PUBLIC_SVRNTY_BETA_GATE,
+    'needs a gate-ON dev server — runs in the scoped NEXT_PUBLIC_SVRNTY_BETA_GATE=1 CI step',
+  );
   test.setTimeout(90_000);
 
   await page.goto('/');

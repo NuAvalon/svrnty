@@ -18,6 +18,11 @@ A QA project that runs **on a single local Ubuntu box** and models:
 - Results feeding the **self-host/federation claims lane** in the living blueprint —
   claims made only when the harness proves them (claim-honesty).
 
+Canonical contract: **blueprint v2.8.7 §11 (W7 Avalon)** — the self-host/federation
+claim-family is Invariant I-C (network-continues-if-we-vanish) made testable. Every
+claim in the W7 honesty ledger is **ROADMAP** until enforced-in-code AND
+Flint-verified on the deployed edge (W6); this harness is the proof substrate.
+
 ## Why one box is sufficient
 
 The svrnty app instance is self-contained: the relay dead-drop (`/api/relay/*`), the
@@ -64,25 +69,38 @@ parameterises it.
 |---|----------|---------|
 | S1 | Mint K identities on `svrnty.is` (headless `mintHeadlessAgent`, proven path) | cards sign, Invariant-1 (`fp ≡ H(pubkey)`) holds for all K |
 | S2 | Each identity registers a mailbox on its home relay | `POST /mailbox/register` owner-proof accepted; `GET /mailbox/{fp}` serves pubkeys only (never `owner_identity_fp`) |
-| S3 | Cross-domain contact exchange | `/c/<code>` dead-drop round-trip works a→b, a→c (single-use, TTL) |
-| S4 | **Mailbox migration** b → c | `publishMailboxPointer` with `pointerEpoch ≥ 1` propagates; peers resolve latest valid pointer (monotonic); old mailbox stops receiving new envelopes; identity durable_id/did unchanged |
+| S3 | Cross-domain contact exchange | `/c/<code>` dead-drop round-trip works a→b, a→c (multi-use within the code TTL — serves until expiry, never consume-on-view; join cap `GROW_INVITE_CAP`) |
+| S4 | **Mailbox migration** b → c | `publishMailboxPointer` with `pointerEpoch ≥ 1` propagates; peers resolve latest valid pointer (monotonic); `rehydrateTrustBeacons` re-derives R + re-deposits beacons onto relay-c; old mailbox stops receiving new envelopes; identity durable_id/did unchanged |
 | S5 | Multi-mailbox relay | relay-c hosts N owner mailboxes; per-mailbox cap → uniform 429; deposit/poll isolation between mailboxes |
 | S6 | Failure modes | relay down mid-migration → pointer retry; stale pointer (lower epoch) rejected; wrong-signature pointer rejected |
 | S7 | Adversarial (Flint's agent) | pointer substitution, replayed envelopes, registry poisoning, R_e probing, rate-limit bypass, cross-instance metadata leakage — see "Adversarial pass" |
+| S8 | **Mailbox expiry → rebuild** (G3) | `run.sh s8` against `registry-ttl` (`MAILBOX_TTL_MS=3000` standing in for the satellite's 30-day GC): register → GET 200 → TTL sweep → GET 404 → re-register same fp → GET 200. Wire-level proof an expired mailbox is gone *and* rebuildable; pointer-republish + `rehydrateTrustBeacons` against the rebuilt box ride the S4 node-level path (the unwired primitive, per W7 two-tier model) |
 
 ## Key contracts the harness depends on
 
 - `POST /mailbox/register`, `GET /mailbox/{fp}` — served by the **satellite**, which is
   NOT in this repo (`infra/svrnty` is referenced by `docs/SELF_HOSTING.md` but not
   vendored). Until the image is published, `infra/fed-qa/registry-stub.mjs` implements
-  exactly the documented wire shape (see `src/lib/crypto/mailbox-registry-client.ts`)
-  as a **TEST-DOUBLE** — marked as such; it proves client behaviour, not satellite
-  correctness.
+  the documented wire shape AND its two verification MUSTs (see
+  `src/lib/crypto/mailbox-registry-client.ts`): `mailbox_fp ≡ SHA256(x25519_pub ‖
+  mlkem1024_pub)` over raw bytes (400 on mismatch), and Ed25519 `owner_sig` over
+  `svrnty-mailbox-reg-v1:{owner}:{fp}:{epoch}` (403 on bad/unknown owner — owners
+  are seeded via the test-only `PUT /_test/identity/{fp}`, stub scaffolding that is
+  NOT wire shape; the real satellite resolves owner keys from its identity registry).
+  `MAILBOX_TTL_MS` env models the 30-day GC for S8. Still a **TEST-DOUBLE** — it
+  proves client behaviour, not satellite correctness.
 - `publishMailboxPointer` / `selectLatestValidPointer` (`src/lib/trust/mailbox-pointer-transport.ts`)
   — the real migration primitive: bootstrap epoch 0 sealed to identity-enc keys,
   rotations epoch ≥1 sealed to the peer's current mailbox.
 - `mailboxConfig()` env knobs — `RELAY_MAILBOX_CAP` drives the multi-mailbox profile;
   the nursery-gated creation flag models the managed-vs-self-host difference.
+- `rehydrateTrustBeacons` (`src/lib/trust/trust-rendezvous.ts:301`) — the W7 §11
+  migration primitive: re-derives R for every trusted peer in the book and re-deposits
+  signed+sealed beacons on the new relay (idempotent, book-derived — "the book makes
+  the mailbox"). **Implemented + unit-tested, but UNWIRED** (zero app callers today):
+  migration is an invocable capability, not an automatic path — so S4 exercises it
+  directly, and honest copy stays "re-derivable from your book", never
+  "automatically rehydrates". Auto-rehydration of a GC-destroyed mailbox is roadmap.
 
 ## "Migrate your mailbox" UX contract (for the docs/runbook)
 
@@ -115,22 +133,49 @@ infra/fed-qa/compose.fed-qa.yml up` + `infra/fed-qa/run.sh`, triggered on PRs to
 `workflow_dispatch`. Not wired as a green no-op — the repo's own rule: an always-green
 stub is worse than no job (see the parked claim-sweep precedent).
 
-## Living-blueprint claims lane (routed: Athena + fleet)
+## Living-blueprint claims lane (canonical: v2.8.7 §11 W7 ledger)
 
-Add under self-host/federation, each gated on the harness scenario that proves it:
+The W7 honesty ledger is the claim contract — each row earns present-tense only
+after its gate, per-claim (never wholesale retirement of the roadmap hedge):
 
-- `fed-minimal-self-host` — claim when S2+S3 green on a clean box (built+proven).
-- `fed-mailbox-migration` — claim when S4 green end-to-end incl. overlap window.
-- `fed-multi-mailbox` — claim when S5 green.
-- `fed-adversarial` — claim only with Flint's stress results attached, scoped wording
-  ("stress-tested against <list>", never "secure").
+| # | Claim | Today | Earns present-tense after |
+|---|-------|-------|---------------------------|
+| 1 | "Run your own relay" (self-host) | 🟡 ROADMAP | W1 shipped + W6 secure-defaults verified on edge — harness: **S2+S3 green on a clean box** |
+| 2 | "Federated — survives if svrnty.is vanishes" (I-C) | 🟡 ROADMAP | W2 + W5-2 failover proven + W6 — harness: **S6 relay-down mid-migration green** |
+| 3 | "Migration unlinkable by content / identity / credentials" | 🟡 ROADMAP | W4 enforced-in-code + Flint-verified (zero-loss, unlinkable handoff) — harness: **S4 green end-to-end incl. overlap window** |
+| 4 | "Migration unlinkable by **TIMING**" (adversary watching BOTH relays) | 🔴 ROADMAP — APEX, caveat-forward | cover-window ("K3-for-migration") built + verified — harness: **S7 timing-analysis scenario, tracked-required** |
+
+Supporting (not ledger rows): `fed-multi-mailbox` claim when S5 green;
+`fed-adversarial` claim only with Flint's stress results attached, scoped wording
+("stress-tested against <list>", never "secure").
+
+## Launch acceptance gates (G1–G7, fleet-set)
+
+The fleet's launch bar maps onto the harness — the S-scenarios are the proof
+substrate; a gate is DONE only when its mapped scenario(s) run green end-to-end:
+
+| Gate | Launch requirement | Harness coverage |
+|------|-------------------|------------------|
+| G1 | PSI + blocking rock-solid | **GAP** — not fed-qa's lane; needs its own suite against the flipped `isPSIDiscoveryLive` + mutual-block graduates (piece-2 §F3 churn matrix exists DARK — target: wire into `qa.yml` or a dedicated gate job) |
+| G2 | Transfer away from primary relay + self-host | S2+S3 (mailbox register on a foreign domain + cross-domain exchange) |
+| G3 | 30-day mailbox expiry → rebuild → work again | S8 — `run.sh s8` (green): short-TTL registry sweeps the mailbox (GET 404), re-register rebuilds it (GET 200). Partial coverage: wire-level expiry+rebuild proven on the stub; the *client-side* rebuild (pointer epoch+1 republish + `rehydrateTrustBeacons` re-deposit) still needs the S4 node-level path and the real satellite's TTL config |
+| G4 | Transfer to a different relay, then still receive updates | S4 (migration + pointer propagation + beacon rehydration) |
+| G5 | Primary relay down + mailboxes gone → full-loss recovery from clients | S6 extended: kill relay-b mid-run, assert client-side rehydration rebuilds the mailbox (manual `rehydrateTrustBeacons` invocation — the unwired primitive, per W7 two-tier model) |
+| G6 | No silent message loss | Cross-cutting invariant on every scenario: every envelope deposited is either polled, expired-by-TTL, or an explicit failure — never silently dropped (assert ack-loop + TTL-death audit trail) |
+| G7 | Resource / resiliency / anti-spam | S7 adversarial + S5 cap tests (per-mailbox 429 uniformity, rate-limit evasion attempts, registry hot-key) |
+
+G-gates are the fleet's words; where they out-scope fed-qa (G1 PSI depth, G6 as a
+product-wide property) the table says so rather than pretending coverage.
 
 ## Open questions for the fleet
 
 1. **Satellite image** — publish the real `infra/svrnty` registration/mailbox service,
    or confirm the registry-stub contract is authoritative for QA.
-2. **Migration call-chain** — which client function orchestrates pointer publication
-   on relay switch today (if any)? If none, S4 defines it and it's a `devin-ok` ticket.
+2. ~~**Migration call-chain**~~ — **ANSWERED by v2.8.7 §11**: `rehydrateTrustBeacons`
+   (`trust-rendezvous.ts:301`) is the migration primitive — implemented + unit-tested,
+   unwired (manual/invocable, not automatic). S4 drives it directly; the honest
+   capability claim is "re-derivable from your book". The auto-rehydrate-on-GC wiring
+   (detect 404 → trigger) is a separate roadmap item, not part of S4.
 3. **Mailbox cap semantics** — is `RELAY_MAILBOX_CAP` the intended multi-mailbox knob,
    or is multi-mailbox per-owner vs per-instance?
 4. **Overlap window** — how long must the old mailbox's decap key stay valid
