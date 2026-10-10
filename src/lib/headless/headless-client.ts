@@ -48,7 +48,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
       if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
-      if (!store.getContactByFingerprint(wire.from_fingerprint)) return null; // stranger — silent drop (I-2)
+      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return null; // in-book AND not-blocked — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety)
       const sent_at = wire.sent_at || now();
       const rec: NoteRecord = {
         note_id: wire.note_id,
