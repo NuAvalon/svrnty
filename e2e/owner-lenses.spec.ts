@@ -50,7 +50,12 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await page.getByTestId('owner-lens-display-name').fill('Archie');
     await page.getByTestId('owner-lens-handle').fill('archie.fest');
     await page.getByTestId('owner-lens-note').fill('festival face');
-    await page.getByRole('checkbox').last().check();
+    await page
+      .getByTestId('owner-card-studio')
+      .locator('label')
+      .filter({ hasText: 'Instagram' })
+      .getByRole('checkbox')
+      .check();
 
     await page.getByTestId('identity-vault-toggle').click();
 
@@ -59,11 +64,12 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(page.getByTestId('identity-card-face')).toHaveAttribute('data-lens-name', 'Festival');
     await expect(page.getByTestId('identity-card-note')).toHaveText('festival face');
     await expect(page.getByTestId('identity-card-methods')).toContainText('Instagram');
-    await expect(page.getByTestId('identity-card-methods')).not.toContainText('lenses@example.test');
+    await expect(page.getByTestId('identity-card-methods')).not.toContainText('Email');
 
     await page.getByTestId('identity-lens-picker-chip').filter({ hasText: 'Everyone' }).click();
     await expect(page.getByTestId('identity-card-name')).toHaveText('Peter Card');
-    await expect(page.getByTestId('identity-card-methods')).toContainText('lenses@example.test');
+    await expect(page.getByTestId('identity-card-methods')).toContainText('Email');
+    await expect(page.getByTestId('identity-card-methods')).toContainText('Instagram');
 
     await page.getByTestId('nav-grow').click();
     const grow = page.getByTestId('grow-surface');

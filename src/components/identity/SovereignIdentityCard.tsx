@@ -145,7 +145,7 @@ function MethodRow({
             color: E.dim,
             fontFamily: E.fontSans,
             flexShrink: 0,
-            width: 48,
+            width: 72,
           }}
         >
           {label}

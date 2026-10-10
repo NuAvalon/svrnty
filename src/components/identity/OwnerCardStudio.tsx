@@ -260,6 +260,7 @@ export function OwnerCardStudio({
                 >
                   <input
                     type="checkbox"
+                    data-testid={`owner-lens-include-${m.id}`}
                     checked={on}
                     onChange={() => persist(toggleLensMethod(bag, lens.id, m.id))}
                   />
