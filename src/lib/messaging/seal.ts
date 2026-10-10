@@ -35,10 +35,29 @@ export async function sealNoteTo(
 }
 
 /**
+ * The note inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
+ * (src/lib/sync/hybrid-dual-read.ts: makeHybridOpener(openEnv, parseNoteWire)) so the hybrid opener
+ * reuses the EXACT same discriminator the classical opener uses → no-cross-swallow is byte-identical.
+ * Returns null on non-JSON or any non-note wire (a hybrid/classical pkg of another inner type fails the
+ * NOTE_WIRE_TYPE gate → null → the consume 4-way demux falls through).
+ */
+export function parseNoteWire(innerUtf8: string): NoteWireV0 | null {
+  try {
+    const p = JSON.parse(innerUtf8) as NoteWireV0;
+    if (p?.type !== NOTE_WIRE_TYPE) return null;
+    if (typeof p.body !== 'string' || typeof p.from_fingerprint !== 'string') return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Decrypt opaque blob → NoteWireV0, or null on any failure (I-1 silent drop). DUAL-READ: when `hybrid`
  * (my mailbox secrets + fp) is supplied, try the PQ-hybrid envelope FIRST; a classical/armored blob is not
  * a hybrid package (openLivingBookHybrid → null) and falls through to the OpenPGP path. A hybrid package of
  * a DIFFERENT inner type fails the NOTE_WIRE_TYPE gate → null (preserves the consume 4-way no-cross-swallow).
+ * The type-gate is the exported {@link parseNoteWire}, which the single dual-read chokepoint reuses.
  */
 export function noteOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
@@ -66,10 +85,7 @@ export function noteOpenpgpDecryptor(
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      const parsed = JSON.parse(text) as NoteWireV0;
-      if (parsed?.type !== NOTE_WIRE_TYPE) return null;
-      if (typeof parsed.body !== 'string' || typeof parsed.from_fingerprint !== 'string') return null;
-      return parsed;
+      return parseNoteWire(text);
     } catch {
       return null;
     }

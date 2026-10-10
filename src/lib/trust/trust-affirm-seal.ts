@@ -42,26 +42,45 @@ export async function sealTrustAffirmTo(
   return (await encrypt({ message, encryptionKeys })) as string;
 }
 
+/** Minimal shape+type gate (mirrors parseNoteWire): the discriminator for the consume 4-way demux. A
+ *  note / joiner / contact-update wire decrypts fine but fails `type !== TRUST_AFFIRM_WIRE_TYPE` → null
+ *  → never eaten as an affirmation. */
+function asAffirm(parsed: TrustAffirmWireV0 | null): TrustAffirmWireV0 | null {
+  if (parsed?.type !== TRUST_AFFIRM_WIRE_TYPE) return null;
+  if (typeof parsed.from_fingerprint !== 'string') return null;
+  if (typeof parsed.to_fingerprint !== 'string') return null;
+  if (typeof parsed.trusts !== 'boolean') return null;
+  return parsed;
+}
+
+/**
+ * The trust-affirm inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
+ * (src/lib/sync/hybrid-dual-read.ts: makeHybridOpener(openEnv, parseTrustAffirmWire)) so the hybrid
+ * opener reuses the EXACT same asAffirm discriminator the classical opener uses → no-cross-swallow is
+ * byte-identical. Null on non-JSON or any non-affirm wire.
+ */
+export function parseTrustAffirmWire(innerUtf8: string): TrustAffirmWireV0 | null {
+  try {
+    return asAffirm(JSON.parse(innerUtf8) as TrustAffirmWireV0);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Decrypt an opaque relay blob → TrustAffirmWireV0, or null on any failure (I-1 silent drop) OR on a
  * type/shape mismatch (→ the consume path falls through to the next decryptor). The `type` gate is the
  * discriminator: a note / joiner / contact-update blob decrypts fine but fails `type !==
  * TRUST_AFFIRM_WIRE_TYPE` → null → never eaten as an affirmation. Does NOT authenticate — that is
  * verifyTrustAffirmSender's job in acceptTrustAffirm (sign-before-admit, mirroring the note path).
+ * DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied; else classical OpenPGP. The type-gate
+ * is the exported {@link parseTrustAffirmWire} (asAffirm), which the single dual-read chokepoint reuses.
  */
 export function trustAffirmOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
   hybrid?: LivingBookHybridSecrets,
 ): (blob: string) => Promise<TrustAffirmWireV0 | null> {
-  // Minimal shape+type gate (mirrors noteOpenpgpDecryptor): the discriminator for the consume 4-way demux.
-  const asAffirm = (parsed: TrustAffirmWireV0 | null): TrustAffirmWireV0 | null => {
-    if (parsed?.type !== TRUST_AFFIRM_WIRE_TYPE) return null;
-    if (typeof parsed.from_fingerprint !== 'string') return null;
-    if (typeof parsed.to_fingerprint !== 'string') return null;
-    if (typeof parsed.trusts !== 'boolean') return null;
-    return parsed;
-  };
   return async (blob: string): Promise<TrustAffirmWireV0 | null> => {
     // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null
     // from openLivingBookHybrid → fall through to OpenPGP; a hybrid pkg of another type fails asAffirm.
@@ -79,7 +98,7 @@ export function trustAffirmOpenpgpDecryptor(
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      return asAffirm(JSON.parse(text) as TrustAffirmWireV0);
+      return parseTrustAffirmWire(text);
     } catch {
       return null;
     }

@@ -42,11 +42,8 @@ import {
   type ContactRecord,
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
-import { readPrivateKey, decryptKey } from 'openpgp';
-import { extractRawEnc } from '@/lib/identity/raw-sign';
-import { base64ToUint8 } from '@/lib/crypto/pq';
-import { deriveMailboxFp } from '@/lib/crypto/mailbox-envelope';
 import { type LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
+import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
@@ -217,31 +214,8 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: LivingBookHy
   };
 }
 
-/**
- * Derive THIS owner's mailbox open-material (x25519 enc secret from the unlocked identity key + ML-KEM-1024
- * secret from the vault PQ bundle + the mailbox fp a sender sealed to) so the dual-read openers can open a
- * PQ-hybrid living-book deposit. FAIL-SOFT: a classical identity (no PQ material) or any unlock/parse error
- * → undefined → the openers stay classical-only. Mirrors contact-message.ts's MyKeys derivation (no new crypto).
- */
-async function deriveOwnerHybridSecrets(
-  privateKeyArmored: string,
-  passphrase: string,
-  kemPublicKeyB64?: string,
-  kemSecretKeyB64?: string,
-): Promise<LivingBookHybridSecrets | undefined> {
-  if (!kemPublicKeyB64 || !kemSecretKeyB64) return undefined; // classical identity → classical-only openers
-  try {
-    const locked = await readPrivateKey({ armoredKey: privateKeyArmored });
-    const decrypted = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase });
-    const { encSec, encPub } = await extractRawEnc(decrypted); // x25519 enc secret+pub (fail-closed invariant)
-    const mlkem1024Sec = base64ToUint8(kemSecretKeyB64);
-    const mlkem1024Pub = base64ToUint8(kemPublicKeyB64);
-    const myFp = deriveMailboxFp(encPub, mlkem1024Pub); // MUST equal what a sender sealed to (same pubs)
-    return { secrets: { x25519Sec: encSec, mlkem1024Sec }, myFp };
-  } catch {
-    return undefined; // never block the poll on a PQ-key read — degrade to classical openers
-  }
-}
+// deriveOwnerHybridSecrets moved to @/lib/crypto/living-book-receive (shared by the FE + headless consume
+// deps so the one dual-read chokepoint derives owner open-material the same way on both paths).
 
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(

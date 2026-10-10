@@ -24,6 +24,21 @@ import {
 } from '@/lib/crypto/living-book-sleeve';
 
 /**
+ * The contact-update inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
+ * (src/lib/sync/hybrid-dual-read.ts: makeHybridOpener(openEnv, parseContactUpdateWire)). The contact-update
+ * path is the consume CATCH-ALL, so there is NO inner type-tag to check here — shape (envelope.fingerprint)
+ * is checked downstream by consumeOne; this returns the parsed object as-is (null only on non-JSON),
+ * reproducing the EXACT current opener behaviour so no-cross-swallow is byte-identical.
+ */
+export function parseContactUpdateWire(innerUtf8: string): SignedContactUpdate | null {
+  try {
+    return JSON.parse(innerUtf8) as SignedContactUpdate;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sender side: encrypt a signed contact.update to the recipient → opaque armored blob. HYBRID (HNDL) when
  * the recipient's ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED SignedContactUpdate with the
  * reject-classical mailbox envelope); classical OpenPGP otherwise (back-compat/tests — the SEND composer
@@ -70,7 +85,7 @@ export function openpgpEnvelopeDecryptor(
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      return JSON.parse(text) as SignedContactUpdate;
+      return parseContactUpdateWire(text);
     } catch {
       return null;
     }
