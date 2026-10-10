@@ -69,7 +69,7 @@ import {
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
 import { ownerLocalBadge } from '@/lib/trust/grow-gate';
-import { VivreBurn, StarEmber, VivreCaution } from '@/components/VivreBurn';
+import { StarEmber, VivreCaution } from '@/components/VivreBurn';
 import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
   loadMethodHistory,
@@ -1440,7 +1440,7 @@ export function TrustMap({
             onSendUpdate={() => onSendMethodUpdate?.(focusEdge)}
             actionsOpen={actionsOpen}
             onActionsOpenChange={setActionsOpen}
-            banner={contactHasDistress(focusEdge) && sheetExpanded ? <VivreBurn /> : null}
+            banner={null}
             edit={editing ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
                 <input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Name" style={fieldStyle()} />

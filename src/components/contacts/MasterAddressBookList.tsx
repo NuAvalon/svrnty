@@ -15,6 +15,7 @@ import {
 } from '@/lib/trust/living-edge-status';
 import type { TrustEdge } from '@/lib/trust/types';
 import { trustPhaseVisual } from '@/components/trust/trust-phase-visual';
+import { VivreBurn } from '@/components/VivreBurn';
 
 export type MasterBookRow = {
   id: string;
@@ -31,6 +32,8 @@ export type MasterBookRow = {
   /** Precomputed living status (from contactRecordToEdge projection). */
   living?: LivingEdgeStatus;
   lastMoment?: string | null;
+  /** Witnessed inbound distress — paints the vivre. */
+  distress?: boolean;
 };
 
 export type MasterAddressBookListProps = {
@@ -122,13 +125,20 @@ export function MasterAddressBookList({
               data-living-trust={status.trust}
               data-bond-state={visual.bondState}
               data-can-communicate={status.canCommunicate ? '1' : '0'}
+              data-distress={row.distress ? '1' : '0'}
               onClick={() => {
                 if (selectionMode) onToggleSelect(row.id);
                 else onOpen(row.id);
               }}
               style={{
                 ...rowBtn,
-                borderColor: selected || opened || live ? E.borderLit : E.border,
+                position: 'relative',
+                overflow: row.distress ? 'hidden' : undefined,
+                borderColor: row.distress
+                  ? E.accent2
+                  : selected || opened || live
+                    ? E.borderLit
+                    : E.border,
                 background: opened
                   ? 'color-mix(in srgb, var(--se-accent) 16%, transparent)'
                   : selected || live
@@ -143,6 +153,7 @@ export function MasterAddressBookList({
                       : undefined,
               }}
             >
+              {row.distress ? <VivreBurn compact /> : null}
               {row.fingerprint ? (
                 <span className="contact-hex" aria-hidden="true">
                   <IdentitySeal fingerprint={row.fingerprint} size={24} />

@@ -10,6 +10,7 @@ import { ChevronDown } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { CardActionMenu, cardVerbBtnStyle } from '@/components/ui/CardActionMenu';
+import { VivreBurn } from '@/components/VivreBurn';
 
 export function ContactActionCard({
   testId = 'contact-action-card',
@@ -73,11 +74,30 @@ export function ContactActionCard({
         border: `1px solid ${
           distress ? E.accent2 : lit || introPending ? E.borderLit : E.border
         }`,
-        boxShadow: 'var(--se-glass-shadow)',
+        boxShadow: distress
+          ? '0 0 22px color-mix(in srgb, var(--se-accent2) 28%, transparent)'
+          : 'var(--se-glass-shadow)',
         fontFamily: E.fontSans,
         overflow: 'visible',
+        position: 'relative',
       }}
+      data-distress={distress ? '1' : '0'}
     >
+      {distress ? (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute',
+            inset: 0,
+            overflow: 'hidden',
+            borderRadius: 14,
+            pointerEvents: 'none',
+            zIndex: 2,
+          }}
+        >
+          <VivreBurn />
+        </div>
+      ) : null}
       {banner}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         {fingerprint ? (

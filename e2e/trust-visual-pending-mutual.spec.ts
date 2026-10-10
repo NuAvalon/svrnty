@@ -84,6 +84,8 @@ test('Galaxy: one-way trust is not white; Mutual trust is the only white light',
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Trusted');
   await ada.click({ force: true });
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual trust');
+  await expect(ada).toHaveAttribute('data-distress', 'true');
+  await expect(page.getByTestId('trust-node-detail').getByTestId('vivre-burn')).toBeVisible();
 });
 
 test('Address book chips: Ada Mutual trust, Alan Trusted (pre-wire)', async ({ page }) => {
@@ -97,6 +99,11 @@ test('Address book chips: Ada Mutual trust, Alan Trusted (pre-wire)', async ({ p
   const alanRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Alan Turing' });
   await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual trust');
   await expect(adaRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'mutual');
+  await expect(adaRow).toHaveAttribute('data-distress', '1');
+  await expect(adaRow.getByTestId('vivre-burn')).toBeVisible();
+  await adaRow.click();
+  await expect(page.getByTestId('contact-action-card').getByTestId('vivre-burn')).toBeVisible();
+  await expect(page.getByTestId('vivre-caution')).toBeVisible();
   await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Trusted');
   await expect(alanRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'trust-sent');
 });

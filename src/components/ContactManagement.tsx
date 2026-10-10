@@ -24,6 +24,8 @@ import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookList';
 import { BOOK_SORTS, sortBookContacts, type BookSort } from '@/components/contacts/sort-book';
 import { ContactActionCard } from '@/components/contacts/ContactActionCard';
+import { VivreCaution } from '@/components/VivreBurn';
+import { contactHasDistress } from '@/lib/trust/distress';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { CardMenuItem } from '@/components/ui/CardActionMenu';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
@@ -361,6 +363,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       pending: isPendingSvrntyContact(c),
       living,
       lastMoment: living.lastMoment,
+      distress: contactHasDistress(c),
     };
   });
 
@@ -1770,6 +1773,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               bondLabel={vis.label}
               bondColor={vis.chipColorCss}
               lit={vis.lit}
+              distress={contactHasDistress(focused)}
               introPending={pending}
               expanded={bookSheetExpanded}
               onToggleExpand={() => setBookSheetExpanded((v) => !v)}
@@ -1840,6 +1844,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               )}
               more={(
                 <>
+                  {contactHasDistress(focused) ? <VivreCaution /> : null}
                   {focused.email ? (
                     <p style={{ margin: '8px 0 0', fontSize: 12 }}>
                       <ContactMethodLink safe={safeEmailLink(focused.email)} style={{ color: E.muted }} />
