@@ -280,8 +280,8 @@ export function TrustMapGalaxy({
       } else if (outboundTrust && !dim) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
-        ctx.strokeStyle = vis?.canvasStroke || '#8f7550';
-        ctx.lineWidth = 1.15;
+        ctx.strokeStyle = vis?.haloStroke || '#f9a825';
+        ctx.lineWidth = 1.7;
         ctx.setLineDash([]);
         ctx.stroke();
       } else if (linkKind === 'witnessed-trust' && !dim) {
@@ -323,6 +323,13 @@ export function TrustMapGalaxy({
           ctx.fillStyle = vis.coreFill;
           ctx.fill();
         }
+      } else if (vis?.shape === 'outer-ring') {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = vis.canvasStroke;
+        ctx.lineWidth = 1.05;
+        ctx.setLineDash([]);
+        ctx.stroke();
       } else if (vis?.shape === 'half-filled') {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);

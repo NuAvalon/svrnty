@@ -28,10 +28,11 @@ export type TrustBondShape =
   | 'outline'
   | 'dashed-hollow'
   | 'half-filled'
+  | 'outer-ring'
   | 'solid-filled'
   | 'struck';
 
-/** Spoke paint. One-way is a dual thin pair — never a dash, never the mutual glow. */
+/** Spoke paint. Mutual is the only thick-bright line. Outbound uses the dim Known spoke. */
 export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
 
 export const TRUST_VISUAL_LABELS = {
@@ -54,6 +55,8 @@ const INBOUND_STROKE = '#f9a825';
 const MUTUAL_FILL = 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
 const MUTUAL_CANVAS_FILL = 'rgba(255,122,26,0.55)';
 const KNOWN_STROKE = 'rgba(249,168,37,0.55)';
+const KNOWN_SPOKE = 'rgba(249,168,37,0.42)';
+const ONE_WAY_OUTER = '#f9a825';
 const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 
 /** Intro-handshake dash — connection axis only. One-way trust is never dashed. */
@@ -199,23 +202,23 @@ export function trustPhaseVisual(input: {
       label,
       lit: false,
       white: false,
-      shape: 'half-filled',
+      shape: 'outer-ring',
       introPending,
       verifiedMark: input.verified === true,
-      svgFill: ONE_WAY_HALF_FILL,
-      svgStroke: MUTED_STROKE,
-      svgStrokeWidth: 1.25,
+      svgFill: 'transparent',
+      svgStroke: KNOWN_STROKE,
+      svgStrokeWidth: 1.05,
       svgDasharray: undefined,
-      canvasFill: ONE_WAY_HALF_FILL,
-      canvasStroke: MUTED_STROKE,
+      canvasFill: null,
+      canvasStroke: KNOWN_STROKE,
       canvasDash: null,
       coreFill: null,
-      haloStroke: MUTED_STROKE,
-      spokeStroke: MUTED_STROKE,
+      haloStroke: ONE_WAY_OUTER,
+      spokeStroke: KNOWN_SPOKE,
       spokeDasharray: undefined,
-      spokeStyle: 'dual-thin',
+      spokeStyle: 'single',
       spokeGlow: false,
-      chipColorCss: 'var(--se-muted)',
+      chipColorCss: 'var(--se-accent)',
     };
   }
 

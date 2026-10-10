@@ -64,19 +64,24 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.svgDasharray, undefined);
   });
 
-  it('outbound is half-filled, dual-thin, never white, labeled Awaiting mutual', () => {
+  it('outbound lights the outer ring only — inner core and Known spoke stay dim', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
     assert.equal(v.bondState, 'trust-sent');
     assert.equal(v.lit, false);
     assert.equal(v.white, false);
-    assert.equal(v.shape, 'half-filled');
-    assert.equal(v.spokeStyle, 'dual-thin');
+    assert.equal(v.shape, 'outer-ring');
+    assert.equal(v.spokeStyle, 'single');
     assert.equal(v.label, TRUST_VISUAL_LABELS['trust-sent']);
     assert.equal(v.coreFill, null);
+    assert.equal(v.haloStroke, '#f9a825');
+    assert.equal(v.svgFill, 'transparent');
     assert.equal(v.spokeGlow, false);
     assert.equal(v.svgDasharray, undefined);
     assert.equal(v.spokeDasharray, undefined);
     assert.equal(usesWhite(v), false);
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
+    assert.equal(v.spokeStyle, known.spokeStyle);
+    assert.equal(v.spokeStroke, known.spokeStroke);
   });
 
   it('pending vs mutual differ on shape AND color AND label', () => {
@@ -85,9 +90,9 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.notEqual(outbound.shape, mutual.shape);
     assert.notEqual(outbound.svgStroke, mutual.svgStroke);
     assert.notEqual(outbound.label, mutual.label);
-    assert.equal(outbound.shape, 'half-filled');
+    assert.equal(outbound.shape, 'outer-ring');
     assert.equal(mutual.shape, 'solid-filled');
-    assert.equal(outbound.spokeStyle, 'dual-thin');
+    assert.equal(outbound.spokeStyle, 'single');
     assert.equal(mutual.spokeStyle, 'thick-bright');
     assert.equal(outbound.label, 'Awaiting mutual');
     assert.equal(mutual.label, 'Mutual');

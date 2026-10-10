@@ -44,9 +44,11 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(alan).toHaveAttribute('data-bond-state', 'trust-sent');
   await expect(alan).not.toHaveAttribute('data-light', 'white');
   await expect(alan).toHaveAttribute('data-mutual', 'false');
-  await expect(alan).toHaveAttribute('data-shape', 'hex-half');
-  await expect(alan).toHaveAttribute('data-spoke-style', 'dual-thin');
-  await expect(page.locator('[data-testid="trust-node-awaiting"]').first()).toBeVisible();
+  await expect(alan).toHaveAttribute('data-shape', 'hex-ring');
+  await expect(alan).toHaveAttribute('data-spoke-style', 'single');
+  const alanRing = page.locator('[data-testid="trust-node-awaiting"][data-ring="outer"]');
+  await expect(alanRing.first()).toBeVisible();
+  await expect(alan.locator('xpath=ancestor::g[1]//*[local-name()="circle" and @data-testid="trust-node-light"]')).toHaveCount(0);
 
   // Intro handshake is a separate axis from trust-sent (Frank is not one-way trust).
   await expect(frank).not.toHaveAttribute('data-bond-state', 'trust-sent');
@@ -54,7 +56,7 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(frank).toHaveAttribute('data-bond-state', 'known');
 
   await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Mutual · full/i);
-  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Awaiting · half/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Awaiting · outer/i);
   await expect(page.getByTestId('trust-map-consent-legend')).toContainText(
     /Every visible line consented — none inferred/,
   );

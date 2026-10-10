@@ -1663,7 +1663,7 @@ export function TrustMap({
           }}
         >
           <span style={{ color: E.accent2 }}>Mutual · full</span>
-          <span style={{ color: E.muted }}>Awaiting · half</span>
+          <span style={{ color: E.accent }}>Awaiting · outer</span>
           <span style={{ color: E.accent }}>Trusts you</span>
           <span>Known</span>
         </div>
@@ -1855,6 +1855,18 @@ function ContactNode({
           style={{ pointerEvents: 'none' }}
         />
       )}
+      {visual.shape === 'outer-ring' && visual.haloStroke ? (
+        <polygon
+          data-testid="trust-node-awaiting"
+          data-ring="outer"
+          points={hexagonPoints(node.x, node.y, r + 4)}
+          fill="none"
+          stroke={visual.haloStroke}
+          strokeOpacity={0.92}
+          strokeWidth={1.7}
+          style={{ pointerEvents: 'none' }}
+        />
+      ) : null}
       <polygon
         data-testid="trust-node"
         data-fingerprint={node.id}
@@ -1868,15 +1880,17 @@ function ContactNode({
         data-shape={
           visual.shape === 'half-filled'
             ? 'hex-half'
-            : visual.shape === 'dashed-hollow'
-              ? 'hex-dashed'
-              : 'hex'
+            : visual.shape === 'outer-ring'
+              ? 'hex-ring'
+              : visual.shape === 'dashed-hollow'
+                ? 'hex-dashed'
+                : 'hex'
         }
         data-spoke-style={visual.spokeStyle}
         data-glass={lane}
         data-light={visual.lit ? 'white' : visual.verifiedMark ? 'ember' : 'none'}
         points={hexagonPoints(node.x, node.y, r)}
-        fill={visual.shape === 'half-filled' ? 'transparent' : visual.svgFill}
+        fill={visual.shape === 'half-filled' || visual.shape === 'outer-ring' ? 'transparent' : visual.svgFill}
         stroke={picked ? E.accent : selected ? T.selfDot : visual.svgStroke}
         strokeWidth={picked || visual.lit ? 1.85 : visual.svgStrokeWidth}
         strokeDasharray={visual.svgDasharray || (node.state === 'decayed' ? '2 2' : undefined)}
@@ -1884,7 +1898,7 @@ function ContactNode({
         <title>{`${node.name} — ${visual.label}`}</title>
       </polygon>
       {visual.shape === 'half-filled' && (
-        <g data-testid="trust-node-awaiting" style={{ pointerEvents: 'none' }}>
+        <g data-testid="trust-node-inbound-half" style={{ pointerEvents: 'none' }}>
           <clipPath id={`half-hex-${node.id}`}>
             <polygon points={halfFillVertical(node.x, node.y, r + 1).points} />
           </clipPath>
