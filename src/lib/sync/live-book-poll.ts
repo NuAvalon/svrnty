@@ -1,24 +1,24 @@
 // src/lib/sync/live-book-poll.ts
-// The RUNTIME poll call-site for the living address book (demo-spine beat-4 — Athena).
+// The RUNTIME poll call-site for the living address book (demo-spine beat-4).
 //
-// consumeInboundContactUpdates (PR#33) is deliberately seam-injected so it stays IndexedDB-free and
+// consumeInboundContactUpdates is deliberately seam-injected so it stays IndexedDB-free and
 // crypto-agnostic. This module is the one place those seams are bound to the real client runtime, and
 // the poll loop that actually drives them:
 //   • owner   — the unlocked local identity: fingerprint + armored public key (from `identity`) + the
 //               private key + passphrase (from loadKey; null while the session is locked).
 //   • decrypt — openpgpEnvelopeDecryptor bound to the owner's private key (the classical envelope;
-//               the hybrid-PQ decryptor is a named upgrade that swaps here with zero caller change,
-//               Flint #116410).
+//               the hybrid-PQ decryptor is a named upgrade that swaps here with zero caller change).
 //   • store   — a client-store adapter: getContactByFingerprint → {known, current}; updateContact = persist.
-//   • emit    — Apollo's live-beat seam: after a verified apply, emitContactChange({ids:[id],reason:'live-apply'})
+//   • emit    — the live-beat seam: after a verified apply, emitContactChange({ids:[id],reason:'live-apply'})
 //               so ContactManagement repaints the row data-live="push" — the honest beat-4 signal, which
 //               can ONLY fire on an incoming apply (a local ui-edit uses reason:'ui-edit').
 //
 // startLiveBookPolling(identity) opens a background interval (the "living" behaviour: Alice's book
-// self-updates when a peer's verified contact.update arrives) and returns stop(). It is FAIL-SOFT: a
-// locked identity or a transient poll error never throws to React — the book just stays static until a
-// later successful tick. All custody/verify/whitelist logic lives inside the caller; nothing here is
-// smart about the social graph.
+// self-updates when a peer's verified contact.update arrives, and Grow joiners land at the Gate).
+// The app shell owns the loop so Galaxy / Grow see arrivals without sitting on Contacts.
+// Returns stop() + burst(). FAIL-SOFT: a locked identity or a transient poll error never throws to
+// React — the book just stays static until a later successful tick. All custody/verify/whitelist
+// logic lives inside the caller; nothing here is smart about the social graph.
 
 import {
   consumeInboundContactUpdates,
@@ -29,16 +29,32 @@ import {
 } from './consume-mailbox';
 import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
 import { emitContactChange } from '@/lib/contacts/contact-events';
+import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
   loadKey,
   getContactByFingerprint,
   updateContact,
+  loadIssuedCodeMap,
+  isCodeOutstanding,
+  codeUnderCap,
+  alreadyAccepted,
   type ContactRecord,
+  type IssuedCodeMap,
 } from '@/lib/identity/client-store';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
+import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
+import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
+import type { JoinerResponseSeam, NoteResponseSeam } from './consume-mailbox';
+import { acceptInboundNote } from '@/lib/messaging/transport';
+import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
 
-const DEFAULT_POLL_INTERVAL_MS = 5_000;
+/** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
+export const DEFAULT_POLL_INTERVAL_MS = 1_500;
+/** After Grow mint / unlock / tab-focus — catch a joiner in ~a second, not a minute. */
+export const BURST_POLL_INTERVAL_MS = 350;
+export const DEFAULT_BURST_MS = 12_000;
 
 /**
  * Project a stored contact record into the verify seam's KnownContactIdentity.
@@ -53,7 +69,7 @@ export function recordToKnownContact(rec: ContactRecord): KnownContactIdentity {
     epoch: rec.epoch ?? 0,
     version: rec.version ?? 0,
     classicalPublicKeyArmored: rec.public_key,
-    // pqSigningPublicKey omitted by design: the wire envelope + signature are classical (Flint #116410 —
+    // pqSigningPublicKey omitted by design: the wire envelope + signature are classical (
     // the hybrid decryptor/verify path is a named upgrade, not yet on the wire). When hybrid lands, map
     // rec.pq_sig_public_key (base64) → Uint8Array here in lockstep with a hybrid decryptor swap.
   };
@@ -76,12 +92,78 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
   };
 }
 
+/**
+ * Build the R1 return-channel seam bound to this owner + a per-poll issued-code snapshot (see
+ * consume-mailbox JoinerResponseSeam). Exported for unit tests. The snapshot is loaded ONCE per poll
+ * (loadIssuedCodeMap, expiry-pruned) so the accept-oracle stays SYNCHRONOUS over a stable view;
+ * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
+ * recordAcceptedJoiner persists the accept across polls.
+ */
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): JoinerResponseSeam {
+  const ownFp = owner.fingerprint;
+
+  // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
+  // unexpired, under-cap Grow codes AND this (claimed) joiner has not already been accepted on it.
+  // Receives the CLAIMED joiner fp (pre-signature) — a false claim only hurts the claimant, since the
+  // crypto (Invariant-1 + signature) then requires a self-consistent, validly-signed identity.
+  const acceptNonce = (nonce: string, joinerFp: string): boolean =>
+    isCodeOutstanding(codes, ownFp, nonce, Date.now())
+    && codeUnderCap(codes, ownFp, nonce) // per-code cap (issuer-chosen at generation; default 1)
+    && !alreadyAccepted(codes, ownFp, nonce, joinerFp);
+
+  return {
+    verify: (blob: string): Promise<PendingJoiner | null> =>
+      verifyJoinerResponse(
+        blob,
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
+        acceptNonce,
+        { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical
+      ),
+    accept: async (pj: PendingJoiner): Promise<{ ignited: boolean } | null> => {
+      // Gate, not Known: consume the return-channel and the issued-code slot, but do not addContact
+      // until the owner admits them. Methods / Galaxy / PSI stay closed until Admit.
+      return acceptJoinerAtGate(ownFp, pj, codes);
+    },
+  };
+}
+
+/**
+ * Build the over-wire NOTE seam bound to this owner (consume-mailbox NoteResponseSeam). The mailbox is
+ * shared by contact.updates + joiner-responses + over-wire notes — all the SAME openpgp envelope — so
+ * WITHOUT this seam the always-on living-book poll decrypts a note via the contact-update path, fails
+ * its `envelope.fingerprint` shape-check, and SILENTLY ack-DELETES it (the silent-loss). This routes a
+ * note by its own type-checked decryptor to acceptInboundNote (authn-then-admit, fail-closed) → the
+ * notes store. Exported for unit tests.
+ */
+export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
+  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  return {
+    // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
+    // the type-check inside noteOpenpgpDecryptor is the discriminator, so this never eats a non-note.
+    verify: (blob: string) => decryptNote(blob),
+    accept: async (wire) => {
+      // acceptInboundNote: verifyNoteSender (authn — public_key↔from_fingerprint + sig) THEN admit
+      // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
+      // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
+      // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
+      const rec = await acceptInboundNote({
+        wire,
+        isAdmitted: async (fp) => (await getContactByFingerprint(owner.fingerprint, fp)) != null,
+      });
+      return rec ? { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint } : null;
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
   opts: { fetchImpl?: typeof fetch } = {},
 ): Promise<ConsumeDeps | null> {
-  const id = identity as { identity?: { fingerprint?: string; public_key?: string } } | null;
+  const id = identity as {
+    identity?: { fingerprint?: string; public_key?: string };
+    post_quantum?: { kem_public_key?: string; sig_public_key?: string };
+  } | null;
   const fingerprint = id?.identity?.fingerprint;
   const publicKeyArmored = id?.identity?.public_key;
   if (!fingerprint || !publicKeyArmored) return null;
@@ -92,18 +174,46 @@ export async function buildConsumeDeps(
     publicKeyArmored,
     privateKeyArmored: key.privateKey,
     passphrase: key.passphrase,
+    // §5 canonical-id: thread the identity's PQ pubkeys so the owner-auth bundle lets the relay
+    // recompute the 64-hex canonical fp. IdentityData.post_quantum is top-level (browser-identity.ts).
+    // Absent (classical identity) → verify falls back to the 40-hex OpenPGP path.
+    kemPublicKey: id?.post_quantum?.kem_public_key,
+    sigPublicKey: id?.post_quantum?.sig_public_key,
   };
+  // R1 return-channel: load the issued-code snapshot ONCE per poll (this fn is called per poll cycle by
+  // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects
+  // codes minted since the last poll. loadIssuedCodeMap prunes expired entries.
+  const codes: IssuedCodeMap = await loadIssuedCodeMap();
+  // Unlock the notes store so received over-wire notes PERSIST on arrival (not just once /msg is open).
+  // Same unlock passphrase the vault uses (store.ts initNotesStore, separate salt); the poll only runs
+  // for an UNLOCKED identity, so the credential is already in memory — no new trust boundary crossed.
+  // Guarded (idempotent) + fail-soft: if it can't unlock, the note seam's putNote throws → the note is
+  // held as retryable in the mailbox (never ack-deleted-unseen), so there is still no silent-loss.
+  if (!isNotesStoreUnlocked()) {
+    try {
+      await initNotesStore(key.passphrase);
+    } catch {
+      /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
+    }
+  }
   return {
     owner,
     decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase),
     store: buildContactStore(fingerprint),
+    joiner: buildJoinerSeam(owner, codes),
+    note: buildNoteSeam(owner),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
+    // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
+    // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)
+    emitNote: (e) => emitNoteArrival(e),
     fetchImpl: opts.fetchImpl,
   };
 }
 
 export interface LiveBookPollHandle {
   stop: () => void;
+  /** Temporarily poll at BURST_POLL_INTERVAL_MS, then settle back. Immediate tick. */
+  burst: (durationMs?: number) => void;
 }
 
 /**
@@ -116,6 +226,20 @@ export interface LiveBookPollHandle {
  * The first tick fires immediately so a freshly-opened book catches already-waiting mail without waiting
  * a full interval.
  */
+/**
+ * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
+ * identity is a no-op (the book is still re-read by the caller). Does not invent
+ * a living wire; it only consumes what the mailbox already has.
+ */
+export async function pollLiveBookOnce(
+  identity: unknown,
+  opts: { fetchImpl?: typeof fetch } = {},
+): Promise<void> {
+  const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
+  if (!deps) return;
+  await consumeInboundContactUpdates(deps);
+}
+
 export function startLiveBookPolling(
   identity: unknown,
   opts: { intervalMs?: number; fetchImpl?: typeof fetch } = {},
@@ -123,6 +247,8 @@ export function startLiveBookPolling(
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
   let inFlight = false;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let burstTimer: ReturnType<typeof setTimeout> | null = null;
 
   const tick = async () => {
     if (stopped || inFlight) return; // never overlap polls
@@ -139,13 +265,34 @@ export function startLiveBookPolling(
     }
   };
 
+  const setCadence = (ms: number) => {
+    if (timer) clearInterval(timer);
+    if (stopped) return;
+    timer = setInterval(() => void tick(), ms);
+  };
+
+  const burst = (durationMs = DEFAULT_BURST_MS) => {
+    if (stopped) return;
+    void tick();
+    setCadence(BURST_POLL_INTERVAL_MS);
+    if (burstTimer) clearTimeout(burstTimer);
+    burstTimer = setTimeout(() => {
+      burstTimer = null;
+      if (!stopped) setCadence(intervalMs);
+    }, durationMs);
+  };
+
   void tick(); // immediate first poll
-  const timer = setInterval(() => void tick(), intervalMs);
+  setCadence(intervalMs);
 
   return {
     stop: () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearInterval(timer);
+      timer = null;
+      if (burstTimer) clearTimeout(burstTimer);
+      burstTimer = null;
     },
+    burst,
   };
 }

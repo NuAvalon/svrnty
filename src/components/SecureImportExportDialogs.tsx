@@ -21,6 +21,7 @@ import {
   loadKey,
   loadPQKeys,
 } from '@/lib/identity/client-store';
+import { contactsEncryptedExportFilename } from '@/components/export/contacts-export-name';
 
 // ── Helpers ────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ export function SecureExportDialog({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [includePublicKeys, setIncludePublicKeys] = useState(true);
-  const [usePassword, setUsePassword] = useState(true);
+  // CUR-4: password protection is REQUIRED — no plaintext contacts export.
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [exportedData, setExportedData] = useState<string | null>(null);
@@ -114,30 +115,33 @@ export function SecureExportDialog({
       let result: string;
       let method: string;
 
-      if (usePassword && password) {
-        // Encrypt with AES-256-GCM via password
-        const salt = new Uint8Array(16);
-        crypto.getRandomValues(salt);
-        const iv = new Uint8Array(12);
-        crypto.getRandomValues(iv);
-        const key = await deriveKey(password, salt);
-        const enc = new TextEncoder();
-        const encrypted = new Uint8Array(
-          await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr))
-        );
-        result = JSON.stringify({
-          encrypted: true,
-          algorithm: 'AES-256-GCM',
-          kdf: 'PBKDF2-SHA256-100k',
-          salt: toBase64(salt),
-          iv: toBase64(iv),
-          data: toBase64(encrypted),
-        });
-        method = 'AES-256-GCM';
-      } else {
-        result = jsonStr;
-        method = 'none';
+      if (!password || password.length < 8) {
+        throw new Error('A password (8+ characters) is required to export contacts.');
       }
+
+      // Encrypt with AES-256-GCM via password
+      // NOTE (CUR-4 README): this dialog still uses the legacy PBKDF2 path that
+      // lived here before polish. Fleet preferred path for identity is packVault
+      // (Argon2id). Contacts-only Argon2id seam = follow-up — do not invent
+      // a parallel KDF in the UI.
+      const salt = new Uint8Array(16);
+      crypto.getRandomValues(salt);
+      const iv = new Uint8Array(12);
+      crypto.getRandomValues(iv);
+      const key = await deriveKey(password, salt);
+      const enc = new TextEncoder();
+      const encrypted = new Uint8Array(
+        await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(jsonStr))
+      );
+      result = JSON.stringify({
+        encrypted: true,
+        algorithm: 'AES-256-GCM',
+        kdf: 'PBKDF2-SHA256-100k',
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        data: toBase64(encrypted),
+      });
+      method = 'AES-256-GCM';
 
       setExportedData(result);
       setExportComplete(true);
@@ -166,7 +170,8 @@ export function SecureExportDialog({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `svrnty-contacts-${new Date().toISOString().split('T')[0]}.svrnty`;
+      // Not bare `.svrnty` — that is the identity vault. See contacts-export-name.ts.
+      a.download = contactsEncryptedExportFilename();
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -177,7 +182,6 @@ export function SecureExportDialog({
   const handleClose = () => {
     setExportedData(null);
     setExportComplete(false);
-    setUsePassword(false);
     setPassword('');
     setIncludePublicKeys(true);
     setError(null);
@@ -186,11 +190,11 @@ export function SecureExportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle>Secure Contact Export</DialogTitle>
-          <DialogDescription>
-            Export your contacts with encryption for secure backup or transfer.
+          <DialogTitle className="text-[var(--se-text)]">Export contacts</DialogTitle>
+          <DialogDescription className="text-[var(--se-muted)]">
+            Password-protected contacts only — not your identity vault. For keys + contacts + trust, use Full Backup (.svrnty).
           </DialogDescription>
         </DialogHeader>
 
@@ -212,48 +216,37 @@ export function SecureExportDialog({
               <Label htmlFor="includePublicKeys">Include public keys</Label>
             </div>
 
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="usePassword"
-                checked={usePassword}
-                onCheckedChange={(checked) => setUsePassword(checked === true)}
-              />
-              <Label htmlFor="usePassword">Password-protect export</Label>
-            </div>
-
-            {usePassword && (
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <div className="flex">
-                  <Input
-                    id="password"
-                    type={showPassword ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Enter secure password"
-                    className="flex-1"
-                  />
-                  <Button
-                    variant="outline"
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="ml-2"
-                  >
-                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                </div>
-                <p className="text-xs text-slate-500">
-                  Choose a strong password you can remember. This password will be needed to import these contacts.
-                </p>
+            <div className="space-y-2">
+              <Label htmlFor="password">Export password (required)</Label>
+              <div className="flex">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter a password (8+ characters)"
+                  className="flex-1"
+                />
+                <Button
+                  variant="outline"
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="ml-2"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
               </div>
-            )}
+              <p className="text-xs text-[var(--se-dim)]">
+                You will need this password to import these contacts. This file cannot restore your identity.
+              </p>
+            </div>
           </div>
         ) : (
           <div className="space-y-4 py-4">
-            <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900">
-              <Lock className="h-4 w-4 text-green-600 dark:text-green-500" />
-              <AlertDescription className="text-green-800 dark:text-green-300">
-                Your contacts have been successfully exported with encryption.
+            <Alert className="bg-[color-mix(in_srgb,var(--se-ok)_12%,var(--se-surface-solid))] border-[var(--se-border)]">
+              <Lock className="h-4 w-4 text-[var(--se-ok)]" />
+              <AlertDescription className="text-[var(--se-text)]">
+                Your contacts have been exported with password protection.
               </AlertDescription>
             </Alert>
 
@@ -286,15 +279,12 @@ export function SecureExportDialog({
               </div>
             </div>
 
-            {usePassword && (
-              <Alert>
-                <AlertTitle>Password Protection</AlertTitle>
-                <AlertDescription>
-                  You will need the password <span className="font-medium">{password}</span> to import these contacts.
-                  Please save it securely.
-                </AlertDescription>
-              </Alert>
-            )}
+            <Alert>
+              <AlertTitle>Password Protection</AlertTitle>
+              <AlertDescription>
+                You will need the export password to import these contacts. Save it securely — it is not shown again after you close this dialog.
+              </AlertDescription>
+            </Alert>
           </div>
         )}
 
@@ -309,12 +299,12 @@ export function SecureExportDialog({
           {!exportComplete && (
             <Button
               onClick={handleExport}
-              disabled={loading || (usePassword && !password)}
-              className="bg-blue-600 hover:bg-blue-700"
+              disabled={loading || password.length < 8}
+              className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
                 <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Exporting...</> :
-                <><Lock className="h-4 w-4 mr-2" />Secure Export</>
+                <><Lock className="h-4 w-4 mr-2" />Export contacts</>
               }
             </Button>
           )}
@@ -421,13 +411,13 @@ export function PrivateKeyExportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Key className="h-5 w-5" />
+          <DialogTitle className="flex items-center gap-2 text-[var(--se-text)]">
+            <Key className="h-5 w-5 text-[var(--se-accent)]" />
             Download Private Key
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-[var(--se-muted)]">
             Export your private key as a password-protected file. Store it securely — this file can access your identity.
           </DialogDescription>
         </DialogHeader>
@@ -441,15 +431,15 @@ export function PrivateKeyExportDialog({
 
         {!exportComplete ? (
           <div className="space-y-4 py-4">
-            <Alert className="bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800">
-              <ShieldCheck className="h-4 w-4 text-amber-600 dark:text-amber-400" />
-              <AlertDescription className="text-amber-800 dark:text-amber-300 text-sm">
+            <Alert className="bg-[color-mix(in_srgb,var(--se-accent)_10%,var(--se-surface-solid))] border-[var(--se-border-lit)]">
+              <ShieldCheck className="h-4 w-4 text-[var(--se-accent)]" />
+              <AlertDescription className="text-[var(--se-text)] text-sm">
                 Your private key will be encrypted with AES-256-GCM using your password. Without this password, the file cannot be decrypted.
               </AlertDescription>
             </Alert>
 
             <div className="space-y-2">
-              <Label htmlFor="keyPassword">Password (minimum 8 characters)</Label>
+              <Label htmlFor="keyPassword" className="text-[var(--se-muted)]">Password (minimum 8 characters)</Label>
               <div className="flex">
                 <Input
                   id="keyPassword"
@@ -475,7 +465,7 @@ export function PrivateKeyExportDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="confirmKeyPassword">Confirm Password</Label>
+              <Label htmlFor="confirmKeyPassword" className="text-[var(--se-muted)]">Confirm Password</Label>
               <Input
                 id="confirmKeyPassword"
                 type={showPassword ? 'text' : 'password'}
@@ -484,15 +474,15 @@ export function PrivateKeyExportDialog({
                 placeholder="Confirm your password"
               />
               {confirmPassword && !passwordsMatch && (
-                <p className="text-xs text-red-500">Passwords do not match</p>
+                <p className="text-xs text-[var(--se-danger)]">Passwords do not match</p>
               )}
             </div>
           </div>
         ) : (
           <div className="space-y-4 py-4">
-            <Alert className="bg-green-50 dark:bg-green-900/20 border-green-100 dark:border-green-900">
-              <Lock className="h-4 w-4 text-green-600 dark:text-green-500" />
-              <AlertDescription className="text-green-800 dark:text-green-300">
+            <Alert className="bg-[color-mix(in_srgb,var(--se-ok)_12%,var(--se-surface-solid))] border-[var(--se-border)]">
+              <Lock className="h-4 w-4 text-[var(--se-ok)]" />
+              <AlertDescription className="text-[var(--se-text)]">
                 Your private key has been downloaded as a password-protected file. Store it in a secure location and remember your password.
               </AlertDescription>
             </Alert>
@@ -508,7 +498,7 @@ export function PrivateKeyExportDialog({
             <Button
               onClick={handleExport}
               disabled={loading || !passwordValid || !passwordsMatch}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ? (
                 <>
@@ -640,11 +630,11 @@ export function SecureImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md bg-[var(--se-surface-solid)] text-[var(--se-text)] border-[var(--se-border)]">
         <DialogHeader>
-          <DialogTitle>Secure Contact Import</DialogTitle>
-          <DialogDescription>
-            Import contacts from an encrypted export.
+          <DialogTitle className="text-[var(--se-text)]">Import contacts</DialogTitle>
+          <DialogDescription className="text-[var(--se-muted)]">
+            Import contacts from a password-protected contacts export (not an identity vault).
           </DialogDescription>
         </DialogHeader>
 
@@ -731,11 +721,11 @@ export function SecureImportDialog({
             <Button
               onClick={handleImport}
               disabled={loading || !importData || (needsPassword && !password)}
-              className="bg-blue-600 hover:bg-blue-700"
+              className="bg-[color-mix(in_srgb,var(--se-accent)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--se-accent)_28%,transparent)] text-[var(--se-accent)] border border-[var(--se-border-lit)]"
             >
               {loading ?
                 <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Importing...</> :
-                <><Upload className="h-4 w-4 mr-2" />Secure Import</>
+                <><Upload className="h-4 w-4 mr-2" />Import contacts</>
               }
             </Button>
           )}

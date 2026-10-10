@@ -4,11 +4,13 @@
 // I-4 ANTI-EXISTENCE-ORACLE (the load-bearing gate): owner-auth is verified FIRST, before any store
 // access, so a non-owner never reaches the store and the response cannot depend on the mailbox's
 // existence/occupancy. owner-auth-fail ≡ no-mailbox ≡ empty — one code path, identical bytes+status
-// +latency (joint §5 §C; Flint D2 — no 404-vs-expired two-latency split reproduced here).
+// +latency (joint §5 §C; no 404-vs-expired two-latency split reproduced here).
 
 import { NextResponse } from 'next/server';
 import { pollMailbox } from '@/lib/relay/mailbox-store';
 import { verifyMailboxPollAuth } from '@/lib/relay/mailbox-auth';
+import { mailboxConfig } from '@/lib/relay/mailbox-config';
+import { isMailboxClaimed } from '@/lib/relay/claim-registry';
 
 // The single uniform non-owner response — computed WITHOUT touching the store, so its latency and
 // bytes are independent of any mailbox's state. It never contains a stored blob.
@@ -25,6 +27,16 @@ export async function GET(request: Request) {
     // path below and never learn whether the mailbox exists.
     const isOwner = await verifyMailboxPollAuth(request, mailboxId, Date.now());
     if (!isOwner) return nonOwner();
+
+    // §5.1 BETA-ADMISSION (layer A, criterion-1): under the inviteRequired profile an UNCLAIMED mailbox
+    // is UNREADABLE — the owner-authed poll returns empty until the owner redeems a beta-access token
+    // (POST /api/relay/claim). This does NOT discard the buffered deposits (they stay in mailbox-store)
+    // → claiming UNLOCKS them = RETROACTIVE delivery, no silent-loss. Door-open profile
+    // (inviteRequired=false, the default) skips this entirely. Empty [] is indistinguishable from a
+    // drained mailbox, so it adds no new oracle (the owner has already authed).
+    if (mailboxConfig().inviteRequired && !isMailboxClaimed(mailboxId)) {
+      return NextResponse.json([]);
+    }
 
     // Authenticated owner only: an absent mailbox reads as empty ([]), which the owner already knows.
     const list = pollMailbox(mailboxId, Date.now());

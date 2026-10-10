@@ -19,7 +19,7 @@ function edge(over: Partial<TrustEdge>): TrustEdge {
   } as TrustEdge;
 }
 
-test('GRAY = not trusted (known, not vouched)', () => {
+test('GRAY = not trusted (known, not Trusted)', () => {
   assert.equal(getContactState(edge({ trusted: false })), 'gray');
 });
 

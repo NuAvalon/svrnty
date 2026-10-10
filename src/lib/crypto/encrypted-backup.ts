@@ -15,8 +15,8 @@
 // hardening: the import path clamps KDF params (assertParamsWithinLimits)
 // before deriveKey, so a crafted file can't OOM/hang the browser.
 //
-// Spec reference: svrnty_unified_spec.md §Phase 1 — Flint finding #2.
-// Parameters: Argon2id t=3, m=64MB (65536 KiB), p=1  (Flint spec v0.1.3).
+// Spec reference §Phase 1.
+// Parameters: Argon2id t=3, m=64MB (65536 KiB), p=1  (spec v0.1.3).
 
 import type { SovereignBackup } from '@/lib/identity/client-store';
 import {

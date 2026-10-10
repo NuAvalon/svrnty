@@ -1,8 +1,8 @@
 // src/lib/format/canonical.ts
-// Canonical serialization for signed svrnty objects (Queue B lane 0.1/0.2 — Archie).
-// This is the byte-string Flint's 0.1 canonical-sign-envelope signs over. Byte-identical
-// across implementations for equal input — the seam contract between format (me) and crypto (Flint).
-// Spec: shared/outbox/archie/svrnty_queueB_0.13_dedup_and_0.1_0.2_format_v1.md §A1
+// Canonical serialization for signed svrnty objects (Queue B lane 0.1/0.2).
+// This is the byte-string the 0.1 canonical-sign-envelope signs over. Byte-identical
+// across implementations for equal input — the seam contract between format and crypto.
+// Spec §A1
 
 export interface CanonicalizeOptions {
   /** Top-level keys to exclude from the canonical form (e.g. ['signature']). */

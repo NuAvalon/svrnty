@@ -9,7 +9,8 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
+import { deriveNextAuthorityCommitment, mintCanonicalFingerprint } from './fingerprint';
 import {
   generatePQKeypairBundle,
   serializeKeypairBundle,
@@ -33,6 +34,7 @@ import {
   storeVault,
   loadVault,
   storeShards,
+  initDeviceMailboxAtGenesis,
   setActiveFingerprint,
   getActiveFingerprint,
   hasIdentity,
@@ -43,6 +45,10 @@ import {
   lockSession,
   type SovereignBackup,
 } from './client-store';
+// piece-2: run-once-at-mint hook registry. generateIdentity fires registered genesis hooks (e.g. the
+// spine's empty-suppression-record init) synchronously in the mint flow — see identity-genesis-hooks.ts.
+import { runGenesisHooks } from './identity-genesis-hooks';
+import type { DeviceMailboxPublic } from './device-mailbox';
 import {
   encryptBackup,
   decryptBackup,
@@ -81,6 +87,16 @@ interface IdentityData {
     kem_algorithm: 'ML-KEM-1024';
     kem_public_key: string;
   };
+  /** Epoch+1 authority-key hash — minted at genesis while masterSecret is in-hand. */
+  next_authority_commitment?: string;
+  durable?: {
+    fingerprint: string;
+    epoch: number;
+    next_authority_commitment: string;
+  };
+  /** piece-2: PUBLIC device-mailbox block (onion seal-target), cached on the wrapper so the card builder
+   *  can carry it. Secrets live in the encrypted device_mailbox store, never here. Absent pre-feature. */
+  device_mailbox?: DeviceMailboxPublic;
 }
 
 interface ExportData {
@@ -126,11 +142,19 @@ export class BrowserIdentity {
       format: 'armored'
     });
 
-    const pubKeyObj = await readKey({ armoredKey: publicKey });
-    const fingerprint = pubKeyObj.getFingerprint();
-
-    // Generate post-quantum keys
+    // Generate post-quantum keys BEFORE minting the fingerprint — the identity id
+    // commits to all four public keys (sign ‖ enc ‖ kem ‖ sig).
     const pqBundle = generatePQKeypairBundle();
+
+    const locked = await readPrivateKey({ armoredKey: privateKey });
+    const unlocked = locked.isDecrypted()
+      ? locked
+      : await decryptKey({ privateKey: locked, passphrase });
+    const { fingerprint } = await mintCanonicalFingerprint({
+      decryptedIdentityKey: unlocked,
+      kemPublicKey: pqBundle.kem.publicKey,
+      sigPublicKey: pqBundle.signing.publicKey,
+    });
 
     const identity: IdentityData = {
       version: '0.2.0',
@@ -172,11 +196,22 @@ export class BrowserIdentity {
       classical_passphrase: passphrase,
       pq_signing_secret_key: uint8ToBase64(pqBundle.signing.secretKey),
       pq_kem_secret_key: uint8ToBase64(pqBundle.kem.secretKey),
+      // Carry the PQ PUBLIC keys too, so seed/vault RESTORE can reconstruct the canonical fp
+      // SHA256(sign‖enc‖kem‖sig) — @noble exposes no ML-DSA secret→public, so the pub must be stored.
+      pq_signing_public_key: uint8ToBase64(pqBundle.signing.publicKey),
+      pq_kem_public_key: uint8ToBase64(pqBundle.kem.publicKey),
+      // Carried INSIDE the encrypted bundle (not the plaintext KeyVault) so SEED restore has a
+      // claim to check its recompute against — the recovery envelope stays identity-blind. (#110)
+      identity_fingerprint: fingerprint,
     };
 
     const { vault, shards, seedPhrase, masterSecret } = await createKeyVault(
       keyBundle, threshold, totalShares, fingerprint
     );
+    // ORDER INVARIANT: derive the next-epoch authority pin BEFORE masterSecret.fill(0).
+    const next_authority_commitment = deriveNextAuthorityCommitment(masterSecret, 1);
+    identity.next_authority_commitment = next_authority_commitment;
+    identity.durable = { fingerprint, epoch: 0, next_authority_commitment };
 
     // Store vault in IndexedDB
     await storeVault(fingerprint, vault);
@@ -189,9 +224,20 @@ export class BrowserIdentity {
     // Zero master secret
     masterSecret.fill(0);
 
+    // piece-2: generate + vault-persist the long-lived device mailbox (onion receive keys) and cache its
+    // PUBLIC block on the identity wrapper so the signed card can carry the seal-target. ONCE, at genesis,
+    // session already unlocked (storeKey above would have thrown otherwise). Secrets stay in the encrypted
+    // device_mailbox store; only these public keys + content-fp are published (via the signed card).
+    identity.device_mailbox = await initDeviceMailboxAtGenesis(fingerprint);
+
     // Store identity
     await storeIdentity(fingerprint, identity);
     await setActiveFingerprint(fingerprint);
+
+    // piece-2: fire run-once genesis hooks SYNCHRONOUSLY in the mint flow (positive genesis EVENT, not a
+    // flag read). The spine hangs its empty-suppression-record init here; on `main` this is a no-op. Must
+    // run AFTER the identity is persisted so a hook keyed to the fingerprint sees a committed identity.
+    await runGenesisHooks(fingerprint);
 
     return { identity, fingerprint, seedPhrase, shards, vault };
   }
@@ -303,7 +349,8 @@ export class BrowserIdentity {
   }
 
   async importSovereignBackup(backup: SovereignBackup): Promise<string> {
-    return importAll(backup);
+    const report = await importAll(backup);
+    return report.fingerprint;
   }
 
   // ── Encrypted .svrnty file operations ────────────────────────────
@@ -328,7 +375,8 @@ export class BrowserIdentity {
     passphrase: string,
   ): Promise<string> {
     const backup = await decryptBackup(file, passphrase);
-    return importAll(backup);
+    const report = await importAll(backup);
+    return report.fingerprint;
   }
 
   /**
@@ -345,7 +393,8 @@ export class BrowserIdentity {
     }
 
     // Legacy plaintext backup
-    return importAll(parsed as SovereignBackup);
+    const report = await importAll(parsed as SovereignBackup);
+    return report.fingerprint;
   }
 }
 

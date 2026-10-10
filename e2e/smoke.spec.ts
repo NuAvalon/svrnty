@@ -7,4 +7,6 @@ test('landing renders the svrnty identity gate', async ({ page }) => {
   await page.goto('/');
   // The gate title is present on every no-identity landing (app/page.tsx gate + SoverentityFrontend).
   await expect(page.getByRole('heading', { name: /svrnty/i }).first()).toBeVisible();
+  // Navbar wordmark is one phrase (domain play), not brand + disconnected tagline.
+  await expect(page.getByText('SVRNTY.IS YOURS')).toBeVisible();
 });

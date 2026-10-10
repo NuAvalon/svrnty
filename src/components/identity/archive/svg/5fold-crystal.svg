@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="400" height="400">
+  <title>Crystal · 5fold</title>
+  <rect width="100" height="100" fill="#0c0805"/>
+  <circle cx="50" cy="50" r="39.68" fill="none" stroke="#f9a825" stroke-opacity="0.18" stroke-width="0.8" />
+<circle cx="50" cy="50" r="24.86968770729577" fill="none" stroke="#c9a227" stroke-opacity="0.155" stroke-width="0.7200000000000001" />
+<circle cx="50" cy="50" r="15.034182202804141" fill="none" stroke="#f9a825" stroke-opacity="0.13" stroke-width="0.64" />
+<circle cx="50" cy="50" r="9.44271909999159" fill="none" stroke="#c9a227" stroke-opacity="0.10499999999999998" stroke-width="0.56" />
+<circle cx="50" cy="50" r="5.695859237612318" fill="none" stroke="#f9a825" stroke-opacity="0.07999999999999999" stroke-width="0.48000000000000004" />
+  <polygon points="50.00,10.00 88.04,37.64 73.51,82.36 26.49,82.36 11.96,37.64" fill="none" stroke="#f9a825" stroke-opacity="0.45" stroke-width="1.05" />
+  <polygon points="50.00,25.28 73.51,42.36 64.53,70.00 35.47,70.00 26.49,42.36" fill="none" stroke="#f9a825" stroke-opacity="0.32" stroke-width="0.8" />
+  <polygon points="50.00,34.72 64.53,45.28 58.98,62.36 41.02,62.36 35.47,45.28" fill="none" stroke="#c9a227" stroke-opacity="0.22" stroke-width="0.7" />
+  <path d="M 86.80,50.00 A 36.80,36.80 0 1 1 13.20,50.00 A 36.80,36.80 0 1 1 86.80,50.00" fill="none" stroke="#f9a825" stroke-opacity="0.7" stroke-width="1.15" stroke-linejoin="miter" />
+<path d="M 72.74,50.00 A 22.74,22.74 0 1 1 27.26,50.00 A 22.74,22.74 0 1 1 72.74,50.00" fill="none" stroke="#f9a825" stroke-opacity="0.58" stroke-width="0.9999999999999999" stroke-linejoin="miter" />
+<path d="M 64.06,50.00 A 14.06,14.06 0 1 1 35.94,50.00 A 14.06,14.06 0 1 1 64.06,50.00" fill="none" stroke="#f9a825" stroke-opacity="0.45999999999999996" stroke-width="0.8499999999999999" stroke-linejoin="miter" />
+  <line x1="50" y1="13" x2="50" y2="7.799999999999997" stroke="#f9a825" stroke-opacity="0.4" stroke-width="1" />
+<line x1="72.45339663757247" y1="19.095550814877004" x2="74.80453764674238" y2="15.859482837377215" stroke="#f9a825" stroke-opacity="0.22" stroke-width="0.5" />
+<line x1="85.18909110292068" y1="38.566371208126945" x2="90.13458498765547" y2="36.95948283737722" stroke="#f9a825" stroke-opacity="0.4" stroke-width="1" />
+<line x1="86.33035892247486" y1="61.80444918512299" x2="90.13458498765547" y2="63.04051716262278" stroke="#f9a825" stroke-opacity="0.22" stroke-width="0.5" />
+<line x1="71.7480543348215" y1="79.93362879187305" x2="74.80453764674238" y2="84.14051716262279" stroke="#f9a825" stroke-opacity="0.4" stroke-width="1" />
+<line x1="50" y1="88.2" x2="50" y2="92.2" stroke="#f9a825" stroke-opacity="0.22" stroke-width="0.5" />
+<line x1="28.251945665178496" y1="79.93362879187305" x2="25.195462353257636" y2="84.14051716262279" stroke="#f9a825" stroke-opacity="0.4" stroke-width="1" />
+<line x1="13.669641077525135" y1="61.804449185123" x2="9.86541501234452" y2="63.040517162622784" stroke="#f9a825" stroke-opacity="0.22" stroke-width="0.5" />
+<line x1="14.810908897079315" y1="38.56637120812695" x2="9.865415012344513" y2="36.95948283737722" stroke="#f9a825" stroke-opacity="0.4" stroke-width="1" />
+<line x1="27.546603362427522" y1="19.095550814877008" x2="25.19546235325763" y2="15.859482837377222" stroke="#f9a825" stroke-opacity="0.22" stroke-width="0.5" />
+  <line x1="50" y1="50" x2="50" y2="10" stroke="#f9a825" stroke-opacity="0.55" stroke-width="1.05" />
+<line x1="50" y1="50" x2="88.04226065180615" y2="37.6393202250021" stroke="#f9a825" stroke-opacity="0.55" stroke-width="1.05" />
+<line x1="50" y1="50" x2="73.51141009169893" y2="82.36067977499789" stroke="#f9a825" stroke-opacity="0.55" stroke-width="1.05" />
+<line x1="50" y1="50" x2="26.48858990830108" y2="82.36067977499789" stroke="#f9a825" stroke-opacity="0.55" stroke-width="1.05" />
+<line x1="50" y1="50" x2="11.957739348193854" y2="37.63932022500211" stroke="#f9a825" stroke-opacity="0.55" stroke-width="1.05" />
+  <line x1="50" y1="25.278640450004204" x2="44.05965566196625" y2="17.10245790176124" stroke="#f9a825" stroke-opacity="0.42" stroke-width="0.75" />
+<line x1="50" y1="25.278640450004204" x2="56.11736659930716" y2="16.858807661823597" stroke="#f9a825" stroke-opacity="0.42" stroke-width="0.75" />
+<line x1="64.53085056010723" y1="45.278640450004204" x2="68.42369077082324" y2="39.92060556469148" stroke="#f9a825" stroke-opacity="0.32" stroke-width="0.6" />
+<line x1="64.53085056010723" y1="45.278640450004204" x2="70.82959833381805" y2="47.32522766328602" stroke="#f9a825" stroke-opacity="0.32" stroke-width="0.6" />
+<line x1="58.98055953159171" y1="62.3606797749979" x2="65.5568218567283" y2="64.49743693202919" stroke="#f9a825" stroke-opacity="0.32" stroke-width="0.6" />
+<line x1="58.98055953159171" y1="62.3606797749979" x2="58.98055953159171" y2="69.27537118656035" stroke="#f9a825" stroke-opacity="0.32" stroke-width="0.6" />
+<line x1="26.488589908301073" y1="42.3606797749979" x2="16.397947689466235" y2="45.639328179536655" stroke="#f9a825" stroke-opacity="0.42" stroke-width="0.75" />
+<line x1="26.488589908301073" y1="42.3606797749979" x2="20.06638652493176" y2="33.52127514853958" stroke="#f9a825" stroke-opacity="0.42" stroke-width="0.75" />
+  <line x1="46.9" y1="33.81794336797913" x2="53.1" y2="33.81794336797913" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="47.3" y1="28.750448535975096" x2="52.7" y2="28.750448535975096" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="47.3" y1="23.68295370397106" x2="52.7" y2="23.68295370397106" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="65.40530273482945" y1="42.31328504321568" x2="66.98128940614167" y2="47.16367327632096" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="66.85498085799108" y1="42.24444036857364" x2="68.19456952860648" y2="46.367270366713136" stroke="#c9a227" stroke-opacity="0.4" stroke-width="0.55" />
+<line x1="68.3402693549866" y1="41.7802414702358" x2="69.66904243079888" y2="45.86978449030496" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="60.63317510742665" y1="61.23270674165801" x2="57.397107129926866" y2="63.58384775082791" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="43.244595003192224" y1="64.5720523148495" x2="38.22868963806754" y2="60.927783750636166" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="42.04550274759841" y1="65.43135596465842" x2="37.78198318724244" y2="62.33372768507709" stroke="#c9a227" stroke-opacity="0.4" stroke-width="0.55" />
+<line x1="39.94238947712195" y1="68.43662765193099" x2="35.57369770749723" y2="65.26258728955165" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="36.96379074880165" y1="72.53631708992948" x2="32.59509897917693" y2="69.36227672755014" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="34.625201920948136" y1="47.68565395031978" x2="36.20118859226037" y2="42.835265717214504" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+<line x1="33.41192179848335" y1="46.88925104071196" x2="34.75151046909875" y2="42.76642104257247" stroke="#c9a227" stroke-opacity="0.4" stroke-width="0.55" />
+<line x1="29.92933473742867" y1="45.73928932180525" x2="31.25810781324094" y2="41.649746301736094" stroke="#c9a227" stroke-opacity="0.5" stroke-width="0.7" />
+  <path d="M 50.00,15.84 L 42.80,18.45 L 50.00,10.00 L 57.20,18.45 Z" fill="none" stroke="#f9a825" stroke-opacity="0.55" stroke-width="0.65" />
+<path d="M 58.98,62.36 L 65.12,63.09 L 64.53,70.00 L 57.77,68.43 Z" fill="none" stroke="#f9a825" stroke-opacity="0.55" stroke-width="0.65" />
+<path d="M 70.08,77.64 L 74.37,71.29 L 73.51,82.36 L 62.72,79.76 Z" fill="none" stroke="#f9a825" stroke-opacity="0.55" stroke-width="0.65" />
+<path d="M 35.47,45.28 L 30.03,51.02 L 26.49,42.36 L 34.44,37.44 Z" fill="none" stroke="#f9a825" stroke-opacity="0.55" stroke-width="0.65" />
+<path d="M 17.51,39.44 L 17.77,47.10 L 11.96,37.64 L 22.22,33.40 Z" fill="none" stroke="#f9a825" stroke-opacity="0.55" stroke-width="0.65" />
+  <polygon points="50.00,40.56 58.98,47.08 55.55,57.64 44.45,57.64 41.02,47.08" fill="none" stroke="#f9a825" stroke-opacity="0.8" stroke-width="1.1" />
+  <circle cx="50" cy="50" r="5.835921350012621" fill="none" stroke="#f9a825" stroke-width="1.05" />
+  <circle cx="50" cy="50" r="1.8" fill="none" stroke="#f9a825" stroke-width="1" />
+</svg>

@@ -1,0 +1,92 @@
+name: QA
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege (restored — "examinee can't tamper the exam" class, #110/#112):
+# PR-triggered jobs check out + run PR-modifiable test code, so the GITHUB_TOKEN must
+# NOT fall back to the repo default (read/WRITE). No job here needs write (no gh/api/
+# push/comment). A future write-needing job grants it narrowly at the job level, never
+# a blanket default.
+permissions:
+  contents: read
+
+# One job, one unified runner.
+#
+# - Gate (BLOCKING): every src/**/*.test.ts EXCEPT files in qa/quarantine.json must pass.
+# - Quarantine tier (informational): quarantined files still run so their other tests stay
+#   visible; a file that goes fully green FAILS the gate — drain the entry, don't let it
+#   collect dust.
+# - Quarantine lint (BLOCKING): expired/invalid entries fail — exceptions are enumerated
+#   and have owners + expiry, not a silent red badge.
+#
+# Claim sweep stays parked until Hypatia lands scripts/claim-sweep.ts + a CI-claimed ledger.
+# A no-op job reporting green would be false evidence — worse than nothing.
+# Re-enable when the contract exists. --Hypatia
+
+jobs:
+  unified:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+
+      - name: Quarantine lint (blocking)
+        run: node scripts/qa-quarantine.mjs check
+
+      - name: Unified suite — gate tier (blocking)
+        env:
+          FORCE_COLOR: '0'
+        run: |
+          set -o pipefail
+          mapfile -t FILES < <(node scripts/qa-quarantine.mjs list gate)
+          echo "gate files: ${#FILES[@]}"
+          npx --no-install tsx --test "${FILES[@]}" 2>&1 | tee /tmp/gate.log
+
+      - name: Quarantine tier (informational — fails gate if a file goes green)
+        env:
+          FORCE_COLOR: '0'
+        run: |
+          mapfile -t FILES < <(node scripts/qa-quarantine.mjs list quarantined)
+          echo "quarantined files: ${#FILES[@]}"
+          STALE=""
+          : > /tmp/q.log
+          for f in "${FILES[@]}"; do
+            if npx --no-install tsx --test "$f" >> /tmp/q.log 2>&1; then
+              STALE="$STALE $f"
+            fi
+          done
+          tail -30 /tmp/q.log
+          if [ -n "$STALE" ]; then
+            echo "::error::quarantined file(s) now fully green — remove the entry from qa/quarantine.json:$STALE"
+            exit 1
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "gate suite last tally:"
+          grep -E '^ℹ (tests|pass|fail) ' /tmp/gate.log | tail -3 || true
+          echo "quarantined suite last tally:"
+          grep -E '^ℹ (tests|pass|fail) ' /tmp/q.log | tail -3 || true
+          cat /tmp/gate.log | grep '✖' | head -50 || true
+
+  # claim-sweep:
+  #   needs: build, e2e, e2e-prod
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #         with: { node-version: '22' }
+  #     - run: npm ci
+  #     - name: Claim sweep (fails on over-claims vs claim-map)
+  #       run: npx --no-install tsx scripts/claim-sweep.ts

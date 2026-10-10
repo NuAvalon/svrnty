@@ -15,11 +15,18 @@ export interface TrustEdge {
   peer_public_key: string;
   // Contact details (encrypted, never shared without consent)
   contact_info?: {
-    phones?: string[];                  // phone numbers (E.164 where known); multiple per §9.2 now-set
-    emails?: string[];                  // additional emails beyond peer_email
-    handles?: Record<string, string>;   // 'signal' -> '@handle', 'telegram' -> '@handle', etc.
-    urls?: string[];                    // personal sites, profiles
-    verified_claims?: VerifiedClaim[];  // what has been proved
+    phones?: string[];
+    emails?: string[];
+    handles?: Record<string, string>;
+    urls?: string[];
+    verified_claims?: VerifiedClaim[];
+    /** Local classical book — round-trip through vCard, never a living-wire field. */
+    org?: string;
+    title?: string;
+    nickname?: string;
+    bday?: string;
+    adr?: string;
+    extras?: Array<{ label: string; value: string }>;
   };
   // Trust — binary
   trusted: boolean;                     // vouched or not
@@ -27,11 +34,19 @@ export interface TrustEdge {
   last_interaction: string;             // last meaningful contact — decay clock starts here
   decay_days: number;                   // customizable per-edge, default from graph settings
   trust_history: TrustEvent[];          // full audit trail
-  // Verification
+  // Verification (legacy / channel claims — not a public "verified" badge)
   verification: {
-    method: 'none' | 'email' | 'qr' | 'mutual_vouch' | 'in_person';
+    method: 'none' | 'email' | 'qr' | 'mutual_vouch' | 'in_person' | 'other_channel';
     verified_at: string | null;
     vouchers?: string[];                // fingerprints of people who vouched
+  };
+  /**
+   * Owner-local: you confirmed this key is the person you mean.
+   * Prerequisite for Trust on this device. NEVER publish / PSI-sync.
+   */
+  owner_verify?: {
+    owner_verified_at: string;
+    method: 'in_person' | 'other_channel';
   };
   // Mutual state
   mutual: {
@@ -44,6 +59,36 @@ export interface TrustEdge {
   notes: string;                        // private notes (never shared)
   connection_channels: string[];        // 'signal', 'email', 'telegram', etc.
   added_at: string;
+  /** Owner-local mute (CUR-5). Never publish — strip on wire like tags. */
+  blocked?: boolean;
+  /**
+   * Owner-local: you received a Distress packet about them (witnessed receipt).
+   * Paints the vivre. NEVER publish.
+   */
+  distress_inbound?: boolean;
+  /**
+   * Fingerprints in YOUR book that this peer disclosed to you
+   * (fleet `visible()` ∩ book). Absent until the fleet fills it — glass never infers.
+   */
+  disclosed_circle?: string[];
+  /**
+   * People in your book this peer also trusts (fleet PSI). Not transitive trust.
+   * Drawn as a peer chord only when both sides are open-visibility mutuals
+   * (see witnessedPeerTrustChords) — never inferred from owner tags.
+   */
+  they_trust?: string[];
+  /**
+   * Owner-local intent toward this peer: open visibility for trusted contacts.
+   * Not a wire field. Combined with reciprocal trust + they_trust, this is
+   * how a witnessed peer bond becomes visible on the glass.
+   * how Sally↔Joe becomes visible on the glass.
+   */
+  open_visibility?: boolean;
+  /**
+   * Owner-local: go-private scoped to THIS edge (piece-1). Excludes this peer from every PSI
+   * reveal set + allowed_senders projection. NEVER publish / PSI-sync (like open_visibility/blocked).
+   */
+  per_contact_private?: boolean;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys
@@ -155,7 +200,7 @@ export interface IntroductionRecord {
 
 export const PRIVACY_FILTERS = {
   known: ['peer_name', 'peer_fingerprint', 'peer_public_key'],
-  trusted: ['peer_name', 'peer_fingerprint', 'peer_public_key', 'verification', 'connection_channels', 'contact_info'],
+  trusted: ['peer_name', 'peer_fingerprint', 'peer_public_key', 'connection_channels', 'contact_info'],
 } as const;
 
 // --- Migration from v1 (5-level system) ---

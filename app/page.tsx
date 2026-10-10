@@ -1,15 +1,32 @@
 // app/page.tsx
 "use client";
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties } from 'react';
 import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
-import { HelpGuide } from '@/components/HelpGuide';
-import { Ceremony } from '@/components/Ceremony';
+import { GrowSurface } from '@/components/GrowSurface';
+import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
+import { NotesInbox } from '@/components/notes/NotesInbox';
+import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
+import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gate-on';
+import { RecoverySheet } from '@/components/RecoverySheet';
+import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
+import { useAppLock } from '@/components/app-lock/useAppLock';
+import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
+import { starsOnly } from '@/lib/trust/grow-gate';
+import { subscribeContactChanges } from '@/lib/contacts/contact-events';
+import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { applyBlockSuppression } from '@/lib/trust/block-suppression';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
+import {
+  loadMethodHistory,
+  seedDemoMethodHistory,
+} from '@/components/identity/method-history';
 import {
   hasIdentity,
   getActiveFingerprint,
@@ -22,9 +39,29 @@ import {
   lockSession,
   listIdentities,
   setActiveFingerprint,
+  updateContact,
+  storeIdentity,
+  loadGateArrivals,
 } from '@/lib/identity/client-store';
+import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
+import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
+import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { distressWentPersistPatch } from '@/lib/trust/distress';
+import { BiometricUnlockButton } from '@/components/biometric/BiometricUnlockButton';
+import {
+  getBiometricEnrollment,
+  probeBiometricCapability,
+} from '@/components/biometric/biometric-seam';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
+
+const shellBg: CSSProperties = {
+  minHeight: '100vh',
+  background: E.bgCss,
+  color: E.text,
+  fontFamily: E.fontSans,
+};
 
 export default function Home() {
   const [appState, setAppState] = useState<AppState>('checking');
@@ -35,9 +72,25 @@ export default function Home() {
   const [unlockError, setUnlockError] = useState('');
   const [unlocking, setUnlocking] = useState(false);
   // Phase-1 identity switcher (UI-only): other on-device vaults, loaded EPHEMERALLY into component
-  // state — never persisted as a new cross-identity link (Flint's correlation-surface line). Empty in
+  // state — never persisted as a new cross-identity link (the correlation-surface line). Empty in
   // the single-identity case, so the demo shows only "New Identity" (no fingerprints co-located).
   const [otherIdentities, setOtherIdentities] = useState<{ name: string; fingerprint: string }[]>([]);
+  // CUR-6 — mount device-unlock chrome when a platform authenticator is present.
+  // Pre-tap honesty (coming-soon vs live action) lives in BiometricUnlockButton.
+  const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
+  // Identity card is the first surface; Trust Map via "Your circle".
+  const [mainTab, setMainTab] = useState('identity');
+  const betaMessagingOn = isBetaIssuerProvisioned();
+  // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
+  const [mapRevise, setMapRevise] = useState<{
+    kind: MethodKind;
+    preselected: string[];
+  } | null>(null);
+  const [growOpen, setGrowOpen] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [gateCount, setGateCount] = useState(0);
+  // CUR-7: only offer lock when vault keys are encrypted at rest.
+  const [canLock, setCanLock] = useState(false);
 
   // Check for existing identity on page load.
   // Encrypted-at-rest keys require initSessionKey before unlocking.
@@ -57,10 +110,12 @@ export default function Home() {
                   fingerprint: fp,
                 });
                 setIdentity(null);
+                setCanLock(false);
                 setAppState('locked');
                 return;
               }
               setIdentity(id);
+              setCanLock(encrypted);
               setAppState('unlocked');
               return;
             }
@@ -74,6 +129,34 @@ export default function Home() {
     checkIdentity();
   }, []);
 
+  /** CUR-7 — Signal-model lock: clear fleet session + UI state → passphrase gate. */
+  const handleLockNow = useCallback(() => {
+    const fp =
+      identity?.identity?.fingerprint ||
+      lockedIdentity?.fingerprint ||
+      null;
+    const name =
+      identity?.identity?.name ||
+      lockedIdentity?.name ||
+      'Identity';
+    if (!fp) return;
+    lockSession();
+    setContacts([]);
+    setIdentity(null);
+    setPassphrase('');
+    setUnlockError('');
+    setMapRevise(null);
+    setLockedIdentity({ name, fingerprint: fp });
+    setCanLock(false);
+    setMainTab('identity');
+    setAppState('locked');
+  }, [identity, lockedIdentity]);
+
+  const { prefs: appLockPrefs, setPrefs: setAppLockPrefs } = useAppLock({
+    enabled: appState === 'unlocked' && canLock,
+    onAutoLock: handleLockNow,
+  });
+
   const handleUnlock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!lockedIdentity || !passphrase) return;
@@ -84,22 +167,7 @@ export default function Home() {
     try {
       // User unlock passphrase derives the session key — it is NOT the PGP key passphrase.
       await initSessionKey(passphrase);
-      const key = await loadKey(lockedIdentity.fingerprint);
-      if (!key) {
-        lockSession();
-        setUnlockError('Could not decrypt keys — wrong passphrase?');
-        return;
-      }
-      const id = await loadIdentity(lockedIdentity.fingerprint);
-      if (id) {
-        setIdentity(id);
-        setAppState('unlocked');
-        setPassphrase('');
-        setLockedIdentity(null);
-      } else {
-        lockSession();
-        setUnlockError('Identity data not found');
-      }
+      await finishUnlockFromSession();
     } catch {
       lockSession();
       setUnlockError('Incorrect passphrase');
@@ -127,9 +195,57 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [appState, lockedIdentity?.fingerprint]);
 
+  // CUR-6: probe platform authenticator on the lock screen (feature detect only — no crypto).
+  // Mount chrome when UVPA is available or enrolled; BiometricUnlockButton is honest
+  // pre-tap (coming soon while isBiometricSeamLive() is false).
+  useEffect(() => {
+    if (appState !== 'locked' || !lockedIdentity?.fingerprint) {
+      setBiometricUnlockVisible(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const cap = await probeBiometricCapability();
+        // Mount chrome when enrolled or UVPA-available so coming-soon is discoverable.
+        const enr = await getBiometricEnrollment(lockedIdentity.fingerprint);
+        if (!cancelled) {
+          setBiometricUnlockVisible(cap.status === 'available' || enr.enrolled);
+        }
+      } catch {
+        if (!cancelled) setBiometricUnlockVisible(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appState, lockedIdentity?.fingerprint]);
+
+  const finishUnlockFromSession = async () => {
+    if (!lockedIdentity) return;
+    const key = await loadKey(lockedIdentity.fingerprint);
+    if (!key) {
+      lockSession();
+      setUnlockError('Could not decrypt keys — wrong passphrase?');
+      return;
+    }
+    const id = await loadIdentity(lockedIdentity.fingerprint);
+    if (id) {
+      setIdentity(id);
+      setCanLock(true);
+      setAppState('unlocked');
+      setPassphrase('');
+      setLockedIdentity(null);
+      setMainTab('identity');
+    } else {
+      lockSession();
+      setUnlockError('Identity data not found');
+    }
+  };
+
   // Phase-1 swap: choose another EXISTING vault to unlock instead of the current one. We are already
   // locked (no keys in memory); lockSession() first is defensive so no key material bleeds across the
-  // swap (Flint #4). Then repoint the active pointer + unlock form at the chosen vault. Existing
+  // swap. Then repoint the active pointer + unlock form at the chosen vault. Existing
   // primitives only — no new vault schema, no derivation (that is Phase 2).
   const handleSwitchIdentity = async (fingerprint: string, name: string) => {
     lockSession();
@@ -143,17 +259,26 @@ export default function Home() {
     setIdentity(newIdentity);
     setAppState('unlocked');
     setLockedIdentity(null);
+    setMainTab('identity');
+    // Fresh forge encrypts at rest — enable Lock Now once identity exists.
+    const fp = newIdentity?.identity?.fingerprint;
+    if (fp) {
+      void hasEncryptedKeys(fp).then((enc) => setCanLock(enc)).catch(() => setCanLock(false));
+    }
   };
 
   // Load contacts — extracted as callback so ContactManagement can trigger refresh
   const refreshContacts = useCallback(async () => {
     if (!identity?.identity?.fingerprint) return;
     try {
-      const rawContacts = await getAllContacts(identity.identity.fingerprint);
+      const fp = identity.identity.fingerprint;
+      const rawContacts = await getAllContacts(fp);
       // Single shared projection (carries pq — see contact-edge.ts). Same helper the joiner
       // ceremony uses, so no field (incl. peer_pq_*) is dropped on one path but not the other.
-      const edges: TrustEdge[] = rawContacts.map(contactRecordToEdge);
+      // Gate arrivals are not contacts; starsOnly is belt-and-suspenders if grow_gate leaked onto a row.
+      const edges: TrustEdge[] = starsOnly(rawContacts).map(contactRecordToEdge);
       setContacts(edges);
+      setGateCount((await loadGateArrivals(fp)).length);
     } catch (err: any) {
       console.error('Failed to load contacts:', err);
     }
@@ -164,21 +289,82 @@ export default function Home() {
     refreshContacts();
   }, [refreshContacts]);
 
+  useEffect(() => {
+    return subscribeContactChanges(() => {
+      void refreshContacts();
+    });
+  }, [refreshContacts]);
+
+  // Living book + Gate: poll at the shell so a share-link joiner lands while you're
+  // on Galaxy / Grow, not only after opening Contacts. Burst after unlock, Grow, and focus.
+  const livePollRef = useRef<{ burst: (ms?: number) => void } | null>(null);
+  useEffect(() => {
+    if (!identity?.identity?.fingerprint) return;
+    const handle = startLiveBookPolling(identity);
+    livePollRef.current = handle;
+    handle.burst(12_000);
+    const onVis = () => {
+      if (document.visibilityState === 'visible') handle.burst(8_000);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      livePollRef.current = null;
+      handle.stop();
+      document.removeEventListener('visibilitychange', onVis);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on stable fingerprint; identity
+    // object ref is not a dep (public key stable per fp; private key re-loaded each tick).
+  }, [identity?.identity?.fingerprint]);
+
+  useEffect(() => {
+    if (growOpen) livePollRef.current?.burst(20_000);
+  }, [growOpen]);
+
+  useEffect(() => {
+    if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
+  }, [mainTab]);
+
+  const [methodHistoryTick, setMethodHistoryTick] = useState(0);
+  const methodHistory = useMemo(() => {
+    if (!identity?.identity?.fingerprint) return [];
+    void methodHistoryTick;
+    return loadMethodHistory(identity.identity.fingerprint);
+  }, [identity, methodHistoryTick]);
+
+  // Playwright-only in production. In next dev the hook exists so we can
+  // grow a demo mesh without shipping a Load-sample button.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const webdriver = !!(navigator as Navigator & { webdriver?: boolean }).webdriver;
+    if (!webdriver && process.env.NODE_ENV === 'production') return;
+    const w = window as Window & { __svrntySeedSampleCircle?: () => Promise<number> };
+    w.__svrntySeedSampleCircle = async () => {
+      const fp = identity?.identity?.fingerprint;
+      if (!fp) return 0;
+      const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
+      const n = await seedSampleCircle(fp);
+      seedDemoMethodHistory(fp);
+      setMethodHistoryTick((t) => t + 1);
+      await refreshContacts();
+      return n;
+    };
+    return () => {
+      delete w.__svrntySeedSampleCircle;
+    };
+  }, [identity, refreshContacts]);
+
   // Loading state
   if (appState === 'checking') {
     return (
       <div style={{
-        minHeight: '100vh',
-        background: '#0a0a0f',
+        ...shellBg,
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        fontFamily: "'Space Grotesk', sans-serif",
-        color: 'rgba(255,255,255,0.3)',
         fontSize: '14px',
         letterSpacing: '4px',
+        color: E.dim,
       }}>
-        {/* Fonts self-hosted via next/font in layout.tsx */}
         RESOLVING...
       </div>
     );
@@ -188,47 +374,49 @@ export default function Home() {
   if (appState === 'locked' && lockedIdentity) {
     return (
       <div style={{
-        minHeight: '100vh',
-        background: '#0a0a0f',
+        ...shellBg,
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
         padding: '20px',
+        position: 'relative' as const,
       }}>
-        {/* Fonts self-hosted via next/font in layout.tsx */}
+        <div style={{ position: 'absolute', top: 20, right: 20 }}>
+          <AppearanceToggle />
+        </div>
         <div style={{
           maxWidth: '400px',
           width: '100%',
-          background: 'rgba(10, 14, 12, 0.92)',
-          border: '1px solid rgba(52, 211, 153, 0.1)',
+          background: E.surfaceSolid,
+          border: `1px solid ${E.borderLit}`,
           borderRadius: '16px',
           padding: '40px',
-          boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(52, 211, 153, 0.03)',
+          boxShadow: '0 4px 60px rgba(0, 0, 0, 0.45), 0 0 80px rgba(249, 168, 37, 0.06)',
           textAlign: 'center' as const,
+          backdropFilter: 'blur(20px)',
         }}>
-          {/* Lock icon */}
           <div style={{
             width: '64px',
             height: '64px',
             borderRadius: '50%',
-            background: 'rgba(52, 211, 153, 0.06)',
-            border: '1px solid rgba(52, 211, 153, 0.12)',
+            background: 'rgba(249, 168, 37, 0.06)',
+            border: `1px solid ${E.borderLit}`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             margin: '0 auto 20px',
           }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#34d399" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={E.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
           </div>
 
           <h1 style={{
-            fontFamily: "'Cormorant Garamond', serif",
+            fontFamily: E.fontSerif,
             fontSize: '24px',
             fontWeight: 300,
-            color: '#e8e4d9',
+            color: E.text,
             letterSpacing: '2px',
             margin: '0 0 4px',
           }}>
@@ -236,9 +424,9 @@ export default function Home() {
           </h1>
 
           <p style={{
-            fontFamily: "'JetBrains Mono', monospace",
+            fontFamily: E.fontMono,
             fontSize: '12px',
-            color: 'rgba(255,255,255,0.3)',
+            color: E.muted,
             marginBottom: '28px',
           }}>
             {lockedIdentity.name}
@@ -253,13 +441,13 @@ export default function Home() {
               autoFocus
               style={{
                 width: '100%',
-                background: 'rgba(6, 10, 8, 0.8)',
-                border: `1px solid ${unlockError ? 'rgba(239, 68, 68, 0.4)' : 'rgba(52, 211, 153, 0.15)'}`,
+                background: E.inputBg,
+                border: `1px solid ${unlockError ? 'rgba(255, 143, 122, 0.45)' : E.border}`,
                 borderRadius: '8px',
                 padding: '14px 16px',
-                color: '#e8e4d9',
+                color: E.text,
                 fontSize: '14px',
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 outline: 'none',
                 marginBottom: '8px',
                 boxSizing: 'border-box' as const,
@@ -268,9 +456,9 @@ export default function Home() {
 
             {unlockError && (
               <p style={{
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 fontSize: '12px',
-                color: '#ef4444',
+                color: E.danger,
                 marginBottom: '8px',
               }}>
                 {unlockError}
@@ -282,14 +470,14 @@ export default function Home() {
               disabled={unlocking || !passphrase}
               style={{
                 width: '100%',
-                background: passphrase ? 'rgba(52, 211, 153, 0.12)' : 'rgba(52, 211, 153, 0.04)',
-                border: `1px solid ${passphrase ? 'rgba(52, 211, 153, 0.3)' : 'rgba(52, 211, 153, 0.1)'}`,
+                background: passphrase ? 'rgba(249, 168, 37, 0.14)' : 'rgba(249, 168, 37, 0.04)',
+                border: `1px solid ${passphrase ? E.borderLit : E.border}`,
                 borderRadius: '8px',
                 padding: '14px 20px',
-                color: passphrase ? '#34d399' : 'rgba(52, 211, 153, 0.3)',
+                color: passphrase ? E.accent : E.dim,
                 fontSize: '12px',
                 fontWeight: 500,
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 letterSpacing: '2px',
                 textTransform: 'uppercase' as const,
                 cursor: passphrase ? 'pointer' : 'default',
@@ -300,17 +488,37 @@ export default function Home() {
             </button>
           </form>
 
+          {/* CUR-6 — device unlock chrome. Seam = Flint; glass is honest while stubbed. */}
+          <BiometricUnlockButton
+            fingerprint={lockedIdentity.fingerprint}
+            visible={biometricUnlockVisible}
+            disabled={unlocking}
+            onFallbackMessage={(msg) => setUnlockError(msg)}
+            onUnlocked={async () => {
+              setUnlocking(true);
+              setUnlockError('');
+              try {
+                await finishUnlockFromSession();
+              } catch {
+                lockSession();
+                setUnlockError('Device unlock failed. Enter your passphrase.');
+              } finally {
+                setUnlocking(false);
+              }
+            }}
+          />
+
           {/* Phase-1 identity switcher (home screen) — UI only, no vault changes. Single-identity case
               shows only "New Identity"; the switch list appears solely when 2+ vaults exist on-device. */}
           <div style={{ marginTop: '24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {otherIdentities.length > 0 && (
               <div data-testid="switch-identity" style={{ marginBottom: '4px' }}>
                 <p style={{
-                  fontFamily: "'JetBrains Mono', monospace",
+                  fontFamily: E.fontMono,
                   fontSize: '10px',
                   letterSpacing: '1px',
                   textTransform: 'uppercase' as const,
-                  color: 'rgba(255,255,255,0.25)',
+                  color: E.dim,
                   marginBottom: '6px',
                 }}>
                   Switch identity
@@ -322,13 +530,13 @@ export default function Home() {
                     onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
                     style={{
                       width: '100%',
-                      background: 'rgba(255,255,255,0.03)',
-                      border: '1px solid rgba(255,255,255,0.08)',
+                      background: 'rgba(255,190,120,0.03)',
+                      border: `1px solid ${E.border}`,
                       borderRadius: '8px',
                       padding: '10px 14px',
-                      color: 'rgba(232,228,217,0.8)',
+                      color: E.text,
                       fontSize: '13px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: E.fontSans,
                       textAlign: 'left' as const,
                       cursor: 'pointer',
                       marginBottom: '6px',
@@ -345,12 +553,12 @@ export default function Home() {
               style={{
                 width: '100%',
                 background: 'none',
-                border: '1px dashed rgba(52, 211, 153, 0.25)',
+                border: `1px dashed ${E.borderLit}`,
                 borderRadius: '8px',
                 padding: '12px 16px',
-                color: 'rgba(52, 211, 153, 0.7)',
+                color: E.muted,
                 fontSize: '12px',
-                fontFamily: "'Space Grotesk', sans-serif",
+                fontFamily: E.fontSans,
                 letterSpacing: '1px',
                 cursor: 'pointer',
               }}
@@ -365,72 +573,407 @@ export default function Home() {
 
   // Gate (no identity) or main app
   return (
-    <div className="min-h-screen p-8" style={{ background: '#0a0a0f', color: '#e0dcd0' }}>
-      <header className="mb-12 text-center relative">
-        <h1 className="text-3xl font-bold mb-2" style={{ color: '#c8a84e', letterSpacing: '3px' }}>SVRNTY</h1>
-        <p style={{ color: '#8a8070', fontSize: '14px' }}>Self-Sovereign Trust Network</p>
-        <p style={{ color: '#5a5548', fontSize: '11px', marginTop: '4px' }}>from NuAvalon</p>
-        {identity && (
-          <p style={{ marginTop: '12px' }}>
-            <a
-              href="/msg"
-              style={{
-                color: 'rgba(200, 168, 78, 0.85)',
-                fontSize: '12px',
-                fontFamily: "'Space Grotesk', sans-serif",
-                letterSpacing: '1px',
-                textDecoration: 'none',
-                borderBottom: '1px solid rgba(200, 168, 78, 0.3)',
-              }}
-            >
-              Notes between contacts
-            </a>
-          </p>
-        )}
-        <HelpGuide />
-      </header>
+    <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
+      <TopNav
+        hasIdentity={Boolean(identity)}
+        canLock={canLock}
+        onLock={handleLockNow}
+        onGrow={() => setGrowOpen(true)}
+        onRecovery={() => setRecoveryOpen(true)}
+        gateCount={identity ? gateCount : 0}
+      />
 
       <main className="max-w-6xl mx-auto">
         {!identity ? (
           <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} />
         ) : (
-          <Tabs defaultValue="trust-map" className="w-full">
-            <TabsList className="w-full max-w-2xl mx-auto mb-8">
-              <TabsTrigger value="trust-map" className="flex-1">Trust Map</TabsTrigger>
-              <TabsTrigger value="ceremony" className="flex-1">Ceremony</TabsTrigger>
-              <TabsTrigger value="contacts" className="flex-1">Contacts</TabsTrigger>
-              <TabsTrigger value="identity" className="flex-1">Identity</TabsTrigger>
+          <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
+            <TabsList
+              className="w-full max-w-3xl mx-auto mb-8"
+              style={{
+                background: 'rgba(30,20,10,.55)',
+                border: `1px solid ${E.border}`,
+                height: 'auto',
+                padding: 4,
+                fontFamily: E.fontSans,
+              }}
+            >
+              <TabsTrigger
+                value="identity"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Identity
+              </TabsTrigger>
+              <TabsTrigger
+                value="trust-map"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Galaxy
+              </TabsTrigger>
+              <TabsTrigger
+                value="contacts"
+                className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Contacts
+              </TabsTrigger>
+              <TabsTrigger
+                value="encrypt-decrypt"
+                aria-label="Encrypt / Decrypt"
+                data-testid="tab-encrypt-decrypt"
+                className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Encrypt
+              </TabsTrigger>
+              <TabsTrigger
+                value="notes"
+                aria-label="Notes"
+                data-testid="tab-notes"
+                className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
+                style={{ color: E.muted, fontFamily: E.fontSans }}
+              >
+                Notes
+              </TabsTrigger>
             </TabsList>
+
+            <TabsContent value="identity">
+              <SoverentityFrontend
+                existingIdentity={identity}
+                onIdentityUpdate={handleIdentityUpdate}
+                onOpenCircle={() => setMainTab('trust-map')}
+                appLockPrefs={canLock ? appLockPrefs : undefined}
+                onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
+                onLockNow={canLock ? handleLockNow : undefined}
+              />
+            </TabsContent>
 
             <TabsContent value="trust-map">
               <TrustMap
                 ownerFingerprint={identity.identity.fingerprint}
                 ownerName={identity.identity.name}
                 contacts={contacts}
+                onGrow={() => setGrowOpen(true)}
+                onRefresh={async () => {
+                  const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
+                  await pollLiveBookOnce(identity);
+                  await refreshContacts();
+                }}
+                methodHistory={methodHistory}
+                onMethodHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
+                onAssignGroup={async (fingerprints, groupName) => {
+                  const label = groupName.trim();
+                  if (!label) return;
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  for (const fp of fingerprints) {
+                    const rec = records.find(
+                      (r) => (r.fingerprint || r.id) === fp || r.id === contacts.find((c) => c.peer_fingerprint === fp)?.id
+                    );
+                    const edge = contacts.find((c) => c.peer_fingerprint === fp);
+                    const id = rec?.id || edge?.id;
+                    if (!id) continue;
+                    const prevTags = (rec as any)?.tags || (rec as any)?.metadata?.tags || edge?.tags || [];
+                    const tags = Array.from(new Set([...prevTags, label]));
+                    await updateContact(id, {
+                      tags,
+                      metadata: { ...((rec as any)?.metadata || {}), tags },
+                    } as any);
+                  }
+                  await refreshContacts();
+                }}
+                onOwnerVerify={async (edge, method) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const patch = ownerVerifyPersistPatch((rec as any)?.metadata, method);
+                  await updateContact(edge.id, patch as any);
+                  await refreshContacts();
+                }}
+                onDistressWent={async (edge) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const patch = distressWentPersistPatch((rec as any)?.metadata);
+                  await updateContact(edge.id, patch as any);
+                  await refreshContacts();
+                }}
+                onTrustToggle={async (edge) => {
+                  const nextTrusted = !edge.trusted;
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
+                  await updateContact(edge.id, {
+                    trust_level: nextTrusted ? 'trusted' : 'unverified',
+                    trusted: nextTrusted,
+                    trusted_since: nextTrusted ? new Date().toISOString() : null,
+                    verified_at: nextTrusted ? new Date().toISOString() : undefined,
+                    // #111 (survivor-safety): untrusting clears open_visibility (TrustMap path)
+                    // — reveal consent is trust-gated, so dropping trust drops the reveal flag.
+                    ...(!nextTrusted && {
+                      metadata: {
+                        ...recMeta,
+                        share_settings: {
+                          ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
+                          open_visibility: false,
+                        },
+                      },
+                    }),
+                  } as any);
+                  // #572 part 2 (flip-blocker b, TrustMap path): mirror POST-change trust to the
+                  // satellite allowed_senders row. Untrust → DELETE; retrust → ADD iff still open-vis ∩
+                  // !blocked. Fire-and-forget + fail-soft (gated dark pre-flip).
+                  void reconcileAllowedOnConsentChange({
+                    ownerFp: identity.identity.fingerprint,
+                    senderFp: edge.peer_fingerprint,
+                    consent: {
+                      trusted: nextTrusted,
+                      openVisibility:
+                        nextTrusted &&
+                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
+                          ?.open_visibility === true,
+                      blocked: edge.blocked === true,
+                      perContactPrivate:
+                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
+                          ?.per_contact_private === true,
+                    },
+                  });
+                  await refreshContacts();
+                }}
+                onRemoveContact={async (edge) => {
+                  const { removeContact } = await import('@/lib/identity/client-store');
+                  // #572 part 2 (6th invariant-exit, Flint seal #157713): contact-REMOVE is a reveal-set
+                  // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
+                  // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
+                  const removedFp = edge.peer_fingerprint;
+                  await removeContact(edge.id);
+                  if (removedFp) {
+                    void reconcileAllowedOnConsentChange({
+                      ownerFp: identity.identity.fingerprint,
+                      senderFp: removedFp,
+                      consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
+                    });
+                  }
+                  await refreshContacts();
+                }}
+                onBlockContact={async (edge, blocked) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
+                  await updateContact(edge.id, {
+                    blocked,
+                    // Block clears local Trust — no trusted+blocked half-state.
+                    ...(blocked
+                      ? {
+                          trusted: false,
+                          trust_level: 'unverified',
+                          trusted_since: null,
+                        }
+                      : {}),
+                    metadata: {
+                      ...recMeta,
+                      blocked,
+                      // #111 (survivor-safety): block clears open_visibility (TrustMap path)
+                      // so the peer leaves every PSI reveal set — mirrors the ContactManagement
+                      // handler; read side is fail-closed too (ownerEdges !blocked).
+                      ...(blocked
+                        ? {
+                            share_settings: {
+                              ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
+                              open_visibility: false,
+                            },
+                          }
+                        : {}),
+                    },
+                  } as any);
+                  // #572 part 2 (flip-blocker b + #111 satellite-completeness, TrustMap path): block →
+                  // DELETE the allowed_senders row (close the stale-row adversary-discovery hole).
+                  // Unblock does NOT re-add — trust + open-vis must be re-granted explicitly.
+                  void reconcileAllowedOnConsentChange({
+                    ownerFp: identity.identity.fingerprint,
+                    senderFp: edge.peer_fingerprint,
+                    consent: {
+                      trusted: blocked ? false : edge.trusted === true,
+                      openVisibility:
+                        !blocked &&
+                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
+                          ?.open_visibility === true,
+                      blocked,
+                      perContactPrivate:
+                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
+                          ?.per_contact_private === true,
+                    },
+                  });
+                  // Piece-2 (#579): block ALSO populates the durable suppression RECORD (load-bearing
+                  // emit-side source; the `blocked` flag is defense-in-depth). Fire-and-forget + fail-closed.
+                  void applyBlockSuppression(identity.identity.fingerprint, edge.peer_fingerprint, blocked);
+                  await refreshContacts();
+                }}
+                onAcceptIntro={async (edge) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  await updateContact(edge.id, {
+                    connection_status: 'accepted',
+                    metadata: {
+                      ...((rec as any)?.metadata || {}),
+                      connection_status: 'accepted',
+                      pending_intro: undefined,
+                    },
+                    pending_intro: undefined,
+                  } as any);
+                  await refreshContacts();
+                }}
+                onUpdateContact={async (edge, patch) => {
+                  const records = await getAllContacts(identity.identity.fingerprint);
+                  const rec = records.find((r) => r.id === edge.id);
+                  const phones = patch.phones ?? edge.contact_info?.phones;
+                  await updateContact(edge.id, {
+                    name: patch.name ?? edge.peer_name,
+                    email: patch.email ?? edge.peer_email,
+                    notes: patch.notes ?? edge.notes,
+                    contact_info: {
+                      ...(edge.contact_info || {}),
+                      ...(rec as any)?.contact_info,
+                      phones,
+                      emails: patch.email
+                        ? [patch.email]
+                        : edge.contact_info?.emails,
+                    },
+                    metadata: {
+                      ...((rec as any)?.metadata || {}),
+                      notes: patch.notes ?? edge.notes,
+                    },
+                  } as any);
+                  await refreshContacts();
+                }}
+                onSendMethodUpdate={(edge) => {
+                  setMapRevise({
+                    kind: 'email',
+                    preselected: [edge.peer_fingerprint],
+                  });
+                }}
               />
-            </TabsContent>
-
-            <TabsContent value="ceremony">
-              <Ceremony identity={identity} contacts={contacts} />
             </TabsContent>
 
             <TabsContent value="contacts">
               <ContactManagement identity={identity} onContactsChange={refreshContacts} />
             </TabsContent>
 
-            <TabsContent value="identity">
-              <SoverentityFrontend
-                existingIdentity={identity}
-                onIdentityUpdate={handleIdentityUpdate}
-              />
+            <TabsContent value="encrypt-decrypt">
+              <EncryptDecryptTab identity={identity} />
+            </TabsContent>
+
+            <TabsContent value="notes">
+              {betaMessagingOn ? (
+                <BetaMessagingTab identity={identity} />
+              ) : (
+                <NotesInbox identity={identity} />
+              )}
             </TabsContent>
           </Tabs>
         )}
+
+        {identity && (
+          <ContactMethodReviseDialog
+            open={mapRevise !== null}
+            kind={mapRevise?.kind ?? 'email'}
+            initialValue={identity.identity?.email || ''}
+            ownerFingerprint={identity.identity.fingerprint}
+            preselectedFingerprints={mapRevise?.preselected}
+            contacts={contacts
+              .map((c) => {
+                const peerFp = String(c.peer_fingerprint || '').trim();
+                if (!peerFp) return null;
+                return {
+                  fingerprint: peerFp,
+                  name: c.peer_name || 'Unnamed',
+                  public_key: c.peer_public_key || undefined,
+                  trusted: !!c.trusted,
+                };
+              })
+              .filter((c): c is NonNullable<typeof c> => c != null)}
+            onClose={() => setMapRevise(null)}
+            onHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
+            onLocalSave={async (kind, value) => {
+              const fp = identity.identity.fingerprint as string;
+              if (kind === 'email') {
+                const next = {
+                  ...identity,
+                  identity: { ...identity.identity, email: value },
+                };
+                await storeIdentity(fp, next);
+                setIdentity(next);
+                return;
+              }
+              saveLocalMethods(fp, { [kind]: value });
+            }}
+          />
+        )}
       </main>
 
-      <footer className="mt-16 text-center text-sm" style={{ color: '#5a5548' }}>
-        <p>SVRNTY — Self-Sovereign Trust Network</p>
-        <p className="mt-1">All data is encrypted and stored locally. No server can read it. No tracking.</p>
+      {identity && (
+        <>
+        <GrowSurface
+          open={growOpen}
+          onClose={() => {
+            setGrowOpen(false);
+            void refreshContacts();
+          }}
+          identity={identity}
+        />
+        <RecoverySheet
+          open={recoveryOpen}
+          onClose={() => setRecoveryOpen(false)}
+          identity={identity}
+          contacts={contacts}
+        />
+        </>
+      )}
+
+      <footer
+        className="mt-16 text-center"
+        style={{ fontFamily: E.fontSans, paddingBottom: 40 }}
+      >
+        <p
+          style={{
+            margin: 0,
+            fontSize: 11,
+            letterSpacing: '0.28em',
+            color: E.accent,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoWord}
+        </p>
+        <p
+          style={{
+            margin: '10px auto 0',
+            maxWidth: 420,
+            fontSize: 14,
+            lineHeight: 1.5,
+            color: E.text,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoKeep}
+        </p>
+        <p
+          style={{
+            margin: '12px 0 0',
+            fontSize: 10,
+            letterSpacing: '0.12em',
+            textTransform: 'uppercase',
+            color: E.dim,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoAxes}
+        </p>
+        <p
+          style={{
+            margin: '8px 0 0',
+            fontSize: 12,
+            color: E.muted,
+          }}
+        >
+          {TRUST_RECIPE_COPY.manifestoCloser}
+        </p>
       </footer>
     </div>
   );

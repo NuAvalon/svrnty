@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import {
   computeTrustLayout,
   disclosureDepth,
+  hexagonPoints,
   trustStateOf,
   NODE_RADIUS,
 } from './trust-map-layout';
@@ -83,6 +84,20 @@ test('no node escapes the frame — for any count, any viewBox size', () => {
   }
 });
 
+test('hexagonPoints is a pointy-top cell of circumradius r', () => {
+  const pts = hexagonPoints(100, 100, 10)
+    .split(' ')
+    .map((p) => p.split(',').map(Number));
+  assert.equal(pts.length, 6);
+  const top = pts[0];
+  assert.ok(Math.abs(top[0] - 100) < 0.05, 'pointy top is on the vertical');
+  assert.ok(Math.abs(top[1] - 90) < 0.05, 'pointy top is r above center');
+  for (const [x, y] of pts) {
+    const d = Math.hypot(x - 100, y - 100);
+    assert.ok(Math.abs(d - 10) < 0.05, `vertex not on circumcircle: ${d}`);
+  }
+});
+
 test('self sits exactly at center', () => {
   const layout = computeTrustLayout('owner-fp', 'Me', [trustedEdge(), knownEdge()], {
     width: 400,
@@ -108,16 +123,28 @@ test('trust state maps to real state + salience radius', () => {
   assert.ok(byState.known.radius > byState.decayed.radius);
 });
 
-test('trusted sit on the inner ring, known/decayed on the outer rim', () => {
-  const layout = computeTrustLayout('o', 'Me', [trustedEdge(), knownEdge()], {
-    width: 400,
-    height: 400,
-  });
-  const t = layout.nodes.find((n) => n.state === 'trusted')!;
-  const k = layout.nodes.find((n) => n.state === 'known')!;
-  const dist = (n: { x: number; y: number }) =>
-    Math.hypot(n.x - layout.cx, n.y - layout.cy);
-  assert.ok(dist(t) < dist(k), 'trusted closer to self than known');
+test('trust is an overlay — not an inner/outer ring', () => {
+  const contacts = [
+    ...Array.from({ length: 6 }, (_, i) =>
+      trustedEdge({ tags: ['crew'], peer_fingerprint: `t${i}`, peer_name: `T${i}` }),
+    ),
+    ...Array.from({ length: 6 }, (_, i) =>
+      knownEdge({ tags: ['crew'], peer_fingerprint: `k${i}`, peer_name: `K${i}` }),
+    ),
+    ...Array.from({ length: 4 }, (_, i) =>
+      trustedEdge({ tags: ['other'], peer_fingerprint: `u${i}`, peer_name: `U${i}` }),
+    ),
+    ...Array.from({ length: 4 }, (_, i) =>
+      knownEdge({ tags: ['other'], peer_fingerprint: `v${i}`, peer_name: `V${i}` }),
+    ),
+  ];
+  const layout = computeTrustLayout('o', 'Me', contacts, { width: 640, height: 640 });
+  const dist = (n: { x: number; y: number }) => Math.hypot(n.x - layout.cx, n.y - layout.cy);
+  const trustedR = layout.nodes.filter((n) => n.state === 'trusted').map(dist);
+  const knownR = layout.nodes.filter((n) => n.state === 'known').map(dist);
+  assert.ok(Math.max(...trustedR) > Math.min(...knownR), 'trusted still stacked inside known');
+  const allR = [...trustedR, ...knownR];
+  assert.ok(Math.max(...allR) - Math.min(...allR) > 20, 'lattice collapsed to a ring');
 });
 
 // ── I-6: opacity decodes to disclosure depth (what they shared) ──────────────
@@ -157,4 +184,89 @@ test('empty contacts → just self, on-screen', () => {
   assert.equal(layout.nodes.length, 0);
   assert.equal(layout.self.x, 160);
   assert.equal(layout.self.y, 160);
+});
+
+test('dense book (200) still fits the world and does not ring-pack trust', () => {
+  const contacts = Array.from({ length: 200 }, (_, i) =>
+    i % 2 === 0
+      ? trustedEdge({ tags: [i % 8 === 0 ? 'a' : 'b'], peer_fingerprint: `t${i}` })
+      : knownEdge({ tags: [i % 8 === 0 ? 'a' : 'c'], peer_fingerprint: `k${i}` }),
+  );
+  const size = 1200;
+  const layout = computeTrustLayout('o', 'Me', contacts, { width: size, height: size });
+  assert.equal(layout.nodes.length, 200);
+  for (const n of layout.nodes) {
+    assert.ok(n.x - n.radius >= 0 && n.x + n.radius <= size);
+    assert.ok(n.y - n.radius >= 0 && n.y + n.radius <= size);
+  }
+  const dist = (n: { x: number; y: number }) => Math.hypot(n.x - layout.cx, n.y - layout.cy);
+  const tR = layout.nodes.filter((n) => n.state === 'trusted').map(dist);
+  const kR = layout.nodes.filter((n) => n.state === 'known').map(dist);
+  assert.ok(Math.max(...tR) > Math.min(...kR));
+});
+
+test('witnessed mutual springs pull a pair closer than the same graph without they_trust', () => {
+  const base = (fp: string, they: string[] = []) =>
+    trustedEdge({
+      peer_fingerprint: fp,
+      peer_name: fp,
+      open_visibility: true,
+      they_trust: they,
+      mutual: { they_trust_me: true, last_sync: new Date().toISOString(), reciprocal: true },
+      tags: [],
+    });
+  const lonely = [
+    base('sally'),
+    base('joe'),
+    base('other'),
+  ];
+  const bonded = [
+    base('sally', ['joe']),
+    base('joe', ['sally']),
+    base('other'),
+  ];
+  const a = computeTrustLayout('o', 'Me', lonely, { width: 720, height: 720 });
+  const b = computeTrustLayout('o', 'Me', bonded, { width: 720, height: 720 });
+  const by = (layout: typeof a) => Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  const dist = (layout: typeof a) => {
+    const m = by(layout);
+    return Math.hypot(m.sally.x - m.joe.x, m.sally.y - m.joe.y);
+  };
+  const without = dist(a);
+  const withBond = dist(b);
+  assert.ok(
+    withBond < without * 0.75,
+    `mutual spring did not tighten Sally↔Joe: ${without} → ${withBond}`,
+  );
+  assert.ok(withBond < 130, `bonded pair still too far: ${withBond}`);
+});
+
+test('witnessed Know springs pull a disclosed pair closer than tags-only', () => {
+  const base = (fp: string, circle: string[] = [], vis = true) =>
+    knownEdge({
+      peer_fingerprint: fp,
+      peer_name: fp,
+      open_visibility: vis,
+      disclosed_circle: circle,
+      tags: [],
+    });
+  const lonely = [base('claude'), base('hedy'), base('other')];
+  const bonded = [
+    base('claude', ['hedy']),
+    base('hedy', ['claude']),
+    base('other'),
+  ];
+  const a = computeTrustLayout('o', 'Me', lonely, { width: 720, height: 720 });
+  const b = computeTrustLayout('o', 'Me', bonded, { width: 720, height: 720 });
+  const by = (layout: typeof a) => Object.fromEntries(layout.nodes.map((n) => [n.id, n]));
+  const dist = (layout: typeof a) => {
+    const m = by(layout);
+    return Math.hypot(m.claude.x - m.hedy.x, m.claude.y - m.hedy.y);
+  };
+  const without = dist(a);
+  const withBond = dist(b);
+  assert.ok(
+    withBond < without * 0.75,
+    `know spring did not tighten Claude↔Hedy: ${without} → ${withBond}`,
+  );
 });

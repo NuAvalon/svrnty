@@ -2,9 +2,9 @@
 // Unit tests for the return-channel mailbox store. Server-independent proof of the functional
 // invariants (deposit / non-destructive poll / ack-delete / at-least-once / cap-429 / TTL GC) and
 // the config-driven policy hooks. The HTTP-level I-4 anti-oracle properties (owner-auth-first,
-// uniform non-owner shape) are exercised against a live server by Flint's e2e gate.
+// uniform non-owner shape) are exercised against a live server by the e2e gate.
 //
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test mailbox-store.test.ts
+// Run: npx tsx --test mailbox-store.test.ts
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';

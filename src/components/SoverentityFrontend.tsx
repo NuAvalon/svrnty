@@ -2,14 +2,40 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureImportExportDialogs';
+import { VaultExportDialog } from '@/components/export/VaultExportDialog';
+import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, initSessionKey, isSessionUnlocked } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { sendContactUpdate } from '@/lib/sync/send-contact-update';
+import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
+import { base64ToUint8 } from '@/lib/crypto/pq';
+import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
 import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
+import { EntropyMeter } from '@/components/recovery/EntropyMeter';
+import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
+import { SeedRestoreInterstitial } from '@/components/recovery/SeedRestoreInterstitial';
+import { SovereignIdentityCard, type MethodKind } from '@/components/identity/SovereignIdentityCard';
+import { OwnerCardStudio } from '@/components/identity/OwnerCardStudio';
+import { ContactShareDialog } from '@/components/ContactShareDialog';
+import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
+import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
+import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
+import { solarEmber as SE } from '@/components/recovery/solar-ember';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
+import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
+import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
+import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
   onVaultRestore?: (contents: any) => void;
+  /** Jump to Trust Map from the card's "Your circle" affordance */
+  onOpenCircle?: () => void;
+  /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
+  appLockPrefs?: AppLockPrefs;
+  onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
+  onLockNow?: () => void;
 }
 
 type GateMode = 'choose' | 'forge' | 'restore' | 'restore-verify' | 'pq-migrate' | 'recovery-reveal';
@@ -123,8 +149,8 @@ function SacredGeometryBg() {
           50% { box-shadow: 0 0 50px rgba(200, 168, 78, 0.2), 0 0 80px rgba(200, 168, 78, 0.06); }
         }
         @keyframes emerald-pulse {
-          0%, 100% { box-shadow: 0 0 20px rgba(52, 211, 153, 0.06); }
-          50% { box-shadow: 0 0 40px rgba(52, 211, 153, 0.15), 0 0 60px rgba(52, 211, 153, 0.04); }
+          0%, 100% { box-shadow: 0 0 20px rgba(249, 168, 37, 0.06); }
+          50% { box-shadow: 0 0 40px rgba(249, 168, 37, 0.15), 0 0 60px rgba(249, 168, 37, 0.04); }
         }
       `}</style>
 
@@ -135,8 +161,8 @@ function SacredGeometryBg() {
       }}>
         <defs>
           <radialGradient id="sacredGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="0.06" />
-            <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+            <stop offset="0%" stopColor="#f9a825" stopOpacity="0.06" />
+            <stop offset="100%" stopColor="#f9a825" stopOpacity="0" />
           </radialGradient>
         </defs>
         {/* Flower of Life circles */}
@@ -145,7 +171,7 @@ function SacredGeometryBg() {
             key={`flower-${i}`}
             cx={c.cx} cy={c.cy} r={60}
             fill="none"
-            stroke="#34d399"
+            stroke="#f9a825"
             strokeWidth="0.5"
             opacity={0.06}
           />
@@ -181,7 +207,7 @@ function SacredGeometryBg() {
             width: `${node.size}px`,
             height: `${node.size}px`,
             borderRadius: '50%',
-            background: node.id % 3 === 0 ? '#34d399' : '#c8a84e',
+            background: node.id % 3 === 0 ? '#f9a825' : '#c8a84e',
             boxShadow: `0 0 6px ${node.id % 3 === 0 ? 'rgba(52,211,153,0.3)' : 'rgba(200,168,78,0.3)'}`,
             '--dx': `${node.drift}px`,
             '--dy': `${node.drift * 0.7}px`,
@@ -208,6 +234,10 @@ export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
   onVaultRestore,
+  onOpenCircle,
+  appLockPrefs,
+  onAppLockPrefsChange,
+  onLockNow,
 }: SoverentityFrontendProps) {
   const [identity, setIdentity] = useState(existingIdentity || null);
   const [loading, setLoading] = useState(false);
@@ -229,19 +259,47 @@ export function SoverentityFrontend({
   const [vaultFile, setVaultFile] = useState<File | null>(null);
   const [vaultHeader, setVaultHeader] = useState<any>(null);
   const [vaultPassphrase, setVaultPassphrase] = useState('');
+  const [soulSeedPhrase, setSoulSeedPhrase] = useState('');
+  /** 3a-pure seed recovery: device passphrase the user sets to protect recovered keys at rest. */
+  const [seedNewPassphrase, setSeedNewPassphrase] = useState('');
+  /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
+  const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
+  /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
+  const [plaintextImportNote, setPlaintextImportNote] = useState<string | null>(null);
+  /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
+  const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
+  /** After successful seed-only restore — unmissable contacts-honesty interstitial (no CTA). */
+  const [seedRestoreInterstitial, setSeedRestoreInterstitial] = useState<{
+    identity: any;
+    fingerprint: string;
+    pqSecretsRecovered: boolean;
+  } | null>(null);
 
   // PQ migration state (shown after v1 import)
   const [pendingPqMigration, setPendingPqMigration] = useState<{ fingerprint: string; identity: any } | null>(null);
   const [pqMigrating, setPqMigrating] = useState(false);
   const [hasPqKeys, setHasPqKeys] = useState(false);
 
-  // Export dialog state
+  // Export dialog state (CUR-4 — auth gate before sensitive export)
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [showKeyExportDialog, setShowKeyExportDialog] = useState(false);
+  const [showVaultExportDialog, setShowVaultExportDialog] = useState(false);
+  const [pendingExportAuth, setPendingExportAuth] = useState<'contacts' | 'keys' | null>(null);
   const [showFullBackupDialog, setShowFullBackupDialog] = useState(false);
   const [fullBackupPassword, setFullBackupPassword] = useState('');
   const [fullBackupConfirm, setFullBackupConfirm] = useState('');
   const [fullBackupLoading, setFullBackupLoading] = useState(false);
+
+  // CUR-1 — revise contact method + shared-with send (UI)
+  const [reviseKind, setReviseKind] = useState<MethodKind | null>(null);
+  const [showShareIdentity, setShowShareIdentity] = useState(false);
+  const [sharePackage, setSharePackage] = useState('');
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
+  const [audience, setAudience] = useState<
+    { fingerprint: string; name: string; public_key?: string; trusted?: boolean; tags?: string[] }[]
+  >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
   const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
@@ -271,6 +329,39 @@ export function SoverentityFrontend({
     } else {
       setHasPqKeys(false);
     }
+  }, [identity]);
+
+  // CUR-1 — local Signal/Site drafts + audience list for revise dialog
+  useEffect(() => {
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) {
+      setLocalMethods({});
+      setAudience([]);
+      return;
+    }
+    setLocalMethods(loadLocalMethods(fp));
+    void getAllContacts(fp).then((rows) => {
+      setAudience(
+        rows
+          .map((c) => {
+            const peerFp = String(c.fingerprint || c.id || '').trim();
+            if (!peerFp) return null;
+            return {
+              fingerprint: peerFp,
+              name: c.name || 'Unnamed',
+              public_key: c.public_key || undefined,
+              trusted:
+                String(c.trust_level || '').toLowerCase() === 'trusted' ||
+                String(c.trust_level || '').toLowerCase() === 'verified' ||
+                c.trusted === true,
+              tags: (c as { tags?: string[]; metadata?: { tags?: string[] } }).tags
+                || (c as { metadata?: { tags?: string[] } }).metadata?.tags
+                || [],
+            };
+          })
+          .filter((c): c is NonNullable<typeof c> => c != null)
+      );
+    });
   }, [identity]);
 
   // Restore claimed URL from registration service on identity load
@@ -333,11 +424,25 @@ export function SoverentityFrontend({
       // Register with satellite
       const fp = identity?.identity?.fingerprint;
       const pk = identity?.identity?.public_key || identity?.identity?.publicKey || '';
-      const email = identity?.identity?.email || '';
-      const regRes = await fetch('/register', {
+      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
+      const extra = await buildSatelliteRegisterFields(identity);
+      const regRes = await fetch('/api/satellite/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, display_name: slug, public_key: pk, fingerprint: fp || '', slug }),
+        body: JSON.stringify({
+          display_name: slug,
+          public_key: pk,
+          fingerprint: extra?.fingerprint || fp || '',
+          slug,
+          ...(extra
+            ? {
+                sign_pub: extra.sign_pub,
+                enc_pub: extra.enc_pub,
+                kem_pub: extra.kem_pub,
+                sig_pub: extra.sig_pub,
+              }
+            : {}),
+        }),
       });
       if (regRes.ok || regRes.status === 409) {
         // Claim the slug
@@ -393,7 +498,7 @@ export function SoverentityFrontend({
     setRecoveryAcked(false);
   };
 
-  // (§1, Peter #116236) Email-verification + OTP handlers removed. There is no server account to
+  // Email-verification + OTP handlers removed. There is no server account to
   // verify against, and any email→identity path is a custodian backdoor (email-verify today implies
   // email-recovery tomorrow → whoever controls the inbox controls the identity). Recovery is SOCIAL
   // (Shamir guardians + veto window), never inbox-based; the identity is self-certifying (key possession).
@@ -448,16 +553,72 @@ export function SoverentityFrontend({
         }
       }
 
-      // .svrnty vault — read unencrypted header
+      // .svrnty vault — read unencrypted header (crypto params + version only; no identity)
       const arrayBuffer = await file.arrayBuffer();
       const { readVaultHeader } = await import('@/lib/sync/vault');
       const header = readVaultHeader(arrayBuffer);
       setVaultHeader(header);
+      setRestorePath('passphrase');
+      setSoulSeedPhrase('');
+      setSeedNewPassphrase('');
+      setVaultPassphrase('');
       setGateMode('restore-verify');
     } catch (err) {
       setRestoreError(
         err instanceof Error ? err.message : 'Could not read file. Accepts .svrnty or .json backups.'
       );
+    }
+  };
+
+  /** v4 dual-envelope: lost passphrase → extractRecoveryVault + recoverFromSeedPhrase (fleet seam). */
+  const handleSeedVaultRestore = async () => {
+    if (!vaultFile || vaultHeader?.format !== 'svrnty-vault') return;
+    // v3-guard: never offer / run seed-only on pre-v4 (UI + crypto belt).
+    if (vaultHeader.version !== 4) {
+      setRestoreError(
+        'This backup was created before passphrase-free recovery. It can be restored only with your passphrase.',
+      );
+      setRestorePath('passphrase');
+      return;
+    }
+    try {
+      setRestoreLoading(true);
+      setRestoreError(null);
+      if (!soulSeedPhrase.trim()) {
+        setRestoreError('Enter your recovery code.');
+        return;
+      }
+      // 3a-pure (Blocker-C): recovered keys must be encrypted at rest — require a device passphrase
+      // before the (fail-closed) stores run, so there is never a plaintext-at-rest window.
+      if (seedNewPassphrase.length < 12) {
+        setRestoreError('Set a device passphrase (at least 12 characters) to protect your recovered keys at rest.');
+        return;
+      }
+      const arrayBuffer = await vaultFile.arrayBuffer();
+      const { restoreIdentityFromSeedVault } = await import('@/components/recovery/seedVaultRestore');
+      const result = await restoreIdentityFromSeedVault(arrayBuffer, soulSeedPhrase, seedNewPassphrase);
+      // Keys are persisted; hold identity out of the main surface until the
+      // contacts-honesty interstitial is acknowledged (queue: UNMISSABLE, no CTA).
+      setSeedRestoreInterstitial({
+        identity: result.identity,
+        fingerprint: result.fingerprint,
+        pqSecretsRecovered: result.pqSecretsRecovered,
+      });
+      setSoulSeedPhrase('');
+      setSeedNewPassphrase('');
+      setVaultPassphrase('');
+      setRestorePath('passphrase');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      // Wrong phrase / hash mismatch from decryptVault — no lockout; let them retry.
+      // DO-SECOND honest error (seed-only path).
+      if (/master secret|seed phrase|Invalid seed|hash|mismatch/i.test(msg)) {
+        setRestoreError("That recovery code doesn't match this backup.");
+      } else {
+        setRestoreError(msg || 'Could not recover from this backup.');
+      }
+    } finally {
+      setRestoreLoading(false);
     }
   };
 
@@ -471,13 +632,13 @@ export function SoverentityFrontend({
       // JSON backup path (plain, encrypted keys, or encrypted full backup)
       if (vaultHeader?.format === 'json-backup' || vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') {
         const data = vaultHeader._jsonData;
-        const { importAll, storeIdentity, storeKey, addContact, setActiveFingerprint, loadIdentity } = await import('@/lib/identity/client-store');
+        const { importAll, storeKey, loadIdentity, setActiveFingerprint, storeIdentity } = await import('@/lib/identity/client-store');
 
         // Detect format and normalize
         if (data.type === 'svrnty-full-backup') {
           // Encrypted full backup — decrypt first, then import
           if (!vaultPassphrase) {
-            setRestoreError('Enter your backup password to decrypt.');
+            setRestoreError('Enter the encryption password you set when exporting this copy.');
             return;
           }
           const fromBase64 = (b64: string) => {
@@ -504,7 +665,37 @@ export function SoverentityFrontend({
             await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, derivedKey, encrypted)
           );
           const backup = JSON.parse(new TextDecoder().decode(decrypted));
-          await importAll(backup);
+
+          // L8: when a KeyVault is present, soul-seed is the second factor.
+          if (backup.vault) {
+            if (!soulSeedPhrase.trim()) {
+              setRestoreError('Enter your soul-seed recovery phrase (second factor).');
+              return;
+            }
+            try {
+              const { recoverFromSeedPhrase } = await import('@/lib/crypto/recovery');
+              const bundle = await recoverFromSeedPhrase(backup.vault, soulSeedPhrase.trim());
+              // Prefer recovering keys from the vault when plaintext keys were omitted (true 2nd factor).
+              if (!backup.keys) {
+                backup.keys = {
+                  privateKey: bundle.classical_private_key,
+                  passphrase: bundle.classical_passphrase,
+                };
+              }
+              // PQ private material shape is team-owned (serializeKeypairBundle). If the backup
+              // omitted pq_keys, flag in recovery README — do not invent a bundle layout here.
+              void bundle.pq_signing_secret_key;
+              void bundle.pq_kem_secret_key;
+            } catch {
+              setRestoreError('Soul-seed does not open the recovery vault. Check the phrase and try again.');
+              return;
+            }
+          }
+
+          const fullReport = await importAll(backup);
+          if (fullReport.kept + fullReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(fullReport));
+          }
 
           // PQ migration: check for missing PRIVATE PQ keys (identity may have public PQ keys but backup lacks private)
           if (!backup.pq_keys) {
@@ -520,7 +711,29 @@ export function SoverentityFrontend({
           onIdentityUpdate?.(backup.identity);
         } else if (data.identity?.identity?.fingerprint) {
           // SovereignBackup format (from exportAll) — pass directly
-          await importAll(data);
+          if (data.vault) {
+            if (!soulSeedPhrase.trim()) {
+              setRestoreError('Enter your soul-seed recovery phrase (second factor).');
+              return;
+            }
+            try {
+              const { recoverFromSeedPhrase } = await import('@/lib/crypto/recovery');
+              const bundle = await recoverFromSeedPhrase(data.vault, soulSeedPhrase.trim());
+              if (!data.keys) {
+                data.keys = {
+                  privateKey: bundle.classical_private_key,
+                  passphrase: bundle.classical_passphrase,
+                };
+              }
+            } catch {
+              setRestoreError('Soul-seed does not open the recovery vault. Check the phrase and try again.');
+              return;
+            }
+          }
+          const sovereignReport = await importAll(data);
+          if (sovereignReport.kept + sovereignReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(sovereignReport));
+          }
 
           // PQ migration: check for missing PRIVATE PQ keys
           if (!data.pq_keys) {
@@ -535,17 +748,12 @@ export function SoverentityFrontend({
           setIdentity(data.identity);
           onIdentityUpdate?.(data.identity);
         } else if (data.owner_fingerprint && data.contacts) {
-          // SecureExportDialog format — contacts only, no identity
-          // Import contacts into existing identity or create stub
+          // SecureExportDialog format — contacts only, no identity.
+          // Same Known-only plaintext gate as importAll; unbindable rows skip and are reported.
           const fp = data.owner_fingerprint;
-          for (const contact of data.contacts) {
-            await addContact(fp, {
-              fingerprint: contact.fingerprint || '',
-              name: contact.name || '',
-              email: contact.email || '',
-              public_key: contact.public_key || '',
-              trust_level: contact.trust_level || 'unknown',
-            });
+          const contactsReport = await importPlaintextContacts(fp, data.contacts);
+          if (contactsReport.kept + contactsReport.skipped > 0) {
+            setPlaintextImportNote(formatPlaintextImportReport(contactsReport));
           }
           await setActiveFingerprint(fp);
           const existingIdentity = await loadIdentity(fp);
@@ -586,6 +794,12 @@ export function SoverentityFrontend({
           const keyData = JSON.parse(new TextDecoder().decode(decrypted));
           // Store key in IndexedDB
           const fp = keyData.fingerprint || data.fingerprint;
+          // 3a-pure (Blocker-C): keys must be encrypted at rest. Establish the session key from the
+          // export password the user just entered (unless a session is already open — don't clobber
+          // it). storeKey is fail-closed, so this guarantees no plaintext-at-rest window.
+          if (!isSessionUnlocked()) {
+            await initSessionKey(vaultPassphrase);
+          }
           if (keyData.privateKey) {
             await storeKey(fp, keyData.privateKey, keyData.passphrase || '');
           }
@@ -607,7 +821,7 @@ export function SoverentityFrontend({
           throw new Error('Unrecognized backup format. Expected a sovereign backup, contacts export, or identity file.');
         }
       } else {
-        // .svrnty vault path — needs passphrase
+        // .svrnty vault path — daily passphrase unlock (v3 + v4)
         if (!vaultPassphrase) return;
         const arrayBuffer = await vaultFile.arrayBuffer();
         const { unpackVault } = await import('@/lib/sync/vault');
@@ -617,24 +831,64 @@ export function SoverentityFrontend({
         // may be shown here as a post-decrypt confirmation — the honest place for
         // the recognition ritual, unforgeable because it required the key. (Pre-
         // passphrase display was removed in v3; a cleartext safe word is fakeable.)
+
+        // PERSIST to IndexedDB so the restored identity survives a reload. Before this,
+        // "Open Vault" only hydrated the in-memory React state below and the identity was
+        // LOST on the next load — a silent data-safety bug contradicting "restore … on
+        // THIS DEVICE / pick up where you left off" (fleet-confirmed
+        // launch-blocker). The adapter binds the private key to the fingerprint + inits
+        // the session key for at-rest equivalence, mirroring genesis + the recovery-code
+        // path (restoreIdentityFromSeedVault). Runs BEFORE setIdentity so a vault that
+        // fails its integrity check throws here and never reaches the main surface.
+        const { restoreIdentityFromVault } = await import('@/components/recovery/vaultPassphraseRestore');
+        await restoreIdentityFromVault(contents, vaultPassphrase);
+
         setIdentity(contents.identity);
         onIdentityUpdate?.(contents.identity);
         onVaultRestore?.(contents);
+        // Migration nudge (DO-SECOND): v3 users should re-export before a loss event.
+        if (vaultHeader?.version === 3) {
+          setShowV3MigrationNudge(true);
+        }
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      const looksLikeDecryptFail =
+        /decrypt|OperationError|passphrase|password|could not open vault/i.test(msg) ||
+        (err instanceof DOMException && err.name === 'OperationError');
+      // Claim-honesty: wrong passphrase on binary vault must NOT auto-offer seed
+      // recovery in the error string for v3. v4 can offer the alternate path in UI.
       setRestoreError(
-        err instanceof Error
-          ? err.message.includes('decrypt')
-            ? 'Wrong passphrase. Check your spelling and try again.'
-            : err.message
-          : 'Failed to restore'
+        looksLikeDecryptFail
+          ? vaultHeader?.format === 'svrnty-vault' && vaultHeader?.version === 4
+            ? 'Incorrect passphrase. Try again, or recover with your recovery code below.'
+            : 'Incorrect encryption password. Use the password you set when you exported this copy.'
+          : msg || 'Failed to restore'
       );
     } finally {
       setRestoreLoading(false);
     }
   };
 
-  const formatFingerprint = (fp: string) => fp?.match(/.{1,4}/g)?.join(' ') || fp;
+  // --- Gate: Seed-restore contacts-honesty interstitial (UNMISSABLE, no CTA) ---
+  // Spec DO-SECOND POST-SUCCESS INTERSTITIAL (d892bfa definitive no-CTA).
+  if (seedRestoreInterstitial) {
+    return (
+      <SeedRestoreInterstitial
+        fingerprint={seedRestoreInterstitial.fingerprint}
+        pqSecretsRecovered={seedRestoreInterstitial.pqSecretsRecovered}
+        onContinue={() => {
+          const pending = seedRestoreInterstitial;
+          setIdentity(pending.identity);
+          onIdentityUpdate?.(pending.identity);
+          setSeedRestoreInterstitial(null);
+          setVaultFile(null);
+          setVaultHeader(null);
+          setGateMode('choose');
+        }}
+      />
+    );
+  }
 
   // --- Gate: Choose Mode ---
   if (!identity && gateMode === 'choose') {
@@ -646,49 +900,66 @@ export function SoverentityFrontend({
             {/* Hero */}
             <div style={s.hero}>
               <div style={s.shieldIcon}>
-                {/* Geodesic dome wireframe with key inside */}
-                <svg width="100" height="100" viewBox="-55 -55 110 110" style={{ overflow: 'visible' }}>
+                {/* Pointy-top hexagon + key — quiet pre-identity mark */}
+                <svg
+                  width="120"
+                  height="120"
+                  viewBox="0 0 100 100"
+                  aria-hidden
+                  style={{ overflow: 'visible', animation: 'gate-breathe 6s ease-in-out infinite' }}
+                >
                   <defs>
-                    <linearGradient id="domeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stopColor="#34d399" stopOpacity="0.6" />
-                      <stop offset="100%" stopColor="#c8a84e" stopOpacity="0.4" />
+                    <linearGradient id="hexGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stopColor={SE.accent} stopOpacity="0.7" />
+                      <stop offset="100%" stopColor={SE.accent2} stopOpacity="0.35" />
                     </linearGradient>
                   </defs>
-                  {/* Outer geodesic wireframe — icosahedron projection */}
-                  <g style={{ animation: 'spin-dome 20s linear infinite' }}>
-                    {/* Pentagon ring top */}
-                    <polygon points="0,-48 45.6,-14.8 28.2,38.8 -28.2,38.8 -45.6,-14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.5" />
-                    {/* Pentagon ring bottom (rotated) */}
-                    <polygon points="0,48 -45.6,14.8 -28.2,-38.8 28.2,-38.8 45.6,14.8" fill="none" stroke="url(#domeGrad)" strokeWidth="0.6" opacity="0.3" />
-                    {/* Connecting triangles */}
-                    <line x1="0" y1="-48" x2="45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
-                    <line x1="0" y1="-48" x2="-45.6" y2="14.8" stroke="#34d399" strokeWidth="0.4" opacity="0.3" />
-                    <line x1="45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
-                    <line x1="-45.6" y1="-14.8" x2="0" y2="48" stroke="#34d399" strokeWidth="0.4" opacity="0.25" />
-                    <line x1="28.2" y1="38.8" x2="-28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
-                    <line x1="-28.2" y1="38.8" x2="28.2" y2="-38.8" stroke="#c8a84e" strokeWidth="0.4" opacity="0.2" />
-                    {/* Inner triangulation */}
-                    <line x1="45.6" y1="-14.8" x2="-28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="-45.6" y1="-14.8" x2="28.2" y2="38.8" stroke="#34d399" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="28.2" y1="38.8" x2="45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
-                    <line x1="-28.2" y1="38.8" x2="-45.6" y2="14.8" stroke="#c8a84e" strokeWidth="0.3" opacity="0.15" />
+                  <style>{`
+                    @keyframes gate-breathe {
+                      0%, 100% { filter: drop-shadow(0 0 10px rgba(249,168,37,.2)); }
+                      50% { filter: drop-shadow(0 0 18px rgba(249,168,37,.4)); }
+                    }
+                    @keyframes gate-key-pulse {
+                      0%, 100% { opacity: 0.88; }
+                      50% { opacity: 1; }
+                    }
+                  `}</style>
+                  {/* Pointy-top regular hexagon */}
+                  <polygon
+                    points="50,8 86,29 86,71 50,92 14,71 14,29"
+                    fill="none"
+                    stroke="url(#hexGrad)"
+                    strokeWidth="1.4"
+                    strokeLinejoin="miter"
+                  />
+                  <polygon
+                    points="50,20 76,35 76,65 50,80 24,65 24,35"
+                    fill="none"
+                    stroke={SE.accent}
+                    strokeOpacity="0.28"
+                    strokeWidth="0.9"
+                  />
+                  {/* Key */}
+                  <g
+                    transform="translate(50,50)"
+                    style={{ animation: 'gate-key-pulse 4s ease-in-out infinite' }}
+                    stroke={SE.accent}
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                  >
+                    <circle cx="0" cy="-8" r="7" />
+                    <circle cx="0" cy="-8" r="2.5" fill={SE.bg} stroke={SE.accent} />
+                    <line x1="0" y1="-1" x2="0" y2="16" />
+                    <line x1="0" y1="8" x2="6" y2="8" />
+                    <line x1="0" y1="13" x2="4.5" y2="13" />
                   </g>
-                  {/* Key at center — doesn't rotate */}
-                  <g opacity="0.9" style={{ animation: 'pulse-key 4s ease-in-out infinite' }}>
-                    <svg x="-12" y="-16" width="24" height="32" viewBox="0 0 24 32" fill="none" stroke="#c8a84e" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="9" r="6" />
-                      <line x1="12" y1="15" x2="12" y2="28" />
-                      <line x1="12" y1="22" x2="16" y2="22" />
-                      <line x1="12" y1="26" x2="15" y2="26" />
-                    </svg>
-                  </g>
-                  {/* Glow */}
-                  <circle cx="0" cy="0" r="50" fill="none" stroke="#34d399" strokeWidth="0.3" opacity="0.08" style={{ animation: 'pulse-node 6s ease-in-out infinite' }} />
                 </svg>
               </div>
               <h1 style={s.gateTitle}>svrnty</h1>
               <p style={s.gateSub}>
-                Your identity. Your trust. Your sovereignty.
+                A card, not an account. Trust starts in the world.
               </p>
             </div>
 
@@ -697,56 +968,57 @@ export function SoverentityFrontend({
               <button
                 onClick={() => setGateMode('forge')}
                 style={s.doorBtn}
+                aria-label={`${TRUST_RECIPE_COPY.gateStart}. Generate a new cryptographic identity.`}
                 onMouseEnter={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(200, 168, 78, 0.4)';
-                  el.style.background = 'rgba(200, 168, 78, 0.08)';
+                  el.style.borderColor = 'var(--se-border-lit)';
+                  el.style.background = 'color-mix(in srgb, var(--se-accent) 12%, transparent)';
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(180, 160, 100, 0.15)';
-                  el.style.background = 'rgba(15, 15, 25, 0.6)';
+                  el.style.borderColor = 'var(--se-border)';
+                  el.style.background = 'var(--se-surface)';
                 }}
               >
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--se-accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
                 </svg>
-                <span style={s.doorTitle}>Begin anew.</span>
+                <span style={s.doorTitle}>{TRUST_RECIPE_COPY.gateStart}</span>
                 <span style={s.doorDesc}>
-                  Generate a new cryptographic identity.
-                  Your keys never leave your device.
+                  A living address book and social web. You own it. We don&apos;t want your data.
                 </span>
               </button>
 
               <button
                 onClick={() => setGateMode('restore')}
                 style={s.doorBtn}
+                aria-label={`${TRUST_RECIPE_COPY.gateContinue}. Restore your identity from a vault file.`}
                 onMouseEnter={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(78, 205, 196, 0.4)';
-                  el.style.background = 'rgba(78, 205, 196, 0.06)';
+                  el.style.borderColor = 'rgba(78, 205, 196, 0.45)';
+                  el.style.background = 'rgba(78, 205, 196, 0.08)';
                 }}
                 onMouseLeave={e => {
                   const el = e.currentTarget;
-                  el.style.borderColor = 'rgba(180, 160, 100, 0.15)';
-                  el.style.background = 'rgba(15, 15, 25, 0.6)';
+                  el.style.borderColor = 'var(--se-border)';
+                  el.style.background = 'var(--se-surface)';
                 }}
               >
                 <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4ecdc4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: '12px' }}>
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Open your vault.</span>
+                <span style={{ ...s.doorTitle, color: '#4ecdc4' }}>Restore from a copy.</span>
                 <span style={s.doorDesc}>
-                  Restore your identity from a vault file.
-                  Pick up where you left off.
+                  Open an exported vault or backup file.
+                  You&apos;ll need the encryption password you set when you exported it.
                 </span>
               </button>
             </div>
 
             <p style={s.footer}>
-              ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
-              <br />Post-quantum. Local-first. Sovereign.
+              Ed25519 signing · Curve25519 encryption · post-quantum-ready (ML-DSA-87 + ML-KEM-1024).
+              <br />Local-first. Sovereign.
             </p>
           </div>
         </div>
@@ -774,10 +1046,10 @@ export function SoverentityFrontend({
                 <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Begin anew.</h2>
+            <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateStart}</h2>
             <p style={s.heroSub}>
-              Generate a sovereign keypair. Your keys never leave your device.
-              Post-quantum encryption. No server can read your data. No tracking.
+              A card, not an account. Generate a sovereign keypair. Your keys never leave your device.
+              Post-quantum-ready encryption. No server can read your data. No tracking.
             </p>
           </div>
 
@@ -811,8 +1083,9 @@ export function SoverentityFrontend({
               onChange={e => { setUnlockConfirm(e.target.value); setUnlockError(''); }}
               style={{ ...s.input, marginTop: '8px' }}
             />
+            <EntropyMeter value={unlockPassphrase} label="Unlock strength" />
             {unlockError && <p style={{ ...s.hint, color: '#ff6b6b' }}>{unlockError}</p>}
-            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down.</p>
+            <p style={s.hint}>Required. Protects private keys in this browser. Min 12 chars. This is NOT emailed — write it down. (Recovery code is shown next — a separate second factor.)</p>
           </div>
 
           <button
@@ -828,12 +1101,12 @@ export function SoverentityFrontend({
                 <Spinner /> Generating keys...
               </span>
             ) : (
-              <span style={s.btnInner}>Begin anew.</span>
+              <span style={s.btnInner}>{TRUST_RECIPE_COPY.gateStart}</span>
             )}
           </button>
 
           <p style={s.footer}>
-            ED25519 + ML-DSA-87 signing. Curve25519 + ML-KEM-1024 encryption.
+            Ed25519 signing · Curve25519 encryption · post-quantum-ready (ML-DSA-87 + ML-KEM-1024).
             <br />Your keys. Your data. Your sovereignty.
           </p>
         </div>
@@ -843,66 +1116,17 @@ export function SoverentityFrontend({
 
   // --- Gate: one-time recovery reveal (seed phrase) ---
   if (!identity && gateMode === 'recovery-reveal' && pendingRecovery) {
+    const fp = pendingRecovery.identity?.identity?.fingerprint || '';
     return (
-      <div style={s.outerWrap}>
-        <div style={s.createCard}>
-          <div style={s.keyIcon}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="1.5">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-            </svg>
-          </div>
-          <h1 style={s.createTitle}>Write this down.</h1>
-          <p style={s.createSub}>
-            This recovery phrase reconstructs your master secret. It is shown once.
-            It is NOT your vault passphrase — the passphrase unlocks this device,
-            the recovery phrase rebuilds your identity if you lose the device.
-            Social-recovery shards ({pendingRecovery.threshold}-of-{pendingRecovery.shardCount}) are stored locally for the tear ceremony.
-          </p>
-          <div style={{
-            background: 'rgba(6, 10, 8, 0.9)',
-            border: '1px solid rgba(200, 168, 78, 0.25)',
-            borderRadius: '10px',
-            padding: '16px',
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize: '13px',
-            color: '#e8e4d9',
-            wordBreak: 'break-all' as const,
-            lineHeight: 1.7,
-            marginBottom: '16px',
-            userSelect: 'all' as const,
-          }}>
-            {pendingRecovery.seedPhrase}
-          </div>
-          <label style={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
-            fontFamily: "'Space Grotesk', sans-serif",
-            fontSize: '12px',
-            color: 'rgba(255,255,255,0.55)',
-            marginBottom: '16px',
-            cursor: 'pointer',
-          }}>
-            <input
-              type="checkbox"
-              checked={recoveryAcked}
-              onChange={e => setRecoveryAcked(e.target.checked)}
-              style={{ marginTop: '2px' }}
-            />
-            <span>I have written this down offline. I understand there is no email recovery.</span>
-          </label>
-          <button
-            onClick={confirmRecoveryReveal}
-            disabled={!recoveryAcked}
-            style={{
-              ...s.primaryBtn,
-              opacity: recoveryAcked ? 1 : 0.45,
-            }}
-          >
-            <span style={s.btnInner}>I have it. Continue.</span>
-          </button>
-        </div>
-      </div>
+      <SoulSeedReveal
+        seedPhrase={pendingRecovery.seedPhrase}
+        fingerprint={fp}
+        threshold={pendingRecovery.threshold}
+        shardCount={pendingRecovery.shardCount}
+        acked={recoveryAcked}
+        onAckChange={setRecoveryAcked}
+        onContinue={confirmRecoveryReveal}
+      />
     );
   }
 
@@ -927,10 +1151,11 @@ export function SoverentityFrontend({
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Open Your Vault</h2>
+            <h2 style={s.heroTitle}>Restore from a copy</h2>
             <p style={s.heroSub}>
-              Upload your .svrnty vault or .json backup to restore your identity,
-              contacts, and trust network on this device.
+              Upload a .svrnty vault or .json backup you exported earlier.
+              Next you&apos;ll enter the encryption password you chose for that file —
+              not an account login password.
             </p>
           </div>
 
@@ -973,53 +1198,90 @@ export function SoverentityFrontend({
     );
   }
 
-  // --- Gate: Restore Vault (verify safe word + enter passphrase) ---
+  // --- Gate: Restore Vault (passphrase unlock / v4 seed recovery) ---
   if (!identity && gateMode === 'restore-verify' && vaultHeader) {
+    const isBinaryVault = vaultHeader.format === 'svrnty-vault';
+    const isV4Vault = isBinaryVault && vaultHeader.version === 4;
+    const isV3Vault = isBinaryVault && vaultHeader.version === 3;
+    const seedPathActive = isBinaryVault && restorePath === 'seed';
+
     return (
       <div style={s.outerWrap}>
-        <div style={s.createPanel}>
-          {/* Back button */}
-          <button onClick={() => { setGateMode('restore'); setVaultHeader(null); }} style={s.backBtn}>
+        <div style={s.createCard}>
+          <button
+            onClick={() => {
+              setGateMode('restore');
+              setVaultHeader(null);
+              setVaultPassphrase('');
+              setSoulSeedPhrase('');
+              setRestorePath('passphrase');
+              setRestoreError(null);
+            }}
+            style={s.backBtn}
+          >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M19 12H5M12 19l-7-7 7-7" />
             </svg>
             Back
           </button>
 
-          {/* Vault Identity */}
           <div style={s.hero}>
             <div style={{ ...s.keyIcon, borderColor: 'rgba(78, 205, 196, 0.2)', background: 'rgba(78, 205, 196, 0.08)' }}>
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#4ecdc4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
             </div>
-            <h2 style={s.heroTitle}>Open Your Vault</h2>
+            <h2 style={s.heroTitle}>
+              {seedPathActive ? 'Recover with your recovery code' : 'Unlock your exported copy'}
+            </h2>
+            {seedPathActive ? (
+              <p style={s.heroSub}>
+                Enter your recovery code to unlock this backup — it works without your passphrase.
+              </p>
+            ) : (
+              <p style={s.heroSub}>
+                Enter the encryption password you set when you exported this file.
+                This is not a website or account login password.
+              </p>
+            )}
+            {isV4Vault && !seedPathActive && (
+              <p style={s.heroSub}>
+                Two ways to restore — both need your backup file:
+              </p>
+            )}
           </div>
 
-          {/* Vault Info Card */}
-          {/* A v3 vault reveals nothing before decryption. Its owner, contacts,
-              and safe word live in the ENCRYPTED body and are authenticated by
-              the passphrase (GCM). A cleartext pre-passphrase preview would be
-              forgeable — an attacker could show a plausible name/safe word to
-              phish "yes, that's mine" — so we show none. Recognition of TYPE,
-              not IDENTITY. (Legacy v2 vaults are refused at file-select.) */}
-          {vaultHeader?.format === 'svrnty-vault' && (
+          {/* Type recognition only — nothing identity-revealing pre-decrypt. */}
+          {isBinaryVault && (
             <div style={s.vaultInfoCard}>
               <div style={s.vaultInfoRow}>
                 <span style={s.vaultInfoLabel}>FILE</span>
                 <span style={s.vaultInfoValue}>Encrypted svrnty vault · v{vaultHeader.version}</span>
               </div>
-              <p style={s.safeWordHint}>
-                This vault is sealed. Your name, contacts, and safe word appear
-                only after you enter the correct passphrase — so nothing shown
-                here can be forged. Enter your passphrase to open it.
-              </p>
+              {isV4Vault && !seedPathActive ? (
+                <div style={{ ...s.safeWordHint, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <p style={{ margin: 0 }}>
+                    Password + backup file → everything (identity, contacts, and trust).
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    Recovery code + backup file → your identity only (no contacts; reconnect those).
+                  </p>
+                  <p style={{ margin: '4px 0 0', opacity: 0.85 }}>
+                    Alternatives — never both. Password alone opens a v4 backup fully.
+                  </p>
+                </div>
+              ) : (
+                <p style={s.safeWordHint}>
+                  {seedPathActive
+                    ? 'Your recovery code unlocks the recovery data inside this backup file — but only together with the file itself. The code alone can\'t rebuild you from nothing.'
+                    : 'This vault is sealed. Your name, contacts, and safe word appear only after you enter the correct passphrase — so nothing shown here can be forged. Enter your passphrase to open it.'}
+                </p>
+              )}
             </div>
           )}
 
           {restoreError && <div style={s.error}>{restoreError}</div>}
 
-          {/* JSON backup — show passphrase for encrypted keys, skip for plaintext */}
           {vaultHeader?.format === 'json-backup' ? (
             <div style={s.trustWarning}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
@@ -1030,12 +1292,11 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>JSON backup detected — not encrypted.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  This file contains your identity data in plaintext. It will be imported directly into your browser's local storage.
+                  This file contains your identity data in plaintext. It will be imported directly into your browser&apos;s local storage.
                 </p>
               </div>
             </div>
           ) : (vaultHeader?.format === 'json-keys-encrypted' || vaultHeader?.format === 'json-full-encrypted') ? (
-            <>
             <div style={s.trustWarning}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
                 <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -1045,34 +1306,11 @@ export function SoverentityFrontend({
               <div>
                 <strong style={{ color: '#c8a84e', fontSize: '12px' }}>Encrypted key backup detected.</strong>
                 <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
-                  Enter the password you used when exporting to decrypt your private keys.
+                  Enter the encryption password you set when exporting this copy, then your soul-seed if the backup includes a KeyVault. Not your everyday unlock passphrase.
                 </p>
               </div>
             </div>
-            <div style={s.field}>
-              <label style={s.label}>DECRYPTION PASSWORD</label>
-              <div style={{ position: 'relative' }}>
-                <input
-                  type={showPassphrase ? 'text' : 'password'}
-                  placeholder="Enter your export password"
-                  value={vaultPassphrase}
-                  onChange={e => setVaultPassphrase(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
-                  style={s.input}
-                  autoFocus
-                />
-                <button
-                  onClick={() => setShowPassphrase(!showPassphrase)}
-                  style={s.eyeBtn}
-                >
-                  {showPassphrase ? '🙈' : '👁'}
-                </button>
-              </div>
-            </div>
-            </>
-          ) : (
-          <>
-          {/* Trust Warning */}
+          ) : !seedPathActive ? (
           <div style={s.trustWarning}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c8a84e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: '1px' }}>
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -1087,87 +1325,248 @@ export function SoverentityFrontend({
               </p>
             </div>
           </div>
+          ) : null}
 
-          {/* Passphrase Input */}
-          <div style={s.field}>
-            <label style={s.label}>VAULT PASSPHRASE</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type={showPassphrase ? 'text' : 'password'}
-                placeholder="Enter your vault passphrase"
-                value={vaultPassphrase}
-                onChange={e => setVaultPassphrase(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore(); }}
-                style={s.input}
-                autoFocus
-              />
-              <button
-                onClick={() => setShowPassphrase(!showPassphrase)}
-                style={s.eyeBtn}
-                tabIndex={-1}
-              >
-                {showPassphrase ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                    <line x1="1" y1="1" x2="23" y2="23" />
-                  </svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
-              </button>
+          {/* Passphrase — daily path only */}
+          {!seedPathActive &&
+            (vaultHeader?.format === 'json-keys-encrypted' ||
+              vaultHeader?.format === 'json-full-encrypted' ||
+              vaultHeader?.format === 'svrnty-vault') && (
+            <div style={s.field}>
+              <label style={s.label}>EXPORT ENCRYPTION PASSWORD</label>
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                The password you chose when you exported this copy. It is not a website login password.
+              </p>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showPassphrase ? 'text' : 'password'}
+                  name="svrnty-export-encryption-password"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                  placeholder="Encryption password from export"
+                  value={vaultPassphrase}
+                  onChange={e => setVaultPassphrase(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && vaultPassphrase) handleVaultRestore();
+                  }}
+                  style={s.input}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassphrase(!showPassphrase)}
+                  style={s.eyeBtn}
+                  tabIndex={-1}
+                  aria-label={showPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+                >
+                  {showPassphrase ? (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                      <line x1="1" y1="1" x2="23" y2="23" />
+                    </svg>
+                  ) : (
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8070" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                      <circle cx="12" cy="12" r="3" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              {isV4Vault && (
+                <p style={s.hint}>Unlocks the backup file — identity, contacts, and trust.</p>
+              )}
             </div>
-          </div>
-
-          <button
-            onClick={handleVaultRestore}
-            disabled={restoreLoading || !vaultPassphrase}
-            style={{
-              ...s.restoreBtn,
-              opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
-            }}
-          >
-            {restoreLoading ? (
-              <span style={s.btnInner}>
-                <Spinner /> Decrypting vault...
-              </span>
-            ) : (
-              <span style={s.btnInner}>Unlock Vault</span>
-            )}
-          </button>
-
-          <p style={s.footer}>
-            Decryption happens locally in your browser.
-            <br />Your passphrase never leaves this device.
-          </p>
-          </>
           )}
 
-          {/* JSON restore button (no passphrase needed) */}
-          {vaultHeader?.format === 'json-backup' && (
-            <>
-            <button
-              onClick={handleVaultRestore}
-              disabled={restoreLoading}
-              style={{
-                ...s.restoreBtn,
-                opacity: restoreLoading ? 0.5 : 1,
-              }}
-            >
-              {restoreLoading ? (
-                <span style={s.btnInner}>
-                  <Spinner /> Restoring...
-                </span>
-              ) : (
-                <span style={s.btnInner}>Restore from Backup</span>
-              )}
-            </button>
+          {/* Recovery phrase — JSON KeyVault 2FA, or v4 binary seed-only path */}
+          {(seedPathActive ||
+            vaultHeader?.format === 'json-keys-encrypted' ||
+            vaultHeader?.format === 'json-full-encrypted' ||
+            (vaultHeader?.format === 'json-backup' && vaultHeader?._jsonData?.vault)) && (
+            <div style={s.field}>
+              <label style={{ ...s.label, color: SE.accent }}>
+                {seedPathActive ? 'Recovery code' : 'RECOVERY PHRASE'}
+              </label>
+              <textarea
+                placeholder={
+                  seedPathActive
+                    ? 'Enter your recovery code — 8 groups of 8 characters (64 characters total) that you saved when you created your identity.'
+                    : 'Paste the recovery phrase shown at forge (hex groups)'
+                }
+                value={soulSeedPhrase}
+                onChange={e => setSoulSeedPhrase(e.target.value)}
+                rows={3}
+                style={{ ...s.input, fontFamily: SE.fontMono, fontSize: 12, resize: 'vertical' as const }}
+                autoFocus={seedPathActive}
+              />
+              <p style={s.hint}>
+                {seedPathActive
+                  ? 'Wrong code fails closed — no lockout; try again.'
+                  : 'Second factor when the backup includes a KeyVault. Required to open sealed recovery material.'}
+              </p>
+            </div>
+          )}
 
-            <p style={s.footer}>
-              Your backup will be imported into this browser's local storage.
-            </p>
+          {seedPathActive && (
+            <div style={s.field}>
+              <label style={s.label}>SET A DEVICE PASSPHRASE</label>
+              <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8a8070', lineHeight: '1.5' }}>
+                Protects your recovered keys on this device — they are encrypted at rest with this
+                passphrase and never written unprotected. You&apos;ll use it to unlock this device from now on.
+              </p>
+              <input
+                type="password"
+                name="svrnty-new-device-passphrase"
+                autoComplete="new-password"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                placeholder="At least 12 characters"
+                value={seedNewPassphrase}
+                onChange={e => setSeedNewPassphrase(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && soulSeedPhrase.trim() && seedNewPassphrase.length >= 12) handleSeedVaultRestore();
+                }}
+                style={s.input}
+              />
+              <p style={s.hint}>
+                {seedNewPassphrase.length > 0 && seedNewPassphrase.length < 12
+                  ? 'At least 12 characters.'
+                  : 'New device passphrase — keeps your recovered keys encrypted at rest.'}
+              </p>
+            </div>
+          )}
+
+          {vaultHeader?.format === 'json-backup' && !seedPathActive ? (
+            <>
+              <button
+                type="button"
+                onClick={handleVaultRestore}
+                disabled={
+                  restoreLoading ||
+                  (!!vaultHeader?._jsonData?.vault && !soulSeedPhrase.trim())
+                }
+                style={{
+                  ...s.restoreBtn,
+                  opacity:
+                    restoreLoading ||
+                    (!!vaultHeader?._jsonData?.vault && !soulSeedPhrase.trim())
+                      ? 0.5
+                      : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Restoring...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>Open Vault</span>
+                )}
+              </button>
+              <p style={s.footer}>
+                Your backup will be imported into this browser&apos;s local storage.
+              </p>
+            </>
+          ) : seedPathActive ? (
+            <>
+              <button
+                type="button"
+                onClick={handleSeedVaultRestore}
+                disabled={restoreLoading || !soulSeedPhrase.trim() || seedNewPassphrase.length < 12}
+                style={{
+                  ...s.restoreBtn,
+                  opacity: restoreLoading || !soulSeedPhrase.trim() || seedNewPassphrase.length < 12 ? 0.5 : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Recovering...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>Recover my identity</span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRestorePath('passphrase');
+                  setSoulSeedPhrase('');
+                  setSeedNewPassphrase('');
+                  setRestoreError(null);
+                }}
+                style={{ ...s.backBtn, marginTop: 12, alignSelf: 'center' }}
+              >
+                I have my passphrase
+              </button>
+              <p style={s.footer}>
+                Recovery runs locally on this device with the backup file you selected.
+                <br />
+                Contacts sealed under the passphrase are not restored on this path.
+              </p>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleVaultRestore}
+                disabled={restoreLoading || !vaultPassphrase}
+                style={{
+                  ...s.restoreBtn,
+                  opacity: restoreLoading || !vaultPassphrase ? 0.5 : 1,
+                }}
+              >
+                {restoreLoading ? (
+                  <span style={s.btnInner}>
+                    <Spinner /> Decrypting vault...
+                  </span>
+                ) : (
+                  <span style={s.btnInner}>
+                    {isBinaryVault ? 'Restore identity' : 'Open Vault'}
+                  </span>
+                )}
+              </button>
+
+              {isV4Vault && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRestorePath('seed');
+                    setVaultPassphrase('');
+                    setSeedNewPassphrase('');
+                    setRestoreError(null);
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: SE.accent,
+                    fontFamily: SE.fontSans,
+                    fontSize: 13,
+                    cursor: 'pointer',
+                    marginTop: 16,
+                    textDecoration: 'underline',
+                    textUnderlineOffset: 3,
+                  }}
+                >
+                  Lost your passphrase? Recover with your recovery code
+                </button>
+              )}
+              {isV3Vault && (
+                <div style={{ ...s.hint, marginTop: 16, textAlign: 'center' }}>
+                  <p style={{ margin: '0 0 6px' }}>
+                    This backup was created before passphrase-free recovery. It can be restored only with your passphrase.
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    Re-export your identity to enable recovery-code restore if you lose your passphrase.
+                  </p>
+                </div>
+              )}
+
+              <p style={s.footer}>
+                Decryption happens locally in your browser.
+                <br />Your passphrase never leaves this device.
+              </p>
             </>
           )}
         </div>
@@ -1178,6 +1577,13 @@ export function SoverentityFrontend({
   // --- Gate: PQ Migration (shown after v1 import) ---
   if (gateMode === 'pq-migrate' && pendingPqMigration) {
     const handlePqUpgrade = async () => {
+      // 3a-pure (Blocker-C): storePQKeys is fail-closed. The identity was just restored with a
+      // device passphrase (session open), but guard explicitly so a locked session gives a clear
+      // message instead of a generic failure — never a plaintext write.
+      if (!isSessionUnlocked()) {
+        setError('Unlock your identity first, then add post-quantum keys from settings.');
+        return;
+      }
       setPqMigrating(true);
       try {
         const { generatePQKeypairBundle, serializeKeypairBundle } = await import('@/lib/crypto/pq');
@@ -1279,194 +1685,293 @@ export function SoverentityFrontend({
   }
 
   // --- Identity View ---
-  // (§1, Peter #116236; badge copy ruled by Hypatia #116414) A sovereign identity is SELF-CERTIFYING:
+  // A sovereign identity is SELF-CERTIFYING:
   // the vault (device + Argon2id passphrase) and the local keys ARE the identity — the fingerprint
   // binds the key, the key IS the proof, attested by no one. There is no verified/unverified model to
   // be in: the identity is complete by construction. The label claims only what the architecture
   // confers — self-certification (SOVEREIGN), never third-party verification.
+
+
+  const handleShareIdentityFromCard = async () => {
+    if (!identity?.identity?.fingerprint) return;
+    setShareBusy(true);
+    setShareError(null);
+    try {
+      const fp = identity.identity.fingerprint as string;
+      const key = await loadKey(fp);
+      if (!key) throw new Error('Unlock your identity first to share a signed card.');
+      const signed = await buildSignedIdentityCard(identity, key.privateKey, key.passphrase);
+      setSharePackage(JSON.stringify(signed, null, 2));
+      setShowShareIdentity(true);
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : 'Could not prepare share package');
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  // ── Method-grow: real SEND of a revised contact method to selected contacts. ──
+  // Wires the dialog to sendContactUpdate (crypto lives in that module; called from here).
+  // The owner signs from the unlocked vault; card_version is the monotonic replay floor — bumped +
+  // PERSISTED BEFORE the deposit (crash-safety: a crash after deposit but before persist
+  // must never re-use a version, or the next edit stale-rejects and is silently lost). epoch=0 until
+  // key-rotation. Recipient poll-loop (ContactManagement) applies + repaints live — this closes it.
+  const handleContactMethodSend: ContactMethodSendFn = async (req) => {
+    const value = req.value.trim();
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (!fp) return { ok: false, reason: 'error', message: 'No active identity.' };
+    if (req.recipientFingerprints.length === 0)
+      return { ok: false, reason: 'no-recipients', message: 'Pick at least one person who already has your card.' };
+
+    // Owner signing material — requires the vault unlocked (same gate as sharing a signed card).
+    const key = await loadKey(fp);
+    if (!key)
+      return { ok: false, reason: 'locked', message: 'Unlock your identity first to send a signed update.' };
+    let pqSigningSecretKey: Uint8Array | undefined;
+    try {
+      const pq = await loadPQKeys(fp);
+      if (pq?.pq_signing_secret_key) pqSigningSecretKey = base64ToUint8(pq.pq_signing_secret_key);
+    } catch {
+      /* classical-only if the PQ half can't be read — never block the send on it */
+    }
+
+    // Monotonic card_version — PERSIST-FIRST (before any deposit). Read the freshly-persisted identity
+    // (loadIdentity, not the possibly-stale React closure) so a just-saved email edit is not clobbered
+    // and the version reflects durable truth.
+    const fresh = (await loadIdentity(fp)) || identity;
+    const nextVersion = (typeof fresh?.card_version === 'number' ? fresh.card_version : 0) + 1;
+    const bumped = { ...fresh, card_version: nextVersion };
+    await storeIdentity(fp, bumped); // persist BEFORE the deposit — crash-safety
+    setIdentity(bumped);
+
+    const owner = {
+      fingerprint: fp,
+      epoch: 0, // no key-rotation yet — recipients hold the card at epoch 0
+      privateKeyArmored: key.privateKey,
+      passphrase: key.passphrase,
+      pqSigningSecretKey,
+    };
+    // Map chosen recipients → {fingerprint, pubkey}. A missing key is passed as '' so the composer
+    // SKIPS it (reason: no-public-key) — never a downgraded/cleartext send.
+    const byFp = new Map(audience.map((c) => [c.fingerprint, c]));
+    const recipients = req.recipientFingerprints.map((rfp) => ({
+      fingerprint: rfp,
+      publicKeyArmored: byFp.get(rfp)?.public_key ?? '',
+    }));
+
+    try {
+      const result = await sendContactUpdate(
+        { version: nextVersion, delta: buildMethodDelta(req.kind, value) },
+        owner,
+        recipients,
+      );
+      const deposited = result.deposited.length;
+      const skipped = result.skipped.length;
+      const failed = result.failed.length;
+      if (deposited === 0) {
+        return {
+          ok: false,
+          reason: 'not-delivered',
+          message: `Couldn't deliver: ${skipped} had no key, ${failed} failed. Saved locally — try Send again later.`,
+        };
+      }
+      return {
+        ok: true,
+        status: 'sent',
+        deposited,
+        skipped,
+        failed,
+        message:
+          `Sent to ${deposited} contact${deposited === 1 ? '' : 's'}` +
+          (skipped ? `, ${skipped} skipped (no key yet)` : '') +
+          (failed ? `, ${failed} failed (retry)` : '') +
+          '.',
+      };
+    } catch (e) {
+      return { ok: false, reason: 'error', message: e instanceof Error ? e.message : 'Send failed.' };
+    }
+  };
 
   if (!identity) return null;
 
   return (
     <div style={s.outerWrap}>
       <div style={s.identityPanel}>
-        {/* Identity Card */}
-        <div style={s.idCard}>
-          <div style={s.idHeader}>
-            <div style={{
-              ...s.statusDot,
-              background: '#6a9a6a',
-              boxShadow: '0 0 8px rgba(106,154,106,0.4)',
-            }} />
-            <div>
-              <h3 style={s.idName}>{identity.identity.name}</h3>
-              <p style={s.idEmail}>{identity.identity.email}</p>
-            </div>
-            <span style={{
-              ...s.statusBadge,
-              color: '#6a9a6a',
-              borderColor: 'rgba(106,154,106,0.3)',
-              background: 'rgba(106,154,106,0.1)',
-            }}>
-              SOVEREIGN
-            </span>
-          </div>
-
-          <div style={s.fpSection}>
-            <label style={s.label}>FINGERPRINT</label>
-            <div style={s.fpValue}>{formatFingerprint(identity.identity.fingerprint)}</div>
-          </div>
-
-          <div style={s.cryptoTags}>
-            <span style={s.tag}>ED25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-DSA-87</span>}
-            <span style={s.tag}>Curve25519</span>
-            {hasPqKeys && <span style={s.tag}>ML-KEM-1024</span>}
-          </div>
-        </div>
-
-        {/* (§1, Peter #116236) The email-verification section is removed: there is no server account
-            and nothing to verify. Onboarding flows straight through (genesis → import) with no email step. */}
-
-        <div style={s.verifiedBanner}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
-          <span>Self-certifying identity. You are sovereign.</span>
-        </div>
-
-        {/* Export / Backup Section */}
-        {identity && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '16px' }}>
+        {plaintextImportNote && (
+          <div
+            role="status"
+            data-testid="plaintext-import-note"
+            style={{
+              background: 'rgba(78, 205, 196, 0.08)',
+              border: '1px solid rgba(78, 205, 196, 0.28)',
+              borderRadius: 12,
+              padding: '14px 16px',
+              marginBottom: 16,
+              maxWidth: 440,
+              width: '100%',
+            }}
+          >
+            <p style={{ margin: 0, color: SE.text, fontSize: 13, lineHeight: 1.5 }}>
+              {plaintextImportNote}
+            </p>
             <button
-              onClick={() => { setShowFullBackupDialog(true); setFullBackupPassword(''); setFullBackupConfirm(''); setFullBackupError(null); }}
+              type="button"
+              onClick={() => setPlaintextImportNote(null)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: SE.dim,
+                fontFamily: SE.fontSans,
+                fontSize: 12,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                textUnderlineOffset: 2,
+                padding: 0,
+                marginTop: 8,
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        <SovereignIdentityCard
+          name={identity.identity.name}
+          fingerprint={identity.identity.fingerprint}
+          handle={claimedUrl || undefined}
+          email={identity.identity.email}
+          signal={localMethods.signal}
+          site={
+            localMethods.site ||
+            (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined)
+          }
+          hasPqKeys={!!hasPqKeys}
+          onRevise={(kind) => setReviseKind(kind)}
+          onOpenCircle={onOpenCircle}
+          onShareIdentity={() => { void handleShareIdentityFromCard(); }}
+        />
+        <OwnerCardStudio
+          fingerprint={identity.identity.fingerprint}
+          email={identity.identity.email}
+          onEmailChange={async (value) => {
+            const fp = identity.identity.fingerprint as string;
+            const next = {
+              ...identity,
+              identity: { ...identity.identity, email: value },
+            };
+            await storeIdentity(fp, next);
+            setIdentity(next);
+            onIdentityUpdate?.(next);
+          }}
+        />
+        {shareError ? (
+          <p style={{ color: 'var(--se-danger)', fontSize: 12, textAlign: 'center' }}>{shareError}</p>
+        ) : null}
+        {shareBusy ? (
+          <p style={{ color: 'var(--se-muted)', fontSize: 12, textAlign: 'center' }}>Preparing share…</p>
+        ) : null}
+        <ContactShareDialog
+          open={showShareIdentity}
+          onClose={() => setShowShareIdentity(false)}
+          exchangePackage={sharePackage}
+          fingerprint={identity.identity.fingerprint}
+        />
+
+        <ContactMethodReviseDialog
+          open={reviseKind !== null}
+          kind={reviseKind ?? 'email'}
+          initialValue={
+            reviseKind === 'signal'
+              ? localMethods.signal || ''
+              : reviseKind === 'site'
+                ? localMethods.site ||
+                  (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : '') ||
+                  ''
+                : identity.identity.email || ''
+          }
+          ownerFingerprint={identity.identity.fingerprint}
+          contacts={audience}
+          onClose={() => setReviseKind(null)}
+          onLocalSave={async (kind, value) => {
+            const fp = identity.identity.fingerprint as string;
+            if (kind === 'email') {
+              const next = {
+                ...identity,
+                identity: { ...identity.identity, email: value },
+              };
+              await storeIdentity(fp, next);
+              setIdentity(next);
+              onIdentityUpdate?.(next);
+              return;
+            }
+            const nextMethods = saveLocalMethods(fp, {
+              [kind]: value,
+            });
+            setLocalMethods(nextMethods);
+          }}
+          sendFn={handleContactMethodSend}
+        />
+
+        {/* Export / Backup Section — CUR-4: vault via fleet packVault + export-behind-auth */}
+        {identity && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '28px', maxWidth: 440, width: '100%' }}>
+            {showV3MigrationNudge && (
+              <div
+                role="status"
+                style={{
+                  background: 'rgba(249, 168, 37, 0.08)',
+                  border: '1px solid rgba(249, 168, 37, 0.28)',
+                  borderRadius: 12,
+                  padding: '14px 16px',
+                  marginBottom: 4,
+                }}
+              >
+                <p style={{ margin: '0 0 8px', color: SE.accent, fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
+                  Update your backup to enable passphrase-free recovery
+                </p>
+                <p style={{ margin: '0 0 12px', color: SE.muted, fontSize: 12, lineHeight: 1.5 }}>
+                  This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowV3MigrationNudge(false)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: SE.dim,
+                    fontFamily: SE.fontSans,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    textUnderlineOffset: 2,
+                    padding: 0,
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+            <button
+              onClick={() => setShowVaultExportDialog(true)}
+              data-testid="full-backup-open"
               style={{
                 ...s.outlineBtn,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 gap: '8px',
-                background: 'rgba(106, 154, 106, 0.1)',
-                borderColor: '#6a9a6a',
+                background: 'rgba(249, 168, 37, 0.08)',
+                borderColor: 'rgba(249, 168, 37, 0.35)',
+                color: SE.accent,
               }}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6a9a6a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SE.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
               </svg>
               Full Backup (Encrypted)
             </button>
-            {showFullBackupDialog && (
-              <div style={{ background: 'rgba(15,15,25,0.95)', border: '1px solid rgba(180,160,100,0.2)', borderRadius: '8px', padding: '16px', marginTop: '8px' }}>
-                <p style={{ color: '#c8a84e', fontSize: '12px', fontWeight: 600, marginBottom: '8px' }}>
-                  🔒 Encrypt your backup with a password
-                </p>
-                <p style={{ color: '#8a8070', fontSize: '11px', marginBottom: '12px', lineHeight: '1.5' }}>
-                  Your private keys will be encrypted with AES-256-GCM. Without this password, the backup cannot be restored.
-                </p>
-                <input
-                  type="password"
-                  placeholder="Password (min 8 characters)"
-                  value={fullBackupPassword}
-                  onChange={e => setFullBackupPassword(e.target.value)}
-                  style={{ ...s.input, marginBottom: '8px' }}
-                  autoFocus
-                />
-                <input
-                  type="password"
-                  placeholder="Confirm password"
-                  value={fullBackupConfirm}
-                  onChange={e => setFullBackupConfirm(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && fullBackupPassword.length >= 8 && fullBackupPassword === fullBackupConfirm) document.getElementById('fullBackupBtn')?.click(); }}
-                  style={s.input}
-                />
-                {fullBackupConfirm && fullBackupPassword !== fullBackupConfirm && (
-                  <p style={{ color: '#c85a4e', fontSize: '11px', marginTop: '4px' }}>Passwords do not match</p>
-                )}
-                {fullBackupError && (
-                  <p style={{ color: '#c85a4e', fontSize: '11px', marginTop: '4px' }}>{fullBackupError}</p>
-                )}
-                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                  <button
-                    onClick={() => setShowFullBackupDialog(false)}
-                    style={{ ...s.outlineBtn, flex: 1, fontSize: '12px' }}
-                  >Cancel</button>
-                  <button
-                    id="fullBackupBtn"
-                    disabled={fullBackupLoading || fullBackupPassword.length < 8 || fullBackupPassword !== fullBackupConfirm}
-                    onClick={async () => {
-                      try {
-                        setFullBackupLoading(true);
-                        setFullBackupError(null);
-                        const { exportAll } = await import('@/lib/identity/client-store');
-                        const fp = identity.identity?.fingerprint;
-                        if (!fp) return;
-                        const backup = await exportAll(fp, true);
-                        const json = JSON.stringify(backup);
-
-                        // Encrypt with AES-256-GCM
-                        const enc = new TextEncoder();
-                        const salt = crypto.getRandomValues(new Uint8Array(16));
-                        const iv = crypto.getRandomValues(new Uint8Array(12));
-                        const keyMaterial = await crypto.subtle.importKey(
-                          'raw', enc.encode(fullBackupPassword), 'PBKDF2', false, ['deriveKey']
-                        );
-                        const derivedKey = await crypto.subtle.deriveKey(
-                          { name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' },
-                          keyMaterial,
-                          { name: 'AES-GCM', length: 256 },
-                          false,
-                          ['encrypt']
-                        );
-                        const encrypted = new Uint8Array(
-                          await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, derivedKey, enc.encode(json))
-                        );
-                        // Loop, NOT String.fromCharCode(...b): the full backup's encrypted `data` is
-                        // large enough to exceed mobile Safari's argument-count limit on the spread
-                        // ("too many function arguments" — this is the failing Full-backup button).
-                        const toB64 = (b: Uint8Array) => { let s = ''; for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s); };
-                        const result = JSON.stringify({
-                          type: 'svrnty-full-backup',
-                          version: '1.0',
-                          algorithm: 'AES-256-GCM',
-                          kdf: 'PBKDF2-SHA256-100k',
-                          salt: toB64(salt),
-                          iv: toB64(iv),
-                          data: toB64(encrypted),
-                          fingerprint_hint: fp.slice(-8),
-                          exported_at: new Date().toISOString(),
-                        }, null, 2);
-
-                        const blob = new Blob([result], { type: 'application/json' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `svrnty-backup-${new Date().toISOString().split('T')[0]}.svrnty`;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-                        setShowFullBackupDialog(false);
-                      } catch (err) {
-                        setFullBackupError(err instanceof Error ? err.message : 'Backup failed');
-                      } finally {
-                        setFullBackupLoading(false);
-                      }
-                    }}
-                    style={{
-                      ...s.primaryBtn,
-                      flex: 1,
-                      fontSize: '12px',
-                      opacity: (fullBackupLoading || fullBackupPassword.length < 8 || fullBackupPassword !== fullBackupConfirm) ? 0.5 : 1,
-                    }}
-                  >
-                    {fullBackupLoading ? 'Encrypting...' : '🔒 Download Encrypted Backup'}
-                  </button>
-                </div>
-              </div>
-            )}
             <div style={{ display: 'flex', gap: '10px' }}>
               <button
-                onClick={() => setShowKeyExportDialog(true)}
+                onClick={() => setPendingExportAuth('keys')}
                 style={{
                   ...s.outlineBtn,
                   flex: 1,
@@ -1482,7 +1987,7 @@ export function SoverentityFrontend({
                 Download Keys
               </button>
               <button
-                onClick={() => setShowExportDialog(true)}
+                onClick={() => setPendingExportAuth('contacts')}
                 style={{
                   ...s.outlineBtn,
                   flex: 1,
@@ -1503,6 +2008,15 @@ export function SoverentityFrontend({
           </div>
         )}
 
+        {/* CUR-7 — app-lock settings (shell owns lockSession + idle timers) */}
+        {identity && appLockPrefs && onAppLockPrefsChange && (
+          <AppLockSettingsPanel
+            prefs={appLockPrefs}
+            onChange={onAppLockPrefsChange}
+            onLockNow={onLockNow}
+          />
+        )}
+
         {/* Set Passphrase button */}
         {identity && (
           <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
@@ -1510,10 +2024,10 @@ export function SoverentityFrontend({
               onClick={() => setShowPassphraseDialog(true)}
               style={{
                 background: 'none',
-                border: '1px solid rgba(52, 211, 153, 0.15)',
+                border: '1px solid rgba(249, 168, 37, 0.15)',
                 borderRadius: '8px',
                 padding: '10px 20px',
-                color: 'rgba(52, 211, 153, 0.6)',
+                color: 'rgba(249, 168, 37, 0.6)',
                 fontSize: '11px',
                 fontFamily: "'Space Grotesk', sans-serif",
                 letterSpacing: '1px',
@@ -1565,37 +2079,52 @@ export function SoverentityFrontend({
           </div>
         )}
 
+        {/* CUR-6 — device unlock (WebAuthn/PRF seam = Flint; stub is claim-honest) */}
+        {identity?.identity?.fingerprint && (
+          <BiometricSettingsPanel
+            fingerprint={identity.identity.fingerprint}
+            compact
+          />
+        )}
+
         {/* Passphrase Dialog */}
         {showPassphraseDialog && (
           <div style={{
             position: 'fixed',
             inset: 0,
-            background: 'rgba(0,0,0,0.8)',
+            background: 'rgba(0,0,0,0.55)',
             display: 'flex',
             justifyContent: 'center',
             alignItems: 'center',
             zIndex: 50,
           }} onClick={() => setShowPassphraseDialog(false)}>
-            <div style={{
-              background: 'rgba(10, 14, 12, 0.98)',
-              border: '1px solid rgba(52, 211, 153, 0.15)',
+            <div
+              role="dialog"
+              aria-label="Set passphrase"
+              style={{
+              background: SE.surfaceSolid,
+              border: `1px solid ${SE.border}`,
               borderRadius: '16px',
               padding: '32px',
               maxWidth: '380px',
               width: '100%',
               margin: '20px',
+              boxShadow: 'var(--se-glass-shadow)',
+              color: SE.text,
             }} onClick={e => e.stopPropagation()}>
               <h3 style={{
-                fontFamily: "'Cormorant Garamond', serif",
-                fontSize: '20px',
-                color: '#e8e4d9',
+                fontFamily: SE.fontSans,
+                fontSize: '1.15rem',
+                fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: SE.text,
                 marginBottom: '20px',
                 textAlign: 'center' as const,
               }}>
                 {passphraseSuccess ? 'Passphrase Set' : 'Set Passphrase'}
               </h3>
               {passphraseSuccess ? (
-                <p style={{ textAlign: 'center' as const, color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px' }}>
+                <p style={{ textAlign: 'center' as const, color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px' }}>
                   Your identity is now protected.
                 </p>
               ) : (
@@ -1608,13 +2137,13 @@ export function SoverentityFrontend({
                     autoFocus
                     style={{
                       width: '100%',
-                      background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      background: SE.inputBg,
+                      border: `1px solid ${SE.border}`,
                       borderRadius: '8px',
                       padding: '12px 14px',
-                      color: '#e8e4d9',
+                      color: SE.text,
                       fontSize: '14px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       outline: 'none',
                       marginBottom: '12px',
                       boxSizing: 'border-box' as const,
@@ -1627,33 +2156,33 @@ export function SoverentityFrontend({
                     onChange={e => { setConfirmPassphrase(e.target.value); setPassphraseError(''); }}
                     style={{
                       width: '100%',
-                      background: 'rgba(6, 10, 8, 0.8)',
-                      border: '1px solid rgba(52, 211, 153, 0.15)',
+                      background: SE.inputBg,
+                      border: `1px solid ${SE.border}`,
                       borderRadius: '8px',
                       padding: '12px 14px',
-                      color: '#e8e4d9',
+                      color: SE.text,
                       fontSize: '14px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       outline: 'none',
                       marginBottom: '8px',
                       boxSizing: 'border-box' as const,
                     }}
                   />
                   {passphraseError && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>{passphraseError}</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>{passphraseError}</p>
                   )}
                   <button
                     onClick={handleSetPassphrase}
                     disabled={!newPassphrase || !confirmPassphrase}
                     style={{
                       width: '100%',
-                      background: 'rgba(52, 211, 153, 0.12)',
-                      border: '1px solid rgba(52, 211, 153, 0.3)',
+                      background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                      border: `1px solid ${SE.borderLit}`,
                       borderRadius: '8px',
                       padding: '12px',
-                      color: '#34d399',
+                      color: SE.accent,
                       fontSize: '12px',
-                      fontFamily: "'Space Grotesk', sans-serif",
+                      fontFamily: SE.fontSans,
                       letterSpacing: '1px',
                       cursor: 'pointer',
                       marginTop: '8px',
@@ -1670,60 +2199,74 @@ export function SoverentityFrontend({
         {/* Claim URL Dialog */}
         {showClaimUrlDialog && (
           <div style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)',
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
             display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 50,
           }} onClick={() => setShowClaimUrlDialog(false)}>
-            <div style={{
-              background: 'rgba(10, 14, 12, 0.98)', border: '1px solid rgba(200, 168, 78, 0.15)',
-              borderRadius: '16px', padding: '32px', maxWidth: '380px', width: '100%', margin: '20px',
-            }} onClick={e => e.stopPropagation()}>
+            <div
+              role="dialog"
+              aria-label="Claim URL"
+              style={{
+                background: SE.surfaceSolid,
+                border: `1px solid ${SE.border}`,
+                borderRadius: '16px',
+                padding: '32px',
+                maxWidth: '380px',
+                width: '100%',
+                margin: '20px',
+                boxShadow: 'var(--se-glass-shadow)',
+                color: SE.text,
+              }}
+              onClick={e => e.stopPropagation()}
+            >
               <h3 style={{
-                fontFamily: "'Cormorant Garamond', serif", fontSize: '20px',
-                color: '#e8e4d9', marginBottom: '8px', textAlign: 'center' as const,
+                fontFamily: SE.fontSans, fontSize: '1.15rem', fontWeight: 500,
+                letterSpacing: '-0.02em',
+                color: SE.text, marginBottom: '8px', textAlign: 'center' as const,
               }}>
                 {claimStatus === 'success' ? 'URL Claimed' : 'Claim Your URL'}
               </h3>
               {claimStatus === 'success' ? (
                 <div style={{ textAlign: 'center' as const }}>
-                  <p style={{ color: '#34d399', fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', marginBottom: '12px' }}>
+                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px', marginBottom: '12px' }}>
                     Your identity is now at:
                   </p>
-                  <p style={{ color: '#c8a84e', fontFamily: "'Space Grotesk', sans-serif", fontSize: '16px', fontWeight: 600 }}>
+                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '16px', fontWeight: 600 }}>
                     {claimedUrl}
                   </p>
                 </div>
               ) : (
                 <>
-                  <p style={{ color: 'rgba(232,228,217,0.5)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
+                  <p style={{ color: SE.muted, fontFamily: SE.fontSans, fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
                     Choose a URL for your public profile
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
-                    <span style={{ color: 'rgba(232,228,217,0.4)', fontFamily: "'Space Grotesk', sans-serif", fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
+                    <span style={{ color: SE.dim, fontFamily: SE.fontSans, fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
                     <input
                       type="text"
                       placeholder="yourname"
                       value={claimSlug}
                       onChange={e => { setClaimSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setClaimStatus('idle'); }}
                       style={{
-                        flex: 1, background: 'rgba(6, 10, 8, 0.8)', border: '1px solid rgba(200, 168, 78, 0.15)',
-                        borderRadius: '8px', padding: '12px 14px', color: '#e8e4d9', fontSize: '14px',
-                        fontFamily: "'Space Grotesk', sans-serif", outline: 'none', boxSizing: 'border-box' as const,
+                        flex: 1, background: SE.inputBg, border: `1px solid ${SE.border}`,
+                        borderRadius: '8px', padding: '12px 14px', color: SE.text, fontSize: '14px',
+                        fontFamily: SE.fontSans, outline: 'none', boxSizing: 'border-box' as const,
                       }}
                     />
                   </div>
                   {claimStatus === 'taken' && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>This URL is already claimed</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>This URL is already claimed</p>
                   )}
                   {claimStatus === 'error' && (
-                    <p style={{ color: '#ef4444', fontSize: '12px', fontFamily: "'Space Grotesk', sans-serif", marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
+                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
                   )}
                   <button
                     onClick={handleClaimUrl}
                     disabled={claimSlug.length < 3 || claimStatus === 'checking' || claimStatus === 'claiming'}
                     style={{
-                      width: '100%', background: 'rgba(200, 168, 78, 0.12)', border: '1px solid rgba(200, 168, 78, 0.3)',
-                      borderRadius: '8px', padding: '12px', color: '#c8a84e', fontSize: '12px',
-                      fontFamily: "'Space Grotesk', sans-serif", letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
+                      width: '100%', background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                      border: `1px solid ${SE.borderLit}`,
+                      borderRadius: '8px', padding: '12px', color: SE.accent, fontSize: '12px',
+                      fontFamily: SE.fontSans, letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
                     }}
                   >
                     {claimStatus === 'checking' ? 'CHECKING...' : claimStatus === 'claiming' ? 'CLAIMING...' : 'CLAIM URL'}
@@ -1734,7 +2277,34 @@ export function SoverentityFrontend({
           </div>
         )}
 
-        {/* Export Dialogs */}
+        {/* Export Dialogs — CUR-4 auth gate + vault packer */}
+        <ExportAuthGate
+          open={pendingExportAuth !== null}
+          fingerprint={identity?.identity?.fingerprint || ''}
+          exportLabel={
+            pendingExportAuth === 'keys'
+              ? 'your private keys'
+              : 'your contacts backup'
+          }
+          onClose={() => setPendingExportAuth(null)}
+          onAuthenticated={() => {
+            const kind = pendingExportAuth;
+            setPendingExportAuth(null);
+            if (kind === 'keys') setShowKeyExportDialog(true);
+            if (kind === 'contacts') setShowExportDialog(true);
+          }}
+          onSessionLocked={() => {
+            window.location.reload();
+          }}
+        />
+        <VaultExportDialog
+          open={showVaultExportDialog}
+          onClose={() => setShowVaultExportDialog(false)}
+          fingerprint={identity?.identity?.fingerprint || ''}
+          onSessionLocked={() => {
+            window.location.reload();
+          }}
+        />
         <SecureExportDialog
           open={showExportDialog}
           onClose={() => setShowExportDialog(false)}
@@ -1777,31 +2347,32 @@ const s: Record<string, React.CSSProperties> = {
   gatePanel: {
     position: 'relative' as const,
     zIndex: 1,
-    background: 'rgba(10, 14, 12, 0.9)',
+    background: SE.surfaceSolid,
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    border: `1px solid ${SE.borderLit}`,
     borderRadius: '16px',
     padding: '48px 40px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: 'var(--se-glass-shadow)',
   },
   gateTitle: {
-    fontSize: '32px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '6px',
+    fontSize: '1.75rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.04em',
     textTransform: 'lowercase' as const,
-    marginBottom: '8px',
-    textShadow: '0 0 40px rgba(200, 168, 78, 0.2)',
+    marginBottom: '10px',
+    textShadow: '0 0 40px rgba(249, 168, 37, 0.18)',
   },
   gateSub: {
-    fontSize: '14px',
-    fontFamily: "'Cormorant Garamond', serif",
-    fontWeight: 300,
-    fontStyle: 'italic' as const,
-    color: 'rgba(255,255,255,0.4)',
-    lineHeight: '1.7',
+    fontSize: '0.95rem',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    fontStyle: 'normal' as const,
+    color: SE.muted,
+    lineHeight: '1.5',
+    marginBottom: '0',
   },
   doorContainer: {
     display: 'flex',
@@ -1814,39 +2385,39 @@ const s: Record<string, React.CSSProperties> = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     padding: '28px 24px',
-    background: 'rgba(6, 10, 8, 0.5)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    background: SE.surface,
+    border: `1px solid ${SE.border}`,
     borderRadius: '12px',
     cursor: 'pointer',
     transition: 'all 0.3s ease',
     textAlign: 'center' as const,
   },
   doorTitle: {
-    fontSize: '16px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#c8a84e',
-    letterSpacing: '1px',
+    fontSize: '15px',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.accent,
+    letterSpacing: '-0.02em',
     marginBottom: '8px',
   },
   doorDesc: {
     fontSize: '12px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    fontWeight: 300,
-    color: 'rgba(255,255,255,0.25)',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    color: 'rgba(201, 162, 113, 0.7)',
     lineHeight: '1.6',
     maxWidth: '280px',
   },
   // --- Shared ---
   createPanel: {
-    background: 'rgba(10, 14, 12, 0.9)',
+    background: SE.surfaceSolid,
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.08)',
+    border: `1px solid ${SE.borderLit}`,
     borderRadius: '16px',
     padding: '40px',
     maxWidth: '460px',
     width: '100%',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 60px rgba(52, 211, 153, 0.02), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: 'var(--se-glass-shadow)',
   },
   backBtn: {
     display: 'flex',
@@ -1854,12 +2425,12 @@ const s: Record<string, React.CSSProperties> = {
     gap: '6px',
     background: 'none',
     border: 'none',
-    color: '#8a8070',
+    color: SE.dim,
     fontSize: '12px',
     cursor: 'pointer',
     padding: '0',
     marginBottom: '20px',
-    fontFamily: "'JetBrains Mono', monospace",
+    fontFamily: SE.fontMono,
     letterSpacing: '0.5px',
   },
   hero: {
@@ -1872,7 +2443,7 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    margin: '0 auto 16px',
+    margin: '0 auto 18px',
   },
   keyIcon: {
     width: '72px',
@@ -1887,19 +2458,19 @@ const s: Record<string, React.CSSProperties> = {
     boxShadow: '0 0 30px rgba(200, 168, 78, 0.06)',
   },
   heroTitle: {
-    fontSize: '26px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '2px',
+    fontSize: '1.35rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.03em',
     marginBottom: '10px',
-    textShadow: '0 0 30px rgba(200, 168, 78, 0.15)',
+    textShadow: '0 0 30px rgba(249, 168, 37, 0.12)',
   },
   heroSub: {
     fontSize: '13px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    fontWeight: 300,
-    color: 'rgba(255,255,255,0.35)',
+    fontFamily: SE.fontSans,
+    fontWeight: 400,
+    color: 'rgba(201, 162, 113, 0.75)',
     lineHeight: '1.7',
     maxWidth: '340px',
     margin: '0 auto',
@@ -1910,8 +2481,8 @@ const s: Record<string, React.CSSProperties> = {
   label: {
     display: 'block',
     fontSize: '10px',
-    fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: 'rgba(255,255,255,0.3)',
+    fontFamily: SE.fontSans,
+    color: 'rgba(201, 162, 113, 0.55)',
     letterSpacing: '2px',
     textTransform: 'uppercase' as const,
     marginBottom: '8px',
@@ -1919,29 +2490,29 @@ const s: Record<string, React.CSSProperties> = {
   },
   input: {
     width: '100%',
-    background: 'rgba(6, 10, 8, 0.8)',
-    border: '1px solid rgba(52, 211, 153, 0.1)',
+    background: SE.inputBg,
+    border: `1px solid ${SE.border}`,
     borderRadius: '8px',
     padding: '12px 16px',
-    color: '#e8e4d9',
+    color: SE.text,
     fontSize: '14px',
-    fontFamily: "'JetBrains Mono', monospace",
+    fontFamily: SE.fontMono,
     outline: 'none',
     transition: 'border-color 0.3s',
     boxSizing: 'border-box' as const,
   },
   hint: {
     fontSize: '11px',
-    color: '#5a5548',
+    color: SE.dim,
     marginTop: '6px',
   },
   primaryBtn: {
     width: '100%',
-    background: 'rgba(52, 211, 153, 0.1)',
-    border: '1px solid rgba(52, 211, 153, 0.3)',
+    background: 'rgba(249, 168, 37, 0.12)',
+    border: '1px solid rgba(249, 168, 37, 0.35)',
     borderRadius: '8px',
     padding: '14px 20px',
-    color: '#34d399',
+    color: '#f9a825',
     fontSize: '12px',
     fontWeight: 500,
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
@@ -1950,7 +2521,7 @@ const s: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     transition: 'all 0.3s',
     marginTop: '8px',
-    boxShadow: '0 0 20px rgba(52, 211, 153, 0.06)',
+    boxShadow: '0 0 20px rgba(249, 168, 37, 0.06)',
   },
   restoreBtn: {
     width: '100%',
@@ -2119,10 +2690,10 @@ const s: Record<string, React.CSSProperties> = {
   idCard: {
     background: 'rgba(10, 14, 12, 0.92)',
     backdropFilter: 'blur(20px)',
-    border: '1px solid rgba(52, 211, 153, 0.1)',
+    border: '1px solid rgba(249, 168, 37, 0.1)',
     borderRadius: '16px',
     padding: '32px',
-    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(52, 211, 153, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
+    boxShadow: '0 4px 60px rgba(0, 0, 0, 0.5), 0 0 80px rgba(249, 168, 37, 0.03), inset 0 1px 0 rgba(255,255,255,0.03)',
   },
   idHeader: {
     display: 'flex',
@@ -2137,11 +2708,11 @@ const s: Record<string, React.CSSProperties> = {
     flexShrink: 0,
   },
   idName: {
-    fontSize: '20px',
-    fontWeight: 300,
-    fontFamily: "'Cormorant Garamond', serif",
-    color: '#e8e4d9',
-    letterSpacing: '1px',
+    fontSize: '1.15rem',
+    fontWeight: 500,
+    fontFamily: SE.fontSans,
+    color: SE.text,
+    letterSpacing: '-0.02em',
     margin: 0,
   },
   idEmail: {
@@ -2197,7 +2768,7 @@ const s: Record<string, React.CSSProperties> = {
   sectionTitle: {
     fontSize: '10px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: '#34d399',
+    color: '#f9a825',
     letterSpacing: '3px',
     fontWeight: 500,
     marginBottom: '16px',
@@ -2212,14 +2783,14 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
-    background: 'rgba(52, 211, 153, 0.06)',
-    border: '1px solid rgba(52, 211, 153, 0.15)',
+    background: 'rgba(249, 168, 37, 0.06)',
+    border: '1px solid rgba(249, 168, 37, 0.15)',
     borderRadius: '10px',
     padding: '14px 20px',
     marginTop: '16px',
     fontSize: '13px',
     fontFamily: "'Space Grotesk', system-ui, sans-serif",
-    color: '#34d399',
-    boxShadow: '0 0 30px rgba(52, 211, 153, 0.04)',
+    color: '#f9a825',
+    boxShadow: '0 0 30px rgba(249, 168, 37, 0.04)',
   },
 };

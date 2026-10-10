@@ -7,12 +7,12 @@
 // consume side (joint design §3). Nothing here is smart about the social graph — the relay never was.
 //
 // SEAMS (deliberately injected, not hardcoded):
-//   • decrypt — the E2E crypto is Flint's lane. The relay stores an OPAQUE blob; only the recipient
+//   • decrypt — the E2E crypto is its own lane. The relay stores an OPAQUE blob; only the recipient
 //     decrypts it to a SignedContactUpdate. Injected so the pipeline is crypto-agnostic + testable,
 //     and so the classical↔hybrid-PQ choice swaps with ZERO caller change (see contact-update-envelope.ts).
 //   • store — lookup(fingerprint) + persist(id, updates). Injected so the pipeline is IndexedDB-free
 //     and unit-testable; the demo passes a client-store adapter.
-//   • emit — Apollo's live-beat seam (PR#32 contact-events.ts, not yet on main). Called after a
+//   • emit — the live-beat seam (contact-events.ts). Called after a
 //     successful apply so the open book repaints live (source:'broadcast' honesty). Injected so this
 //     module never hard-depends on the (unmerged) emitter.
 //
@@ -32,6 +32,8 @@ import {
   ContactUpdateApplyRejected,
   type StoredContact,
 } from '@/lib/contacts/apply-contact-update';
+import type { PendingJoiner } from '@/lib/trust/joiner-response';
+import type { NoteWireV0 } from '@/lib/messaging/types';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -39,6 +41,10 @@ export interface OwnerIdentity {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  // §5 canonical-id: the identity's PQ public keys, threaded into the owner-auth bundle so the relay
+  // can recompute the 64-hex canonical fingerprint. Absent for a classical identity (40-hex fp).
+  kemPublicKey?: string;
+  sigPublicKey?: string;
 }
 
 /** Decrypt an opaque relay blob to a SignedContactUpdate, or null if it isn't for us / is corrupt. */
@@ -58,20 +64,85 @@ export interface ContactStore {
   persist(id: string, next: StoredContact): Promise<void>;
 }
 
-/** Emitted after a successful apply so the live book repaints (Apollo's reason:'live-apply' seam). */
+/** Emitted after a successful apply so the live book repaints (reason:'live-apply' seam). */
 export interface LiveApplyEvent {
   id: string;
   fingerprint: string;
   ignited: boolean;
 }
 
+/**
+ * R1 RETURN-CHANNEL (KNOWN tier) — the pending-joiner routing seam (pinned by
+ * joiner-response.e2e.test.ts). The mailbox is shared by TWO inbound message types encrypted to the
+ * owner with the SAME openpgp envelope: contact.updates AND joiner-responses. They CANNOT be told apart
+ * by "which decrypt returned non-null" — the contact-update decryptor DECRYPTS a joiner-response fine
+ * (returns non-null) and would then drop it on its missing `envelope.fingerprint`, LOSING the joiner.
+ * The only correct discriminator is WHICH VERIFY SUCCEEDS. This optional seam supplies the joiner-side
+ * verify+accept so consumeOne can try it FIRST:
+ *   • verify — try the RAW blob as a joiner-response (it decrypts internally + checks giver-binding,
+ *     the solicited-gate oracle, Invariant-1, and the signature). Returns the KNOWN PendingJoiner, or
+ *     null for anything that is not a solicited, well-signed joiner-response (→ fall through to the
+ *     contact-update path). Injected pre-bound to the owner identity + a per-poll accept-oracle snapshot.
+ *   • accept — surface a VERIFIED joiner as KNOWN (idempotent add) and record the (code, verified-fp)
+ *     accept. Returns {ignited} for a fresh add, or null if the joiner is already in the book (a no-op
+ *     that still acks/records). Kept crypto/IndexedDB-free here — the caller (live-book-poll) wires it.
+ * Optional: a caller with no return channel (unit tests, legacy) omits it and behaves exactly as before.
+ */
+export interface JoinerResponseSeam {
+  verify: (blob: string) => Promise<PendingJoiner | null>;
+  accept: (pj: PendingJoiner) => Promise<{ ignited: boolean } | null>;
+}
+
+/**
+ * OVER-WIRE NOTE routing seam (svrnty-note-v0) — the mailbox's THIRD inbound type. A note is sealed
+ * to the owner with the SAME openpgp envelope as contact.updates + joiner-responses (seal.ts →
+ * contact-update-envelope.ts pattern), so — exactly like a joiner-response — it DECRYPTS NON-NULL via
+ * the contact-update decryptor below and would then be dropped on its missing `envelope.fingerprint`
+ * → silently ack-DELETED. The always-on living-book poll would therefore EAT every over-wire note
+ * before any inbox consumer saw it (the silent-loss). This seam routes notes FIRST, by their own
+ * type-checked decryptor, so over-wire RECEIVE actually delivers.
+ *   • verify — decrypt + type-check the blob as a note (noteOpenpgpDecryptor returns null for a
+ *     non-note, incl. a contact.update/joiner → fall through to the contact-update path). Returns the
+ *     NoteWireV0, or null. Does NOT authenticate — that's accept's job (the note can be forged until
+ *     verifyNoteSender runs), mirroring sign-before-admit.
+ *   • accept — authenticate (verifyNoteSender: public_key↔from_fingerprint + signature) THEN admit
+ *     (in-book) THEN persist to the notes store (= acceptInboundNote). Returns the persisted note's
+ *     ids for the inbox repaint, or null if DROPPED (unsigned / forged / stranger — silent I-1/I-2,
+ *     the SAME custody as a stranger contact-update: terminal + acked, never echoed). THROWS only on
+ *     a store I/O failure → retryable (putNote is idempotent on note_id, so redelivery re-persists
+ *     harmlessly). Kept crypto/IndexedDB-free here — the caller (live-book-poll) wires it.
+ * Optional: a caller that omits it keeps the exact prior behaviour (notes, if any, fall to the
+ * contact-update path — i.e. the silent-loss; so the runtime binding MUST wire this once over-wire ships).
+ */
+export interface NoteResponseSeam {
+  verify: (blob: string) => Promise<NoteWireV0 | null>;
+  accept: (wire: NoteWireV0) => Promise<AcceptedNote | null>;
+}
+
+/** The persisted note's handles, returned by the note seam's accept for the inbox live-repaint. */
+export interface AcceptedNote {
+  note_id: string;
+  thread_id: string;
+  from_fingerprint: string;
+}
+
+/** Emitted after a note is persisted so the inbox repaints live (separate from the contact-book beat). */
+export interface NoteLiveEvent {
+  note_id: string;
+  thread_id: string;
+  from_fingerprint: string;
+}
+
 export interface ConsumeDeps {
   owner: OwnerIdentity;
   decrypt: EnvelopeDecryptor;
   store: ContactStore;
+  joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
+  note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
-  emit?: (event: LiveApplyEvent) => void; // Apollo live-beat seam
+  emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
+  emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   now?: () => string; // ISO timestamp source (inject for determinism)
 }
 
@@ -79,12 +150,14 @@ export interface ConsumeSummary {
   polled: number;
   applied: number;
   ignited: number;
+  notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   acked: number;
 }
 
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
+  | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
   | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
 
@@ -99,7 +172,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, dropped: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -108,6 +181,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     publicKeyArmored: deps.owner.publicKeyArmored,
     privateKeyArmored: deps.owner.privateKeyArmored,
     passphrase: deps.owner.passphrase,
+    kemPublicKey: deps.owner.kemPublicKey,
+    sigPublicKey: deps.owner.sigPublicKey,
     now: Date.now(),
   });
   const res = await doFetch(`${relayBase}/queue?mailbox_id=${encodeURIComponent(mailboxId)}`, { headers: pollHeaders });
@@ -140,6 +215,14 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       } catch {
         /* the live-beat is best-effort; a repaint failure must not block consume/ack */
       }
+    } else if (outcome.kind === 'note') {
+      summary.notes++;
+      toAck.push(env.envelope_id); // persisted to the inbox → consumed, ack-delete
+      try {
+        deps.emitNote?.(outcome.event);
+      } catch {
+        /* inbox repaint is best-effort; a repaint failure must not block consume/ack */
+      }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
       toAck.push(env.envelope_id); // clean up permanently-invalid mail (silently)
@@ -158,6 +241,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       publicKeyArmored: deps.owner.publicKeyArmored,
       privateKeyArmored: deps.owner.privateKeyArmored,
       passphrase: deps.owner.passphrase,
+      kemPublicKey: deps.owner.kemPublicKey,
+      sigPublicKey: deps.owner.sigPublicKey,
       now: Date.now(),
     });
     const ackRes = await doFetch(`${relayBase}/ack`, {
@@ -172,6 +257,68 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
+  // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
+  // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
+  // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;
+  // a joiner-response verifies to a PendingJoiner. Routing by decrypt-null would silently LOSE every
+  // joiner-response: it decrypts NON-null via the contact-update decryptor below, then drops on the
+  // missing `envelope.fingerprint`. The two verifies are mutually exclusive (proven E2E), so
+  // trying joiner-verify first can never eat a contact-update.
+  if (deps.joiner) {
+    let pj: PendingJoiner | null;
+    try {
+      pj = await deps.joiner.verify(blob);
+    } catch {
+      pj = null; // a throwing joiner-verify is treated as not-a-joiner → fall through (fail-safe)
+    }
+    if (pj) {
+      try {
+        const res = await deps.joiner.accept(pj);
+        // accepted a fresh joiner → surface as an apply so the open book repaints (ignited); already in
+        // the book → terminal (still ack + record, no repaint). Either way the envelope is consumed.
+        return res
+          ? { kind: 'applied', event: { id: pj.fingerprint, fingerprint: pj.fingerprint, ignited: res.ignited } }
+          : { kind: 'terminal' };
+      } catch (err) {
+        // A store failure while accepting a VERIFIED joiner → leave for retry (at-least-once). The accept
+        // is idempotent (fingerprint-dedup), so a redelivered blob re-adds harmlessly on a later poll.
+        console.error('[return-channel] joiner accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // pj null → not a solicited joiner-response → fall through to the contact-update consume path.
+  }
+
+  // OVER-WIRE NOTE ROUTING (svrnty-note-v0) — same discipline as the joiner seam above, and for the
+  // same reason: a note decrypts NON-NULL via the contact-update decryptor below, then drops on its
+  // missing `envelope.fingerprint` → it would be silently ack-DELETED. Route it FIRST by its own
+  // type-checked decryptor. note.verify returns null for a non-note (contact.update / joiner), which
+  // falls through unharmed — so this can never eat a contact-update (note-type ≠ contact-update shape).
+  if (deps.note) {
+    let wire: NoteWireV0 | null;
+    try {
+      wire = await deps.note.verify(blob);
+    } catch {
+      wire = null; // a throwing note-verify is treated as not-a-note → fall through (fail-safe)
+    }
+    if (wire) {
+      try {
+        const accepted = await deps.note.accept(wire);
+        // persisted (signed + admitted) → note (ack + inbox repaint); dropped (unsigned / forged /
+        // stranger) → terminal (silent ack — I-1/I-2, the same custody as a stranger contact-update).
+        return accepted
+          ? { kind: 'note', event: { note_id: accepted.note_id, thread_id: accepted.thread_id, from_fingerprint: accepted.from_fingerprint } }
+          : { kind: 'terminal' };
+      } catch (err) {
+        // A store I/O failure while persisting a VERIFIED note → leave for retry (at-least-once).
+        // acceptInboundNote's putNote is idempotent on note_id, so a redelivered note re-persists harmlessly.
+        console.error('[return-channel] note accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // wire null → not a note → fall through to the contact-update consume path.
+  }
+
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
   let signed: SignedContactUpdate | null;
   try {

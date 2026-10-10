@@ -1,0 +1,97 @@
+// src/lib/claim-gates.ts
+//
+// CLAIM GATES — the honesty-gate made systematic (Archie #129179: "governance-as-architecture").
+//
+// A claim gate is ONE honest boolean answering "is this capability REAL yet?" — imported by BOTH:
+//   • the user-facing copy  → show the true claim only when the gate is true, else the honest hedge
+//   • the CI launch_claim_sweep → assert no surface claims a capability the gate says isn't live
+// One source of truth, no per-surface divergence, self-flips WITH the wire (never ahead of it).
+//
+// PATTERN — mirrors components/biometric/biometric-seam.ts `isBiometricSeamLive`, which Archie cleared
+// in #101 as "the do-no-harm fix, done right": each gate is an honest CONSTANT tied to the wire by
+// comment and GUARDED by claim-gates.test.ts (asserting false). It is deliberately NOT a runtime probe.
+// The test prevents a premature/dishonest flip: whoever wires the capability flips the constant AND
+// updates the test in the same change, so CI enforces copy ⇔ reality.
+
+// The honest-signal barrel: re-export the biometric gate so every claim gate imports from ONE module.
+// (biometric-seam exports pure, node-safe helpers — no JSX — so this is a plain function re-export.)
+export { isBiometricSeamLive } from '../components/biometric/biometric-seam';
+
+/**
+ * ML-KEM-1024 post-quantum ENCRYPTION (encapsulation) is wired into the send/seal path.
+ *
+ * FALSE today: `hybridEncapsulate()` has ZERO real callers (only the crypto/index barrel re-export) —
+ * the seal is classical OpenPGP. Cards CARRY a pq_kem public key (mint = ED25519+ML-DSA-87+ML-KEM-1024)
+ * but nothing encrypts with it yet. Carrying a key ≠ protection.
+ * Flip to true WITH the first real `hybridEncapsulate` caller (and update claim-gates.test.ts).
+ */
+export function isPQEncapLive(): boolean {
+  return false;
+}
+
+/**
+ * ML-DSA-87 post-quantum SIGNING is wired into the identity/card-sign path.
+ *
+ * FALSE today: `buildSignedIdentityCard()` signs classical-only (does not thread pqSigningSecretKey →
+ * SUITE_CLASSICAL). Cards carry a pq_sig public key but are not PQ-signed.
+ * Flip to true WITH the card-sign path threading the PQ secret (and update claim-gates.test.ts).
+ */
+export function isPQSignLive(): boolean {
+  return false;
+}
+
+/**
+ * Post-quantum TRANSPORT WIRE for PSI DISCOVERY is live — the /initiate exchange rides an
+ * ML-KEM-1024 + X25519 hybrid envelope. psi-wire-seal.ts wraps every PSI body BY CONSTRUCTION (no gate);
+ * apex-proven-live on the deployed edge (session 836a17cd — satellite mandates a 1568B ML-KEM key,
+ * decaps+opens every exchange). Use this ONLY for the "PQ-blinded mutual discovery" claim.
+ *
+ * Tied to `isPSIDiscoveryLive` so the PQ-discovery CLAIM graduates ATOMICALLY with the discovery feature
+ * (never advertised while discovery is dark) — the single flip (isPSIDiscoveryLive false→true) lights
+ * both; there is NO second runtime flag. (A flipper must update BOTH test assertions — see claim-gates.test.ts.)
+ *
+ * NOT a blanket "post-quantum protected" claim. MESSAGING PQ (encrypt-to-contact + card-sign) is SEPARATE
+ * and HELD — `isPQEncapLive` / `isPQSignLive` (both false). A future blanket messaging-PQ claim must
+ * compute `isPQEncapLive() && isPQSignLive()` directly, NOT this gate. Decoupled from that messaging AND
+ * per the #572/apex claim-gate review (Flint/Archie/Hypatia): the old `encap && sign` derivation was a
+ * conflation trap — it would have under-claimed the real, live discovery-wire PQ, or tempted a messaging
+ * over-claim to light it. This gate claims exactly what's proven: the discovery transport wire is PQ.
+ */
+export function isPQWireLive(): boolean {
+  return isPSIDiscoveryLive();
+}
+
+/**
+ * PSI mutual-contact DISCOVERY (the KNOW-layer "trust map") is wired end-to-end and LIVE (dev).
+ *
+ * TRUE as of the dev flip (2026-10-04): startKnowLayerSync runs; the client wire-in (per-peer blinder
+ * persisted on the contact record → initiator completes on a later tick → mutual set applied;
+ * forward-revocation on retract) is active. Graduated on: piece-1 two-layer reveal + edgeTrusted
+ * single-helper (flip-gate #1 closed), the e2e verify (determinism / unlinkability / set-change→
+ * new-session / stateless-reload), Flint's at-rest-blinder co-verify, and Peter's informed reconfirm.
+ * SCOPE (honest): block≡offline is DIRECT-block only; mutual-mediated/transitive block (#156420) is
+ * piece-2, NOT yet live — copy says "blocked directly," not "fully blocked." PROD stays separately gated.
+ */
+export function isPSIDiscoveryLive(): boolean {
+  return true;
+}
+
+/**
+ * PSI MUTUAL-MEDIATED / TRANSITIVE block (#156420) — "piece-2 mutual-block" — is wired end-to-end and live.
+ *
+ * FALSE today: the spine MECHANISM (visible-affirm §F1 payload, durable durable_id-keyed suppression-record,
+ * viewer-side held-affirmatives + the read-time reveal AND-gate) is BUILT + unit-green, but the emit/poll
+ * transport (Athena's shared /onion module) + the receive-path are NOT wired — so no affirmatives flow, the
+ * gate is INERT and under-reveals BY CONSTRUCTION. isPSIDiscoveryLive's scope stays honest: block≡offline is
+ * DIRECT-block only; the TRANSITIVE/mutual-mediated block graduates on THIS flag. The reveal AND-gate in the
+ * trust map is applied ONLY when this is true (flag-off ⇒ current ungated behavior, no regression).
+ *
+ * Flip to true ONLY when: emit+receive land over the shared transport, the §F3 churn-test matrix is GREEN
+ * (Flint co-verify: zero-emit-to-suppressed across {rotation,rebuild,transfer}×{person,group,global} +
+ * positive control), Hypatia's claims-contract holds (cadence-indistinguishable / latency ≤ 20min /
+ * no-re-assert-to-suppressed), and Peter GOs. (A flipper MUST update claim-gates.test.ts.) Copy: "stops
+ * newly surfacing you, including through mutual friends" only when true — until then, "blocked directly."
+ */
+export function isPiece2MutualBlockLive(): boolean {
+  return false;
+}

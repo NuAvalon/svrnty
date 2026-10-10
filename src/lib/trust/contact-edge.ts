@@ -1,17 +1,33 @@
 // src/lib/trust/contact-edge.ts
 // The ONE ContactRecord → TrustEdge projection. Single source of truth so no field silently
-// vanishes at the record→edge boundary — that bug class is Peter's "PQ-keys-dropped-on-every-edge":
+// vanishes at the record→edge boundary — that bug class is "PQ-keys-dropped-on-every-edge":
 // pq_* were stored on the ContactRecord (client-store.ts open bag), but the live UI built its
 // TrustEdges through hand-rolled inline maps (app/page.tsx main map + JoinerCeremony lattice) that
 // enumerated a fixed field list and never carried pq — so pq was dropped on every projected edge.
 //
 // Everything that turns a stored contact into a TrustEdge projects through THIS function:
 //   - the live UI (app/page.tsx TrustMap, JoinerCeremony lattice),
-//   - the import/dedup path (Apollo — dedupeContacts `existing` is projected upstream here).
+//   - the import/dedup path (dedupeContacts `existing` is projected upstream here).
 // ContactRecord stores `pq_*_public_key`; TrustEdge exposes `peer_pq_*_public_key` — the fallback
 // carries either shape so a record OR an already-edge-shaped object both project correctly.
 
 import type { TrustEdge } from './types';
+
+/**
+ * The ONE "is this edge trusted?" predicate (piece-1 ★★ TRUSTED-DEFINITION CONSISTENCY, Athena #158853).
+ * Exported + shared so the reveal (contactRecordToEdge below), the H1 clamp (ContactManagement),
+ * the §G legacy sweep (client-store) and the H2 disable (ContactDetailDialog) all derive "trusted"
+ * from ONE definition and cannot silently drift (Flint's before-flip reliability finding #158889 —
+ * it was 4 verbatim hand-copies + 2 test copies; now a single source).
+ *
+ * `??` semantics (the non-obvious part): an explicit `c.trusted === false` WINS over trust_level —
+ * `??` only falls back to the trust_level check when `c.trusted` is null/undefined, so a
+ * {trusted:false, trust_level:'trusted'} edge is NOT trusted. The reveal HIDES such an edge, so every
+ * gate MUST agree or a {trusted:false,...} edge slips a clamp/sweep while the reveal hides it (the gap).
+ */
+export function edgeTrusted(c: { trusted?: boolean; trust_level?: string }): boolean {
+  return (c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted')) === true;
+}
 
 /**
  * Project a stored contact record onto a TrustEdge for display / trust-graph / encryption use.
@@ -24,22 +40,29 @@ import type { TrustEdge } from './types';
 export function contactRecordToEdge(c: any): TrustEdge {
   return {
     id: c.id,
-    peer_fingerprint: c.peer_fingerprint || c.fingerprint || c.id,
+    // Keyless demo rows lose fingerprint at addContact (Invariant-1). Sample hex is
+    // owner-local metadata only — never a living-wire id, never a key binding.
+    peer_fingerprint:
+      c.peer_fingerprint || c.fingerprint || c.metadata?.sample_fingerprint || c.id,
     peer_name: c.peer_name || c.name,
     peer_email: c.peer_email || c.email || '',
     peer_public_key: c.peer_public_key || c.public_key || '',
-    trusted: c.trusted ?? (c.trust_level === 'verified' || c.trust_level === 'trusted'),
+    // Routes through the shared edgeTrusted predicate (above) so reveal ≡ clamp ≡ sweep ≡ disable
+    // by construction — a single edit to the trusted-definition propagates to every gate.
+    trusted: edgeTrusted(c),
     trusted_since: c.trusted_since || c.verified_at || null,
     last_interaction: c.last_interaction || c.verified_at || c.added_at || new Date().toISOString(),
     decay_days: c.decay_days || 730,
     trust_history: c.trust_history || [],
     verification: c.verification || { method: 'none', verified_at: null },
+    // Owner-local verify (trust prereq). Private — never a public badge.
+    owner_verify: c.owner_verify || c.metadata?.owner_verify,
     mutual: c.mutual || { they_trust_me: null, last_sync: null, reciprocal: false },
     tags: c.tags || c.metadata?.tags || [],
     notes: c.notes || c.metadata?.notes || '',
     connection_channels: c.connection_channels || [],
     // Contact channels (phones/emails/urls/handles) — carry them so vCard-imported phones survive the
-    // record→edge projection. Chaos#40: phones parse (vcard.ts) + persist (ContactRecord) but were
+    // record→edge projection. phones parse (vcard.ts) + persist (ContactRecord) but were
     // dropped HERE, the same "field vanishes at the record→edge boundary" class this file kills for pq.
     contact_info: c.contact_info,
     added_at: c.added_at || new Date().toISOString(),
@@ -47,5 +70,38 @@ export function contactRecordToEdge(c: any): TrustEdge {
     // `pq_*_public_key`; a peer-shaped source may already carry `peer_pq_*`. Carry either.
     peer_pq_sig_public_key: c.peer_pq_sig_public_key || c.pq_sig_public_key,
     peer_pq_kem_public_key: c.peer_pq_kem_public_key || c.pq_kem_public_key,
+    // Demo / UI connection lifecycle (pending intro ≠ trust). Open-bag passthrough.
+    connection_status: c.connection_status || c.metadata?.connection_status,
+    pending_intro: c.pending_intro || c.metadata?.pending_intro,
+    // CUR-5 — owner-local block flag (like tags: never publish on the wire).
+    blocked: !!(c.blocked ?? c.metadata?.blocked),
+    distress_inbound: !!(c.distress_inbound ?? c.metadata?.distress_inbound),
+    disclosed_circle: c.disclosed_circle || c.metadata?.disclosed_circle,
+    they_trust: c.they_trust || c.metadata?.they_trust,
+    open_visibility: !!(
+      c.open_visibility ?? c.metadata?.share_settings?.open_visibility
+    ),
+    // piece-1: per-contact-private (owner-local, mirrors open_visibility's storage in share_settings).
+    per_contact_private: !!(
+      c.per_contact_private ?? c.metadata?.share_settings?.per_contact_private
+    ),
+    // Living-book glass phases (local / demo metadata — fleet fills receipts later).
+    metadata: c.metadata
+      ? {
+          connection_status: c.metadata.connection_status,
+          pending_intro: c.metadata.pending_intro,
+          method_delivery: c.metadata.method_delivery,
+          trust_outbound: c.metadata.trust_outbound,
+          trust_probe: c.metadata.trust_probe,
+          last_moment: c.metadata.last_moment,
+          last_moment_at: c.metadata.last_moment_at,
+          sample_lane: c.metadata.sample_lane,
+          sample: c.metadata.sample,
+          sample_revision: c.metadata.sample_revision,
+          grow_gate: c.metadata.grow_gate,
+          grow_invite_nonce: c.metadata.grow_invite_nonce,
+          grow_mint_channel: c.metadata.grow_mint_channel,
+        }
+      : undefined,
   } as TrustEdge;
 }

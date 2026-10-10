@@ -1,47 +1,52 @@
-# CODEOWNERS — svrnty merge-gate jurisdictions
-# Git-infra memo §1 (Peter/Fable, 2026-08-17). The canonical review-routing map for the
-# delegated merge gate. Full rules + merge-mechanic runbook: docs/MERGE_GATE.md
+# svrnty CODEOWNERS — crypto / key / vault / relay / seal / contact-security surfaces
+# require code-owner review before merge.
 #
-# ⚠️ ENFORCEMENT NOTE (read this): all agents currently push under ONE GitHub identity
-# (palberts22), so GitHub-native CODEOWNERS review-enforcement cannot tell agents apart.
-# Until per-agent GitHub accounts exist, THIS FILE IS THE JURISDICTION MAP (who reviews
-# what); the required non-author review is enforced by the MCP request_review() layer +
-# the merge-mechanic (Athena). The @palberts22 owner is a technical placeholder; the
-# [jurisdiction] tag in each comment is the OPERATIVE routing. When per-agent handles
-# land, swap @palberts22 → the jurisdiction's handle and GitHub enforcement turns on.
+# ENFORCEMENT: ACTIVE — branch-protection rulesets on `main` (main-1: block force-push/delete;
+# main-2: require PR + require code-owner review + 1 approval + no bypass). A change under a
+# fenced path below CANNOT merge without @palberts22 review.
+#
+# PRINCIPLE: the enforced fence == AGENTS.md §HARD BOUNDARY NEVER-TOUCH, but NO broader —
+# never wall pure-render (Cursor/Devin build the render-glass freely).
+# Rationale + full render-glass boundary: AGENTS.md + .cursor/rules/svrnty-gap-freeze.mdc
 
-# ── Default: merge-mechanic routes to the governing jurisdiction ──────────────
-*                                    @palberts22   # [merge-mechanic]
+# --- Crypto / keys / identity / vault ---
+/src/lib/crypto/          @palberts22
+/src/lib/identity/        @palberts22
 
-# ── Crypto · envelope · key material → FLINT  (also PROTECTED PATH: Peter-ack) ─
-/src/lib/crypto/                     @palberts22   # [Flint · PROTECTED]
-/src/lib/identity/                   @palberts22   # [Flint · identity keys]
-/src/lib/trust/contact-update.ts     @palberts22   # [Flint · consume-verify firewall (sig-verify)]
-/src/lib/trust/slug-claim.ts         @palberts22   # [Flint · key-material / slug claim]
-/src/lib/trust/mutual-trust-sync.ts  @palberts22   # [Flint · trust crypto]
-**/sign-envelope.ts                  @palberts22   # [Flint · PROTECTED]
-**/*envelope*.ts                     @palberts22   # [Flint · PROTECTED]
+# --- Trust-layer crypto: PSI core (mutual-trust-sync.ts), publish firewall
+#     (trust-recipe.ts / stripOwnerLocalForPublish), signing (contact-update-sign.ts),
+#     owner-local projection (contact-edge.ts) ---
+/src/lib/trust/           @palberts22
 
-# ── Formats · protocol objects · frozen rows → ARCHIE  (frozen = PROTECTED) ────
-/src/lib/format/                     @palberts22   # [Archie · format-frozen · PROTECTED]
-/src/lib/trust/types.ts              @palberts22   # [Archie · TrustEdge schema · PROTECTED]
+# --- Publish/sync wire + the .svrnty vault format (whole dir: all wire/protocol, no pure-render;
+#     supersedes the sync/vault.ts-only fence) ---
+/src/lib/sync/            @palberts22
 
-# ── Relay custody logic → PROTECTED PATH (Peter-ack) ──────────────────────────
-/src/lib/sync/relay.ts               @palberts22   # [PROTECTED · relay custody]
-/src/lib/sync/vault.ts               @palberts22   # [Flint · at-rest vault crypto]
+# --- Message crypto + relay/candle/mailbox protocol internals (whole dirs: no pure-render) ---
+/src/lib/messaging/       @palberts22
+/src/lib/relay/           @palberts22
 
-# ── UX · ceremony · onboarding · contacts → ATHENA (if Athena authors → Flint/Archie reviews) ─
-/src/lib/ceremony/                   @palberts22   # [Athena · ceremony/UX]
-/src/lib/contacts/                   @palberts22   # [Athena · contacts/dedup/apply]
-/src/lib/trust/contact-state.ts      @palberts22   # [Athena · three-state view]
-/src/components/                     @palberts22   # [Athena · UI]
+# --- The SEAL: deterministic-from-fingerprint, recompute-never-transmit. Seal-specific files ONLY;
+#     the rest of components/identity/ (OwnerCardStudio, SovereignIdentityCard, dialogs) is
+#     render-glass Cursor/Devin build freely — do NOT whole-dir fence it. ---
+/src/components/identity/IdentitySeal.tsx     @palberts22
+/src/components/identity/sacred-geometry.ts   @palberts22
 
-# ── Docs · canon → HYPATIA ────────────────────────────────────────────────────
-*.md                                 @palberts22   # [Hypatia · docs/canon]
-/docs/                               @palberts22   # [Hypatia · docs/canon]
-/README.md                           @palberts22   # [Hypatia · canon]
+# --- Contact-security surfaces only (lane routing + link-scheme allowlist);
+#     NOT plain contact-management. ---
+/src/lib/contacts/contact-lane.ts        @palberts22
+/src/lib/contacts/safe-contact-link.ts   @palberts22
+/src/lib/contacts/resolve-sms-href.ts   @palberts22
 
-# ── The gate config itself → PROTECTED PATH (the gate cannot self-weaken) ──────
-/CODEOWNERS                          @palberts22   # [PROTECTED · gate config]
-/.github/                            @palberts22   # [PROTECTED · CI / branch-protection config]
-/docs/MERGE_GATE.md                  @palberts22   # [PROTECTED · gate rules]
+# --- CI / guard-of-guards: Devin's App has workflows:write, and CI enforces test-guarded
+#     surfaces (e.g. the book-export.test.ts private-tag export-firewall). Fence CI so any
+#     workflow change needs code-owner review (else Devin could gut a firewall test with only a
+#     general approval). Pairs with wiring ci.yml as a required status check (#7). ---
+/.github/workflows/      @palberts22
+
+# NOTE (honesty over the fence): the restore-gate CONTROL FLOW (seedPathActive / path-selection /
+# which-key-decrypts-what / step-up + auth / trust-block wire-strip) is NEVER-TOUCH per AGENTS.md,
+# but it currently lives embedded in src/components/SoverentityFrontend.tsx (a render component)
+# and is NOT path-fenced here — fencing the whole component would wall pure-render. Tracked for
+# extraction into src/lib/ so it can be fenced without walling render. Until then: fleet-owned by
+# the RULE, not the fence.

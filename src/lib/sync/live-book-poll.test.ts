@@ -3,11 +3,15 @@
 // ContactRecord → the verify seam's KnownContactIdentity). buildContactStore / startLiveBookPolling
 // are runtime glue over IndexedDB + timers, covered end-to-end by the beat-4 e2e (demo-arc.spec.ts).
 //
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test src/lib/sync/live-book-poll.test.ts
+// Run: npx tsx --test src/lib/sync/live-book-poll.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordToKnownContact } from './live-book-poll';
+import {
+  BURST_POLL_INTERVAL_MS,
+  DEFAULT_POLL_INTERVAL_MS,
+  recordToKnownContact,
+} from './live-book-poll';
 import type { ContactRecord } from '@/lib/identity/client-store';
 
 function record(over: Partial<ContactRecord> = {}): ContactRecord {
@@ -35,6 +39,12 @@ test('defaults epoch/version to 0 for a v1 record (the lowest replay floor)', ()
   const known = recordToKnownContact(record()); // no epoch/version
   assert.equal(known.epoch, 0);
   assert.equal(known.version, 0);
+});
+
+test('Gate cadence is sub-second burst, not a 5s Contacts-tab wait', () => {
+  assert.ok(BURST_POLL_INTERVAL_MS <= 400);
+  assert.ok(DEFAULT_POLL_INTERVAL_MS <= 2_000);
+  assert.ok(BURST_POLL_INTERVAL_MS < DEFAULT_POLL_INTERVAL_MS);
 });
 
 test('omits pqSigningPublicKey — the demo path is classical (no hybrid KEM on the wire yet)', () => {

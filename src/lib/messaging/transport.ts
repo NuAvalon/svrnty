@@ -4,6 +4,7 @@
 
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
+import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
@@ -17,6 +18,16 @@ export interface NoteSenderIdentity {
 /** Seal + deposit one note to a peer's mailbox (opaque blob). */
 export async function sendNoteToPeer(args: {
   sender: NoteSenderIdentity;
+  /** Sender's own openpgp identity key material — signs the note so the recipient can authenticate
+   *  `from_fingerprint` (fingerprintMatchesKey binds senderPublicKeyArmored ↔ sender.fingerprint). */
+  senderPublicKeyArmored: string;
+  senderPrivateKeyArmored: string;
+  passphrase: string;
+  /** §5 canonical-fp binding: the sender's PQ pubkeys (base64). Thread BOTH so a CANONICAL (64-hex)
+   *  sender authenticates — verifyNoteSender recomputes SHA256(sign‖enc‖kem‖sig). A classical (40-hex)
+   *  sender omits them → the OpenPGP-fp path. Sourced from the identity's post_quantum. */
+  senderPqKemPublicKey?: string;
+  senderPqSigPublicKey?: string;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
   body: string;
@@ -30,7 +41,7 @@ export async function sendNoteToPeer(args: {
   const note_id = newNoteId();
   const sent_at = new Date().toISOString();
 
-  const wire: NoteWireV0 = {
+  const unsignedWire: NoteWireV0 = {
     type: NOTE_WIRE_TYPE,
     note_id,
     thread_id,
@@ -40,6 +51,16 @@ export async function sendNoteToPeer(args: {
     participant_kind: args.sender.participant_kind,
   };
 
+  // Sign BEFORE sealing so the recipient can authenticate the sender (not just decrypt). The
+  // signature travels inside the sealed blob — confidentiality is unchanged; authenticity is added.
+  const wire = await signNoteWire(
+    unsignedWire,
+    args.senderPublicKeyArmored,
+    args.senderPrivateKeyArmored,
+    args.passphrase,
+    args.senderPqKemPublicKey, // §5: canonical-fp binding (both must be present to bind; else classical path)
+    args.senderPqSigPublicKey,
+  );
   const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
   const mailbox_id = deriveMailboxId(args.peerFingerprint);
   const res = await fetchImpl(`${relayBase}/envelope`, {
@@ -114,6 +135,12 @@ export async function acceptInboundNote(args: {
   peerDisplayName?: string;
   peerKind?: ParticipantKind;
 }): Promise<NoteRecord | null> {
+  // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
+  // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
+  // HERE, before isAdmitted — admission is not authentication.
+  if (!(await verifyNoteSender(args.wire))) {
+    return null; // unsigned / forged sender — structural drop
+  }
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
     return null; // spam / stranger — structural drop
   }

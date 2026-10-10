@@ -14,7 +14,6 @@
 // Together they bind pq_kem to the fingerprint via the classical key — the signature COMPLETES
 // Invariant-1 to cover the pq key it doesn't today.
 //
-// AUTHORITATIVE spec: shared/outbox/flint/svrnty_identity_card_signing_spec_flint.md (Flint, s904).
 // The byte-exact envelope lives in crypto/sign-envelope.ts; the canonical bytes in format/canonical.ts;
 // the domain tag + signing-input in format/envelope.ts (single-source, so sign≡verify can't drift).
 
@@ -22,11 +21,15 @@ import type { IdentityCard } from '../format/envelope';
 import { DOMAIN_IDENTITY_CARD, identityCardSigningInput } from '../format/envelope';
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
 import { fingerprintMatchesKey } from './fingerprint';
+// piece-2 device-mailbox: validate the seal-target the card carries. extractValidMailboxFromCard is the
+// shape/content-fp gate ON TOP of the card signature (the mailbox fields live under identity.* so the
+// signature already covers them); validateMailboxPublic re-checks the owner's own cached block on send.
+import { extractValidMailboxFromCard, validateMailboxPublic, type DeviceMailboxPublic } from './device-mailbox';
 
 // ── §6 Suite-length validation: the ek length IS the suite discriminant ──────────
 // ML-KEM ek (public-key) sizes are bijective with the parameter set, so a valid card needs no
 // separate suite_id field — the length names the suite under the signature. This is the SINGLE
-// SOURCE of suite-truth (Flint spec §6). Two load-bearing conditions:
+// SOURCE of suite-truth. Two load-bearing conditions:
 //   1. DOWNGRADE-FLOOR: the map holds ONLY svrnty-sanctioned suites. ML-KEM-512 (800 B) is BELOW
 //      the security floor and is deliberately absent → a 512 key derives `undefined` → 4c (dropped).
 //   2. ENCAP MUST DERIVE IDENTICALLY: when `hybridEncapsulate` gets its first caller it MUST pick
@@ -111,8 +114,12 @@ export async function verifySignedIdentityCard(
   if (!id || typeof id.public_key !== 'string' || typeof id.fingerprint !== 'string') return false;
   if (typeof card.signature !== 'string' || card.signature.length === 0) return false;
 
-  // (1) fingerprint↔classical-key binding — Invariant-1, cheap, checked first.
-  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) return false;
+  // (1) fingerprint↔key binding — cheap, checked first. Pass PQ pubs when present so a
+  // four-key identity id matches; placeholder/short PQ falls through to the OpenPGP 40-hex check.
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
+    kem_public_key: id.pq_kem_public_key,
+    sig_public_key: id.pq_sig_public_key,
+  }))) return false;
 
   // (2) envelope signature over the canonical card. Strip BOTH signature fields before recomputing
   // the signing input — the signer signed the card without them (identityCardSigningInput excludes them).
@@ -139,14 +146,23 @@ export async function buildSignedIdentityCard(
   identity: any,
   classicalPrivateKeyArmored: string,
   classicalPassphrase: string,
+  entityType?: 'agent' | 'human' | 'org',
 ): Promise<SignedIdentityCard> {
   const idData = identity?.identity ?? identity;
   if (!idData?.fingerprint || !idData?.public_key) {
     throw new Error('cannot sign identity card — identity is missing fingerprint or public_key');
   }
-  const pq = idData.post_quantum;
+  // post_quantum lives at the identity WRAPPER top-level (genesis: browser-identity.ts:163), a
+  // SIBLING of the nested `.identity` — not on the unwrapped idData. Read both shapes: the flat
+  // identity (post_quantum beside fingerprint) AND the genesis wrapper (post_quantum one level up).
+  // Reading only idData.post_quantum dropped the legs for the wrapper shape → empty-pq cards (beat-3).
+  const pq = idData?.post_quantum ?? identity?.post_quantum;
+  // Same wrapper-aware read as post_quantum: genesis stores next_authority_commitment on the
+  // wrapper (sibling of post_quantum), not on the nested `.identity` object.
+  const next_authority_commitment =
+    idData?.next_authority_commitment ?? identity?.next_authority_commitment ?? '';
   const card: IdentityCard = {
-    version: '1.0',
+    version: '1.1',
     type: 'identity-exchange',
     created_at: new Date().toISOString(),
     identity: {
@@ -156,14 +172,46 @@ export async function buildSignedIdentityCard(
       email: idData.email || '',
       pq_sig_public_key: pq?.sig_public_key || '',
       pq_kem_public_key: pq?.kem_public_key || '',
+      next_authority_commitment,
     },
   };
+  // Bind the self-attested entity_type into the signed card (immutable, G-attest). Optional + byte-preserving:
+  // omit it → the card canonicalizes exactly as a legacy card. Read from an explicit arg OR the identity input.
+  const et = entityType ?? idData?.entity_type ?? identity?.entity_type;
+  if (et !== undefined) {
+    if (et !== 'agent' && et !== 'human' && et !== 'org')
+      throw new Error(`buildSignedIdentityCard: entity_type must be one of {agent, human, org}, got ${String(et)}`);
+    card.entity_type = et;
+  }
+  // piece-2: carry the PUBLIC device-mailbox (onion seal-target) if the identity has one. Read from the
+  // wrapper like post_quantum/next_authority_commitment; validate (content-fp self-consistency) and OMIT
+  // when absent/invalid so a legacy/pre-feature card canonicalizes identically (byte-preserving; never
+  // null). Signed because it sits under identity.* — a receiver re-verifies it the same as pq_kem.
+  const dmb = validateMailboxPublic(idData?.device_mailbox ?? identity?.device_mailbox);
+  if (dmb) {
+    card.identity.mailbox_fp = dmb.mailbox_fp;
+    card.identity.mailbox_x25519_pk = dmb.mailbox_x25519_pk;
+    card.identity.mailbox_mlkem1024_pk = dmb.mailbox_mlkem1024_pk;
+  }
+  // Build-time self-consistency guard (N2 class-killer — Archie ⚡9693 + Hypatia's claim-honesty vote):
+  // a card whose canonical fingerprint claims 4 keys MUST carry all 4. Assert the card binds to its
+  // OWN carried keys BEFORE it can be constructed, so a self-inconsistent card (fp≠carried-keys — e.g.
+  // the empty-pq-legs beat-3 bug) is uninstantiable at the send-side, not caught downstream at a peer.
+  if (!(await fingerprintMatchesKey(
+    card.identity.fingerprint,
+    card.identity.public_key,
+    { kem_public_key: card.identity.pq_kem_public_key, sig_public_key: card.identity.pq_sig_public_key },
+  ))) {
+    throw new Error(
+      'refusing to build a self-inconsistent identity card — fingerprint does not bind to its carried keys (missing/mismatched PQ legs?)',
+    );
+  }
   return signIdentityCard(card, classicalPrivateKeyArmored, classicalPassphrase);
 }
 
 // ── RECEIVE side: the fail-closed 4-branch import disposition (both receive-paths share this) ──
 // JoinerCeremony (relay/QR) and ContactManagement.handleImportExchange (copy/paste) BOTH call this
-// so the security decision can't drift between carriers (Flint spec §4/§5: every carrier ends at
+// so the security decision can't drift between carriers (every carrier ends at
 // verifySignedIdentityCard). Pure decision — it stores nothing; the caller applies `pq` + `alarm`.
 export interface ImportDisposition {
   /** Import the classical contact at all? false ONLY for branch 1 (fp-fail / malformed card). */
@@ -176,10 +224,18 @@ export interface ImportDisposition {
   branch: 1 | 2 | 3 | '4a' | '4b' | '4c';
   /** Derived svrnty suite (4b only). */
   suite?: string;
+  /**
+   * piece-2: the VALIDATED public device-mailbox (onion seal-target) to STORE on the contact, or null to
+   * drop it. Non-null ONLY under a VALID signature (any of 4a/4b/4c) AND a present + content-fp-consistent
+   * mailbox block — a seal-target is as MITM-sensitive as pq_kem, so branches 1/2/3 (reject / no-sig /
+   * invalid-sig) always drop it (emit to that peer under-reveals, fail-closed). Orthogonal to the pq
+   * sub-disposition: a valid signer may carry a mailbox but no pq (and vice-versa).
+   */
+  deviceMailbox: DeviceMailboxPublic | null;
 }
 
 /**
- * Classify a parsed identity-exchange card into its fail-closed import disposition (Flint spec §4).
+ * Classify a parsed identity-exchange card into its fail-closed import disposition.
  *   1  fp↔key FAILS / malformed        → REJECT the whole card (classical identity unverifiable).
  *   2  fp↔key OK, no `signature`        → classical-only, DROP pq, QUIET (benign pre-PQ peer).
  *   3  signature PRESENT but INVALID    → classical-only, DROP pq, LOUD (possible tampering).
@@ -199,35 +255,42 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     typeof id.public_key !== 'string' || id.public_key.length === 0 ||
     typeof id.fingerprint !== 'string' || id.fingerprint.length === 0
   ) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null };
   }
   // BRANCH 1: fp↔classical-key binding (Invariant-1). Checked independently of verify — branch 2
   // never calls verify, and this decides classical-import for every branch.
-  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key))) {
-    return { importClassical: false, pq: null, alarm: 'reject', branch: 1 };
+  if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
+    kem_public_key: id.pq_kem_public_key,
+    sig_public_key: id.pq_sig_public_key,
+  }))) {
+    return { importClassical: false, pq: null, alarm: 'reject', branch: 1, deviceMailbox: null };
   }
   // fp↔key OK → the classical contact imports for branches 2/3/4.
   const hasSig = typeof card.signature === 'string' && card.signature.length > 0;
   // BRANCH 2: no signature → classical-only, quiet. Must NOT alarm (benign transition-era peer).
   if (!hasSig) {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2 };
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: 2, deviceMailbox: null };
   }
   // Signature present → verify (re-checks fp↔key internally; keeps verify self-contained).
   const valid = await verifySignedIdentityCard(card as SignedIdentityCard);
   // BRANCH 3: present but invalid → classical-only, LOUD. Reserve the tamper alarm for THIS only.
   if (!valid) {
-    return { importClassical: true, pq: null, alarm: 'loud', branch: 3 };
+    return { importClassical: true, pq: null, alarm: 'loud', branch: 3, deviceMailbox: null };
   }
-  // BRANCH 4: valid signature → pq sub-disposition.
+  // BRANCH 4: valid signature. The seal-target (device-mailbox) is now authenticated under identity.* —
+  // extract + content-fp-validate it ONCE here (orthogonal to the pq suite decision below). Absent/invalid
+  // → null (emit under-reveals). Dropped by construction in branches 1/2/3 above (no valid signature).
+  const deviceMailbox = extractValidMailboxFromCard(id);
+  // pq sub-disposition:
   const kem = typeof id.pq_kem_public_key === 'string' ? id.pq_kem_public_key : '';
   // 4a: absent/empty pq_kem under a valid sig → legit v1/no-PQ signer. Quiet, no pq.
   if (kem === '') {
-    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a' };
+    return { importClassical: true, pq: null, alarm: 'quiet', branch: '4a', deviceMailbox };
   }
   const suite = suiteFromKemLength(kem);
   // 4c: valid sig, unsupported/malformed suite length → sender bug, NOT tampering. Soft-info, no pq.
   if (!suite) {
-    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c' };
+    return { importClassical: true, pq: null, alarm: 'soft-info', branch: '4c', deviceMailbox };
   }
   // 4b: valid sig + supported suite → STORE the authenticated pq (both keys, as carried).
   const sig = typeof id.pq_sig_public_key === 'string' ? id.pq_sig_public_key : '';
@@ -237,5 +300,6 @@ export async function classifyImportedCard(card: any): Promise<ImportDisposition
     alarm: 'quiet',
     branch: '4b',
     suite,
+    deviceMailbox,
   };
 }

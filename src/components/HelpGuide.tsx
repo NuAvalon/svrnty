@@ -6,88 +6,112 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { HelpCircle, ChevronRight } from 'lucide-react';
+import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 const steps = [
   {
-    title: 'Create Your Identity',
+    title: 'The Formula',
     content: [
-      'Enter your name, email, and a strong passphrase.',
-      'This generates your cryptographic keys — ED25519 (classical) and ML-DSA-87 (post-quantum).',
-      'Your passphrase protects your private key. If you lose it, you lose your identity. There is no recovery email. There is no "forgot password."',
-      'Write it down. Store it somewhere safe — not on your phone, not in a note app.',
+      TRUST_RECIPE_COPY.knowLayer,
+      TRUST_RECIPE_COPY.trustLayer,
+      TRUST_RECIPE_COPY.mutualOnly,
     ],
   },
   {
-    title: 'Back Up Your Keys',
+    title: 'Create a card, not an account',
     content: [
-      'Go to Contacts → More → Secure Export to create an encrypted backup of your data.',
-      'Set a strong password for the export. This is separate from your passphrase.',
-      'Save the encrypted file somewhere you control: USB drive, external hard drive, or a cloud service you trust.',
-      'Do this after creating your identity and again whenever you add important contacts.',
-      'If your device is lost, this backup + your passphrase is how you recover.',
+      'On the gate: Start makes a new card. Continue opens a vault you already have.',
+      'Enter your name and a passphrase that unlocks this device.',
+      'This generates your keys. There is no recovery email. A card, not an account.',
+      'Export a vault with an encryption password you set at export — that is not a website login.',
     ],
   },
   {
-    title: 'Add People You Know',
+    title: 'Grow the Galaxy',
     content: [
-      'Click "Share Identity" in the Contacts tab. This creates a signed package with your public key.',
-      'Copy it and send it to your friend via Signal, email, or any channel you trust.',
-      'Your friend opens SVRNTY, clicks "Import Contact", and pastes your package.',
-      'The signatures are verified automatically — they know it really came from you.',
-      'They appear as "Known" in your network. You appear as "Known" in theirs.',
+      'Tap Grow. Show my code is your QR or short link. Scan / paste is how you join from theirs.',
+      'In person mints a single-use code. Remote joiners wait at the Gate until you admit them as Known.',
+      TRUST_RECIPE_COPY.mycelial,
+      'Name them as you know them. Notes stay on this device.',
     ],
   },
   {
-    title: 'Trust & Vouch',
+    title: 'Verify, then Trust',
     content: [
-      'Known means you have their contact. It doesn\'t mean you trust them.',
-      'Click "Vouch" on a contact to grant trust. This is your word — it means something.',
-      'Trusted contacts are inside the walls. Known contacts are outside.',
-      'If someone loses your trust, click "Break". They\'ll disappear from your trusted circle. Both of you will notice. That\'s the point — it creates the space to talk about it.',
+      TRUST_RECIPE_COPY.verifyWhy,
+      TRUST_RECIPE_COPY.verifyPrivate,
+      'They must verify you on their device too before Trust can be mutual. No one else sees your verify mark.',
     ],
   },
   {
-    title: 'Trust Decay',
+    title: 'Decay',
     content: [
-      'Trust isn\'t permanent. If you don\'t interact with someone for 2 years, trust fades.',
-      'This is like a key that expires — stay in touch, and it stays alive.',
-      'When trust decays, the person drops back to Known. You can reverify to restore it.',
-      'You can customize the decay period per contact if 2 years doesn\'t fit.',
+      TRUST_RECIPE_COPY.decay,
     ],
   },
   {
-    title: 'How It Works',
+    title: TRUST_RECIPE_COPY.recoveryTitle,
     content: [
-      'All your data is encrypted with your keys and stored locally. The server can\'t read it.',
-      'Every signal you send is signed with both classical and post-quantum cryptography.',
-      'No accounts. No passwords stored on a server. No tracking. No ads.',
-      'Your identity is yours. Your trust network is yours. We just built the walls.',
+      // Claim-honesty: render only what's LIVE — the guardian GIVE (mounted, Shamir) —
+      // plus a roadmap "Coming" line. recoveryRotate/Seed/Password are unmounted stubs; recoveryDistress
+      // is a NO-OP send with a life-safety FALSE cry-claim → both GATED OUT of beta Help (constants kept
+      // for when they wire up; do NOT re-add here until then).
+      TRUST_RECIPE_COPY.recoverySelect,
+      TRUST_RECIPE_COPY.recoveryComing,
     ],
   },
 ];
 
-export function HelpGuide() {
-  const [open, setOpen] = useState(false);
+export type HelpGuideProps = {
+  /** When false, parent supplies the opener; the dialog still mounts. */
+  showTrigger?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
+
+export function HelpGuide({
+  showTrigger = true,
+  open: openProp,
+  onOpenChange,
+}: HelpGuideProps = {}) {
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : uncontrolledOpen;
+  const setOpen = (next: boolean) => {
+    if (!controlled) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
+
+  const openHelp = () => {
+    setActiveStep(0);
+    setOpen(true);
+  };
+
+  React.useEffect(() => {
+    if (open) setActiveStep(0);
+  }, [open]);
 
   return (
     <>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => { setOpen(true); setActiveStep(0); }}
-        className="absolute right-0 top-0"
-        style={{ color: '#8a8070' }}
-      >
-        <HelpCircle className="h-5 w-5 mr-1" />
-        Help
-      </Button>
+      {showTrigger ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={openHelp}
+          style={{ color: E.dim, fontFamily: E.fontSans }}
+        >
+          <HelpCircle className="h-5 w-5 mr-1" />
+          Help
+        </Button>
+      ) : null}
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto" style={{ fontFamily: E.fontSans }}>
           <DialogHeader>
-            <DialogTitle className="text-lg" style={{ color: '#c8a84e' }}>
-              Getting Started
+            <DialogTitle className="text-lg" style={{ color: E.accent, fontFamily: E.fontSans }}>
+              {TRUST_RECIPE_COPY.helpTitle}
             </DialogTitle>
           </DialogHeader>
 
@@ -99,9 +123,10 @@ export function HelpGuide() {
                 onClick={() => setActiveStep(i)}
                 className="text-xs px-2.5 py-1 rounded-full border transition-colors"
                 style={{
-                  borderColor: activeStep === i ? '#c8a84e' : 'rgba(180,160,100,0.2)',
-                  color: activeStep === i ? '#c8a84e' : '#8a8070',
-                  background: activeStep === i ? 'rgba(200,168,78,0.1)' : 'transparent',
+                  fontFamily: E.fontSans,
+                  borderColor: activeStep === i ? E.accent : E.border,
+                  color: activeStep === i ? E.accent : E.dim,
+                  background: activeStep === i ? 'rgba(249,168,37,0.1)' : 'transparent',
                 }}
               >
                 {i + 1}. {step.title}
@@ -111,13 +136,13 @@ export function HelpGuide() {
 
           {/* Active step content */}
           <div className="space-y-4">
-            <h3 className="text-base font-medium" style={{ color: '#e0dcd0' }}>
+            <h3 className="text-base font-medium" style={{ color: E.text, fontFamily: E.fontSans }}>
               {steps[activeStep].title}
             </h3>
             <ul className="space-y-3">
               {steps[activeStep].content.map((line, i) => (
-                <li key={i} className="flex gap-2 text-sm" style={{ color: '#a09880' }}>
-                  <ChevronRight className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#c8a84e' }} />
+                <li key={i} className="flex gap-2 text-sm" style={{ color: E.muted, fontFamily: E.fontSans }}>
+                  <ChevronRight className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: E.accent }} />
                   <span>{line}</span>
                 </li>
               ))}
@@ -125,17 +150,17 @@ export function HelpGuide() {
           </div>
 
           {/* Navigation */}
-          <div className="flex justify-between mt-6 pt-4 border-t" style={{ borderColor: 'rgba(180,160,100,0.15)' }}>
+          <div className="flex justify-between mt-6 pt-4 border-t" style={{ borderColor: E.border }}>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setActiveStep(Math.max(0, activeStep - 1))}
               disabled={activeStep === 0}
-              style={{ color: '#8a8070' }}
+              style={{ color: E.dim, fontFamily: E.fontSans }}
             >
               Previous
             </Button>
-            <span className="text-xs self-center" style={{ color: '#5a5548' }}>
+            <span className="text-xs self-center" style={{ color: E.dim }}>
               {activeStep + 1} of {steps.length}
             </span>
             {activeStep < steps.length - 1 ? (
@@ -143,7 +168,7 @@ export function HelpGuide() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setActiveStep(activeStep + 1)}
-                style={{ color: '#c8a84e' }}
+                style={{ color: E.accent, fontFamily: E.fontSans }}
               >
                 Next
               </Button>
@@ -152,7 +177,7 @@ export function HelpGuide() {
                 variant="ghost"
                 size="sm"
                 onClick={() => setOpen(false)}
-                style={{ color: '#c8a84e' }}
+                style={{ color: E.accent, fontFamily: E.fontSans }}
               >
                 Got it
               </Button>

@@ -1,12 +1,12 @@
 // src/lib/relay/mailbox-config.ts
 // Per-operator POLICY for the return-channel mailbox — read from env, NEVER hardcoded literals.
 //
-// Joint design §5.1 + Fable directive §2 (Peter #116236) + Invariant 8 (no protocol fork
+// Joint design §5.1 + Invariant 8 (no protocol fork
 // managed-vs-self-host): the numbers below are the svrnty.is DEFAULT profile, NOT protocol
 // constants. A family relay runs the SAME image with different env (door-wide-open); a community
 // relay gates to members. Hardcoding svrnty.is's profile would fork the image in practice.
 //
-// Read per-call (cheap env lookups) so tooling — e.g. Flint's on-demand TTL hook — can shorten a
+// Read per-call (cheap env lookups) so tooling — e.g. an on-demand TTL hook — can shorten a
 // value for one run without a rebuild.
 
 function intEnv(name: string, def: number): number {
@@ -23,9 +23,9 @@ function boolEnv(name: string, def: boolean): boolean {
 }
 
 export interface MailboxConfig {
-  /** Per-mailbox envelope cap → 429 at-cap (documented bounded I-4 residual, Peter #116282). */
+  /** Per-mailbox envelope cap → 429 at-cap (documented bounded I-4 residual). */
   cap: number;
-  /** Per-envelope TTL backstop GC in ms (ack-delete is primary; Flint's on-demand hook shortens this). */
+  /** Per-envelope TTL backstop GC in ms (ack-delete is primary; an on-demand hook shortens this). */
   envelopeTtlMs: number;
   /** Opaque blob size cap in bytes. */
   maxPayloadBytes: number;
@@ -37,7 +37,7 @@ export interface MailboxConfig {
   /**
    * §5.1 LAUNCH seam: when true (svrnty.is nursery profile), mailbox CREATION is gated behind an
    * explicit owner-claim carrying an invite_token+chain. That claim machinery lands WITH the invite
-   * system (launch hardening, Archie #116271) and is deliberately NOT retrofitted into the 9/10 build.
+   * system (launch hardening) and is deliberately NOT retrofitted into the 9/10 build.
    * Default false = door-open lazy-create-on-deposit (demo/family profile).
    */
   inviteRequired: boolean;

@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// Prod-build demo-arc config (Athena). beat-3 (guided-Ceremony) is PROD-ONLY: React StrictMode
+// Prod-build demo-arc config. beat-3 (guided-Ceremony) is PROD-ONLY: React StrictMode
 // double-invoke breaks the joiner mount under `next dev`, so beat-3 can only be verified against a
 // production build. This runs the demo-arc against `next start` on a dedicated :3017 (no contact with
 // any stray :3000 dev server). Setting E2E_PROD here makes the beat-3 skip-guard

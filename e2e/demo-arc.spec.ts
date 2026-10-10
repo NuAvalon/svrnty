@@ -5,8 +5,8 @@ import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtur
 // ─────────────────────────────────────────────────────────────────────────────────────
 // svrnty 9/10 DEMO ARC (§9.7) — the whole story as one end-to-end journey.
 //
-// Fable's §9.7 named deliverable. The arc is Hypatia's demo-script v1
-// (shared/outbox/hypatia/svrnty_015_demo_script_v1.md, KB #85999): five beats, each bound to
+// The §9.7 named deliverable. The arc is the demo-script v1:
+// five beats, each bound to
 // its HONEST wired-state — the demo shows only what ships (a false demo is a false claim).
 //
 //   Beat 1 · the gray sea    — your relationships live in someone else's DB → real vCard import.
@@ -15,20 +15,19 @@ import { seedAliceWithBob, depositContactUpdate, depositRawBlob } from './fixtur
 //   Beat 4 · the living edge  — Bob edits his card → Alice's entry self-updates.
 //   Beat 5 · the candle       — what survives the fire: export the whole self (no second Alexandria).
 //
-// OWNERSHIP / DIVISION (Archie #116268):
-//   • Hypatia — this arc skeleton (owns the arc).
-//   • Athena  — ceremony/export testids (beats 3 & 5) + un-stubs beat 4 when her consume→apply
-//               caller lands (return_channel_caller_build_plan.md).
-//   • Archie  — return-channel relay-semantics (the mailbox/poll/ack HOW).
-//   • Apollo  — the BroadcastChannel repaint / last_interaction-reset that makes beat 4 LIVE.
-//   • Coexists with e2e/return-channel.spec.ts (Flint's gate; self-skips until endpoints land).
+// MOVING PARTS:
+//   • ceremony/export testids (beats 3 & 5) + un-stubs beat 4 when the consume→apply
+//     caller lands.
+//   • return-channel relay-semantics (the mailbox/poll/ack HOW).
+//   • the BroadcastChannel repaint / last_interaction-reset that makes beat 4 LIVE.
+//   • Coexists with e2e/return-channel.spec.ts (self-skips until endpoints land).
 //
-// WIRE-STATE (verified on main, 2026-08-18 — see KB #86234):
+// WIRE-STATE (verified on main, 2026-08-18):
 //   Beats 1–2 : LIVE — wired here (mirror import.spec.ts / identity.spec.ts). This test PASSES.
-//   Beat 3    : LIVE (2026-08-21, PR#40) — a real two-context handshake through the client-side relay:
-//               Alice's Ceremony join-link (key on the URL fragment) → Bob joins → the edge blooms.
+//   Beat 3    : LIVE (2026-08-21) — a real two-context handshake through the client-side relay:
+//               Alice's Grow join-link (key on the URL fragment) → Bob joins → the edge blooms.
 //               Runs+passes in e2e-prod (2.9s), skips clean in dev.
-//   Beat 4    : LIVE (2026-08-19) — Athena's return-channel consume caller (PR#33) + Apollo's live-apply
+//   Beat 4    : LIVE (2026-08-19) — the return-channel consume caller + the live-apply
 //               subscription. RECEIVE side on the wire (a real signed deposit → Alice consumes/verifies/
 //               applies → data-live="push"); SEND-from-UI still simulated (Bob's client caller unbuilt).
 //   Beat 5    : PENDING TESTIDS — SecureExportDialog exists; test.fixme until export testids land.
@@ -45,21 +44,21 @@ const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 grays: Grace 
 async function genesis(page: Page, name: string, email: string) {
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
-  // §1 / Peter #117506: genesis is name + passphrase ONLY — no email field, no verification.
+  // §1: genesis is name + passphrase ONLY — no email field, no verification.
   await expect(page.getByPlaceholder('your@email.com')).toHaveCount(0);
   await page.getByPlaceholder('Your name').fill(name);
   await page.getByPlaceholder('Encrypts your keys at rest').fill('e2e-passphrase-1234');
   await page.getByPlaceholder('Confirm passphrase').fill('e2e-passphrase-1234');
-  await page.getByRole('button', { name: /begin anew/i }).click();
+  await page.getByRole('button', { name: /^start$/i }).click();
   await page.getByRole('checkbox', { name: /written this down offline/i }).check({ timeout: 30_000 });
   await page.getByRole('button', { name: /i have it/i }).click();
-  await expect(page.getByRole('tab', { name: 'Contacts' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
 }
 
 // Beat 1 — the gray sea: import a multi-contact vCard, see the dedup preview BEFORE any write
 // (confirm-gate, never silent), confirm. Mirrors import.spec.ts (proven assertions only).
 async function importGraySea(page: Page) {
-  await page.getByRole('tab', { name: 'Contacts' }).click();
+  await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
   await page.getByTestId('import-contacts-trigger').click();
   await expect(page.getByTestId('import-contacts-dialog')).toBeVisible();
   await page.getByTestId('vcf-input').setInputFiles(VCF);
@@ -80,7 +79,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 3: the handshake bloom (two devices, one relay) ─────────────────────────────
-  // LIVE (PR#40). Real shape: Alice opens the Ceremony tab → the app auto-creates a
+  // LIVE. Real shape: Alice opens Grow → the app auto-creates a
   // one-time relay handshake (QR + short link off one code); Bob, on his own device/context, opens the
   // /c/<code>#<key> link, receives her signed card, and the trust edge goes live in his book.
   // ACTIVATION SATISFIED: extractJoinPath confirmed in CI (the key rides the URL fragment; read off the
@@ -95,14 +94,19 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await genesis(alice, 'Alice E2E', 'alice-e2e@example.test');
     await genesis(bob, 'Bob E2E', 'bob-e2e@example.test'); // the joiner needs an identity first
 
-    // Alice: enter the ceremony → the handshake step auto-creates the relay → grab the full join URL.
-    await alice.getByRole('tab', { name: 'Ceremony' }).click();
+    // Alice: Grow → the handshake auto-creates the relay → grab the full join URL.
+    await alice.getByTestId('nav-grow').click();
     const joinPath = await extractJoinPath(aliceCtx, alice);
 
     // Bob: open the link on his device → walk the joiner steps → the edge persists.
     await bob.goto(joinPath);
     await bob.getByRole('button', { name: /receive their card/i }).click();
+    await bob.getByTestId('join-presence-in-person').click();
     await bob.getByRole('button', { name: /add to my network/i }).click();
+    // Joiner /c/ navigation drops the in-memory session key — persistEdge prompts
+    // to unlock so the return-channel deposit can be signed (R1). Then lattice.
+    await bob.getByPlaceholder('Your passphrase').fill('e2e-passphrase-1234');
+    await bob.getByRole('button', { name: /^unlock/i }).click();
     await bob.getByRole('button', { name: /the facet is lit/i }).click();
 
     // The bloom: Alice now appears in Bob's constellation. The joiner is a standalone /c/<code> page with no
@@ -110,7 +114,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.goto('/');
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
-    await bob.getByRole('tab', { name: 'Contacts' }).click();
+    await bob.getByRole('tab', { name: 'Contacts', exact: true }).click();
     await expect(bob.getByText('Alice E2E')).toBeVisible();
 
     await aliceCtx.close();
@@ -118,8 +122,8 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 4: the living edge — Bob edits → Alice's entry self-updates LIVE ─────────────
-  // WIRED (2026-08-19): Athena's return-channel consume caller (poll→decrypt→verify→apply→persist→ack, PR#33)
-  // + Apollo's ContactManagement live-apply subscription (data-live="push" on reason:'live-apply'). THREE
+  // WIRED (2026-08-19): the return-channel consume caller (poll→decrypt→verify→apply→persist→ack)
+  // + the ContactManagement live-apply subscription (data-live="push" on reason:'live-apply'). THREE
   // honesty hinges are baked in: (1) LIVE-not-reload — data-live="push" fires ONLY on a real incoming apply,
   // so asserting it IS the proof the update arrived live (a reload or local edit can never set it). (2)
   // SEND-from-UI is NOT wired yet (Bob's client caller doesn't exist — only the endpoint); we SIMULATE his
@@ -129,7 +133,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // deposit must be rejected on consume (negative test below).
   test('beat 4: Bob edits his card → Alice\'s entry self-updates LIVE (no reload)', async ({ page, request }) => {
     await genesis(page, 'Alice E2E', 'alice-e2e@example.test');   // Alice's key is unlocked IN MEMORY, poll running
-    await page.getByRole('tab', { name: 'Contacts' }).click();    // ensure ContactManagement (live subscription) is mounted
+    await page.getByRole('tab', { name: 'Contacts', exact: true }).click();    // ensure ContactManagement (live subscription) is mounted
     // Extract Alice's real pubkey from her genesis identity + seed Bob into her book @ epoch 0 (I-2 whitelist).
     // ⚠ NO RELOAD after this — a refresh would relock her key → the poll no-ops → silent red.
     const { aliceFp, aliceArmoredPub, bob } = await seedAliceWithBob(page);
@@ -156,7 +160,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // relay 200s the deposit (identity-blind by design); Alice's CONSUME decrypt/verify rejects it → no push.
   test('beat 4 (negative): a garbage deposit does not surface as a live update', async ({ page, request }) => {
     await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
-    await page.getByRole('tab', { name: 'Contacts' }).click();
+    await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
     const { aliceFp } = await seedAliceWithBob(page);
     const status = await depositRawBlob(request, { recipientFingerprint: aliceFp, blob: 'garbage-not-a-signed-update' });
     expect(status).toBe(200);            // the blind relay queues it; the only gate is Alice's consume-verify
@@ -165,30 +169,43 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   });
 
   // ── Beat 5: the candle — export the whole self ───────────────────────────────────────
-  // The exit right made visible (Fable §9.3). "What survives the fire" has two halves:
-  //   • encrypted-vault export — WIRED + tested here (Full Backup, SoverentityFrontend export section).
-  //   • vCard-all export — the lib exists (toVCardFile) but has NO UI caller yet → tracked, kept .fixme below.
+  // The exit right made visible (§9.3). "What survives the fire" has two halves:
+  //   • encrypted-vault export — CUR-4: auth gate → vault passphrase → fleet packVault (v4).
+  //   • vCard-all export — Contacts → More → Export all as vCard (auth-gated).
   // Honesty gate: we test only what SHIPS. A green here means an encrypted .svrnty vault really leaves the
-  // device (real download event) — no server, no second Alexandria. Selectors verified vs live source @main.
+  // device (real download event) — no server, no second Alexandria.
   test('beat 5 (vault export): the candle — the whole encrypted vault survives the fire', async ({ page }) => {
-    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');   // an identity worth carrying out of the fire
-    await page.getByRole('tab', { name: 'Identity' }).click();    // the export/backup section lives on the Identity tab
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
+    await page.getByRole('tab', { name: 'Identity' }).click();
     await page.getByRole('button', { name: /full backup/i }).click();
-    // Encrypt-at-rest: the vault is AES-256-GCM under a password; the button stays disabled until it's ≥8 + matches.
-    await page.getByPlaceholder('Password (min 8 characters)').fill('vault-pass-e2e-1234');
-    await page.getByPlaceholder('Confirm password').fill('vault-pass-e2e-1234');
-    // The download IS the candle. Arm the listener BEFORE the click (the anchor fires synchronously).
+
+    // CUR-4 export-behind-auth: re-enter unlock passphrase before the vault packer.
+    await expect(page.getByRole('heading', { name: /confirm it/i })).toBeVisible();
+    await page.getByPlaceholder('Your everyday unlock passphrase').fill('e2e-passphrase-1234');
+    await page.getByRole('button', { name: /^Continue$/ }).click();
+
+    // Fleet packVault floor: 12+ char vault passphrase (not the unlock passphrase).
+    await expect(page.getByTestId('vault-export-dialog')).toBeVisible();
+    await page.getByTestId('vault-export-passphrase').fill('vault-pass-e2e');
+    await page.getByTestId('vault-export-confirm').fill('vault-pass-e2e');
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#fullBackupBtn').click();
     const download = await downloadPromise;
-    expect(download.suggestedFilename()).toMatch(/^svrnty-backup-.*\.svrnty$/);
+    expect(download.suggestedFilename()).toMatch(/^vault-.*\.svrnty$/);
   });
 
-  // Beat 5 (vCard-all) — the OTHER half of the candle: a portable, plain-text vCard of every relationship.
-  // toVCardFile() exists (src/lib/contacts/vcard.ts) but has ZERO UI callers → un-fixme when an
-  // "Export all as vCard" button lands. Kept here so the canon (vCard + vault) isn't silently dropped.
-  test.fixme('beat 5 (vCard-all, pending UI): export every relationship as a portable vCard', async () => {
-    // INTENDED: Contacts → "Export all as vCard" → assert a .vcf download of all edges.
+  // Beat 5 (vCard-all) — portable plaintext of every relationship (auth-gated, not encrypted).
+  test('beat 5 (vCard-all): export every relationship as a portable vCard', async ({ page }) => {
+    await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
+    await importGraySea(page);
+    await page.getByRole('button', { name: /more/i }).click();
+    await page.getByRole('menuitem', { name: /export all as vcard/i }).click();
+    await expect(page.getByRole('heading', { name: /confirm it/i })).toBeVisible();
+    await page.getByPlaceholder('Your everyday unlock passphrase').fill('e2e-passphrase-1234');
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: /^Continue$/ }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toMatch(/^svrnty-contacts-.*\.vcf$/);
   });
 });
 
@@ -198,7 +215,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
 async function extractJoinPath(ctx: BrowserContext, page: Page): Promise<string> {
   await ctx.grantPermissions(['clipboard-read', 'clipboard-write']);
   await expect(page.getByRole('button', { name: /copy link/i })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole('button', { name: /copy link/i }).click();
+  await page.getByRole('button', { name: /copy link/i }).click({ force: true });
   const fullUrl: string = await page.evaluate(() => navigator.clipboard.readText());
   const m = fullUrl.match(/\/c\/[^#\s"']+#[^\s"']+/);
   if (!m) throw new Error(`extractJoinPath: no /c/<code>#<key> found in clipboard: "${fullUrl}"`);

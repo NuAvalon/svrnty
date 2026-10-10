@@ -3,7 +3,7 @@
 //
 // Implements the DH-PSI protocol against satellite endpoints.
 // Satellite never learns who trusts whom — it only relays blinded sets.
-// Client computes intersection locally, feeds into trustGraph.updateMutualState().
+// Client computes intersection locally, persists via deps.applyMutualResult() (storage-agnostic).
 //
 // Protocol (5-step DH-PSI):
 //   1. Alice blinds her trusted fingerprints, sends to satellite → session_id
@@ -15,22 +15,45 @@
 // Crypto: X25519 point hashing + ECDH blinding (DH commutativity).
 // Both parties end up with doubly-blinded sets — intersection = mutual contacts.
 //
-// Spec: outpost/flint/zkp_mutual_trust_spec.md
+// Spec: zkp_mutual_trust_spec.md
 // Satellite endpoints: /trust/psi/* (infra/satellite/satellite.py)
 // Crypto primitives: infra/satellite/crypto_utils.py (reference impl)
-//
-// Author: Athena (session 2819), design review: Flint
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils.js';
-import type { TrustGraphManager } from './trust-graph';
-import type { TrustGraph } from './types';
+import {
+  sealPsiToSatellite,
+  openPsiSessionResponse,
+  newPsiSessionKey,
+  type PsiSessionKey,
+} from '../crypto/psi-wire-seal.js';
+import type { MailboxPublicKeys, MailboxEnvelopePackage } from '../crypto/mailbox-envelope.js';
+
+// ── PQ wire-wrap (psi-wire-seal.ts) — DARK until isPSIDiscoveryLive flips (claim-gates.ts) ─────────
+// When PSISyncOptions.pqWrap is set, 4 of the 5 wire exchanges below seal their bodies/responses in the
+// ML-KEM mailbox envelope instead of riding as classical plaintext JSON: initiate (POST, registers the
+// INITIATOR's response_pub), get_blinded (POST, registers the RESPONDER's response_pub — per-session,
+// minted fresh inside psiGetBlinded), respond (POST), and result (GET response only, opened with the
+// initiator's session key from initiate). `pending` (GET) is METADATA-ONLY (session_id /
+// initiator_fingerprint / created_at — no blinded data) and is deliberately left UNSEALED with no
+// response_pub registration (Athena/Apollo contract correction, 2026-10-02): the ML-KEM pubkey is
+// ~2KB base64 and can't ride a GET query string, and response_pub is per-SESSION while pending is
+// per-RESPONDER (all pending sessions at once) — the wrong home for it.
+// `pqWrap` absent (default) ⇒ byte-identical to today's classical behavior — every existing
+// caller/test that doesn't set it is completely unaffected. The X25519 PSI blinding crypto above
+// (hashFingerprintToPoint / blindFingerprints / reblindSet) is UNTOUCHED either way — this wrap only
+// concerns the WIRE transport of the already-blinded body (see psi-wire-seal.ts header).
+export interface PsiPqWrapConfig {
+  /** The satellite's mailbox pubkeys, already anti-swap-verified via verifySatelliteKey. */
+  satelliteKeys: MailboxPublicKeys;
+}
 
 // --- Constants ---
 
 const PSI_SALT = 'svrnty-psi-v1';
+const PSI_POINT_INFO = 'svrnty-psi-point-derivation';
 const PSI_SESSION_TTL_MS = 60 * 60 * 1000; // 1 hour — matches satellite expiry
 
 // --- Types ---
@@ -43,7 +66,8 @@ export interface PSIKeypair {
 }
 
 export interface PSISyncResult {
-  /** Fingerprints where trust is mutual (both parties trust each other) */
+  /** Peer fingerprint(s) flagged as sharing >=1 trusted contact — tier-1 mutual-CONTACT
+   *  discovery, NOT reciprocal "peer trusts us" (own fp is never in the blinded set). */
   mutualFingerprints: string[];
   /** Total contacts checked */
   totalChecked: number;
@@ -60,6 +84,49 @@ export interface PSISyncOptions {
   myFingerprint: string;
   /** Ed25519 signing function: (data, privateKey) => signature */
   signFn: (data: Uint8Array) => Uint8Array;
+  /** PQ wire-wrap config (see above). Absent ⇒ classical plaintext wire (today's prod behavior). Only
+   * ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (dark until the flip). */
+  pqWrap?: PsiPqWrapConfig;
+}
+
+/**
+ * Storage-agnostic dependencies for the orchestrator — the zero-knowledge seam.
+ *
+ * The orchestrator NEVER touches the filesystem or the owner's private key/passphrase.
+ * The caller (browser client-store, or a local CLI) decrypts its OWN trust graph where
+ * the key lives and provides:
+ *  - getTrustedPeers: the peers this owner trusts (already decrypted + trust-filtered),
+ *    each with an optional lastSync for the staleness scheduler. Fingerprints are blinded
+ *    before anything leaves the device; the satellite only ever sees blinded points.
+ *  - applyMutualResult: sink to persist the discovered mutual-CONTACT state to the
+ *    caller's store. `sharesTrustedContact` = we share >=1 trusted contact with the peer
+ *    (tier-1 discovery) — it is NOT "the peer trusts us" (our own fingerprint is never in
+ *    our blinded set, so the intersection cannot reveal reciprocal trust). `matched`
+ *    carries named shared contacts for P2 named-mode (empty in tier-1).
+ */
+export interface OrchestratorDeps {
+  /** TRUST layer (existing): the peers this owner trusts (already decrypted + trust-filtered). */
+  getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
+  /**
+   * KNOW layer (Flint co-review D2, 2026-09-03): the peers this owner has CONSENTED to mutual
+   * visibility with — the `open_visibility` SUBSET of the book, NOT the whole book. This IS the
+   * consent gate for BOTH roles (initiate + respond) AND the data-minimization boundary: only
+   * these fingerprints are ever blinded/synced. Empty until the owner opts a contact in →
+   * fail-closed by construction (no consent ⇒ no participation ⇒ nothing disclosed).
+   */
+  getKnownPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
+  /**
+   * Sink to persist the computed visibility result. FAIL-CLOSED CONTRACT (Flint D4/F1 + Archie
+   * collab-seam): the impl APPLIES this result to disclosed_circle (`know`) / they_trust (`trust`),
+   * intersected with the local book — it NEVER computes visibility itself and NEVER serializes
+   * these owner-local fields on the wire (§C: stripOwnerLocalForPublish). `disclosed` = the shared
+   * contact fingerprints the (consent-gated) PSI compute found; `[]` = nothing disclosed.
+   */
+  applyMutualResult: (
+    peerFingerprint: string,
+    layer: 'know' | 'trust',
+    disclosed: string[]
+  ) => Promise<void>;
 }
 
 // --- Crypto Primitives (mirrors crypto_utils.py) ---
@@ -78,21 +145,19 @@ export function generatePSIKeypair(): PSIKeypair {
 }
 
 /**
- * Hash a fingerprint to a valid X25519 point.
- * Uses HKDF-SHA256 with domain separator, then clamps to curve.
- * Mirrors crypto_utils.py _hash_fingerprint_to_point().
+ * Hash a fingerprint to an X25519 u-coordinate (canonical H(fp)).
+ * H(fp) = HKDF-SHA256(ikm=utf8(fp), salt=PSI_SALT, info=PSI_POINT_INFO, 32) → raw 32B u-coord, NO clamp.
+ * MUST match client-kit/crypto_utils.py _hash_fingerprint_to_point() byte-for-byte, or cross-impl
+ * PSI intersections are silently empty (the B3 bug). Locked vector
+ * (FP_PINNED d7f54122… → 593f2af2…).
+ * Clamp removed: it was a SCALAR op misapplied to a point; the ephemeral PSI scalar is clamped by
+ * X25519 (RFC 7748), which annihilates the cofactor. getSharedSecret rejects all-zero (low-order u).
  */
-function hashFingerprintToPoint(fingerprint: string): Uint8Array {
+export function hashFingerprintToPoint(fingerprint: string): Uint8Array {
   const ikm = new TextEncoder().encode(fingerprint);
   const salt = new TextEncoder().encode(PSI_SALT);
-  // HKDF: extract + expand to 32 bytes
-  const point = hkdf(sha256, ikm, salt, fingerprint, 32);
-  // Clamp for X25519 (RFC 7748 §5)
-  const clamped = new Uint8Array(point);
-  clamped[0] &= 248;
-  clamped[31] &= 127;
-  clamped[31] |= 64;
-  return clamped;
+  const info = new TextEncoder().encode(PSI_POINT_INFO);
+  return hkdf(sha256, ikm, salt, info, 32);
 }
 
 /**
@@ -105,13 +170,44 @@ export function blindFingerprints(
   psiPrivateKeyB64: string
 ): string[] {
   const sk = fromBase64(psiPrivateKeyB64);
-  const blinded = fingerprints.map(fp => {
-    const point = hashFingerprintToPoint(fp);
-    const blindedPoint = x25519.getSharedSecret(sk, point);
-    return toBase64(blindedPoint);
-  });
+  const blinded: string[] = [];
+  for (const fp of fingerprints) {
+    try {
+      const point = hashFingerprintToPoint(fp);
+      blinded.push(toBase64(x25519.getSharedSecret(sk, point)));
+    } catch {
+      // B6 / low-order guard: getSharedSecret rejects a low-order/degenerate H(fp)
+      // (negligible, ~2^-250). Skip it → this fp simply won't match. Never crash the sync.
+    }
+  }
   // Shuffle to prevent position correlation
   return shuffle(blinded);
+}
+
+/**
+ * Like blindFingerprints, but returns the shuffled fingerprint order parallel to the blinded
+ * output — so the initiator can map an intersection match (an index into its sent set) back to
+ * WHICH of its contacts is shared (Flint co-review 2026-09-03: the "P2 named-mode" {i→fp} map).
+ * fp↔blinded pairs are shuffled TOGETHER so index correspondence survives; a low-order H(fp) is
+ * skipped in lockstep (never crash). fpOrder NEVER leaves the device — the satellite only ever
+ * sees `blinded` (identical bytes/shape to blindFingerprints), so this adds no wire surface.
+ */
+export function blindFingerprintsWithOrder(
+  fingerprints: string[],
+  psiPrivateKeyB64: string
+): { blinded: string[]; fpOrder: string[] } {
+  const sk = fromBase64(psiPrivateKeyB64);
+  const pairs: Array<{ fp: string; blinded: string }> = [];
+  for (const fp of fingerprints) {
+    try {
+      const point = hashFingerprintToPoint(fp);
+      pairs.push({ fp, blinded: toBase64(x25519.getSharedSecret(sk, point)) });
+    } catch {
+      // low-order guard — skip this fp AND its (absent) blinded value together; alignment holds.
+    }
+  }
+  const shuffled = shuffle(pairs);
+  return { blinded: shuffled.map(p => p.blinded), fpOrder: shuffled.map(p => p.fp) };
 }
 
 /**
@@ -124,11 +220,18 @@ export function reblindSet(
   psiPrivateKeyB64: string
 ): string[] {
   const sk = fromBase64(psiPrivateKeyB64);
-  return theirBlindedValues.map(b64 => {
-    const point = fromBase64(b64);
-    const reblinded = x25519.getSharedSecret(sk, point);
-    return toBase64(reblinded);
-  });
+  const reblinded: string[] = [];
+  for (const b64 of theirBlindedValues) {
+    try {
+      const point = fromBase64(b64);
+      reblinded.push(toBase64(x25519.getSharedSecret(sk, point)));
+    } catch {
+      // B6 / low-order guard: a peer may send a low-order/degenerate point (crafted or
+      // corrupt) — getSharedSecret rejects it. Skip → no-match, never crash the sync.
+      // Set-based intersection is index-free, so dropping a degenerate value is safe.
+    }
+  }
+  return reblinded;
 }
 
 /**
@@ -152,29 +255,59 @@ function computeIntersection(
 // --- Satellite API Client ---
 
 /**
+ * Auth signature in the satellite's scheme (satellite.py verify_request_signature):
+ * Ed25519(signFn, "{fingerprint}:{unixSeconds}"), sent as "{unixSeconds}:{b64sig}" (±30s window).
+ * The caller's OWN fingerprint is always the one bound. Replaces the old per-action JSON
+ * payloads, which the satellite never verified. (Follow-up: bind sig to request body/action —
+ * server+client hardening; TLS covers transit for now.)
+ */
+function buildAuthSignature(myFingerprint: string, signFn: (data: Uint8Array) => Uint8Array): string {
+  const ts = Math.floor(Date.now() / 1000);
+  const sig = signFn(new TextEncoder().encode(`${myFingerprint}:${ts}`));
+  return `${ts}:${toBase64(sig)}`;
+}
+
+/**
  * Initiate a PSI session with a specific peer.
  * Sends our blinded trust set to the satellite.
+ *
+ * PQ wrap (pqWrap set): mints this session's ephemeral response key (the INITIATOR's "first touch" —
+ * one newPsiSessionKey() per session, Athena/Apollo ordering contract), embeds its `response_pub` in
+ * the body so the satellite can later seal psiGetResult's response back to it, then seals the WHOLE
+ * body (fp's + the existing liveness `signature`, UNCHANGED — see buildAuthSignature — + blinded_set +
+ * response_pub) to the satellite's mailbox key. Classical (pqWrap undefined) path is byte-identical to
+ * before this change.
  */
 async function psiInitiate(
   satelliteUrl: string,
   myFingerprint: string,
   peerFingerprint: string,
   blindedSet: string[],
-  signFn: (data: Uint8Array) => Uint8Array
-): Promise<{ sessionId: string } | { error: string }> {
-  const body = {
+  signFn: (data: Uint8Array) => Uint8Array,
+  layer: 'know' | 'trust',
+  pqWrap?: PsiPqWrapConfig
+): Promise<{ sessionId: string; pqSession?: PsiSessionKey } | { error: string }> {
+  const pqSession = pqWrap ? newPsiSessionKey() : undefined;
+  const classicalBody = {
     initiator_fingerprint: myFingerprint,
     responder_fingerprint: peerFingerprint,
     blinded_set: blindedSet,
-    signature: toBase64(signFn(
-      new TextEncoder().encode(JSON.stringify({ action: 'psi_initiate', peer: peerFingerprint }))
-    )),
+    layer, // F4 (Flint) forward-prep: Phase-2 per-layer responder gating. Satellite ignores it today.
+    signature: buildAuthSignature(myFingerprint, signFn),
   };
+
+  let fetchBody: unknown = classicalBody;
+  if (pqWrap && pqSession) {
+    fetchBody = await sealPsiToSatellite(
+      { ...classicalBody, response_pub: pqSession.responsePub },
+      pqWrap.satelliteKeys
+    );
+  }
 
   const res = await fetch(`${satelliteUrl}/trust/psi/initiate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(fetchBody),
   });
 
   if (!res.ok) {
@@ -183,35 +316,84 @@ async function psiInitiate(
   }
 
   const data = await res.json();
-  return { sessionId: data.session_id };
+  return { sessionId: data.session_id, pqSession };
 }
 
 /**
  * Check for pending PSI sessions addressed to us.
+ *
+ * NOT part of the PQ wire-wrap (Athena/Apollo contract correction, 2026-10-02): this call is
+ * metadata-only (session_id / initiator_fingerprint / created_at — no blinded data), stays classical
+ * plaintext in BOTH modes, and never registers a response_pub — that happens per-session at
+ * psiGetBlinded instead (pending is per-RESPONDER/all-sessions-at-once, the wrong home for a
+ * per-SESSION ephemeral key; the ML-KEM pubkey is also too large for a GET query string).
  */
 async function psiPending(
   satelliteUrl: string,
-  myFingerprint: string
+  myFingerprint: string,
+  signFn: (data: Uint8Array) => Uint8Array
 ): Promise<Array<{ session_id: string; initiator: string; created_at: number }>> {
-  const res = await fetch(`${satelliteUrl}/trust/psi/pending/${myFingerprint}`);
+  const res = await fetch(`${satelliteUrl}/trust/psi/pending/${myFingerprint}`, {
+    headers: { 'X-Signature': buildAuthSignature(myFingerprint, signFn) },
+  });
   if (!res.ok) return [];
   const data = await res.json();
-  return data.pending_sessions ?? [];
+  // Tolerate either the legacy {pending_sessions:[{..., initiator}]} shape or the satellite's
+  // {sessions:[{..., initiator_fingerprint}]} shape (Athena contract note, 2026-10-02) — normalize to
+  // {session_id, initiator, created_at} so the rest of this file (session.initiator) is shape-agnostic.
+  const list = (data?.sessions ?? data?.pending_sessions ?? []) as Array<Record<string, unknown>>;
+  if (!Array.isArray(list)) return [];
+  return list.map((s) => ({
+    session_id: String(s.session_id ?? ''),
+    initiator: String(s.initiator_fingerprint ?? s.initiator ?? ''),
+    created_at: Number(s.created_at ?? 0),
+  }));
 }
 
 /**
  * Fetch the initiator's blinded set for a session.
+ *
+ * PQ wrap (pqWrap set, Athena/Apollo contract correction 2026-10-02): this is NOT a GET when wrapped —
+ * it's a POST to /trust/psi/session/{id}/blinded carrying a SEALED body
+ * { responder_fingerprint, signature, response_pub }. This is where the RESPONDER registers its
+ * per-SESSION ephemeral response_pub (a fresh newPsiSessionKey(), minted HERE — never shared across
+ * the tick/other sessions). The satellite opens it, verifies, stores responder_response_pub, and
+ * returns a SEALED { blinded_set } (the initiator's), opened here with that SAME ephemeral key. The
+ * session secret is used once and discarded — psiRespond submits no sealed read-back, so it is never
+ * threaded any further. Classical (pqWrap undefined) path is byte-identical to before this change:
+ * GET with ?fingerprint=.
  */
 async function psiGetBlinded(
   satelliteUrl: string,
   sessionId: string,
   myFingerprint: string,
-  signFn: (data: Uint8Array) => Uint8Array
+  signFn: (data: Uint8Array) => Uint8Array,
+  pqWrap?: PsiPqWrapConfig
 ): Promise<string[] | null> {
-  const signature = toBase64(signFn(
-    new TextEncoder().encode(JSON.stringify({ action: 'psi_get_blinded', session: sessionId }))
-  ));
+  if (pqWrap) {
+    const pqSession = newPsiSessionKey();
+    const sealedBody = await sealPsiToSatellite(
+      {
+        responder_fingerprint: myFingerprint,
+        signature: buildAuthSignature(myFingerprint, signFn),
+        response_pub: pqSession.responsePub,
+      },
+      pqWrap.satelliteKeys
+    );
+    const res = await fetch(`${satelliteUrl}/trust/psi/session/${sessionId}/blinded`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sealedBody),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const opened = await openPsiSessionResponse(data as MailboxEnvelopePackage, pqSession);
+    if (!opened || typeof opened !== 'object') return null;
+    const blinded = (opened as { blinded_set?: unknown }).blinded_set;
+    return Array.isArray(blinded) && blinded.every((x) => typeof x === 'string') ? (blinded as string[]) : null;
+  }
 
+  const signature = buildAuthSignature(myFingerprint, signFn);
   const res = await fetch(
     `${satelliteUrl}/trust/psi/session/${sessionId}/blinded?fingerprint=${myFingerprint}`,
     { headers: { 'X-Signature': signature } }
@@ -223,6 +405,13 @@ async function psiGetBlinded(
 
 /**
  * Respond to a PSI session with our blinded set + re-blinded initiator set.
+ *
+ * PQ wrap (pqWrap set): seals a body of EXACTLY { initiator_fingerprint, responder_fingerprint,
+ * signature, responder_blinded_set, reblinded_initiator_set } (the pinned contract — `blindedSet`
+ * above is carried as `responder_blinded_set` in the sealed shape; the classical wire below keeps its
+ * existing `blinded_set` key name, untouched) to the satellite's mailbox key. No response_pub here —
+ * the responder already registered its per-session key at psiGetBlinded, and respond has no sealed
+ * read-back to open. Classical (pqWrap undefined) path is byte-identical to before this change.
  */
 async function psiRespond(
   satelliteUrl: string,
@@ -230,47 +419,82 @@ async function psiRespond(
   myFingerprint: string,
   blindedSet: string[],
   reblindedInitiatorSet: string[],
-  signFn: (data: Uint8Array) => Uint8Array
+  signFn: (data: Uint8Array) => Uint8Array,
+  pqWrap?: PsiPqWrapConfig,
+  initiatorFingerprint?: string
 ): Promise<boolean> {
-  const body = {
+  const signature = buildAuthSignature(myFingerprint, signFn);
+
+  let fetchBody: unknown = {
     responder_fingerprint: myFingerprint,
     blinded_set: blindedSet,
     reblinded_initiator_set: reblindedInitiatorSet,
-    signature: toBase64(signFn(
-      new TextEncoder().encode(JSON.stringify({ action: 'psi_respond', session: sessionId }))
-    )),
+    signature,
   };
+
+  if (pqWrap) {
+    fetchBody = await sealPsiToSatellite(
+      {
+        initiator_fingerprint: initiatorFingerprint,
+        responder_fingerprint: myFingerprint,
+        signature,
+        responder_blinded_set: blindedSet,
+        reblinded_initiator_set: reblindedInitiatorSet,
+      },
+      pqWrap.satelliteKeys
+    );
+  }
 
   const res = await fetch(`${satelliteUrl}/trust/psi/session/${sessionId}/respond`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(fetchBody),
   });
   return res.ok;
 }
 
 /**
  * Fetch PSI session result (initiator only — after responder has submitted).
+ *
+ * PQ wrap: the response (responder_blinded_set + reblinded_initiator_set) arrives sealed to the
+ * INITIATOR's response_pub, established back at psiInitiate — `pqSession` here is that SAME session
+ * key (threaded through initiateTrustSync → completeTrustSync), not a fresh mint. Classical
+ * (pqSession undefined) path is byte-identical to before this change.
  */
 async function psiGetResult(
   satelliteUrl: string,
   sessionId: string,
   myFingerprint: string,
-  signFn: (data: Uint8Array) => Uint8Array
+  signFn: (data: Uint8Array) => Uint8Array,
+  pqSession?: PsiSessionKey
 ): Promise<{
   responder_blinded_set: string[];
   reblinded_initiator_set: string[];
 } | null> {
-  const signature = toBase64(signFn(
-    new TextEncoder().encode(JSON.stringify({ action: 'psi_get_result', session: sessionId }))
-  ));
+  const signature = buildAuthSignature(myFingerprint, signFn);
 
   const res = await fetch(
     `${satelliteUrl}/trust/psi/session/${sessionId}/result?fingerprint=${myFingerprint}`,
     { headers: { 'X-Signature': signature } }
   );
   if (!res.ok) return null;
-  return await res.json();
+  const data = await res.json();
+  if (pqSession) {
+    const opened = await openPsiSessionResponse(data as MailboxEnvelopePackage, pqSession);
+    if (!opened || typeof opened !== 'object') return null;
+    const o = opened as { responder_blinded_set?: unknown; reblinded_initiator_set?: unknown };
+    if (
+      !Array.isArray(o.responder_blinded_set) || !o.responder_blinded_set.every((x) => typeof x === 'string') ||
+      !Array.isArray(o.reblinded_initiator_set) || !o.reblinded_initiator_set.every((x) => typeof x === 'string')
+    ) {
+      return null;
+    }
+    return {
+      responder_blinded_set: o.responder_blinded_set as string[],
+      reblinded_initiator_set: o.reblinded_initiator_set as string[],
+    };
+  }
+  return data;
 }
 
 // --- High-Level Sync Operations ---
@@ -286,33 +510,45 @@ async function psiGetResult(
  * 4. Return session ID — poll psiGetResult() later for completion
  */
 export async function initiateTrustSync(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   peerFingerprint: string,
-  options: PSISyncOptions
-): Promise<{ sessionId: string; keypair: PSIKeypair } | { error: string }> {
-  // Load trusted fingerprints from local graph
-  const trustedFps = await getTrustedFingerprints(trustGraph);
-  if (trustedFps.length === 0) {
-    return { error: 'No trusted contacts to sync' };
+  options: PSISyncOptions,
+  layer: 'know' | 'trust'
+): Promise<
+  | { sessionId: string; keypair: PSIKeypair; fpOrder: string[]; pqSession?: PsiSessionKey }
+  | { error: string }
+> {
+  // Load the layer's fingerprint set. KNOW = the open-visible (consented) subset (Flint D2).
+  const fps = await getLayerFingerprints(deps, layer);
+  if (fps.length === 0) {
+    return { error: `No ${layer === 'know' ? 'consented (open-visible)' : 'trusted'} contacts to sync` };
+  }
+  // D1 consent gate (initiator, KNOW): only sync with a peer we've opted into mutual visibility
+  // with. getKnownPeers IS the consented set, so membership = consent. Fail-closed.
+  if (layer === 'know' && !fps.includes(peerFingerprint)) {
+    return { error: 'know-layer: peer not in the consented (open-visible) set — fail-closed' };
   }
 
-  // Generate ephemeral keypair
+  // Ephemeral keypair — single-use per session (Flint D3: never reused across sessions/layers/peers).
   const keypair = generatePSIKeypair();
 
-  // Blind our trust set
-  const blindedSet = blindFingerprints(trustedFps, keypair.privateKey);
+  // Blind our set, keeping the shuffled fp order so completeTrustSync can name the matches ({i→fp}).
+  const { blinded, fpOrder } = blindFingerprintsWithOrder(fps, keypair.privateKey);
 
-  // Send to satellite
+  // Send to satellite. `layer` = forward-prep for Phase-2 per-layer responder gating; the current
+  // satellite ignores unknown fields, so full propagation (store/return) is a satellite change (Athena).
   const result = await psiInitiate(
     options.satelliteUrl,
     options.myFingerprint,
     peerFingerprint,
-    blindedSet,
-    options.signFn
+    blinded,
+    options.signFn,
+    layer,
+    options.pqWrap
   );
 
   if ('error' in result) return result;
-  return { sessionId: result.sessionId, keypair };
+  return { sessionId: result.sessionId, keypair, fpOrder, pqSession: result.pqSession };
 }
 
 /**
@@ -327,18 +563,22 @@ export async function initiateTrustSync(
  * 5. Update trust graph
  */
 export async function completeTrustSync(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   sessionId: string,
   peerFingerprint: string,
   keypair: PSIKeypair,
-  options: PSISyncOptions
+  options: PSISyncOptions,
+  fpOrder: string[],
+  layer: 'know' | 'trust',
+  pqSession?: PsiSessionKey
 ): Promise<PSISyncResult | { error: string }> {
   // Fetch result
   const result = await psiGetResult(
     options.satelliteUrl,
     sessionId,
     options.myFingerprint,
-    options.signFn
+    options.signFn,
+    pqSession
   );
 
   if (!result) {
@@ -351,36 +591,33 @@ export async function completeTrustSync(
   // Our set was re-blinded by responder — compare
   const myReblinded = result.reblinded_initiator_set;
 
-  // Find intersection
+  // Find intersection — indices into myReblinded (= our sent set, in fpOrder order).
   const matches = computeIntersection(myReblinded, theirReblinded);
 
-  // To map matches back to fingerprints, we need the original order.
-  // But we shuffled during blinding — so we track the mapping.
-  // The intersection count tells us mutual trust exists, but we can't
-  // map back to specific fingerprints from the blinded values alone.
-  //
-  // For mutual trust discovery between TWO specific parties:
-  // If the responder's fingerprint is in our trusted set AND our
-  // fingerprint is in theirs, the intersection will be non-empty
-  // (at minimum containing both parties' fingerprints).
-  //
-  // The key insight: we already KNOW who the peer is (peerFingerprint).
-  // The question is: does our fingerprint appear in THEIR trusted set?
-  // If intersection > 0, at least some of our trusted contacts overlap
-  // with theirs — and since we only initiated with a trusted peer,
-  // mutual trust is confirmed.
+  // {i→fp} (Flint co-review, "P2 named-mode"): map each match index back to WHICH of our contacts
+  // is shared, via the fp order we blinded in (parallel to our sent set). fpOrder never left the
+  // device. `disclosed` is already consent-gated: for KNOW it can only contain fps from our
+  // open-visible subset (getKnownPeers), and a match requires the peer to hold that contact too —
+  // so it is exactly "contacts we mutually know AND both consented" (Peter's B4 semantic). It is
+  // NOT "the peer trusts us": our own fp is never in our blinded set, so we can't appear in it.
+  const disclosed: string[] = [];
+  for (const i of matches) {
+    const fp = fpOrder[i];
+    if (fp) disclosed.push(fp);
+  }
 
-  // Update trust graph — the peer trusts us if intersection is non-empty
-  const peerTrustsUs = matches.size > 0;
-
+  // Persist via the caller's sink. FAIL-CLOSED CONTRACT (Flint D4/F1 + Archie collab-seam):
+  // applyMutualResult APPLIES `disclosed` to disclosed_circle (know) / they_trust (trust) ∩ book —
+  // it never computes visibility itself, and never serializes these owner-local fields on the wire
+  // (§C: stripOwnerLocalForPublish strips disclosed_circle + they_trust). `[]` = nothing disclosed.
   try {
-    await trustGraph.updateMutualState(peerFingerprint, peerTrustsUs);
+    await deps.applyMutualResult(peerFingerprint, layer, disclosed);
   } catch {
-    // Edge might not exist yet — that's OK for discovery
+    // Sink may reject an unknown peer — that's OK for discovery.
   }
 
   return {
-    mutualFingerprints: peerTrustsUs ? [peerFingerprint] : [],
+    mutualFingerprints: disclosed.length > 0 ? [peerFingerprint] : [],
     totalChecked: myReblinded.length,
     sessionId,
     role: 'initiator',
@@ -400,25 +637,33 @@ export async function completeTrustSync(
  * 7. Update trust graph
  */
 export async function respondToTrustSync(
-  trustGraph: TrustGraphManager,
-  options: PSISyncOptions
+  deps: OrchestratorDeps,
+  options: PSISyncOptions,
+  layer: 'know' | 'trust'
 ): Promise<PSISyncResult[]> {
   const results: PSISyncResult[] = [];
 
-  // Check for pending sessions
-  const pending = await psiPending(options.satelliteUrl, options.myFingerprint);
+  // Check for pending sessions (metadata-only — never sealed, no response_pub here; see psiPending doc).
+  const pending = await psiPending(options.satelliteUrl, options.myFingerprint, options.signFn);
   if (pending.length === 0) return results;
 
-  // Load our trusted fingerprints once
-  const trustedFps = await getTrustedFingerprints(trustGraph);
-  if (trustedFps.length === 0) return results;
+  // Load our layer set once. KNOW = the open-visible (consented) subset = the responder consent
+  // allowlist (Flint D1/D2).
+  const fps = await getLayerFingerprints(deps, layer);
+  if (fps.length === 0) return results;
+  const consentSet = new Set(fps);
 
   for (const session of pending) {
     // Skip expired sessions
     const age = Date.now() - session.created_at * 1000;
     if (age > PSI_SESSION_TTL_MS) continue;
 
-    // Generate ephemeral keypair for this session
+    // D1 consent gate (responder, KNOW) — MUST be before psiRespond (Flint): only respond to a
+    // peer we've opted into mutual visibility with. Not consented ⇒ don't participate (fail-closed).
+    // (Phase-2 reads session.layer to gate per-layer; Phase-1 wires only the know-layer.)
+    if (layer === 'know' && !consentSet.has(session.initiator)) continue;
+
+    // Ephemeral keypair for this session (Flint D3: single-use, never reused across sessions/layers).
     const keypair = generatePSIKeypair();
 
     // Fetch initiator's blinded set
@@ -426,15 +671,16 @@ export async function respondToTrustSync(
       options.satelliteUrl,
       session.session_id,
       options.myFingerprint,
-      options.signFn
+      options.signFn,
+      options.pqWrap
     );
     if (!initiatorBlinded) continue;
 
     // Re-blind initiator's set with our key
     const reblindedInitiator = reblindSet(initiatorBlinded, keypair.privateKey);
 
-    // Blind our own set
-    const ourBlinded = blindFingerprints(trustedFps, keypair.privateKey);
+    // Blind our own set (responder computes no intersection — no fpOrder needed here).
+    const ourBlinded = blindFingerprints(fps, keypair.privateKey);
 
     // Submit response
     const ok = await psiRespond(
@@ -443,7 +689,9 @@ export async function respondToTrustSync(
       options.myFingerprint,
       ourBlinded,
       reblindedInitiator,
-      options.signFn
+      options.signFn,
+      options.pqWrap,
+      session.initiator
     );
     if (!ok) continue;
 
@@ -455,15 +703,14 @@ export async function respondToTrustSync(
     //
     // As responder, we DON'T get the initiator's re-blinding of our set.
     // The initiator computes the final intersection.
-    // But we CAN infer: if the initiator's trusted set contains our fingerprint,
-    // we'll find out when they call updateMutualState on their end,
-    // and our next sync will reflect it.
+    // The initiator persists the shared-contact result on their end (applyMutualResult);
+    // our own next sync as initiator computes our side independently.
     //
     // For now: mark that we participated. The initiator drives the update.
 
     results.push({
       mutualFingerprints: [], // Responder can't compute intersection alone
-      totalChecked: trustedFps.length,
+      totalChecked: fps.length,
       sessionId: session.session_id,
       role: 'responder',
     });
@@ -477,30 +724,48 @@ export async function respondToTrustSync(
  * Designed to run on app open or periodic timer.
  */
 export async function syncMutualTrust(
-  trustGraph: TrustGraphManager,
-  options: PSISyncOptions
+  deps: OrchestratorDeps,
+  options: PSISyncOptions,
+  layer: 'know' | 'trust'
 ): Promise<{
   responded: PSISyncResult[];
-  initiated: Array<{ peerFingerprint: string; sessionId: string; keypair: PSIKeypair }>;
+  initiated: Array<{
+    peerFingerprint: string;
+    sessionId: string;
+    keypair: PSIKeypair;
+    fpOrder: string[];
+    pqSession?: PsiSessionKey;
+  }>;
   errors: string[];
 }> {
   const responded: PSISyncResult[] = [];
-  const initiated: Array<{ peerFingerprint: string; sessionId: string; keypair: PSIKeypair }> = [];
+  const initiated: Array<{
+    peerFingerprint: string;
+    sessionId: string;
+    keypair: PSIKeypair;
+    fpOrder: string[];
+    pqSession?: PsiSessionKey;
+  }> = [];
   const errors: string[] = [];
 
-  // Step 1: Respond to any pending sessions
+  // Step 1: Respond to any pending sessions (consent-gated per layer inside).
   try {
-    const responses = await respondToTrustSync(trustGraph, options);
+    const responses = await respondToTrustSync(deps, options, layer);
     responded.push(...responses);
   } catch (e) {
     errors.push(`Respond phase: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // Step 2: Initiate sessions with trusted contacts that haven't synced recently
+  // Step 2: Initiate sessions with peers that haven't synced recently. For KNOW, restrict to the
+  // open-visible (consented) subset up front (D1/D2) — initiateTrustSync also fails-closed on it.
   try {
-    const stalePeers = await getStaleMutualPeers(trustGraph);
+    let stalePeers = await getStaleMutualPeers(deps);
+    if (layer === 'know') {
+      const consented = new Set(await getKnownFingerprints(deps));
+      stalePeers = stalePeers.filter(fp => consented.has(fp));
+    }
     for (const peerFp of stalePeers) {
-      const result = await initiateTrustSync(trustGraph, peerFp, options);
+      const result = await initiateTrustSync(deps, peerFp, options, layer);
       if ('error' in result) {
         errors.push(`Initiate ${peerFp.slice(0, 8)}...: ${result.error}`);
       } else {
@@ -508,6 +773,8 @@ export async function syncMutualTrust(
           peerFingerprint: peerFp,
           sessionId: result.sessionId,
           keypair: result.keypair,
+          fpOrder: result.fpOrder,
+          pqSession: result.pqSession,
         });
       }
     }
@@ -521,13 +788,25 @@ export async function syncMutualTrust(
 // --- Trust Graph Helpers ---
 
 /**
- * Get fingerprints of all contacts we trust.
+ * Get fingerprints of all peers we trust (from the caller's decrypted store).
  */
-async function getTrustedFingerprints(trustGraph: TrustGraphManager): Promise<string[]> {
-  const graph = await (trustGraph as unknown as { loadGraph(): Promise<TrustGraph> }).loadGraph();
-  return graph.edges
-    .filter(e => e.trusted)
-    .map(e => e.peer_fingerprint);
+async function getTrustedFingerprints(deps: OrchestratorDeps): Promise<string[]> {
+  const peers = await deps.getTrustedPeers();
+  return peers.map(p => p.fingerprint);
+}
+
+/**
+ * KNOW layer (Flint D2): the open-visible (consented) subset — the fingerprints we blind/sync
+ * AND the valid-peer allowlist for the consent gate (initiate + respond). Empty ⇒ fail-closed.
+ */
+async function getKnownFingerprints(deps: OrchestratorDeps): Promise<string[]> {
+  const peers = await deps.getKnownPeers();
+  return peers.map(p => p.fingerprint);
+}
+
+/** Layer-aware fingerprint source: KNOW = open-visible subset (consent-gated), TRUST = trusted set. */
+async function getLayerFingerprints(deps: OrchestratorDeps, layer: 'know' | 'trust'): Promise<string[]> {
+  return layer === 'know' ? getKnownFingerprints(deps) : getTrustedFingerprints(deps);
 }
 
 /**
@@ -535,20 +814,19 @@ async function getTrustedFingerprints(trustGraph: TrustGraphManager): Promise<st
  * These are candidates for a new PSI session.
  */
 async function getStaleMutualPeers(
-  trustGraph: TrustGraphManager,
+  deps: OrchestratorDeps,
   maxAgeMs: number = 24 * 60 * 60 * 1000
 ): Promise<string[]> {
-  const graph = await (trustGraph as unknown as { loadGraph(): Promise<TrustGraph> }).loadGraph();
+  const peers = await deps.getTrustedPeers();
   const now = Date.now();
 
-  return graph.edges
-    .filter(e => {
-      if (!e.trusted) return false;
-      if (!e.mutual.last_sync) return true; // Never synced
-      const syncAge = now - new Date(e.mutual.last_sync).getTime();
+  return peers
+    .filter(p => {
+      if (!p.lastSync) return true; // Never synced
+      const syncAge = now - new Date(p.lastSync).getTime();
       return syncAge > maxAgeMs;
     })
-    .map(e => e.peer_fingerprint);
+    .map(p => p.fingerprint);
 }
 
 // --- Utilities ---
@@ -572,11 +850,23 @@ function fromBase64(b64: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, 'base64'));
 }
 
-/** Fisher-Yates shuffle — prevents position correlation in blinded sets. */
+/** Unbiased random integer in [0, n) via rejection sampling on a CSPRNG (randomBytes). */
+function randBelow(n: number): number {
+  if (n <= 1) return 0;
+  const limit = Math.floor(0x100000000 / n) * n;
+  let x: number;
+  do {
+    const b = randomBytes(4);
+    x = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
+  } while (x >= limit);
+  return x % n;
+}
+
+/** Fisher-Yates shuffle (CSPRNG) — prevents position correlation in blinded sets. */
 function shuffle<T>(array: T[]): T[] {
   const result = [...array];
   for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randBelow(i + 1);
     [result[i], result[j]] = [result[j], result[i]];
   }
   return result;

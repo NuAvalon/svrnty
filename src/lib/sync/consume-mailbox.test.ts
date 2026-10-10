@@ -3,7 +3,7 @@
 // injected transport + decrypt + store — so the whole verify→apply→persist→ack→emit path is proven,
 // plus the custody behaviours: whitelist-on-fetch drop, silent rejection, terminal-vs-retryable ack.
 //
-// Run: PATH=/home/alpha/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test consume-mailbox.test.ts
+// Run: npx tsx --test consume-mailbox.test.ts
 
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -229,6 +229,6 @@ test('empty mailbox → no-op summary', async () => {
   const summary = await consumeInboundContactUpdates(baseDeps({
     fetchImpl: recordingFetch([], ackLog),
   }));
-  assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, dropped: 0, acked: 0 });
+  assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, notes: 0, dropped: 0, acked: 0 });
   assert.deepEqual(ackLog, []);
 });

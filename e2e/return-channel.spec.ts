@@ -1,10 +1,10 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 import { ownerMailboxId, pollHeaders, ackHeaders } from './fixtures/return-channel-owner';
 
-// Return-channel custody gate — I-1/I-4 timing + functional (Flint · s919 · Peter #116192 §1, joint §8).
-// Drop-in for `e2e/return-channel.spec.ts`. Gates Athena's mailbox/poll/ack build: the relay may gain a
+// Return-channel custody gate — I-1/I-4 timing + functional (joint §8).
+// Drop-in for `e2e/return-channel.spec.ts`. Gates the mailbox/poll/ack build: the relay may gain a
 // mailbox + poll + ack WITHOUT becoming smart about the social graph. Grounded in
-// shared/outbox/archie/svrnty_return_channel_joint_design.md §2/§4/§5/§8 + criteria doc + KB #86227.
+// §2/§4/§5/§8 + criteria doc.
 //
 // TEST-FIRST: it self-skips LOUDLY until the endpoints exist (a not-yet-run gate is NOT a passing one).
 // The NON-owner anti-oracle half (B/C/E) activates as soon as the endpoints land — it needs no owner key,
@@ -12,7 +12,7 @@ import { ownerMailboxId, pollHeaders, ackHeaders } from './fixtures/return-chann
 // owner-auth seam (§4.1) is wired. The statistical latency test (B2) is on-demand (RC_TIMING=1), never a
 // flaky always-on CI gate (ci.yml: "a flaky gate is worse than a narrow one"). Nothing here authorizes deploy.
 
-// ── SEAM CONSTANTS (joint §7) — confirm exact shapes with Athena; the gate asserts PROPERTIES, only these bind to wire ──
+// ── SEAM CONSTANTS (joint §7) — confirm exact shapes; the gate asserts PROPERTIES, only these bind to wire ──
 const DEPOSIT = '/api/relay/envelope';        // POST {mailbox_id, blob} → uniform ack
 const QUEUE = '/api/relay/queue';             // GET ?mailbox_id=… → owner-only, non-destructive list
 const ACK = '/api/relay/ack';                 // POST {mailbox_id, envelope_ids[], owner_ack} → owner-only delete
@@ -53,7 +53,7 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
     test.skip(
       !live,
       `⏸ RETURN-CHANNEL GATE PENDING — mailbox endpoints not built (POST ${DEPOSIT} 404s). This is a ` +
-        `NOT-YET-RUN gate, not a passing one; it auto-activates when Athena's build lands. (Flint, joint §8)`,
+        `NOT-YET-RUN gate, not a passing one; it auto-activates when the build lands. (joint §8)`,
     );
   });
 
@@ -87,7 +87,7 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
     expect(toWarm.status, 'deposit status must not reveal R mailbox state').toBe(toFresh.status);
     expect(toWarm.body, 'deposit body must not reveal R mailbox state (exists/empty/full)').toBe(toFresh.body);
     // NOTE: the at-CAP (429) state is deliberately EXCLUDED here — see criteria §3 (cap-429 ↔ I-4 seam),
-    // pending Peter/Archie/Athena's option (i/ii/iii). Add the at-cap assertion once that's decided.
+    // pending a decision (i/ii/iii). Add the at-cap assertion once that's decided.
   });
 
   // ── E. Owner-only enforcement (non-owner half; owner half under A). ──
@@ -131,7 +131,7 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
     expect(ids3, 'unacked ids remain (at-least-once)').toContain(list1[1].envelope_id);
   });
 
-  // A5 (TTL GC) needs a shortened-TTL hook (seam §4.4) — assert once Athena exposes it.
+  // A5 (TTL GC) needs a shortened-TTL hook (seam §4.4) — assert once the hook is exposed.
 });
 
 // ── B2. Statistical latency-distribution uniformity — ON-DEMAND ONLY (RC_TIMING=1). Not an always-on CI gate. ──

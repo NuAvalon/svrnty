@@ -2,12 +2,42 @@
 // Client-side IndexedDB storage for sovereign identity
 // Replaces server-side fs operations — all data stays in the user's browser
 
-// C2 / Invariant-1 (Flint KB#85781): the ONE crypto import this storage layer takes —
+// C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+// Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
+import type { VaultContents } from '../sync/vault';
+// enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
+// returns ONLY the two HMAC subkeys {index, manifest}; contact-record AES reuses _sessionKey (below).
+import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
+import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
+import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
+import { ownerHasVerified } from '../trust/trust-recipe';
+// ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
+// reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
+// no browser coupling, safe to import here).
+import { edgeTrusted } from '../trust/contact-edge';
+// piece-2 device-mailbox lifecycle: the card-borne receiver keypair (generated once at genesis,
+// vault-persisted, secrets never leave the device). mailbox-keys is a leaf crypto util (like the
+// fingerprint import above). device-mailbox is PURE helpers (no back-import of this file → no cycle);
+// we take only its public-block builder (runtime) + its public-block type (erased).
+import {
+  generateMailboxKeypair,
+  serializeMailboxKeypair,
+  deserializeMailboxKeypair,
+  toPublicKeys,
+  toSecretKeys,
+  type MailboxKeypair,
+} from '../crypto/mailbox-keys';
+import { deriveMailboxFp, type MailboxPublicKeys, type MailboxSecretKeys } from '../crypto/mailbox-envelope';
+import { mailboxPublicOf, type DeviceMailboxPublic } from './device-mailbox';
 
 const DB_NAME = 'svrnty';
-const DB_VERSION = 3;
+// v4: device_mailbox store (piece-2). One record per identity (keyed by fingerprint), holding the
+// vault-encrypted serialized mailbox keypair — the long-lived onion receive keys. Additive: a v3→v4
+// upgrade only CREATES the new store (existing stores untouched), and a pre-feature identity lazily
+// gets a mailbox on next unlock (ensureDeviceMailboxesOnUnlock).
+const DB_VERSION = 4;
 
 // ── Session key management (F1 fix: encrypt keys at rest in IndexedDB) ──
 // The session key is a non-extractable CryptoKey held in memory.
@@ -16,6 +46,9 @@ const DB_VERSION = 3;
 
 let _sessionKey: CryptoKey | null = null;
 let _sessionSalt: Uint8Array | null = null;
+// enc-b HMAC subkeys: index = blinded-fp keyed-PRF; manifest = book-integrity MAC. Derived at
+// initSessionKey (from the passphrase + salt-b), cleared on lock. Contact AES reuses _sessionKey.
+let _contactKeys: ContactCryptoKeys | null = null;
 
 const PBKDF2_ITERATIONS = 600_000;
 const ENC_VERSION = 1; // Encrypted record format version
@@ -59,6 +92,19 @@ async function deriveSessionKey(passphrase: string, salt: Uint8Array): Promise<C
 }
 
 /**
+ * enc-b HMAC-master salt = option (b), Flint-locked: SHA-256('svrnty/enc-b/hmac-master-salt/v1' ‖
+ * key_encryption_salt). Distinct from key_encryption_salt (domain separation between the AES
+ * _sessionKey and the HMAC-master), inherits its per-install randomness, no new stored state.
+ */
+async function deriveHmacMasterSalt(keSalt: Uint8Array): Promise<Uint8Array> {
+  const label = new TextEncoder().encode('svrnty/enc-b/hmac-master-salt/v1');
+  const preimage = new Uint8Array(label.length + keSalt.length);
+  preimage.set(label, 0);
+  preimage.set(keSalt, label.length);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', preimage));
+}
+
+/**
  * Initialize the session key from a user passphrase.
  * Call once per session (on identity creation or unlock).
  * The derived CryptoKey is held in memory — lost on tab close.
@@ -76,6 +122,23 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   }
   _sessionKey = await deriveSessionKey(passphrase, salt);
   _sessionSalt = salt;
+  // enc-b: derive the two HMAC subkeys {index, manifest} from the passphrase via the salt-(b)
+  // HMAC-master. Contact-record AES reuses _sessionKey (◆5701) — no separate AES key derived here.
+  _contactKeys = await deriveContactCryptoKeys(passphrase, await deriveHmacMasterSalt(salt), PBKDF2_ITERATIONS);
+  // enc-b B5: on every unlock, heal any legacy plaintext-at-rest contacts to encrypted, then establish
+  // (first run / post-upgrade) or verify the per-owner book manifest. Best-effort + resumable — it
+  // never throws into the unlock path (a hiccup just leaves work for next unlock; a manifest MISMATCH
+  // sets a corrupt flag for the recovery UI rather than raising).
+  await migrateAndVerifyContactsOnUnlock();
+  // piece-1 #111-legacy sweep (Archie do-no-harm #158835): clear open_visibility on every NON-trusted
+  // contact so B1's `&& e.trusted` drop has zero transitional-reveal. Must run WITH the mask-drop. Best-effort.
+  await migratePerContactPrivacyOnUnlock();
+  // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
+  // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
+  await eagerMigrateIdentityStoresOnUnlock();
+  // piece-2: lazily ensure every identity has a device mailbox (heals pre-v4 identities). Best-effort,
+  // never throws into unlock; regenerates only on genuine absence, never on a decrypt-fail (see fn).
+  await ensureDeviceMailboxesOnUnlock();
 }
 
 /** Check if the session is unlocked (key available in memory). */
@@ -87,6 +150,7 @@ export function isSessionUnlocked(): boolean {
 export function lockSession(): void {
   _sessionKey = null;
   _sessionSalt = null;
+  _contactKeys = null;
 }
 
 async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
@@ -150,21 +214,26 @@ export interface ContactRecord {
   // ── Post-quantum keys (0.12 pq-carry) ───────────────────────────────────────
   // Stored ONLY from a card whose signature verified against the fp-bound classical key
   // (fail-closed §4 branch 4). A card with no/invalid signature drops these (branches 2/3) —
-  // an unauthenticated pq_kem is NEVER stored. Apollo projects both → TrustEdge.peer_pq_*.
+  // an unauthenticated pq_kem is NEVER stored. Both are projected → TrustEdge.peer_pq_*.
   pq_sig_public_key?: string;   // ML-DSA base64
   pq_kem_public_key?: string;   // ML-KEM base64 — the HNDL-protected encryption key
+  // ── piece-2 device-mailbox (onion seal-target) ──────────────────────────────
+  // The peer's PUBLIC device-mailbox block (fp + x25519/ml-kem pubkeys, hex). Stored ONLY from a card
+  // whose signature VERIFIED (classifyImportedCard branch 4) — a seal-target is as MITM-sensitive as
+  // pq_kem, so a no/invalid-signature card drops it (emit under-reveals). Read via peerDeviceMailbox().
+  device_mailbox?: DeviceMailboxPublic;
   trust_level: string;
   added_at: string;
   metadata?: any;
 
-  // ── 0.14 verify bookkeeping (Archie D3 #115574 §6) ──────────────────────────
+  // ── 0.14 verify bookkeeping ──────────────────────────
   // epoch/version mirror the wire identity_epoch/revision a verified contact.update
   // carried (written by applyVerifiedContactUpdate). Peer-authored wire data — the
   // monotonic/replay floors read them; safe to carry.
   epoch?: number;
   version?: number;
 
-  // ── LOCAL-ONLY decay clock (guardrail A — Flint #115581) ────────────────────
+  // ── LOCAL-ONLY decay clock (guardrail A) ────────────────────
   // last_interaction is DERIVED LOCALLY (the receiver's own witnessed-receipt: apply
   // sets it = now on a VerifiedContactUpdate). It is NEVER signed and MUST NEVER enter
   // an outbound payload to a peer or the relay — leaking it would turn a private decay
@@ -261,6 +330,13 @@ function openDB(): Promise<IDBDatabase> {
         const heldStore = db.createObjectStore('held_shards', { keyPath: 'id' });
         heldStore.createIndex('holder', 'holder_fingerprint', { unique: false });
       }
+      // v4: device_mailbox — MY long-lived onion receive keypair (one per identity, keyed by
+      // fingerprint). The serialized keypair is key material → encrypted at rest like the vault
+      // (storeDeviceMailbox is Blocker-C fail-closed). Public keys + content-fp are published via the
+      // SIGNED identity card, never a relay index (/mailbox/register stays unwired — blind-binding gate).
+      if (!db.objectStoreNames.contains('device_mailbox')) {
+        db.createObjectStore('device_mailbox', { keyPath: 'fingerprint' });
+      }
     };
 
     request.onsuccess = () => {
@@ -337,6 +413,30 @@ async function txGetByIndex<T>(storeName: string, indexName: string, key: string
   });
 }
 
+// Multi-store atomic write (enc-b B4): put/delete across several stores in ONE IndexedDB transaction,
+// so a contact record and its book-manifest (or a delete and the manifest) commit together or not at
+// all. FOOTGUN (why this helper exists): an IDB txn auto-commits as soon as the microtask queue drains
+// with no pending IDB request — so callers must compute the manifest MAC + gather all entries BEFORE
+// calling this; the body here does synchronous puts/deletes only, never an awaited non-IDB op mid-tx.
+type TxOp = { store: string; value: unknown } | { store: string; delete: string };
+
+async function txPutMany(ops: TxOp[]): Promise<void> {
+  const db = await openDB();
+  const stores = [...new Set(ops.map((o) => o.store))];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, 'readwrite');
+    let firstError: unknown = null;
+    for (const op of ops) {
+      const store = tx.objectStore(op.store);
+      const req = 'delete' in op ? store.delete(op.delete) : store.put(op.value);
+      req.onerror = () => { firstError = req.error; }; // capture (e.g. ConstraintError) before the abort
+    }
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onabort = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction aborted')); };
+    tx.onerror = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction error')); };
+  });
+}
+
 // ── Identity operations ──────────────────────────────────────────
 
 export async function storeIdentity(fingerprint: string, data: any): Promise<void> {
@@ -364,6 +464,83 @@ export async function setActiveFingerprint(fingerprint: string): Promise<void> {
   await txPut('settings', { key: 'active_fingerprint', value: fingerprint });
 }
 
+// ── Piece-2 mutual-block: durable owner-local SUPPRESSION record (§F2/§F3, spec KB#92246) ──────────
+// F's emit-side "whom I've gone private to" set {global, groups, persons(durable_id)} (suppression.ts).
+// Encrypted at rest via the SAME AAD-bound contact-crypto path, domain-separated by a RESERVED id — so a
+// suppression blob can't be transplanted onto a contact row or another owner (the GCM tag binds id+owner).
+// Owner-local, NEVER on the wire (§C firewall). person entries are rotation-stable durable_ids → the set
+// survives key-rotation / mailbox-rebuild / relay-transfer (it's F's vault data, not key-derived).
+const SUPPRESSION_RECORD_ID = 'piece2:suppression'; // reserved AAD id (contacts use random UUIDs — never this)
+function suppressionSettingKey(ownerFingerprint: string): string {
+  return `suppression:${ownerFingerprint}`;
+}
+
+/**
+ * Read F's durable suppression record. ★ FAIL-CLOSED (§F3): returns null on ANY doubt — session locked,
+ * record ABSENT, decrypt/tag failure, or a malformed/legacy shape. The emit path treats null as SUPPRESS-ALL
+ * (emit to no one) — we never un-suppress a survivor because the store couldn't be read. A genuinely
+ * never-suppressed user is made discoverable by an EXPLICIT empty record (setSuppressionRecord, written at
+ * unlock/genesis — emit-path integration), NOT by this returning an empty set on absence.
+ */
+export async function getSuppressionRecord(ownerFingerprint: string): Promise<SuppressionRecord | null> {
+  if (!_sessionKey) return null; // locked ⇒ fail-closed
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', suppressionSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null; // absent ⇒ fail-closed (the store can't tell never-had from lost)
+    const rec = await decryptContactRecord<unknown>(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, row.value);
+    return isSuppressionRecord(rec) ? rec : null; // malformed ⇒ fail-closed
+  } catch {
+    return null; // decrypt/tag failure ⇒ fail-closed
+  }
+}
+
+/** Persist F's suppression record, encrypted at rest (fail-closed: throws if locked — never write plaintext). */
+export async function setSuppressionRecord(ownerFingerprint: string, rec: SuppressionRecord): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store suppression record unencrypted (§C/enc-b fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, SUPPRESSION_RECORD_ID, ownerFingerprint, rec);
+  await txPut('settings', { key: suppressionSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── Piece-2 mutual-block: VIEWER-SIDE held-affirmatives store ──────────────────────────────────────
+// Anna's received+verified affirmatives {signer durable_id → {validUntil,epoch}} (held-affirmatives.ts).
+// The reveal AND-gate (trust map) READS this; the receive-path (next layer, over Athena's /onion transport)
+// WRITES it. Encrypted at rest via the same AAD-bound path (reserved domain id). Owner-local; derived from
+// wire-received payloads but never re-serialized outbound.
+const HELD_AFFIRMS_RECORD_ID = 'piece2:held-affirms'; // reserved AAD id
+function heldAffirmsSettingKey(ownerFingerprint: string): string {
+  return `held_affirms:${ownerFingerprint}`;
+}
+
+/**
+ * Read Anna's held-affirmatives map. ★ FAIL-CLOSED (§F3): null on ANY doubt (locked / absent / decrypt-fail
+ * / malformed). The reveal gate treats null as "surface nothing transitive" (affirmGateCircle(_, null, _) =
+ * []) — under-reveal, never surface on a guess. Absent is simply "no affirmatives held yet" → the gate
+ * surfaces nothing, which is the correct DARK-until-receive state; returning null here is equivalent for the
+ * gate (both ⇒ surface nothing), so absent→null is safe (unlike suppression, where absent vs empty differs).
+ */
+export async function getHeldAffirmatives(ownerFingerprint: string): Promise<HeldAffirmatives | null> {
+  if (!_sessionKey) return null;
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', heldAffirmsSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null;
+    const map = await decryptContactRecord<unknown>(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, row.value);
+    return isHeldAffirmatives(map) ? map : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist Anna's held-affirmatives map, encrypted at rest (fail-closed: throws if locked). Receive-path only. */
+export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAffirmatives): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
+  const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
+  await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
+}
+
 export async function listIdentities(): Promise<IdentityRecord[]> {
   return txGetAll('identities');
 }
@@ -371,14 +548,15 @@ export async function listIdentities(): Promise<IdentityRecord[]> {
 // ── Key operations ──────────────────────────────────────────────
 
 export async function storeKey(fingerprint: string, privateKey: string, passphrase: string): Promise<void> {
-  if (_sessionKey) {
-    // Encrypt before storing
-    const encrypted = await encryptKeyData({ privateKey, passphrase });
-    await txPut('keys', { fingerprint, ...encrypted });
-  } else {
-    // Fallback: store unencrypted (legacy / during initial setup before session key exists)
-    await txPut('keys', { fingerprint, privateKey, passphrase });
+  // Blocker-C fail-closed: never write key material as plaintext at rest. The caller MUST
+  // initSessionKey() first — genesis (passphrase-mandatory) and every recovery/import path
+  // establishes it. Mirrors the contacts fail-closed (addContact); a locked session throws
+  // instead of silently falling back to plaintext.
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey, passphrase });
+  await txPut('keys', { fingerprint, ...encrypted });
 }
 
 export async function loadKey(fingerprint: string): Promise<{ privateKey: string; passphrase: string } | null> {
@@ -404,12 +582,12 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
-    await txPut('pq_keys', { fingerprint, ...encrypted });
-  } else {
-    await txPut('pq_keys', { fingerprint, bundle });
+  // Blocker-C fail-closed: never write PQ key material as plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store PQ key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(bundle), passphrase: '' });
+  await txPut('pq_keys', { fingerprint, ...encrypted });
 }
 
 export async function loadPQKeys(fingerprint: string): Promise<any | null> {
@@ -433,12 +611,12 @@ export async function loadPQKeys(fingerprint: string): Promise<any | null> {
 // ── Vault operations ─────────────────────────────────────────────
 
 export async function storeVault(fingerprint: string, vault: any): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
-    await txPut('vaults', { fingerprint, ...encrypted });
-  } else {
-    await txPut('vaults', { fingerprint, vault });
+  // Blocker-C fail-closed: never write vault key material as plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store vault key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(vault), passphrase: '' });
+  await txPut('vaults', { fingerprint, ...encrypted });
 }
 
 export async function loadVault(fingerprint: string): Promise<any | null> {
@@ -459,19 +637,134 @@ export async function loadVault(fingerprint: string): Promise<any | null> {
   return record.vault ?? null;
 }
 
+// ── Device-mailbox operations (piece-2 onion receive keys) ───────
+// MY long-lived mailbox keypair: generated once at genesis, vault-persisted (secrets never leave the
+// device), published as PUBLIC keys inside the SIGNED identity card. Key material → encrypted at rest
+// exactly like the vault (Blocker-C fail-closed: refuse rather than write plaintext). The store is NEW
+// in DB v4, so there is NO legacy-plaintext record to migrate — a record that is present but not
+// enc_version is corrupt and THROWS (never silently treated as absent, which would regenerate-overwrite).
+
+/** Persist (encrypted) the serialized mailbox keypair for one of my identities. Fail-closed when locked. */
+export async function storeDeviceMailbox(
+  fingerprint: string,
+  serialized: ReturnType<typeof serializeMailboxKeypair>,
+): Promise<void> {
+  // Blocker-C fail-closed: the mailbox SECRET keys are key material → never plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store device-mailbox key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
+  }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(serialized), passphrase: '' });
+  await txPut('device_mailbox', { fingerprint, ...encrypted });
+}
+
+/**
+ * Load the mailbox keypair for `fingerprint`. Returns null ONLY when the record is genuinely ABSENT
+ * (no identity-mint ran this feature yet → caller lazy-inits). THROWS when a record exists but cannot be
+ * decrypted or is malformed — the caller MUST NOT treat that as absent (regenerating on a transient
+ * decrypt-fail would churn mailbox_fp + orphan undelivered mail; worse, silently discard recoverable key
+ * material). Fail-closed: null ⇒ absent (safe to init); throw ⇒ present-but-unreadable (surface, don't overwrite).
+ */
+export async function loadDeviceMailbox(fingerprint: string): Promise<MailboxKeypair | null> {
+  const record = await txGet<any>('device_mailbox', fingerprint);
+  if (!record) return null; // genuinely absent
+  if (record.enc_version !== ENC_VERSION) {
+    // No legacy-plaintext form ever existed for this v4 store → a non-enc record is corrupt, not legacy.
+    throw new Error('device_mailbox record malformed (missing enc_version) — refusing to treat as absent');
+  }
+  const decrypted = await decryptKeyData(record as EncryptedKeyRecord); // throws on decrypt-fail
+  return deserializeMailboxKeypair(JSON.parse(decrypted.privateKey));    // throws on malformed length
+}
+
+/**
+ * MY own device mailbox — the RECEIVE side (secrets to open onion-delivered mail) + the seal-target I
+ * publish — for `fingerprint` (default: the active identity). null when no identity is active or the
+ * mailbox is absent (heals on next unlock via ensureDeviceMailboxesOnUnlock). Propagates a decrypt-fail
+ * throw from loadDeviceMailbox (surface, don't silently churn). The onion RECEIVE accessor Apollo's
+ * emit/receive layer consumes (KB#92278).
+ */
+export async function getMyDeviceMailbox(
+  fingerprint?: string,
+): Promise<{ secrets: MailboxSecretKeys; publicKeys: MailboxPublicKeys; fp: string } | null> {
+  const fp = (fingerprint || (await getActiveFingerprint()) || '').trim();
+  if (!fp) return null;
+  const kp = await loadDeviceMailbox(fp);
+  if (!kp) return null;
+  return {
+    secrets: toSecretKeys(kp),
+    publicKeys: toPublicKeys(kp),
+    fp: deriveMailboxFp(kp.x25519Pub, kp.mlkem1024Pub),
+  };
+}
+
+/**
+ * Generate + persist a fresh device mailbox at identity GENESIS and return its PUBLIC block for the
+ * caller to stamp onto the IdentityData wrapper (so the card builder can read it later). Called ONCE,
+ * synchronously inside browser-identity.generateIdentity, after the session is unlocked. Fail-closed via
+ * storeDeviceMailbox. The keypair is random (NO derivation from any identity/pair secret) — a device-
+ * mailbox compromise reads only inbound mail, never the identity key.
+ */
+export async function initDeviceMailboxAtGenesis(fingerprint: string): Promise<DeviceMailboxPublic> {
+  const kp = generateMailboxKeypair();
+  await storeDeviceMailbox(fingerprint, serializeMailboxKeypair(kp));
+  return mailboxPublicOf(toPublicKeys(kp));
+}
+
+/**
+ * On unlock, lazily ensure every identity has a device mailbox — heals PRE-FEATURE identities (minted
+ * before v4) by generating one and stamping its public block onto the IdentityData wrapper. Best-effort:
+ * NEVER throws into the unlock path. Regenerates ONLY on genuine ABSENCE (loadDeviceMailbox===null); on a
+ * decrypt-fail/malformed throw it SKIPS (never overwrites possibly-recoverable key material, never churns
+ * mailbox_fp on a transient fault). A regenerated mailbox changes mailbox_fp → peers under-reveal to the
+ * stale card until a re-exchange (fail-closed liveness fallback; NEVER a re-expose). Does NOT touch any
+ * suppression record (that is the spine's genesis-FLOW-only init — a separate store, separate concern).
+ */
+async function ensureDeviceMailboxesOnUnlock(): Promise<void> {
+  if (!_sessionKey) return; // guard; never called locked
+  let identities: IdentityRecord[];
+  try {
+    identities = await listIdentities();
+  } catch {
+    return;
+  }
+  for (const idRec of identities) {
+    const fp = idRec.fingerprint;
+    try {
+      const existing = await loadDeviceMailbox(fp); // null = absent; throw = present-but-unreadable
+      if (existing) continue; // already has a readable mailbox — nothing to do
+      // Absent → lazy-init: generate, persist, and cache the public block on the identity wrapper so
+      // the card builder (buildSignedIdentityCard) can carry it without reaching into this store.
+      const pub = await initDeviceMailboxAtGenesis(fp);
+      try {
+        const data = await loadIdentity(fp);
+        if (data) {
+          data.device_mailbox = pub;
+          await storeIdentity(fp, data);
+        }
+      } catch (e) {
+        // The secret is persisted; only the public-block cache failed → card build omits until next
+        // unlock heals it (under-reveal, fail-closed). Non-fatal.
+        console.warn('[device-mailbox] public-block cache write skipped', fp, e);
+      }
+    } catch (e) {
+      // present-but-unreadable (decrypt-fail/malformed) → do NOT overwrite; surface for recovery.
+      console.warn('[device-mailbox] ensure skipped (present but unreadable — not overwriting)', fp, e);
+    }
+  }
+}
+
 // ── Shard operations (social recovery — "the tear") ──────────────
-// My own shards are key material → encrypted at rest like the vault
-// when a session key is present (falls back to plaintext pre-unlock,
-// same as keys/vaults).
+// My own shards are key material → encrypted at rest like the vault.
+// Blocker-C fail-closed: refuses rather than writing plaintext pre-unlock
+// (same guarantee as keys/pq_keys/vaults).
 
 /** Persist all shards for one of my identities (stops the create-time discard). */
 export async function storeShards(fingerprint: string, shardsData: ShardsData): Promise<void> {
-  if (_sessionKey) {
-    const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
-    await txPut('shards', { fingerprint, ...encrypted });
-  } else {
-    await txPut('shards', { fingerprint, shards_data: shardsData });
+  // Blocker-C fail-closed: my own shards are key material → never plaintext at rest (see storeKey).
+  if (!_sessionKey) {
+    throw new Error('Session locked — refusing to store shard key material as plaintext (Blocker-C fail-closed). Call initSessionKey() first.');
   }
+  const encrypted = await encryptKeyData({ privateKey: JSON.stringify(shardsData), passphrase: '' });
+  await txPut('shards', { fingerprint, ...encrypted });
 }
 
 export async function loadShards(fingerprint: string): Promise<ShardsData | null> {
@@ -534,14 +827,71 @@ export async function getHeldShards(holderFingerprint: string): Promise<HeldShar
 
 // ── Contact operations ───────────────────────────────────────────
 
+// ── Contact book-integrity manifest (enc-b B4) ───────────────────
+// A per-owner HMAC over {(id, version)…, count} (contact-crypto.serializeManifest) catches book-level
+// tampering that per-record AES-GCM tags miss: delete, truncation, rollback, insert/reorder. Stored as
+// a keyed record in `settings` under `contact_manifest:${owner}`, written in the SAME tx as every
+// contact mutation (add/update/remove) via txPutMany so the record and its manifest never diverge
+// across a crash. The manifest subkey is per-identity (deriveContactCryptoKeys) and never leaves memory.
+// `version` lives INSIDE the encrypted contact body, so entries are gathered by decrypting the owner's
+// book (getAllContacts) BEFORE the write tx — never mid-tx (the txPutMany auto-commit footgun).
+function contactManifestSettingKey(ownerFingerprint: string): string {
+  return `contact_manifest:${ownerFingerprint}`;
+}
+
+function toManifestEntry(c: ContactRecord): ManifestEntry {
+  return { id: c.id, version: typeof c.version === 'number' ? c.version : 0 };
+}
+
+/**
+ * Build the settings-store write op carrying the book manifest for `ownerFingerprint` over the given
+ * POST-mutation entries. Async (HMAC) — call BEFORE opening the write tx, then hand the returned op to
+ * txPutMany alongside the record put/delete. Fail-closed: needs the unlocked manifest subkey.
+ */
+async function buildContactManifestOp(ownerFingerprint: string, entries: ManifestEntry[]): Promise<TxOp> {
+  if (!_contactKeys) {
+    throw new Error('Session locked — cannot compute contact manifest (enc-b fail-closed)');
+  }
+  const mac = await computeManifestMAC(_contactKeys.manifestKey, entries, entries.length);
+  return { store: 'settings', value: { key: contactManifestSettingKey(ownerFingerprint), value: mac } };
+}
+
+/**
+ * Encrypt a logical ContactRecord into its at-rest envelope (fail-closed — throws if locked).
+ * Envelope = { id, owner_fingerprint (plaintext: keyPath / 'owner' index / AAD), fingerprint = the
+ * BLINDED index HMAC(indexKey, realFp) [omitted when keyless — skips the UNIQUE index],
+ * enc_version/iv/ciphertext = AES-GCM(body, AAD id+owner) }. The body is the full record minus the
+ * plaintext envelope keys; the real fingerprint stays inside the ciphertext.
+ */
+async function buildStoredContact(record: ContactRecord): Promise<Record<string, unknown>> {
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — refusing to store a contact unencrypted (enc-b fail-closed)');
+  }
+  const { id, owner_fingerprint, ...body } = record;
+  const payload = await encryptContactRecord(_sessionKey, id, owner_fingerprint, body);
+  const stored: Record<string, unknown> = { id, owner_fingerprint, ...payload };
+  const rawFp = (record.fingerprint || '').trim();
+  if (rawFp) stored.fingerprint = await blindFingerprint(_contactKeys.indexKey, rawFp);
+  return stored;
+}
+
 export async function addContact(ownerFingerprint: string, contact: Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>): Promise<ContactRecord> {
-  // C2 / Invariant-1 (Flint KB#85781): fail-closed binding check at the store, so NO caller
-  // can persist a contact whose fingerprint doesn't match its key. Calibrated — enforced only
-  // when a key is present: a MISSING key is not a MITM vector (nothing to encrypt toward an
-  // attacker; the private key stays the victim's), and several callers legitimately add keyless
-  // contacts. A MISMATCHED key is the attack (attacker's key + victim's real fingerprint), and
-  // it is refused here for every caller (relay, manual form-add, bulk/exchange import).
-  if (contact.public_key && !(await fingerprintMatchesKey(contact.fingerprint, contact.public_key))) {
+  // enc-b fail-closed (Flint seam Q4): never persist a contact unencrypted. Every add-path must be
+  // post-unlock; if locked, refuse (do NOT fall back to plaintext — that was the Blocker-C mistake).
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — addContact refuses to store plaintext (enc-b fail-closed)');
+  }
+  // Invariant-1: a fingerprint exists only with a bound key.
+  // Keyless rows MUST NOT carry a fingerprint (even a placeholder).
+  const pk = (contact.public_key || '').trim();
+  if (!pk) {
+    contact = { ...contact, fingerprint: '', public_key: '' };
+  } else if (!(await fingerprintMatchesKey(contact.fingerprint, pk, {
+    kem_public_key: contact.pq_kem_public_key,
+    sig_public_key: contact.pq_sig_public_key,
+  }))) {
+    // C2 / Invariant-1: fail-closed when a key is present —
+    // refuse mismatched attacker-key + victim-fingerprint pairs.
     throw new Error('fingerprint↔key binding failed — refusing to store a contact whose fingerprint does not match its public key');
   }
   const id = crypto.randomUUID();
@@ -551,26 +901,89 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
     owner_fingerprint: ownerFingerprint,
     added_at: new Date().toISOString(),
   };
-  // Keyless/gray contacts (vCard import) have no fingerprint. The `contacts.fingerprint` index is
-  // UNIQUE: IndexedDB collides multiple ''-valued keys, but SKIPS records whose key is ABSENT. So a
-  // second gray with fingerprint='' throws a ConstraintError — store an empty fingerprint as absent
-  // instead. (Verified in-browser: two ''-fp puts → 2nd errors; two absent-fp puts → both OK.)
+  // Keyless/gray contacts (vCard import) have no fingerprint. buildStoredContact omits the (blinded)
+  // fingerprint field for keyless records → they skip the UNIQUE index (IndexedDB skips ABSENT keys),
+  // so multiple grays coexist. Normalize the logical record the same way (absent fp/pk = keyless).
   if (!record.fingerprint) delete (record as { fingerprint?: string }).fingerprint;
-  await txPut('contacts', record);
+  if (!(record.public_key || '').trim()) delete (record as { public_key?: string }).public_key;
+  // pt5 verify-before-trust (SINK gate, CREATE path — mirrors updateContact's promotion gate): never
+  // CREATE a contact already-trusted without a real owner-verification, so no path (add OR update)
+  // reaches trusted-unverified. Normal adds are unverified → unaffected; a verified add (e.g. in-person
+  // sample) passes. Fail-closed.
+  {
+    const addTrusted = record.trust_level === 'trusted' || record.trust_level === 'verified' || (record as { trusted?: boolean }).trusted === true;
+    if (addTrusted && !ownerHasVerified(record as Parameters<typeof ownerHasVerified>[0])) {
+      throw new Error('verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
+    }
+  }
+  const stored = await buildStoredContact(record);
+  // enc-b B4: recompute the book manifest over the POST-insert set (existing owner contacts + this new
+  // record) and write it in the SAME tx as the record. Decrypt-all + MAC happen BEFORE the tx (the
+  // auto-commit footgun). A ConstraintError aborts BOTH puts → the book and manifest stay consistent.
+  const postAddEntries = [
+    ...(await getAllContacts(ownerFingerprint)).map(toManifestEntry),
+    { id: record.id, version: typeof record.version === 'number' ? record.version : 0 },
+  ];
+  const addManifestOp = await buildContactManifestOp(ownerFingerprint, postAddEntries);
+  try {
+    await txPutMany([{ store: 'contacts', value: stored }, addManifestOp]);
+  } catch (e) {
+    // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent add-paths for the
+    // same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add) can each pass
+    // a getContactByFingerprint pre-check as null, then both insert. The UNIQUE (blinded) fingerprint
+    // index catches the 2nd → ConstraintError. Rather than surface it, return the record that WON the
+    // race. getContactByFingerprint takes the RAW fp (it blinds internally). Fresh db/txn → clean.
+    if (record.fingerprint && (e as { name?: string } | null)?.name === 'ConstraintError') {
+      const existing = await getContactByFingerprint(ownerFingerprint, record.fingerprint);
+      if (existing) return existing;
+    }
+    throw e; // any other failure (or missing existing) → preserve the fail-closed contract
+  }
   return record;
 }
 
 export async function updateContact(id: string, updates: Partial<ContactRecord>): Promise<void> {
-  const existing = await txGet<ContactRecord>('contacts', id);
+  // enc-b fail-closed: re-encrypting an update needs the session; refuse when locked.
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error('Session locked — updateContact refuses to store plaintext (enc-b fail-closed)');
+  }
+  const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
   if (!existing) throw new Error('Contact not found');
   const next = { ...existing, ...updates, id: existing.id };
-  // Same fail-closed binding as addContact — refuse fingerprint↔key swaps via update.
-  const fp = next.fingerprint;
-  const pk = next.public_key;
-  if (pk && !(await fingerprintMatchesKey(fp, pk))) {
+  const pk = (next.public_key || '').trim();
+  // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
+  if (!pk) {
+    next.public_key = '';
+    delete (next as { fingerprint?: string }).fingerprint;
+  } else if (!(await fingerprintMatchesKey(next.fingerprint, pk, {
+    kem_public_key: next.pq_kem_public_key,
+    sig_public_key: next.pq_sig_public_key,
+  }))) {
     throw new Error('fingerprint↔key binding failed — refusing to update a contact whose fingerprint does not match its public key');
   }
-  await txPut('contacts', next);
+  // pt5 verify-before-trust (survivor-safety SINK gate — Flint seal-criteria #158146 / Archie #92153):
+  // block the unverified/known → trusted PROMOTION unless a REAL owner-verification backs it. Every
+  // promotion path (bulk-select Trust, TrustMap toggle, card dialog, import-update, future) funnels
+  // through updateContact, so gating here is by-construction — no caller can bypass. Reads the REAL
+  // owner-verify (ownerHasVerified → owner_verified_at w/ in_person|other_channel), NEVER the top-level
+  // trusted-since stamp. Fail-closed. Non-regression: only the TRANSITION is gated (re-saving an already-
+  // trusted contact, or un-trusting, passes). This is Peter's pt5 "resistance between known and trusted".
+  {
+    const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
+    const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
+    if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
+      throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
+    }
+  }
+  const stored = await buildStoredContact(next);
+  // enc-b B4: manifest over the post-update set (this id's version replaced) in the SAME tx as the
+  // record. owner_fingerprint is immutable per contact, so the book is `existing.owner_fingerprint`.
+  const owner = existing.owner_fingerprint;
+  const postUpdateEntries = (await getAllContacts(owner)).map((c) =>
+    c.id === id ? { id, version: typeof next.version === 'number' ? next.version : 0 } : toManifestEntry(c),
+  );
+  const updateManifestOp = await buildContactManifestOp(owner, postUpdateEntries);
+  await txPutMany([{ store: 'contacts', value: stored }, updateManifestOp]);
 }
 
 /**
@@ -583,20 +996,207 @@ export async function hasEncryptedKeys(fingerprint: string): Promise<boolean> {
 }
 
 export async function removeContact(id: string): Promise<void> {
-  await txDelete('contacts', id);
+  // enc-b B4: delete the record AND rewrite the book manifest over the post-remove set in ONE tx, so a
+  // removal can't leave a stale manifest that would false-alarm as corruption on the next unlock.
+  const rec = await txGet<{ owner_fingerprint?: string }>('contacts', id);
+  if (!rec) return; // idempotent: nothing to remove
+  if (!_sessionKey || !_contactKeys) {
+    // Removal is a post-unlock user action; recomputing the manifest needs the session. Fail-closed
+    // (consistent with add/update) rather than delete-without-manifest and trip a false corruption flag.
+    throw new Error('Session locked — removeContact needs the session to update the book manifest (enc-b fail-closed)');
+  }
+  const owner = rec.owner_fingerprint ?? '';
+  const postRemoveEntries = (await getAllContacts(owner)).filter((c) => c.id !== id).map(toManifestEntry);
+  const removeManifestOp = await buildContactManifestOp(owner, postRemoveEntries);
+  await txPutMany([{ store: 'contacts', delete: id }, removeManifestOp]);
+}
+
+/**
+ * Decrypt a stored contact to the full in-memory ContactRecord. Backward-compatible: encrypted
+ * records (enc_version present) are AES-GCM-decrypted under _sessionKey (AAD = id+owner); legacy
+ * plaintext records pass through unchanged. At rest the `fingerprint` field holds the BLINDED index;
+ * the decrypted body carries the real fingerprint, which wins on the merge below.
+ */
+async function decryptContactIfNeeded(rec: any): Promise<ContactRecord> {
+  if (rec && rec.enc_version && rec.ciphertext) {
+    if (!_sessionKey) throw new Error('Session locked — cannot decrypt contact');
+    const body = await decryptContactRecord<ContactRecord>(
+      _sessionKey,
+      rec.id,
+      rec.owner_fingerprint,
+      { enc_version: rec.enc_version, iv: rec.iv, ciphertext: rec.ciphertext },
+    );
+    return { ...body, id: rec.id, owner_fingerprint: rec.owner_fingerprint };
+  }
+  return rec as ContactRecord;
 }
 
 export async function getContact(id: string): Promise<ContactRecord | null> {
-  return txGet('contacts', id);
+  const rec = await txGet<any>('contacts', id);
+  return rec ? decryptContactIfNeeded(rec) : null;
 }
 
 export async function getContactByFingerprint(ownerFingerprint: string, fingerprint: string): Promise<ContactRecord | null> {
-  const contacts = await txGetByIndex<ContactRecord>('contacts', 'owner', ownerFingerprint);
-  return contacts.find(c => c.fingerprint === fingerprint) ?? null;
+  // Blinded index: encrypted records store idx = HMAC(indexKey, fp) in the `fingerprint` field.
+  // Compute the same idx to look them up. Mixed-state during the on-unlock migration: legacy
+  // plaintext records still hold the raw fp, so match either. (idx needs an unlocked session.)
+  const idx = _contactKeys ? await blindFingerprint(_contactKeys.indexKey, fingerprint) : null;
+  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  const found = recs.find(c => (idx !== null && c.fingerprint === idx) || c.fingerprint === fingerprint);
+  return found ? decryptContactIfNeeded(found) : null;
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
-  return txGetByIndex('contacts', 'owner', ownerFingerprint);
+  const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
+  return Promise.all(recs.map(decryptContactIfNeeded));
+}
+
+// ── enc-b B5: on-unlock heal + book-integrity establish/verify ────
+function contactIntegritySettingKey(ownerFingerprint: string): string {
+  return `contact_integrity:${ownerFingerprint}`;
+}
+
+/**
+ * Read the book-integrity status for an owner: 'corrupt' if the last unlock found a manifest mismatch
+ * (→ prompt cloud restore), else 'ok'. This is a UX hint, not a security control — the manifest MAC is
+ * the tamper-evidence; the flag just surfaces it. (Spec point 5: MAC-fail → cloud restore = wiring.)
+ */
+export async function getContactBookIntegrity(ownerFingerprint: string): Promise<'ok' | 'corrupt'> {
+  const flag = await txGet<{ key: string; value: string }>('settings', contactIntegritySettingKey(ownerFingerprint));
+  return flag?.value === 'corrupt' ? 'corrupt' : 'ok';
+}
+
+/**
+ * Heal legacy plaintext contacts to encrypted-at-rest, then establish or verify each owner's book
+ * manifest. Called from initSessionKey once the session + contact subkeys are set.
+ *  - Idempotent: encrypted records (enc_version present) are skipped.
+ *  - Crash-safe/resumable: each record is re-encrypted with txPut OVERWRITE (never delete-then-write),
+ *    so a crash mid-sweep just leaves the remainder for the next unlock.
+ *  - Manifest-neutral migration: encrypting a record changes neither its id nor its version, so the
+ *    {id,version} manifest stays valid across the sweep; we (re)establish/verify once at the end.
+ *  - Best-effort: never throws into the unlock path. A manifest MISMATCH sets a per-owner corrupt flag
+ *    (settings:contact_integrity:${owner}) for the recovery/cloud-restore UI — it does not raise.
+ */
+async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return; // guard; never called locked
+  let stored: Array<Record<string, unknown>>;
+  try {
+    stored = await txGetAll<Record<string, unknown>>('contacts');
+  } catch {
+    return; // store unavailable — nothing to do this unlock
+  }
+  if (stored.length === 0) return; // fresh identity / empty book
+
+  // 1. Migrate plaintext-at-rest contacts (no enc_version) → encrypted envelope, in place.
+  for (const rec of stored) {
+    if (rec && rec.enc_version) continue; // already encrypted — idempotent skip
+    try {
+      await txPut('contacts', await buildStoredContact(rec as unknown as ContactRecord));
+    } catch (e) {
+      console.warn('[enc-b] contact migration skipped a record (retries next unlock)', e);
+    }
+  }
+
+  // 2. Establish (first run / post-upgrade) or verify the per-owner book manifest over the healed book.
+  try {
+    const healed = await txGetAll<Record<string, unknown>>('contacts');
+    const byOwner = new Map<string, ContactRecord[]>();
+    for (const rec of healed) {
+      const c = await decryptContactIfNeeded(rec);
+      const list = byOwner.get(c.owner_fingerprint) ?? [];
+      list.push(c);
+      byOwner.set(c.owner_fingerprint, list);
+    }
+    for (const [owner, contacts] of byOwner) {
+      const entries = contacts.map(toManifestEntry);
+      const existing = await txGet<{ key: string; value: string }>('settings', contactManifestSettingKey(owner));
+      if (!existing) {
+        // No baseline yet (existing user upgrading, or first contact) → establish over current book.
+        await txPutMany([await buildContactManifestOp(owner, entries)]);
+        continue;
+      }
+      const ok = await verifyManifestMAC(_contactKeys.manifestKey, entries, entries.length, existing.value);
+      if (!ok) {
+        await txPut('settings', { key: contactIntegritySettingKey(owner), value: 'corrupt' });
+        console.warn(`[enc-b] contact book manifest MISMATCH for ${owner} — flagged for recovery`);
+      } else {
+        // Book verifies → clear any stale corrupt flag from a prior false-alarm/repair.
+        await txDelete('settings', contactIntegritySettingKey(owner)).catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn('[enc-b] contact manifest establish/verify skipped this unlock', e);
+  }
+}
+
+/**
+ * piece-1 / #111-LEGACY sweep (survivor-safety, Archie do-no-harm ruling #158835). The two-layer reveal
+ * drops `&& e.trusted` from getKnownPeers — FIX B's read-side mask over legacy untrusted-open edges
+ * (#111 FIX A was handler-only, no migration → pre-FIX-A untrust left open_visibility SET). Without this,
+ * the drop REVEALS them = unhonored-severance surfacing. This clears open_visibility on every NON-trusted
+ * contact → "no untrusted-open edge" true-by-construction → the drop has zero transitional-reveal. Must
+ * land WITH the drop. Idempotent (re-run clears nothing new), best-effort (never throws into unlock).
+ *
+ * ★★ TRUSTED-DEFINITION CONSISTENCY (Athena #158853): `trusted` here MUST match the REVEAL's derivation
+ * (contact-edge.ts: `c.trusted ?? (trust_level === 'verified' || 'trusted')`), NOT trust_level-only — an
+ * explicit `c.trusted === false` WINS over trust_level (?? short-circuits on the explicit false), so a
+ * {trusted:false, trust_level:'trusted'} edge (which the reveal HIDES) is swept and no clamp/reveal gap reopens.
+ */
+async function migratePerContactPrivacyOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return;
+  let stored: Array<Record<string, unknown>>;
+  try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
+  for (const rec of stored) {
+    try {
+      const c = await decryptContactIfNeeded(rec);
+      // ★★ edgeTrusted (shared reveal derivation): explicit c.trusted===false WINS over trust_level (?? semantics).
+      const trusted = edgeTrusted(c as { trusted?: boolean; trust_level?: string });
+      const md = (c.metadata as Record<string, unknown>) ?? {};
+      const ss = (md.share_settings as { open_visibility?: boolean }) ?? {};
+      if (!trusted && ss.open_visibility === true) {
+        // Honor the severance: a non-trusted contact must not carry open_visibility (two-layer: UI only
+        // sets open_vis on trusted; any untrusted-open edge is legacy #111 drift). Preserve other share_settings.
+        await updateContact(c.id, {
+          metadata: { ...md, share_settings: { ...ss, open_visibility: false } },
+        } as Partial<ContactRecord>);
+      }
+    } catch (e) {
+      console.warn('[piece-1] #111-legacy privacy sweep skipped a record (retries next unlock)', e);
+    }
+  }
+}
+
+/**
+ * enc-b Blocker-C (eager-migrate half): on unlock, proactively re-encrypt any plaintext-fallback
+ * records in the four identity stores (keys / pq_keys / vaults / shards). loadKey/loadPQKeys/loadVault/
+ * loadShards already lazy-migrate a plaintext record to encrypted-at-rest as a side effect when the
+ * session is unlocked — but only for records that are READ. Recovery material (esp. shards) is read
+ * rarely, so a written-never-read-post-unlock plaintext record would otherwise sit exposed indefinitely.
+ * Eager-calling the loaders once per identity on unlock heals those stragglers. No re-key (same
+ * _sessionKey the lazy path uses). Best-effort: never throws into the unlock path.
+ *
+ * NOTE: this is the SAFE half of Blocker-C. The OTHER half — removing the `else { plaintext }` fallback
+ * branches so storeKey/storePQKeys/storeVault/storeShards are fail-closed — is DEFERRED: a caller audit
+ * found live paths (importAll JSON restore, the passphrase-free seed/recovery-code restore, two vault-
+ * restore branches) that write identity key material while the session is still locked, so fail-closing
+ * as-is would break restore/recovery. That removal needs those paths fixed first + a product decision on
+ * the passphrase-free recovery path. Escalated to Flint (security) + Archie (product).
+ */
+async function eagerMigrateIdentityStoresOnUnlock(): Promise<void> {
+  if (!_sessionKey) return; // guard; never called locked
+  let identities: IdentityRecord[];
+  try {
+    identities = await listIdentities();
+  } catch {
+    return;
+  }
+  for (const idRec of identities) {
+    const fp = idRec.fingerprint;
+    try { await loadKey(fp); } catch (e) { console.warn('[enc-b] eager key migrate skipped', fp, e); }
+    try { await loadPQKeys(fp); } catch (e) { console.warn('[enc-b] eager pq_keys migrate skipped', fp, e); }
+    try { await loadVault(fp); } catch (e) { console.warn('[enc-b] eager vault migrate skipped', fp, e); }
+    try { await loadShards(fp); } catch (e) { console.warn('[enc-b] eager shards migrate skipped', fp, e); }
+  }
 }
 
 export async function searchContacts(ownerFingerprint: string, query: string): Promise<ContactRecord[]> {
@@ -619,6 +1219,10 @@ export interface SovereignBackup {
   pq_keys?: any;
   vault?: any;
   shards?: ShardsData;
+  // piece-2: the serialized device-mailbox keypair (secrets) — carried under includePrivateKeys so a
+  // restore preserves onion mailbox continuity (no mailbox_fp churn on migration). Optional/absent on
+  // pre-feature backups; a malformed value is skipped on import (a fresh mailbox inits on unlock).
+  device_mailbox?: ReturnType<typeof serializeMailboxKeypair>;
   contacts: ContactRecord[];
 }
 
@@ -638,14 +1242,112 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
     backup.pq_keys = await loadPQKeys(fingerprint) ?? undefined;
     backup.vault = await loadVault(fingerprint) ?? undefined;
     backup.shards = await loadShards(fingerprint) ?? undefined;
+    // Device mailbox is a liveness nicety, not a launch-blocker — a corrupt one must NOT fail the
+    // whole (critical-key) backup, so guard the read rather than letting a decrypt-fail throw propagate.
+    try {
+      const dmbKp = await loadDeviceMailbox(fingerprint);
+      if (dmbKp) backup.device_mailbox = serializeMailboxKeypair(dmbKp);
+    } catch (e) {
+      console.warn('[export] device-mailbox skipped (present but unreadable)', e);
+    }
   }
 
   return backup;
 }
 
-export async function importAll(backup: SovereignBackup): Promise<string> {
-  const fingerprint = backup.identity?.identity?.fingerprint;
+/**
+ * Plaintext JSON backup is untrusted. Drop claimed trust / owner_verify / Gate
+ * provenance so a crafted file cannot land Trusted, a fake verify mark, or a
+ * Grow-Gate holding-room row. Persistence still goes through addContact
+ * (fail-closed fingerprint↔key binding). Encrypted vault restore is unchanged.
+ */
+export function contactFromPlaintextBackup(
+  raw: ContactRecord,
+): Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'> {
+  const next: Record<string, unknown> = { ...(raw as unknown as Record<string, unknown>) };
+  delete next.id;
+  delete next.added_at;
+  delete next.owner_fingerprint;
+  delete next.owner_verify;
+  delete next.trusted;
+  delete next.trusted_since;
+  delete next.verified_at;
+  delete next.grow_gate;
+  delete next.grow_invite_nonce;
+  delete next.grow_mint_channel;
+  next.trust_level = 'known';
+  next.verification = { method: 'none', verified_at: null };
+  if (next.metadata && typeof next.metadata === 'object') {
+    const meta = { ...(next.metadata as Record<string, unknown>) };
+    delete meta.owner_verify;
+    delete meta.grow_gate;
+    delete meta.grow_invite_nonce;
+    delete meta.grow_mint_channel;
+    next.metadata = meta;
+  }
+  return next as Omit<ContactRecord, 'id' | 'added_at' | 'owner_fingerprint'>;
+}
+
+export type PlaintextImportReport = {
+  fingerprint: string;
+  kept: number;
+  skipped: number;
+};
+
+/** Owner-facing tally. Unbindable rows never persist; they are counted, not hidden. */
+export function formatPlaintextImportReport(report: Pick<PlaintextImportReport, 'kept' | 'skipped'>): string {
+  const known = `${report.kept} landed Known`;
+  if (report.skipped <= 0) return known;
+  return `${known}, ${report.skipped} skipped (key didn't match)`;
+}
+
+/**
+ * Fail-closed identity binding for an untrusted plaintext backup. Refuse before any
+ * IndexedDB write so a forged fingerprint leaves no partial state.
+ */
+export async function assertPlaintextBackupIdentityBinds(backup: SovereignBackup): Promise<string> {
+  const fingerprint = (backup.identity?.identity?.fingerprint || '').trim();
   if (!fingerprint) throw new Error('Invalid backup: no fingerprint');
+  const identityPub = backup.identity?.identity?.public_key || '';
+  const identityPq = backup.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fingerprint, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
+    throw new Error(
+      'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
+    );
+  }
+  return fingerprint;
+}
+
+/** Persist plaintext contacts via addContact. Unbindable rows skip and are counted. */
+export async function importPlaintextContacts(
+  ownerFingerprint: string,
+  contacts: ContactRecord[] | undefined,
+): Promise<{ kept: number; skipped: number }> {
+  let kept = 0;
+  let skipped = 0;
+  for (const contact of contacts || []) {
+    try {
+      await addContact(ownerFingerprint, contactFromPlaintextBackup(contact));
+      kept++;
+    } catch {
+      skipped++;
+    }
+  }
+  return { kept, skipped };
+}
+
+export async function importAll(backup: SovereignBackup): Promise<PlaintextImportReport> {
+  // 3a/block (Blocker-C, Archie #133842): a plaintext SovereignBackup carries no secret to derive
+  // an at-rest key from, so refuse to import unless a passphrase session is already established
+  // (the key stores are fail-closed). Block cleanly BEFORE any write — no partial import, no
+  // plaintext-at-rest window.
+  if (!isSessionUnlocked()) {
+    throw new Error('Set or enter your device passphrase before importing a plaintext backup — imported keys are encrypted at rest, never stored in the clear.');
+  }
+  const fingerprint = await assertPlaintextBackupIdentityBinds(backup);
 
   await storeIdentity(fingerprint, backup.identity);
 
@@ -661,13 +1363,110 @@ export async function importAll(backup: SovereignBackup): Promise<string> {
   if (backup.shards) {
     await storeShards(fingerprint, backup.shards);
   }
-
-  for (const contact of (backup.contacts || [])) {
-    await txPut('contacts', { ...contact, owner_fingerprint: fingerprint });
+  if (backup.device_mailbox) {
+    // Validate the untrusted serialized shape BEFORE persisting — a malformed value would store fine
+    // but fail every later decrypt (present-but-unreadable → ensure won't overwrite → a soft-lock). On
+    // a bad shape, SILENTLY SKIP (this import region is log-free by invariant — skips surface via the
+    // returned report, not console): a fresh mailbox inits on next unlock (under-reveal, fail-closed).
+    try {
+      deserializeMailboxKeypair(backup.device_mailbox);
+      await storeDeviceMailbox(fingerprint, backup.device_mailbox);
+    } catch {
+      /* malformed backup mailbox — skip; a fresh one inits on next unlock (fail-closed under-reveal) */
+    }
   }
 
+  // Same persistence gate as importVaultContents: never raw-put a contact from
+  // an untrusted file. Unbindable rows skip; the identity import still completes.
+  const { kept, skipped } = await importPlaintextContacts(fingerprint, backup.contacts);
+
   await setActiveFingerprint(fingerprint);
-  return fingerprint;
+  return { fingerprint, kept, skipped };
+}
+
+/**
+ * Persist an already-decrypted .svrnty VaultContents to IndexedDB — the
+ * restore-onto-this-device / daily passphrase-unlock path. Converges to the SAME
+ * at-rest state as genesis (browser-identity.ts) — encrypted — so a passphrase
+ * restore STICKS across reload instead of only hydrating in-memory state (the
+ * data-safety launch-blocker: before this, "Open Vault" set React state but wrote
+ * nothing → reload = identity lost).
+ *
+ * AT-REST MODEL (2026-09-11 — Blocker-C fail-closed, Archie #133842): ALL key-material write
+ * paths now converge to encrypted-at-rest or fail closed. genesis + this (importVaultContents) +
+ * the passphrase-free recovery-code path (restoreIdentityFromSeedVault now requires a device
+ * passphrase + initSessionKey before writing) + the encrypted-key import all establish a session
+ * key first. The stores (storeKey/storePQKeys/storeVault/storeShards) THROW rather than ever
+ * writing plaintext, so there is no plaintext-at-rest window — not even transiently. Plaintext
+ * SovereignBackup import (importAll) blocks unless a session is established (no secret to derive
+ * an at-rest key from).
+ *
+ * SECURITY (persist SAFELY, not just persist):
+ *  • Self-guarding like addContact: the identity's public_key MUST bind to `fingerprint`
+ *    (fingerprintMatchesKey) — a .svrnty file is untrusted-importable, so refuse to
+ *    persist a forged identity whose fingerprint does not match its key.
+ *  • Contacts go through addContact, inheriting its fail-closed fingerprint↔key binding
+ *    (never persist a forged contact) + keyless handling + fingerprint-idempotency.
+ *  • AT-REST EQUIVALENCE: the caller MUST initSessionKey() first so keys/pq_keys/vault
+ *    are encrypted at rest exactly as genesis stores them (else the plaintext fallback
+ *    would be a weaker at-rest form on the restore path).
+ * The caller (vaultPassphraseRestore adapter) additionally binds the PRIVATE key to the
+ * fingerprint and passes the DERIVED (not merely claimed) fingerprint as `fingerprint`.
+ */
+export async function importVaultContents(
+  contents: VaultContents,
+  fingerprint: string,
+): Promise<string> {
+  const fp = (fingerprint || contents.identity?.identity?.fingerprint || '').trim();
+  if (!fp) throw new Error('Invalid vault: no fingerprint');
+
+  // Fail-closed identity binding (mirrors addContact): refuse a forged identity before
+  // any write, so a rejected vault leaves NO partial state.
+  const identityPub = contents.identity?.identity?.public_key || '';
+  const identityPq = contents.identity?.post_quantum;
+  if (!(await fingerprintMatchesKey(fp, identityPub, {
+    kem_public_key: identityPq?.kem_public_key,
+    sig_public_key: identityPq?.sig_public_key,
+  }))) {
+    throw new Error(
+      'fingerprint↔key binding failed — refusing to persist an identity whose fingerprint does not match its public key',
+    );
+  }
+
+  await storeIdentity(fp, contents.identity);
+
+  const classical = contents.keys?.classical;
+  if (classical?.privateKey) {
+    await storeKey(fp, classical.privateKey, classical.passphrase);
+  }
+  if (contents.keys?.pq) {
+    await storePQKeys(fp, contents.keys.pq);
+  }
+  // v4 dual-envelope recovery KeyVault (Shamir metadata) — the same store genesis and
+  // the recovery-code path write via storeVault. Absent on v3 → skipped.
+  if (contents.recovery) {
+    await storeVault(fp, contents.recovery);
+  }
+
+  // Contacts / trust network ride the encrypted body as a raw ContactRecord[]
+  // (VaultExportDialog stashes the exportAll contacts on trustGraph.contacts). Persist
+  // each via addContact so it inherits the fail-closed binding check; the spread carries
+  // the security-relevant epoch/version/pq fields — only the local id/added_at re-mint.
+  // A single unbindable/malformed contact is skipped (fail-closed) rather than aborting
+  // the whole restore: the identity + keys are the launch-blocker, not one bad contact.
+  const contacts = (contents.trustGraph as unknown as { contacts?: any[] } | null)?.contacts;
+  if (Array.isArray(contacts)) {
+    for (const contact of contacts) {
+      try {
+        await addContact(fp, contact);
+      } catch (e) {
+        console.warn('[restore] skipped a contact that failed to persist:', (e as Error)?.message);
+      }
+    }
+  }
+
+  await setActiveFingerprint(fp);
+  return fp;
 }
 
 // ── Check if identity exists (for UI flow) ──────────────────────
@@ -698,4 +1497,317 @@ export async function clearAll(confirm: 'I understand this deletes all keys'): P
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
   });
+}
+
+// ── Issued Grow-code tracking (R1 pending-joiner accept-oracle, giver-side) ───
+// When a giver mints a Grow invite (createRelay), we remember the shortcode. A
+// joiner's SIGNED response binds this code as its inviteNonce (the
+// verifyJoinerResponse); the giver's accept-oracle admits the response only if the
+// code is one WE issued, still within the ACCEPTANCE WINDOW, under the invite cap,
+// and this joiner hasn't already been accepted on it. Layered on the crypto's
+// joiner-sig + giverFp-bind + giver-only-decrypt + Invariant-1 defenses. The binding
+// is "which invite," not secrecy — the PUBLIC shortcode is fine here.
+//
+// MULTI-USE: a Grow link accepts up to GROW_INVITE_CAP DISTINCT
+// joiners — key the accepted-set by (code, joinerFp), NEVER consume the code.
+// Same-joiner replay is dropped here AND idempotent at addContact (fp-dedup).
+//
+// ACCEPTANCE WINDOW = the mailbox envelope TTL (~7d), NOT the relay's 15-min
+// dead-drop: the giver may be offline and poll days later; a legit response must
+// still be admitted. Aligns to RELAY_ENVELOPE_TTL_MS default (mailbox-config.ts).
+//
+// The acceptNonce predicate is SYNC but IndexedDB is async — so the consume
+// path loads the map ONCE per poll (loadIssuedCodeMap), builds a sync predicate
+// over that snapshot (isCodeOutstanding + codeUnderCap + alreadyAccepted), and
+// records accepts back (markAcceptedInMap on the snapshot so later envelopes in the
+// same poll see it; recordAcceptedJoiner persists). Codes are per-device, stored in
+// the 'settings' k/v store keyed by owner fp so a multi-identity device never crosses
+// one issuer's codes into another identity's oracle.
+
+const ISSUED_GROW_CODES_KEY = 'issued_grow_codes';
+// Acceptance window matches the mailbox envelope TTL (~7d) so a giver polling days
+// after issuing still admits a joiner-response — NOT the 15-min relay dead-drop.
+const R1_ACCEPTANCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Ceiling for a per-link distinct-joiner cap. */
+const ISSUED_CODE_CAP_MAX = 1000;
+/** Clamp a per-link cap to an integer in [1, ISSUED_CODE_CAP_MAX]; junk → 1 (single-use, the safe default). */
+function clampCodeCap(n: unknown): number {
+  const v = Math.floor(Number(n));
+  if (!Number.isFinite(v)) return 1;
+  return Math.max(1, Math.min(ISSUED_CODE_CAP_MAX, v));
+}
+
+/** How a Grow code was minted. Legacy entries with no field normalize to remote (fail-closed). */
+export type GrowMintChannel = 'in_person' | 'remote';
+
+/** One issued code: when it stops accepting (epoch ms), which joiner fps it has accepted, and the
+ *  per-code distinct-joiner cap (issuer-chosen at generation; default 1 = single-use). */
+export interface IssuedCodeEntry {
+  acceptUntil: number;
+  accepted: string[];
+  cap: number;
+  channel: GrowMintChannel;
+}
+/** ownerFp -> { shortcode -> entry } */
+export type IssuedCodeMap = Record<string, Record<string, IssuedCodeEntry>>;
+
+function normalizeEntry(e: unknown): IssuedCodeEntry | null {
+  if (!e || typeof e !== 'object') return null;
+  const r = e as Record<string, unknown>;
+  if (!Number.isFinite(r.acceptUntil as number)) return null;
+  // cap: a legacy entry (pre-cap) defaults to 1 (single-use) — it must NOT retroactively become
+  // multi-use. A present cap is clamped to [1, MAX].
+  const cap = r.cap === undefined ? 1 : clampCodeCap(r.cap);
+  const channel: GrowMintChannel = r.channel === 'in_person' ? 'in_person' : 'remote';
+  return {
+    acceptUntil: r.acceptUntil as number,
+    accepted: Array.isArray(r.accepted) ? (r.accepted as string[]) : [],
+    cap,
+    channel,
+  };
+}
+
+/** Pure: drop entries past their acceptance window. Owners left empty are removed. */
+export function pruneIssuedCodes(map: IssuedCodeMap, nowMs: number): IssuedCodeMap {
+  const out: IssuedCodeMap = {};
+  for (const [fp, codes] of Object.entries(map || {})) {
+    const kept: Record<string, IssuedCodeEntry> = {};
+    for (const [code, raw] of Object.entries(codes || {})) {
+      const entry = normalizeEntry(raw);
+      if (entry && entry.acceptUntil > nowMs) kept[code] = entry;
+    }
+    if (Object.keys(kept).length > 0) out[fp] = kept;
+  }
+  return out;
+}
+
+/** Pure: did this owner issue this code, still within its acceptance window? */
+export function isCodeOutstanding(map: IssuedCodeMap, ownerFp: string, code: string, nowMs: number): boolean {
+  const e = map?.[ownerFp]?.[code];
+  return !!e && Number.isFinite(e.acceptUntil) && e.acceptUntil > nowMs;
+}
+
+/** Pure: is this code still under its PER-CODE distinct-joiner cap (stored in the entry, issuer-chosen
+ *  at generation; default 1 = single-use)? */
+export function codeUnderCap(map: IssuedCodeMap, ownerFp: string, code: string): boolean {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return false;
+  const cap = Number.isFinite(e.cap) ? e.cap : 1;
+  return (Array.isArray(e.accepted) ? e.accepted.length : 0) < cap;
+}
+
+/** Pure: has this exact joiner already been accepted on this code? */
+export function alreadyAccepted(map: IssuedCodeMap, ownerFp: string, code: string, joinerFp: string): boolean {
+  const e = map?.[ownerFp]?.[code];
+  return !!e && Array.isArray(e.accepted) && e.accepted.includes(joinerFp);
+}
+
+/** Pure: mint channel for a code. Missing / junk → remote (never upgrade to in-person). */
+export function issuedCodeChannel(map: IssuedCodeMap, ownerFp: string, code: string): GrowMintChannel {
+  return map?.[ownerFp]?.[code]?.channel === 'in_person' ? 'in_person' : 'remote';
+}
+
+/** Pure: distinct-joiner cap reached (in-person codes should regen after this). */
+export function issuedCodeSpent(map: IssuedCodeMap, ownerFp: string, code: string): boolean {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return false;
+  const cap = Number.isFinite(e.cap) ? e.cap : 1;
+  return (Array.isArray(e.accepted) ? e.accepted.length : 0) >= cap;
+}
+
+/** Pure: record a VERIFIED joiner fp as accepted on a code (idempotent). Mutates + returns map. */
+export function markAcceptedInMap(map: IssuedCodeMap, ownerFp: string, code: string, joinerFp: string): IssuedCodeMap {
+  const e = map?.[ownerFp]?.[code];
+  if (!e) return map;
+  if (!Array.isArray(e.accepted)) e.accepted = [];
+  if (!e.accepted.includes(joinerFp)) e.accepted.push(joinerFp);
+  return map;
+}
+
+async function loadRawIssuedCodeMap(): Promise<IssuedCodeMap> {
+  const setting = await txGet<{ key: string; value: string }>('settings', ISSUED_GROW_CODES_KEY);
+  if (!setting?.value) return {};
+  try {
+    const parsed = JSON.parse(setting.value);
+    return parsed && typeof parsed === 'object' ? (parsed as IssuedCodeMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveIssuedCodeMap(map: IssuedCodeMap): Promise<void> {
+  await txPut('settings', { key: ISSUED_GROW_CODES_KEY, value: JSON.stringify(map) });
+}
+
+/**
+ * Load the pruned issued-code map for building the SYNC accept-oracle in the consume
+ * path. Load ONCE per poll, then pass the snapshot to the pure helpers above.
+ */
+export async function loadIssuedCodeMap(): Promise<IssuedCodeMap> {
+  return pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+}
+
+/** Remember a Grow shortcode this owner just issued, opening a ~7d acceptance window with a per-code
+ *  distinct-joiner cap (issuer-chosen at generation; default 1 = single-use, max 1000).
+ *  In-person codes are forced cap 1. Omit `channel` to preserve a prior mint channel on cap edits. */
+export async function recordIssuedGrowCode(
+  ownerFp: string,
+  code: string,
+  cap: number = 1,
+  channel?: GrowMintChannel,
+): Promise<void> {
+  if (!ownerFp || !code) return;
+  const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+  if (!map[ownerFp]) map[ownerFp] = {};
+  const prior = map[ownerFp][code];
+  const nextChannel: GrowMintChannel =
+    channel === 'in_person' || channel === 'remote'
+      ? channel
+      : prior?.channel === 'in_person'
+        ? 'in_person'
+        : 'remote';
+  // Fresh window on (re)issue; preserve any joiners already accepted on this code. In-person is
+  // always single-use; remote cap is the issuer's choice, clamped to [1, 1000].
+  map[ownerFp][code] = {
+    acceptUntil: Date.now() + R1_ACCEPTANCE_WINDOW_MS,
+    accepted: prior?.accepted ?? [],
+    cap: nextChannel === 'in_person' ? 1 : clampCodeCap(cap),
+    channel: nextChannel,
+  };
+  await saveIssuedCodeMap(map);
+}
+
+/**
+ * Persist a VERIFIED joiner fp as accepted on a code (giver-side, after a non-null
+ * verifyJoinerResponse). Records ONLY the crypto-verified fp — never a pre-check claim.
+ */
+export async function recordAcceptedJoiner(ownerFp: string, code: string, verifiedJoinerFp: string): Promise<void> {
+  if (!ownerFp || !code || !verifiedJoinerFp) return;
+  const map = pruneIssuedCodes(await loadRawIssuedCodeMap(), Date.now());
+  markAcceptedInMap(map, ownerFp, code, verifiedJoinerFp);
+  await saveIssuedCodeMap(map);
+}
+
+/**
+ * Async single-code outstanding check (convenience). The consume path prefers
+ * loadIssuedCodeMap + the sync helpers so the accept-oracle stays synchronous.
+ */
+export async function isOutstandingIssuedCode(ownerFp: string, code: string): Promise<boolean> {
+  return isCodeOutstanding(await loadIssuedCodeMap(), ownerFp, code, Date.now());
+}
+
+// ── Grow Gate arrivals (glass) ───────────────────────────────────────────────
+// Remote (and in-person) joiners land here until the owner ADMITS them as Known.
+// Not a contact yet — Galaxy / Contacts / PSI must not see them. The return-channel
+// still consumes the mailbox and marks the issued code accepted (cap / single-use).
+// Identity forge/restore "Gate" is a different machine (SoverentityFrontend).
+
+const GROW_GATE_ARRIVALS_KEY = 'grow_gate_arrivals';
+
+/** A solicited arrival waiting at the Gate — not yet a star. Owner-local only. */
+export interface GateArrival {
+  fingerprint: string;
+  displayName: string;
+  publicKeyArmored: string;
+  pqSigPublicKey?: string;
+  pqKemPublicKey?: string;
+  epoch: number;
+  inviteNonce: string;
+  mintChannel: GrowMintChannel;
+  arrivedAt: string;
+  /** inbound_joiner = giver consumed a return-channel; scanned_giver = joiner gated the card they scanned. */
+  direction: 'inbound_joiner' | 'scanned_giver';
+}
+
+/** ownerFp -> { peerFp -> arrival } */
+export type GateArrivalMap = Record<string, Record<string, GateArrival>>;
+
+function isGrowMintChannel(v: unknown): v is GrowMintChannel {
+  return v === 'in_person' || v === 'remote';
+}
+
+function normalizeArrival(raw: unknown): GateArrival | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
+  if (typeof r.publicKeyArmored !== 'string' || !r.publicKeyArmored) return null;
+  if (typeof r.inviteNonce !== 'string' || !r.inviteNonce) return null;
+  const epoch = Number.isSafeInteger(r.epoch) ? (r.epoch as number) : 0;
+  const direction = r.direction === 'scanned_giver' ? 'scanned_giver' : 'inbound_joiner';
+  const arrival: GateArrival = {
+    fingerprint: r.fingerprint,
+    displayName: typeof r.displayName === 'string' ? r.displayName : '',
+    publicKeyArmored: r.publicKeyArmored,
+    epoch,
+    inviteNonce: r.inviteNonce,
+    mintChannel: isGrowMintChannel(r.mintChannel) ? r.mintChannel : 'remote',
+    arrivedAt: typeof r.arrivedAt === 'string' ? r.arrivedAt : new Date().toISOString(),
+    direction,
+  };
+  if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
+  if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  return arrival;
+}
+
+async function loadRawGateMap(): Promise<GateArrivalMap> {
+  const setting = await txGet<{ key: string; value: string }>('settings', GROW_GATE_ARRIVALS_KEY);
+  if (!setting?.value) return {};
+  try {
+    const parsed = JSON.parse(setting.value);
+    return parsed && typeof parsed === 'object' ? (parsed as GateArrivalMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function saveGateMap(map: GateArrivalMap): Promise<void> {
+  await txPut('settings', { key: GROW_GATE_ARRIVALS_KEY, value: JSON.stringify(map) });
+}
+
+function normalizeGateMap(map: GateArrivalMap): GateArrivalMap {
+  const out: GateArrivalMap = {};
+  for (const [fp, bag] of Object.entries(map || {})) {
+    const kept: Record<string, GateArrival> = {};
+    for (const [peer, raw] of Object.entries(bag || {})) {
+      const arrival = normalizeArrival(raw);
+      if (arrival) kept[arrival.fingerprint || peer] = arrival;
+    }
+    if (Object.keys(kept).length > 0) out[fp] = kept;
+  }
+  return out;
+}
+
+/** Load Gate arrivals for one owner (not contacts — not on Galaxy). */
+export async function loadGateArrivals(ownerFp: string): Promise<GateArrival[]> {
+  if (!ownerFp) return [];
+  const map = normalizeGateMap(await loadRawGateMap());
+  const bag = map[ownerFp] || {};
+  return Object.values(bag).sort((a, b) => (a.arrivedAt < b.arrivedAt ? 1 : -1));
+}
+
+export async function getGateArrival(ownerFp: string, peerFp: string): Promise<GateArrival | null> {
+  if (!ownerFp || !peerFp) return null;
+  const map = normalizeGateMap(await loadRawGateMap());
+  return map[ownerFp]?.[peerFp] ?? null;
+}
+
+/** Idempotent by fingerprint: a retry overwrites the same arrival. */
+export async function enqueueGateArrival(ownerFp: string, arrival: GateArrival): Promise<void> {
+  if (!ownerFp) return;
+  const normalized = normalizeArrival(arrival);
+  if (!normalized) return;
+  const map = normalizeGateMap(await loadRawGateMap());
+  if (!map[ownerFp]) map[ownerFp] = {};
+  map[ownerFp][normalized.fingerprint] = normalized;
+  await saveGateMap(map);
+}
+
+export async function removeGateArrival(ownerFp: string, peerFp: string): Promise<void> {
+  if (!ownerFp || !peerFp) return;
+  const map = normalizeGateMap(await loadRawGateMap());
+  if (!map[ownerFp]?.[peerFp]) return;
+  delete map[ownerFp][peerFp];
+  if (Object.keys(map[ownerFp]).length === 0) delete map[ownerFp];
+  await saveGateMap(map);
 }

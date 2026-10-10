@@ -1,5 +1,5 @@
 // src/lib/trust/contact-edge.test.ts
-// The projection carries pq to the edge — the end-to-end half of Peter's "PQ-keys-dropped-on-every-edge".
+// The projection carries pq to the edge — the end-to-end half of the "PQ-keys-dropped-on-every-edge".
 // Run: npx tsx --test src/lib/trust/contact-edge.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -26,6 +26,84 @@ test('carries pq from an already-edge-shaped source (peer_pq_*) unchanged', () =
   });
   assert.equal(edge.peer_pq_kem_public_key, kem);
   assert.equal(edge.peer_pq_sig_public_key, sig);
+});
+
+test('carries owner_verify from metadata for the trust prereq', () => {
+  const edge = contactRecordToEdge({
+    id: 'v',
+    fingerprint: 'fp4',
+    name: 'Eli',
+    public_key: 'PK4',
+    metadata: { owner_verify: { owner_verified_at: '2026-01-01T00:00:00.000Z', method: 'in_person' } },
+  });
+  assert.equal(edge.owner_verify?.method, 'in_person');
+});
+
+test('carries they_trust and open_visibility for witnessed peer springs', () => {
+  const edge = contactRecordToEdge({
+    id: 't',
+    fingerprint: 'fp-sally',
+    name: 'Sally',
+    public_key: 'PK',
+    they_trust: ['fp-joe'],
+    metadata: { share_settings: { open_visibility: true } },
+  });
+  assert.deepEqual(edge.they_trust, ['fp-joe']);
+  assert.equal(edge.open_visibility, true);
+});
+
+test('carries Gate provenance on metadata without making it a star flag by default', () => {
+  const edge = contactRecordToEdge({
+    id: 'g',
+    fingerprint: 'fp-gate',
+    name: 'Pat',
+    public_key: 'PK',
+    metadata: { grow_invite_nonce: 'CODE1', grow_mint_channel: 'remote' },
+  });
+  assert.equal(edge.metadata?.grow_invite_nonce, 'CODE1');
+  assert.equal(edge.metadata?.grow_mint_channel, 'remote');
+  assert.equal(edge.metadata?.grow_gate, undefined);
+});
+
+test('carries inbound distress as a witnessed receipt', () => {
+  const edge = contactRecordToEdge({
+    id: 'd',
+    fingerprint: 'fp5',
+    name: 'Ada',
+    public_key: 'PK5',
+    metadata: { distress_inbound: true },
+  });
+  assert.equal(edge.distress_inbound, true);
+});
+
+test('keyless sample rows keep a stable demo fingerprint for peer chords', () => {
+  const edge = contactRecordToEdge({
+    id: 'uuid-ada',
+    name: 'Ada',
+    public_key: '',
+    metadata: {
+      sample: true,
+      sample_fingerprint: 'a11a10e1ace00000000000000000000000000001',
+      they_trust: ['61ace00000000000000000000000000000000003'],
+      disclosed_circle: ['61ace00000000000000000000000000000000003'],
+      share_settings: { open_visibility: true },
+    },
+  });
+  assert.equal(edge.peer_fingerprint, 'a11a10e1ace00000000000000000000000000001');
+  assert.deepEqual(edge.they_trust, ['61ace00000000000000000000000000000000003']);
+  assert.deepEqual(edge.disclosed_circle, ['61ace00000000000000000000000000000000003']);
+  assert.equal(edge.open_visibility, true);
+});
+
+test('mutual_contacts is not projected as disclosed_circle', () => {
+  const edge = contactRecordToEdge({
+    id: 'm',
+    fingerprint: 'fp-m',
+    name: 'Mo',
+    public_key: 'PK',
+    metadata: { mutual_contacts: ['fp-other'] },
+  });
+  assert.equal(edge.disclosed_circle, undefined);
 });
 
 test('a contact with no pq → edge pq is undefined (no crash, classical-only edge)', () => {

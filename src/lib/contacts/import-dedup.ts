@@ -1,16 +1,16 @@
 // src/lib/contacts/import-dedup.ts
-// Top-level dedup ENGINE for the IMPORT flow (Queue B 0.12 / Fable §9.1).
+// Top-level dedup ENGINE for the IMPORT flow (Queue B 0.12).
 // Wraps the dedup primitives (dedup.ts). Import-time dedup — NOT sync/merge (cross-device vault sync).
 //
 // The living-wins field-union (livingWinsMerge, now a primitive in dedup.ts) is the SHARED
-// "living-data-wins" mechanism (Hypatia #115891): the same rule powers import dedup ("imports never
+// "living-data-wins" mechanism: the same rule powers import dedup ("imports never
 // overwrite attested data") AND the live-update beat ("Bob's edit updates Alice's entry").
 //
 // v1 scope (demo-safe, conservative):
 //   - EXACT-KEY dedup only: match iff two contacts share ≥1 normalized channel (phone E.164 /
 //     folded email). Fuzzy name-matching → review is DEFERRED (over-merge is the cardinal sin).
 //   - Ambiguous (>1 existing match) → review card-stack, NEVER a silent merge.
-//   - SECURITY (chaos#32, Archie fix A + Flint co-verify #116149): a single-match auto-merge that
+//   - SECURITY: a single-match auto-merge that
 //     would ADD ≥1 net-new reachability channel to a TRUSTED-living target → route to review
 //     (channel-INJECTION guard). Net-new is read from the ACTUAL livingWinsMerge survivor via
 //     addsRawChannel (RAW values), so a raw-unioned UNNORMALIZABLE channel (bare national phone /
@@ -33,7 +33,7 @@ export interface DedupPlan {
   /** Single exact-key match → auto-merged (field-union, living wins). */
   autoMerge: AutoMerge[];
   /**
-   * Needs the user before applying: an ambiguous match (>1 existing) OR a chaos#32 guarded merge into
+   * Needs the user before applying: an ambiguous match (>1 existing) OR a guarded merge into
    * a trusted edge. `reason` tells the UI which copy to show — disambiguation ("which contact?") vs a
    * channel-injection security warning ("adds new reachability to a TRUSTED contact — confirm").
    */
@@ -63,7 +63,7 @@ export function dedupeContacts(incoming: Partial<TrustEdge>[], existing: TrustEd
     if (matches.length === 1) {
       const target = matches[0];
       const survivor = livingWinsMerge(target, inc);
-      // chaos#32 (Archie fix A): auto-merging an import into a TRUSTED-living edge UNIONs the import's
+      // auto-merging an import into a TRUSTED-living edge UNIONs the import's
       // channels onto it (livingWinsMerge) — a channel-INJECTION vector. If the merge ADDS a reachability
       // channel to a trusted target, route to review; idempotent/no-net-new or non-trusted → auto-merge.
       // addsRawChannel reads the actual survivor's RAW channels, so unnormalizable injections can't slip past.

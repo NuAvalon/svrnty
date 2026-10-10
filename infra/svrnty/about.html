@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>about — svrnty</title>
+<meta property="og:title" content="svrnty — sovereign identity">
+<meta property="og:description" content="Your key is you. No passwords. No accounts. No platform. Just cryptography and trust.">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: #0a0a1a;
+    color: #c8c8c8;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 3rem 2rem;
+    line-height: 1.7;
+  }
+  .container { max-width: 600px; width: 100%; }
+
+  h1 {
+    font-size: 2.5rem;
+    color: #c9a227;
+    margin-bottom: 0.25rem;
+    letter-spacing: 2px;
+  }
+  .tagline {
+    color: #666;
+    margin-bottom: 3rem;
+    font-size: 0.9rem;
+  }
+
+  h2 {
+    font-size: 1.1rem;
+    color: #c9a227;
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+    letter-spacing: 1px;
+  }
+
+  p {
+    margin-bottom: 1.2rem;
+    font-size: 0.9rem;
+  }
+
+  .ceremony {
+    background: #12122a;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    margin: 1.5rem 0;
+  }
+  .ceremony-name {
+    color: #c9a227;
+    font-size: 1rem;
+    font-weight: bold;
+    margin-bottom: 0.5rem;
+  }
+  .ceremony p {
+    color: #999;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+  }
+  .ceremony p:last-child { margin-bottom: 0; }
+
+  .principle {
+    color: #555;
+    font-size: 0.8rem;
+    padding-left: 1rem;
+    border-left: 2px solid #2a2a4a;
+    margin-bottom: 1rem;
+  }
+
+  .tech-note {
+    color: #444;
+    font-size: 0.75rem;
+    font-style: italic;
+  }
+
+  a { color: #c9a227; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .cta {
+    display: inline-block;
+    margin-top: 2rem;
+    padding: 14px 32px;
+    background: #c9a227;
+    color: #0a0a1a;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 1rem;
+    font-weight: bold;
+    text-decoration: none;
+    transition: background 0.2s;
+  }
+  .cta:hover { background: #d4b33c; text-decoration: none; }
+
+  footer {
+    margin-top: 3rem;
+    color: #333;
+    font-size: 0.7rem;
+    text-align: center;
+  }
+
+  .separator {
+    border: none;
+    border-top: 1px solid #1a1a3a;
+    margin: 2.5rem 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>svrnty</h1>
+  <p class="tagline">sovereign identity for a sovereign web</p>
+
+  <h2>Why is your identity sacred?</h2>
+
+  <p>Because it's the only thing that is entirely yours. Not your name &mdash; someone else gave you that. Not your accounts &mdash; a company owns those. Not your reputation &mdash; that lives in other people's heads. Your identity &mdash; the proof that you are you &mdash; is the one thing no one should be able to take, copy, or revoke.</p>
+
+  <p>Today, your "identity" online is a row in someone else's database. A username and password that a company stores, can reset, can delete, can sell. When Equifax gets breached, it's YOUR identity that leaks. When a platform bans your account, it's YOUR relationships that vanish. You never owned any of it.</p>
+
+  <h2>Why would anyone want to steal it?</h2>
+
+  <p>Because identity is access. With your identity, someone can speak as you, sign contracts as you, empty accounts as you. Identity theft isn't about stealing information &mdash; it's about stealing agency. The ability to act in the world as yourself. Every year, millions of people discover that someone else has been being them.</p>
+
+  <p>This happens because identity is stored in places you don't control. Databases get breached. Passwords get phished. Recovery questions get guessed. The problem isn't weak passwords. The problem is that your identity lives on someone else's server.</p>
+
+  <h2>Why is trust important?</h2>
+
+  <p>Because everything runs on it. Every transaction, every relationship, every collaboration. You can't do anything meaningful with another person without some form of trust. But right now, trust is outsourced &mdash; to platforms, to blue checkmarks, to institutions that say "this person is real" and charge for the privilege.</p>
+
+  <p>What if trust were between you and the other person, and no one else? What if you could declare trust privately, verify it mathematically, and revoke it silently? What if no platform could see who you trust, sell that data, or take it away?</p>
+
+  <h2>What is svrnty?</h2>
+
+  <p>A cryptographic identity that you own completely. Not an account on someone else's server. Not a password that can be reset by a company. A key pair &mdash; Ed25519, the same algorithm used by SSH and Signal &mdash; generated in your browser, stored on your device, never seen by us.</p>
+
+  <p>Your key is you. That's not a metaphor.</p>
+
+  <h2>How it works</h2>
+
+  <p>There are three acts. Each one does something real with mathematics.</p>
+
+  <div class="ceremony">
+    <div class="ceremony-name">I. The Naming</div>
+    <p>Your browser generates a unique Ed25519 key pair &mdash; a public key and a private key. From the public key, we derive your fingerprint: a permanent, unforgeable identifier that is mathematically yours.</p>
+    <p>A file downloads. That's your <code>.svrnty</code> file. It contains your private key. We don't keep a copy. There is no "forgot password" flow. If you lose this file, your identity is gone &mdash; because it was actually yours.</p>
+    <p class="tech-note">Ed25519 over Curve25519. Key generation via WebCrypto API. Fingerprint = SHA-256(public_key)[0:16].</p>
+  </div>
+
+  <div class="ceremony">
+    <div class="ceremony-name">II. The Knowing</div>
+    <p>You can declare that you trust someone. They won't know. The declaration is a cryptographic commitment &mdash; a sealed envelope that proves you decided, without revealing what you decided.</p>
+    <p>If they also trust you, something happens. Not a notification &mdash; a mathematical confirmation. Two independent commitments, made in private, verified without either party revealing their hand first. Conviction without revelation.</p>
+    <p>One-sided trust stays silent forever. Mutual trust reveals itself.</p>
+    <p class="tech-note">Diffie-Hellman Private Set Intersection. The relay mediates but cannot read your trust state &mdash; content-blind from day one.</p>
+  </div>
+
+  <div class="ceremony">
+    <div class="ceremony-name">III. The Proving</div>
+    <p>When you need to prove you are who you are, you sign a challenge with your private key. Anyone with your public key can verify the signature. No one can forge it. You demonstrate knowledge without giving it away.</p>
+    <p>This is the oldest idea in cryptography, and maybe the oldest idea in trust: I can show you I know something without telling you what I know.</p>
+    <p class="tech-note">Ed25519 digital signatures. Challenge-response authentication. No passwords, no sessions, no tokens.</p>
+  </div>
+
+  <hr class="separator">
+
+  <h2>What we believe</h2>
+
+  <p class="principle">Your identity lives on your device, not our servers.</p>
+  <p class="principle">There's nothing to verify and nothing to reset &mdash; your key is you from the first moment.</p>
+  <p class="principle">No passwords. No accounts. No tracking.</p>
+  <p class="principle">Trust is private. You choose who to trust. No one else sees it unless it's mutual.</p>
+  <p class="principle">Our server carries what it cannot read. It's a relay, not a vault.</p>
+  <p class="principle">You can leave anytime. Export your <code>.svrnty</code> file &mdash; your identity and trust graph are yours to take, not locked to us. (Running your own relay is on the roadmap.)</p>
+
+  <hr class="separator">
+
+  <h2>What this is not</h2>
+
+  <p>This is not a social network. There is no feed, no algorithm, no engagement metric. This is infrastructure for trust &mdash; the layer underneath everything else.</p>
+
+  <p>This is not a company asking you to trust it. The cryptography is the trust. If svrnty.is disappeared tomorrow, every person who exported their key file IS the network. The tree is contained in the seed.</p>
+
+  <hr class="separator">
+
+  <h2>The technology</h2>
+
+  <p>Ed25519 key pairs. Client-side generation via WebCrypto API. Diffie-Hellman Private Set Intersection for mutual trust discovery. AES-256-GCM for contact card encryption. SHA-256 fingerprints. Everything runs in your browser or on your machine. The relay is a 25MB container that relays encrypted blobs it cannot decrypt.</p>
+
+  <p>The source code will be open. The protocol will be documented. The cryptography is standard, auditable, and replaceable &mdash; we've specified a <code>key_type</code> field for post-quantum migration when the time comes.</p>
+
+  <hr class="separator">
+
+  <div style="text-align: center;">
+    <p>Ready?</p>
+    <a href="/" class="cta">Create your identity</a>
+  </div>
+</div>
+
+<footer>
+  svrnty &mdash; built by people and machines who chose service<br>
+  <a href="/">home</a> &middot; <a href="https://github.com/NuAvalon/svrnty">source</a>
+</footer>
+
+</body>
+</html>

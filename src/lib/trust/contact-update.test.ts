@@ -1,8 +1,8 @@
 // 0.9 invariant floor for 0.4 contact.update consume — the E2E-invariant made executable.
 // Run: npx tsx --test src/lib/trust/contact-update.test.ts
 //
-// What this suite proves (maps to shared/outbox/flint/svrnty_master_spec_security_invariants.md §S1):
-//   • THE FLOOR (Archie #115561): once-signed-never-unsigned. Every consume-path that would skip or
+// What this suite proves (maps to §S1):
+//   • THE FLOOR: once-signed-never-unsigned. Every consume-path that would skip or
 //     fail a check throws LOUDLY — the only success is a fully-verified return. No silent-false path.
 //   • I-7 tamper-evidence: any mutation of a signed field fails verification.
 //   • I-4 reachability-not-location / I-6 render-provenance: the field firewall refuses a location or
@@ -13,7 +13,7 @@
 //   • Replay/rollback: a version <= last-seen is dropped BEFORE any crypto (DoS-resistant ordering).
 //
 // Out of scope HERE (relay-side / other lanes, noted so the gap is explicit, not silent):
-//   I-1/I-2 constant-shape+timing live in the satellite relay (Athena's satellite.py D2 leaks);
+//   I-1/I-2 constant-shape+timing live in the satellite relay (satellite.py D2 leaks);
 //   I-3 no-aggregate is architectural; I-5 recovery-soundness lives in crypto/recovery.ts.
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,6 +30,8 @@ import {
   verifyIncomingContactUpdate,
   ContactUpdateRejected,
   CONTACT_UPDATE_ALLOWED_FIELDS,
+  HANDLES_MAX_COUNT,
+  HANDLE_VALUE_MAX_LEN,
   type ContactUpdateRejectReason,
   type KnownContactIdentity,
   type SignedContactUpdate,
@@ -184,14 +186,17 @@ test('I-4: a device-location field is refused (field-not-allowed), pre-crypto', 
   await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
 });
 
-// ── Now-vocab allowlist (Archie #115574 shrink → phones GROW #115747; joint verify↔apply pass) ──────
+// ── Now-vocab allowlist (shrink → phones GROW; joint verify↔apply pass) ──────
 // The allowlist is the SHARED verify↔apply contract. It must equal EXACTLY {display_name, phones, note,
 // emails}; the same set is re-asserted on the apply side (apply-contact-update.ts) and the merge-guard
 // cross-checks them post-merge. This test is the verify-side half of that divergence guard. Fields that
 // moved to their own signed object type (public_key→key.rotate, routing→routing.update) or haven't
 // earned a grow yet (rich vCard set) are refused by the firewall pre-crypto.
-test('vocab: the allowlist is EXACTLY {display_name, phones, emails, note}', () => {
-  assert.deepEqual([...CONTACT_UPDATE_ALLOWED_FIELDS].sort(), ['display_name', 'emails', 'note', 'phones']);
+test('vocab: the allowlist is EXACTLY {display_name, phones, emails, note, handles, urls}', () => {
+  assert.deepEqual(
+    [...CONTACT_UPDATE_ALLOWED_FIELDS].sort(),
+    ['display_name', 'emails', 'handles', 'note', 'phones', 'urls'],
+  );
 });
 
 test('shrink: public_key is refused field-not-allowed (moved to key.rotate — not a card field)', async () => {
@@ -212,7 +217,7 @@ test('shrink: a rich vCard field (org) is refused field-not-allowed (grow-later,
   await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
 });
 
-test('grow: phones now verifies end-to-end (the first earned grow, Archie #115747)', async () => {
+test('grow: phones now verifies end-to-end', async () => {
   const env = baseEnv({ changed_fields: ['phones'], delta: { phones: ['+15551234567', '+442071234567'] } });
   const v = await verifyIncomingContactUpdate(await signAs(env), known());
   assert.deepEqual(v.changed_fields, ['phones']);
@@ -261,5 +266,69 @@ test('anti-downgrade: stripping the PQ half of a hybrid signature fails bad-sign
   await assert.rejects(
     verifyIncomingContactUpdate(s, known({ pqSigningPublicKey: pq.publicKey })),
     rejectsWith('bad-signature'),
+  );
+});
+
+// ── 5b VALUE firewall for the grown structured fields (handles + urls) ──────────
+test('grow: a valid handles map (curated keys, bounded) verifies end-to-end', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { signal: '@alice', telegram: 'alicetg' } } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.delta, { handles: { signal: '@alice', telegram: 'alicetg' } });
+});
+
+test('grow: an empty-string handle value (explicit removal / merge-delete) verifies', async () => {
+  // Removal is the empty string, NOT null — canonicalize forbids null in the signed form.
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { signal: '' } } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.delta, { handles: { signal: '' } });
+});
+
+test('grow: a valid urls list verifies end-to-end', async () => {
+  const env = baseEnv({ changed_fields: ['urls'], delta: { urls: ['https://alice.example'] } });
+  const v = await verifyIncomingContactUpdate(await signAs(env), known());
+  assert.deepEqual(v.delta, { urls: ['https://alice.example'] });
+});
+
+// The value firewall (5b) fires PRE-crypto → a dummy signature suffices; this proves the recipient
+// fail-closes on an abusive SIGNED map regardless of whether the signature is "correct".
+test('5b: handles that is not an object is field-value-invalid', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: 'not-a-map' } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: an off-curated handle key is field-value-invalid (I-4 reach-only vocab)', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { myspace: 'tom' } } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: too many handles (> HANDLES_MAX_COUNT) is field-value-invalid (DoS/bloat guard)', async () => {
+  const handles: Record<string, unknown> = {};
+  for (let i = 0; i <= HANDLES_MAX_COUNT; i++) handles[`k${i}`] = 'x';
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: an over-long handle value is field-value-invalid', async () => {
+  const env = baseEnv({ changed_fields: ['handles'], delta: { handles: { signal: 'x'.repeat(HANDLE_VALUE_MAX_LEN + 1) } } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
+  );
+});
+
+test('5b: urls that is not an array is field-value-invalid', async () => {
+  const env = baseEnv({ changed_fields: ['urls'], delta: { urls: 'not-an-array' } });
+  await assert.rejects(
+    verifyIncomingContactUpdate({ envelope: env, signature: { classical: 'x' } }, known()),
+    rejectsWith('field-value-invalid'),
   );
 });

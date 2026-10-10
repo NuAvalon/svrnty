@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir fastapi uvicorn pydantic cryptography segno
+
+COPY registration.py .
+COPY landing.html .
+COPY profile.html .
+COPY about.html .
+COPY crypto_utils.py .
+
+EXPOSE 8101
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8101/health || exit 1
+
+# --no-access-log: registration URL paths carry fingerprint/slug
+# (/identity/{fingerprint}, /u/{slug}) → access log is a correlation surface. Suppress it.
+CMD ["uvicorn", "registration:app", "--host", "0.0.0.0", "--port", "8101", "--no-access-log"]

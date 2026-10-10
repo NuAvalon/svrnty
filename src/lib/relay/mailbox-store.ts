@@ -1,7 +1,7 @@
 // src/lib/relay/mailbox-store.ts
 // Return-channel mailbox: a persistent, recipient-keyed DELTA on the single-use dead-drop relay.
 // The relay gains a mailbox + poll + ack WITHOUT becoming smart about the social graph
-// (joint design §1/§5, Peter-acked #116192). It stores ONLY opaque blobs + relay-assigned ids —
+// (joint design §1/§5). It stores ONLY opaque blobs + relay-assigned ids —
 // NO sender field, no edge-list (custody I-1). Sender identity + sender_signature live INSIDE the
 // E2E-encrypted blob and are verified by the RECIPIENT on consume, never by the relay (§4).
 //
@@ -40,7 +40,7 @@ export type DepositResult = { ok: true } | { ok: false; status: 400 | 413 | 429 
  *
  * The OUTCOME is uniform w.r.t. the recipient's mailbox state (I-4 deposit-side, §4): a depositor
  * cannot probe whether R's mailbox exists / is empty / has mail. The ONLY mailbox-state-dependent
- * signal is the at-cap 429 — a Peter-RATIFIED bounded I-4 residual (#116282): it leaks only the
+ * signal is the at-cap 429 — a bounded I-4 residual: it leaks only the
  * coarse "at-capacity" fact, never who/read-state, and probing it requires filling a stranger's
  * mailbox to cap (itself rate-limited + costly). Named closure = edge-scoped deposit-tokens (Tier-2).
  *
@@ -55,9 +55,9 @@ export function depositEnvelope(mailboxId: string, blob: string, now: number): D
   // §5.1 LAUNCH seam (config-driven, NOT built for 9/10): under the svrnty.is nursery profile
   // (cfg.inviteRequired), mailbox CREATION is gated behind an explicit owner-claim carrying an
   // invite_token+chain. A deposit to an as-yet-UNCLAIMED mailbox is still ACCEPTED UNIFORMLY —
-  // buffered + TTL'd + unreadable until claimed — and is NEVER rejected (Archie #116327): rejecting
+  // buffered + TTL'd + unreadable until claimed — and is NEVER rejected: rejecting
   // would reintroduce exactly the occupancy-oracle / silent-drop that the uniform-ack design closes.
-  // That claim registry lands with the invite machinery (Archie #116271); the demo/family profile
+  // That claim registry lands with the invite machinery; the demo/family profile
   // (inviteRequired=false, default) lazy-creates on first deposit below. Referenced here so the
   // policy branch reads config, not a literal — the image never forks (Invariant 8).
   void cfg.inviteRequired;

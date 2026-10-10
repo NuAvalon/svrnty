@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Satellite — Trust Network Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; color: #e0dcd0; font-family: 'Courier New', monospace; min-height: 100vh; }
+  .header { text-align: center; padding: 2rem 1rem 1rem; border-bottom: 1px solid #1a1a2f; }
+  .header h1 { color: #c8a84e; font-size: 1.8rem; letter-spacing: 4px; }
+  .header p { color: #5a5548; font-size: 0.85rem; margin-top: 4px; }
+  .status-bar { display: flex; justify-content: center; gap: 2rem; padding: 1rem; background: #0d0d15; border-bottom: 1px solid #1a1a2f; }
+  .status-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.online { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+  .dot.offline { background: #ef4444; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
+  .card { background: #111118; border: 1px solid #1a1a2f; border-radius: 8px; padding: 1.5rem; }
+  .card h2 { color: #c8a84e; font-size: 1rem; letter-spacing: 2px; margin-bottom: 1rem; border-bottom: 1px solid #1a1a2f; padding-bottom: 0.5rem; }
+  .identity { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid #0d0d15; }
+  .identity:last-child { border-bottom: none; }
+  .identity .name { color: #c8a84e; font-weight: bold; }
+  .identity .fp { color: #5a5548; font-size: 0.75rem; font-family: monospace; }
+  .identity .seen { color: #8a8070; font-size: 0.75rem; }
+  .handshake { padding: 0.6rem 0; border-bottom: 1px solid #0d0d15; }
+  .handshake:last-child { border-bottom: none; }
+  .handshake .state { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+  .state.hello_sent { background: #1e3a5f; color: #60a5fa; }
+  .state.hello_response_sent { background: #3b2f1e; color: #fbbf24; }
+  .state.verify_sent { background: #1e3b3a; color: #34d399; }
+  .state.trust_established { background: #1e3b1e; color: #4ade80; }
+  .metric { text-align: center; padding: 1rem; }
+  .metric .number { font-size: 2.5rem; color: #c8a84e; font-weight: bold; }
+  .metric .label { color: #8a8070; font-size: 0.75rem; letter-spacing: 1px; text-transform: uppercase; margin-top: 0.25rem; }
+  .metrics-row { display: flex; justify-content: space-around; }
+  .audit-entry { padding: 0.4rem 0; font-size: 0.8rem; color: #8a8070; border-bottom: 1px solid #0d0d15; }
+  .audit-entry .event { color: #c8a84e; }
+  .audit-entry .time { color: #5a5548; }
+  .full-width { grid-column: 1 / -1; }
+  .empty { color: #5a5548; font-style: italic; font-size: 0.85rem; text-align: center; padding: 1rem; }
+  .refresh-note { text-align: center; color: #3a3530; font-size: 0.7rem; padding: 1rem; }
+  @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>SATELLITE</h1>
+  <p>Trust Network Relay — from NuAvalon</p>
+</div>
+
+<div class="status-bar">
+  <div class="status-item"><div class="dot" id="dot-status"></div><span id="status-text">Connecting...</span></div>
+  <div class="status-item">Identities: <strong id="identity-count">-</strong></div>
+  <div class="status-item">Pending: <strong id="pending-count">-</strong></div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>METRICS</h2>
+    <div class="metrics-row">
+      <div class="metric"><div class="number" id="m-identities">-</div><div class="label">Registered</div></div>
+      <div class="metric"><div class="number" id="m-pending">-</div><div class="label">Queued</div></div>
+      <div class="metric"><div class="number" id="m-handshakes">-</div><div class="label">Handshakes</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>DIRECTORY</h2>
+    <div id="directory-list"><div class="empty">Loading...</div></div>
+  </div>
+
+  <div class="card full-width">
+    <h2>TRUST HANDSHAKES</h2>
+    <div id="handshake-list"><div class="empty">Loading...</div></div>
+  </div>
+</div>
+
+<div class="refresh-note">Auto-refreshes every 10 seconds</div>
+
+<script>
+const BASE = '/satellite';
+
+async function fetchJSON(path) {
+  try {
+    const r = await fetch(BASE + path);
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+function timeAgo(iso) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function refresh() {
+  const health = await fetchJSON('/health');
+  const dir = await fetchJSON('/directory');
+
+  // Status bar
+  const dot = document.getElementById('dot-status');
+  const statusText = document.getElementById('status-text');
+  if (health) {
+    dot.className = 'dot online';
+    statusText.textContent = 'Online';
+    document.getElementById('identity-count').textContent = health.identities;
+    document.getElementById('pending-count').textContent = health.pending_messages;
+    document.getElementById('m-identities').textContent = health.identities;
+    document.getElementById('m-pending').textContent = health.pending_messages;
+  } else {
+    dot.className = 'dot offline';
+    statusText.textContent = 'Offline';
+  }
+
+  // Directory
+  const dirList = document.getElementById('directory-list');
+  if (dir && dir.identities.length > 0) {
+    dirList.innerHTML = dir.identities.map(i => `
+      <div class="identity">
+        <div>
+          <span class="name">${esc(i.display_name || 'Anonymous')}</span>
+          <div class="fp">${esc(i.fingerprint)}</div>
+        </div>
+        <span class="seen">${timeAgo(i.last_seen)}</span>
+      </div>
+    `).join('');
+  } else {
+    dirList.innerHTML = '<div class="empty">No registered identities</div>';
+  }
+
+  // Handshakes — check each identity
+  let allHandshakes = [];
+  if (dir && dir.identities.length > 0) {
+    for (const id of dir.identities) {
+      const hs = await fetchJSON('/handshake/pending/' + id.fingerprint);
+      if (hs) {
+        allHandshakes.push(...hs.incoming.map(h => ({...h, direction: 'incoming', who: id.display_name || id.fingerprint})));
+        allHandshakes.push(...hs.outgoing.map(h => ({...h, direction: 'outgoing', who: id.display_name || id.fingerprint})));
+      }
+    }
+  }
+  // Deduplicate by id
+  const seen = new Set();
+  allHandshakes = allHandshakes.filter(h => { if (seen.has(h.id)) return false; seen.add(h.id); return true; });
+
+  document.getElementById('m-handshakes').textContent = allHandshakes.length;
+  const hsList = document.getElementById('handshake-list');
+  if (allHandshakes.length > 0) {
+    hsList.innerHTML = allHandshakes.map(h => {
+      const safeState = esc(h.state);
+      const stateClass = safeState.replace(/[^a-z_]/g, '');
+      const parties = h.from ? esc(h.from) + ' \u2192 ' + esc(h.who) : esc(h.who) + ' \u2192 ' + esc(h.to);
+      return `
+      <div class="handshake">
+        <span class="state ${stateClass}">${safeState.replace(/_/g, ' ').toUpperCase()}</span>
+        <span style="color:#8a8070;margin-left:8px">${parties}</span>
+        <span style="color:#5a5548;font-size:0.75rem;margin-left:8px">${timeAgo(h.created_at)}</span>
+      </div>`;
+    }).join('');
+  } else {
+    hsList.innerHTML = '<div class="empty">No active handshakes</div>';
+  }
+}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

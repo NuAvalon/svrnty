@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 // Playwright e2e against the dev server. The demo-critical flows (contact import, the trust
 // ceremony) render React that can't be verified in-container any other way — this is the
-// standing verification path Peter asked for (T11 demo-arc). `webServer` boots `next dev` and
+// standing verification path (T11 demo-arc). `webServer` boots `next dev` and
 // tears it down automatically; CI installs the browser, then runs `playwright test`.
 export default defineConfig({
   testDir: './e2e',

@@ -5,7 +5,14 @@
 import { canonicalize } from '@/lib/format/canonical';
 import type { NoteWireV0 } from './types';
 
-/** Bytes signed for a note v0 (excludes top-level `signature` if attached later). */
+/**
+ * Bytes signed for a note v0. Excludes the SIGNATURE-ATTACHMENT fields (`signature`, the sender's
+ * `public_key`) AND the §5 canonical-fp PQ pubkeys (`pq_kem_public_key`, `pq_sig_public_key`) so the
+ * preimage is identical whether computed before attaching them (sign side) or after they arrive on the
+ * wire (verify side). Excluding the PQ pubkeys PRESERVES the pinned DOMAIN_NOTE preimage byte-vector —
+ * they bind via the fp-match (fingerprintMatchesKey), NOT the signature. Everything else — including
+ * `from_fingerprint` and `body` — is bound, so tampering any of it fails verification.
+ */
 export function noteSigningInput(note: NoteWireV0): string {
-  return canonicalize(note, { exclude: ['signature'] });
+  return canonicalize(note, { exclude: ['signature', 'public_key', 'pq_kem_public_key', 'pq_sig_public_key'] });
 }

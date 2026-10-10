@@ -6,7 +6,7 @@ import {
   contactUpdateSigningInput, slugClaimSigningInput,
 } from './envelope';
 
-test('domain tags are the agreed protocol strings (shared vocab with Flint)', () => {
+test('domain tags are the agreed protocol strings', () => {
   assert.equal(DOMAIN_TRUST_SIGNAL, 'svrnty:trust-signal:v1');
   assert.equal(DOMAIN_CONTACT_UPDATE, 'svrnty:contact-update:v1');
   assert.equal(DOMAIN_SLUG_CLAIM, 'svrnty:slug-claim:v1');
