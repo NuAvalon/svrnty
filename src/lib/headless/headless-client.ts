@@ -175,12 +175,21 @@ export { sendTrustAffirmToPeer };
  * Send an over-wire note from a headless client: sign → seal → deposit to the peer's mailbox, and persist
  * the outbound copy to the local HeadlessStore. Mirrors messaging/transport.sendNoteToPeer but writes the
  * local copy to the Node store (sendNoteToPeer persists to the browser IndexedDB notes store).
+ *
+ * HNDL (L7): the seal is PQ-hybrid (living-book-sleeve, X25519+ML-KEM-1024) when the recipient's ML-KEM
+ * pubkey is supplied — the same fail-closed contract as transport.sendNoteToPeer: a recipient with no
+ * verified pq_kem is NOT deposited to (never a silent classical downgrade); the local copy is kept as
+ * "not sent" (deposited:false). So an agent's outbound mail is all-hybrid, and legacy/keyless peers are
+ * skipped loud-locally, never downgraded.
  */
 export async function sendNoteFromHeadless(args: {
   owner: HeadlessOwner;
   senderKind?: ParticipantKind;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+  /** Recipient's verified ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); ABSENT ⇒
+   *  fail-closed: NOT deposited (never downgraded to classical), local copy kept as not-sent. */
+  peerPqKemPublicKey?: string;
   body: string;
   threadId?: string;
   store: HeadlessStore;
@@ -213,13 +222,23 @@ export async function sendNoteFromHeadless(args: {
     args.owner.kemPublicKey,
     args.owner.sigPublicKey,
   );
-  const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
-  const mailbox_id = deriveMailboxId(args.peerFingerprint);
-  const res = await fetchImpl(`${relayBase}/envelope`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mailbox_id, blob }),
-  });
+  // fail-closed (HNDL): seal PQ-hybrid + deposit ONLY when the recipient has a verified ML-KEM-1024 pubkey.
+  // A recipient without one is NOT deposited to in a classical/downgraded form (never downgrade). The local
+  // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
+  // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
+  let deposited = false;
+  if (args.peerPqKemPublicKey) {
+    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+    const mailbox_id = deriveMailboxId(args.peerFingerprint);
+    const res = await fetchImpl(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob }),
+    });
+    deposited = res.ok;
+  } else {
+    console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
+  }
 
   // local outbound copy (Node store)
   args.store.putNote({
@@ -234,5 +253,5 @@ export async function sendNoteFromHeadless(args: {
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
   });
-  return { note_id, thread_id, deposited: res.ok };
+  return { note_id, thread_id, deposited };
 }
