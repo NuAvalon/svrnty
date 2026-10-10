@@ -50,6 +50,24 @@ let _sessionSalt: Uint8Array | null = null;
 // initSessionKey (from the passphrase + salt-b), cleared on lock. Contact AES reuses _sessionKey.
 let _contactKeys: ContactCryptoKeys | null = null;
 
+// ── session-lock hooks (P1#1 cross-identity notes-leak fix, Flint co-verify #169668) ─────────
+// Session-scoped keys held OUTSIDE this module — notably the notes store's passphrase-derived
+// _notesKey — must be dropped whenever the session LOCKS or the active identity SWITCHES, else B
+// inherits A's still-loaded key and reads A's plaintext notes. The holder REGISTERS inward
+// (messaging → client-store) so identity-core never imports a feature module (that direction caused
+// a tsc cycle). Fired from BOTH lockSession AND setActiveFingerprint — the latter is the TRUE
+// universal switch chokepoint (menu-switch, restore, AND import-activation route through it;
+// lockSession alone misses restore + import).
+const _sessionLockHooks: Array<() => void> = [];
+export function onSessionLock(fn: () => void): void {
+  _sessionLockHooks.push(fn);
+}
+function fireSessionLockHooks(): void {
+  for (const h of _sessionLockHooks) {
+    try { h(); } catch { /* a hook must never block the lock/switch */ }
+  }
+}
+
 const PBKDF2_ITERATIONS = 600_000;
 const ENC_VERSION = 1; // Encrypted record format version
 
@@ -151,6 +169,7 @@ export function lockSession(): void {
   _sessionKey = null;
   _sessionSalt = null;
   _contactKeys = null;
+  fireSessionLockHooks(); // P1#1: drop the notes-store key (+ any registered session-scoped key) on lock
 }
 
 async function encryptKeyData(data: { privateKey: string; passphrase: string }): Promise<Omit<EncryptedKeyRecord, 'fingerprint'>> {
@@ -461,6 +480,10 @@ export async function getActiveFingerprint(): Promise<string | null> {
 }
 
 export async function setActiveFingerprint(fingerprint: string): Promise<void> {
+  // P1#1: EVERY identity switch routes through here (menu-switch, restore, import-activation) — drop the
+  // prior identity's session-scoped keys (the notes-store _notesKey) FIRST so B never inherits A's loaded
+  // key and reads A's plaintext. This is the TRUE switch chokepoint (lockSession alone misses restore + import).
+  fireSessionLockHooks();
   await txPut('settings', { key: 'active_fingerprint', value: fingerprint });
 }
 
