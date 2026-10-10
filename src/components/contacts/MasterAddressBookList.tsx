@@ -129,14 +129,18 @@ export function MasterAddressBookList({
               style={{
                 ...rowBtn,
                 borderColor: selected || opened || live ? E.borderLit : E.border,
-                background: selected || opened || live
-                  ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
-                  : E.surfaceSolid,
-                boxShadow: live
-                  ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
-                  : visual.lit
-                    ? '0 0 12px color-mix(in srgb, var(--se-accent2) 16%, transparent)'
-                    : undefined,
+                background: opened
+                  ? 'color-mix(in srgb, var(--se-accent) 16%, transparent)'
+                  : selected || live
+                    ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
+                    : E.surfaceSolid,
+                boxShadow: opened
+                  ? 'inset 3px 0 0 var(--se-accent)'
+                  : live
+                    ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
+                    : visual.lit
+                      ? '0 0 12px color-mix(in srgb, var(--se-accent2) 16%, transparent)'
+                      : undefined,
               }}
             >
               {row.fingerprint ? (

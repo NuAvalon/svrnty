@@ -149,8 +149,6 @@ export function ContactActionCard({
 
       {edit}
 
-      {showMore && more ? more : null}
-
       {!edit ? (
         <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start' }}>
           {canChat && onChat ? (
@@ -168,6 +166,8 @@ export function ContactActionCard({
           </CardActionMenu>
         </div>
       ) : null}
+
+      {showMore && more ? more : null}
     </div>
   );
 }

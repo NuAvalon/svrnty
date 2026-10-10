@@ -1040,7 +1040,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         boxShadow: 'var(--se-glass-shadow)',
-        overflow: 'hidden',
+        overflow: 'visible',
       }}
     >
       
@@ -1825,7 +1825,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
               onChat={() => onOpenChat?.({ fingerprint: fp, name: focused.name })}
               actionsOpen={bookActionsOpen}
               onActionsOpenChange={setBookActionsOpen}
-              actionsSide="down"
+              actionsSide="up"
               actions={(
                 <>
                   {!svrn ? (

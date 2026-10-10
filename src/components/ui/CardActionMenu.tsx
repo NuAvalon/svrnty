@@ -27,6 +27,8 @@ export function CardActionMenu({
 
   useEffect(() => {
     if (!open) return;
+    const menu = root.current?.querySelector('[role="menu"]');
+    (menu as HTMLElement | null)?.scrollIntoView({ behavior: 'auto', block: 'nearest' });
     const onDoc = (e: PointerEvent) => {
       if (!root.current?.contains(e.target as Node)) onOpenChange(false);
     };

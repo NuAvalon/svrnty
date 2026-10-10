@@ -122,11 +122,13 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
         return r.top < window.innerHeight && r.bottom > 0;
       }))
       .toBe(true);
-    await page.getByTestId('card-actions-toggle').click();
-    await expect(page.getByTestId('card-actions-toggle-menu')).toBeVisible();
-    await expect(page.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
-    await page.getByTestId('card-actions-toggle').click();
-    await page.getByTestId('star-sheet-expand').click();
-    await expect(page.getByTestId('classical-no-fingerprint')).toBeVisible();
+    const actions = card.getByTestId('card-actions-toggle');
+    await actions.scrollIntoViewIfNeeded();
+    await actions.click({ timeout: 10_000 });
+    await expect(card.getByTestId('card-actions-toggle-menu')).toBeVisible();
+    await expect(card.getByRole('menuitem', { name: 'Edit' })).toBeVisible();
+    await actions.click();
+    await card.getByTestId('star-sheet-expand').click();
+    await expect(card.getByTestId('classical-no-fingerprint')).toBeVisible();
   });
 });
