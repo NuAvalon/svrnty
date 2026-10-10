@@ -40,14 +40,6 @@
       "added": "2026-09-30",
       "expires": "2026-10-14",
       "ref": "unified gate run 2026-09-30 (757/759 green otherwise)"
-    },
-    {
-      "file": "src/components/beta-messaging/beta-messaging-copy.test.ts",
-      "reason": "2 red asserts ('uses the queue Unlock/redeem lines verbatim', 'redeem screen is gated on isBetaIssuerProvisioned') \u2014 test expects BETA_COPY.tabLabel + gate wiring in app/page.tsx source; page.tsx was refactored by a later merge and no longer matches. Landed red via #218 on main.",
-      "owner": "hypatia",
-      "added": "2026-10-10",
-      "expires": "2026-10-24",
-      "ref": "unified gate run 2026-10-10 (PR #221, unrelated to its diff)"
     }
   ]
 }
