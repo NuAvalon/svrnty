@@ -35,6 +35,7 @@ import {
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
+import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -188,6 +189,12 @@ export interface ConsumeDeps {
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
   now?: () => string; // ISO timestamp source (inject for determinism)
+  // ③ HNDL receive gate (Flint): true iff the owner ADVERTISES a kem pub but NO ML-KEM secret could be
+  // derived (OwnerIdentity.kemPublicKey present && deriveOwnerHybridSecrets → undefined). Set by the deps
+  // builders (buildConsumeDeps / buildHeadlessConsumeDeps). When true, consumeOne treats a hybrid-package
+  // blob it cannot open as RETRYABLE (loud), never terminal — so inbound hybrid is never silently lost
+  // while the secret is transiently missing (locked session / Athena-① pending). Undefined ⇒ status quo.
+  hybridSecretMissing?: boolean;
 }
 
 export interface ConsumeSummary {
@@ -311,6 +318,20 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
+  // ③ LOUD-not-silent (Flint, HNDL receive gate): a hybrid deposit we SHOULD be able to open — the owner
+  // ADVERTISES a kem pub but we currently have NO derived ML-KEM secret (Athena-① pending / a transiently
+  // locked session) — must NEVER be acked+DELETED (= silent-loss). Leave it for RETRY, loudly. KEYED ON
+  // secret-DERIVABILITY, not open-success: when we HAVE the secret, a hybrid pkg that fails to open is
+  // genuinely terminal (corrupt / wrong-recipient) and is handled by the normal decrypt path below.
+  if (deps.hybridSecretMissing && asMailboxEnvelopePackage(blob) != null) {
+    console.error(
+      `[consume] LOUD: hybrid deposit for kem-advertising owner ${deps.owner.fingerprint.slice(0, 8)} ` +
+      `with no derivable ML-KEM secret — leaving for RETRY, not acking (acking would be silent-loss). ` +
+      `Needs the owner's kem secret (OwnerIdentity.kemSecretKey / vault PQ bundle) or a session unlock.`,
+    );
+    return { kind: 'retryable' };
+  }
+
   // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
   // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
   // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;
