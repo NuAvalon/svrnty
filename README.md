@@ -4,6 +4,8 @@
 
 **svrnty is the trust layer that depends on no one. Your identity, your contacts, and your trust graph live on your device, encrypted, controlled by you alone.**
 
+Read the [Manifesto](./MANIFESTO.md).
+
 ## The problem
 
 Every digital relationship you have is mediated by someone else's infrastructure. Your contacts live in Google's database. Your messages route through Meta's servers. Your identity is a row in someone else's table, revocable at their discretion.
