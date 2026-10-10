@@ -34,6 +34,7 @@ import {
 } from '@/lib/contacts/apply-contact-update';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
+import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -133,16 +134,59 @@ export interface NoteLiveEvent {
   from_fingerprint: string;
 }
 
+/**
+ * MUTUAL-TRUST AFFIRMATION routing seam (svrnty-trust-affirm-v0) — the mailbox's FOURTH inbound type.
+ * An affirmation is sealed to the owner with the SAME openpgp envelope as contact.updates / joiner-
+ * responses / notes, so — exactly like them — it DECRYPTS NON-NULL via the contact-update decryptor and
+ * would then be dropped on its missing `envelope.fingerprint` → silently ack-DELETED (the silent-loss).
+ * This seam routes affirmations FIRST, by their own type-checked decryptor, so the mutual-trust flip
+ * actually lands. It is the WIRE that makes "Trusted · awaiting mutual" a TRANSIENT state (it resolves
+ * when the peer's affirmation arrives) rather than a PERMANENT one (updateMutualState had zero callers —
+ * the built-not-wired over-claim this closes; Apollo ☀8178, Hypatia #167478).
+ *   • verify — decrypt + type-check the blob as an affirmation (trustAffirmOpenpgpDecryptor returns null
+ *     for a non-affirmation, incl. a note / joiner / contact-update → fall through). Does NOT authenticate
+ *     — that's accept's job (the affirmation can be forged until verifyTrustAffirmSender runs).
+ *   • accept — authenticate (verifyTrustAffirmSender: public_key↔from_fingerprint + sig + direction) THEN
+ *     bind-to-me (to_fingerprint === owner) THEN admit (in-book — the FALSE-MUTUAL gate) THEN apply the
+ *     flip (they_trust_me / reciprocal). Returns the applied event for the trust-repaint, or null if
+ *     DROPPED (unsigned / forged / misaddressed / stranger — silent I-1/I-2, terminal + acked, never
+ *     echoed). THROWS only on a store I/O failure → retryable (the apply is idempotent on redelivery).
+ * Optional: a caller that omits it keeps the exact prior behaviour (an affirmation, if any, falls to the
+ * contact-update path = the silent-loss; so the runtime binding MUST wire this once trust-affirm ships).
+ */
+export interface TrustAffirmResponseSeam {
+  verify: (blob: string) => Promise<TrustAffirmWireV0 | null>;
+  accept: (wire: TrustAffirmWireV0) => Promise<AcceptedTrustAffirmEvent | null>;
+}
+
+/** The applied affirmation's handles, returned by the affirm seam's accept for the trust live-repaint. */
+export interface AcceptedTrustAffirmEvent {
+  id: string; // the local contact record id (for the repaint — reuses the contact-book beat)
+  from_fingerprint: string;
+  trusts: boolean;
+  reciprocal: boolean;
+}
+
+/** Emitted after a mutual-trust flip is persisted so the trust map / book repaints live. */
+export interface TrustLiveEvent {
+  id: string;
+  from_fingerprint: string;
+  trusts: boolean;
+  reciprocal: boolean;
+}
+
 export interface ConsumeDeps {
   owner: OwnerIdentity;
   decrypt: EnvelopeDecryptor;
   store: ContactStore;
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
+  affirm?: TrustAffirmResponseSeam; // mutual-trust affirmation routing; omit → affirms fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
+  emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
   now?: () => string; // ISO timestamp source (inject for determinism)
 }
 
@@ -151,6 +195,7 @@ export interface ConsumeSummary {
   applied: number;
   ignited: number;
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
+  affirmed: number; // mutual-trust affirmations applied (they_trust_me / reciprocal flipped)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   acked: number;
 }
@@ -158,6 +203,7 @@ export interface ConsumeSummary {
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
+  | { kind: 'affirm'; event: TrustLiveEvent } // mutual-trust flip persisted → ack + trust repaint (NOT a book beat)
   | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
   | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
 
@@ -172,7 +218,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, dropped: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -222,6 +268,14 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
         deps.emitNote?.(outcome.event);
       } catch {
         /* inbox repaint is best-effort; a repaint failure must not block consume/ack */
+      }
+    } else if (outcome.kind === 'affirm') {
+      summary.affirmed++;
+      toAck.push(env.envelope_id); // flip persisted → consumed, ack-delete
+      try {
+        deps.emitTrust?.(outcome.event);
+      } catch {
+        /* trust repaint is best-effort; a repaint failure must not block consume/ack */
       }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
@@ -317,6 +371,38 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       }
     }
     // wire null → not a note → fall through to the contact-update consume path.
+  }
+
+  // MUTUAL-TRUST AFFIRMATION ROUTING (svrnty-trust-affirm-v0) — same discipline as the joiner + note
+  // seams above, same reason: an affirmation decrypts NON-NULL via the contact-update decryptor, then
+  // drops on its missing `envelope.fingerprint` → silently ack-DELETED. Route it by its own type-checked
+  // decryptor. affirm.verify returns null for a non-affirmation (note / joiner / contact-update → fall
+  // through unharmed), so this can never eat another type (4-way no-cross-swallow — affirm-type ≠ the
+  // other three shapes). accept authenticates → binds-to-me → admits (in-book) → applies the flip.
+  if (deps.affirm) {
+    let wire: TrustAffirmWireV0 | null;
+    try {
+      wire = await deps.affirm.verify(blob);
+    } catch {
+      wire = null; // a throwing affirm-verify is treated as not-an-affirmation → fall through (fail-safe)
+    }
+    if (wire) {
+      try {
+        const applied = await deps.affirm.accept(wire);
+        // applied (signed + bound + admitted) → affirm (ack + trust repaint); dropped (unsigned / forged /
+        // misaddressed / stranger) → terminal (silent ack — I-1/I-2, the FALSE-MUTUAL gate: no flip, no echo).
+        return applied
+          ? { kind: 'affirm', event: { id: applied.id, from_fingerprint: applied.from_fingerprint, trusts: applied.trusts, reciprocal: applied.reciprocal } }
+          : { kind: 'terminal' };
+      } catch (err) {
+        // A store I/O failure while applying a VERIFIED+ADMITTED flip → leave for retry (at-least-once).
+        // The apply is idempotent on (from_fingerprint, trusts), so a redelivered affirmation re-applies
+        // harmlessly. ACK-FOLLOWS-PERSIST: the envelope is NOT acked until the flip is durable.
+        console.error('[return-channel] trust-affirm accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // wire null → not an affirmation → fall through to the contact-update consume path.
   }
 
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
