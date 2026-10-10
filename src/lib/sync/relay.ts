@@ -109,7 +109,9 @@ export async function createRelay(exchangePackage: string): Promise<RelayResult>
  * Resolve a relay: fetch the encrypted blob and decrypt with the key from the URL fragment.
  */
 export async function resolveRelay(code: string, keyFragment: string): Promise<string> {
-  // Fetch the encrypted blob (single-use — server deletes it)
+  // Fetch the encrypted blob. Multi-use within the 7d TTL — NOT consumed on read; the server deletes
+  // it at TTL-expiry, not on-read. Single-ACCEPT is enforced downstream at the joiner accept-oracle
+  // (isCodeOutstanding ∧ codeUnderCap ∧ !alreadyAccepted), not here — see app/api/relay/[code]/route.ts.
   const res = await fetch(`/api/relay/${encodeURIComponent(code)}`);
 
   if (!res.ok) {
