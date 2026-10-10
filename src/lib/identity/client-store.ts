@@ -1465,6 +1465,19 @@ export async function importVaultContents(
     }
   }
 
+  // Message/notes store (encrypted rows + salt) — the backup gap this closes. Fail-soft like contacts:
+  // identity+keys are the launch-blocker, notes are additive, so a notes-import hiccup never aborts the
+  // identity restore. importNotesStore restores the salt FIRST so the notes-key re-derives from the
+  // vault passphrase on next unlock. (Athena, launch-blocker; Flint-gated.)
+  if (contents.notes) {
+    try {
+      const { importNotesStore } = await import('@/lib/messaging/store');
+      await importNotesStore(contents.notes);
+    } catch (e) {
+      console.warn('[restore] notes/message store import failed (identity+keys restored OK):', (e as Error)?.message);
+    }
+  }
+
   await setActiveFingerprint(fp);
   return fp;
 }

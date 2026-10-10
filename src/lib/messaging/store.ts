@@ -163,6 +163,41 @@ export function lockNotesStore(): void {
   _notesSalt = null;
 }
 
+// ── Backup export/import (Athena — launch-blocker: the message store must ride the .svrnty vault) ──
+// The .svrnty backup (packVault) covered identity/keys/contacts/vault but NOT the notes/message store.
+// We export the ALREADY-ENCRYPTED rows + the notes salt — never plaintext (rows stay sealed under the
+// notes-key; packVault re-encrypts the whole VaultContents on top = double-sealed). Restore re-derives
+// the notes-key from the VAULT passphrase (initNotesStore uses the same passphrase, separate salt) +
+// the restored salt. Flint-gated before ship (rides the master/passphrase-keyed envelope, never plaintext).
+export interface NotesBackup {
+  threads: ThreadRow[];
+  notes: NoteRow[];
+  ring_channels: RingRow[];
+  salt: string | null; // notes_encryption_salt (base64) — REQUIRED so the notes-key re-derives on restore
+}
+
+export async function exportNotesStore(): Promise<NotesBackup> {
+  await openDb();
+  const saltSetting = await txGet<{ key: string; value: string }>('settings', 'notes_encryption_salt');
+  return {
+    threads: await txGetAll<ThreadRow>('threads'),
+    notes: await txGetAll<NoteRow>('notes'),
+    ring_channels: await txGetAll<RingRow>('ring_channels'),
+    salt: saltSetting?.value ?? null,
+  };
+}
+
+export async function importNotesStore(backup: NotesBackup): Promise<void> {
+  await openDb();
+  // Salt FIRST: a later initNotesStore(passphrase) must re-derive the ORIGINAL notes-key. If the salt
+  // isn't restored before initNotesStore runs, it mints a fresh random salt → wrong key → the restored
+  // rows are undecryptable = silent-loss-on-restore. Order is load-bearing.
+  if (backup?.salt) await txPut('settings', { key: 'notes_encryption_salt', value: backup.salt });
+  for (const t of backup?.threads ?? []) await txPut('threads', t);
+  for (const n of backup?.notes ?? []) await txPut('notes', n);
+  for (const c of backup?.ring_channels ?? []) await txPut('ring_channels', c);
+}
+
 type ThreadRow = { thread_id: string; enc: EncryptedBlob };
 type NoteRow = { note_id: string; thread_id: string; enc: EncryptedBlob };
 type RingRow = { channel_id: string; enc: EncryptedBlob };

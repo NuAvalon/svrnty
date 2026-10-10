@@ -101,6 +101,7 @@ import {
   IV_LENGTH,
 } from '../crypto/kdf';
 import type { TrustGraph } from '../trust/types';
+import type { NotesBackup } from '../messaging/store';
 import type { KeyVault } from '../crypto/recovery';
 
 // --- Magic bytes ---
@@ -131,6 +132,7 @@ export interface VaultContents {
   settings: VaultSettings;
   recovery: unknown | null; // KeyVault (Shamir shards metadata)
   sync: VaultSync;
+  notes?: NotesBackup; // message/notes store (encrypted rows + salt) — optional for back-compat (Athena, launch-blocker)
 }
 
 export interface VaultIdentity {

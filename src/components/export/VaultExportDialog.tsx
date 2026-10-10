@@ -100,6 +100,7 @@ export function VaultExportDialog({
       const { createVaultContents, packVault, downloadVault } = await import(
         '@/lib/sync/vault'
       );
+      const { exportNotesStore } = await import('@/lib/messaging/store');
       const contents = createVaultContents(
         backup.identity,
         vaultKeys,
@@ -107,6 +108,10 @@ export function VaultExportDialog({
         { safeWord: '' },
         vaultData || null,
       );
+      // Include the message/notes store (encrypted rows + salt) — was a backup gap: .svrnty covered
+      // identity/keys/contacts/vault but NOT messages. Exports raw sealed rows (never plaintext);
+      // packVault re-encrypts on top. Empty/no-op if notes were never used. (Athena, launch-blocker.)
+      contents.notes = await exportNotesStore();
       const packed = await packVault(contents, password);
       downloadVault(packed);
       setStep('done');
