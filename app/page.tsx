@@ -9,6 +9,7 @@ import { GrowSurface } from '@/components/GrowSurface';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
 import { NotesInbox } from '@/components/notes/NotesInbox';
 import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
+import { BETA_COPY } from '@/components/beta-messaging/beta-messaging-copy';
 import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gate-on';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
@@ -635,7 +636,7 @@ export default function Home() {
                 className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
-                Notes
+                {BETA_COPY.tabLabel}
               </TabsTrigger>
             </TabsList>
 

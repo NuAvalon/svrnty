@@ -9,6 +9,7 @@
 
 import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
 import { loadKey } from '@/lib/identity/client-store';
+import { NotesInbox } from '@/components/notes/NotesInbox';
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
 import { BETA_COPY } from './beta-messaging-copy';
 import { isBetaIssuerProvisioned } from './is-beta-gate-on';
@@ -126,7 +127,10 @@ export function BetaMessagingTab({ identity, gateOn }: Props) {
       }}
     >
       {claimed ? (
-        <BetaExplainer />
+        <>
+          <BetaExplainer />
+          <NotesInbox identity={identity} />
+        </>
       ) : (
         <form onSubmit={(e) => void onRedeem(e)} data-testid="beta-redeem-form">
           <h2
