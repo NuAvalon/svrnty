@@ -19,14 +19,20 @@ import {
   type NoteResponseSeam,
   type TrustAffirmResponseSeam,
 } from '@/lib/sync/consume-mailbox';
-import { openpgpEnvelopeDecryptor } from '@/lib/sync/contact-update-envelope';
-import { noteOpenpgpDecryptor, sealNoteTo } from '@/lib/messaging/seal';
+import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/contact-update-envelope';
+import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
-import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
+import { trustAffirmOpenpgpDecryptor, parseTrustAffirmWire } from '@/lib/trust/trust-affirm-seal';
 import { acceptTrustAffirm } from '@/lib/trust/trust-affirm-consume';
 import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
+// L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
+// (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
+import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
+import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
+import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
+import type { LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore } from './headless-store';
 import type { NoteWireV0, NoteRecord, NoteThread, ParticipantKind } from '@/lib/messaging/types';
@@ -40,10 +46,20 @@ export interface HeadlessOpts {
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
-function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets): NoteResponseSeam {
+  // Single dual-read chokepoint (Option-B, mirrors FE buildNoteSeam): hybrid-FIRST (makeHybridOpener →
+  // openMailboxEnvelope bound to MY secrets + parseNoteWire, the SAME type-gate the classical path uses →
+  // no-cross-swallow unchanged), classical FALLBACK. Classical-only when the owner has no derivable hybrid
+  // secret (classical identity, or custody ① pending — then the ③ gate leaves un-openable hybrid for retry).
+  const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const verifyNote = hybrid
+    ? dualReadOpener<NoteWireV0>(
+        makeHybridOpener<NoteWireV0>((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseNoteWire),
+        classicalNote,
+      )
+    : classicalNote;
   return {
-    verify: (blob) => decryptNote(blob),
+    verify: (blob) => verifyNote(blob),
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
       if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
@@ -83,10 +99,18 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
 }
 
 // ── the mutual-trust AFFIRMATION seam, Node-backed (acceptTrustAffirm is already injection-based) ──
-function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets): TrustAffirmResponseSeam {
+  // Single dual-read chokepoint (Option-B, mirrors FE buildTrustAffirmSeam): hybrid-FIRST + classical
+  // FALLBACK, reusing parseTrustAffirmWire (the SAME asAffirm type-gate → no-cross-swallow unchanged).
+  const classicalAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const verifyAffirm = hybrid
+    ? dualReadOpener(
+        makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseTrustAffirmWire),
+        classicalAffirm,
+      )
+    : classicalAffirm;
   return {
-    verify: (blob) => decryptAffirm(blob),
+    verify: (blob) => verifyAffirm(blob),
     accept: (wire) =>
       acceptTrustAffirm({
         wire,
@@ -105,31 +129,45 @@ function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: (
 }
 
 /**
- * Assemble the consume deps for a headless owner over a HeadlessStore. The joiner (Grow-gate) seam is
- * omitted — headless agents don't run the browser Grow flow; contact-update + note + affirm cover receive.
+ * Assemble the consume deps for a headless owner over a HeadlessStore (ASYNC — it derives the owner's
+ * hybrid open-material). The joiner (Grow-gate) seam is omitted — headless agents don't run the browser
+ * Grow flow; contact-update + note + affirm cover receive.
  *
- * ③ NO-SILENT-LOSS (Flint's HNDL gate): a headless agent ADVERTISES a kem pub on its card, so senders
- * WILL hybrid-seal to it — but until Athena's custody ① threads the owner's ML-KEM SECRET onto
- * OwnerIdentity (kemSecretKey), this process has no secret to OPEN those blobs with. We therefore set
- * `hybridSecretMissing` so consumeOne LEAVES an un-openable hybrid blob FOR RETRY (loud) instead of
- * silently ack+deleting it — the mail waits in the mailbox until the secret arrives, never vanishes.
- *   • PRE-① (now): OwnerIdentity carries no kemSecretKey ⇒ no secret derivable ⇒ missing IFF we advertise
- *     a kem pub ⇒ `!!owner.kemPublicKey`. The openers stay classical-only; the ③ gate covers hybrid blobs.
- *   • POST-① (Athena's field lands): derive the secret via deriveOwnerHybridSecrets + compose the
- *     dualReadOpener hybrid path here (mirroring buildConsumeDeps) so agents actually OPEN hybrid mail;
- *     `hybridSecretMissing` then flips to false (secret present) and the happy path lights up.
+ * L7 HYBRID RECEIVE (single dual-read chokepoint, mirrors FE buildConsumeDeps): each of the 3 seams opens
+ * hybrid-FIRST (dualReadOpener over makeHybridOpener, off the owner's ML-KEM secret) then falls back to
+ * classical OpenPGP for in-flight legacy blobs. The owner's ML-KEM secret rides ON OwnerIdentity
+ * (kemSecretKey, custody ① — headless has no browser vault/loadPQKeys), B64 → deriveOwnerHybridSecrets.
+ *   • secret DERIVABLE ⇒ the hybrid path OPENS inbound hybrid mail; hybridSecretMissing=false.
+ *   • secret ABSENT/un-derivable (classical identity, or custody ① pending) ⇒ classical-only openers, and
+ *     hybridSecretMissing=true so Flint's ③ gate LEAVES an un-openable hybrid blob FOR RETRY (loud),
+ *     never silently acked+dropped — the mail waits until the secret arrives, never vanishes.
+ * The flag is keyed on ACTUAL derivability (not mere kem-pub presence) so a secret-HAVING agent never
+ * loops its mail retryable-FOREVER (the flip-side harm Flint pinned, #168382).
  */
-export function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): ConsumeDeps {
+export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeDeps> {
   const now = () => new Date().toISOString();
+  // Derive THIS owner's hybrid OPEN-material from the custody-threaded ML-KEM secret (OwnerIdentity.kemSecretKey,
+  // ① — the SAME helper + B64 contract the FE path uses). undefined for a classical identity OR when the secret
+  // is absent/un-derivable (① pending / wrong-length) → classical-only openers + the ③ loud-retry gate below.
+  const hybrid = await deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey);
+  const classicalCU = openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase);
   return {
     owner,
-    decrypt: openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase),
+    // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
+    decrypt: hybrid
+      ? dualReadOpener(
+          makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseContactUpdateWire),
+          classicalCU,
+        )
+      : classicalCU,
     store: store.asContactStore(),
-    note: buildNoteSeam(owner, store, now),
-    affirm: buildTrustAffirmSeam(owner, store, now),
-    // ③ loud-not-silent: advertise-kem-pub but no derivable ML-KEM secret (⟵ Athena ① pending) ⇒ a hybrid
-    // blob is LEFT FOR RETRY by consumeOne, never silently acked+dropped. Flips false once the secret lands.
-    hybridSecretMissing: !!owner.kemPublicKey,
+    note: buildNoteSeam(owner, store, now, hybrid),
+    affirm: buildTrustAffirmSeam(owner, store, now, hybrid),
+    // ③ loud-not-silent, keyed on ACTUAL derivability (Flint's hard gate #168382): advertise-kem-pub but the
+    // ML-KEM secret did NOT derive ⇒ a hybrid blob is LEFT FOR RETRY, never silently acked+dropped. The instant
+    // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
+    // looping it retryable-FOREVER (the flip-side harm). advertise-kem && !hybrid ⟺ missing.
+    hybridSecretMissing: !!owner.kemPublicKey && !hybrid,
     relayBase: opts.relayBase,
     fetchImpl: opts.fetchImpl,
     now,
@@ -138,7 +176,7 @@ export function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessSt
 
 /** Poll the owner's smart mailbox ONCE: decrypt → verify → apply → persist → ack every pending envelope. */
 export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary> {
-  return consumeInboundContactUpdates(buildHeadlessConsumeDeps(owner, store, opts));
+  return consumeInboundContactUpdates(await buildHeadlessConsumeDeps(owner, store, opts));
 }
 
 export interface HeadlessPollHandle {

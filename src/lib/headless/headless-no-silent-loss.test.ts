@@ -26,19 +26,20 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
-import { HeadlessStore } from './headless-store';
+import { uint8ToBase64 } from '@/lib/crypto/pq';
+import { HeadlessStore, type HeadlessContact } from './headless-store';
 import { type HeadlessOwner, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
 
 const RELAY = 'http://relay.test/api/relay';
 
-type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; sig: string };
+type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
 async function mint(): Promise<Id> {
   const a = await mintHeadlessAgent({ throwaway: true });
   const id: any = a.introduction.card.identity;
   return {
     fp: id.fingerprint, pub: id.public_key,
     priv: a.secret_material.classicalPrivateKey, kpass: a.secret_material.classicalKpass,
-    kem: id.pq_kem_public_key, sig: id.pq_sig_public_key,
+    kem: id.pq_kem_public_key, kemSec: uint8ToBase64(a.secret_material.mlkem1024Sec), sig: id.pq_sig_public_key,
   };
 }
 // B advertises a kem pub (mint gives one) but carries NO kem SECRET on its OwnerIdentity — the exact
@@ -48,6 +49,17 @@ function ownerKemAdvertisedNoSecret(id: Id): HeadlessOwner {
     fingerprint: id.fp, publicKeyArmored: id.pub, privateKeyArmored: id.priv, passphrase: id.kpass,
     kemPublicKey: id.kem, sigPublicKey: id.sig, // kem PUB advertised; NO kem secret
   };
+}
+// B carries its ML-KEM SECRET on OwnerIdentity (custody ① threaded it) — the post-① state: it can OPEN
+// the hybrid blobs senders seal to its advertised kem pub.
+function ownerWithSecret(id: Id): HeadlessOwner {
+  return {
+    fingerprint: id.fp, publicKeyArmored: id.pub, privateKeyArmored: id.priv, passphrase: id.kpass,
+    kemPublicKey: id.kem, kemSecretKey: id.kemSec, sigPublicKey: id.sig,
+  };
+}
+function asContact(id: Id, over: Partial<HeadlessContact> = {}): HeadlessContact {
+  return { id: 'c_' + id.fp.slice(0, 8), fingerprint: id.fp, public_key: id.pub, pq_sig_public_key: id.sig, pq_kem_public_key: id.kem, ...over };
 }
 
 function mockRelay() {
@@ -107,4 +119,41 @@ test('FLIP-GATE: hybrid note to a kem-advertising headless owner with NO secret 
   );
   assert.equal(summary.acked, 0, 'the hybrid blob was NOT acked (advertise-kem ⟹ must-open; missing secret is loud, not a silent drop)');
   assert.equal(summary.notes, 0, 'and it was not (and must not be) fabricated as delivered while unopened');
+});
+
+test('FLIP-GATE (happy path, post-①): hybrid note to a headless owner WITH its kem secret → OPENS + persists + acks (never retryable-forever)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const { fetchImpl, boxes } = mockRelay();
+  const bStore = new HeadlessStore();
+  bStore.upsertContact(asContact(A)); // A in B's book so an opened note is admitted + persisted
+  const mailboxB = deriveMailboxId(B.fp);
+
+  const sent = await sendNoteFromHeadless({
+    owner: ownerWithSecret(A),
+    peerFingerprint: B.fp,
+    peerPublicKeyArmored: B.pub,
+    peerPqKemPublicKey: B.kem,
+    body: 'hybrid hello an agent CAN open',
+    store: new HeadlessStore(),
+    relayBase: RELAY,
+    fetchImpl,
+  });
+  assert.equal(sent.deposited, true);
+  assert.equal((boxes.get(mailboxB) ?? []).length, 1, 'precondition: one hybrid blob waiting');
+
+  // B WITH its ML-KEM secret polls — the dualReadOpener OPENS the hybrid blob (hybridSecretMissing=false,
+  // so Flint's ③ does NOT intercept it; it decrypts, verifies, admits, persists, and acks).
+  const summary = await pollHeadlessOnce(ownerWithSecret(B), bStore, { relayBase: RELAY, fetchImpl });
+
+  // OPENS + delivers, the flip-side of no-silent-loss: a secret-HAVING agent must NOT loop its mail
+  // retryable-forever. The note is persisted, the blob is acked + removed — proof hybridSecretMissing is
+  // keyed on derivability (false here), not on mere kem-pub presence.
+  assert.equal(summary.notes, 1, 'the hybrid note was OPENED + persisted (dualReadOpener hybrid path)');
+  assert.equal(summary.acked, 1, 'the blob was acked (consumed), NOT left retryable-forever');
+  assert.equal((boxes.get(mailboxB) ?? []).length, 0, 'blob removed from the mailbox — processed, not stuck');
+  const inbound = bStore.listNotes();
+  assert.equal(inbound.length, 1);
+  assert.equal(inbound[0].direction, 'inbound');
+  assert.equal(inbound[0].body, 'hybrid hello an agent CAN open');
+  assert.equal(inbound[0].from_fingerprint, A.fp);
 });
