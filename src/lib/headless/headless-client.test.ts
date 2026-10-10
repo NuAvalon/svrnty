@@ -175,6 +175,97 @@ test('headless RECEIVE: a BLOCKED in-book sender note is NOT persisted — block
   assert.equal(bStore.listThreads().length, 0, 'no thread created for a blocked sender');
 });
 
+test('headless RECEIVE anti-rollback (#3 monotonic): a replayed STALE "trust" cannot revive a newer "break" (no false-Mutual)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const { fetchImpl } = mockRelay();
+  const bStore = new HeadlessStore();
+  bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted' })); // B trusts A → an affirm can reach mutual
+
+  const OLD = '2026-10-10T10:00:00.000Z';
+  const NEW = '2026-10-10T11:00:00.000Z';
+  const base = {
+    senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
+    senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, relayBase: RELAY, fetchImpl,
+  };
+
+  // 1) A affirms trust (OLD) → B applies → they_trust_me TRUE.
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 'af_trust_old', sentAt: OLD });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, true, 'trust applied');
+
+  // 2) A BREAKS trust (NEW > OLD) → B applies → they_trust_me FALSE (the survivor revokes).
+  await sendTrustAffirmToPeer({ ...base, trusts: false, affirmId: 'af_break_new', sentAt: NEW });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, false, 'break applied — trust revoked');
+
+  // 3) REPLAY the stale OLD "trust" (sent_at=OLD < last-applied NEW, back-dated or captured-and-replayed).
+  //    MUST be dropped — a superseded affirmation can never resurrect revoked trust.
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 'af_trust_old_replay', sentAt: OLD });
+  const summary = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+
+  assert.equal(summary.affirmed, 0, 'the stale replayed trust is NOT applied');
+  assert.equal(summary.dropped, 1, 'it is dropped terminally (superseded by the newer break)');
+  assert.equal(summary.acked, 1, 'and acked away — not left to replay forever');
+  const a = bStore.getContactByFingerprint(A.fp)!;
+  assert.equal(a.mutual?.they_trust_me, false, 'ANTI-ROLLBACK: a replayed stale affirmation cannot resurrect broken trust');
+  assert.equal(a.mutual?.last_affirm_at, NEW, 'the per-sender monotonic cursor stayed at the newest applied affirm');
+});
+
+test('headless anti-rollback NaN-hardening (#3): a GARBAGE-timestamp affirm is dropped — no false-Mutual revival, no cursor poison', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const { fetchImpl } = mockRelay();
+  const bStore = new HeadlessStore();
+  bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted' }));
+  const base = {
+    senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
+    senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, relayBase: RELAY, fetchImpl,
+  };
+  const OLD = '2026-10-10T10:00:00.000Z';
+  const NEW = '2026-10-10T11:00:00.000Z';
+
+  // A trusts (OLD) then BREAKS (NEW) → they_trust_me false, cursor = NEW.
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 't1', sentAt: OLD });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  await sendTrustAffirmToPeer({ ...base, trusts: false, affirmId: 'b1', sentAt: NEW });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, false, 'break applied — trust revoked');
+
+  // HOSTILE: the (in-book) sender signs a "trust" with a GARBAGE sent_at. Unguarded, Date.parse→NaN would
+  // make `NaN < NEW` false → the malformed affirm would APPLY (revive trust) and poison the cursor.
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 'garbage', sentAt: 'not-a-timestamp' });
+  const s = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(s.affirmed, 0, 'the garbage-timestamp affirm is NOT applied');
+  assert.equal(s.dropped, 1, 'it is dropped terminally (malformed sent_at fails the finite guard)');
+  const a = bStore.getContactByFingerprint(A.fp)!;
+  assert.equal(a.mutual?.they_trust_me, false, 'NO false-Mutual revival — trust stays revoked');
+  assert.equal(a.mutual?.last_affirm_at, NEW, 'the cursor is NOT poisoned — it stays at the last VALID affirm');
+
+  // Proof the cursor survived intact: a replayed legit OLD trust is still correctly dropped (< NEW).
+  await sendTrustAffirmToPeer({ ...base, trusts: true, affirmId: 't1replay', sentAt: OLD });
+  await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, false, 'ordering still enforced — garbage never defeated it');
+});
+
+test('headless RECEIVE: a BLOCKED in-book sender\'s AFFIRM is dropped — no flip (survivor-safety, affirm seam symmetry)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const { fetchImpl } = mockRelay();
+  const bStore = new HeadlessStore();
+  bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted', blocked: true })); // in book but BLOCKED
+
+  await sendTrustAffirmToPeer({
+    senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
+    senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, trusts: true, relayBase: RELAY, fetchImpl,
+  });
+  const s = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
+
+  assert.equal(s.affirmed, 0, 'a BLOCKED sender\'s affirmation is NOT applied (admitContact: in-book AND not-blocked)');
+  assert.equal(s.dropped, 1, 'dropped terminally — a blocked person cannot re-establish trust via the affirm seam');
+  assert.notEqual(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me, true, 'blocked sender cannot flip they_trust_me');
+});
+
 test('headless SEND: deposits to the peer fp-derived mailbox (relay-independent addressing)', async () => {
   const [A, B] = [await mint(), await mint()];
   const { fetchImpl, boxes } = mockRelay();
