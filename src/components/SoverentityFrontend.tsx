@@ -22,6 +22,13 @@ import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
+import {
+  cardMethodsForFace,
+  emptyOwnerCard,
+  hydrateOwnerCard,
+  ownerLensFace,
+  type OwnerCardBag,
+} from '@/components/identity/owner-card';
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
@@ -299,6 +306,8 @@ export function SoverentityFrontend({
   const [shareBusy, setShareBusy] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
   const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
+  const [ownerBag, setOwnerBag] = useState<OwnerCardBag>(() => emptyOwnerCard());
+  const [activeLensId, setActiveLensId] = useState<string | undefined>(undefined);
   const [audience, setAudience] = useState<
     { fingerprint: string; name: string; public_key?: string; trusted?: boolean; tags?: string[] }[]
   >([]);
@@ -345,6 +354,11 @@ export function SoverentityFrontend({
       return;
     }
     setLocalMethods(loadLocalMethods(fp));
+    const bag = hydrateOwnerCard(fp, identity?.identity?.email);
+    setOwnerBag(bag);
+    setActiveLensId((prev) =>
+      prev && bag.lenses.some((l) => l.id === prev) ? prev : bag.defaultLensId,
+    );
     void getAllContacts(fp).then((rows) => {
       setAudience(
         rows
@@ -378,6 +392,26 @@ export function SoverentityFrontend({
       }).catch(() => {});
     }
   }, [identity]);
+
+  const ownerFace = useMemo(
+    () =>
+      ownerLensFace(ownerBag, activeLensId, {
+        displayName: identity?.identity?.name,
+        handle: claimedUrl || undefined,
+      }),
+    [ownerBag, activeLensId, identity?.identity?.name, claimedUrl],
+  );
+  const ownerFaceMethods = useMemo(
+    () =>
+      cardMethodsForFace(ownerBag, ownerFace, {
+        email: identity?.identity?.email,
+        signal: localMethods.signal,
+        site:
+          localMethods.site ||
+          (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined),
+      }),
+    [ownerBag, ownerFace, identity?.identity?.email, localMethods, claimedUrl],
+  );
 
   const handleSetPassphrase = async () => {
     if (newPassphrase !== confirmPassphrase) {
@@ -1847,9 +1881,20 @@ export function SoverentityFrontend({
           </div>
         )}
         <SovereignIdentityCard
-          name={identity.identity.name}
+          name={ownerFace.displayName || identity.identity.name}
           fingerprint={identity.identity.fingerprint}
-          handle={claimedUrl || undefined}
+          handle={ownerFace.handle}
+          note={ownerFace.note}
+          lensName={ownerFace.lensName}
+          methods={ownerFaceMethods}
+          lenses={ownerBag.lenses.map((l) => ({
+            id: l.id,
+            name: l.name,
+            isDefault: l.id === ownerBag.defaultLensId,
+          }))}
+          selectedLensId={activeLensId}
+          onSelectLens={setActiveLensId}
+          onEditFaces={() => setVaultOpen(true)}
           email={identity.identity.email}
           signal={localMethods.signal}
           site={
@@ -1908,7 +1953,7 @@ export function SoverentityFrontend({
                 />
               )}
               <CardMenuItem
-                label="Vault & device"
+                label="Faces & vault"
                 onClick={() => {
                   setVaultOpen(true);
                   close();
@@ -1961,6 +2006,7 @@ export function SoverentityFrontend({
               [kind]: value,
             });
             setLocalMethods(nextMethods);
+            setOwnerBag(hydrateOwnerCard(fp, identity.identity.email));
           }}
           sendFn={handleContactMethodSend}
         />
@@ -2007,12 +2053,15 @@ export function SoverentityFrontend({
         <CardMorePanel
           open={vaultOpen}
           onOpenChange={setVaultOpen}
-          label="Vault & device"
+          label="Faces & vault"
           testId="identity-vault-toggle"
         >
           <OwnerCardStudio
             fingerprint={identity.identity.fingerprint}
             email={identity.identity.email}
+            selectedLensId={activeLensId}
+            onSelectedLensIdChange={setActiveLensId}
+            onBagChange={setOwnerBag}
             onEmailChange={async (value) => {
               const fp = identity.identity.fingerprint as string;
               const next = {

@@ -22,6 +22,13 @@ import { SimpleQRCode } from '@/components/SimpleQRCode';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { GROW_INVITE_MAX, clampGrowCap, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { GATE_COPY } from '@/lib/trust/grow-gate';
+import {
+  hydrateOwnerCard,
+  methodKindLabel,
+  ownerLensFace,
+  type OwnerCardBag,
+} from '@/components/identity/owner-card';
+import { OwnerLensPicker } from '@/components/identity/OwnerLensPicker';
 
 type Props = {
   open: boolean;
@@ -52,6 +59,8 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
   const [spent, setSpent] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mintNonce, setMintNonce] = useState(0);
+  const [lensBag, setLensBag] = useState<OwnerCardBag | null>(null);
+  const [lensId, setLensId] = useState<string | undefined>(undefined);
   const usesRef = useRef(uses);
   const channelRef = useRef(channel);
   usesRef.current = uses;
@@ -93,6 +102,14 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
       setError(null);
       setSpent(false);
       return;
+    }
+    const fp = identity?.identity?.fingerprint as string | undefined;
+    if (fp) {
+      const bag = hydrateOwnerCard(fp, identity?.identity?.email);
+      setLensBag(bag);
+      setLensId((prev) =>
+        prev && bag.lenses.some((l) => l.id === prev) ? prev : bag.defaultLensId,
+      );
     }
     void mintRef.current();
   }, [open, channel, mintNonce]);
@@ -158,6 +175,72 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
         <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim, lineHeight: 1.5 }}>
           {TRUST_RECIPE_COPY.mycelial}
         </p>
+
+        {lensBag && lensBag.lenses.length > 0 ? (
+          <div style={{ marginTop: 18 }}>
+            <p style={{ margin: '0 0 8px', fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: E.dim }}>
+              Which face?
+            </p>
+            <OwnerLensPicker
+              lenses={lensBag.lenses}
+              selectedId={lensId}
+              defaultId={lensBag.defaultLensId}
+              onSelect={setLensId}
+              testId="grow-lens-picker"
+            />
+            {(() => {
+              const face = ownerLensFace(lensBag, lensId, {
+                displayName: identity?.identity?.name,
+              });
+              return (
+                <div
+                  data-testid="grow-lens-face"
+                  data-lens-id={face.lensId}
+                  style={{
+                    marginTop: 10,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: `1px solid ${E.border}`,
+                    background: E.inputBg,
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: E.accent }}>
+                    {face.lensName}
+                  </p>
+                  <p
+                    data-testid="grow-lens-face-name"
+                    style={{ margin: '4px 0 0', fontSize: 16, fontWeight: 600, color: E.text }}
+                  >
+                    {face.displayName || identity?.identity?.name || 'Unnamed'}
+                  </p>
+                  {face.handle ? (
+                    <p style={{ margin: '2px 0 0', fontSize: 12, color: E.accent, fontFamily: E.fontMono }}>
+                      {face.handle.startsWith('@') ? face.handle : `@${face.handle}`}
+                    </p>
+                  ) : null}
+                  {face.note ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 12, color: E.muted }}>{face.note}</p>
+                  ) : null}
+                  {face.methods.length ? (
+                    <p style={{ margin: '8px 0 0', fontSize: 12, color: E.muted, lineHeight: 1.45 }}>
+                      {face.methods
+                        .map((m) => `${methodKindLabel(m.kind)}${m.value ? ` · ${m.value}` : ''}`)
+                        .join(' · ')}
+                    </p>
+                  ) : (
+                    <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim }}>
+                      This face has no extra channels yet.
+                    </p>
+                  )}
+                  <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.45 }}>
+                    Same key. This is the face you intend to hand them. Extra channels stay on this
+                    device until the living card schema carries them.
+                  </p>
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
 
         <p style={{ margin: '18px 0 8px', fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: E.dim }}>
           How are they joining?

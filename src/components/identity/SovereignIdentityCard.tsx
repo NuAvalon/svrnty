@@ -9,8 +9,22 @@ import { solarEmber as E, solarGlass } from '../recovery/solar-ember';
 import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
 import { CardActionMenu, CardMenuItem } from '@/components/ui/CardActionMenu';
+import { OwnerLensPicker } from '@/components/identity/OwnerLensPicker';
 
 export type MethodKind = 'email' | 'signal' | 'site';
+
+export type IdentityCardMethod = {
+  id?: string;
+  kind: string;
+  label: string;
+  value?: string;
+};
+
+export type IdentityCardLens = {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+};
 
 export interface SovereignIdentityCardProps {
   name: string;
@@ -20,6 +34,16 @@ export interface SovereignIdentityCardProps {
   email?: string;
   signal?: string;
   site?: string;
+  /** Short line under the name for this face. */
+  note?: string;
+  /** Active lens name — painted on the card chrome. */
+  lensName?: string;
+  /** When set, these rows replace the classic email/Signal/site trio. */
+  methods?: IdentityCardMethod[];
+  lenses?: IdentityCardLens[];
+  selectedLensId?: string;
+  onSelectLens?: (id: string) => void;
+  onEditFaces?: () => void;
   hasPqKeys?: boolean;
   onRevise?: (kind: MethodKind) => void;
   onOpenCircle?: () => void;
@@ -46,7 +70,7 @@ function maskSignal(value: string): string {
   return value;
 }
 
-function MethodIcon({ kind }: { kind: MethodKind }) {
+function MethodIcon({ kind }: { kind: string }) {
   const stroke = E.accent;
   const common = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke, strokeWidth: 1.5, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
   if (kind === 'email') {
@@ -57,7 +81,7 @@ function MethodIcon({ kind }: { kind: MethodKind }) {
       </svg>
     );
   }
-  if (kind === 'signal') {
+  if (kind === 'signal' || kind === 'phone' || kind === 'whatsapp' || kind === 'telegram') {
     return (
       <svg {...common}>
         <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.34a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.74-1.74a2 2 0 0 1 2.11-.45c.74.32 1.53.55 2.34.68A2 2 0 0 1 22 16.92z" />
@@ -79,11 +103,11 @@ function MethodRow({
   emptyHint,
   onRevise,
 }: {
-  kind: MethodKind;
+  kind: string;
   label: string;
   value?: string;
   emptyHint: string;
-  onRevise?: (kind: MethodKind) => void;
+  onRevise?: () => void;
 }) {
   return (
     <div
@@ -139,31 +163,37 @@ function MethodRow({
           {value || emptyHint}
         </span>
       </div>
-      <button
-        type="button"
-        className="ember-act"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onRevise?.(kind);
-        }}
-        aria-label={`Revise ${label}`}
-        style={{
-          background: 'transparent',
-          border: 'none',
-          color: E.accent,
-          fontSize: 11,
-          fontFamily: E.fontSans,
-          cursor: 'pointer',
-          padding: '2px 4px',
-          flexShrink: 0,
-          letterSpacing: '0.04em',
-        }}
-      >
-        Revise
-      </button>
+      {onRevise ? (
+        <button
+          type="button"
+          className="ember-act"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRevise();
+          }}
+          aria-label={`Revise ${label}`}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: E.accent,
+            fontSize: 11,
+            fontFamily: E.fontSans,
+            cursor: 'pointer',
+            padding: '2px 4px',
+            flexShrink: 0,
+            letterSpacing: '0.04em',
+          }}
+        >
+          Revise
+        </button>
+      ) : null}
     </div>
   );
+}
+
+function isClassicKind(kind: string): kind is MethodKind {
+  return kind === 'email' || kind === 'signal' || kind === 'site';
 }
 
 export function SovereignIdentityCard({
@@ -173,6 +203,13 @@ export function SovereignIdentityCard({
   email,
   signal,
   site,
+  note,
+  lensName,
+  methods,
+  lenses,
+  selectedLensId,
+  onSelectLens,
+  onEditFaces,
   hasPqKeys = false,
   onRevise,
   onOpenCircle,
@@ -209,6 +246,14 @@ export function SovereignIdentityCard({
     downloadOwnVCard({ name, fingerprint, email, signal, site });
   };
 
+  const rows: IdentityCardMethod[] = methods
+    ? methods
+    : [
+        { kind: 'email', label: 'Email', value: email },
+        { kind: 'signal', label: 'Signal', value: signalDisplay },
+        { kind: 'site', label: 'Site', value: site },
+      ];
+
   return (
     <div
       style={{
@@ -233,7 +278,25 @@ export function SovereignIdentityCard({
           background: E.surfaceSolid,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        {lenses && lenses.length > 0 && onSelectLens ? (
+          <div style={{ marginBottom: 10 }}>
+            <OwnerLensPicker
+              lenses={lenses}
+              selectedId={selectedLensId}
+              defaultId={lenses.find((l) => l.isDefault)?.id}
+              onSelect={onSelectLens}
+              onEditFaces={onEditFaces}
+              testId="identity-lens-picker"
+            />
+          </div>
+        ) : null}
+
+        <div
+          data-testid="identity-card-face"
+          data-lens-id={selectedLensId || ''}
+          data-lens-name={lensName || ''}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}
+        >
           <IdentitySeal fingerprint={fingerprint} size={56} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <p
@@ -246,9 +309,10 @@ export function SovereignIdentityCard({
                 fontFamily: E.fontSans,
               }}
             >
-              Your card
+              Your card{lensName ? ` · ${lensName}` : ''}
             </p>
             <h2
+              data-testid="identity-card-name"
               style={{
                 margin: '2px 0 0',
                 fontSize: 20,
@@ -262,6 +326,20 @@ export function SovereignIdentityCard({
             <p style={{ margin: '2px 0 0', fontSize: 12, color: E.accent, fontFamily: E.fontMono }}>
               {displayHandle}
             </p>
+            {note ? (
+              <p
+                data-testid="identity-card-note"
+                style={{
+                  margin: '4px 0 0',
+                  fontSize: 12,
+                  color: E.muted,
+                  fontFamily: E.fontSans,
+                  lineHeight: 1.35,
+                }}
+              >
+                {note}
+              </p>
+            ) : null}
             <p
               style={{
                 margin: '4px 0 0',
@@ -276,10 +354,32 @@ export function SovereignIdentityCard({
           </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}>
-          <MethodRow kind="email" label="Email" value={email} emptyHint="not set" onRevise={handleRevise} />
-          <MethodRow kind="signal" label="Signal" value={signalDisplay} emptyHint="not set" onRevise={handleRevise} />
-          <MethodRow kind="site" label="Site" value={site} emptyHint="not set" onRevise={handleRevise} />
+        <div
+          data-testid="identity-card-methods"
+          style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}
+        >
+          {rows.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 12, color: E.dim, fontFamily: E.fontSans }}>
+              No channels on this face yet.
+            </p>
+          ) : (
+            rows.map((row) => {
+              const value =
+                row.kind === 'signal' && row.value ? maskSignal(row.value) : row.value;
+              const classic = isClassicKind(row.kind) ? row.kind : null;
+              const revise = classic ? () => handleRevise(classic) : onEditFaces;
+              return (
+                <MethodRow
+                  key={`${row.id || row.kind}-${row.label}`}
+                  kind={row.kind}
+                  label={row.label}
+                  value={value}
+                  emptyHint="not set"
+                  onRevise={revise}
+                />
+              );
+            })
+          )}
         </div>
 
         {reviseNote && (

@@ -17,6 +17,7 @@ import {
   hydrateOwnerCard,
   methodKindLabel,
   methodsForLens,
+  ownerLensFace,
   preferredMethod,
   type OwnerCardBag,
 } from '@/components/identity/owner-card';
@@ -222,17 +223,20 @@ export function ContactShareDialog({
               ))}
             </div>
             {(() => {
+              const face = ownerLensFace(lensBag, lensId);
               const pref = preferredMethod(lensBag, lensId);
               const shown = methodsForLens(lensBag, lensId);
               if (!shown.length) {
                 return (
                   <p className="text-xs text-gray-500">
-                    This lens has no extra methods yet. Recipients still get your signed name and key.
+                    {face.displayName ? `${face.displayName} · ` : ''}
+                    This face has no extra methods yet. Recipients still get your signed name and key.
                   </p>
                 );
               }
               return (
                 <p className="text-xs text-gray-500 leading-relaxed">
+                  {face.displayName ? `Face: ${face.displayName}. ` : ''}
                   {pref
                     ? `Preferred: ${methodKindLabel(pref.kind)}${pref.value ? ` · ${pref.value}` : ''}. `
                     : ''}
