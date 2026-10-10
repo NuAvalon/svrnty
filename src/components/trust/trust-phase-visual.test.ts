@@ -7,12 +7,10 @@ import { livingEdgeStatus, type LivingEdgeStatus } from '../../lib/trust/living-
 import type { TrustEdge } from '../../lib/trust/types';
 import {
   INTRO_PENDING_DASH,
-  TRUST_BROKEN_DASH,
   TRUST_VISUAL_LABELS,
   TRUST_VISUAL_WHITE_CORE,
   TRUST_VISUAL_WHITE_HALO,
   TRUST_VISUAL_WHITE_SPOKE,
-  lastLocalTrustAction,
   trustPhaseVisual,
   trustVisualLane,
   visualForEdge,
@@ -197,25 +195,22 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(mutVis.white, true);
   });
 
-  it('local break with no remaining trust paints Trust broken, not Known', () => {
-    const v = trustPhaseVisual({ status: status({ trust: 'none' }), afterBreak: true });
-    assert.equal(v.bondState, 'broken');
-    assert.equal(v.label, TRUST_VISUAL_LABELS.broken);
-    assert.equal(v.lit, false);
-    assert.equal(v.svgDasharray, TRUST_BROKEN_DASH);
-    assert.notEqual(v.shape, 'half-filled');
-    assert.equal(trustVisualLane(v, false), 'broken');
+  it('a break with no remaining trust paints Known — no historical broken state', () => {
+    const v = trustPhaseVisual({ status: status({ trust: 'none' }) });
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.known);
+    assert.equal(v.shape, 'outline');
   });
 
-  it('break while they still trust you returns to one-way inbound', () => {
-    const v = trustPhaseVisual({ status: status({ trust: 'inbound' }), afterBreak: true });
+  it('if they still hold after you drop trust, that is one-way inbound', () => {
+    const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
     assert.equal(v.bondState, 'trust-received');
-    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received-again']);
-    assert.equal(v.lit, false);
+    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
+    assert.equal(v.shape, 'half-filled');
   });
 
-  it('visualForEdge reads last trust_history break without inventing mutual', () => {
-    const brokenEdge = {
+  it('trust_history does not invent a broken paint — live boolean only', () => {
+    const afterBreak = {
       id: 'brk',
       peer_fingerprint: 'cc'.repeat(20),
       peer_name: 'Pat',
@@ -236,10 +231,9 @@ describe('trust-phase visual map — white IFF mutual', () => {
       connection_channels: [],
       added_at: new Date().toISOString(),
     } as TrustEdge;
-    assert.equal(lastLocalTrustAction(brokenEdge), 'break');
-    const v = visualForEdge(brokenEdge);
-    assert.equal(v.bondState, 'broken');
-    assert.equal(v.label, 'Trust broken');
+    const v = visualForEdge(afterBreak);
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, 'Known');
   });
 });
 
