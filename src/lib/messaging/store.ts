@@ -17,6 +17,13 @@ let _notesSalt: Uint8Array | null = null;
 // finish AFTER it and RESTORE the old key (Codex P1 async-init race, 10/10). The check→assign in
 // initNotesStore is synchronous (no await between), so it is TOCTOU-free in JS's single thread.
 let _notesGeneration = 0;
+// Per-identity DB name (P1#1 owner-scope): notes live in `svrnty-notes-<ownerFingerprint>`, so two
+// identities — even with the SAME unlock passphrase — get SEPARATE IndexedDBs (each with its own salt →
+// distinct AES keys → no cross-identity read, and no shared-DB structural residue). Set by
+// initNotesStore; cleared (and the handle closed) on lock/switch so a switch re-opens the NEXT
+// identity's DB, never the cached previous one. Legacy single-DB 'svrnty-notes' notes are PRESERVED
+// (never opened by this scheme) — orphaned, not deleted.
+let _notesDbName: string | null = null;
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -33,8 +40,14 @@ function fromBase64(b64: string): Uint8Array {
 
 function openDb(): Promise<IDBDatabase> {
   if (_db) return Promise.resolve(_db);
+  const dbName = _notesDbName;
+  if (!dbName) {
+    return Promise.reject(
+      new Error('Notes store not initialized — call initNotesStore(passphrase, ownerFingerprint) first'),
+    );
+  }
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    const req = indexedDB.open(dbName, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('threads')) {
@@ -145,8 +158,12 @@ async function decryptJson<T>(blob: EncryptedBlob): Promise<T> {
 }
 
 /** Unlock the notes DB with the same unlock passphrase the vault uses (separate salt). */
-export async function initNotesStore(passphrase: string): Promise<void> {
+export async function initNotesStore(passphrase: string, ownerFingerprint: string): Promise<void> {
+  if (!ownerFingerprint) {
+    throw new Error('initNotesStore requires an ownerFingerprint (P1#1 owner-scope — per-identity DB)');
+  }
   const gen = _notesGeneration; // capture at start; a lock/switch mid-init bumps this → refuse the stale key below
+  _notesDbName = `${DB_NAME}-${ownerFingerprint}`; // per-identity DB (owner-scope) — set BEFORE openDb
   await openDb();
   const setting = await txGet<{ key: string; value: string }>('settings', 'notes_encryption_salt');
   let salt: Uint8Array;
@@ -174,6 +191,13 @@ export function lockNotesStore(): void {
   _notesGeneration += 1; // invalidate any in-flight initNotesStore (async-init race, Codex P1 10/10)
   _notesKey = null;
   _notesSalt = null;
+  // Owner-scope: close + drop the per-identity DB handle so a switch re-opens the NEXT identity's DB,
+  // never the cached previous one (else B could read A's DB through the stale _db handle).
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
+  _notesDbName = null;
 }
 
 // P1#1 (cross-identity notes-leak): drop the notes key on every session-lock AND identity-switch.
