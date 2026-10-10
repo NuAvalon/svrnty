@@ -37,6 +37,7 @@ test('device unlock is coming-soon, not a live action, while the seam is stubbed
   });
 
   await page.getByRole('tab', { name: 'Identity' }).click();
+  await page.getByTestId('identity-vault-toggle').click();
   const settings = page.getByTestId('biometric-settings');
   await expect(settings).toBeVisible();
   await expect(settings.getByTestId('device-unlock-coming-soon')).toBeVisible();
