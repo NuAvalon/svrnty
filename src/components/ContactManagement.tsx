@@ -23,6 +23,7 @@ import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookList';
+import { BOOK_SORTS, sortBookContacts, type BookSort } from '@/components/contacts/sort-book';
 import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
 import { CardMenuItem } from '@/components/ui/CardActionMenu';
@@ -177,6 +178,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [bookSort, setBookSort] = useState<BookSort>('name-asc');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [bookSheetExpanded, setBookSheetExpanded] = useState(false);
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
@@ -337,7 +339,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
     return true;
   });
 
-  const masterRows = filteredContacts.map((c) => {
+  const sortedContacts = sortBookContacts(filteredContacts, bookSort);
+
+  const masterRows = sortedContacts.map((c) => {
     const edge = contactRecordToEdge(c);
     const living = livingEdgeStatus(edge);
     return {
@@ -1134,20 +1138,44 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
         )}
 
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
-            <Input
-              placeholder="Search by name, email, fingerprint..."
-              className="pl-8"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+          <div className="flex w-full sm:w-auto flex-1 items-center gap-2">
+            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+              <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
+              <Input
+                placeholder="Search by name, email, fingerprint..."
+                className="pl-8"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{
+                  fontFamily: E.fontSans,
+                  background: E.inputBg,
+                  borderColor: E.border,
+                  color: E.text,
+                }}
+              />
+            </div>
+            <select
+              data-testid="contacts-book-sort"
+              aria-label="Sort contacts"
+              value={bookSort}
+              onChange={(e) => setBookSort(e.target.value as BookSort)}
               style={{
                 fontFamily: E.fontSans,
-                background: E.inputBg,
-                borderColor: E.border,
+                fontSize: 12,
                 color: E.text,
+                background: E.inputBg,
+                border: `1px solid ${E.border}`,
+                borderRadius: 8,
+                padding: '8px 10px',
+                flexShrink: 0,
               }}
-            />
+            >
+              {BOOK_SORTS.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
           </div>
           <Button onClick={() => setShowAddDialog(true)} style={emberPrimaryBtn}>
             <UserPlus className="h-4 w-4 mr-2" />

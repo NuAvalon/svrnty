@@ -94,6 +94,12 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
       .poll(async () => scroller.evaluate((el) => getComputedStyle(el).overflowY))
       .toMatch(/auto|scroll/);
 
+    const bookRow = scroller.locator('[data-testid="contact-row"][data-master-book-row="1"]');
+    await expect(bookRow.first()).toContainText('Ada');
+    await page.getByTestId('contacts-book-sort').selectOption('name-desc');
+    await expect(bookRow.first()).toContainText('Nikola');
+    await page.getByTestId('contacts-book-sort').selectOption('name-asc');
+
     // Scope to master-book rows (not any other contact-row surface).
     // Today's sample-circle seed writes public_key:'' for every demo row, so after
     // #83 (fingerprint only with a bound key) Ada is classical too. Living keys
