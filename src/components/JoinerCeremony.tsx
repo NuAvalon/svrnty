@@ -126,7 +126,14 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
           ? { kemPublicKeyB64: id.post_quantum.kem_public_key, sigPublicKeyB64: id.post_quantum.sig_public_key }
           : {}),
       },
-      { fingerprint: peer.fingerprint, publicKeyArmored: peer.publicKey, inviteNonce: code },
+      {
+        fingerprint: peer.fingerprint,
+        publicKeyArmored: peer.publicKey,
+        // HNDL: the giver's ML-KEM-1024 pubkey → hybrid seal. Absent (classical giver card) ⇒
+        // buildJoinerResponseDeposit fail-closed-skips (null), never a classical/downgraded deposit.
+        giverPqKemPublicKey: peer.pq?.pq_kem_public_key,
+        inviteNonce: code,
+      },
     );
     if (!res.ok) {
       console.warn('[joiner-response] deposit not delivered (edge stands locally):', res.status);

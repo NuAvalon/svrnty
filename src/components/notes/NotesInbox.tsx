@@ -236,6 +236,7 @@ export function NotesInbox({ identity }: Props) {
         sender,
         peerFingerprint: selected.fingerprint,
         peerPublicKeyArmored: selected.publicKeyArmored,
+        peerPqKemPublicKey: selected.pqKemPublicKey, // HNDL: present ⇒ hybrid seal; absent ⇒ fail-closed skip
         body,
         threadId: existing?.thread_id,
       });

@@ -12,6 +12,9 @@ export type NoteableContact = {
   name: string;
   fingerprint: string;
   publicKeyArmored: string;
+  /** The recipient's verified ML-KEM-1024 pubkey (base64), if any. Present ⇒ the note is sealed PQ-hybrid
+   *  (HNDL); absent ⇒ the send site fail-closed-skips (never downgrades to classical). */
+  pqKemPublicKey?: string;
 };
 
 export type ContactRow = {
@@ -22,6 +25,7 @@ export type ContactRow = {
   peer_public_key?: string | null;
   peer_fingerprint?: string | null;
   peer_name?: string | null;
+  pq_kem_public_key?: string | null;
   blocked?: boolean;
   metadata?: { blocked?: boolean } | null;
 };
@@ -36,11 +40,13 @@ function noteableFromRow(row: ContactRow): NoteableContact | null {
   const fingerprint = normalizeFingerprintHex(String(row.fingerprint || row.peer_fingerprint || ''));
   if (!publicKeyArmored || fingerprint.length < 16) return null;
   if (!isSvrnNetworkContact({ fingerprint, public_key: publicKeyArmored })) return null;
+  const pqKemPublicKey = String(row.pq_kem_public_key || '').trim() || undefined;
   return {
     id: String(row.id || fingerprint),
     name: boundDisplayText(row.name || row.peer_name) || `Contact ${fingerprint.slice(0, 8)}`,
     fingerprint,
     publicKeyArmored,
+    ...(pqKemPublicKey ? { pqKemPublicKey } : {}),
   };
 }
 

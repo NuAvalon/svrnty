@@ -33,6 +33,9 @@ export async function sendTrustAffirmToPeer(args: {
   senderPqSigPublicKey?: string;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+  /** The PEER's verified ML-KEM-1024 pubkey (base64). Present ⇒ the affirmation is sealed PQ-hybrid (HNDL).
+   *  ABSENT ⇒ fail-closed: NOT deposited (deposited:false), never downgraded to classical. */
+  peerPqKemPublicKey?: string;
   /** true = affirm trust; false = break trust. */
   trusts: boolean;
   affirmId?: string; // inject for determinism in tests; default a fresh uuid
@@ -64,7 +67,13 @@ export async function sendTrustAffirmToPeer(args: {
     args.senderPqKemPublicKey, // §5: both present ⇒ canonical-fp binding; else classical path
     args.senderPqSigPublicKey,
   );
-  const blob = await sealTrustAffirmTo(wire, args.peerPublicKeyArmored);
+  // fail-closed: no pq_kem → skip, never downgrade (HNDL). A peer without a verified ML-KEM-1024 pubkey
+  // gets NO affirmation deposit — not a classical/downgraded send.
+  if (!args.peerPqKemPublicKey) {
+    console.warn('[trust-affirm] fail-closed: peer has no pq_kem — affirmation NOT deposited (never downgrade, HNDL)');
+    return { affirm_id, deposited: false };
+  }
+  const blob = await sealTrustAffirmTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
   const mailbox_id = deriveMailboxId(args.peerFingerprint);
   const res = await fetchImpl(`${relayBase}/envelope`, {
     method: 'POST',

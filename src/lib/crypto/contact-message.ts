@@ -88,12 +88,14 @@ export function verifyContactMessage(message: string, recipientFp: string, sigHe
 }
 
 // ── armor (copy-pasteable block) ──────────────────────────────────────────────────────────────────
-function armor(pkg: MailboxEnvelopePackage): string {
+// Exported (byte-shape canonical) so the living-book hybrid sleeve (living-book-sleeve.ts) wraps/parses
+// the SAME MailboxEnvelopePackage string as contact messages — one armor format, no second wire shape.
+export function armorMailboxEnvelope(pkg: MailboxEnvelopePackage): string {
   const body = uint8ToBase64(new TextEncoder().encode(JSON.stringify(pkg)));
   const wrapped = body.replace(/(.{64})/g, '$1\n').replace(/\n$/, '');
   return `${ARMOR_BEGIN}\n${wrapped}\n${ARMOR_END}`;
 }
-function dearmor(armored: string): MailboxEnvelopePackage | null {
+export function dearmorMailboxEnvelope(armored: string): MailboxEnvelopePackage | null {
   try {
     const s = (armored || '').trim();
     const b = s.indexOf(ARMOR_BEGIN);
@@ -123,7 +125,7 @@ export async function sealSignedToRecipient(
     x25519Pub: recipient.x25519Pub,
     mlkem1024Pub: recipient.mlkem1024Pub,
   });
-  return armor(pkg);
+  return armorMailboxEnvelope(pkg);
 }
 
 // ── high-level: encrypt to a CONTACT (extract recipient keys from the card, anti-poison) ────────────
@@ -148,7 +150,7 @@ export async function encryptToContact(message: string, contact: ContactKeys, se
  * UI MUST then show "sender NOT cryptographically verified".
  */
 export async function decryptFromContact(armored: string, me: MyKeys, senderCard?: ContactKeys): Promise<DecryptedMessage | null> {
-  const pkg = dearmor(armored);
+  const pkg = dearmorMailboxEnvelope(armored);
   if (!pkg) return null;
   const myFp = deriveMailboxFp(me.x25519Pub, me.mlkem1024Pub);
   const pt = await openMailboxEnvelope(pkg, { x25519Sec: me.x25519Sec, mlkem1024Sec: me.mlkem1024Sec }, myFp);

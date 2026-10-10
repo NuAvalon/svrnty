@@ -17,12 +17,26 @@
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import type { SignedContactUpdate } from '@/lib/trust/contact-update';
 import type { EnvelopeDecryptor } from './consume-mailbox';
+import {
+  sealLivingBookHybrid,
+  openLivingBookHybrid,
+  type LivingBookHybridSecrets,
+} from '@/lib/crypto/living-book-sleeve';
 
-/** Sender side: encrypt a signed contact.update to the recipient's public key → opaque armored blob. */
+/**
+ * Sender side: encrypt a signed contact.update to the recipient → opaque armored blob. HYBRID (HNDL) when
+ * the recipient's ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED SignedContactUpdate with the
+ * reject-classical mailbox envelope); classical OpenPGP otherwise (back-compat/tests — the SEND composer
+ * buildContactUpdateDeposits fail-closed-SKIPS a recipient with no pq_kem, so production never downgrades).
+ */
 export async function encryptContactUpdateTo(
   signed: SignedContactUpdate,
   recipientPublicKeyArmored: string,
+  recipientPqKemB64?: string,
 ): Promise<string> {
+  if (recipientPqKemB64) {
+    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), recipientPublicKeyArmored, recipientPqKemB64);
+  }
   const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
   const message = await createMessage({ text: JSON.stringify(signed) });
   return (await encrypt({ message, encryptionKeys })) as string;
@@ -30,10 +44,26 @@ export async function encryptContactUpdateTo(
 
 /**
  * Recipient side: an {@link EnvelopeDecryptor} bound to the owner's private key. Returns null on ANY
- * failure (not-for-us / corrupt / wrong key / not-JSON) so the caller drops it silently (I-1/I-2).
+ * failure (not-for-us / corrupt / wrong key / not-JSON) so the caller drops it silently (I-1/I-2). DUAL-
+ * READ: when `hybrid` is supplied, try the PQ-hybrid envelope FIRST; a classical/armored blob is not a
+ * hybrid package → fall through to OpenPGP. The contact-update path is the consume catch-all, so shape
+ * (envelope.fingerprint) is checked by consumeOne — mirrored here by returning the parsed object as-is.
  */
-export function openpgpEnvelopeDecryptor(recipientPrivateKeyArmored: string, passphrase: string): EnvelopeDecryptor {
+export function openpgpEnvelopeDecryptor(
+  recipientPrivateKeyArmored: string,
+  passphrase: string,
+  hybrid?: LivingBookHybridSecrets,
+): EnvelopeDecryptor {
   return async (blob: string): Promise<SignedContactUpdate | null> => {
+    if (hybrid) {
+      try {
+        const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
+        if (pt) return JSON.parse(new TextDecoder().decode(pt)) as SignedContactUpdate;
+        // pt null → not a hybrid package → fall through to the classical OpenPGP path below.
+      } catch {
+        return null;
+      }
+    }
     try {
       const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
       const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });

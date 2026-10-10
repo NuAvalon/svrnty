@@ -12,6 +12,8 @@ export async function sendNoteFromInbox(args: {
   sender: OwnerNoteSender;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+  /** Recipient's ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); absent ⇒ fail-closed skip. */
+  peerPqKemPublicKey?: string;
   body: string;
   threadId?: string;
 }): Promise<SendNoteResult> {
@@ -25,6 +27,7 @@ export async function sendNoteFromInbox(args: {
       senderPqSigPublicKey: args.sender.pqSigPublicKey,
       peerFingerprint: args.peerFingerprint,
       peerPublicKeyArmored: args.peerPublicKeyArmored,
+      peerPqKemPublicKey: args.peerPqKemPublicKey,
       body: args.body,
       threadId: args.threadId,
     });

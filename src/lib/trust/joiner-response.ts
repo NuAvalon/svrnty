@@ -63,6 +63,11 @@ import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '..
 import { fingerprintMatchesKey, KEM_PUB_LEN } from '../identity/fingerprint';
 import { base64ToUint8 } from '../crypto/pq';
 import {
+  sealLivingBookHybrid,
+  openLivingBookHybrid,
+  type LivingBookHybridSecrets,
+} from '../crypto/living-book-sleeve';
+import {
   createMessage,
   encrypt,
   readKey,
@@ -230,7 +235,14 @@ export async function buildJoinerResponse(
 export async function encryptJoinerResponseTo(
   signed: SignedJoinerResponse,
   giverPublicKeyArmored: string,
+  giverPqKemB64?: string,
 ): Promise<string> {
+  // HYBRID (HNDL) when the giver's ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED response);
+  // classical OpenPGP otherwise (back-compat/tests — buildJoinerResponseDeposit fail-closed-SKIPS a giver
+  // with no pq_kem, never downgrades).
+  if (giverPqKemB64) {
+    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), giverPublicKeyArmored, giverPqKemB64);
+  }
   const encryptionKeys = await readKey({ armoredKey: giverPublicKeyArmored });
   const message = await createMessage({ text: JSON.stringify(signed) });
   return (await encrypt({ message, encryptionKeys })) as string;
@@ -276,7 +288,22 @@ async function decryptJoinerBlob(
   blob: string,
   giverPrivateKeyArmored: string,
   passphrase: string,
+  hybrid?: LivingBookHybridSecrets,
 ): Promise<SignedJoinerResponse | null> {
+  // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null from
+  // openLivingBookHybrid → fall through to OpenPGP; isWellFormed is the type gate either way (a non-joiner
+  // hybrid pkg fails it → null → the consume joiner-verify falls through, preserving no-cross-swallow).
+  if (hybrid) {
+    try {
+      const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
+      if (pt) {
+        const parsed = JSON.parse(new TextDecoder().decode(pt)) as unknown;
+        return isWellFormed(parsed) ? parsed : null;
+      }
+    } catch {
+      return null;
+    }
+  }
   try {
     const locked = await readPrivateKey({ armoredKey: giverPrivateKeyArmored });
     const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
@@ -317,11 +344,11 @@ async function decryptJoinerBlob(
  */
 export async function verifyJoinerResponse(
   blob: string,
-  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string },
+  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; hybrid?: LivingBookHybridSecrets },
   acceptNonce: (nonce: string, joinerFp: string) => boolean,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingJoiner | null> {
-  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase);
+  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase, giver.hybrid);
   if (!signed) return null;
   const { envelope, signature } = signed;
 

@@ -32,6 +32,7 @@ import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
   loadKey,
+  loadPQKeys,
   getContactByFingerprint,
   updateContact,
   loadIssuedCodeMap,
@@ -41,6 +42,11 @@ import {
   type ContactRecord,
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
+import { readPrivateKey, decryptKey } from 'openpgp';
+import { extractRawEnc } from '@/lib/identity/raw-sign';
+import { base64ToUint8 } from '@/lib/crypto/pq';
+import { deriveMailboxFp } from '@/lib/crypto/mailbox-envelope';
+import { type LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
@@ -102,7 +108,7 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
  * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
  * recordAcceptedJoiner persists the accept across polls.
  */
-export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): JoinerResponseSeam {
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: LivingBookHybridSecrets): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
 
   // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
@@ -118,9 +124,11 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
     verify: (blob: string): Promise<PendingJoiner | null> =>
       verifyJoinerResponse(
         blob,
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
+        // DUAL-READ: hybrid secrets (when present) let verify open a PQ-hybrid joiner-response FIRST, else
+        // it falls through to the classical OpenPGP decrypt — same giver identity either way.
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid },
         acceptNonce,
-        { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical
+        { requirePq: false }, // classical-era joiners still accepted — the signature suite is separate from the envelope
       ),
     accept: async (pj: PendingJoiner): Promise<{ ignited: boolean } | null> => {
       // Gate, not Known: consume the return-channel and the issued-code slot, but do not addContact
@@ -138,8 +146,8 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
  * note by its own type-checked decryptor to acceptInboundNote (authn-then-admit, fail-closed) → the
  * notes store. Exported for unit tests.
  */
-export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+export function buildNoteSeam(owner: OwnerIdentity, hybrid?: LivingBookHybridSecrets): NoteResponseSeam {
+  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, hybrid);
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
     // the type-check inside noteOpenpgpDecryptor is the discriminator, so this never eats a non-note.
@@ -175,8 +183,8 @@ export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
  * the EXISTING trusted state, which a remote wire can never promote (updateContact pt5 gate). So an
  * in-book affirm sets they_trust_me (inbound) but mutual requires MY own prior owner-verified trust.
  */
-export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: LivingBookHybridSecrets): TrustAffirmResponseSeam {
+  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, hybrid);
   return {
     // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; the
     // type-check inside trustAffirmOpenpgpDecryptor is the discriminator, so this never eats a non-affirm.
@@ -209,6 +217,32 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseS
   };
 }
 
+/**
+ * Derive THIS owner's mailbox open-material (x25519 enc secret from the unlocked identity key + ML-KEM-1024
+ * secret from the vault PQ bundle + the mailbox fp a sender sealed to) so the dual-read openers can open a
+ * PQ-hybrid living-book deposit. FAIL-SOFT: a classical identity (no PQ material) or any unlock/parse error
+ * → undefined → the openers stay classical-only. Mirrors contact-message.ts's MyKeys derivation (no new crypto).
+ */
+async function deriveOwnerHybridSecrets(
+  privateKeyArmored: string,
+  passphrase: string,
+  kemPublicKeyB64?: string,
+  kemSecretKeyB64?: string,
+): Promise<LivingBookHybridSecrets | undefined> {
+  if (!kemPublicKeyB64 || !kemSecretKeyB64) return undefined; // classical identity → classical-only openers
+  try {
+    const locked = await readPrivateKey({ armoredKey: privateKeyArmored });
+    const decrypted = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase });
+    const { encSec, encPub } = await extractRawEnc(decrypted); // x25519 enc secret+pub (fail-closed invariant)
+    const mlkem1024Sec = base64ToUint8(kemSecretKeyB64);
+    const mlkem1024Pub = base64ToUint8(kemPublicKeyB64);
+    const myFp = deriveMailboxFp(encPub, mlkem1024Pub); // MUST equal what a sender sealed to (same pubs)
+    return { secrets: { x25519Sec: encSec, mlkem1024Sec }, myFp };
+  } catch {
+    return undefined; // never block the poll on a PQ-key read — degrade to classical openers
+  }
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -234,6 +268,19 @@ export async function buildConsumeDeps(
     kemPublicKey: id?.post_quantum?.kem_public_key,
     sigPublicKey: id?.post_quantum?.sig_public_key,
   };
+  // HNDL dual-read: derive this owner's mailbox open-material so the openers can open a PQ-hybrid deposit
+  // FIRST, falling back to classical for legacy blobs. Fail-soft — a classical identity / PQ-read error
+  // → undefined → classical-only openers (receive still works for classical deposits). ML-KEM secret comes
+  // from the vault PQ bundle (loadPQKeys); the enc (x25519) secret from the unlocked identity key.
+  let hybrid: LivingBookHybridSecrets | undefined;
+  try {
+    const pq = await loadPQKeys(fingerprint);
+    const kemSecB64: string | undefined = pq?.pq_kem_secret_key ?? pq?.kem?.secretKey;
+    hybrid = await deriveOwnerHybridSecrets(key.privateKey, key.passphrase, owner.kemPublicKey, kemSecB64);
+  } catch {
+    hybrid = undefined; // never block the poll on a PQ-key read
+  }
+
   // R1 return-channel: load the issued-code snapshot ONCE per poll (this fn is called per poll cycle by
   // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects
   // codes minted since the last poll. loadIssuedCodeMap prunes expired entries.
@@ -252,11 +299,11 @@ export async function buildConsumeDeps(
   }
   return {
     owner,
-    decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase),
+    decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, hybrid),
     store: buildContactStore(fingerprint),
-    joiner: buildJoinerSeam(owner, codes),
-    note: buildNoteSeam(owner),
-    affirm: buildTrustAffirmSeam(owner),
+    joiner: buildJoinerSeam(owner, codes, hybrid),
+    note: buildNoteSeam(owner, hybrid),
+    affirm: buildTrustAffirmSeam(owner, hybrid),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)

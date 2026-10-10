@@ -298,7 +298,7 @@ export function SoverentityFrontend({
   const [shareError, setShareError] = useState<string | null>(null);
   const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
   const [audience, setAudience] = useState<
-    { fingerprint: string; name: string; public_key?: string; trusted?: boolean; tags?: string[] }[]
+    { fingerprint: string; name: string; public_key?: string; pq_kem_public_key?: string; trusted?: boolean; tags?: string[] }[]
   >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
@@ -350,6 +350,7 @@ export function SoverentityFrontend({
               fingerprint: peerFp,
               name: c.name || 'Unnamed',
               public_key: c.public_key || undefined,
+              pq_kem_public_key: c.pq_kem_public_key || undefined, // HNDL: the recipient's ML-KEM-1024 pubkey
               trusted:
                 String(c.trust_level || '').toLowerCase() === 'trusted' ||
                 String(c.trust_level || '').toLowerCase() === 'verified' ||
@@ -1757,6 +1758,9 @@ export function SoverentityFrontend({
     const recipients = req.recipientFingerprints.map((rfp) => ({
       fingerprint: rfp,
       publicKeyArmored: byFp.get(rfp)?.public_key ?? '',
+      // HNDL: thread the recipient's ML-KEM-1024 pubkey → hybrid seal; a recipient without it is
+      // fail-closed-SKIPPED by buildContactUpdateDeposits (reason 'no-pq-kem'), never downgraded.
+      pqKemPublicKey: byFp.get(rfp)?.pq_kem_public_key,
     }));
 
     try {

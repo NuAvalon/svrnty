@@ -34,6 +34,9 @@ export interface ContactUpdateOwner {
 export interface ContactUpdateRecipient {
   fingerprint: string;
   publicKeyArmored: string;
+  /** The recipient's verified ML-KEM-1024 pubkey (base64). Present ⇒ the deposit is sealed PQ-hybrid
+   *  (HNDL). ABSENT ⇒ fail-closed: the recipient is SKIPPED (reason 'no-pq-kem'), never downgraded. */
+  pqKemPublicKey?: string;
 }
 
 /** One ready-to-POST deposit for /api/relay/envelope. */
@@ -45,7 +48,7 @@ export interface ContactUpdateDeposit {
 /** The batch result — honest per-recipient accounting so the UI can say "sent to N of M" truthfully. */
 export interface ContactUpdateSendPlan {
   deposits: ContactUpdateDeposit[];
-  skipped: Array<{ fingerprint: string; reason: 'bad-fingerprint' | 'no-public-key' | 'encrypt-failed' }>;
+  skipped: Array<{ fingerprint: string; reason: 'bad-fingerprint' | 'no-public-key' | 'no-pq-kem' | 'encrypt-failed' }>;
 }
 
 /** The change the owner is publishing: the delta + the NEW monotonic card version. */
@@ -99,8 +102,14 @@ export async function buildContactUpdateDeposits(
       skipped.push({ fingerprint: r.fingerprint, reason: 'no-public-key' });
       continue;
     }
+    if (typeof r.pqKemPublicKey !== 'string' || r.pqKemPublicKey.length === 0) {
+      // fail-closed: no pq_kem → skip, never downgrade (HNDL). A legacy/classical/RSA-only recipient with
+      // no verified ML-KEM-1024 pubkey is SKIPPED (reported), NOT sealed classically on the wire.
+      skipped.push({ fingerprint: r.fingerprint, reason: 'no-pq-kem' });
+      continue;
+    }
     try {
-      const blob = await encryptContactUpdateTo(signed, r.publicKeyArmored);
+      const blob = await encryptContactUpdateTo(signed, r.publicKeyArmored, r.pqKemPublicKey);
       deposits.push({ mailbox_id: deriveMailboxId(r.fingerprint), blob });
     } catch {
       // A malformed/unreadable recipient key must not abort the batch.

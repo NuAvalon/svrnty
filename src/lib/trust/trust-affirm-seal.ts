@@ -13,19 +13,29 @@
 
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { TRUST_AFFIRM_WIRE_TYPE, type TrustAffirmWireV0 } from './trust-affirm';
+import {
+  sealLivingBookHybrid,
+  openLivingBookHybrid,
+  type LivingBookHybridSecrets,
+} from '@/lib/crypto/living-book-sleeve';
 
 /**
- * Seal a signed trust-affirmation to the recipient's OpenPGP public key. The affirmation MUST already
- * carry its {public_key, signature} (signTrustAffirm) — sealing is confidentiality only; authentication
- * is the sender signature the consumer re-checks. Refuses a non-affirm wire type (fail-loud) so a
- * mis-routed object can never be sealed under the wrong discriminator.
+ * Seal a signed trust-affirmation to the recipient. The affirmation MUST already carry its {public_key,
+ * signature} (signTrustAffirm) — sealing is confidentiality only; authentication is the sender signature
+ * the consumer re-checks. Refuses a non-affirm wire type (fail-loud). HYBRID (HNDL) when the recipient's
+ * ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED wire); classical OpenPGP otherwise (back-compat/
+ * tests — the SEND site sendTrustAffirmToPeer fail-closed-SKIPS a peer with no pq_kem, never downgrades).
  */
 export async function sealTrustAffirmTo(
   affirm: TrustAffirmWireV0,
   recipientPublicKeyArmored: string,
+  recipientPqKemB64?: string,
 ): Promise<string> {
   if (affirm.type !== TRUST_AFFIRM_WIRE_TYPE) {
     throw new Error('sealTrustAffirmTo: refusing non-affirm wire type');
+  }
+  if (recipientPqKemB64) {
+    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(affirm)), recipientPublicKeyArmored, recipientPqKemB64);
   }
   const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
   const message = await createMessage({ text: JSON.stringify(affirm) });
@@ -42,22 +52,34 @@ export async function sealTrustAffirmTo(
 export function trustAffirmOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
+  hybrid?: LivingBookHybridSecrets,
 ): (blob: string) => Promise<TrustAffirmWireV0 | null> {
+  // Minimal shape+type gate (mirrors noteOpenpgpDecryptor): the discriminator for the consume 4-way demux.
+  const asAffirm = (parsed: TrustAffirmWireV0 | null): TrustAffirmWireV0 | null => {
+    if (parsed?.type !== TRUST_AFFIRM_WIRE_TYPE) return null;
+    if (typeof parsed.from_fingerprint !== 'string') return null;
+    if (typeof parsed.to_fingerprint !== 'string') return null;
+    if (typeof parsed.trusts !== 'boolean') return null;
+    return parsed;
+  };
   return async (blob: string): Promise<TrustAffirmWireV0 | null> => {
+    // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null
+    // from openLivingBookHybrid → fall through to OpenPGP; a hybrid pkg of another type fails asAffirm.
+    if (hybrid) {
+      try {
+        const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
+        if (pt) return asAffirm(JSON.parse(new TextDecoder().decode(pt)) as TrustAffirmWireV0);
+      } catch {
+        return null;
+      }
+    }
     try {
       const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
       const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      const parsed = JSON.parse(text) as TrustAffirmWireV0;
-      if (parsed?.type !== TRUST_AFFIRM_WIRE_TYPE) return null;
-      // Minimal shape gate (mirrors noteOpenpgpDecryptor): the fields the consume seam binds/reads MUST
-      // be present + the right primitive type, or it is not a well-formed affirmation → null (fall through).
-      if (typeof parsed.from_fingerprint !== 'string') return null;
-      if (typeof parsed.to_fingerprint !== 'string') return null;
-      if (typeof parsed.trusts !== 'boolean') return null;
-      return parsed;
+      return asAffirm(JSON.parse(text) as TrustAffirmWireV0);
     } catch {
       return null;
     }
