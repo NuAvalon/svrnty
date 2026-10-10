@@ -705,7 +705,6 @@ export default function Home() {
               <SoverentityFrontend
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
-                onOpenCircle={() => setMainTab('trust-map')}
                 appLockPrefs={canLock ? appLockPrefs : undefined}
                 onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
                 onLockNow={canLock ? handleLockNow : undefined}

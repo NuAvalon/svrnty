@@ -10,7 +10,7 @@ import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { base64ToUint8 } from '@/lib/crypto/pq';
 import type { ContactMethodSendFn } from '@/components/identity/contact-method-send';
-import { SVRNTY_DOMAIN, slugUrlShort } from '@/lib/config/domain';
+import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
 import { EntropyMeter } from '@/components/recovery/EntropyMeter';
 import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 import { SeedRestoreInterstitial } from '@/components/recovery/SeedRestoreInterstitial';
@@ -39,8 +39,6 @@ interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
   onVaultRestore?: (contents: any) => void;
-  /** Jump to Trust Map from the card's "Your circle" affordance */
-  onOpenCircle?: () => void;
   /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
   appLockPrefs?: AppLockPrefs;
   onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
@@ -243,7 +241,6 @@ export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
   onVaultRestore,
-  onOpenCircle,
   appLockPrefs,
   onAppLockPrefsChange,
   onLockNow,
@@ -315,10 +312,6 @@ export function SoverentityFrontend({
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
   const [passphraseFlash, setPassphraseFlash] = useState(false);
   const [backupFlash, setBackupFlash] = useState(false);
-  const [showClaimUrlDialog, setShowClaimUrlDialog] = useState(false);
-  const [claimSlug, setClaimSlug] = useState('');
-  const [claimStatus, setClaimStatus] = useState<'idle' | 'checking' | 'claiming' | 'success' | 'taken' | 'error'>('idle');
-  const [claimedUrl, setClaimedUrl] = useState('');
   const [vaultOpen, setVaultOpen] = useState(false);
   const [newPassphrase, setNewPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
@@ -383,34 +376,21 @@ export function SoverentityFrontend({
     });
   }, [identity]);
 
-  // Restore claimed URL from registration service on identity load
-  useEffect(() => {
-    const fp = identity?.identity?.fingerprint;
-    if (fp && !claimedUrl) {
-      fetch(`/identity/${fp}`).then(r => r.ok ? r.json() : null).then(data => {
-        if (data?.slug) setClaimedUrl(slugUrlShort(data.slug));
-      }).catch(() => {});
-    }
-  }, [identity]);
-
   const ownerFace = useMemo(
     () =>
       ownerLensFace(ownerBag, activeLensId, {
         displayName: identity?.identity?.name,
-        handle: claimedUrl || undefined,
       }),
-    [ownerBag, activeLensId, identity?.identity?.name, claimedUrl],
+    [ownerBag, activeLensId, identity?.identity?.name],
   );
   const ownerFaceMethods = useMemo(
     () =>
       cardMethodsForFace(ownerBag, ownerFace, {
         email: identity?.identity?.email,
         signal: localMethods.signal,
-        site:
-          localMethods.site ||
-          (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined),
+        site: localMethods.site,
       }),
-    [ownerBag, ownerFace, identity?.identity?.email, localMethods, claimedUrl],
+    [ownerBag, ownerFace, identity?.identity?.email, localMethods],
   );
 
   const handleSetPassphrase = async () => {
@@ -449,60 +429,37 @@ export function SoverentityFrontend({
     } catch { setPassphraseError('Failed to set unlock passphrase'); }
   };
 
-  const handleClaimUrl = async () => {
-    const slug = claimSlug.toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    if (slug.length < 3) { setClaimStatus('error'); return; }
-    setClaimStatus('checking');
-    try {
-      // Check availability
-      const checkRes = await fetch(`/slug/${slug}`); const checkData = await checkRes.json();
-      if (checkRes.ok && !checkData.available) {
-        // Check if this slug is already ours
-        const fp = identity?.identity?.fingerprint;
-        if (checkData.fingerprint && checkData.fingerprint === fp) {
-          setClaimStatus('success');
-          setClaimedUrl(slugUrlShort(slug));
-          return;
-        }
-        setClaimStatus('taken');
-        return;
-      }
-      // Register with satellite
-      const fp = identity?.identity?.fingerprint;
-      const pk = identity?.identity?.public_key || identity?.identity?.publicKey || '';
-      const { buildSatelliteRegisterFields } = await import('@/lib/identity/fingerprint');
-      const extra = await buildSatelliteRegisterFields(identity);
-      const regRes = await fetch('/api/satellite/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          display_name: slug,
-          public_key: pk,
-          fingerprint: extra?.fingerprint || fp || '',
-          slug,
-          ...(extra
-            ? {
-                sign_pub: extra.sign_pub,
-                enc_pub: extra.enc_pub,
-                kem_pub: extra.kem_pub,
-                sig_pub: extra.sig_pub,
-              }
-            : {}),
-        }),
-      });
-      if (regRes.ok || regRes.status === 409) {
-        // Claim the slug
-        const claimRes = await fetch(`/slug/${slug}/claim`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fingerprint: fp }),
-        });
-        if (claimRes.ok) {
-          setClaimStatus('success');
-          setClaimedUrl(slugUrlShort(slug));
-        } else { setClaimStatus('taken'); }
-      } else { setClaimStatus('error'); }
-    } catch { setClaimStatus('error'); }
+  const handleExportOwnVcf = (lensId: string) => {
+    const fp = identity?.identity?.fingerprint || '';
+    const face = ownerLensFace(ownerBag, lensId, {
+      displayName: identity?.identity?.name,
+    });
+    const methods = cardMethodsForFace(ownerBag, face, {
+      email: identity?.identity?.email,
+      signal: localMethods.signal,
+      site: localMethods.site,
+    });
+    const pick = (kind: string) => methods.find((m) => m.kind === kind)?.value;
+    const stem = (face.displayName || identity?.identity?.name || 'svrnty')
+      .trim()
+      .replace(/[^\w.\- ]+/g, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 40) || 'svrnty';
+    const lens = (face.lensName || 'card')
+      .trim()
+      .replace(/[^\w.\- ]+/g, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 24) || 'card';
+    downloadOwnVCard(
+      {
+        name: face.displayName || identity?.identity?.name || 'svrnty',
+        fingerprint: fp,
+        email: pick('email'),
+        signal: pick('signal') || pick('phone'),
+        site: pick('site'),
+      },
+      `${stem}-${lens}.vcf`,
+    );
   };
 
   const handleCreateIdentity = async () => {
@@ -1897,13 +1854,10 @@ export function SoverentityFrontend({
           onEditLenses={() => setVaultOpen(true)}
           email={identity.identity.email}
           signal={localMethods.signal}
-          site={
-            localMethods.site ||
-            (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : undefined)
-          }
+          site={localMethods.site}
           hasPqKeys={!!hasPqKeys}
           onRevise={(kind) => setReviseKind(kind)}
-          onOpenCircle={onOpenCircle}
+          onExportVcf={handleExportOwnVcf}
           onShareIdentity={() => { void handleShareIdentityFromCard(); }}
           extraActions={(close) => (
             <>
@@ -1936,22 +1890,6 @@ export function SoverentityFrontend({
                   close();
                 }}
               />
-              {claimedUrl ? (
-                <CardMenuItem
-                  label={claimedUrl}
-                  onClick={close}
-                />
-              ) : (
-                <CardMenuItem
-                  label="Claim URL"
-                  onClick={() => {
-                    setShowClaimUrlDialog(true);
-                    setClaimStatus('idle');
-                    setClaimSlug('');
-                    close();
-                  }}
-                />
-              )}
               <CardMenuItem
                 label="Lenses & vault"
                 onClick={() => {
@@ -1982,9 +1920,7 @@ export function SoverentityFrontend({
             reviseKind === 'signal'
               ? localMethods.signal || ''
               : reviseKind === 'site'
-                ? localMethods.site ||
-                  (claimedUrl ? claimedUrl.replace(/^https?:\/\//, '') : '') ||
-                  ''
+                ? localMethods.site || ''
                 : identity.identity.email || ''
           }
           ownerFingerprint={identity.identity.fingerprint}
@@ -2193,87 +2129,6 @@ export function SoverentityFrontend({
                     }}
                   >
                     {passphraseSuccess ? 'PASSPHRASE SET' : 'SET PASSPHRASE'}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Claim URL Dialog */}
-        {showClaimUrlDialog && (
-          <div style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)',
-            display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 50,
-          }} onClick={() => setShowClaimUrlDialog(false)}>
-            <div
-              role="dialog"
-              aria-label="Claim URL"
-              style={{
-                background: SE.surfaceSolid,
-                border: `1px solid ${SE.border}`,
-                borderRadius: '16px',
-                padding: '32px',
-                maxWidth: '380px',
-                width: '100%',
-                margin: '20px',
-                boxShadow: 'var(--se-glass-shadow)',
-                color: SE.text,
-              }}
-              onClick={e => e.stopPropagation()}
-            >
-              <h3 style={{
-                fontFamily: SE.fontSans, fontSize: '1.15rem', fontWeight: 500,
-                letterSpacing: '-0.02em',
-                color: SE.text, marginBottom: '8px', textAlign: 'center' as const,
-              }}>
-                {claimStatus === 'success' ? 'URL Claimed' : 'Claim Your URL'}
-              </h3>
-              {claimStatus === 'success' ? (
-                <div style={{ textAlign: 'center' as const }}>
-                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '13px', marginBottom: '12px' }}>
-                    Your identity is now at:
-                  </p>
-                  <p style={{ color: SE.accent, fontFamily: SE.fontSans, fontSize: '16px', fontWeight: 600 }}>
-                    {claimedUrl}
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <p style={{ color: SE.muted, fontFamily: SE.fontSans, fontSize: '12px', marginBottom: '16px', textAlign: 'center' as const }}>
-                    Choose a URL for your public profile
-                  </p>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '8px' }}>
-                    <span style={{ color: SE.dim, fontFamily: SE.fontSans, fontSize: '14px', whiteSpace: 'nowrap' as const }}>{SVRNTY_DOMAIN}/</span>
-                    <input
-                      type="text"
-                      placeholder="yourname"
-                      value={claimSlug}
-                      onChange={e => { setClaimSlug(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '')); setClaimStatus('idle'); }}
-                      style={{
-                        flex: 1, background: SE.inputBg, border: `1px solid ${SE.border}`,
-                        borderRadius: '8px', padding: '12px 14px', color: SE.text, fontSize: '14px',
-                        fontFamily: SE.fontSans, outline: 'none', boxSizing: 'border-box' as const,
-                      }}
-                    />
-                  </div>
-                  {claimStatus === 'taken' && (
-                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>This URL is already claimed</p>
-                  )}
-                  {claimStatus === 'error' && (
-                    <p style={{ color: SE.danger, fontSize: '12px', fontFamily: SE.fontSans, marginBottom: '8px' }}>Must be at least 3 characters (a-z, 0-9, -, _)</p>
-                  )}
-                  <button
-                    onClick={handleClaimUrl}
-                    disabled={claimSlug.length < 3 || claimStatus === 'checking' || claimStatus === 'claiming'}
-                    style={{
-                      width: '100%', background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                      border: `1px solid ${SE.borderLit}`,
-                      borderRadius: '8px', padding: '12px', color: SE.accent, fontSize: '12px',
-                      fontFamily: SE.fontSans, letterSpacing: '1px', cursor: 'pointer', marginTop: '8px',
-                    }}
-                  >
-                    {claimStatus === 'checking' ? 'CHECKING...' : claimStatus === 'claiming' ? 'CLAIMING...' : 'CLAIM URL'}
                   </button>
                 </>
               )}

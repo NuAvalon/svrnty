@@ -46,12 +46,11 @@ export interface SovereignIdentityCardProps {
   onEditLenses?: () => void;
   hasPqKeys?: boolean;
   onRevise?: (kind: MethodKind) => void;
-  onOpenCircle?: () => void;
   /** Open Share Identity (moved from Contacts). */
   onShareIdentity?: () => void;
-  /** Optional override — default downloads name + methods as native .vcf */
-  onExportVcf?: () => void;
-  /** Extra overflow-menu rows (vault, backup, claim). Closed via the callback. */
+  /** Download this lens as a .vcf. */
+  onExportVcf?: (lensId: string) => void;
+  /** Extra overflow-menu rows (vault, backup). Closed via the callback. */
   extraActions?: (close: () => void) => ReactNode;
 }
 
@@ -212,13 +211,14 @@ export function SovereignIdentityCard({
   onEditLenses,
   hasPqKeys = false,
   onRevise,
-  onOpenCircle,
   onShareIdentity,
   onExportVcf,
   extraActions,
 }: SovereignIdentityCardProps) {
   const [reviseNote, setReviseNote] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [saveCardOpen, setSaveCardOpen] = useState(false);
+  const [saveCardLensId, setSaveCardLensId] = useState<string | undefined>(selectedLensId);
   const displayHandle = handle
     ? (handle.startsWith('@') ? handle : `@${handle}`)
     : `@….${SVRNTY_DOMAIN}`;
@@ -238,12 +238,18 @@ export function SovereignIdentityCard({
     );
   };
 
-  const handleExportVcf = () => {
+  const handleExportVcf = (lensId: string) => {
     if (onExportVcf) {
-      onExportVcf();
+      onExportVcf(lensId);
       return;
     }
     downloadOwnVCard({ name, fingerprint, email, signal, site });
+  };
+
+  const openSaveCard = () => {
+    setSaveCardLensId(selectedLensId || lenses?.[0]?.id);
+    setSaveCardOpen(true);
+    setActionsOpen(false);
   };
 
   const rows: IdentityCardMethod[] = methods
@@ -414,20 +420,8 @@ export function SovereignIdentityCard({
             <CardMenuItem
               testId="export-own-vcf"
               label="Save contact card (.vcf)"
-              onClick={() => {
-                handleExportVcf();
-                setActionsOpen(false);
-              }}
+              onClick={openSaveCard}
             />
-            {onOpenCircle ? (
-              <CardMenuItem
-                label="Your Galaxy"
-                onClick={() => {
-                  onOpenCircle();
-                  setActionsOpen(false);
-                }}
-              />
-            ) : null}
             {extraActions?.(() => setActionsOpen(false))}
           </CardActionMenu>
         </div>
@@ -435,6 +429,91 @@ export function SovereignIdentityCard({
           Local-first · {hasPqKeys ? 'Ed25519 + ML-DSA' : 'Ed25519'}
         </p>
       </div>
+      {saveCardOpen ? (
+        <div
+          data-testid="save-card-lens-dialog"
+          role="dialog"
+          aria-label="Save contact card"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 50,
+          }}
+          onClick={() => setSaveCardOpen(false)}
+        >
+          <div
+            style={{
+              background: E.surfaceSolid,
+              border: `1px solid ${E.border}`,
+              borderRadius: 16,
+              padding: 24,
+              maxWidth: 360,
+              width: '100%',
+              margin: 20,
+              boxShadow: 'var(--se-glass-shadow)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              style={{
+                margin: '0 0 8px',
+                fontFamily: E.fontSans,
+                fontSize: 16,
+                fontWeight: 500,
+                color: E.text,
+                textAlign: 'center',
+              }}
+            >
+              Which lens?
+            </h3>
+            <p
+              style={{
+                margin: '0 0 14px',
+                fontSize: 12,
+                color: E.muted,
+                textAlign: 'center',
+              }}
+            >
+              The card you save matches that lens — name, handle, and methods.
+            </p>
+            <OwnerLensPicker
+              lenses={lenses?.length ? lenses : [{ id: selectedLensId || 'everyone', name: lensName || 'Everyone' }]}
+              selectedId={saveCardLensId}
+              onSelect={setSaveCardLensId}
+              testId="save-card-lens-picker"
+            />
+            <button
+              type="button"
+              data-testid="save-card-confirm"
+              disabled={!saveCardLensId}
+              onClick={() => {
+                if (!saveCardLensId) return;
+                handleExportVcf(saveCardLensId);
+                setSaveCardOpen(false);
+              }}
+              style={{
+                width: '100%',
+                marginTop: 16,
+                padding: 12,
+                borderRadius: 8,
+                border: `1px solid ${E.borderLit}`,
+                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                color: E.accent,
+                fontFamily: E.fontSans,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: saveCardLensId ? 'pointer' : 'default',
+              }}
+            >
+              Save .vcf
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

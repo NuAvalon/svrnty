@@ -13,7 +13,7 @@ export type OwnVCardSource = {
   email?: string;
   /** Signal number or handle — emitted as TEL when phone-like, else X-SIGNAL */
   signal?: string;
-  /** Personal site / claimed URL host */
+  /** Personal site host */
   site?: string;
 };
 
