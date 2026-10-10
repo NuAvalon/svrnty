@@ -6,7 +6,6 @@
 import { useMemo, useState } from 'react';
 import { IdentitySeal } from './IdentitySeal';
 import { solarEmber as E, solarGlass } from '../recovery/solar-ember';
-import { SVRNTY_DOMAIN } from '@/lib/config/domain';
 import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
 
 export type MethodKind = 'email' | 'signal' | 'site';
@@ -14,7 +13,7 @@ export type MethodKind = 'email' | 'signal' | 'site';
 export interface SovereignIdentityCardProps {
   name: string;
   fingerprint: string;
-  /** Display slug like alice.svrnty.is or claimed URL short form */
+  /** Optional local label. There is no public directory handle. */
   handle?: string;
   email?: string;
   signal?: string;
@@ -214,7 +213,7 @@ export function SovereignIdentityCard({
   const [reviseNote, setReviseNote] = useState<string | null>(null);
   const displayHandle = handle
     ? (handle.startsWith('@') ? handle : `@${handle}`)
-    : `@….${SVRNTY_DOMAIN}`;
+    : null;
   const signalDisplay = signal ? maskSignal(signal) : undefined;
 
   const handleRevise = (kind: MethodKind) => {
@@ -293,17 +292,19 @@ export function SovereignIdentityCard({
         >
           {name || 'Unnamed'}
         </h2>
-        <p
-          style={{
-            margin: '0 0 10px',
-            textAlign: 'center',
-            fontSize: 14,
-            color: E.accent,
-            fontFamily: E.fontMono,
-          }}
-        >
-          {displayHandle}
-        </p>
+        {displayHandle ? (
+          <p
+            style={{
+              margin: '0 0 10px',
+              textAlign: 'center',
+              fontSize: 14,
+              color: E.accent,
+              fontFamily: E.fontMono,
+            }}
+          >
+            {displayHandle}
+          </p>
+        ) : null}
         <p
           style={{
             margin: '0 0 22px',
