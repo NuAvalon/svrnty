@@ -107,6 +107,17 @@ function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: (
 /**
  * Assemble the consume deps for a headless owner over a HeadlessStore. The joiner (Grow-gate) seam is
  * omitted — headless agents don't run the browser Grow flow; contact-update + note + affirm cover receive.
+ *
+ * ③ NO-SILENT-LOSS (Flint's HNDL gate): a headless agent ADVERTISES a kem pub on its card, so senders
+ * WILL hybrid-seal to it — but until Athena's custody ① threads the owner's ML-KEM SECRET onto
+ * OwnerIdentity (kemSecretKey), this process has no secret to OPEN those blobs with. We therefore set
+ * `hybridSecretMissing` so consumeOne LEAVES an un-openable hybrid blob FOR RETRY (loud) instead of
+ * silently ack+deleting it — the mail waits in the mailbox until the secret arrives, never vanishes.
+ *   • PRE-① (now): OwnerIdentity carries no kemSecretKey ⇒ no secret derivable ⇒ missing IFF we advertise
+ *     a kem pub ⇒ `!!owner.kemPublicKey`. The openers stay classical-only; the ③ gate covers hybrid blobs.
+ *   • POST-① (Athena's field lands): derive the secret via deriveOwnerHybridSecrets + compose the
+ *     dualReadOpener hybrid path here (mirroring buildConsumeDeps) so agents actually OPEN hybrid mail;
+ *     `hybridSecretMissing` then flips to false (secret present) and the happy path lights up.
  */
 export function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): ConsumeDeps {
   const now = () => new Date().toISOString();
@@ -116,6 +127,9 @@ export function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessSt
     store: store.asContactStore(),
     note: buildNoteSeam(owner, store, now),
     affirm: buildTrustAffirmSeam(owner, store, now),
+    // ③ loud-not-silent: advertise-kem-pub but no derivable ML-KEM secret (⟵ Athena ① pending) ⇒ a hybrid
+    // blob is LEFT FOR RETRY by consumeOne, never silently acked+dropped. Flips false once the secret lands.
+    hybridSecretMissing: !!owner.kemPublicKey,
     relayBase: opts.relayBase,
     fetchImpl: opts.fetchImpl,
     now,
