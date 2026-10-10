@@ -27,6 +27,7 @@ export function ContactActionCard({
   onChat,
   actionsOpen,
   onActionsOpenChange,
+  actionsSide = 'up',
   actions,
   more,
   edit,
@@ -47,6 +48,7 @@ export function ContactActionCard({
   onChat?: () => void;
   actionsOpen: boolean;
   onActionsOpenChange: (open: boolean) => void;
+  actionsSide?: 'up' | 'down';
   actions: ReactNode;
   more?: ReactNode;
   edit?: ReactNode;
@@ -150,7 +152,7 @@ export function ContactActionCard({
       {showMore && more ? more : null}
 
       {!edit ? (
-        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, alignItems: 'flex-start' }}>
           {canChat && onChat ? (
             <button
               type="button"
@@ -161,7 +163,7 @@ export function ContactActionCard({
               Chat
             </button>
           ) : null}
-          <CardActionMenu open={actionsOpen} onOpenChange={onActionsOpenChange}>
+          <CardActionMenu open={actionsOpen} onOpenChange={onActionsOpenChange} side={actionsSide}>
             {actions}
           </CardActionMenu>
         </div>

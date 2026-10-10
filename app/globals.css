@@ -358,7 +358,13 @@ button[data-slot="button"]:active:not(:disabled) {
   }
 }
 
-/* Living Address Book — list scrolls in-frame; search / filters stay put. */
+/* Living Address Book — list scrolls in-frame; the shared card stays in the pane. */
+.contacts-book-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
 .contacts-book-scroll {
   max-height: min(58vh, calc(100dvh - 16rem));
   overflow-y: auto;
@@ -366,6 +372,14 @@ button[data-slot="button"]:active:not(:disabled) {
   padding-right: 4px;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--se-accent) 35%, transparent) transparent;
+}
+.contacts-book-pane[data-card-open='1'] .contacts-book-scroll {
+  max-height: min(38vh, calc(100dvh - 26rem));
+}
+.contacts-book-card {
+  position: relative;
+  z-index: 4;
+  flex-shrink: 0;
 }
 .contacts-book-scroll:focus {
   outline: none;
@@ -376,6 +390,9 @@ button[data-slot="button"]:active:not(:disabled) {
 @media (max-width: 640px) {
   .contacts-book-scroll {
     max-height: min(52vh, calc(100dvh - 14rem));
+  }
+  .contacts-book-pane[data-card-open='1'] .contacts-book-scroll {
+    max-height: min(30vh, calc(100dvh - 24rem));
   }
 }
 

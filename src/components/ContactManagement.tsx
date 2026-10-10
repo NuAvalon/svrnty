@@ -182,6 +182,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [bookSheetExpanded, setBookSheetExpanded] = useState(false);
   const [bookActionsOpen, setBookActionsOpen] = useState(false);
+  const bookCardRef = useRef<HTMLDivElement>(null);
   const [verifyOpen, setVerifyOpen] = useState(false);
   const [trustAfterVerify, setTrustAfterVerify] = useState(false);
   const verifiedForTrust = useRef(false);
@@ -271,6 +272,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
   useEffect(() => {
     if (fingerprint) loadContacts();
   }, [fingerprint, loadContacts]);
+
+  useEffect(() => {
+    if (!selectedContact || selectionMode) return;
+    bookCardRef.current?.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+  }, [selectedContact?.id, selectionMode]);
 
   // Live-beat: a peer's edit → the return-channel caller applies it IN Alice's page → emits reason:'live-apply'.
   // We re-project the book IN-PLACE (no reload / no navigation — the honest hinge) and mark the ignited rows
@@ -1714,7 +1720,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
           </div>
         )}
 
-        <div className="w-full">
+        <div
+          className="w-full contacts-book-pane"
+          data-card-open={selectedContact && !selectionMode ? '1' : '0'}
+        >
             {loading ? (
               <div className="flex justify-center p-8">
                 <RefreshCw className="h-8 w-8 animate-spin" style={{ color: E.dim }} />
@@ -1762,8 +1771,15 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
                   selectedIds={selectedIds}
                   selectionMode={selectionMode}
                   liveIds={liveIds}
+                  openId={selectionMode ? undefined : selectedContact?.id}
                   onToggleSelect={toggleSelected}
                 onOpen={(id) => {
+                  if (selectedContact?.id === id) {
+                    setSelectedContact(null);
+                    setBookSheetExpanded(false);
+                    setBookActionsOpen(false);
+                    return;
+                  }
                   const contact = contacts.find((c) => c.id === id);
                   if (!contact) return;
                   setSelectedContact(contact);
@@ -1774,99 +1790,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
                 />
               </div>
             )}
-          </div>
-
-        {/* === DIALOGS === */}
-
-        {/* Add Contact */}
-        <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Add Contact</DialogTitle>
-              <DialogDescription>Enter their details. New contacts start as Known.</DialogDescription>
-            </DialogHeader>
-            {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-            <div className="space-y-4 py-4">
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Look up by URL</label>
-                <div className="flex gap-2">
-                  <Input
-                    value={lookupInput}
-                    onChange={e => setLookupInput(e.target.value)}
-                    placeholder={`${SVRNTY_DOMAIN}/name or slug`}
-                    onKeyDown={e => e.key === 'Enter' && handleLookup()}
-                  />
-                  <Button variant="outline" onClick={handleLookup} disabled={lookupLoading || !lookupInput.trim()}>
-                    {lookupLoading ? 'Looking up...' : 'Lookup'}
-                  </Button>
-                </div>
-                {lookupMessage && <p className="text-xs text-green-500">{lookupMessage}</p>}
-                <p className="text-xs text-muted-foreground">Or fill in manually below</p>
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="name" className="text-sm font-medium">Name</label>
-                <Input id="name" value={newContactForm.name} onChange={e => setNewContactForm(p => ({ ...p, name: e.target.value }))} placeholder="Contact name" />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="email" className="text-sm font-medium">Email</label>
-                <Input id="email" type="email" value={newContactForm.email} onChange={e => setNewContactForm(p => ({ ...p, email: e.target.value }))} placeholder="contact@example.com" />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="fp" className="text-sm font-medium">Fingerprint</label>
-                <Input id="fp" value={newContactForm.fingerprint} onChange={e => setNewContactForm(p => ({ ...p, fingerprint: e.target.value }))} placeholder="PGP fingerprint" />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="pubkey" className="text-sm font-medium">Public Key</label>
-                <Textarea id="pubkey" value={newContactForm.public_key} onChange={e => setNewContactForm(p => ({ ...p, public_key: e.target.value }))} placeholder="Paste PGP public key" className="font-mono text-xs" rows={5} />
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowAddDialog(false)}>Cancel</Button>
-              <Button onClick={handleAddContact} disabled={loading || !newContactForm.name || !newContactForm.fingerprint}>
-                {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Adding...</> : <><UserPlus className="h-4 w-4 mr-2" />Add as Known</>}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Edit Contact */}
-        <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Edit Contact</DialogTitle>
-              <DialogDescription>Update contact details.</DialogDescription>
-            </DialogHeader>
-            {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-            <div className="space-y-4 py-4">
-              <div className="space-y-1.5">
-                <label htmlFor="edit-name" className="text-sm font-medium">Name</label>
-                <Input id="edit-name" value={editContactForm.name} onChange={e => setEditContactForm(p => ({ ...p, name: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="edit-email" className="text-sm font-medium">Email</label>
-                <Input id="edit-email" type="email" value={editContactForm.email} onChange={e => setEditContactForm(p => ({ ...p, email: e.target.value }))} />
-              </div>
-              <div className="space-y-1.5">
-                <label htmlFor="edit-notes" className="text-sm font-medium">Notes</label>
-                <Textarea id="edit-notes" value={editContactForm.notes} onChange={e => setEditContactForm(p => ({ ...p, notes: e.target.value }))} placeholder="Private notes about this contact..." rows={3} />
-              </div>
-              <ClassicalFieldsEditor fields={bookFields} onChange={setBookFields} />
-              <div className="space-y-1.5">
-                <label className="text-sm font-medium">Fingerprint</label>
-                <Input value={editContactForm.fingerprint} readOnly className="font-mono text-xs opacity-60" />
-                <p className="text-xs text-muted-foreground">Fingerprint is immutable</p>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
-              <Button onClick={handleUpdateContact} disabled={loading || !editContactForm.name}>
-                {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Saving...</> : <><Check className="h-4 w-4 mr-2" />Save</>}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {selectedContact && !selectionMode ? (() => {
+          {selectedContact && !selectionMode ? (() => {
           const focused = contacts.find((c) => c.id === selectedContact.id) ?? selectedContact;
           const edge = contactRecordToEdge(focused);
           const vis = visualForContact(focused);
@@ -1881,6 +1805,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
           const groupChoices = Array.from(new Set([...contacts.flatMap((c) => c.metadata?.tags || []), ...tags])).sort();
           const share = readShareSettings(focused);
           return (
+            <div ref={bookCardRef} className="contacts-book-card">
             <ContactActionCard
               testId="contact-action-card"
               name={focused.name}
@@ -1900,6 +1825,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
               onChat={() => onOpenChat?.({ fingerprint: fp, name: focused.name })}
               actionsOpen={bookActionsOpen}
               onActionsOpenChange={setBookActionsOpen}
+              actionsSide="down"
               actions={(
                 <>
                   {!svrn ? (
@@ -2054,8 +1980,100 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
                 </>
               )}
             />
+            </div>
           );
         })() : null}
+        </div>
+
+        {/* === DIALOGS === */}
+
+        {/* Add Contact */}
+        <Dialog open={showAddDialog} onOpenChange={setShowAddDialog}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Add Contact</DialogTitle>
+              <DialogDescription>Enter their details. New contacts start as Known.</DialogDescription>
+            </DialogHeader>
+            {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Look up by URL</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={lookupInput}
+                    onChange={e => setLookupInput(e.target.value)}
+                    placeholder={`${SVRNTY_DOMAIN}/name or slug`}
+                    onKeyDown={e => e.key === 'Enter' && handleLookup()}
+                  />
+                  <Button variant="outline" onClick={handleLookup} disabled={lookupLoading || !lookupInput.trim()}>
+                    {lookupLoading ? 'Looking up...' : 'Lookup'}
+                  </Button>
+                </div>
+                {lookupMessage && <p className="text-xs text-green-500">{lookupMessage}</p>}
+                <p className="text-xs text-muted-foreground">Or fill in manually below</p>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="name" className="text-sm font-medium">Name</label>
+                <Input id="name" value={newContactForm.name} onChange={e => setNewContactForm(p => ({ ...p, name: e.target.value }))} placeholder="Contact name" />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="email" className="text-sm font-medium">Email</label>
+                <Input id="email" type="email" value={newContactForm.email} onChange={e => setNewContactForm(p => ({ ...p, email: e.target.value }))} placeholder="contact@example.com" />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="fp" className="text-sm font-medium">Fingerprint</label>
+                <Input id="fp" value={newContactForm.fingerprint} onChange={e => setNewContactForm(p => ({ ...p, fingerprint: e.target.value }))} placeholder="PGP fingerprint" />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="pubkey" className="text-sm font-medium">Public Key</label>
+                <Textarea id="pubkey" value={newContactForm.public_key} onChange={e => setNewContactForm(p => ({ ...p, public_key: e.target.value }))} placeholder="Paste PGP public key" className="font-mono text-xs" rows={5} />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowAddDialog(false)}>Cancel</Button>
+              <Button onClick={handleAddContact} disabled={loading || !newContactForm.name || !newContactForm.fingerprint}>
+                {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Adding...</> : <><UserPlus className="h-4 w-4 mr-2" />Add as Known</>}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Edit Contact */}
+        <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Edit Contact</DialogTitle>
+              <DialogDescription>Update contact details.</DialogDescription>
+            </DialogHeader>
+            {error && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <label htmlFor="edit-name" className="text-sm font-medium">Name</label>
+                <Input id="edit-name" value={editContactForm.name} onChange={e => setEditContactForm(p => ({ ...p, name: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="edit-email" className="text-sm font-medium">Email</label>
+                <Input id="edit-email" type="email" value={editContactForm.email} onChange={e => setEditContactForm(p => ({ ...p, email: e.target.value }))} />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="edit-notes" className="text-sm font-medium">Notes</label>
+                <Textarea id="edit-notes" value={editContactForm.notes} onChange={e => setEditContactForm(p => ({ ...p, notes: e.target.value }))} placeholder="Private notes about this contact..." rows={3} />
+              </div>
+              <ClassicalFieldsEditor fields={bookFields} onChange={setBookFields} />
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Fingerprint</label>
+                <Input value={editContactForm.fingerprint} readOnly className="font-mono text-xs opacity-60" />
+                <p className="text-xs text-muted-foreground">Fingerprint is immutable</p>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowEditDialog(false)}>Cancel</Button>
+              <Button onClick={handleUpdateContact} disabled={loading || !editContactForm.name}>
+                {loading ? <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Saving...</> : <><Check className="h-4 w-4 mr-2" />Save</>}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <VerifySheet
           open={!!(verifyOpen && selectedContact)}

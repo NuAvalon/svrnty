@@ -40,6 +40,8 @@ export type MasterAddressBookListProps = {
   onToggleSelect: (id: string) => void;
   onOpen: (id: string) => void;
   liveIds?: Set<string>;
+  /** Row whose shared card is open — list highlight only, not multi-select. */
+  openId?: string;
 };
 
 function statusForRow(row: MasterBookRow): LivingEdgeStatus {
@@ -90,6 +92,7 @@ export function MasterAddressBookList({
   onToggleSelect,
   onOpen,
   liveIds,
+  openId,
 }: MasterAddressBookListProps) {
   if (rows.length === 0) return null;
 
@@ -98,6 +101,7 @@ export function MasterAddressBookList({
       {rows.map((row) => {
         const svrn = isSvrnNetworkContact(row);
         const selected = selectedIds.has(row.id);
+        const opened = !selectionMode && openId === row.id;
         const live = liveIds?.has(row.id) === true;
         const status = statusForRow(row);
         const visual = trustPhaseVisual({
@@ -111,6 +115,8 @@ export function MasterAddressBookList({
               type="button"
               data-testid="contact-row"
               data-master-book-row="1"
+              data-open={opened ? '1' : undefined}
+              aria-expanded={opened}
               data-svrn={svrn ? '1' : '0'}
               data-live={live ? 'push' : undefined}
               data-living-trust={status.trust}
@@ -122,8 +128,8 @@ export function MasterAddressBookList({
               }}
               style={{
                 ...rowBtn,
-                borderColor: selected || live ? E.borderLit : E.border,
-                background: selected || live
+                borderColor: selected || opened || live ? E.borderLit : E.border,
+                background: selected || opened || live
                   ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
                   : E.surfaceSolid,
                 boxShadow: live

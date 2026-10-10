@@ -11,6 +11,7 @@ export function CardActionMenu({
   label = 'Actions',
   testId = 'card-actions-toggle',
   align = 'end',
+  side = 'up',
   children,
 }: {
   open: boolean;
@@ -18,6 +19,8 @@ export function CardActionMenu({
   label?: string;
   testId?: string;
   align?: 'start' | 'end';
+  /** `down` stays in flow so a parent overflow:hidden cannot swallow the menu. */
+  side?: 'up' | 'down';
   children: ReactNode;
 }) {
   const root = useRef<HTMLDivElement>(null);
@@ -61,10 +64,14 @@ export function CardActionMenu({
         <div
           role="menu"
           data-testid={`${testId}-menu`}
-          style={{
-            ...menuStyle,
-            [align === 'end' ? 'right' : 'left']: 0,
-          }}
+          style={
+            side === 'down'
+              ? inFlowMenuStyle
+              : {
+                  ...menuStyle,
+                  [align === 'end' ? 'right' : 'left']: 0,
+                }
+          }
         >
           {children}
         </div>
@@ -138,6 +145,20 @@ const menuStyle: CSSProperties = {
   bottom: 'calc(100% + 6px)',
   zIndex: 30,
   minWidth: '100%',
+  maxHeight: '46dvh',
+  overflowY: 'auto',
+  padding: 6,
+  borderRadius: 12,
+  border: `1px solid ${E.borderLit}`,
+  background: E.surfaceSolid,
+  boxShadow: 'var(--se-glass-shadow)',
+};
+
+const inFlowMenuStyle: CSSProperties = {
+  position: 'relative',
+  zIndex: 30,
+  width: '100%',
+  marginTop: 6,
   maxHeight: '46dvh',
   overflowY: 'auto',
   padding: 6,
