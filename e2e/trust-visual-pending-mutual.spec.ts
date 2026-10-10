@@ -24,7 +24,9 @@ async function genesis(page: Page, name: string) {
   });
 }
 
-test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white light', async ({
+// Labels assert the PRE-WIRE gated copy (claim-gates.isMutualTrustWireLive=false → 'Trusted' /
+// 'mutual confirmation coming'); structural attrs (bond-state/light/shape) are ungated. Flip with the wire.
+test('Galaxy: outbound one-way trust is not white; mutual is the only white light', async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -53,15 +55,15 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(frank).toHaveAttribute('data-bond-state', 'known');
 
   await expect(page.getByText('Mutual · white light')).toBeVisible();
-  await expect(page.getByText('Awaiting mutual · dashed hollow')).toBeVisible();
+  await expect(page.getByText('Trusted · mutual confirmation coming')).toBeVisible();
 
   await alan.click();
-  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Awaiting mutual');
+  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Trusted');
   await ada.click();
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual');
 });
 
-test('Address book chips: Ada Mutual, Alan Awaiting mutual', async ({ page }) => {
+test('Address book chips: Ada Mutual, Alan Trusted (pre-wire gate label)', async ({ page }) => {
   test.setTimeout(90_000);
   await genesis(page, 'Book Visual');
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
@@ -72,6 +74,6 @@ test('Address book chips: Ada Mutual, Alan Awaiting mutual', async ({ page }) =>
   const alanRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Alan Turing' });
   await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual');
   await expect(adaRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'mutual');
-  await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Awaiting mutual');
+  await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Trusted');
   await expect(alanRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'trust-sent');
 });

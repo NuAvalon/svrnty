@@ -50,6 +50,9 @@ export function TrustActionConfirmDialog({
         position: 'fixed',
         inset: 0,
         zIndex: 80,
+        // Radix modal dialogs scroll-lock: body gets pointer-events:none and only the dialog's
+        // own portal shard is re-enabled. A body-level portal must re-enable it explicitly.
+        pointerEvents: 'auto',
         background: 'rgba(8, 5, 3, 0.72)',
         display: 'flex',
         alignItems: 'center',
