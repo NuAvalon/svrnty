@@ -29,6 +29,7 @@ import {
 } from './consume-mailbox';
 import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
 import { emitContactChange } from '@/lib/contacts/contact-events';
+import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
   loadKey,
   getContactByFingerprint,
@@ -202,6 +203,9 @@ export async function buildConsumeDeps(
     joiner: buildJoinerSeam(owner, codes),
     note: buildNoteSeam(owner),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
+    // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
+    // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)
+    emitNote: (e) => emitNoteArrival(e),
     fetchImpl: opts.fetchImpl,
   };
 }

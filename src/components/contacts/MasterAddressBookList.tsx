@@ -10,10 +10,10 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import {
   livingEdgeStatus,
-  livingStatusChip,
   type LivingEdgeStatus,
 } from '@/lib/trust/living-edge-status';
 import type { TrustEdge } from '@/lib/trust/types';
+import { trustPhaseVisual } from '@/components/trust/trust-phase-visual';
 
 export type MasterBookRow = {
   id: string;
@@ -81,14 +81,6 @@ const rowBtn: CSSProperties = {
   color: E.text,
 };
 
-function chipColor(status: LivingEdgeStatus): string {
-  if (status.trust === 'mutual') return E.accent2;
-  if (status.trust === 'outbound') return E.accent;
-  if (status.connection === 'pending') return E.accent;
-  if (status.methodDelivery === 'undelivered') return E.danger || '#c45c4a';
-  if (status.canCommunicate) return E.ok || E.accent;
-  return E.muted;
-}
 
 export function MasterAddressBookList({
   rows,
@@ -107,7 +99,11 @@ export function MasterAddressBookList({
         const selected = selectedIds.has(row.id);
         const live = liveIds?.has(row.id) === true;
         const status = statusForRow(row);
-        const chip = livingStatusChip(status);
+        const visual = trustPhaseVisual({
+          status,
+          blocked: row.blocked === true,
+        });
+        const chip = visual.label;
         return (
           <li key={row.id}>
             <button
@@ -117,6 +113,7 @@ export function MasterAddressBookList({
               data-svrn={svrn ? '1' : '0'}
               data-live={live ? 'push' : undefined}
               data-living-trust={status.trust}
+              data-bond-state={visual.bondState}
               data-can-communicate={status.canCommunicate ? '1' : '0'}
               onClick={() => {
                 if (selectionMode) onToggleSelect(row.id);
@@ -130,7 +127,7 @@ export function MasterAddressBookList({
                   : E.surfaceSolid,
                 boxShadow: live
                   ? '0 0 18px color-mix(in srgb, var(--se-accent) 22%, transparent)'
-                  : status.trust === 'mutual'
+                  : visual.lit
                     ? '0 0 12px color-mix(in srgb, var(--se-accent2) 16%, transparent)'
                     : undefined,
               }}
@@ -244,11 +241,14 @@ export function MasterAddressBookList({
                 </span>
                 <span
                   data-testid="master-row-chip"
+                  data-bond-state={visual.bondState}
                   style={{
                     fontSize: 10,
                     letterSpacing: '0.04em',
-                    color: chipColor(status),
-                    fontWeight: status.trust === 'mutual' || status.trust === 'outbound' ? 600 : 400,
+                    color: visual.chipColorCss,
+                    fontWeight: visual.lit ? 600 : 500,
+                    borderBottom:
+                      visual.bondState === 'trust-sent' ? `1px dashed ${visual.chipColorCss}` : undefined,
                   }}
                 >
                   {chip}

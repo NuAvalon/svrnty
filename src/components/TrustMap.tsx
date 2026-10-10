@@ -74,6 +74,12 @@ import {
 } from '@/components/identity/method-history';
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import { VERIFY_SHEET_COPY } from '@/components/verify/verify-copy';
+import {
+  trustVisualLane,
+  visualForEdge,
+  type TrustPhaseVisual,
+  type TrustVisualLane,
+} from '@/components/trust/trust-phase-visual';
 
 interface PendingIntro {
   introduced_by: string;
@@ -120,9 +126,7 @@ interface TrustMapProps {
 const T = {
   field: E.bg,
   myEdge: E.accent,
-  dimFill: E.surfaceSolid,
   dimStroke: E.border,
-  lit: E.accent2,
   selfRing: E.accent,
   selfDot: E.text,
   label: E.muted,
@@ -136,14 +140,17 @@ const IGNITE_MS = 1100;
 const GLASS_POP_MS = 900;
 const GATE_SPARK_MS = 1600;
 
-type GlassLane = 'pending' | 'known' | 'verified' | 'trusted' | 'decayed';
+type GlassLane = TrustVisualLane;
 
-function glassLane(state: TrustState, verified: boolean, pending: boolean): GlassLane {
-  if (pending) return 'pending';
-  if (state === 'trusted') return 'trusted';
-  if (state === 'decayed') return 'decayed';
-  if (verified) return 'verified';
-  return 'known';
+function visualOf(edge: EdgeExtras | null | undefined, verified: boolean): TrustPhaseVisual {
+  return visualForEdge(edge, {
+    blocked: !!edge && isContactBlocked(edge),
+    verified,
+  });
+}
+
+function glassLane(edge: EdgeExtras | null | undefined, verified: boolean, decayed: boolean): GlassLane {
+  return trustVisualLane(visualOf(edge, verified), decayed);
 }
 const IGNITE_STORE = 'svrnty.galaxy.ignited.v1';
 
@@ -178,18 +185,6 @@ function isPending(edge: EdgeExtras | null | undefined): boolean {
   return edge.connection_status === 'pending' || !!edge.pending_intro;
 }
 
-function nodeStroke(state: TrustState, pending: boolean): string {
-  if (pending) return T.pending;
-  if (state === 'trusted') return T.lit;
-  return T.myEdge;
-}
-
-function nodeFill(state: TrustState, pending: boolean): string {
-  if (pending) return 'transparent';
-  if (state === 'trusted') return 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
-  if (state === 'known') return 'color-mix(in srgb, var(--se-accent) 7%, transparent)';
-  return T.dimFill;
-}
 
 function iconBtnStyle(): React.CSSProperties {
   return {
@@ -481,14 +476,17 @@ export function TrustMap({
       pending: 0,
       known: 1,
       verified: 2,
-      trusted: 3,
+      'trust-sent': 3,
+      'trust-received': 3,
+      mutual: 4,
       decayed: 1,
+      blocked: 0,
     };
     const next = new Map<string, GlassLane>();
     const popped = new Set<string>();
     for (const n of layout.nodes) {
       const edge = edgeByFp.get(n.id);
-      const lane = glassLane(n.state, !!edge && ownerHasVerified(edge), isPending(edge));
+      const lane = glassLane(edge, !!edge && ownerHasVerified(edge), n.state === 'decayed');
       next.set(n.id, lane);
       const prev = prevGlassRef.current.get(n.id);
       if (prev && rank[lane] > rank[prev]) popped.add(n.id);
@@ -1008,25 +1006,26 @@ export function TrustMap({
           <g>
             {layout.nodes.map((n, i) => {
               const edge = edgeByFp.get(n.id);
-              const pending = isPending(edge);
               const verified = !!edge && ownerHasVerified(edge);
-              const mutual = !!edge?.mutual?.reciprocal;
-              const lane = glassLane(n.state, verified, pending);
-              const trusted = lane === 'trusted';
-              const spokeClass =
-                trusted ? 'tm-edge tm-spoke-trusted' : verified ? 'tm-edge tm-spoke-verified' : 'tm-edge tm-spoke-known';
+              const visual = visualOf(edge, verified);
+              const lane = trustVisualLane(visual, n.state === 'decayed');
+              const spokeClass = visual.lit
+                ? 'tm-edge tm-spoke-trusted'
+                : visual.verifiedMark
+                  ? 'tm-edge tm-spoke-verified'
+                  : 'tm-edge tm-spoke-known';
               return (
                 <g key={`e-${n.id}`}>
-                  {trusted && (
+                  {visual.spokeGlow && (
                     <line
                       className="tm-edge"
                       x1={layout.self.x}
                       y1={layout.self.y}
                       x2={n.x}
                       y2={n.y}
-                      stroke="#fff8ee"
-                      strokeOpacity={mutual ? 0.28 : 0.16}
-                      strokeWidth={mutual ? 5.5 : 4.2}
+                      stroke={visual.haloStroke || visual.spokeStroke}
+                      strokeOpacity={0.28}
+                      strokeWidth={5.5}
                       style={{ ['--tm-o' as string]: 0.85, animationDelay: `${0.08 + i * 0.02}s` }}
                     />
                   )}
@@ -1034,24 +1033,15 @@ export function TrustMap({
                     className={spokeClass}
                     data-testid="trust-edge"
                     data-spoke={lane}
+                    data-bond-state={visual.bondState}
                     x1={layout.self.x}
                     y1={layout.self.y}
                     x2={n.x}
                     y2={n.y}
-                    stroke={pending ? T.pending : trusted ? '#fff6e8' : T.myEdge}
-                    strokeOpacity={
-                      pending
-                        ? 0.4
-                        : trusted
-                          ? mutual
-                            ? 0.95
-                            : 0.82
-                          : verified
-                            ? 0.58
-                            : 0.48
-                    }
-                    strokeWidth={trusted ? (mutual ? 2.4 : 1.85) : verified ? 1.25 : pending ? 1.1 : 1.05}
-                    strokeDasharray={pending ? '5 4' : n.state === 'decayed' ? '3 3' : undefined}
+                    stroke={visual.spokeStroke}
+                    strokeOpacity={visual.lit ? 0.95 : visual.bondState === 'trust-sent' ? 0.7 : visual.verifiedMark ? 0.58 : 0.48}
+                    strokeWidth={visual.lit ? 2.4 : visual.bondState === 'trust-sent' ? 1.55 : visual.verifiedMark ? 1.25 : 1.05}
+                    strokeDasharray={visual.spokeDasharray || (n.state === 'decayed' ? '3 3' : undefined)}
                     style={{ ['--tm-o' as string]: n.edgeOpacity, animationDelay: `${0.08 + i * 0.02}s` }}
                   />
                 </g>
@@ -1106,6 +1096,8 @@ export function TrustMap({
           <g>
             {layout.nodes.map((n, i) => {
               const edge = edgeByFp.get(n.id);
+              const verified = !!edge && ownerHasVerified(edge);
+              const visual = visualOf(edge, verified);
               return (
                 <ContactNode
                   key={n.id}
@@ -1113,9 +1105,8 @@ export function TrustMap({
                   index={i}
                   selected={focusId === n.id}
                   picked={picked.has(n.id)}
-                  pending={isPending(edge)}
-                  verified={!!edge && ownerHasVerified(edge)}
-                  mutual={!!edge?.mutual?.reciprocal}
+                  visual={visual}
+                  lane={trustVisualLane(visual, n.state === 'decayed')}
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
                   glassPop={glassPop.has(n.id)}
@@ -1326,8 +1317,10 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
-          <span style={{ color: E.accent2 }}>⬡ trusted · white light</span>
-          <span>⬡ known · dim spoke</span>
+          <span style={{ color: E.accent2 }}>⬡ Mutual · white light</span>
+          <span style={{ color: E.muted }}>⬡ Awaiting mutual · dashed hollow</span>
+          <span style={{ color: E.accent }}>⬡ Trusts you · gold</span>
+          <span>⬡ Known · dim outline</span>
           <span style={{ color: E.text }}>⬡ you · larger + light</span>
           <span style={{ color: E.accent2 }}>═ {TRUST_RECIPE_COPY.peerTrustChord}</span>
           <span>─ {TRUST_RECIPE_COPY.peerKnowChord}</span>
@@ -1386,11 +1379,10 @@ export function TrustMap({
             border: `1px solid ${
               contactHasDistress(focusEdge)
                 ? E.accent2
-                : isPending(focusEdge)
+                : visualOf(focusEdge, ownerHasVerified(focusEdge)).lit ||
+                    visualOf(focusEdge, ownerHasVerified(focusEdge)).introPending
                   ? E.borderLit
-                  : focusNode.state === 'trusted'
-                    ? E.borderLit
-                    : E.border
+                  : E.border
             }`,
             boxShadow: 'var(--se-glass-shadow)',
             fontFamily: E.fontSans,
@@ -1429,15 +1421,18 @@ export function TrustMap({
                     {focusEdge.peer_name || focusNode.name}
                   </p>
                   <p
+                    data-testid="trust-node-bond-label"
                     style={{
                       margin: '4px 0 0',
                       fontSize: 12,
-                      color: isPending(focusEdge)
-                        ? E.accent
-                        : focusNode.state === 'trusted'
-                          ? E.accent2
-                          : E.dim,
-                      fontWeight: focusNode.state === 'trusted' ? 600 : 400,
+                      color: visualOf(focusEdge, ownerHasVerified(focusEdge)).lit
+                        ? E.accent2
+                        : visualOf(focusEdge, ownerHasVerified(focusEdge)).introPending
+                          ? E.accent
+                          : visualOf(focusEdge, ownerHasVerified(focusEdge)).bondState === 'trust-sent'
+                            ? E.muted
+                            : E.dim,
+                      fontWeight: visualOf(focusEdge, ownerHasVerified(focusEdge)).lit ? 600 : 500,
                     }}
                   >
                     {describeAlive(focusNode, focusEdge)}
@@ -1910,9 +1905,8 @@ function ContactNode({
   index,
   selected,
   picked,
-  pending,
-  verified,
-  mutual,
+  visual,
+  lane,
   distress,
   ignite,
   glassPop,
@@ -1922,20 +1916,17 @@ function ContactNode({
   index: number;
   selected: boolean;
   picked: boolean;
-  pending: boolean;
-  verified: boolean;
-  mutual: boolean;
+  visual: TrustPhaseVisual;
+  lane: TrustVisualLane;
   distress: boolean;
   ignite: boolean;
   glassPop: boolean;
   onSelect: (id: string, multi: boolean) => void;
 }) {
   const r = selected || picked ? node.radius + 2.5 : node.radius;
-  const trusted = node.state === 'trusted' && !pending;
-  const lane = glassLane(node.state, verified, pending);
   const cls = [
     'tm-node',
-    pending ? 'tm-pending' : '',
+    visual.introPending ? 'tm-pending' : '',
     ignite ? 'tm-ignite' : '',
     glassPop ? 'tm-glass-up' : '',
   ]
@@ -1961,52 +1952,74 @@ function ContactNode({
         />
       )}
       {distress && <StarEmber x={node.x} y={node.y} r={r} />}
-      {trusted && (
+      {visual.lit && visual.haloStroke && (
         <polygon
-          points={hexagonPoints(node.x, node.y, r + (mutual ? 5 : 3.5))}
+          points={hexagonPoints(node.x, node.y, r + 5)}
           fill="none"
-          stroke="#fff8ee"
-          strokeOpacity={mutual ? 0.42 : 0.22}
-          strokeWidth={mutual ? 1.5 : 1.05}
+          stroke={visual.haloStroke}
+          strokeOpacity={0.42}
+          strokeWidth={1.5}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
+      {visual.bondState === 'trust-sent' && visual.haloStroke && (
+        <polygon
+          data-testid="trust-node-awaiting"
+          points={hexagonPoints(node.x, node.y, r + 4)}
+          fill="none"
+          stroke={visual.haloStroke}
+          strokeOpacity={0.85}
+          strokeWidth={1.2}
+          strokeDasharray={visual.svgDasharray}
           style={{ pointerEvents: 'none' }}
         />
       )}
       <polygon
         data-testid="trust-node"
         data-fingerprint={node.id}
-        data-trust-state={pending ? 'pending' : node.state}
-        data-verified={verified ? 'true' : 'false'}
-        data-mutual={mutual ? 'true' : 'false'}
+        data-trust-state={visual.introPending ? 'pending' : node.state}
+        data-bond-state={visual.bondState}
+        data-intro-pending={visual.introPending ? 'true' : 'false'}
+        data-verified={visual.verifiedMark ? 'true' : 'false'}
+        data-mutual={visual.lit ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
-        data-shape="hex"
+        data-shape={visual.shape === 'dashed-hollow' ? 'hex-dashed' : 'hex'}
         data-glass={lane}
-        data-light={trusted ? 'white' : verified ? 'ember' : 'none'}
+        data-light={visual.lit ? 'white' : visual.verifiedMark ? 'ember' : 'none'}
         points={hexagonPoints(node.x, node.y, r)}
-        fill={nodeFill(node.state, pending)}
-        stroke={picked ? E.accent : selected ? T.selfDot : nodeStroke(node.state, pending)}
-        strokeWidth={picked || trusted ? 1.85 : pending ? 1.4 : 1.05}
-        strokeDasharray={pending || node.state === 'decayed' ? (pending ? '3 2' : '2 2') : undefined}
+        fill={visual.svgFill}
+        stroke={picked ? E.accent : selected ? T.selfDot : visual.svgStroke}
+        strokeWidth={picked || visual.lit ? 1.85 : visual.svgStrokeWidth}
+        strokeDasharray={visual.svgDasharray || (node.state === 'decayed' ? '2 2' : undefined)}
       >
-        <title>{`${node.name} — ${pending ? 'pending intro' : describe(node)}${mutual ? ' · mutual' : ''}`}</title>
+        <title>{`${node.name} — ${visual.label}`}</title>
       </polygon>
-      {verified && !trusted && !pending && (
-        <circle
-          cx={node.x}
-          cy={node.y}
-          r={Math.max(1.6, r * 0.22)}
-          fill={T.myEdge}
-          opacity={0.85}
+      {visual.bondState === 'trust-received' && (
+        <polygon
+          points={hexagonPoints(node.x, node.y, Math.max(2.4, r * 0.38))}
+          fill={visual.svgStroke}
+          opacity={0.9}
           style={{ pointerEvents: 'none' }}
         />
       )}
-      {trusted && (
+      {visual.verifiedMark && (
+        <circle
+          cx={node.x + r * 0.62}
+          cy={node.y - r * 0.62}
+          r={Math.max(1.8, r * 0.2)}
+          fill={T.myEdge}
+          opacity={0.9}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
+      {visual.lit && visual.coreFill && (
         <>
           <circle
             cx={node.x}
             cy={node.y}
             r={Math.max(4.2, r * 0.55)}
-            fill="#fff8ee"
+            fill={visual.haloStroke || visual.coreFill}
             opacity={0.18}
             style={{ pointerEvents: 'none' }}
           />
@@ -2016,7 +2029,7 @@ function ContactNode({
             cx={node.x}
             cy={node.y}
             r={Math.max(2.1, r * 0.28)}
-            fill="#fffef8"
+            fill={visual.coreFill}
             style={{ pointerEvents: 'none' }}
           />
         </>
@@ -2025,18 +2038,8 @@ function ContactNode({
   );
 }
 
-function describe(n: LaidOutNode): string {
-  if (n.state === 'known') return 'known';
-  if (n.state === 'decayed') return 'trust decayed';
-  if (n.daysLeft > 365) return `trusted · ${Math.round(n.daysLeft / 365)}y until decay`;
-  return `trusted · ${n.daysLeft}d until decay`;
-}
-
 function describeAlive(n: LaidOutNode, edge: EdgeExtras): string {
-  if (isPending(edge)) return 'pending connection · not yet known';
-  if (n.state === 'known') return 'known · not trusted';
-  if (n.state === 'decayed') return 'trust decayed';
-  const mutual = edge.mutual?.reciprocal ? ' · mutual' : '';
-  if (n.daysLeft > 365) return `trusted${mutual} · ${Math.round(n.daysLeft / 365)}y until decay`;
-  return `trusted${mutual} · ${n.daysLeft}d until decay`;
+  const visual = visualOf(edge, ownerHasVerified(edge));
+  if (n.state === 'decayed') return `${visual.label} · trust quiet`;
+  return visual.label;
 }

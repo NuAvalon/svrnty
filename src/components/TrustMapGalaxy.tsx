@@ -9,6 +9,7 @@ import { constellationLinkKind } from '@/lib/trust/constellation';
 import type { WitnessedPeerChord } from '@/lib/trust/peer-trust-chords';
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import type { LivingEdgeStatus } from '@/lib/trust/living-edge-status';
+import { trustPhaseVisual } from '@/components/trust/trust-phase-visual';
 
 function worldToScreen(cam: Camera, w: number, h: number, x: number, y: number) {
   return {
@@ -103,13 +104,16 @@ export function TrustMapGalaxy({
       ctx.moveTo(self.x, self.y);
       ctx.lineTo(p.x, p.y);
       if (focusId === n.id) {
-        const focusTrusted = n.state === 'trusted';
-        ctx.strokeStyle = focusTrusted ? 'rgba(255,122,26,0.72)' : 'rgba(249,168,37,0.35)';
-        ctx.lineWidth = focusTrusted ? 2.4 : 1.2;
+        const focusVis = livingById?.get(n.id)
+          ? trustPhaseVisual({ status: livingById.get(n.id)! })
+          : null;
+        const focusLit = focusVis?.lit === true;
+        ctx.strokeStyle = focusLit ? 'rgba(255,122,26,0.72)' : 'rgba(249,168,37,0.35)';
+        ctx.lineWidth = focusLit ? 2.4 : 1.2;
       } else if (kind === 'witnessed-trust') {
         ctx.strokeStyle = 'rgba(255,122,26,0.22)';
         ctx.lineWidth = 1.0;
-      } else if (n.state === 'trusted') {
+      } else if (livingById?.get(n.id) && trustPhaseVisual({ status: livingById.get(n.id)! }).lit) {
         ctx.strokeStyle = dim ? 'rgba(255,122,26,0.03)' : 'rgba(255,122,26,0.22)';
         ctx.lineWidth = isLit ? 1.4 : 0.7;
       } else {
@@ -224,9 +228,10 @@ export function TrustMapGalaxy({
       const match = q && n.name.toLowerCase().includes(q);
       const dim = focusId && !isLit && !match && !isHover;
       const st = livingById?.get(n.id);
+      const vis = st ? trustPhaseVisual({ status: st }) : null;
       const decay = st?.decayFreshness ?? 1;
-      const mutualAlive = st?.trust === 'mutual';
-      const outboundTrust = st?.trust === 'outbound';
+      const mutualAlive = vis?.lit === true;
+      const outboundTrust = vis?.bondState === 'trust-sent';
       const rBase =
         (isFocus || isPick || isHover || linkKind === 'witnessed-trust' || mutualAlive
           ? n.radius + 2
@@ -257,9 +262,9 @@ export function TrustMapGalaxy({
       } else if (outboundTrust && !dim) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255,122,26,0.55)';
+        ctx.strokeStyle = vis?.canvasStroke || '#8f7550';
         ctx.lineWidth = 1.4;
-        ctx.setLineDash([5, 3]);
+        ctx.setLineDash(vis?.canvasDash || [8, 5]);
         ctx.stroke();
         ctx.setLineDash([]);
       } else if (linkKind === 'witnessed-trust' && !dim) {
@@ -286,15 +291,29 @@ export function TrustMapGalaxy({
         ctx.stroke();
       }
 
-      if (n.state === 'trusted') {
+      if (vis?.lit) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(255,122,26,${(dim ? 0.04 : 0.16) * alphaMul})`;
         ctx.fill();
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,122,26,${(dim ? 0.15 : 0.55) * alphaMul})`;
+        ctx.fillStyle = vis.canvasFill || `rgba(255,122,26,${(dim ? 0.15 : 0.55) * alphaMul})`;
         ctx.fill();
+        if (vis.coreFill) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, Math.max(2.1, r * 0.28), 0, Math.PI * 2);
+          ctx.fillStyle = vis.coreFill;
+          ctx.fill();
+        }
+      } else if (vis?.bondState === 'trust-sent') {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = vis.canvasStroke;
+        ctx.lineWidth = 1.45;
+        ctx.setLineDash(vis.canvasDash || [8, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
       } else if (living.has(n.id)) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
@@ -321,7 +340,7 @@ export function TrustMapGalaxy({
       const force = !!(isLit || isFocus || match || isHover);
       let priority: LabelCandidate['priority'] = 'known';
       if (force) priority = 'force';
-      else if (n.state === 'trusted') priority = 'trusted';
+      else if (vis?.lit) priority = 'trusted';
       else if (living.has(n.id)) priority = 'living';
       candidates.push({
         id: n.id,
