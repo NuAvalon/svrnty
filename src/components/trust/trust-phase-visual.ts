@@ -22,6 +22,7 @@ export type TrustBondState =
   | 'trust-sent'
   | 'trust-received'
   | 'mutual'
+  | 'broken'
   | 'blocked';
 
 export type TrustBondShape =
@@ -35,7 +36,9 @@ export const TRUST_VISUAL_LABELS = {
   known: 'Known',
   'trust-sent': 'Awaiting mutual',
   'trust-received': 'Trusts you · trust back?',
+  'trust-received-again': 'One-way again · they still trust you',
   mutual: 'Mutual',
+  broken: 'Trust broken',
   blocked: 'Blocked',
   introPending: 'Pending intro',
 } as const;
@@ -58,6 +61,8 @@ const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 export const INTRO_PENDING_DASH = '3 2';
 /** Trust-sent (outbound, not yet mutual) dash. */
 export const TRUST_SENT_DASH = '8 5';
+/** Local break — dimmer and gappier than one-way pending. */
+export const TRUST_BROKEN_DASH = '2 6';
 
 export type TrustPhaseVisual = {
   bondState: TrustBondState;
@@ -89,18 +94,39 @@ export type TrustPhaseVisual = {
 function bondStateOf(
   trust: LivingTrustPhase,
   blocked: boolean,
+  afterBreak: boolean,
 ): TrustBondState {
   if (blocked) return 'blocked';
   if (trust === 'mutual') return 'mutual';
   if (trust === 'outbound') return 'trust-sent';
   if (trust === 'inbound') return 'trust-received';
+  if (afterBreak && trust === 'none') return 'broken';
   return 'known';
 }
 
-function displayLabel(bond: TrustBondState, introPending: boolean, trust: LivingTrustPhase): string {
+function displayLabel(
+  bond: TrustBondState,
+  introPending: boolean,
+  trust: LivingTrustPhase,
+  afterBreak: boolean,
+): string {
   if (bond === 'blocked') return TRUST_VISUAL_LABELS.blocked;
   if (introPending && trust === 'none') return TRUST_VISUAL_LABELS.introPending;
+  if (bond === 'trust-received' && afterBreak) return TRUST_VISUAL_LABELS['trust-received-again'];
   return TRUST_VISUAL_LABELS[bond];
+}
+
+/** Last owner-local trust_history action. Glass-only; never invents wire reciprocity. */
+export function lastLocalTrustAction(
+  edge: TrustEdge | null | undefined,
+): 'trust' | 'break' | 'decay' | 'reverify' | null {
+  const history = edge?.trust_history;
+  if (!history || history.length === 0) return null;
+  const action = history[history.length - 1]?.action;
+  if (action === 'trust' || action === 'break' || action === 'decay' || action === 'reverify') {
+    return action;
+  }
+  return null;
 }
 
 const KNOWN_STATUS: LivingEdgeStatus = {
@@ -122,12 +148,15 @@ export function trustPhaseVisual(input: {
   status: LivingEdgeStatus;
   blocked?: boolean;
   verified?: boolean;
+  /** Last local history action was break — paint broken / one-way-again. */
+  afterBreak?: boolean;
 }): TrustPhaseVisual {
   const trust: LivingTrustPhase = input.status.trust;
   const introPending = input.status.connection === 'pending';
-  const bond = bondStateOf(trust, input.blocked === true);
+  const afterBreak = input.afterBreak === true;
+  const bond = bondStateOf(trust, input.blocked === true, afterBreak);
   const lit = bond === 'mutual';
-  const label = displayLabel(bond, introPending, trust);
+  const label = displayLabel(bond, introPending, trust, afterBreak);
 
   if (bond === 'blocked') {
     return {
@@ -152,6 +181,32 @@ export function trustPhaseVisual(input: {
       spokeDasharray: '2 3',
       spokeGlow: false,
       chipColorCss: 'var(--se-danger)',
+    };
+  }
+
+  if (bond === 'broken') {
+    return {
+      bondState: bond,
+      connection: input.status.connection,
+      label,
+      lit: false,
+      white: false,
+      shape: 'dashed-hollow',
+      introPending,
+      verifiedMark: input.verified === true,
+      svgFill: 'transparent',
+      svgStroke: BLOCKED_STROKE,
+      svgStrokeWidth: 1.15,
+      svgDasharray: TRUST_BROKEN_DASH,
+      canvasFill: null,
+      canvasStroke: BLOCKED_STROKE,
+      canvasDash: [2, 6],
+      coreFill: null,
+      haloStroke: BLOCKED_STROKE,
+      spokeStroke: BLOCKED_STROKE,
+      spokeDasharray: TRUST_BROKEN_DASH,
+      spokeGlow: false,
+      chipColorCss: 'var(--se-dim)',
     };
   }
 
@@ -268,6 +323,7 @@ export type TrustVisualLane =
   | 'trust-sent'
   | 'trust-received'
   | 'mutual'
+  | 'broken'
   | 'decayed'
   | 'blocked';
 
@@ -280,6 +336,7 @@ export function visualForEdge(
     status: edge ? livingEdgeStatus(edge) : KNOWN_STATUS,
     blocked: extra?.blocked,
     verified: extra?.verified,
+    afterBreak: lastLocalTrustAction(edge) === 'break',
   });
 }
 
@@ -289,6 +346,7 @@ export function trustVisualLane(
 ): TrustVisualLane {
   if (visual.introPending && visual.bondState === 'known') return 'pending';
   if (visual.bondState === 'blocked') return 'blocked';
+  if (visual.bondState === 'broken') return 'broken';
   if (decayed) return 'decayed';
   if (visual.bondState === 'mutual') return 'mutual';
   if (visual.bondState === 'trust-sent') return 'trust-sent';

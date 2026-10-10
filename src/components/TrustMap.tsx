@@ -1320,9 +1320,16 @@ export function TrustMap({
             letterSpacing: '0.04em',
           }}
         >
+          <span
+            data-testid="trust-lifecycle-legend"
+            style={{ color: E.text, width: '100%', letterSpacing: '0.06em' }}
+          >
+            One-way pending → Mutual → Broken (or one-way again if they still hold)
+          </span>
           <span style={{ color: E.accent2 }}>⬡ Mutual · white light</span>
           <span style={{ color: E.muted }}>⬡ Awaiting mutual · dashed hollow</span>
           <span style={{ color: E.accent }}>⬡ Trusts you · gold</span>
+          <span style={{ color: E.dim }}>⬡ Broken · dim ring</span>
           <span>⬡ Known · dim outline</span>
           <span style={{ color: E.text }}>⬡ you · larger + light</span>
           <span style={{ color: E.accent2 }}>═ {TRUST_RECIPE_COPY.peerTrustChord}</span>
@@ -1981,6 +1988,18 @@ function ContactNode({
           stroke={visual.haloStroke}
           strokeOpacity={0.85}
           strokeWidth={1.2}
+          strokeDasharray={visual.svgDasharray}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
+      {visual.bondState === 'broken' && visual.haloStroke && (
+        <polygon
+          data-testid="trust-node-broken"
+          points={hexagonPoints(node.x, node.y, r + 4)}
+          fill="none"
+          stroke={visual.haloStroke}
+          strokeOpacity={0.55}
+          strokeWidth={1.05}
           strokeDasharray={visual.svgDasharray}
           style={{ pointerEvents: 'none' }}
         />

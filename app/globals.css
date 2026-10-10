@@ -528,3 +528,19 @@ button[data-slot="button"]:active:not(:disabled) {
     animation: none;
   }
 }
+
+.tab-ember {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--se-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--se-accent) 55%, transparent);
+  vertical-align: middle;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab-ember {
+    box-shadow: none;
+  }
+}

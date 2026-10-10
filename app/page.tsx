@@ -15,7 +15,7 @@ import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
 import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { TrustEdge } from '@/lib/trust/types';
+import type { TrustEdge, TrustEvent } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
@@ -53,6 +53,10 @@ import {
   getBiometricEnrollment,
   probeBiometricCapability,
 } from '@/components/biometric/biometric-seam';
+import { subscribeNoteArrivals } from '@/lib/notes/note-events';
+import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
+import { TabActivityEmber } from '@/components/activity/TabActivityEmber';
+import { galaxyActivitySignature, shouldMarkGalaxyActivity } from '@/components/activity/tab-activity';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -91,6 +95,9 @@ export default function Home() {
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [gateCount, setGateCount] = useState(0);
+  const [notesActivity, setNotesActivity] = useState(false);
+  const [galaxyActivity, setGalaxyActivity] = useState(false);
+  const galaxySigRef = useRef<string | null>(null);
   // CUR-7: only offer lock when vault keys are encrypted at rest.
   const [canLock, setCanLock] = useState(false);
 
@@ -325,6 +332,34 @@ export default function Home() {
   useEffect(() => {
     if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
   }, [mainTab]);
+
+  useEffect(() => {
+    return subscribeNoteArrivals(() => {
+      if (mainTab !== 'notes') setNotesActivity(true);
+    });
+  }, [mainTab]);
+
+  useEffect(() => {
+    if (mainTab === 'notes') setNotesActivity(false);
+    if (mainTab === 'trust-map') setGalaxyActivity(false);
+  }, [mainTab]);
+
+  useEffect(() => {
+    const attention = contacts
+      .map((edge) => {
+        const status = livingEdgeStatus(edge);
+        if (status.trust === 'inbound' || status.connection === 'pending') {
+          return edge.peer_fingerprint;
+        }
+        return '';
+      })
+      .filter(Boolean);
+    const next = galaxyActivitySignature(gateCount, attention);
+    if (shouldMarkGalaxyActivity(galaxySigRef.current, next) && mainTab !== 'trust-map') {
+      setGalaxyActivity(true);
+    }
+    galaxySigRef.current = next;
+  }, [contacts, gateCount, mainTab]);
 
   const [methodHistoryTick, setMethodHistoryTick] = useState(0);
   const methodHistory = useMemo(() => {
@@ -609,10 +644,16 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="trust-map"
+                data-testid="tab-galaxy"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Galaxy
+                <TabActivityEmber
+                  on={galaxyActivity}
+                  label="Galaxy has new activity"
+                  testId="tab-galaxy-activity"
+                />
               </TabsTrigger>
               <TabsTrigger
                 value="contacts"
@@ -638,6 +679,11 @@ export default function Home() {
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Notes
+                <TabActivityEmber
+                  on={notesActivity}
+                  label="New notes arrived"
+                  testId="tab-notes-activity"
+                />
               </TabsTrigger>
             </TabsList>
 
@@ -704,11 +750,21 @@ export default function Home() {
                   const records = await getAllContacts(identity.identity.fingerprint);
                   const rec = records.find((r) => r.id === edge.id);
                   const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
+                  const priorHistory = ((rec as { trust_history?: TrustEvent[] })?.trust_history
+                    || edge.trust_history
+                    || []) as TrustEvent[];
+                  const historyEvent: TrustEvent = {
+                    timestamp: new Date().toISOString(),
+                    action: nextTrusted ? 'trust' : 'break',
+                    reason: nextTrusted ? 'owner trusted' : 'owner broke trust',
+                    initiated_by: 'self',
+                  };
                   await updateContact(edge.id, {
                     trust_level: nextTrusted ? 'trusted' : 'unverified',
                     trusted: nextTrusted,
                     trusted_since: nextTrusted ? new Date().toISOString() : null,
                     verified_at: nextTrusted ? new Date().toISOString() : undefined,
+                    trust_history: [...priorHistory, historyEvent],
                     // #111 (survivor-safety): untrusting clears open_visibility (TrustMap path)
                     // — reveal consent is trust-gated, so dropping trust drops the reveal flag.
                     ...(!nextTrusted && {

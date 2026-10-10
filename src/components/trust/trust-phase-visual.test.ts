@@ -7,13 +7,16 @@ import { livingEdgeStatus, type LivingEdgeStatus } from '../../lib/trust/living-
 import type { TrustEdge } from '../../lib/trust/types';
 import {
   INTRO_PENDING_DASH,
+  TRUST_BROKEN_DASH,
   TRUST_SENT_DASH,
   TRUST_VISUAL_LABELS,
   TRUST_VISUAL_WHITE_CORE,
   TRUST_VISUAL_WHITE_HALO,
   TRUST_VISUAL_WHITE_SPOKE,
+  lastLocalTrustAction,
   trustPhaseVisual,
   trustVisualLane,
+  visualForEdge,
   type TrustPhaseVisual,
 } from './trust-phase-visual';
 
@@ -189,6 +192,51 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(mutVis.bondState, 'mutual');
     assert.equal(outVis.white, false);
     assert.equal(mutVis.white, true);
+  });
+
+  it('local break with no remaining trust paints Trust broken, not Known', () => {
+    const v = trustPhaseVisual({ status: status({ trust: 'none' }), afterBreak: true });
+    assert.equal(v.bondState, 'broken');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.broken);
+    assert.equal(v.lit, false);
+    assert.equal(v.svgDasharray, TRUST_BROKEN_DASH);
+    assert.notEqual(v.svgDasharray, TRUST_SENT_DASH);
+    assert.equal(trustVisualLane(v, false), 'broken');
+  });
+
+  it('break while they still trust you returns to one-way inbound', () => {
+    const v = trustPhaseVisual({ status: status({ trust: 'inbound' }), afterBreak: true });
+    assert.equal(v.bondState, 'trust-received');
+    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received-again']);
+    assert.equal(v.lit, false);
+  });
+
+  it('visualForEdge reads last trust_history break without inventing mutual', () => {
+    const brokenEdge = {
+      id: 'brk',
+      peer_fingerprint: 'cc'.repeat(20),
+      peer_name: 'Pat',
+      peer_email: '',
+      peer_public_key: 'PK',
+      trusted: false,
+      trusted_since: null,
+      last_interaction: new Date().toISOString(),
+      decay_days: 730,
+      trust_history: [
+        { timestamp: '2026-01-01T00:00:00.000Z', action: 'trust', reason: '', initiated_by: 'self' },
+        { timestamp: '2026-02-01T00:00:00.000Z', action: 'break', reason: '', initiated_by: 'self' },
+      ],
+      verification: { method: 'none' as const, verified_at: null },
+      mutual: { they_trust_me: false, last_sync: null, reciprocal: false },
+      tags: [],
+      notes: '',
+      connection_channels: [],
+      added_at: new Date().toISOString(),
+    } as TrustEdge;
+    assert.equal(lastLocalTrustAction(brokenEdge), 'break');
+    const v = visualForEdge(brokenEdge);
+    assert.equal(v.bondState, 'broken');
+    assert.equal(v.label, 'Trust broken');
   });
 });
 
