@@ -7,6 +7,7 @@
 import type { CSSProperties } from 'react';
 import { Check } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
+import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import {
   livingEdgeStatus,
@@ -132,6 +133,11 @@ export function MasterAddressBookList({
                     : undefined,
               }}
             >
+              {row.fingerprint ? (
+                <span className="contact-hex" aria-hidden="true">
+                  <IdentitySeal fingerprint={row.fingerprint} size={24} />
+                </span>
+              ) : null}
               {selectionMode ? (
                 <span
                   aria-hidden

@@ -956,7 +956,17 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="contacts">
-              <ContactManagement identity={identity} onContactsChange={refreshContacts} />
+              <ContactManagement
+                identity={identity}
+                onContactsChange={refreshContacts}
+                onOpenChat={(peer) => {
+                  const fp = String(peer.fingerprint || '').trim();
+                  if (!fp) return;
+                  setNotesPeerFp(fp);
+                  setNotesPeerName(String(peer.name || '').trim());
+                  setMainTab('notes');
+                }}
+              />
             </TabsContent>
 
             <TabsContent value="encrypt-decrypt">

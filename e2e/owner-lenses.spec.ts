@@ -53,7 +53,8 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(hypatia).toHaveAttribute('data-svrn', '0');
 
     await hypatia.click();
-    await page.getByRole('tab', { name: 'Card' }).click();
+    await expect(page.getByTestId('contact-action-card')).toBeVisible();
+    await page.getByTestId('star-sheet-expand').click();
     await expect(page.getByTestId('classical-no-fingerprint')).toBeVisible();
   });
 });

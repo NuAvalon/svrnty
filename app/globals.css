@@ -472,6 +472,7 @@ button.notes-field-peer-hop:hover {
   background: color-mix(in srgb, var(--se-accent) 14%, transparent);
   box-shadow: inset 3px 0 0 var(--se-accent);
 }
+.contact-hex,
 .notes-hex {
   width: 36px;
   height: 36px;
@@ -483,7 +484,8 @@ button.notes-field-peer-hop:hover {
   clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
   background: color-mix(in srgb, var(--se-accent) 14%, var(--se-bg));
 }
-.notes-field-thread-head .notes-hex {
+.notes-field-thread-head .notes-hex,
+.contact-action-card .contact-hex {
   width: 40px;
   height: 40px;
 }

@@ -12,7 +12,7 @@
 "use client";
 
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import { ChevronDown, Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import { Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
 import { useGraphViewport } from '@/lib/trust/use-graph-viewport';
 import { boundsOf, hitTestNodes } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
@@ -44,8 +44,8 @@ import {
 } from '@/lib/trust/layout-memory';
 import { selectLabels, shortDisplayName, type LabelCandidate } from '@/lib/trust/label-lod';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
-import { IdentitySeal } from '@/components/identity/IdentitySeal';
-import { CardActionMenu, CardMenuItem } from '@/components/ui/CardActionMenu';
+import { CardMenuItem } from '@/components/ui/CardActionMenu';
+import { ContactActionCard } from '@/components/contacts/ContactActionCard';
 import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
 import {
   safeEmailLink,
@@ -1406,113 +1406,24 @@ export function TrustMap({
         const canNote = !!(onOpenNote && String(focusEdge.peer_fingerprint || '').replace(/[^0-9a-fA-F]/g, '').length >= 16);
         const closeMenu = () => setActionsOpen(false);
         return (
-          <div
-            data-testid="trust-node-detail"
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              marginTop: 10,
-              padding: 10,
-              borderRadius: 14,
-              background: E.surfaceSolid,
-              border: `1px solid ${
-                contactHasDistress(focusEdge)
-                  ? E.accent2
-                  : vis.lit || vis.introPending
-                    ? E.borderLit
-                    : E.border
-              }`,
-              boxShadow: 'var(--se-glass-shadow)',
-              fontFamily: E.fontSans,
-              overflow: 'visible',
-            }}
-          >
-            {contactHasDistress(focusEdge) && sheetExpanded && <VivreBurn />}
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              {focusEdge.peer_fingerprint ? (
-                <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={36} />
-              ) : (
-                <div
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: 8,
-                    border: `1px dashed ${E.border}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: E.dim,
-                    fontSize: 8,
-                    flexShrink: 0,
-                  }}
-                >
-                  no key
-                </div>
-              )}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: E.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {focusEdge.peer_name || focusNode.name}
-                </p>
-                <p
-                  data-testid="trust-node-bond-label"
-                  style={{
-                    margin: '2px 0 0',
-                    fontSize: 11,
-                    color: vis.lit ? E.accent2 : vis.introPending ? E.accent : vis.bondState === 'trust-sent' ? E.muted : E.dim,
-                    fontWeight: vis.lit ? 600 : 500,
-                  }}
-                >
-                  {describeAlive(focusNode, focusEdge)}
-                </p>
-              </div>
-              <button
-                type="button"
-                data-testid="star-sheet-expand"
-                aria-expanded={sheetExpanded || editing}
-                onClick={() => setSheetExpanded((v) => !v)}
-                style={{
-                  background: 'transparent',
-                  border: `1px solid ${E.border}`,
-                  color: E.muted,
-                  cursor: 'pointer',
-                  fontSize: 11,
-                  fontFamily: E.fontSans,
-                  borderRadius: 8,
-                  padding: '6px 8px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  flexShrink: 0,
-                }}
-              >
-                {sheetExpanded || editing ? 'Less' : 'More'}
-                <ChevronDown
-                  size={12}
-                  style={{
-                    transform: sheetExpanded || editing ? 'rotate(180deg)' : undefined,
-                    transition: 'transform 120ms ease',
-                  }}
-                />
-              </button>
-              <button
-                type="button"
-                onClick={clearFocus}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: E.dim,
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  fontFamily: E.fontSans,
-                  flexShrink: 0,
-                }}
-              >
-                Close
-              </button>
-            </div>
-
-            {(sheetExpanded || editing) && (
-            <>
-            {editing && (
+          <ContactActionCard
+            testId="trust-node-detail"
+            name={focusEdge.peer_name || focusNode.name}
+            fingerprint={focusEdge.peer_fingerprint}
+            bondLabel={describeAlive(focusNode, focusEdge)}
+            bondColor={vis.lit ? E.accent2 : vis.introPending ? E.accent : vis.bondState === 'trust-sent' ? E.muted : E.dim}
+            lit={vis.lit}
+            distress={contactHasDistress(focusEdge)}
+            introPending={vis.introPending}
+            expanded={sheetExpanded || editing}
+            onToggleExpand={() => setSheetExpanded((v) => !v)}
+            onClose={clearFocus}
+            canChat={canNote}
+            onChat={() => onOpenNote?.(focusEdge)}
+            actionsOpen={actionsOpen}
+            onActionsOpenChange={setActionsOpen}
+            banner={contactHasDistress(focusEdge) && sheetExpanded ? <VivreBurn /> : null}
+            edit={editing ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
                 <input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="Name" style={fieldStyle()} />
                 <input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} placeholder="Email" style={fieldStyle()} />
@@ -1543,80 +1454,9 @@ export function TrustMap({
                   <ActionBtn label="Cancel" onClick={() => setEditing(false)} />
                 </div>
               </div>
-            )}
-
-            {contactHasDistress(focusEdge) && <VivreCaution />}
-            {isPending(focusEdge) && focusEdge.pending_intro && (
-              <p style={{ margin: '8px 0 0', fontSize: 11, color: E.accent }}>
-                {focusEdge.pending_intro.context ||
-                  `${focusEdge.pending_intro.introduced_by} introduced you`}
-              </p>
-            )}
-            {!editing && (
-              <div style={{ marginTop: 8, fontSize: 12, color: E.muted, lineHeight: 1.35 }}>
-                {(() => {
-                  const mark = ownerLocalBadge({
-                    mintChannel: focusEdge.metadata?.grow_mint_channel as string | undefined,
-                    verified: ownerHasVerified(focusEdge),
-                  });
-                  if (!mark.kind) return null;
-                  return (
-                    <p
-                      data-testid="star-provenance"
-                      data-kind={mark.kind}
-                      style={{
-                        margin: '0 0 4px',
-                        fontSize: 10,
-                        letterSpacing: '0.08em',
-                        textTransform: 'lowercase',
-                        color: mark.kind === 'verified' ? E.accent2 : E.muted,
-                      }}
-                    >
-                      {mark.label}
-                    </p>
-                  );
-                })()}
-                {focusEdge.peer_email && (
-                  <ContactMethodLink safe={safeEmailLink(focusEdge.peer_email)} style={{ color: E.muted }} />
-                )}
-                {focusEdge.contact_info?.phones?.[0] && (
-                  <span>
-                    {focusEdge.peer_email ? ' · ' : ''}
-                    <ContactMethodLink
-                      safe={safePhoneLink(focusEdge.contact_info.phones[0])}
-                      style={{ color: E.muted }}
-                    />
-                  </span>
-                )}
-              </div>
-            )}
-            </>
-            )}
-
-            {!editing && (
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                {canNote && (
-                  <button
-                    type="button"
-                    data-testid="galaxy-open-note"
-                    onClick={() => onOpenNote?.(focusEdge)}
-                    style={{
-                      flex: 1,
-                      fontSize: 12,
-                      fontFamily: E.fontSans,
-                      fontWeight: 600,
-                      padding: '8px 10px',
-                      borderRadius: 10,
-                      border: `1px solid ${E.borderLit}`,
-                      background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                      color: E.accent,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    Chat
-                  </button>
-                )}
-                <CardActionMenu open={actionsOpen} onOpenChange={setActionsOpen}>
+            ) : null}
+            actions={(
+              <>
                   {isPending(focusEdge) && onAcceptIntro && (
                     <CardMenuItem
                       label={busy ? '…' : 'Accept connection'}
@@ -1710,12 +1550,55 @@ export function TrustMap({
                       closeMenu();
                     }}
                   />
-                </CardActionMenu>
+              </>
+            )}
+            more={(
+              <>
+            {contactHasDistress(focusEdge) && <VivreCaution />}
+            {isPending(focusEdge) && focusEdge.pending_intro && (
+              <p style={{ margin: '8px 0 0', fontSize: 11, color: E.accent }}>
+                {focusEdge.pending_intro.context ||
+                  `${focusEdge.pending_intro.introduced_by} introduced you`}
+              </p>
+            )}
+            {!editing && (
+              <div style={{ marginTop: 8, fontSize: 12, color: E.muted, lineHeight: 1.35 }}>
+                {(() => {
+                  const mark = ownerLocalBadge({
+                    mintChannel: focusEdge.metadata?.grow_mint_channel as string | undefined,
+                    verified: ownerHasVerified(focusEdge),
+                  });
+                  if (!mark.kind) return null;
+                  return (
+                    <p
+                      data-testid="star-provenance"
+                      data-kind={mark.kind}
+                      style={{
+                        margin: '0 0 4px',
+                        fontSize: 10,
+                        letterSpacing: '0.08em',
+                        textTransform: 'lowercase',
+                        color: mark.kind === 'verified' ? E.accent2 : E.muted,
+                      }}
+                    >
+                      {mark.label}
+                    </p>
+                  );
+                })()}
+                {focusEdge.peer_email && (
+                  <ContactMethodLink safe={safeEmailLink(focusEdge.peer_email)} style={{ color: E.muted }} />
+                )}
+                {focusEdge.contact_info?.phones?.[0] && (
+                  <span>
+                    {focusEdge.peer_email ? ' · ' : ''}
+                    <ContactMethodLink
+                      safe={safePhoneLink(focusEdge.contact_info.phones[0])}
+                      style={{ color: E.muted }}
+                    />
+                  </span>
+                )}
               </div>
             )}
-
-            {(sheetExpanded || editing) && (
-            <>
             {!isPending(focusEdge) && ownerHasVerified(focusEdge) && !focusEdge.trusted && (
               <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.4 }}>
                 {TRUST_RECIPE_COPY.verifiedHere}
@@ -1760,9 +1643,9 @@ export function TrustMap({
             {(groupNote || actionNote) && (
               <p style={{ margin: '6px 0 0', fontSize: 11, color: E.ok }}>{groupNote || actionNote}</p>
             )}
-            </>
+              </>
             )}
-          </div>
+          />
         );
       })()}
       </div>
