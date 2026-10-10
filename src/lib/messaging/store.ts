@@ -12,6 +12,11 @@ const PBKDF2_ITERATIONS = 600_000;
 let _db: IDBDatabase | null = null;
 let _notesKey: CryptoKey | null = null;
 let _notesSalt: Uint8Array | null = null;
+// Bumped on every lock/identity-switch (via lockNotesStore). An in-flight initNotesStore that started
+// in an older generation MUST NOT assign the key — else a notes-init started before a lock/switch can
+// finish AFTER it and RESTORE the old key (Codex P1 async-init race, 10/10). The check→assign in
+// initNotesStore is synchronous (no await between), so it is TOCTOU-free in JS's single thread.
+let _notesGeneration = 0;
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -141,6 +146,7 @@ async function decryptJson<T>(blob: EncryptedBlob): Promise<T> {
 
 /** Unlock the notes DB with the same unlock passphrase the vault uses (separate salt). */
 export async function initNotesStore(passphrase: string): Promise<void> {
+  const gen = _notesGeneration; // capture at start; a lock/switch mid-init bumps this → refuse the stale key below
   await openDb();
   const setting = await txGet<{ key: string; value: string }>('settings', 'notes_encryption_salt');
   let salt: Uint8Array;
@@ -151,7 +157,12 @@ export async function initNotesStore(passphrase: string): Promise<void> {
     crypto.getRandomValues(salt);
     await txPut('settings', { key: 'notes_encryption_salt', value: toBase64(salt) });
   }
-  _notesKey = await deriveNotesKey(passphrase, salt);
+  const key = await deriveNotesKey(passphrase, salt);
+  // P1 async-init race: if a lock/identity-switch happened while we were awaiting IndexedDB + key
+  // derivation, DO NOT restore the key. No await between this check and the assignment → the clear
+  // from lockNotesStore cannot interleave back in after the check passes.
+  if (gen !== _notesGeneration) return;
+  _notesKey = key;
   _notesSalt = salt;
 }
 
@@ -160,6 +171,7 @@ export function isNotesStoreUnlocked(): boolean {
 }
 
 export function lockNotesStore(): void {
+  _notesGeneration += 1; // invalidate any in-flight initNotesStore (async-init race, Codex P1 10/10)
   _notesKey = null;
   _notesSalt = null;
 }

@@ -9,7 +9,7 @@
 
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SVRNTY_BASE_URL, SVRNTY_DOMAIN, shareUrl, shareUrlShort, slugUrlShort } from './domain';
+import { SVRNTY_BASE_URL, SVRNTY_DOMAIN, shareUrl, shareUrlShort } from './domain';
 
 /** Marker so the parent can find the payload even if the loader printed warnings first. */
 export const SNAPSHOT_MARKER = '__DOMAIN_SNAPSHOT__';
@@ -22,7 +22,6 @@ const isEntrypoint =
 if (isEntrypoint) {
   const code = process.env.__PROBE_CODE ?? 'ABC123';
   const key = process.env.__PROBE_KEY ?? 'k';
-  const slug = process.env.__PROBE_SLUG ?? 'alice';
 
   process.stdout.write(
     SNAPSHOT_MARKER +
@@ -32,7 +31,6 @@ if (isEntrypoint) {
         shareUrl: shareUrl(code, key),
         shareUrlShortNoKey: shareUrlShort(code),
         shareUrlShortWithKey: shareUrlShort(code, key),
-        slugUrlShort: slugUrlShort(slug),
       }) +
       '\n',
   );

@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { SVRNTY_BASE_URL, SVRNTY_DOMAIN, shareUrl, shareUrlShort, slugUrlShort } from './domain';
+import { SVRNTY_BASE_URL, SVRNTY_DOMAIN, shareUrl, shareUrlShort } from './domain';
 import { SNAPSHOT_MARKER } from './__domain-env-probe';
 
 /** What a subprocess evaluation of domain.ts reports back. */
@@ -25,7 +25,6 @@ interface DomainSnapshot {
   shareUrl: string;
   shareUrlShortNoKey: string;
   shareUrlShortWithKey: string;
-  slugUrlShort: string;
 }
 
 const PROBE_PATH = fileURLToPath(new URL('./__domain-env-probe.ts', import.meta.url));
@@ -146,8 +145,7 @@ test('self-host override propagates to every link helper — no svrnty.is left b
   assert.equal(snap.shareUrl, 'https://id.example.com/c/ABC123#k');
   assert.equal(snap.shareUrlShortNoKey, 'id.example.com/c/ABC123');
   assert.equal(snap.shareUrlShortWithKey, 'id.example.com/c/ABC123#k');
-  assert.equal(snap.slugUrlShort, 'id.example.com/alice');
-  for (const link of [snap.shareUrl, snap.shareUrlShortWithKey, snap.slugUrlShort]) {
+  for (const link of [snap.shareUrl, snap.shareUrlShortWithKey]) {
     assert.ok(!link.includes('svrnty.is'), `leaked default domain: ${link}`);
   }
 });
@@ -277,25 +275,4 @@ test('shareUrlShort is the scheme-less form of shareUrl for the same inputs', ()
   assert.equal(snap.shareUrl, `https://${snap.shareUrlShortWithKey}`);
 });
 
-// --- slugUrlShort --------------------------------------------------------------------
-
-test('slugUrlShort: `${domain}/${slug}` — scheme-less, no /c/ segment', () => {
-  const s = slugUrlShort('alice');
-  assert.equal(s, `${SVRNTY_DOMAIN}/alice`);
-  assert.ok(!s.includes('://'));
-  assert.ok(!s.includes('/c/'));
-  assert.ok(!s.includes('#'));
-});
-
-test('slugUrlShort: an empty slug yields a bare trailing slash', () => {
-  assert.equal(slugUrlShort(''), `${SVRNTY_DOMAIN}/`);
-});
-
-test('slugUrlShort: the slug is interpolated verbatim (documents current behavior)', () => {
-  assert.equal(slugUrlShort('a.b_c-d'), `${SVRNTY_DOMAIN}/a.b_c-d`);
-});
-
-test('slugUrlShort and shareUrlShort share the same domain prefix', () => {
-  assert.ok(slugUrlShort('alice').startsWith(`${SVRNTY_DOMAIN}/`));
-  assert.ok(shareUrlShort('ABC').startsWith(`${SVRNTY_DOMAIN}/`));
-});
+// (slugUrlShort removed — dead public-URL functionality dropped in #176; see __domain-env-probe.ts)
