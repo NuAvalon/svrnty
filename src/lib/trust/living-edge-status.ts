@@ -159,7 +159,9 @@ export function livingStatusChip(status: LivingEdgeStatus): string {
   if (status.connection === 'classical') return 'Classical';
   if (status.connection === 'pending') return 'Pending';
   if (status.trust === 'mutual') return 'Mutual';
-  if (status.trust === 'outbound') return 'Trust sent';
+  // Pre-wire: "Trust sent" implies a wire deposit that hasn't happened (no deposit-hook yet) → "Trusted"
+  // (same isMutualTrustWireLive gate as the statusLine + the phase-visual label; one flag, every path).
+  if (status.trust === 'outbound') return isMutualTrustWireLive() ? 'Trust sent' : 'Trusted';
   if (status.trust === 'inbound') return 'Trusts you';
   if (status.canCommunicate) return 'Linked';
   return 'Known';

@@ -64,7 +64,7 @@ test('linked known can communicate; trust outbound distinct from mutual', () => 
   assert.equal(outbound.connection, 'linked');
   assert.equal(outbound.canCommunicate, true);
   assert.equal(outbound.trust, 'outbound');
-  assert.equal(livingStatusChip(outbound), 'Trust sent');
+  assert.equal(livingStatusChip(outbound), 'Trusted'); // pre-wire (gated); "Trust sent" once the wire is live
 
   const mutual = livingEdgeStatus(
     edge({
