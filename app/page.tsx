@@ -382,6 +382,19 @@ export default function Home() {
       const n = await seedSampleCircle(fp);
       seedDemoMethodHistory(fp);
       setMethodHistoryTick((t) => t + 1);
+      try {
+        const key = await loadKey(fp);
+        if (key?.passphrase) {
+          const { seedDemoNotes } = await import('@/components/notes/seed-demo-notes');
+          await seedDemoNotes({
+            ownerFingerprint: fp,
+            ownerName: identity?.identity?.name || 'You',
+            passphrase: key.passphrase,
+          });
+        }
+      } catch {
+        /* notes optional */
+      }
       await refreshContacts();
       return n;
     };
@@ -704,6 +717,27 @@ export default function Home() {
                 ownerName={identity.identity.name}
                 contacts={contacts}
                 onGrow={() => setGrowOpen(true)}
+                onLoadSample={async () => {
+                  const fp = identity.identity.fingerprint;
+                  const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
+                  await seedSampleCircle(fp);
+                  seedDemoMethodHistory(fp);
+                  setMethodHistoryTick((t) => t + 1);
+                  try {
+                    const key = await loadKey(fp);
+                    if (key?.passphrase) {
+                      const { seedDemoNotes } = await import('@/components/notes/seed-demo-notes');
+                      await seedDemoNotes({
+                        ownerFingerprint: fp,
+                        ownerName: identity.identity.name,
+                        passphrase: key.passphrase,
+                      });
+                    }
+                  } catch {
+                    /* notes optional — graph still loads */
+                  }
+                  await refreshContacts();
+                }}
                 onRefresh={async () => {
                   const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
                   await pollLiveBookOnce(identity);

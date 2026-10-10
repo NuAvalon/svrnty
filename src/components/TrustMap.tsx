@@ -101,6 +101,8 @@ interface TrustMapProps {
   contacts: TrustEdge[];
   /** Empty galaxy CTA — opens Grow (share / in-person). */
   onGrow?: () => void;
+  /** Demo mesh + local notes. No-op when a living book already exists. */
+  onLoadSample?: () => void | Promise<void>;
   /** Assign a local group label (tag) to selected peers */
   onAssignGroup?: (fingerprints: string[], groupName: string) => void | Promise<void>;
   onTrustToggle?: (edge: TrustEdge) => void | Promise<void>;
@@ -212,6 +214,7 @@ export function TrustMap({
   ownerName,
   contacts,
   onGrow,
+  onLoadSample,
   onAssignGroup,
   onTrustToggle,
   onRemoveContact,
@@ -440,6 +443,13 @@ export function TrustMap({
     fittedOnce.current = false;
   }, [fullscreen]);
 
+  // Empty → first stars: refit so the sample mesh is not left off-camera.
+  const lastFitCount = useRef(layout.nodes.length);
+  useEffect(() => {
+    if (lastFitCount.current === 0 && layout.nodes.length > 0) fittedOnce.current = false;
+    lastFitCount.current = layout.nodes.length;
+  }, [layout.nodes.length]);
+
   useEffect(() => {
     const el = viewportElRef.current;
     const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
@@ -521,6 +531,7 @@ export function TrustMap({
   const [confirmKind, setConfirmKind] = useState<TrustActionKind | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const [sampleBusy, setSampleBusy] = useState(false);
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -1307,26 +1318,56 @@ export function TrustMap({
             In person they can become a star you Know. Remote, they wait at the Gate.
             Trust is mutual, after you make sure it&apos;s them.
           </p>
-          {onGrow ? (
-            <button
-              type="button"
-              data-testid="trust-map-grow"
-              onClick={onGrow}
-              style={{
-                marginTop: 10,
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.08em',
-                color: T.myEdge,
-                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                border: `1px solid ${T.dimStroke}`,
-                borderRadius: 8,
-                padding: '8px 14px',
-                cursor: 'pointer',
-              }}
-            >
-              Grow
-            </button>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            {onGrow ? (
+              <button
+                type="button"
+                data-testid="trust-map-grow"
+                onClick={onGrow}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  letterSpacing: '0.08em',
+                  color: T.myEdge,
+                  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                  border: `1px solid ${T.dimStroke}`,
+                  borderRadius: 8,
+                  padding: '8px 14px',
+                  cursor: 'pointer',
+                }}
+              >
+                Grow
+              </button>
+            ) : null}
+            {onLoadSample ? (
+              <button
+                type="button"
+                data-testid="trust-map-load-sample"
+                disabled={sampleBusy}
+                onClick={() => {
+                  setSampleBusy(true);
+                  void Promise.resolve(onLoadSample()).finally(() => setSampleBusy(false));
+                }}
+                style={{
+                  fontFamily: E.fontSans,
+                  fontSize: 12,
+                  letterSpacing: '0.08em',
+                  color: T.myEdge,
+                  background: 'transparent',
+                  border: `1px solid ${T.dimStroke}`,
+                  borderRadius: 8,
+                  padding: '8px 14px',
+                  cursor: sampleBusy ? 'wait' : 'pointer',
+                }}
+              >
+                {sampleBusy ? 'Loading…' : 'Load sample circle'}
+              </button>
+            ) : null}
+          </div>
+          {onLoadSample ? (
+            <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
+              Sample people on this device — demo names, no real keys.
+            </p>
           ) : null}
         </div>
       )}
