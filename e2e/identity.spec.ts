@@ -32,6 +32,7 @@ test('create an identity → land in the unlocked app', async ({ page }) => {
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole('tab', { name: 'Identity' }).click();
+  await page.getByTestId('card-actions-toggle').click();
   await expect(page.getByTestId('export-own-vcf')).toBeVisible();
 
   const downloadPromise = page.waitForEvent('download');

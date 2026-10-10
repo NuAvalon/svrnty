@@ -19,6 +19,7 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
   test('Identity: add a field and a named lens', async ({ page }) => {
     await genesis(page, 'Lens Owner');
     await page.getByRole('tab', { name: 'Identity' }).click();
+    await page.getByTestId('identity-vault-toggle').click();
     await expect(page.getByTestId('owner-card-studio')).toBeVisible();
     await page.getByTestId('owner-card-add-field').click();
     await page.getByPlaceholder('New lens name — Business, Festival…').fill('Festival');

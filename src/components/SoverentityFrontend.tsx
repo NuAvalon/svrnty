@@ -16,6 +16,8 @@ import { SoulSeedReveal } from '@/components/recovery/SoulSeedReveal';
 import { SeedRestoreInterstitial } from '@/components/recovery/SeedRestoreInterstitial';
 import { SovereignIdentityCard, type MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { OwnerCardStudio } from '@/components/identity/OwnerCardStudio';
+import { CardMenuItem } from '@/components/ui/CardActionMenu';
+import { CardMorePanel } from '@/components/ui/CardMorePanel';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { buildSignedIdentityCard } from '@/lib/identity/identity-card-sign';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
@@ -308,6 +310,7 @@ export function SoverentityFrontend({
   const [claimSlug, setClaimSlug] = useState('');
   const [claimStatus, setClaimStatus] = useState<'idle' | 'checking' | 'claiming' | 'success' | 'taken' | 'error'>('idle');
   const [claimedUrl, setClaimedUrl] = useState('');
+  const [vaultOpen, setVaultOpen] = useState(false);
   const [newPassphrase, setNewPassphrase] = useState('');
   const [confirmPassphrase, setConfirmPassphrase] = useState('');
   const [passphraseError, setPassphraseError] = useState('');
@@ -1804,7 +1807,7 @@ export function SoverentityFrontend({
   if (!identity) return null;
 
   return (
-    <div style={s.outerWrap}>
+    <div style={{ ...s.outerWrap, padding: '4px 0 12px' }}>
       <div style={s.identityPanel}>
         {plaintextImportNote && (
           <div
@@ -1857,20 +1860,62 @@ export function SoverentityFrontend({
           onRevise={(kind) => setReviseKind(kind)}
           onOpenCircle={onOpenCircle}
           onShareIdentity={() => { void handleShareIdentityFromCard(); }}
-        />
-        <OwnerCardStudio
-          fingerprint={identity.identity.fingerprint}
-          email={identity.identity.email}
-          onEmailChange={async (value) => {
-            const fp = identity.identity.fingerprint as string;
-            const next = {
-              ...identity,
-              identity: { ...identity.identity, email: value },
-            };
-            await storeIdentity(fp, next);
-            setIdentity(next);
-            onIdentityUpdate?.(next);
-          }}
+          extraActions={(close) => (
+            <>
+              <CardMenuItem
+                testId="full-backup-open"
+                label={backupFlash ? 'Vault downloaded' : 'Full Backup (Encrypted)'}
+                onClick={() => {
+                  setShowVaultExportDialog(true);
+                  close();
+                }}
+              />
+              <CardMenuItem
+                label="Download Keys"
+                onClick={() => {
+                  setPendingExportAuth('keys');
+                  close();
+                }}
+              />
+              <CardMenuItem
+                label="Export Contacts"
+                onClick={() => {
+                  setPendingExportAuth('contacts');
+                  close();
+                }}
+              />
+              <CardMenuItem
+                label={passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
+                onClick={() => {
+                  setShowPassphraseDialog(true);
+                  close();
+                }}
+              />
+              {claimedUrl ? (
+                <CardMenuItem
+                  label={claimedUrl}
+                  onClick={close}
+                />
+              ) : (
+                <CardMenuItem
+                  label="Claim URL"
+                  onClick={() => {
+                    setShowClaimUrlDialog(true);
+                    setClaimStatus('idle');
+                    setClaimSlug('');
+                    close();
+                  }}
+                />
+              )}
+              <CardMenuItem
+                label="Vault & device"
+                onClick={() => {
+                  setVaultOpen(true);
+                  close();
+                }}
+              />
+            </>
+          )}
         />
         {shareError ? (
           <p style={{ color: 'var(--se-danger)', fontSize: 12, textAlign: 'center' }}>{shareError}</p>
@@ -1920,187 +1965,79 @@ export function SoverentityFrontend({
           sendFn={handleContactMethodSend}
         />
 
-        {/* Export / Backup Section — CUR-4: vault via fleet packVault + export-behind-auth */}
-        {identity && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '28px', maxWidth: 440, width: '100%' }}>
-            {showV3MigrationNudge && (
-              <div
-                role="status"
-                style={{
-                  background: 'rgba(249, 168, 37, 0.08)',
-                  border: '1px solid rgba(249, 168, 37, 0.28)',
-                  borderRadius: 12,
-                  padding: '14px 16px',
-                  marginBottom: 4,
-                }}
-              >
-                <p style={{ margin: '0 0 8px', color: SE.accent, fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
-                  Update your backup to enable passphrase-free recovery
-                </p>
-                <p style={{ margin: '0 0 12px', color: SE.muted, fontSize: 12, lineHeight: 1.5 }}>
-                  This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setShowV3MigrationNudge(false)}
-                  style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: SE.dim,
-                    fontFamily: SE.fontSans,
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    textDecoration: 'underline',
-                    textUnderlineOffset: 2,
-                    padding: 0,
-                  }}
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
+        {showV3MigrationNudge && (
+          <div
+            role="status"
+            style={{
+              background: 'rgba(249, 168, 37, 0.08)',
+              border: '1px solid rgba(249, 168, 37, 0.28)',
+              borderRadius: 12,
+              padding: '10px 12px',
+              marginTop: 10,
+              maxWidth: 440,
+              width: '100%',
+            }}
+          >
+            <p style={{ margin: '0 0 6px', color: SE.accent, fontSize: 12, fontWeight: 600, lineHeight: 1.4 }}>
+              Update your backup to enable passphrase-free recovery
+            </p>
+            <p style={{ margin: '0 0 8px', color: SE.muted, fontSize: 11, lineHeight: 1.45 }}>
+              This identity was opened from a v3 backup. Re-export a new .svrnty file so recovery-code restore works if you lose your passphrase.
+            </p>
             <button
               type="button"
-              className="ember-act"
-              data-flash={backupFlash ? 'ok' : undefined}
-              onClick={() => setShowVaultExportDialog(true)}
-              data-testid="full-backup-open"
+              onClick={() => setShowV3MigrationNudge(false)}
               style={{
-                ...s.outlineBtn,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                background: backupFlash ? 'color-mix(in srgb, var(--se-ok) 18%, transparent)' : 'rgba(249, 168, 37, 0.08)',
-                borderColor: backupFlash ? 'color-mix(in srgb, var(--se-ok) 50%, var(--se-border))' : 'rgba(249, 168, 37, 0.35)',
-                color: backupFlash ? SE.ok : SE.accent,
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={SE.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-              {backupFlash ? 'Vault downloaded' : 'Full Backup (Encrypted)'}
-            </button>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <button
-                onClick={() => setPendingExportAuth('keys')}
-                style={{
-                  ...s.outlineBtn,
-                  flex: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                }}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-                </svg>
-                Download Keys
-              </button>
-              <button
-                onClick={() => setPendingExportAuth('contacts')}
-                style={{
-                  ...s.outlineBtn,
-                  flex: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                }}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                Export Contacts
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* CUR-7 — app-lock settings (shell owns lockSession + idle timers) */}
-        {identity && appLockPrefs && onAppLockPrefsChange && (
-          <AppLockSettingsPanel
-            prefs={appLockPrefs}
-            onChange={onAppLockPrefsChange}
-            onLockNow={onLockNow}
-          />
-        )}
-
-        {/* Set Passphrase button */}
-        {identity && (
-          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '12px' }}>
-            <button
-              type="button"
-              className="ember-act"
-              data-flash={passphraseFlash ? 'ok' : undefined}
-              onClick={() => setShowPassphraseDialog(true)}
-              style={{
-                background: passphraseFlash ? 'color-mix(in srgb, var(--se-ok) 18%, transparent)' : 'none',
-                border: `1px solid ${passphraseFlash ? 'color-mix(in srgb, var(--se-ok) 50%, var(--se-border))' : 'rgba(249, 168, 37, 0.15)'}`,
-                borderRadius: '8px',
-                padding: '10px 20px',
-                color: passphraseFlash ? 'var(--se-ok)' : 'rgba(249, 168, 37, 0.6)',
-                fontSize: '11px',
-                fontFamily: "'Space Grotesk', sans-serif",
-                letterSpacing: '1px',
+                background: 'transparent',
+                border: 'none',
+                color: SE.dim,
+                fontFamily: SE.fontSans,
+                fontSize: 12,
                 cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
+                textDecoration: 'underline',
+                textUnderlineOffset: 2,
+                padding: 0,
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
-              {passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
+              Dismiss
             </button>
-            {claimedUrl ? (
-              <span style={{
-                color: 'rgba(200, 168, 78, 0.7)',
-                fontSize: '12px',
-                fontFamily: "'Space Grotesk', sans-serif",
-                padding: '10px 16px',
-              }}>
-                {claimedUrl}
-              </span>
-            ) : (
-              <button
-                onClick={() => { setShowClaimUrlDialog(true); setClaimStatus('idle'); setClaimSlug(''); }}
-                style={{
-                  background: 'rgba(200, 168, 78, 0.08)',
-                  border: '1px solid rgba(200, 168, 78, 0.25)',
-                  borderRadius: '10px',
-                  padding: '10px 16px',
-                  color: '#c8a84e',
-                  fontSize: '13px',
-                  fontFamily: "'Space Grotesk', sans-serif",
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                </svg>
-                Claim URL
-              </button>
-            )}
           </div>
         )}
 
-        {/* CUR-6 — device unlock (WebAuthn/PRF seam = Flint; stub is claim-honest) */}
-        {identity?.identity?.fingerprint && (
-          <BiometricSettingsPanel
+        <CardMorePanel
+          open={vaultOpen}
+          onOpenChange={setVaultOpen}
+          label="Vault & device"
+          testId="identity-vault-toggle"
+        >
+          <OwnerCardStudio
             fingerprint={identity.identity.fingerprint}
-            compact
+            email={identity.identity.email}
+            onEmailChange={async (value) => {
+              const fp = identity.identity.fingerprint as string;
+              const next = {
+                ...identity,
+                identity: { ...identity.identity, email: value },
+              };
+              await storeIdentity(fp, next);
+              setIdentity(next);
+              onIdentityUpdate?.(next);
+            }}
           />
-        )}
+          {appLockPrefs && onAppLockPrefsChange && (
+            <AppLockSettingsPanel
+              prefs={appLockPrefs}
+              onChange={onAppLockPrefsChange}
+              onLockNow={onLockNow}
+            />
+          )}
+          {identity.identity.fingerprint && (
+            <BiometricSettingsPanel
+              fingerprint={identity.identity.fingerprint}
+              compact
+            />
+          )}
+        </CardMorePanel>
 
         {/* Passphrase Dialog */}
         {showPassphraseDialog && (

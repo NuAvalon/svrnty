@@ -47,6 +47,7 @@ test('Galaxy Verify — guided compare, mismatch fails loud, other-channel match
   await known.click();
 
   await expect(page.getByTestId('trust-node-detail')).toBeVisible();
+  await page.getByTestId('card-actions-toggle').click();
   await page.getByTestId('galaxy-verify').click();
 
   const sheet = page.getByTestId('verify-sheet');

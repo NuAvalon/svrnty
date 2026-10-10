@@ -610,7 +610,7 @@ export default function Home() {
 
   // Gate (no identity) or main app
   return (
-    <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
+    <div className="min-h-screen px-4 py-3 sm:px-8 sm:py-8" style={shellBg}>
       <TopNav
         hasIdentity={Boolean(identity)}
         canLock={canLock}
@@ -626,7 +626,7 @@ export default function Home() {
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
-              className="w-full max-w-3xl mx-auto mb-8"
+              className="w-full max-w-3xl mx-auto mb-3"
               style={{
                 background: 'rgba(30,20,10,.55)',
                 border: `1px solid ${E.border}`,
