@@ -129,3 +129,15 @@ export function isPiece2MutualBlockLive(): boolean {
 export function isMutualTrustWireLive(): boolean {
   return false;
 }
+
+/**
+ * Runtime relay switch (Settings → Relay → migrateRelay) is live end-to-end.
+ *
+ * FALSE today: the glass (validate / confirm / progress / incomplete-state) is built. The fleet
+ * seams are not — #236 `migrateRelay` is still landing, and the config override + card re-sign
+ * have no production callers. Flip to true WITH registerRelayMigrate + those three seams, and
+ * update claim-gates.test.ts in the same change.
+ */
+export function isRelayMigrateLive(): boolean {
+  return false;
+}
