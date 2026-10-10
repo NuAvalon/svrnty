@@ -5,7 +5,7 @@
  * Solar Ember UI only. Wire broadcast is the seam (see contact-method-send.ts).
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -68,6 +68,7 @@ export function ContactMethodReviseDialog({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<ContactMethodSendResult | null>(null);
   const [localNote, setLocalNote] = useState<string | null>(null);
+  const primed = useRef(false);
 
   const sorted = useMemo(() => {
     return [...contacts]
@@ -86,7 +87,14 @@ export function ContactMethodReviseDialog({
   }, [contacts]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      primed.current = false;
+      return;
+    }
+    // Prime once per open. A successful save updates the card, which would
+    // otherwise wipe the Saved/Sent flash via initialValue/contacts changing.
+    if (primed.current) return;
+    primed.current = true;
     setValue(initialValue);
     setStatus(null);
     setLocalNote(null);
@@ -165,8 +173,6 @@ export function ContactMethodReviseDialog({
       recordHistory([]);
       setLocalNote('Saved on this device.');
       setBusy(false);
-      await new Promise((r) => setTimeout(r, 700));
-      onClose();
     } catch (e) {
       setLocalNote(e instanceof Error ? e.message : 'Could not save locally.');
       setBusy(false);
@@ -189,8 +195,6 @@ export function ContactMethodReviseDialog({
       if (result.ok) {
         setStatus(result);
         setBusy(false);
-        await new Promise((r) => setTimeout(r, 700));
-        onClose();
         return;
       }
       setStatus(result);
