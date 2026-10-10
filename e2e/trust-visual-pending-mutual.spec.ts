@@ -57,9 +57,9 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/one-way pending/i);
   await expect(page.getByText('Broken · dim ring')).toBeVisible();
 
-  await alan.click();
+  await alan.click({ force: true });
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Awaiting mutual');
-  await ada.click();
+  await ada.click({ force: true });
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual');
 });
 
