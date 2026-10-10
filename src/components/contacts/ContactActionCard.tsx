@@ -92,7 +92,7 @@ export function ContactActionCard({
             overflow: 'hidden',
             borderRadius: 14,
             pointerEvents: 'none',
-            zIndex: 2,
+            zIndex: 6,
           }}
         >
           <VivreBurn />
