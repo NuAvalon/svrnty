@@ -1748,19 +1748,28 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </p>
               </div>
             ) : (
-              <MasterAddressBookList
-                rows={masterRows}
-                selectedIds={selectedIds}
-                selectionMode={selectionMode}
-                liveIds={liveIds}
-                onToggleSelect={toggleSelected}
-                onOpen={(id) => {
-                  const contact = contacts.find((c) => c.id === id);
-                  if (!contact) return;
-                  setSelectedContact(contact);
-                  setShowDetailDialog(true);
-                }}
-              />
+              <div
+                key={`${bookScope}-${showBlocked}-${groupFilterTag ?? ''}-${searchQuery}`}
+                className="contacts-book-scroll"
+                data-testid="contacts-book-scroll"
+                role="region"
+                aria-label="Contacts"
+                tabIndex={0}
+              >
+                <MasterAddressBookList
+                  rows={masterRows}
+                  selectedIds={selectedIds}
+                  selectionMode={selectionMode}
+                  liveIds={liveIds}
+                  onToggleSelect={toggleSelected}
+                  onOpen={(id) => {
+                    const contact = contacts.find((c) => c.id === id);
+                    if (!contact) return;
+                    setSelectedContact(contact);
+                    setShowDetailDialog(true);
+                  }}
+                />
+              </div>
             )}
           </div>
 

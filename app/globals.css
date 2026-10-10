@@ -358,6 +358,27 @@ button[data-slot="button"]:active:not(:disabled) {
   }
 }
 
+/* Living Address Book — list scrolls in-frame; search / filters stay put. */
+.contacts-book-scroll {
+  max-height: min(58vh, calc(100dvh - 16rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--se-accent) 35%, transparent) transparent;
+}
+.contacts-book-scroll:focus {
+  outline: none;
+}
+.contacts-book-scroll:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--se-accent) 40%, transparent);
+}
+@media (max-width: 640px) {
+  .contacts-book-scroll {
+    max-height: min(52vh, calc(100dvh - 14rem));
+  }
+}
+
 /* Thread Field — Chat window only (app header / menu / footer stay outside). */
 .notes-field-shell {
   max-width: 1100px;

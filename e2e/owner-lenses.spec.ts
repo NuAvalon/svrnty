@@ -34,6 +34,12 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await seedSampleGalaxy(page);
     await page.getByRole('tab', { name: 'Contacts' }).click();
 
+    const scroller = page.getByTestId('contacts-book-scroll');
+    await expect(scroller).toBeVisible();
+    await expect
+      .poll(async () => scroller.evaluate((el) => getComputedStyle(el).overflowY))
+      .toMatch(/auto|scroll/);
+
     // Scope to master-book rows (not any other contact-row surface).
     // Today's sample-circle seed writes public_key:'' for every demo row, so after
     // #83 (fingerprint only with a bound key) Ada is classical too. Living keys
