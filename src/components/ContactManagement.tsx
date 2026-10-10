@@ -344,7 +344,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
       id: c.id,
       name: c.name,
       email: c.email,
-      fingerprint: c.fingerprint,
+      fingerprint: edge.peer_fingerprint || c.fingerprint,
       public_key: c.public_key,
       trust_level: c.trust_level,
       blocked: isContactBlocked(c),
@@ -1846,7 +1846,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat }: Co
           const pending = isPendingSvrntyContact(focused);
           const verified = ownerHasVerified(edge);
           const trusted = isTrusted(focused);
-          const fp = String(focused.fingerprint || '').replace(/[^0-9a-fA-F]/g, '');
+          const fp = String(edge.peer_fingerprint || focused.fingerprint || '').replace(/[^0-9a-fA-F]/g, '');
           const canChat = !!onOpenChat && fp.length >= 16;
           const closeMenu = () => setBookActionsOpen(false);
           const tags = focused.metadata?.tags || [];
