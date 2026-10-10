@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
 import {
   getTrustActionCopy,
@@ -40,7 +41,7 @@ export function TrustActionConfirmDialog({
 
   const copy = getTrustActionCopy(kind, target);
 
-  return (
+  const dialog = (
     <div
       role="presentation"
       data-testid="trust-action-confirm-overlay"
@@ -161,6 +162,10 @@ export function TrustActionConfirmDialog({
       </div>
     </div>
   );
+
+  return typeof document === 'undefined'
+    ? dialog
+    : createPortal(dialog, document.body);
 }
 
 function btnStyle(primary: boolean, danger: boolean): React.CSSProperties {
