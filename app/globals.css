@@ -473,13 +473,19 @@ button.notes-field-peer-hop:hover {
   box-shadow: inset 3px 0 0 var(--se-accent);
 }
 .notes-hex {
-  width: 40px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
+  aspect-ratio: 1;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  /* Regular pointy-top hex in a square — not a tall stretched cell. */
+  clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
   background: color-mix(in srgb, var(--se-accent) 14%, var(--se-bg));
+}
+.notes-field-thread-head .notes-hex {
+  width: 40px;
+  height: 40px;
 }
 .notes-day {
   align-self: center;

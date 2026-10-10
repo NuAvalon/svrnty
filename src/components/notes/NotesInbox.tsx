@@ -453,7 +453,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                       onClick={() => onPickContact(person.fingerprint)}
                     >
                       <span className="notes-hex" aria-hidden="true">
-                        <IdentitySeal fingerprint={person.fingerprint} size={28} />
+                        <IdentitySeal fingerprint={person.fingerprint} size={26} />
                       </span>
                       <span style={{ minWidth: 0, flex: 1 }}>
                         <span style={{ display: 'block', fontSize: 15, fontWeight: 600, color: E.text }}>
