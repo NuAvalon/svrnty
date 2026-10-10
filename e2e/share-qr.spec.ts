@@ -55,7 +55,8 @@ test.describe('Share-Identity QR tab — short-link, no 25KB overflow crash (PR#
     await dialog.getByRole('button', { name: /generate qr code/i }).click();
     // The post-generate state shows the short-link QR + its scan hint. If the card (25KB) were
     // still being QR'd this would overflow-crash; the short URL cannot.
-    await expect(dialog.getByText(/scan with a phone camera/i)).toBeVisible({ timeout: 15_000 });
+    // 30s: Next dev cold-compiles /api/relay on the first createRelay POST inside CI.
+    await expect(dialog.getByText(/scan with a phone camera/i)).toBeVisible({ timeout: 30_000 });
     expect(errors, `QR generate crashed: ${errors.join('; ')}`).toHaveLength(0);
   });
 });
