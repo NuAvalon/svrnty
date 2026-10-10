@@ -155,6 +155,118 @@ export function deriveKeyArgon2id(
   });
 }
 
+// ── Off-main-thread derivation (#542) ─────────────────────────────────
+// The memory-hard argon2id above is SYNCHRONOUS pure-JS; at m=64MB it blocks the
+// caller for seconds. On the main UI thread that is the vault export/restore
+// "freeze". deriveKeyArgon2idAsync runs the SAME computation in a Web Worker so
+// the UI stays responsive. The worker returns a BYTE-IDENTICAL key (same noble,
+// same params) — no crypto change, .svrnty format unchanged, old backups open.
+//
+// Fail-safe: when no Worker exists (SSR / node / tests / an unsupported or
+// failed worker) the wrapper transparently falls back to the SYNC path — correct
+// in every environment, merely without the off-thread benefit (the pre-#542
+// behavior). So this can never make a derivation FAIL; worst case it blocks like
+// before. assertParamsWithinLimits runs here too (the F1 guarantee is preserved
+// on the async path exactly as on the sync one).
+
+interface PendingKdf {
+  resolve: (key: Uint8Array) => void;
+  reject: (err: unknown) => void;
+  fallback: () => void;
+}
+
+let _kdfWorker: Worker | null = null;
+let _kdfWorkerBroken = false;
+let _kdfSeq = 0;
+const _kdfPending = new Map<number, PendingKdf>();
+
+/** Lazily create (once) the shared KDF worker. Returns null when workers are
+ *  unavailable or creation failed — the caller then uses the sync fallback. */
+function getKdfWorker(): Worker | null {
+  if (typeof Worker === 'undefined' || _kdfWorkerBroken) return null;
+  if (_kdfWorker) return _kdfWorker;
+  try {
+    _kdfWorker = new Worker(new URL('./kdf.worker.ts', import.meta.url), { type: 'module' });
+    _kdfWorker.onmessage = (e: MessageEvent) => {
+      const { id, key, error } = e.data as { id: number; key?: Uint8Array; error?: string };
+      const p = _kdfPending.get(id);
+      if (!p) return;
+      _kdfPending.delete(id);
+      if (error || !key) p.fallback(); // worker-reported failure → sync fallback (never fail the derivation)
+      else p.resolve(new Uint8Array(key));
+    };
+    _kdfWorker.onerror = () => {
+      // Worker-level failure (e.g. failed to load): mark broken, drain every
+      // pending request to the sync fallback, and never try the worker again.
+      _kdfWorkerBroken = true;
+      _kdfWorker = null;
+      for (const [, p] of _kdfPending) p.fallback();
+      _kdfPending.clear();
+    };
+    return _kdfWorker;
+  } catch {
+    _kdfWorkerBroken = true;
+    return null;
+  }
+}
+
+/**
+ * Derive a 256-bit AES key from a passphrase via Argon2id, OFF the main thread
+ * when a Web Worker is available (falls back to the sync path otherwise). Same
+ * validation + byte-identical output as deriveKeyArgon2id. Zero the bytes after
+ * importKey. Use this on any UI-triggered path (export/restore/unlock) so the
+ * 64MB derivation never freezes the UI.
+ */
+export function deriveKeyArgon2idAsync(
+  passphrase: string,
+  salt: Uint8Array,
+  params: { time_cost: number; memory_cost: number; parallelism: number },
+): Promise<Uint8Array> {
+  // F1 guarantee (same as the sync path), surfaced as a REJECTION so the async
+  // contract is uniform — callers handle rejections only, never a sync throw.
+  try {
+    assertParamsWithinLimits(params);
+  } catch (e) {
+    return Promise.reject(e);
+  }
+  const worker = getKdfWorker();
+  if (!worker) {
+    // No worker → sync (correct, blocks like before). Wrapped so a throw rejects.
+    return new Promise((resolve, reject) => {
+      try {
+        resolve(deriveKeyArgon2id(passphrase, salt, params));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const id = ++_kdfSeq;
+    const fallback = () => {
+      try {
+        resolve(deriveKeyArgon2id(passphrase, salt, params));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    _kdfPending.set(id, { resolve, reject, fallback });
+    try {
+      worker.postMessage({
+        id,
+        passphrase,
+        salt,
+        time_cost: params.time_cost,
+        memory_cost: params.memory_cost,
+        parallelism: params.parallelism,
+        dkLen: ARGON2_KEY_LENGTH,
+      });
+    } catch {
+      _kdfPending.delete(id);
+      fallback(); // posting failed (e.g. non-cloneable) → sync fallback
+    }
+  });
+}
+
 // ── Authenticated encryption (AES-256-GCM, optional AAD) ──────────────
 /**
  * AES-256-GCM encrypt. If `aad` is given, the auth tag also covers it, so any

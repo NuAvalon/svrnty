@@ -28,7 +28,7 @@ import {
   toBase64,
   fromBase64,
   randomBytes,
-  deriveKeyArgon2id,
+  deriveKeyArgon2idAsync,
   aesGcmEncrypt,
   aesGcmDecrypt,
   assertParamsWithinLimits,
@@ -79,8 +79,8 @@ export async function encryptBackup(
   const salt = randomBytes(SALT_LENGTH);
   const iv = randomBytes(IV_LENGTH);
 
-  // Derive AES key via the single shared Argon2id path.
-  const keyBytes = deriveKeyArgon2id(passphrase, salt, {
+  // Derive AES key via the single shared Argon2id path (off the main thread — #542).
+  const keyBytes = await deriveKeyArgon2idAsync(passphrase, salt, {
     time_cost: ARGON2_TIME_COST,
     memory_cost: ARGON2_MEMORY_COST,
     parallelism: ARGON2_PARALLELISM,
@@ -133,7 +133,7 @@ export async function decryptBackup(
   const iv = fromBase64(file.encrypted.iv);
   const ciphertext = fromBase64(file.encrypted.ciphertext);
 
-  const keyBytes = deriveKeyArgon2id(passphrase, salt, {
+  const keyBytes = await deriveKeyArgon2idAsync(passphrase, salt, {
     time_cost: file.kdf.time_cost,
     memory_cost: file.kdf.memory_cost,
     parallelism: file.kdf.parallelism,
