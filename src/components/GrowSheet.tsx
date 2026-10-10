@@ -179,7 +179,7 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
         {lensBag && lensBag.lenses.length > 0 ? (
           <div style={{ marginTop: 18 }}>
             <p style={{ margin: '0 0 8px', fontSize: 12, letterSpacing: '0.12em', textTransform: 'uppercase', color: E.dim }}>
-              Which face?
+              Which lens?
             </p>
             <OwnerLensPicker
               lenses={lensBag.lenses}
@@ -229,11 +229,11 @@ export function GrowSheet({ open, onClose, identity, embedded = false }: Props) 
                     </p>
                   ) : (
                     <p style={{ margin: '8px 0 0', fontSize: 12, color: E.dim }}>
-                      This face has no extra channels yet.
+                      This lens has no extra channels yet.
                     </p>
                   )}
                   <p style={{ margin: '8px 0 0', fontSize: 11, color: E.dim, lineHeight: 1.45 }}>
-                    Same key. This is the face you intend to hand them. Extra channels stay on this
+                    Same key. This is the lens you intend to hand them. Extra channels stay on this
                     device until the living card schema carries them.
                   </p>
                 </div>

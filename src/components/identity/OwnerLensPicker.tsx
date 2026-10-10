@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Lens chips — pick which face of YOU is on the card / Grow handoff.
+ * Lens chips — pick which lens of YOU is on the card / Grow handoff.
  * Same identity. Different profile. No second key.
  */
 
@@ -12,15 +12,15 @@ export function OwnerLensPicker({
   selectedId,
   defaultId,
   onSelect,
-  onEditFaces,
+  onEditLenses,
   testId = 'owner-lens-picker',
 }: {
   lenses: Array<{ id: string; name: string }>;
   selectedId?: string;
   defaultId?: string;
   onSelect: (id: string) => void;
-  /** Opens the face editor (studio). */
-  onEditFaces?: () => void;
+  /** Opens the lens editor (studio). */
+  onEditLenses?: () => void;
   testId?: string;
 }) {
   if (!lenses.length) return null;
@@ -46,14 +46,14 @@ export function OwnerLensPicker({
           </button>
         );
       })}
-      {onEditFaces ? (
+      {onEditLenses ? (
         <button
           type="button"
           data-testid={`${testId}-edit`}
-          onClick={onEditFaces}
+          onClick={onEditLenses}
           style={chip(false)}
         >
-          Edit faces
+          Edit lenses
         </button>
       ) : null}
     </div>

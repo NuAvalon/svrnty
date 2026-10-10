@@ -1894,7 +1894,7 @@ export function SoverentityFrontend({
           }))}
           selectedLensId={activeLensId}
           onSelectLens={setActiveLensId}
-          onEditFaces={() => setVaultOpen(true)}
+          onEditLenses={() => setVaultOpen(true)}
           email={identity.identity.email}
           signal={localMethods.signal}
           site={
@@ -1953,7 +1953,7 @@ export function SoverentityFrontend({
                 />
               )}
               <CardMenuItem
-                label="Faces & vault"
+                label="Lenses & vault"
                 onClick={() => {
                   setVaultOpen(true);
                   close();
@@ -2053,7 +2053,7 @@ export function SoverentityFrontend({
         <CardMorePanel
           open={vaultOpen}
           onOpenChange={setVaultOpen}
-          label="Faces & vault"
+          label="Lenses & vault"
           testId="identity-vault-toggle"
         >
           <OwnerCardStudio

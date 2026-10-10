@@ -43,7 +43,7 @@ export interface SovereignIdentityCardProps {
   lenses?: IdentityCardLens[];
   selectedLensId?: string;
   onSelectLens?: (id: string) => void;
-  onEditFaces?: () => void;
+  onEditLenses?: () => void;
   hasPqKeys?: boolean;
   onRevise?: (kind: MethodKind) => void;
   onOpenCircle?: () => void;
@@ -209,7 +209,7 @@ export function SovereignIdentityCard({
   lenses,
   selectedLensId,
   onSelectLens,
-  onEditFaces,
+  onEditLenses,
   hasPqKeys = false,
   onRevise,
   onOpenCircle,
@@ -285,7 +285,7 @@ export function SovereignIdentityCard({
               selectedId={selectedLensId}
               defaultId={lenses.find((l) => l.isDefault)?.id}
               onSelect={onSelectLens}
-              onEditFaces={onEditFaces}
+              onEditLenses={onEditLenses}
               testId="identity-lens-picker"
             />
           </div>
@@ -360,14 +360,14 @@ export function SovereignIdentityCard({
         >
           {rows.length === 0 ? (
             <p style={{ margin: 0, fontSize: 12, color: E.dim, fontFamily: E.fontSans }}>
-              No channels on this face yet.
+              No channels on this lens yet.
             </p>
           ) : (
             rows.map((row) => {
               const value =
                 row.kind === 'signal' && row.value ? maskSignal(row.value) : row.value;
               const classic = isClassicKind(row.kind) ? row.kind : null;
-              const revise = classic ? () => handleRevise(classic) : onEditFaces;
+              const revise = classic ? () => handleRevise(classic) : onEditLenses;
               return (
                 <MethodRow
                   key={`${row.id || row.kind}-${row.label}`}

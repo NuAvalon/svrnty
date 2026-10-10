@@ -1,6 +1,6 @@
 'use client';
 
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -18,8 +18,14 @@ export function CardMorePanel({
   testId?: string;
   children: ReactNode;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [open]);
+
   return (
-    <div style={{ width: '100%', maxWidth: 440, margin: '10px auto 0' }}>
+    <div ref={rootRef} style={{ width: '100%', maxWidth: 440, margin: '10px auto 0' }}>
       <button
         type="button"
         data-testid={testId}

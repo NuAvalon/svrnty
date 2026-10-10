@@ -204,7 +204,7 @@ export function ContactShareDialog({
 
         {lensBag && lensBag.lenses.length > 0 ? (
           <div className="mt-3 space-y-2" data-testid="share-lens-picker">
-            <p className="text-xs uppercase tracking-wider text-amber-500/80">Face for this handoff</p>
+            <p className="text-xs uppercase tracking-wider text-amber-500/80">Lens for this handoff</p>
             <div className="flex flex-wrap gap-1.5">
               {lensBag.lenses.map((l) => (
                 <button
@@ -230,13 +230,13 @@ export function ContactShareDialog({
                 return (
                   <p className="text-xs text-gray-500">
                     {face.displayName ? `${face.displayName} · ` : ''}
-                    This face has no extra methods yet. Recipients still get your signed name and key.
+                    This lens has no extra methods yet. Recipients still get your signed name and key.
                   </p>
                 );
               }
               return (
                 <p className="text-xs text-gray-500 leading-relaxed">
-                  {face.displayName ? `Face: ${face.displayName}. ` : ''}
+                  {face.displayName ? `Lens: ${face.displayName}. ` : ''}
                   {pref
                     ? `Preferred: ${methodKindLabel(pref.kind)}${pref.value ? ` · ${pref.value}` : ''}. `
                     : ''}

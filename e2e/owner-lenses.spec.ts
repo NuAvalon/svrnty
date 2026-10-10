@@ -19,7 +19,7 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
   test('Identity: add a field and a named lens', async ({ page }) => {
     await genesis(page, 'Lens Owner');
     await page.getByRole('tab', { name: 'Identity' }).click();
-    await page.getByTestId('identity-vault-toggle').click();
+    await page.getByTestId('identity-lens-picker-edit').click();
     await expect(page.getByTestId('owner-card-studio')).toBeVisible();
     await page.getByTestId('owner-card-add-field').click();
     await page.getByPlaceholder('New lens name — Business, Festival…').fill('Festival');
@@ -27,7 +27,7 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(page.getByRole('button', { name: /^Festival/ }).first()).toBeVisible();
   });
 
-  test('each lens has its own card; Grow picks a face', async ({ page }) => {
+  test('each lens has its own card; Grow picks a lens', async ({ page }) => {
     test.setTimeout(90_000);
     await genesis(page, 'Peter Card');
     await page.getByRole('tab', { name: 'Identity' }).click();
@@ -35,7 +35,7 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
     await expect(page.getByTestId('identity-card-name')).toHaveText('Peter Card');
     await expect(page.getByTestId('identity-lens-picker')).toBeVisible();
 
-    await page.getByTestId('identity-vault-toggle').click();
+    await page.getByTestId('identity-lens-picker-edit').click();
     await expect(page.getByTestId('owner-card-studio')).toBeVisible();
 
     await page.getByTestId('owner-card-add-kind').selectOption('instagram');

@@ -183,8 +183,8 @@ export function OwnerCardStudio({
           Lenses
         </p>
         <p style={{ margin: '6px 0 10px', fontSize: 12, color: E.dim, fontFamily: E.fontSans, lineHeight: 1.45 }}>
-          Same you, same key, same seal. Each lens is a profile — a name and the channels that face
-          shows. Grow picks which face you hand them.
+          Same you, same key, same seal. Each lens is a profile — a name and the channels that lens
+          shows. Grow picks which lens you hand them.
         </p>
       </div>
 
@@ -213,13 +213,13 @@ export function OwnerCardStudio({
             onChange={(e) => persist(patchOwnerLens(bag, lens.id, { name: e.target.value }))}
             style={inp(0)}
             aria-label="Lens name"
-            placeholder="Face name — Business, Festival…"
+            placeholder="Lens name — Business, Festival…"
           />
           <input
             value={lens.profile?.displayName || ''}
             onChange={(e) => persist(patchLensProfile(bag, lens.id, { displayName: e.target.value }))}
             style={inp(0)}
-            aria-label="Profile name on this face"
+            aria-label="Profile name on this lens"
             data-testid="owner-lens-display-name"
             placeholder="Name on this card (leave blank to use your signed name)"
           />
@@ -227,15 +227,15 @@ export function OwnerCardStudio({
             value={lens.profile?.handle || ''}
             onChange={(e) => persist(patchLensProfile(bag, lens.id, { handle: e.target.value }))}
             style={inp(0)}
-            aria-label="Handle on this face"
+            aria-label="Handle on this lens"
             data-testid="owner-lens-handle"
-            placeholder="Handle on this face — optional"
+            placeholder="Handle on this lens — optional"
           />
           <input
             value={lens.profile?.note || ''}
             onChange={(e) => persist(patchLensProfile(bag, lens.id, { note: e.target.value }))}
             style={inp(0)}
-            aria-label="Note on this face"
+            aria-label="Note on this lens"
             data-testid="owner-lens-note"
             placeholder="Short line under the name — optional"
           />
@@ -340,7 +340,7 @@ export function OwnerCardStudio({
       </div>
 
       <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans, lineHeight: 1.45 }}>
-        The share link is still you — one key. A lens is the default face you intend to hand them.
+        The share link is still you — one key. A lens is the default profile you intend to hand them.
         Extra methods stay on this device until the living card schema carries them.
       </p>
     </div>
