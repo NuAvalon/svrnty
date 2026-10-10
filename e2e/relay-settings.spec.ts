@@ -14,6 +14,8 @@ async function genesis(page: Page) {
   });
 }
 
+test.use({ serviceWorkers: 'block' });
+
 test('Settings → Relay validates and never auto-switches', async ({ page }) => {
   test.setTimeout(90_000);
   await page.route('**/*', async (route) => {
