@@ -47,8 +47,13 @@ test('Galaxy: outbound Awaiting mutual is not white; mutual is the only white li
   await expect(alan).toHaveAttribute('data-shape', 'hex');
   await expect(ada).toHaveAttribute('data-shape', 'hex');
   await expect(alan).toHaveAttribute('data-spoke-style', 'single');
-  await expect(alan.locator('xpath=ancestor::g[1]//*[local-name()="circle" and @data-testid="trust-node-light"]')).toHaveCount(0);
-  await expect(ada.locator('xpath=ancestor::g[1]//*[local-name()="circle" and @data-testid="trust-node-light"]')).toHaveCount(1);
+  const adaFill = await ada.getAttribute('fill');
+  const alanFill = await alan.getAttribute('fill');
+  expect(alanFill, 'one-way hex fill matches mutual').toBe(adaFill);
+  expect(alanFill).toBeTruthy();
+  expect(alanFill).not.toBe('transparent');
+  await expect(page.locator(`g[data-graph-node="${ALAN}"] [data-testid="trust-node-light"]`)).toHaveCount(0);
+  await expect(page.locator(`g[data-graph-node="${ADA}"] [data-testid="trust-node-light"]`)).toHaveCount(1);
   await expect(page.locator('[data-testid="trust-node-awaiting"]')).toHaveCount(0);
   await expect(page.locator('[data-testid="trust-node-inbound-half"]')).toHaveCount(0);
 
