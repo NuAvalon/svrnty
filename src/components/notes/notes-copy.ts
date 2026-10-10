@@ -6,7 +6,7 @@ export const NOTES_COPY = {
   tabLabel: 'Notes',
   heading: 'Encrypted messages, with the people you trust',
   whatItIs:
-    'Send and receive end-to-end encrypted messages with your contacts. Every message is sealed on your device — the relay only ever moves sealed blobs, and never learns who you talk to.',
+    'Send and receive end-to-end encrypted messages with your contacts. Every message is sealed on your device — the relay only ever moves sealed blobs, so it can’t read your messages.',
   sending:
     'When you send, you’ll see Sent — your message left your device sealed and reached the relay. (A Delivered confirmation is coming.)',
   sendingWait:

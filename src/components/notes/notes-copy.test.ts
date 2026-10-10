@@ -29,6 +29,13 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.equal(blob.includes('not allowed'), false);
     assert.equal(blob.includes('not admitted'), false);
     assert.equal(blob.includes('unreachable'), false);
+    // claim-honesty (Hypatia #167343 / GPT / Peter #167278): the relay sees mailbox-id +
+    // timing + size + IP = communication metadata. NEVER claim it can't tell who you talk
+    // to; only confidentiality (can't read messages) is supportable.
+    assert.equal(blob.includes('who you talk to'), false);
+    assert.equal(blob.includes('never learns who'), false);
+    assert.equal(blob.includes('communication relationship'), false);
+    assert.equal(blob.includes('read your messages'), true);
   });
 
   it('receiving copy says saved / there when you open — not appears live', () => {
