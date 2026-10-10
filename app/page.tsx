@@ -86,6 +86,7 @@ export default function Home() {
   const [mainTab, setMainTab] = useState('identity');
   const [notesPeerFp, setNotesPeerFp] = useState('');
   const [notesPeerName, setNotesPeerName] = useState('');
+  const [galaxyPeerFp, setGalaxyPeerFp] = useState('');
   const betaMessagingOn = isBetaIssuerProvisioned();
   // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
@@ -950,6 +951,7 @@ export default function Home() {
                   setNotesPeerName(String(edge.peer_name || '').trim());
                   setMainTab('notes');
                 }}
+                focusFingerprint={galaxyPeerFp}
               />
             </TabsContent>
 
@@ -969,6 +971,12 @@ export default function Home() {
                   identity={identity}
                   focusFingerprint={notesPeerFp}
                   focusName={notesPeerName}
+                  onOpenGalaxy={(peer) => {
+                    const fp = String(peer.fingerprint || '').trim();
+                    if (!fp) return;
+                    setGalaxyPeerFp(fp);
+                    setMainTab('trust-map');
+                  }}
                 />
               )}
             </TabsContent>

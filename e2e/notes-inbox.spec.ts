@@ -82,4 +82,9 @@ test('galaxy star Chat opens that conversation in the Thread Field', async ({ pa
   await expect(panel.getByTestId('notes-send-btn')).toHaveText(/^Send$/i);
   await expect(panel.getByText(/^Delivered$/)).toHaveCount(0);
   await expect(panel.getByText(/post-quantum/i)).toHaveCount(0);
+
+  await panel.getByTestId('notes-field-peer').click();
+  await expect(page.getByTestId('trust-map')).toBeVisible();
+  await expect(page.getByTestId('trust-node-detail')).toBeVisible();
+  await expect(page.getByTestId('trust-node-detail')).toContainText(/Nikola Tesla/i);
 });

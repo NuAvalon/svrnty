@@ -415,6 +415,9 @@ button[data-slot="button"]:active:not(:disabled) {
   min-width: 0;
   min-height: 0;
 }
+button.notes-field-peer-hop:hover {
+  color: var(--se-accent);
+}
 .notes-field-thread-head {
   display: flex;
   align-items: center;

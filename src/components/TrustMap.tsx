@@ -126,6 +126,8 @@ interface TrustMapProps {
   onRefresh?: () => void | Promise<void>;
   /** Open this star's 1:1 conversation (parent switches to the Chat tab). */
   onOpenNote?: (edge: TrustEdge) => void;
+  /** Chat name hop — focus this star when Galaxy opens. */
+  focusFingerprint?: string;
 }
 
 // Solar Ember via CSS vars — follows light/dark appearance.
@@ -227,6 +229,7 @@ export function TrustMap({
   onDistressWent,
   onRefresh,
   onOpenNote,
+  focusFingerprint,
 }: TrustMapProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const {
@@ -630,6 +633,20 @@ export function TrustMap({
     setTrustAfterVerify(false);
     verifiedForTrust.current = false;
   }, [edgeByFp]);
+
+  const appliedChatFocus = useRef('');
+  useEffect(() => {
+    const want = String(focusFingerprint || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+    if (want.length < 16 || appliedChatFocus.current === want) return;
+    for (const id of edgeByFp.keys()) {
+      const have = String(id).replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+      if (have === want || have.startsWith(want) || want.startsWith(have)) {
+        appliedChatFocus.current = want;
+        openFocus(id);
+        return;
+      }
+    }
+  }, [focusFingerprint, edgeByFp, openFocus]);
 
   const handleNodeClick = useCallback((id: string, multi: boolean) => {
     openFocus(id);

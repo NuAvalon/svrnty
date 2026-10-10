@@ -56,6 +56,8 @@ type Props = {
   focusFingerprint?: string;
   /** Display name from the star sheet (book may not have a key-bound fingerprint). */
   focusName?: string;
+  /** Thread name hop — parent switches to Galaxy and focuses this star. */
+  onOpenGalaxy?: (peer: { fingerprint: string; name: string }) => void;
 };
 
 const fieldStyle: CSSProperties = {
@@ -109,7 +111,7 @@ function bookNames(records: ContactRow[]): FieldName[] {
   return out;
 }
 
-export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
+export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy }: Props) {
   const fp = identity?.identity?.fingerprint || '';
   const [book, setBook] = useState<ContactRow[]>([]);
   const [threads, setThreads] = useState<NoteThread[]>([]);
@@ -531,19 +533,40 @@ export function NotesInbox({ identity, focusFingerprint, focusName }: Props) {
               {NOTES_COPY.fieldBack}
             </button>
             {selectedFp ? (
-              <>
+              <button
+                type="button"
+                className="notes-field-peer-hop"
+                data-testid="notes-field-peer"
+                aria-label={`Show ${peerName} in Galaxy`}
+                onClick={() => onOpenGalaxy?.({ fingerprint: selectedFp, name: peerName })}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  minWidth: 0,
+                  flex: 1,
+                  margin: 0,
+                  padding: 0,
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: onOpenGalaxy ? 'pointer' : 'default',
+                  textAlign: 'left',
+                  font: 'inherit',
+                  color: E.text,
+                }}
+              >
                 <span className="notes-hex" aria-hidden="true">
                   <IdentitySeal fingerprint={selectedFp} size={32} />
                 </span>
-                <div style={{ minWidth: 0 }}>
-                  <p data-testid="notes-field-peer" style={{ margin: 0, fontSize: 16, fontWeight: 600, color: E.text }}>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 16, fontWeight: 600, color: 'inherit' }}>
                     {peerName}
-                  </p>
-                  <p style={{ margin: '3px 0 0', fontSize: 11, color: E.dim, fontFamily: E.fontMono }}>
+                  </span>
+                  <span style={{ display: 'block', marginTop: 3, fontSize: 11, color: E.dim, fontFamily: E.fontMono }}>
                     {formatFingerprintShort(selectedFp)}
-                  </p>
-                </div>
-              </>
+                  </span>
+                </span>
+              </button>
             ) : (
               <p data-testid="notes-field-peer" style={{ margin: 0, fontSize: 14, color: E.muted }}>
                 {NOTES_COPY.fieldPick}
