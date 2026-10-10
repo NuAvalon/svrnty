@@ -17,11 +17,7 @@
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import type { SignedContactUpdate } from '@/lib/trust/contact-update';
 import type { EnvelopeDecryptor } from './consume-mailbox';
-import {
-  sealLivingBookHybrid,
-  openLivingBookHybrid,
-  type LivingBookHybridSecrets,
-} from '@/lib/crypto/living-book-sleeve';
+import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
 
 /**
  * The contact-update inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
@@ -59,26 +55,17 @@ export async function encryptContactUpdateTo(
 
 /**
  * Recipient side: an {@link EnvelopeDecryptor} bound to the owner's private key. Returns null on ANY
- * failure (not-for-us / corrupt / wrong key / not-JSON) so the caller drops it silently (I-1/I-2). DUAL-
- * READ: when `hybrid` is supplied, try the PQ-hybrid envelope FIRST; a classical/armored blob is not a
- * hybrid package → fall through to OpenPGP. The contact-update path is the consume catch-all, so shape
+ * failure (not-for-us / corrupt / wrong key / not-JSON) so the caller drops it silently (I-1/I-2).
+ * Classical-ONLY: the PQ-hybrid dual-read now lives in the SINGLE chokepoint (dualReadOpener over
+ * makeHybridOpener(openEnv, parseContactUpdateWire)) composed by the consume deps builders — this opener
+ * is its classical fallback. The contact-update path is the consume catch-all, so shape
  * (envelope.fingerprint) is checked by consumeOne — mirrored here by returning the parsed object as-is.
  */
 export function openpgpEnvelopeDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
-  hybrid?: LivingBookHybridSecrets,
 ): EnvelopeDecryptor {
   return async (blob: string): Promise<SignedContactUpdate | null> => {
-    if (hybrid) {
-      try {
-        const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
-        if (pt) return JSON.parse(new TextDecoder().decode(pt)) as SignedContactUpdate;
-        // pt null → not a hybrid package → fall through to the classical OpenPGP path below.
-      } catch {
-        return null;
-      }
-    }
     try {
       const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
       const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });

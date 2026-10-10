@@ -27,7 +27,7 @@ import {
   type KnownContact,
   type OwnerIdentity,
 } from './consume-mailbox';
-import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
+import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from './contact-update-envelope';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
@@ -44,16 +44,20 @@ import {
 } from '@/lib/identity/client-store';
 import { type LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
+// L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
+// compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
+import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
+import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
-import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
 import { acceptTrustAffirm } from '@/lib/trust/trust-affirm-consume';
-import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
+import { trustAffirmOpenpgpDecryptor, parseTrustAffirmWire } from '@/lib/trust/trust-affirm-seal';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
 
 /** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
@@ -144,11 +148,19 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybr
  * notes store. Exported for unit tests.
  */
 export function buildNoteSeam(owner: OwnerIdentity, hybrid?: LivingBookHybridSecrets): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, hybrid);
+  // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
+  // classical FALLBACK (noteOpenpgpDecryptor). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
+  const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const verifyNote = hybrid
+    ? dualReadOpener(
+        makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseNoteWire),
+        classicalNote,
+      )
+    : classicalNote;
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
-    // the type-check inside noteOpenpgpDecryptor is the discriminator, so this never eats a non-note.
-    verify: (blob: string) => decryptNote(blob),
+    // parseNoteWire is the discriminator (both legs), so this never eats a non-note.
+    verify: (blob: string) => verifyNote(blob),
     accept: async (wire) => {
       // acceptInboundNote: verifyNoteSender (authn — public_key↔from_fingerprint + sig) THEN admit
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
@@ -181,11 +193,19 @@ export function buildNoteSeam(owner: OwnerIdentity, hybrid?: LivingBookHybridSec
  * in-book affirm sets they_trust_me (inbound) but mutual requires MY own prior owner-verified trust.
  */
 export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: LivingBookHybridSecrets): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, hybrid);
+  // Single dual-read chokepoint: hybrid-FIRST + classical FALLBACK, reusing parseTrustAffirmWire (the same
+  // asAffirm type-gate on BOTH legs → no-cross-swallow).
+  const classicalAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const verifyAffirm = hybrid
+    ? dualReadOpener(
+        makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseTrustAffirmWire),
+        classicalAffirm,
+      )
+    : classicalAffirm;
   return {
-    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; the
-    // type-check inside trustAffirmOpenpgpDecryptor is the discriminator, so this never eats a non-affirm.
-    verify: (blob) => decryptAffirm(blob),
+    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; parseTrustAffirmWire
+    // is the discriminator (both legs), so this never eats a non-affirm.
+    verify: (blob) => verifyAffirm(blob),
     accept: (wire) =>
       acceptTrustAffirm({
         wire,
@@ -271,13 +291,25 @@ export async function buildConsumeDeps(
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
   }
+  // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
+  const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase);
   return {
     owner,
-    decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, hybrid),
+    decrypt: hybrid
+      ? dualReadOpener(
+          makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseContactUpdateWire),
+          classicalCU,
+        )
+      : classicalCU,
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes, hybrid),
     note: buildNoteSeam(owner, hybrid),
     affirm: buildTrustAffirmSeam(owner, hybrid),
+    // ③ loud-not-silent (closes the FE fail-soft silent-loss vector, Flint #168225): advertise-kem-pub but
+    // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
+    // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
+    // poll off loadPQKeys) — a derivable owner is FALSE → opens; never retryable-forever (Flint #168382).
+    hybridSecretMissing: !!owner.kemPublicKey && !hybrid,
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)

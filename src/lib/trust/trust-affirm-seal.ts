@@ -13,11 +13,7 @@
 
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { TRUST_AFFIRM_WIRE_TYPE, type TrustAffirmWireV0 } from './trust-affirm';
-import {
-  sealLivingBookHybrid,
-  openLivingBookHybrid,
-  type LivingBookHybridSecrets,
-} from '@/lib/crypto/living-book-sleeve';
+import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
 
 /**
  * Seal a signed trust-affirmation to the recipient. The affirmation MUST already carry its {public_key,
@@ -73,25 +69,16 @@ export function parseTrustAffirmWire(innerUtf8: string): TrustAffirmWireV0 | nul
  * discriminator: a note / joiner / contact-update blob decrypts fine but fails `type !==
  * TRUST_AFFIRM_WIRE_TYPE` → null → never eaten as an affirmation. Does NOT authenticate — that is
  * verifyTrustAffirmSender's job in acceptTrustAffirm (sign-before-admit, mirroring the note path).
- * DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied; else classical OpenPGP. The type-gate
- * is the exported {@link parseTrustAffirmWire} (asAffirm), which the single dual-read chokepoint reuses.
+ * Classical-ONLY: the PQ-hybrid dual-read now lives in the SINGLE chokepoint (dualReadOpener over
+ * makeHybridOpener(openEnv, parseTrustAffirmWire)) composed by the consume deps builders — this opener is
+ * its classical fallback. The type-gate is the exported {@link parseTrustAffirmWire} (asAffirm), reused by
+ * the hybrid opener so no-cross-swallow is byte-identical across both legs.
  */
 export function trustAffirmOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
-  hybrid?: LivingBookHybridSecrets,
 ): (blob: string) => Promise<TrustAffirmWireV0 | null> {
   return async (blob: string): Promise<TrustAffirmWireV0 | null> => {
-    // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null
-    // from openLivingBookHybrid → fall through to OpenPGP; a hybrid pkg of another type fails asAffirm.
-    if (hybrid) {
-      try {
-        const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
-        if (pt) return asAffirm(JSON.parse(new TextDecoder().decode(pt)) as TrustAffirmWireV0);
-      } catch {
-        return null;
-      }
-    }
     try {
       const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
       const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
