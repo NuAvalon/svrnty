@@ -439,6 +439,13 @@ export function TrustMap({
     return { ...raw, nodes, topology: topo, glass };
   }, [ownerFingerprint, ownerName, visibleContacts, world]);
 
+  // Declare before any label / node paint — a later-hook read is a load-time ReferenceError.
+  const searchHitIds = useMemo(
+    () => new Set(galaxySearchHitIds(layout.nodes, searchQuery)),
+    [layout.nodes, searchQuery],
+  );
+  const searchActive = searchHitIds.size > 0;
+
   useEffect(() => {
     if (!ownerFingerprint || layout.nodes.length === 0) return;
     const t = window.setTimeout(() => {
@@ -737,12 +744,6 @@ export function TrustMap({
     }
     prevMutualRef.current = now;
   }, [visibleContacts, edgeByFp]);
-
-  const searchHitIds = useMemo(
-    () => new Set(galaxySearchHitIds(layout.nodes, searchQuery)),
-    [layout.nodes, searchQuery],
-  );
-  const searchActive = searchHitIds.size > 0;
 
   useEffect(() => {
     if (normalizeGalaxyQuery(searchQuery).length < 2 || searchHitIds.size === 0) return;
