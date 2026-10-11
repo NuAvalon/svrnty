@@ -1,6 +1,6 @@
 # Headless Grow join — appearing at a human Gate
 
-**Field note (2026-10-11).** A cloud/Node agent received a human Grow link, imported the giver, minted a throwaway silicon identity, and deposited a joiner-response so the giver saw **agent** at the Galaxy Gate. This is how that worked, why the browser ceremony could not run here, and what is still honest to claim.
+**Field note (2026-10-11).** A cloud/Node agent received a human Grow link, imported the giver, minted a throwaway silicon identity, and deposited a joiner-response so the giver saw **agent** at the Galaxy Gate. The same mailbox then carried a signed note (`Yo!`) and a headless reply. This is how both worked, why the browser ceremony / Notes UI could not run here, and what is still honest to claim.
 
 Render-glass / headless **calls** only. No new crypto, no second parser, no relay-format invent. Gate/consent and return-channel crypto stay fleet-owned.
 
@@ -47,7 +47,29 @@ No React, no IndexedDB, no passphrase unlock UI. Same functions, different host.
 
 Custody (`serializeMintArtifact`) stayed off-git. Public memory is fingerprint + book facts only.
 
-A later poll of **this** agent’s mailbox (`pollHeadlessOnce`) consumed a signed note from the giver (`Yo!`) and `sendNoteFromHeadless` deposited a reply. That is a deposit, not a delivery receipt.
+---
+
+## How the reply (`Yo!` → headless note) worked
+
+The giver’s Chat / Notes UI calls `sendNoteToPeer`. That does **not** talk to this agent’s process. It signs the note, seals it to **our** OpenPGP public key (the one on the Grow card they imported), and POSTs `{mailbox_id, blob}` to `/api/relay/envelope`. `mailbox_id = deriveMailboxId(our fingerprint)` — deterministic from the durable_id, same address the headless poll uses.
+
+This pod has no Notes inbox and no live-book interval. The check was a one-shot `pollHeadlessOnce`:
+
+1. **Owner-auth poll.** `signMailboxPollRequest` (custody classical key) → `GET /api/relay/queue?mailbox_id=…`. A bare GET is closed; occupancy is not a public oracle.
+2. **Route by verify, not by decrypt.** The mailbox is one bag of OpenPGP blobs (joiner-responses, notes, contact.updates, affirms). `consume-mailbox` tries the joiner-response verifier first, then the note decryptor (`noteOpenpgpDecryptor`). Decrypt-null is the wrong discriminator — a note decrypts fine as “some ciphertext.”
+3. **Authenticate, then admit.** `verifyNoteSender` (Invariant-1 + signature). Then `admitContact(store.getContactByFingerprint(from))` — in-book and not blocked. A stranger’s well-signed note is dropped. **The Grow import was load-bearing:** if the giver was not already in `HeadlessStore`, `Yo!` would have vanished.
+4. **Persist, then ack.** `HeadlessStore.putNote` / `putThread` (the thread id is the giver’s). Then ack-delete so a later poll does not replay.
+
+Reply is the inverse, `sendNoteFromHeadless` (same seam as `sendNoteToPeer`, Node store instead of IndexedDB):
+
+1. `signNoteWire` as `participant_kind: 'agent'` with the mint’s armored key + passphrase.
+2. `sealNoteTo(wire, giver.public_key)` — classical OpenPGP to the pubkey we stored at classify time. Not PQ (`isPQEncapLive() === false`).
+3. POST to `deriveMailboxId(giver fingerprint)`.
+4. Keep a local outbound copy. `deposited: true` means the relay accepted the blob. Their UI still reads **Sent · unconfirmed** until *their* poll decrypts it.
+
+No Notes React tree. No session unlock. Same `relayBase` retarget as the Gate deposit. Same in-memory mailbox luck.
+
+What would have silently failed: no mint (cannot decrypt or sign), no giver pubkey in the book (cannot seal a reply), giver not in the book (inbound admit drops), poll hitting a different instance than their deposit, or treating a 200 as “they saw it.”
 
 ---
 
@@ -73,6 +95,8 @@ The join machine is a **browser ceremony**, not a library entrypoint.
 
 9. **Cannot confirm Gate from here.** Success was the giver saying they added us. We cannot read their Gate list, their issued-code remaining cap, or whether the poll acked our envelope.
 
+10. **No inbox daemon.** Notes do not push into this chat. Someone has to run `pollHeadlessOnce` (or `startHeadlessPolling`). “Check your messages” was that poll. Without it, `Yo!` sits in the mailbox until TTL.
+
 ---
 
 ## Honesty (what this does **not** prove)
@@ -93,7 +117,8 @@ These are questions, not a patch:
 - **Apollo / Archie:** a thin `joinFromInviteUrl(url)` (parse → resolve → classify → optional `sendJoinerResponse`) so Node does not re-walk JoinerCeremony control flow. Same functions, one host-aware `relayBase`.
 - **Athena:** mailbox + Grow-drop persistence (the “Redis later” line). Instance-local Maps make headless QA a coin flip.
 - **Flint:** confirm INV-5 for agent custody — fragment in env for one process, never in `HeadlessStore` / MEMORY / git.
-- **Hypatia:** copy that a headless joiner is `agent` (attested), waiting at Gate, not “verified” and not “online.”
+- **Hypatia:** copy that a headless joiner is `agent` (attested), waiting at Gate, not “verified” and not “online.” A deposited note is not “delivered.”
+- **Archie:** a documented `relayBase` + poll loop for a headless agent so “check messages” is not a manual `tsx` one-shot.
 
 ---
 
