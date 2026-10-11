@@ -12,18 +12,18 @@ import { DISTRESS_COPY } from '@/lib/trust/distress';
 import { useId } from 'react';
 
 const FLAMES = [
-  { x: 28, y: 10, rx: 4.2, ry: 9, delay: '0s', dur: '1.35s' },
-  { x: 78, y: 7, rx: 5.5, ry: 13, delay: '0.22s', dur: '1.55s' },
-  { x: 148, y: 9, rx: 3.6, ry: 8, delay: '0.48s', dur: '1.2s' },
-  { x: 214, y: 6, rx: 6.2, ry: 15, delay: '0.1s', dur: '1.7s' },
-  { x: 286, y: 8, rx: 4.8, ry: 11, delay: '0.35s', dur: '1.4s' },
-  { x: 352, y: 7, rx: 5.1, ry: 12, delay: '0.18s', dur: '1.5s' },
-  { x: 388, y: 11, rx: 3.2, ry: 7, delay: '0.55s', dur: '1.25s' },
+  { x: 26, y: 14, rx: 6, ry: 14, delay: '0s', dur: '1.35s' },
+  { x: 74, y: 10, rx: 8, ry: 20, delay: '0.22s', dur: '1.55s' },
+  { x: 146, y: 13, rx: 5.5, ry: 13, delay: '0.48s', dur: '1.2s' },
+  { x: 212, y: 8, rx: 9, ry: 22, delay: '0.1s', dur: '1.7s' },
+  { x: 284, y: 11, rx: 7, ry: 17, delay: '0.35s', dur: '1.4s' },
+  { x: 350, y: 10, rx: 7.5, ry: 18, delay: '0.18s', dur: '1.5s' },
+  { x: 386, y: 15, rx: 5, ry: 11, delay: '0.55s', dur: '1.25s' },
 ] as const;
 
 export function VivreBurn({ compact }: { compact?: boolean }) {
   const uid = useId().replace(/:/g, '');
-  const height = compact ? 40 : 58;
+  const height = compact ? 48 : 72;
   const char = `vivre-char-${uid}`;
   const ridge = `vivre-ridge-${uid}`;
   const ember = `vivre-ember-${uid}`;
@@ -78,8 +78,8 @@ export function VivreBurn({ compact }: { compact?: boolean }) {
             <stop offset="100%" stopColor={E.accent2} />
           </linearGradient>
           <linearGradient id={ember} x1="0%" y1="0%" x2="0%" y2="100%">
-            <stop offset="0%" stopColor="#fff3c4" stopOpacity="0.55" />
-            <stop offset="45%" stopColor={E.accent} stopOpacity="0.35" />
+            <stop offset="0%" stopColor="#fff3c4" stopOpacity="0.85" />
+            <stop offset="40%" stopColor={E.accent} stopOpacity="0.55" />
             <stop offset="100%" stopColor="transparent" />
           </linearGradient>
           <linearGradient id={flame} x1="50%" y1="100%" x2="50%" y2="0%">
