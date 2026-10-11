@@ -237,6 +237,7 @@ export function TrustMap({
   focusFingerprint,
 }: TrustMapProps) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const {
     cam,
     reset: resetVp,
@@ -548,7 +549,6 @@ export function TrustMap({
   const [sampleBusy, setSampleBusy] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(true);
   const [shardGiveOpen, setShardGiveOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
