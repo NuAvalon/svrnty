@@ -12,7 +12,7 @@
 "use client";
 
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import { Maximize2, Minimize2, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
+import { Maximize2, Minimize2, Search, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
 import { useGraphViewport } from '@/lib/trust/use-graph-viewport';
 import { boundsOf, hitTestNodes } from '@/lib/trust/graph-camera';
 import type { TrustEdge } from '@/lib/trust/types';
@@ -70,6 +70,7 @@ import {
 } from '@/lib/trust/trust-recipe';
 import { ownerLocalBadge } from '@/lib/trust/grow-gate';
 import { StarEmber, VivreCaution } from '@/components/VivreBurn';
+import { galaxySearchHitIds, normalizeGalaxyQuery } from '@/components/trust/galaxy-search';
 import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
   loadMethodHistory,
@@ -265,7 +266,12 @@ export function TrustMap({
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setFullscreen(false);
+      if (e.key !== 'Escape') return;
+      if (searchQuery.trim()) {
+        setSearchQuery('');
+        return;
+      }
+      setFullscreen(false);
     };
     window.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
@@ -274,7 +280,7 @@ export function TrustMap({
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
     };
-  }, [fullscreen]);
+  }, [fullscreen, searchQuery]);
 
   // Piece-2 mutual-block reveal AND-gate (DARK until isPiece2MutualBlockLive): when live, the viewer's
   // held-affirmatives gate the TRANSITIVE sets (disclosed_circle/they_trust) at this SINGLE chokepoint —
@@ -542,6 +548,7 @@ export function TrustMap({
   const [sampleBusy, setSampleBusy] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(true);
   const [shardGiveOpen, setShardGiveOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const focusNode = layout.nodes.find((n) => n.id === focusId) ?? null;
   const focusEdge = useMemo(
@@ -731,6 +738,24 @@ export function TrustMap({
     prevMutualRef.current = now;
   }, [visibleContacts, edgeByFp]);
 
+  const searchHitIds = useMemo(
+    () => new Set(galaxySearchHitIds(layout.nodes, searchQuery)),
+    [layout.nodes, searchQuery],
+  );
+  const searchActive = searchHitIds.size > 0;
+
+  useEffect(() => {
+    if (normalizeGalaxyQuery(searchQuery).length < 2 || searchHitIds.size === 0) return;
+    const hits = layout.nodes.filter((n) => searchHitIds.has(n.id));
+    if (hits.length === 0) return;
+    const t = window.setTimeout(() => {
+      const el = viewportElRef.current;
+      const aspect = el ? el.clientWidth / Math.max(el.clientHeight, 1) : 1;
+      applyFit(boundsOf(hits, 64), aspect, 'reset');
+    }, 160);
+    return () => window.clearTimeout(t);
+  }, [searchQuery, searchHitIds, layout.nodes, applyFit, viewportElRef]);
+
   const pxPerWorld = vpSize.w / Math.max(cam.w, 1);
   const labels = useMemo(() => {
     const cands: LabelCandidate[] = layout.nodes.map((n) => {
@@ -743,7 +768,11 @@ export function TrustMap({
         x: sx,
         y: sy,
         r: rPx,
-        priority: (n.id === focusId ? 'force' : n.state === 'trusted' ? 'trusted' : 'known') as LabelCandidate['priority'],
+        priority: (n.id === focusId || searchHitIds.has(n.id)
+          ? 'force'
+          : n.state === 'trusted'
+            ? 'trusted'
+            : 'known') as LabelCandidate['priority'],
       };
     });
     return selectLabels(cands, {
@@ -752,7 +781,7 @@ export function TrustMap({
       pxPerWorld,
       maxLabels: 48,
     });
-  }, [layout.nodes, cam, vpSize, pxPerWorld, focusId]);
+  }, [layout.nodes, cam, vpSize, pxPerWorld, focusId, searchHitIds]);
 
   const runRefresh = useCallback(async () => {
     if (!onRefresh || refreshing) return;
@@ -887,6 +916,59 @@ export function TrustMap({
             <RotateCw className="h-3.5 w-3.5" />
           </button>
         ) : null}
+        <label
+          style={{
+            position: 'relative',
+            flex: '1 1 140px',
+            minWidth: 120,
+            maxWidth: 280,
+          }}
+        >
+          <Search
+            className="h-3.5 w-3.5"
+            aria-hidden
+            style={{
+              position: 'absolute',
+              left: 8,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              color: E.dim,
+              pointerEvents: 'none',
+            }}
+          />
+          <input
+            type="search"
+            data-testid="trust-map-search"
+            aria-label="Find a person in your galaxy"
+            placeholder="Find someone…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setSearchQuery('');
+                return;
+              }
+              if (e.key === 'Enter' && searchHitIds.size === 1) {
+                e.preventDefault();
+                const id = [...searchHitIds][0];
+                if (id) handleNodeClick(id, false);
+              }
+            }}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              fontFamily: E.fontSans,
+              fontSize: 12,
+              color: E.text,
+              background: E.inputBg,
+              border: `1px solid ${searchActive ? E.borderLit : E.border}`,
+              borderRadius: 8,
+              padding: '6px 8px 6px 26px',
+              outline: 'none',
+            }}
+          />
+        </label>
         <div style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
           <button type="button" data-testid="trust-map-zoom-out" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.12)} style={iconBtnStyle()}>
             <ZoomOut className="h-3.5 w-3.5" />
@@ -952,6 +1034,11 @@ export function TrustMap({
           .tm-core-light { animation: tm-core-breathe 2.8s ease-in-out infinite; }
           .tm-self-light { animation: tm-self-breathe 3.6s ease-in-out infinite; }
           .tm-glass-up { animation: tm-glass-up .9s cubic-bezier(.16,1,.3,1) both; }
+          .tm-search-halo { animation: tm-search-glow 1.6s ease-in-out infinite; pointer-events: none; }
+          @keyframes tm-search-glow {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+          }
           @keyframes tm-grow { from { opacity: 0; transform: scale(.3); } to { opacity: var(--tm-o,1); transform: scale(1); } }
           @keyframes tm-ignite {
             0% { opacity: 0; transform: translateY(42px) scale(.18); }
@@ -984,7 +1071,7 @@ export function TrustMap({
           }
           @media (prefers-reduced-motion: reduce) {
             .tm-node, .tm-edge, .tm-label, .tm-self, .tm-cluster, .tm-pending, .tm-ignite, .tm-ignite-halo,
-            .tm-spoke-trusted, .tm-peer-trust, .tm-core-light, .tm-self-light, .tm-glass-up { animation: none; }
+            .tm-search-halo, .tm-spoke-trusted, .tm-peer-trust, .tm-core-light, .tm-self-light, .tm-glass-up { animation: none; }
             .tm-node { transform: none; }
           }
         `}</style>
@@ -1186,6 +1273,8 @@ export function TrustMap({
                   distress={contactHasDistress(edge || {})}
                   ignite={igniteIds.has(n.id)}
                   glassPop={glassPop.has(n.id)}
+                  searchHit={searchHitIds.has(n.id)}
+                  searchDim={searchActive && !searchHitIds.has(n.id)}
                   onSelect={handleNodeClick}
                 />
               );
@@ -1289,8 +1378,8 @@ export function TrustMap({
                 transform: 'translate(-50%, 0)',
                 fontFamily: E.fontSans,
                 fontSize: 11,
-                color: l.id === focusId ? E.text : E.muted,
-                fontWeight: l.id === focusId ? 600 : 400,
+                color: l.id === focusId || searchHitIds.has(l.id) ? E.text : E.muted,
+                fontWeight: l.id === focusId || searchHitIds.has(l.id) ? 600 : 400,
                 whiteSpace: 'nowrap',
               }}
             >
@@ -1839,6 +1928,8 @@ function ContactNode({
   distress,
   ignite,
   glassPop,
+  searchHit,
+  searchDim,
   onSelect,
 }: {
   node: LaidOutNode;
@@ -1850,9 +1941,11 @@ function ContactNode({
   distress: boolean;
   ignite: boolean;
   glassPop: boolean;
+  searchHit: boolean;
+  searchDim: boolean;
   onSelect: (id: string, multi: boolean) => void;
 }) {
-  const r = selected || picked ? node.radius + 2.5 : node.radius;
+  const r = selected || picked || searchHit ? node.radius + 2.5 : node.radius;
   const cls = [
     'tm-node',
     visual.introPending ? 'tm-pending' : '',
@@ -1865,7 +1958,11 @@ function ContactNode({
     <g
       className={cls}
       data-graph-node={node.id}
-      style={{ ['--tm-o' as string]: node.opacity, animationDelay: `${index * 0.025}s`, cursor: 'pointer' }}
+      style={{
+        ['--tm-o' as string]: searchDim ? 0.22 : node.opacity,
+        animationDelay: `${index * 0.025}s`,
+        cursor: 'pointer',
+      }}
       onClick={(e) => {
         e.stopPropagation();
         onSelect(node.id, e.shiftKey || e.metaKey || e.ctrlKey);
@@ -1878,6 +1975,15 @@ function ContactNode({
           fill="none"
           stroke={T.myEdge}
           strokeOpacity={0.8}
+        />
+      )}
+      {searchHit && (
+        <polygon
+          className="tm-search-halo"
+          points={hexagonPoints(node.x, node.y, r + 9)}
+          fill="none"
+          stroke={E.accent}
+          strokeWidth={2.4}
         />
       )}
       {distress && <StarEmber x={node.x} y={node.y} r={r} />}
@@ -1902,6 +2008,7 @@ function ContactNode({
         data-mutual={visual.lit ? 'true' : 'false'}
         data-distress={distress ? 'true' : 'false'}
         data-ignite={ignite ? 'true' : 'false'}
+        data-search-hit={searchHit ? '1' : '0'}
         data-shape={visual.shape === 'dashed-hollow' ? 'hex-dashed' : 'hex'}
         data-spoke-style={visual.spokeStyle}
         data-glass={lane}
