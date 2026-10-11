@@ -2,6 +2,8 @@
 
 **Render-glass only.** One parser (`parseInviteUrl`) feeds the existing `<JoinerCeremony>`. No crypto, no second join path, no relay changes.
 
+A Node agent cannot mount that ceremony. Field note on using the same parser + `sendJoinerResponse` to appear at a giver’s Gate: [`src/lib/headless/README.md`](../headless/README.md).
+
 | File | Role |
 |------|------|
 | `parseInviteUrl.ts` | INV-4 untrusted-input boundary — total, host-pinned |
