@@ -13,7 +13,7 @@
 // fallback). Truly-static assets (icons, manifest) stay cache-first. Bumping
 // CACHE_NAME forces every existing browser to install this worker, and the
 // activate handler then deletes the poisoned v1 cache.
-const CACHE_NAME = 'svrnty-v2';
+const CACHE_NAME = 'svrnty-v3';
 
 // Only genuinely-static, rarely-changing assets are pre-cached. The HTML
 // document is deliberately NOT pre-cached — it must always come from the network

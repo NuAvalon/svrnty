@@ -315,6 +315,23 @@ export function TrustMap({
   }, [contacts, heldAffirms, affirmNow]);
   const starKey = visibleContacts.map((c) => c.peer_fingerprint).join('\n');
 
+  // Must live above every paint path (labels, glow, dim). A later const is a
+  // ReferenceError on first Galaxy render — Next then shows the localhost overlay.
+  const searchHitIds = useMemo(
+    () =>
+      new Set(
+        galaxySearchHitIds(
+          visibleContacts.map((c) => ({
+            id: c.peer_fingerprint,
+            name: c.peer_name,
+          })),
+          searchQuery,
+        ),
+      ),
+    [visibleContacts, searchQuery],
+  );
+  const searchActive = searchHitIds.size > 0;
+
   useEffect(() => {
     if (!ownerFingerprint) return;
     let cancelled = false;
@@ -438,13 +455,6 @@ export function TrustMap({
     });
     return { ...raw, nodes, topology: topo, glass };
   }, [ownerFingerprint, ownerName, visibleContacts, world]);
-
-  // Declare before any label / node paint — a later-hook read is a load-time ReferenceError.
-  const searchHitIds = useMemo(
-    () => new Set(galaxySearchHitIds(layout.nodes, searchQuery)),
-    [layout.nodes, searchQuery],
-  );
-  const searchActive = searchHitIds.size > 0;
 
   useEffect(() => {
     if (!ownerFingerprint || layout.nodes.length === 0) return;
