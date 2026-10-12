@@ -198,6 +198,7 @@ export interface ConsumeSummary {
   affirmed: number; // mutual-trust affirmations applied (they_trust_me / reciprocal flipped)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   acked: number;
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
 type Outcome =
@@ -232,7 +233,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     now: Date.now(),
   });
   const res = await doFetch(`${relayBase}/queue?mailbox_id=${encodeURIComponent(mailboxId)}`, { headers: pollHeaders });
-  if (!res.ok) return summary;
+  if (!res.ok) {
+    summary.rejected = res.status;
+    return summary;
+  }
   const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string }>;
   if (!Array.isArray(envelopes)) return summary;
   summary.polled = envelopes.length;
