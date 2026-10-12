@@ -8,7 +8,7 @@ import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
-import type { NoteRecord, NoteThread } from './types';
+import type { NoteRecord } from './types';
 
 export interface NoteSenderIdentity {
   fingerprint: string;
