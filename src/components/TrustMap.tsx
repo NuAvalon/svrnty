@@ -65,7 +65,7 @@ import {
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
 import { ownerLocalBadge } from '@/lib/trust/grow-gate';
-import { VivreBurn, StarEmber, VivreCaution } from '@/components/VivreBurn';
+import { VivreBurn, StarEmber, VivreCaution, VIVRE_PAPER_CLIP } from '@/components/VivreBurn';
 import { contactHasDistress, DISTRESS_COPY } from '@/lib/trust/distress';
 import {
   loadMethodHistory,
@@ -1368,11 +1368,11 @@ export function TrustMap({
 
       {/* Contact sheet — alive contacts: seal + info + actions */}
       {focusNode && focusEdge && (
+        <div style={{ position: 'relative', marginTop: 14 }}>
         <div
           data-testid="trust-node-detail"
           onClick={(e) => e.stopPropagation()}
           style={{
-            marginTop: 14,
             padding: 16,
             borderRadius: 14,
             background: E.surfaceSolid,
@@ -1388,9 +1388,9 @@ export function TrustMap({
             fontFamily: E.fontSans,
             position: 'relative',
             overflow: 'hidden',
+            clipPath: contactHasDistress(focusEdge) ? VIVRE_PAPER_CLIP : undefined,
           }}
         >
-          {contactHasDistress(focusEdge) && <VivreBurn />}
           <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
             {focusEdge.peer_fingerprint ? (
               <IdentitySeal fingerprint={focusEdge.peer_fingerprint} size={72} />
@@ -1811,6 +1811,8 @@ export function TrustMap({
               Tip: shift-click nodes to multi-select · groups form clusters on the map
             </p>
           </div>
+        </div>
+        {contactHasDistress(focusEdge) && <VivreBurn />}
         </div>
       )}
 

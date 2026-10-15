@@ -2,8 +2,9 @@
 
 /**
  * Vivre — the paper that burns.
- * Top-right corner, Ace-style: jagged char eating the sheet.
- * The burnt paper is the mark. Small flame licks sit on the ridge — not embers.
+ * Top-right corner, Ace-style: the sheet itself is eaten. Irregular torn
+ * edge along the top-right, dark char crust, small flame licks on the ridge.
+ * The hole is the mark — not a glow blob, not a filled sawtooth sticker.
  * Renders a witnessed inbound Distress mark. Not a badge.
  */
 
@@ -11,20 +12,82 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { DISTRESS_COPY } from '@/lib/trust/distress';
 import { useId } from 'react';
 
-/** Small tongues on the char peaks. Secondary to the burnt paper. */
+/**
+ * Organic torn bite, percent of the card (0–100).
+ * Walks the TOP edge (Ace), then turns the right corner — not a diagonal saw.
+ * Depths and spacing vary so it reads as fire-eaten paper.
+ */
+const BITE: ReadonlyArray<readonly [number, number]> = [
+  [70.5, 0.0],
+  [72.4, 2.8],
+  [74.6, 0.3],
+  [75.8, 3.6],
+  [78.2, 0.7],
+  [79.4, 4.4],
+  [81.8, 1.0],
+  [83.2, 2.4],
+  [85.0, 0.2],
+  [86.4, 5.0],
+  [88.8, 1.4],
+  [90.0, 3.2],
+  [91.8, 0.5],
+  [93.2, 4.6],
+  [95.4, 1.2],
+  [96.4, 5.8],
+  [98.0, 2.4],
+  [97.2, 8.6],
+  [99.2, 10.4],
+  [97.6, 13.2],
+  [99.6, 15.0],
+  [98.4, 17.8],
+  [100, 16.6],
+];
+
+function pct([x, y]: readonly [number, number]): string {
+  return `${x}% ${y}%`;
+}
+
+/** Clip the card so the top-right corner is gone. Other corners stay on the rect. */
+export const VIVRE_PAPER_CLIP = `polygon(0% 0%, ${BITE.map(pct).join(', ')}, 100% 100%, 0% 100%)`;
+
+function ridgePath(): string {
+  return BITE.map(([x, y], i) => `${i === 0 ? 'M' : 'L'} ${x} ${y}`).join(' ');
+}
+
+function inward([x, y]: readonly [number, number], n = 1.6): [number, number] {
+  const dx = 42 - x;
+  const dy = 48 - y;
+  const len = Math.hypot(dx, dy) || 1;
+  return [x + (dx / len) * n, y + (dy / len) * n];
+}
+
+function charBandPath(): string {
+  const inner = BITE.map((p) => inward(p));
+  const start = BITE[0];
+  const end = BITE[BITE.length - 1];
+  return [
+    `M ${start[0]} ${start[1]}`,
+    ...BITE.slice(1).map(([x, y]) => `L ${x} ${y}`),
+    `L ${end[0]} ${end[1] + 0.01}`,
+    ...inner.reverse().map(([x, y]) => `L ${x} ${y}`),
+    'Z',
+  ].join(' ');
+}
+
+/** Small tongues on the char peaks. Secondary to the eaten paper. */
 const FLAMES = [
-  { x: 168, y: 18, w: 7, h: 16, delay: '0s', dur: '1.45s' },
-  { x: 132, y: 36, w: 6, h: 13, delay: '0.28s', dur: '1.2s' },
-  { x: 188, y: 52, w: 5.5, h: 12, delay: '0.5s', dur: '1.35s' },
+  { x: 74.6, y: 0.3, w: 1.7, h: 4.2, delay: '0s', dur: '1.45s' },
+  { x: 85.0, y: 0.2, w: 1.55, h: 3.8, delay: '0.22s', dur: '1.2s' },
+  { x: 91.8, y: 0.5, w: 1.4, h: 3.4, delay: '0.48s', dur: '1.35s' },
 ] as const;
 
-export function VivreBurn({ compact }: { compact?: boolean }) {
+export function VivreBurn({ compact: _unusedCompact }: { compact?: boolean } = {}) {
+  void _unusedCompact;
   const uid = useId().replace(/:/g, '');
-  const w = compact ? 96 : 168;
-  const h = compact ? 84 : 148;
-  const char = `vivre-char-${uid}`;
   const crust = `vivre-crust-${uid}`;
+  const ash = `vivre-ash-${uid}`;
   const flame = `vivre-flame-${uid}`;
+  const ridge = ridgePath();
   return (
     <div
       aria-hidden
@@ -32,113 +95,75 @@ export function VivreBurn({ compact }: { compact?: boolean }) {
       data-ace-vivre="corner"
       style={{
         position: 'absolute',
-        top: 0,
-        right: 0,
-        width: w,
-        height: h,
+        inset: 0,
         pointerEvents: 'none',
         zIndex: 6,
       }}
     >
       <style>{`
         @keyframes svrnty-vivre-lick {
-          0%, 100% { transform: translateY(0) scaleY(1); opacity: 0.9; }
-          40% { transform: translateY(-1.4px) scaleY(1.08); opacity: 1; }
-          70% { transform: translateY(0.5px) scaleY(0.94); opacity: 0.85; }
+          0%, 100% { transform: translateY(0) scaleY(1); opacity: 0.92; }
+          40% { transform: translateY(-0.6px) scaleY(1.08); opacity: 1; }
+          70% { transform: translateY(0.25px) scaleY(0.94); opacity: 0.85; }
         }
         @media (prefers-reduced-motion: reduce) {
           .svrnty-vivre-lick { animation: none !important; }
         }
       `}</style>
       <svg
-        viewBox="0 0 200 180"
-        width={w}
-        height={h}
-        preserveAspectRatio="xMaxYMin meet"
-        style={{ display: 'block' }}
+        viewBox="0 0 100 100"
+        width="100%"
+        height="100%"
+        preserveAspectRatio="none"
+        overflow="visible"
+        style={{ display: 'block', overflow: 'visible' }}
       >
         <defs>
-          <linearGradient id={char} x1="100%" y1="0%" x2="20%" y2="85%">
-            <stop offset="0%" stopColor="#090302" />
-            <stop offset="28%" stopColor="#1a0804" />
-            <stop offset="58%" stopColor="#3a1408" />
-            <stop offset="82%" stopColor="#6a240c" />
-            <stop offset="100%" stopColor="#2a1008" />
+          <linearGradient id={ash} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#0a0402" />
+            <stop offset="55%" stopColor="#2a1008" />
+            <stop offset="100%" stopColor="#4a1a0a" />
           </linearGradient>
-          <linearGradient id={crust} x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#0d0502" />
-            <stop offset="45%" stopColor="#4a1a08" />
-            <stop offset="100%" stopColor="#7a2c0c" />
+          <linearGradient id={crust} x1="0%" y1="0%" x2="80%" y2="80%">
+            <stop offset="0%" stopColor="#1a0804" />
+            <stop offset="60%" stopColor="#5a220c" />
+            <stop offset="100%" stopColor="#7a3010" />
           </linearGradient>
           <linearGradient id={flame} x1="50%" y1="100%" x2="50%" y2="0%">
-            <stop offset="0%" stopColor="#8a2200" />
-            <stop offset="40%" stopColor={E.accent2} />
-            <stop offset="78%" stopColor={E.accent} />
+            <stop offset="0%" stopColor="#6a1600" />
+            <stop offset="45%" stopColor={E.accent2} />
+            <stop offset="80%" stopColor={E.accent} />
             <stop offset="100%" stopColor="#fff4c8" />
           </linearGradient>
         </defs>
 
-        {/* Consumed paper — jagged Ace bite in the top-right, not a smooth wedge. */}
+        {/* Scorched band on the remaining paper — the burn, not a fill of the hole. */}
         <path
           data-testid="vivre-paper-bite"
-          d="M200 0
-             L200 168
-             L188 154 L176 162 L168 140
-             L154 152 L148 128 L132 142
-             L124 114 L108 130 L102 104
-             L86 118 L80 90 L64 106
-             L58 78 L42 92 L36 64
-             L22 76 L16 48 L6 58
-             L2 28 L0 34 L0 0
-             Z"
-          fill={`url(#${char})`}
+          d={charBandPath()}
+          fill={`url(#${ash})`}
         />
 
-        {/* Deeper char pits — the paper is gone, not glowing. */}
-        <path
-          d="M200 0 L200 88 L176 70 L164 92 L148 58 L200 0 Z"
-          fill="#050201"
-          opacity="0.72"
-        />
-        <path
-          d="M200 70 L200 140 L178 122 L166 138 L154 108 L176 92 Z"
-          fill="#120804"
-          opacity="0.55"
-        />
-
-        {/* Jagged char ridge — brown-black crust along the eaten edge. */}
+        {/* Jagged char ridge along the torn edge. */}
         <path
           data-testid="vivre-char-ridge"
-          d="M200 168
-             L188 154 L176 162 L168 140
-             L154 152 L148 128 L132 142
-             L124 114 L108 130 L102 104
-             L86 118 L80 90 L64 106
-             L58 78 L42 92 L36 64
-             L22 76 L16 48 L6 58
-             L2 28 L0 34"
+          d={ridge}
           fill="none"
           stroke={`url(#${crust})`}
-          strokeWidth="5.5"
+          strokeWidth="3.4"
           strokeLinejoin="miter"
-          strokeMiterlimit="8"
+          strokeMiterlimit="10"
           strokeLinecap="butt"
+          vectorEffect="non-scaling-stroke"
         />
-        {/* Hairline heat on the ridge only — not a glow blob. */}
         <path
-          d="M198 164
-             L188 154 L176 162 L168 140
-             L154 152 L148 128 L132 142
-             L124 114 L108 130 L102 104
-             L86 118 L80 90 L64 106
-             L58 78 L42 92 L36 64
-             L22 76 L16 48 L6 58
-             L2 28"
+          d={ridge}
           fill="none"
           stroke={E.accent2}
-          strokeWidth="1.15"
+          strokeWidth="0.7"
           strokeLinejoin="miter"
-          opacity="0.7"
+          opacity="0.45"
+          vectorEffect="non-scaling-stroke"
         />
 
         {FLAMES.map((f, i) => (
@@ -151,9 +176,9 @@ export function VivreBurn({ compact }: { compact?: boolean }) {
             }}
           >
             <path
-              d={`M ${f.x} ${f.y + f.h}
-                  C ${f.x - f.w} ${f.y + f.h * 0.45}, ${f.x - f.w * 0.45} ${f.y + f.h * 0.12}, ${f.x} ${f.y}
-                  C ${f.x + f.w * 0.45} ${f.y + f.h * 0.12}, ${f.x + f.w} ${f.y + f.h * 0.45}, ${f.x} ${f.y + f.h}
+              d={`M ${f.x} ${f.y + f.h * 0.35}
+                  C ${f.x - f.w} ${f.y + f.h * 0.15}, ${f.x - f.w * 0.35} ${f.y - f.h * 0.15}, ${f.x} ${f.y - f.h * 0.55}
+                  C ${f.x + f.w * 0.35} ${f.y - f.h * 0.15}, ${f.x + f.w} ${f.y + f.h * 0.15}, ${f.x} ${f.y + f.h * 0.35}
                   Z`}
               fill={`url(#${flame})`}
             />
@@ -184,7 +209,7 @@ export function StarEmber({ x, y, r }: { x: number; y: number; r: number }) {
         <linearGradient id={char} x1="50%" y1="0%" x2="50%" y2="100%">
           <stop offset="0%" stopColor="#090302" />
           <stop offset="70%" stopColor="#4a1608" />
-          <stop offset="100%" stopColor="transparent" />
+          <stop offset="100%" stopColor="#2a1008" />
         </linearGradient>
         <linearGradient id={flame} x1="50%" y1="100%" x2="50%" y2="0%">
           <stop offset="0%" stopColor={E.accent2} />
@@ -192,28 +217,29 @@ export function StarEmber({ x, y, r }: { x: number; y: number; r: number }) {
         </linearGradient>
       </defs>
       <path
-        d={`M ${x - r * 0.85} ${y - r * 0.15}
-            L ${x - r * 0.4} ${y - r * 0.55}
-            L ${x - r * 0.15} ${y - r * 0.25}
-            L ${x + r * 0.1} ${y - r * 0.62}
-            L ${x + r * 0.35} ${y - r * 0.28}
-            L ${x + r * 0.7} ${y - r * 0.5}
-            L ${x + r * 0.9} ${y - r * 0.12}`}
+        d={`M ${x + r * 0.15} ${y - r * 0.95}
+            L ${x + r * 0.42} ${y - r * 0.62}
+            L ${x + r * 0.28} ${y - r * 0.48}
+            L ${x + r * 0.7} ${y - r * 0.38}
+            L ${x + r * 0.55} ${y - r * 0.12}
+            L ${x + r * 0.95} ${y - r * 0.18}
+            L ${x + r * 0.92} ${y + r * 0.05}`}
         fill="none"
-        stroke="#2a1008"
-        strokeWidth={Math.max(1.6, r * 0.2)}
+        stroke={`url(#${char})`}
+        strokeWidth={Math.max(1.8, r * 0.22)}
         strokeLinejoin="miter"
+        strokeMiterlimit="8"
       />
       <path
         className="svrnty-star-lick"
-        d={`M ${x} ${y - r * 0.35}
-            C ${x - r * 0.22} ${y - r * 0.7}, ${x - r * 0.08} ${y - r * 1.05}, ${x} ${y - r * 1.2}
-            C ${x + r * 0.08} ${y - r * 1.05}, ${x + r * 0.22} ${y - r * 0.7}, ${x} ${y - r * 0.35}
+        d={`M ${x + r * 0.55} ${y - r * 0.55}
+            C ${x + r * 0.42} ${y - r * 0.85}, ${x + r * 0.5} ${y - r * 1.12}, ${x + r * 0.58} ${y - r * 1.22}
+            C ${x + r * 0.66} ${y - r * 1.12}, ${x + r * 0.7} ${y - r * 0.85}, ${x + r * 0.55} ${y - r * 0.55}
             Z`}
         fill={`url(#${flame})`}
         style={{
           animation: 'svrnty-star-lick 1.4s ease-in-out infinite',
-          transformOrigin: `${x}px ${y - r * 0.35}px`,
+          transformOrigin: `${x + r * 0.55}px ${y - r * 0.55}px`,
         }}
       />
     </g>
