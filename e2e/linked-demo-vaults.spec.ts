@@ -81,6 +81,36 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
     fullPage: true,
   });
 
+  // Fire the existing handlers (call-only) on this disclosed living star.
+  await galaxyCard.getByTestId('galaxy-open-note').click();
+  await expect(page.getByTestId('notes-inbox')).toBeVisible();
+  await expect(page.getByTestId('notes-field-peer').first()).toContainText('River Vale');
+
+  await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+  await riverStar.click({ force: true });
+  const riverCard = page.getByTestId('trust-node-detail');
+  await riverCard.getByTestId('contact-send-update').click();
+  await expect(page.getByRole('heading', { name: /revise /i })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: /revise /i })).toHaveCount(0);
+
+  await riverStar.click({ force: true });
+  await page.getByTestId('trust-node-detail').getByTestId('card-actions-toggle').click();
+  await page.getByRole('menuitem', { name: 'Give a piece' }).click();
+  await expect(page.getByRole('heading', { name: /tear off a piece/i })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('heading', { name: /tear off a piece/i })).toHaveCount(0);
+
+  // Keyless sample (Hypatia) is a disclosed Known contact — no living-key verbs, nothing inferred.
+  const hypatiaStar = page.locator('[data-testid="trust-node"][data-name="Hypatia"]');
+  await expect(hypatiaStar).toBeVisible();
+  await hypatiaStar.click({ force: true });
+  const hypatiaCard = page.getByTestId('trust-node-detail');
+  await expect(hypatiaCard.getByTestId('galaxy-open-note')).toHaveCount(0);
+  await expect(hypatiaCard.getByTestId('contact-send-update')).toHaveCount(0);
+  await hypatiaCard.getByTestId('card-actions-toggle').click();
+  await expect(page.getByRole('menuitem', { name: 'Give a piece' })).toHaveCount(0);
+
   await page.getByTestId('top-nav-menu-btn').click();
   await page.getByTestId('nav-lock-menu').click();
   await expect(page.getByTestId('switch-identity')).toBeVisible({ timeout: 15_000 });

@@ -32,3 +32,24 @@ describe('classical cards do not get Chat', () => {
     assert.match(galaxy, /label="Give a piece"/);
   });
 });
+
+describe('galaxy-card verbs — disclosed living contacts only (Hypatia #198)', () => {
+  it('Chat / Send update / Give a piece call existing handlers — never inferred edges', () => {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const galaxy = readFileSync(join(dir, '..', 'TrustMap.tsx'), 'utf8');
+    const card = readFileSync(join(dir, 'ContactActionCard.tsx'), 'utf8');
+    // Render the three verbs.
+    assert.match(card, /data-testid="galaxy-open-note"/);
+    assert.match(card, /data-testid="contact-send-update"/);
+    assert.match(galaxy, /label="Give a piece"/);
+    // CALL existing handlers — do not reimplement.
+    assert.match(galaxy, /onChat=\{\(\) => onOpenNote\?\.\(focusEdge\)\}/);
+    assert.match(galaxy, /onSendUpdate=\{\(\) => onSendMethodUpdate\?\.\(focusEdge\)\}/);
+    assert.match(galaxy, /setShardGiveOpen\(true\)/);
+    // Give a piece is living-only (disclosed SVRNTY contact with a key).
+    assert.match(galaxy, /\{living \? \([\s\S]*label="Give a piece"/);
+    // Consent legend stays load-bearing — no inferred-edge render.
+    assert.match(galaxy, /Every visible line consented — none inferred/);
+    assert.doesNotMatch(galaxy, /friends-of-friends|auto-trust|inferred edge/i);
+  });
+});
