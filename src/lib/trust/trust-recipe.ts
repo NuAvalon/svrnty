@@ -168,11 +168,12 @@ export function stripOwnerLocalForPublish<T extends Record<string, unknown>>(pay
     delete next.grow_gate;
     delete next.grow_invite_nonce;
     delete next.grow_mint_channel;
-    if (next.share_settings && typeof next.share_settings === 'object') {
-      const share = { ...(next.share_settings as Record<string, unknown>) };
-      delete share.open_visibility;
-      next.share_settings = share;
-    }
+    // share_settings is an owner-local container — open_visibility, per_contact_private, and
+    // known_visibility (#255) all ride it and NONE belong on the wire. Drop the whole sub-object
+    // (fail-CLOSED: the allowlist-inversion the §C F1 comment above flagged) so a new owner-local
+    // share_settings field can't leak by default. Closes #255's known_visibility AND the latent
+    // per_contact_private leak the old field-by-field denylist missed (Flint #171523).
+    delete next.share_settings;
     out.metadata = next;
   }
   delete (out as { distress_inbound?: unknown }).distress_inbound;
