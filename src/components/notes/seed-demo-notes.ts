@@ -63,7 +63,7 @@ export async function seedDemoNotes(args: {
 }): Promise<number> {
   if (!isNotesStoreUnlocked()) {
     if (!args.passphrase) return 0;
-    await initNotesStore(args.passphrase);
+    await initNotesStore(args.passphrase, args.ownerFingerprint);
   }
 
   const now = Date.now();

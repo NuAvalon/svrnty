@@ -45,7 +45,7 @@ export async function peerRatchetFromCard(args: {
   try {
     const pubs = await canonicalPubsFromArmoredPublicKey(args.publicKeyArmored, kem, sig);
     if (!pubs) return null;
-    return { x25519Pub: pubs.enc, mlkem1024Pub: pubs.kem };
+    return { x25519Pub: pubs.encPub, mlkem1024Pub: pubs.kemPub };
   } catch {
     return null;
   }
