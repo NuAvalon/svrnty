@@ -37,6 +37,18 @@ export interface NoteThread {
 
 export type NoteDirection = 'outbound' | 'inbound';
 
+/**
+ * Honest outcome of an outbound deposit attempt. The relay is a blind dead-drop with NO delivery
+ * query, so we never claim Delivered — but we DO distinguish what the transport told us:
+ *   confirmed  — the relay returned 2xx (the sealed blob reached the relay; no receipt-of-record).
+ *   unconfirmed — the attempt threw / timed out / got a transient non-2xx (429/5xx): it MAY have
+ *                 landed, we genuinely don't know. Resolves to the non-lying "couldn't confirm" state,
+ *                 NEVER "failed" (a 5xx can sit over an already-durable deposit).
+ *   refused    — the relay AUTHORITATIVELY rejected the blob (400 malformed / 413 too large): it
+ *                 provably did not land. The only outcome that earns "Not sent".
+ */
+export type SendOutcome = 'confirmed' | 'unconfirmed' | 'refused';
+
 export interface NoteRecord {
   note_id: string;
   thread_id: string;
@@ -49,6 +61,9 @@ export interface NoteRecord {
   retention: RetentionPolicy;
   /** Wire protocol version that produced this note */
   wire_type: typeof NOTE_WIRE_TYPE;
+  /** Outbound only: honest result of the deposit attempt (persisted so the status survives reload,
+   *  not just the live send). Omitted for inbound. */
+  send_outcome?: SendOutcome;
 }
 
 /**

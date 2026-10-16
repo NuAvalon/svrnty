@@ -92,7 +92,6 @@ export function NotesInbox({ identity }: Props) {
   const [busy, setBusy] = useState(false);
   const [storeReady, setStoreReady] = useState(false);
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
-  const [failedIds, setFailedIds] = useState<Record<string, true>>({});
 
   const loadBook = useCallback(async () => {
     if (!fp) return;
@@ -245,12 +244,10 @@ export function NotesInbox({ identity }: Props) {
       }
       setDraft('');
       setActiveThreadId(result.thread_id);
-      if (!result.deposited) {
-        setFailedIds((prev) => ({ ...prev, [result.note_id]: true }));
-        setStatus(NOTES_COPY.notSent);
-      } else {
-        setStatus(NOTES_COPY.sentUnconfirmed);
-      }
+      // Honest status from the deposit OUTCOME — never a false "failed" on a transport hiccup, never a
+      // vanished bubble (transport persisted the local copy before the deposit). 2xx → "Sent · unconfirmed";
+      // 5xx/timeout/throw → "couldn't confirm"; authoritative 400/413 → "Not sent".
+      setStatus(statusLabel(outboundStatus(result.outcome)));
       emitNoteArrival({ note_id: result.note_id, thread_id: result.thread_id });
       await loadThreads();
       await loadNotes(result.thread_id);
@@ -261,8 +258,9 @@ export function NotesInbox({ identity }: Props) {
 
   const bubbleStatus = (note: NoteRecord): NoteBubbleStatus => {
     if (note.direction !== 'outbound') return 'inbound';
-    if (failedIds[note.note_id]) return 'not-sent';
-    return outboundStatus(true);
+    // Honest status from the PERSISTED outcome (survives reload). Legacy notes without send_outcome
+    // default to 'confirmed' → the prior "Sent · unconfirmed." behavior (no regression).
+    return outboundStatus(note.send_outcome ?? 'confirmed');
   };
 
   return (

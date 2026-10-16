@@ -8,7 +8,7 @@ import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
-import type { NoteRecord } from './types';
+import type { NoteRecord, SendOutcome } from './types';
 
 export interface NoteSenderIdentity {
   fingerprint: string;
@@ -34,7 +34,7 @@ export async function sendNoteToPeer(args: {
   threadId?: string;
   relayBase?: string;
   fetchImpl?: typeof fetch;
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
+}): Promise<{ note_id: string; thread_id: string; outcome: SendOutcome }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
   const thread_id = args.threadId ?? newThreadId();
@@ -63,14 +63,10 @@ export async function sendNoteToPeer(args: {
   );
   const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
   const mailbox_id = deriveMailboxId(args.peerFingerprint);
-  const res = await fetchImpl(`${relayBase}/envelope`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mailbox_id, blob }),
-  });
-  const deposited = res.ok;
 
-  // Local outbound copy (encrypted at rest in notes store — caller must have unlocked it)
+  // Persist the local outbound copy + thread BEFORE the deposit attempt. A thrown/timed-out fetch must
+  // NEVER vanish the sender's own message (the deposit may have landed regardless). Start at the honest
+  // floor 'unconfirmed'; upgrade/downgrade once the transport tells us something below.
   const local: NoteRecord = {
     note_id,
     thread_id,
@@ -82,6 +78,7 @@ export async function sendNoteToPeer(args: {
     participant_kind: args.sender.participant_kind,
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    send_outcome: 'unconfirmed',
   };
   await putNote(local);
 
@@ -107,7 +104,34 @@ export async function sendNoteToPeer(args: {
   }
   await putThread(thread);
 
-  return { note_id, thread_id, deposited };
+  // Attempt the deposit and classify HONESTLY — never conflate "no clean 2xx" with "did not send":
+  //   2xx             → confirmed   (reached the relay; no receipt-of-record — the blind dead-drop has none)
+  //   400 / 413       → refused     (relay AUTHORITATIVELY rejected the blob → provably did not land)
+  //   429 / other 5xx → unconfirmed (transient; a 5xx can sit over an already-durable deposit)
+  //   throw / timeout → unconfirmed (we genuinely don't know; it may have landed)
+  // NO auto-retry here: the relay assigns envelope_id (no client idempotency yet) so a retry would
+  // DUPLICATE the deposit. Safe auto-retry lands with the durable upsert-by-envelope_id store (Slice 2).
+  let outcome: SendOutcome;
+  try {
+    const res = await fetchImpl(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob }),
+    });
+    if (res.ok) outcome = 'confirmed';
+    else if (res.status === 400 || res.status === 413) outcome = 'refused';
+    else outcome = 'unconfirmed';
+  } catch {
+    outcome = 'unconfirmed';
+  }
+
+  // putNote is idempotent on note_id → update the persisted copy's honest status in place (so it
+  // survives reload, not just the live result). 'unconfirmed' was already persisted above.
+  if (outcome !== 'unconfirmed') {
+    await putNote({ ...local, send_outcome: outcome });
+  }
+
+  return { note_id, thread_id, outcome };
 }
 
 /**

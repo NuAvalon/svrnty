@@ -3,9 +3,10 @@
 import { sendNoteToPeer } from '@/lib/messaging/transport';
 import { NOTES_COPY } from './notes-copy';
 import type { OwnerNoteSender } from './notes-keys';
+import type { SendOutcome } from '@/lib/messaging/types';
 
 export type SendNoteResult =
-  | { ok: true; note_id: string; thread_id: string; deposited: boolean }
+  | { ok: true; note_id: string; thread_id: string; outcome: SendOutcome }
   | { ok: false; error: string };
 
 export async function sendNoteFromInbox(args: {
@@ -32,9 +33,12 @@ export async function sendNoteFromInbox(args: {
       ok: true,
       note_id: result.note_id,
       thread_id: result.thread_id,
-      deposited: result.deposited,
+      outcome: result.outcome,
     };
   } catch {
+    // sendNoteToPeer no longer throws on a transport failure — it persists the local copy BEFORE the
+    // deposit and classifies the outcome (confirmed/unconfirmed/refused) internally. So a throw HERE is
+    // a genuine PRE-SEND error (seal/sign/missing keys / locked store), which IS a true failure.
     return { ok: false, error: NOTES_COPY.sendFailed };
   }
 }

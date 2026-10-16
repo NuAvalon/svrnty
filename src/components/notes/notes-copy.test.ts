@@ -7,18 +7,24 @@ import { NOTES_COPY } from './notes-copy';
 import { statusIsHonestFloor, statusLabel, outboundStatus } from './notes-status';
 
 describe('notes inbox copy — claim-honesty', () => {
-  it('send status is Sent · unconfirmed only', () => {
-    assert.equal(NOTES_COPY.sentUnconfirmed, 'Sent · unconfirmed.');
-    assert.equal(statusLabel(outboundStatus(true)), 'Sent · unconfirmed.');
-    assert.equal(statusIsHonestFloor(NOTES_COPY.sentUnconfirmed), true);
-    assert.equal(statusIsHonestFloor('Delivered'), false);
-    assert.equal(statusIsHonestFloor('Read'), false);
-    assert.equal(statusIsHonestFloor('Expired'), false);
-  });
-
-  it('never treats a failed deposit as Sent', () => {
-    assert.equal(statusLabel(outboundStatus(false)), NOTES_COPY.notSent);
+  it('honest send-state machine: 2xx→Sent·unconfirmed, 5xx/timeout→couldn’t-confirm, 4xx-refuse→Not sent', () => {
+    // confirmed (2xx): reached the relay, no receipt-of-record.
+    assert.equal(statusLabel(outboundStatus('confirmed')), 'Sent · unconfirmed.');
+    // unconfirmed (5xx / timeout / thrown): the honest "couldn't confirm" state — NEVER "failed"
+    // (a 5xx can sit over an already-durable deposit; uncertainty resolves to the non-lying state).
+    assert.equal(statusLabel(outboundStatus('unconfirmed')), NOTES_COPY.sentUncertain);
+    assert.notEqual(outboundStatus('unconfirmed'), 'not-sent');
+    assert.doesNotMatch(NOTES_COPY.sentUncertain, /\bfailed\b|could not be sent|Delivered|Read|Expired/i);
+    // refused (authoritative 400 / 413): provably did not land — the ONLY outcome that earns "Not sent".
+    assert.equal(statusLabel(outboundStatus('refused')), NOTES_COPY.notSent);
     assert.doesNotMatch(NOTES_COPY.notSent, /Delivered|Read|Expired|unconfirmed/);
+    // honest floor holds for every live outbound state; Delivered/Read/Expired never do.
+    for (const t of [NOTES_COPY.sentUnconfirmed, NOTES_COPY.sentUncertain, NOTES_COPY.notSent]) {
+      assert.equal(statusIsHonestFloor(t), true);
+    }
+    for (const t of ['Delivered', 'Read', 'Expired']) {
+      assert.equal(statusIsHonestFloor(t), false);
+    }
   });
 
   it('does not claim post-quantum and does not leak admit-status', () => {
@@ -54,12 +60,19 @@ describe('notes inbox copy — claim-honesty', () => {
     const inbox = readFileSync(join(dir, 'NotesInbox.tsx'), 'utf8');
     const copy = readFileSync(join(dir, 'notes-copy.ts'), 'utf8');
     const status = readFileSync(join(dir, 'notes-status.ts'), 'utf8');
-    assert.match(inbox, /NOTES_COPY\.sentUnconfirmed/);
+    // The inbox renders status THROUGH the honest-state machine (statusLabel∘outboundStatus), not a raw
+    // literal — so it can never emit a false "failed" on a transport hiccup, nor skip the state model.
+    assert.match(inbox, /statusLabel\(outboundStatus\(/);
     assert.doesNotMatch(inbox, /dangerouslySetInnerHTML/);
     assert.doesNotMatch(inbox, /\/api\/relay\/msg\/status/);
     assert.match(copy, /A Delivered confirmation is coming/);
     assert.doesNotMatch(status, /Delivered confirmation/);
-    const liveStatus = [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');
+    const liveStatus = [
+      NOTES_COPY.sentUnconfirmed,
+      NOTES_COPY.sentUncertain,
+      NOTES_COPY.notSent,
+      statusLabel('inbound'),
+    ].join('\n');
     assert.doesNotMatch(liveStatus, /\b(Delivered|Read|Expired)\b/);
   });
 });

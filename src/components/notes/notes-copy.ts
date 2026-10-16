@@ -14,6 +14,7 @@ export const NOTES_COPY = {
   receiving:
     'You receive messages from your contacts. A message arrives sealed and is saved to this device — if it doesn’t appear in your inbox live yet, it’s there when you open your messages.',
   sentUnconfirmed: 'Sent · unconfirmed.',
+  sentUncertain: 'Couldn’t confirm this sent. It may have gone through — saved on this device.',
   notSent: 'Not sent. Saved on this device.',
   sendAction: 'Send',
   sendingAction: 'Sending…',
