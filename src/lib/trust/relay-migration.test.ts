@@ -20,7 +20,7 @@ function peer(fp: string): MigratePeer {
 // per-peer seal target (distinct by fp so we can assert each pointer is sealed to ITS OWN peer [F2])
 function sealFor(p: MigratePeer): PeerSealTarget {
   return {
-    sealTarget: { x25519Pub: new Uint8Array(32).fill(p.fingerprint.charCodeAt(0)), mlkemEk: new Uint8Array(1568).fill(1) } as any,
+    sealTarget: { x25519Pub: new Uint8Array(32).fill(p.fingerprint.charCodeAt(0)), mlkem1024Pub: new Uint8Array(1568).fill(1) },
     sealTargetFp: `mbx-${p.fingerprint}`,
   };
 }
@@ -89,7 +89,7 @@ test('[F3] idempotent + RESUMABLE: crash mid-migrate → re-run completes, no du
 
   // Run 2: SAME epoch, carol now deposits fine. loadProgress returns alice/bob → they are NOT re-published.
   const depositFails = new Set<string>(); // carol recovers
-  h.deps.publishPointer = (async ({ peer: p, sealTarget, newMailbox, pointerEpoch }) => {
+  h.deps.publishPointer = (async ({ peer: p, sealTarget, pointerEpoch }) => {
     if (depositFails.has(p.fingerprint)) return false;
     assert.equal(sealTarget.sealTargetFp, `mbx-${p.fingerprint}`);
     h.published.push({ fp: p.fingerprint, sealTargetFp: sealTarget.sealTargetFp, epoch: pointerEpoch });
