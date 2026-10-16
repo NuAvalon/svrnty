@@ -8,12 +8,14 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { depositEnvelope, pollMailbox, ackDelete, getMailboxStore } from './mailbox-store';
+// OPT-2: run against an in-memory SQLite DB (the test runner does not set NODE_ENV).
+process.env.RELAY_DB_PATH = ':memory:';
+import { depositEnvelope, pollMailbox, ackDelete, resetMailboxStore } from './mailbox-store';
 
 const ENV_KEYS = ['RELAY_MAILBOX_CAP', 'RELAY_ENVELOPE_TTL_MS', 'RELAY_MAX_PAYLOAD_BYTES'] as const;
 
 beforeEach(() => {
-  getMailboxStore().clear();
+  resetMailboxStore();
   for (const k of ENV_KEYS) delete process.env[k];
 });
 
