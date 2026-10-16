@@ -28,6 +28,13 @@ export const DOMAIN_ROTATION = 'svrnty:rotation:v1';
 // joiner-response signature can never verify as a contact-update / identity-card, and vice-versa.
 export const DOMAIN_JOINER_RESPONSE = 'svrnty:joiner-response:v1';
 export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
+// Transitive INTRODUCTION (B introduces subject A to recipient C). DISTINCT tag from DOMAIN_MUTUAL_VOUCH:
+// mutual-vouch is a 2-party VERIFY affirmation (voucher==knows==vouchee, recipient IS the subject); an
+// introduction is 3-ROLE (voucher B ≠ subject A ≠ recipient C) and carries PROVENANCE ONLY, never a trust
+// grant. Reusing mutual-vouch's tag would be domain-confusion (a provenance introduction must never verify
+// as a verify-vouch, and vice-versa). Consent-model locked by Archie #171921 (A-initiates = consent;
+// vouch claim = "B knows A / relaying A's card", NEVER "B verified A"; recipient_fingerprint bound).
+export const DOMAIN_INTRODUCTION = 'svrnty:introduction:v1';
 // T1 DID-Document mutation (add/revoke a device verificationMethod, serviceEndpoint move, key-rotation
 // folded in). Signed by the COLD-SEED rotation-authority key (Flint X5) over canonicalize(DID-Doc w/ seq).
 // DISTINCT from DOMAIN_ROTATION so a DID-Doc-update signature can never verify as a rotation-successor and
@@ -130,6 +137,32 @@ export interface MutualVouchEnvelope {
 }
 
 /**
+ * Transitive INTRODUCTION envelope (Introduce feature). B (voucher) introduces subject A to recipient C,
+ * relaying A's SignedIdentityCard alongside. THREE distinct roles (B ≠ A ≠ C) — this is NOT mutual-vouch.
+ *
+ * ★ STRUCTURALLY TRUST-BLIND (Flint point-(c), Hypatia #3): this envelope carries PROVENANCE ONLY —
+ * "B knows A and is relaying A's card." There is DELIBERATELY no trust_level / trusted / vouch-strength
+ * field, so NOTHING a relay or client reads can be promoted to a trust edge. The receiver (C) routes the
+ * subject to the Grow GATE as KNOWN (unverified), never auto-trusted; C evaluates A from zero (Admit +
+ * independent Verify). The anti-"transitive trust" guarantee is in the MECHANISM, not only the copy.
+ *
+ * Verification binds: signature over the canonical envelope by B (C must already HOLD B's key — the
+ * "exchange keys with one of you" premise — so this is NOT TOFU); recipient_fingerprint == C's own fp
+ * (B's intro for A cannot be replayed to introduce A to a different party D); and subject_fingerprint ==
+ * the attached card's fingerprint (B cannot bind the vouch to one card then swap another; the card itself
+ * self-verifies end-to-end via classifyImportedCard, carrier-independent). One-shot, not a monotonic
+ * stream → replay bounded by recipient-binding + freshness `ts` (+ the carrier's single-use nonce), not a
+ * version floor. A's consent = A chose to be introduced (A-initiates the export) — Nov-5 minimal, per
+ * Archie #171921; an A-signed authorization token is the roadmap hardening.
+ */
+export interface IntroductionEnvelope {
+  voucher_fingerprint: string;   // B — the introducer. C already holds B's key; the sig verifies against the HELD key (not TOFU).
+  subject_fingerprint: string;   // A — who is being introduced. MUST equal the attached card's identity.fingerprint (= H(pubkey[+pq])).
+  recipient_fingerprint: string; // C — binds the intro to its intended recipient (anti-replay to a third party).
+  ts: string;                    // ISO-8601 UTC — freshness/display; signed (bound), excluded only are the signature fields.
+}
+
+/**
  * F6 slug-claim (closes the unsigned-slug-claim gap). Server verifies the signature against
  * `public_key` AND that `fingerprint === H(public_key)` — proving private-key possession over
  * THIS claim, not merely presenting a public key. (Reuses the canonical envelope, own sub-domain.)
@@ -209,6 +242,14 @@ export function joinerResponseSigningInput(env: JoinerResponseEnvelope): string 
 /** Canonical bytes for a mutual-vouch signature (excludes any attached `signature`). */
 export function mutualVouchSigningInput(env: MutualVouchEnvelope): string {
   return canonicalize(env, { exclude: ['signature'] });
+}
+
+/** Canonical bytes for an introduction signature. Excludes BOTH signature fields (classical +
+ *  hybrid pq) — the signer signs the envelope without them; canonicalize's exclude is top-level-only,
+ *  so every bound field (voucher/subject/recipient/ts) stays covered. Sign and verify BOTH call this
+ *  single-source helper → byte-exact by construction. */
+export function introductionSigningInput(env: IntroductionEnvelope): string {
+  return canonicalize(env, { exclude: ['signature', 'pq_signature'] });
 }
 
 /**
