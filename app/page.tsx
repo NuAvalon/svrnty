@@ -9,6 +9,7 @@ import { GrowSurface } from '@/components/GrowSurface';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
 import { NotesInbox } from '@/components/notes/NotesInbox';
 import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
+import { BETA_COPY } from '@/components/beta-messaging/beta-messaging-copy';
 import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gate-on';
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
@@ -699,12 +700,12 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="notes"
-                aria-label="Chat"
+                aria-label={BETA_COPY.tabLabel}
                 data-testid="tab-notes"
                 className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
-                Chat
+                {BETA_COPY.tabLabel}
                 <TabActivityEmber
                   on={notesActivity}
                   label="New messages"
