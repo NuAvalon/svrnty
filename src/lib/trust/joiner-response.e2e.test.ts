@@ -6,6 +6,7 @@
 // decrypt returns null"; it MUST be "which VERIFY succeeds". This test pins that so the wiring routes
 // by verify, not by decrypt.
 // Run: npx tsx --test src/lib/trust/joiner-response.e2e.test.ts
+process.env.RELAY_DB_PATH = ':memory:'; // OPT-2: in-memory SQLite for tests (runner sets no NODE_ENV)
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, readKey } from 'openpgp';

@@ -9,6 +9,7 @@
 //   • NON-TRANSFERABILITY (format §3): a stranger cannot redeem a token minted for the owner's sub.
 // Run: PATH=~/.nvm/versions/node/v22.22.1/bin:$PATH npx tsx --test claim-flow.test.ts
 
+process.env.RELAY_DB_PATH = ':memory:'; // OPT-2: in-memory SQLite for tests (runner sets no NODE_ENV)
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
