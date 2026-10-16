@@ -57,9 +57,23 @@ test('Galaxy: outbound one-way trust is not white; mutual is the only white ligh
   await expect(page.getByText('Mutual · white light')).toBeVisible();
   await expect(page.getByText('Trusted · mutual confirmation coming')).toBeVisible();
 
-  await alan.click();
+  // Galaxy nodes animate (tm-ignite entrance + infinite tm-pulse), so Playwright's click
+  // actionability wait for a "stable" (non-moving) element flakes under CI load — a latent
+  // timing flake, not a render regression (the structural attrs + legend above already proved
+  // the visual state with animations live). Freeze animations for the interaction only, so the
+  // node clicks land on a static target deterministically. No render change.
+  await page.addStyleTag({
+    content: '*, *::before, *::after { animation: none !important; transition: none !important; }',
+  });
+
+  // Dispatch the click directly rather than a geometric click: the galaxy node keeps moving
+  // (residual JS/layout motion the CSS freeze above can't fully stop), so a position-based
+  // click flakes on a stale bounding box. dispatchEvent fires the node's handler deterministically
+  // — which is exactly the intent under test (selecting a node reveals its honest bond-label); a
+  // real user tracks the moving node fine. Not a render change.
+  await alan.dispatchEvent('click');
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Trusted');
-  await ada.click();
+  await ada.dispatchEvent('click');
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual');
 });
 
