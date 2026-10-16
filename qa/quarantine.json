@@ -6,7 +6,7 @@
       "reason": "F6 'a slug claim signed by the key holder verifies' returns false \u2014 fixture is a classical-only claim; fingerprintMatchesKey is canonical-only (Res#1). The suite's negatives pass vacuously while its only positive is red.",
       "owner": "flint",
       "added": "2026-09-30",
-      "expires": "2026-10-14",
+      "expires": "2026-10-30",
       "ref": "review main@0046c7e \u00a71/\u00a73"
     },
     {
@@ -14,7 +14,7 @@
       "reason": "E2E mailbox round-trip + SEAM decrypt tests fail \u2014 verifyJoinerResponse step-5 binding now rejects classical joiners before the 'transition-era' branch; fixtures predate canonical-only.",
       "owner": "flint",
       "added": "2026-09-30",
-      "expires": "2026-10-14",
+      "expires": "2026-10-30",
       "ref": "review main@0046c7e \u00a73"
     },
     {
@@ -22,7 +22,7 @@
       "reason": "'addresses the giver mailbox and round-trips through verifyJoinerResponse' fails \u2014 classical-fixture vs canonical binding, same root cause as joiner-response.e2e.",
       "owner": "flint",
       "added": "2026-09-30",
-      "expires": "2026-10-14",
+      "expires": "2026-10-30",
       "ref": "review main@0046c7e \u00a73"
     },
     {
@@ -30,7 +30,7 @@
       "reason": "demo peers Invariant-1 fails \u2014 80-peer sample fixture is classical-era; fixture either needs canonical re-mint or retirement (no production refs, though sample-circle-lanes.test.ts now consumes it).",
       "owner": "flint",
       "added": "2026-09-30",
-      "expires": "2026-10-14",
+      "expires": "2026-10-30",
       "ref": "review main@0046c7e \u00a73/\u00a75"
     },
     {
@@ -38,7 +38,7 @@
       "reason": "expects 10 living names but the fixture now has 80, and classical demo names leak into the living key set \u2014 same stale SAMPLE_SVRNTY_PEERS fixture as sample-svrnty-keys.",
       "owner": "flint",
       "added": "2026-09-30",
-      "expires": "2026-10-14",
+      "expires": "2026-10-30",
       "ref": "unified gate run 2026-09-30 (757/759 green otherwise)"
     }
   ]

@@ -75,7 +75,7 @@ export default function NotesPage() {
       }
       await initSessionKey(passphrase);
       await loadKey(fingerprint);
-      await initNotesStore(passphrase);
+      await initNotesStore(passphrase, fingerprint); // owner-scope: per-identity notes DB (P1#1)
       setPassphrase('');
       setGate('ready');
     } catch {

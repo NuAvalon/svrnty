@@ -1,23 +1,32 @@
 // src/components/JoinerCeremony.tsx
 'use client';
 //
-// The joiner's side of the 9/10 connection ceremony. Mirror of the initiator
-// component (src/components/Ceremony.tsx): the SAME proven state machine
-// (src/lib/ceremony/machine.ts) drives both devices — role affects rendering, not the
-// transition graph ("one impl, not two").
+// The joiner's side of a Grow connection — COLLAPSED (2026-10-10, Peter #170061).
 //
-// Perspective: this instance runs on the JOINER's device (the receiver — arrives via the
-// /c/[code] relay link, receives the card, persists the edge, watches their own lattice
-// light up). The three middle steps (card, edge, lattice) are the joiner's REAL local
-// actions here (the mirror of the initiator, where those three are "on their device"). The
-// handshake already happened the moment they opened this link; the tear (step 5) happens on
-// the GIVER's device, so it carries the "on their device" framing.
+// Peter's directive: "the Grow link needs to tell you to open your .svrnty vault; when
+// scanned from in your vault, it adds the person to the galaxy or the gate. Simple."
+// Flint's security refinement (#170073): a scanned Grow link is an INBOUND request —
+// it must land in the GATE (pending), never auto-elevate into the Galaxy. Promotion to a
+// Known star stays a deliberate owner tap in GrowGatePanel. The signed-card verify
+// (classifyImportedCard, fingerprint↔key binding) is PRESERVED — a Grow link must not be
+// spoofable into adding someone else.
 //
-// Honest-scoping: the relay is a single-use dead-drop (src/lib/sync/relay.ts) — one code
-// carries one payload. A CARD link walks the full stepper. A SHARD link ("the tear" landing
-// on this device) is one meaningful act — accepting a recovery piece — so it gets a focused
-// accept panel rather than being forced through a card-shaped 5-step rail. Nothing here
-// touches prod; all state is local (IndexedDB) or the client-side relay.
+// So the old 5-step ceremony rail (handshake → card → edge → lattice → tear) collapses to:
+//   1. No identity  → "Open your SVRNTY vault first" (Peter's literal ask).
+//   2. Locked        → unlock inline (owner act — your OWN vault, key never leaves the device).
+//   3. Card verified → ONE tap "Add to my Gate" → enqueueGateArrival + the R1 return-channel.
+//   4. Done          → "They're at your Gate. Admit them to your Galaxy when you're ready."
+//
+// PRESERVED exactly (admission logic unchanged — UX orchestration only):
+//   • classifyImportedCard refuse-branch (fp↔key mismatch / malformed → never imported).
+//   • enqueueGateArrival (scan → GATE, pending; promotion is the explicit GrowGatePanel admit).
+//   • depositJoinerResponse — the R1 return-channel so the edge becomes MUTUAL (best-effort,
+//     fail-soft; a locked identity or relay hiccup never blocks and never surfaces to a peer).
+//   • SHARD ("the tear") landing on this device keeps its focused accept panel.
+//
+// Nothing here touches prod; all state is local (IndexedDB) or the client-side relay. The
+// shared ceremony state machine (src/lib/ceremony/machine.ts) is unchanged and still drives the
+// INITIATOR (Ceremony.tsx) — this component no longer needs the stepper.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { resolveRelay } from '@/lib/sync/relay';
@@ -25,10 +34,8 @@ import {
   getActiveFingerprint,
   loadIdentity,
   loadKey,
-  addContact,
   updateContact,
   getContactByFingerprint,
-  getAllContacts,
   storeHeldShard,
   SHARD_CUSTODY_TYPE,
   isSessionUnlocked,
@@ -40,14 +47,8 @@ import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
-import { TrustMap } from '@/components/TrustMap';
-import { useCeremony } from '@/lib/ceremony/useCeremony';
-import { stepLabel, CEREMONY_STEP_ORDER, type CeremonyStepId } from '@/lib/ceremony/machine';
-import type { TrustEdge } from '@/lib/trust/types';
-import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { isPQEncapLive } from '@/lib/claim-gates';
-import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { GATE_COPY, buildAdmitRecord, clampArrivalName, joinerPersistPlan } from '@/lib/trust/grow-gate';
+import { clampArrivalName } from '@/lib/trust/grow-gate';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -62,21 +63,6 @@ const C = {
   err: '#ef4444',
 };
 
-// Which device each step happens on, from the JOINER's perspective — the mirror of the
-// initiator's STEP_LOCUS. The middle three are the joiner's own actions; the tear is the
-// giver's.
-const STEP_LOCUS: Record<CeremonyStepId, 'you' | 'them' | 'done'> = {
-  handshake: 'you',
-  card: 'you',
-  edge: 'you',
-  lattice: 'you',
-  tear: 'them',
-  complete: 'done',
-};
-
-// ContactRecord -> TrustEdge projection now lives in the shared helper (single source of truth;
-// carries pq — see contact-edge.ts). The main page (app/page.tsx) projects through the same one.
-
 interface PeerCard {
   name: string;
   fingerprint: string;
@@ -90,12 +76,14 @@ interface PeerCard {
   alarm: 'quiet' | 'loud' | 'soft-info';
 }
 
+type Phase = 'loading' | 'card' | 'done';
+
 // R1 return-channel deposit. After the joiner adds the giver, deposit a signed
 // joiner-response to the GIVER's mailbox so the giver learns of us and the edge becomes MUTUAL — closing
-// the one-directional Grow asymmetry (giver polls → verifyJoinerResponse → adds us as KNOWN → the 0.4
+// the one-directional Grow asymmetry (giver polls → verifyJoinerResponse → gates us → the 0.4
 // contact.update wire now flows both ways). Best-effort + FAIL-SOFT: signing requires our unlocked
-// private key; if the identity is locked or the deposit fails, the local edge still stands and the
-// ceremony never blocks — any failure is a local-only diagnostic, NEVER surfaced to a peer/relay (I-1).
+// private key; if the identity is locked or the deposit fails, the local gate entry still stands and the
+// flow never blocks — any failure is a local-only diagnostic, NEVER surfaced to a peer/relay (I-1).
 // The giver's mailbox holds the response for ~7d, so a deposit that lands on a later unlocked open still
 // connects. IDENTITY-ONLY: carries our {fp, epoch, key, name}, never contact methods.
 async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: string): Promise<void> {
@@ -103,9 +91,9 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
     if (!peer.fingerprint || !peer.publicKey || !code) return; // nothing to bind the response to
     const key = await loadKey(ownerFp);
     if (!key) {
-      // Locked session — cannot sign. The edge is already stored; the return channel simply doesn't fire
-      // this time (a later unlocked open can re-deposit within the giver's ~7d mailbox window).
-      console.warn('[joiner-response] identity locked — return-channel deposit deferred (edge stands locally)');
+      // Locked session — cannot sign. The gate entry is already stored; the return channel simply doesn't
+      // fire this time (a later unlocked open can re-deposit within the giver's ~7d mailbox window).
+      console.warn('[joiner-response] identity locked — return-channel deposit deferred (gate entry stands locally)');
       return;
     }
     const id = await loadIdentity(ownerFp);
@@ -129,30 +117,27 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
       { fingerprint: peer.fingerprint, publicKeyArmored: peer.publicKey, inviteNonce: code },
     );
     if (!res.ok) {
-      console.warn('[joiner-response] deposit not delivered (edge stands locally):', res.status);
+      console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);
     }
   } catch (err) {
-    console.warn('[joiner-response] deposit failed (edge stands locally):', err);
+    console.warn('[joiner-response] deposit failed (gate entry stands locally):', err);
   }
 }
 
 export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragment: string }) {
-  const ceremony = useCeremony('joiner');
-  const { state } = ceremony;
-  // Stable action identities (useCallback deps [] in useCeremony) — safe as effect deps.
-  const { handshakeEstablished, fail } = ceremony;
-
+  const [phase, setPhase] = useState<Phase>('loading');
   const [kind, setKind] = useState<'card' | 'shard' | null>(null);
   const [peer, setPeer] = useState<PeerCard | null>(null);
   const [ownerFp, setOwnerFp] = useState<string | null>(null);
-  const [ownerName, setOwnerName] = useState<string>('You');
-  const [contacts, setContacts] = useState<TrustEdge[]>([]);
+  const [noIdentity, setNoIdentity] = useState(false);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
-  const [presence, setPresence] = useState<'in_person' | 'remote' | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Unlock gate (R1): the joiner arrives at /c/ with a LOCKED session (the memory-only session key does
-  // not survive the navigation). Signing the return-channel joiner-response needs the private key, so we
-  // prompt for the passphrase at the "make the edge live" step to complete a MUTUAL connection.
+  // Unlock gate: the joiner arrives at /c/ with a LOCKED session (the memory-only session key does not
+  // survive the navigation). Adding to the gate + signing the mutual return-channel needs the private key,
+  // so we prompt for the passphrase on the "Add" tap. In the in-app scan path the vault is already unlocked,
+  // so this never shows — one tap.
   const [needsUnlock, setNeedsUnlock] = useState(false);
   const [unlockPass, setUnlockPass] = useState('');
   const [unlockError, setUnlockError] = useState<string | null>(null);
@@ -176,17 +161,12 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         const fp = await getActiveFingerprint();
         if (cancelled) return;
         if (!fp) {
-          fail('No active identity found. Set up your identity on the main page first, then revisit this link.');
+          // Peter's "the Grow link needs to tell you to open your .svrnty vault." No active identity =
+          // nothing to add them to. A dedicated screen, not a scary error.
+          setNoIdentity(true);
           return;
         }
         setOwnerFp(fp);
-        loadIdentity(fp)
-          .then((id) => {
-            if (!cancelled && id) {
-              setOwnerName(id?.identity?.display_name || id?.identity?.name || id?.name || 'You');
-            }
-          })
-          .catch(() => {});
 
         const decrypted = await resolveRelay(code, keyFragment);
         if (cancelled) return;
@@ -195,156 +175,112 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         if (parsed?.type === SHARD_CUSTODY_TYPE) {
           setKind('shard');
           setShardFrom(parsed?.from?.name || 'Someone');
-          // Stash for the accept action.
           setPeer(null);
           (window as any).__svrnty_shard = parsed;
-        } else {
-          const p = parsed.identity || parsed;
-          // C2 / Invariant-1 + signature: classify the card BEFORE showing the reassuring fingerprint
-          // box or persisting anything. Branch 1 (fp↔key fail / malformed) refuses the card — otherwise
-          // the out-of-band "is this your fingerprint?" ritual would falsely pass while the stored key
-          // is an attacker's. Branches 2/3/4 import the classical contact; the pq sub-disposition
-          // decides whether the authenticated pq_kem/pq_sig is stored (spec §4).
-          const d = await classifyImportedCard(parsed);
-          if (cancelled) return;
-          if (!d.importClassical) {
-            fail(
-              'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send you a fresh link.',
-            );
-            return;
-          }
-          setKind('card');
-          setPeer({
-            name: p.display_name || p.name || p.peer_name || 'Unknown',
-            fingerprint: p.fingerprint || p.peer_fingerprint || '',
-            publicKey: p.public_key || p.publicKey || '',
-            email: p.email || '',
-            pq: d.pq,
-            deviceMailbox: d.deviceMailbox,
-            alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
-          });
+          return;
         }
-        handshakeEstablished(code); // machine: handshake -> card
+
+        const p = parsed.identity || parsed;
+        // C2 / Invariant-1 + signature: classify the card BEFORE showing the reassuring fingerprint box or
+        // persisting anything. Branch 1 (fp↔key fail / malformed) refuses the card — otherwise the
+        // out-of-band "is this your fingerprint?" ritual would falsely pass while the stored key is an
+        // attacker's. Branches 2/3/4 import the classical contact; the pq sub-disposition decides whether
+        // the authenticated pq_kem/pq_sig is stored (spec §4). THIS IS THE ANTI-SPOOF GATE — unchanged.
+        const d = await classifyImportedCard(parsed);
+        if (cancelled) return;
+        if (!d.importClassical) {
+          setError(
+            'This card could not be verified — its fingerprint does not match its key, so it was not imported. Ask them to send you a fresh link.',
+          );
+          return;
+        }
+        setKind('card');
+        setPeer({
+          name: p.display_name || p.name || p.peer_name || 'Unknown',
+          fingerprint: p.fingerprint || p.peer_fingerprint || '',
+          publicKey: p.public_key || p.publicKey || '',
+          email: p.email || '',
+          pq: d.pq,
+          deviceMailbox: d.deviceMailbox,
+          alarm: d.alarm === 'reject' ? 'quiet' : d.alarm,
+        });
+        setPhase('card');
       } catch (err: any) {
         if (cancelled) return;
-        fail(err?.message || 'This link has expired or already been used.');
+        setError(err?.message || 'This link has expired or already been used.');
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [code, keyFragment, handshakeEstablished, fail]);
+  }, [code, keyFragment]);
 
-  // --- Card ceremony actions ---
-  const receiveCard = useCallback(() => {
-    if (!peer) return;
-    ceremony.cardConveyed(peer.fingerprint, peer.name); // card -> edge
-  }, [peer, ceremony]);
-
-  const persistEdge = useCallback(async () => {
-    if (!peer || !ownerFp) return;
-    // A MUTUAL connection requires signing a joiner-response with our private key (so the giver learns of
-    // us and the edge is two-way). The session key is memory-only and does NOT survive the /c/ navigation,
-    // so a joiner arriving via a link is locked. Prompt for the passphrase here — unlocking both persists
-    // the edge AND signs the return deposit. Without this, the deposit is skipped and the connect stays
-    // one-directional (the R1 bug). If already unlocked (e.g. same-tab from the main app), proceed directly.
+  // --- The single action: add the giver to MY Gate (pending) + fire the mutual return-channel. ---
+  // Scan → GATE, never auto-Galaxy (Flint #170073). Promotion to a Known star is the explicit
+  // GrowGatePanel admit tap — scanning is not trusting.
+  const addToGate = useCallback(async () => {
+    if (!peer || !ownerFp || adding) return;
+    // Adding to the gate + signing the mutual return-channel needs the private key, and the session key is
+    // memory-only (does NOT survive the /c/ navigation). Prompt for the passphrase here — unlocking both
+    // enables the gate write AND signs the return deposit. If already unlocked (in-app scan), proceed.
     if (!isSessionUnlocked()) {
       setNeedsUnlock(true);
       return;
     }
+    setAdding(true);
+    setError(null);
     try {
-      // Idempotent: if we already know them, don't double-add — advance with the existing edge.
+      // Idempotent: if we already know them (or they already wait at our gate under the same fp),
+      // enqueueGateArrival upserts — don't double-report. Back-fill authenticated pq / device-mailbox onto a
+      // known edge that lacks them (§7#5 upgrade-on-re-exchange), never silently replacing a different key.
       const existing = peer.fingerprint
         ? await getContactByFingerprint(ownerFp, peer.fingerprint)
         : null;
-      let edgeId: string;
-      const pqFields = peer.pq
-        ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
-        : {};
-      // piece-2: authenticated device-mailbox (onion seal-target), present ONLY under a valid signature.
-      const mailboxFields = peer.deviceMailbox ? { device_mailbox: peer.deviceMailbox } : {};
       if (existing) {
-        // Upgrade-on-re-exchange (§7#5): back-fill authenticated pq and/or the device-mailbox onto a known
-        // edge that lacks them — no duplicate; never silently replace a different stored key (rotation is
-        // a separate, deliberate, lineage-tracked path, not a re-import side effect).
         if ((peer.pq && !existing.pq_kem_public_key) || (peer.deviceMailbox && !existing.device_mailbox)) {
-          await updateContact(existing.id, { ...pqFields, ...mailboxFields });
+          await updateContact(existing.id, {
+            ...(peer.pq
+              ? { pq_kem_public_key: peer.pq.pq_kem_public_key, pq_sig_public_key: peer.pq.pq_sig_public_key }
+              : {}),
+            ...(peer.deviceMailbox ? { device_mailbox: peer.deviceMailbox } : {}),
+          });
         }
         setAlreadyKnown(true);
-        edgeId = existing.id;
       } else {
-        const plan = joinerPersistPlan(presence, false);
-        if (plan === 'need-presence') return;
-        if (plan === 'enqueue-gate') {
-          // NOTE (piece-2 coverage boundary): the device-mailbox is NOT threaded through the holding-room
-          // gate pipeline (GateArrival → admit) yet — a remote joiner admitted from the holding room lands
-          // WITHOUT a mailbox until a re-exchange back-fills it (safe: emit under-reveals, fail-closed). The
-          // DIRECT paths (in-person admit below + ContactManagement + re-exchange back-fill above) DO carry
-          // it. Threading the gate pipeline is a tracked fast-follow (co-owned with Apollo's emit UI work).
-          await enqueueGateArrival(ownerFp, {
-            fingerprint: peer.fingerprint,
-            displayName: clampArrivalName(peer.name),
-            publicKeyArmored: peer.publicKey,
-            epoch: 0,
-            inviteNonce: code,
-            mintChannel: 'remote',
-            arrivedAt: new Date().toISOString(),
-            direction: 'scanned_giver',
-            ...(peer.pq
-              ? { pqKemPublicKey: peer.pq.pq_kem_public_key, pqSigPublicKey: peer.pq.pq_sig_public_key }
-              : {}),
-          });
-          emitContactChange({ ids: [], reason: 'ui-edit' });
-          edgeId = peer.fingerprint;
-        } else {
-          // admit-known: in-person provenance, no owner_verify. Verify is a later owner tap.
-          const rec = buildAdmitRecord(
-            {
-              fingerprint: peer.fingerprint,
-              displayName: clampArrivalName(peer.name),
-              publicKeyArmored: peer.publicKey,
-              epoch: 0,
-              inviteNonce: code,
-              mintChannel: 'in_person',
-              arrivedAt: new Date().toISOString(),
-              direction: 'scanned_giver',
-              ...(peer.pq
-                ? {
-                    pqKemPublicKey: peer.pq.pq_kem_public_key,
-                    pqSigPublicKey: peer.pq.pq_sig_public_key,
-                  }
-                : {}),
-            },
-            { name: peer.name, verify: null },
-          );
-          const contact = await addContact(ownerFp, {
-            ...rec,
-            email: peer.email,
-            ...pqFields,
-            ...mailboxFields, // piece-2: onion seal-target, present ONLY under a valid signature
-          } as any);
-          edgeId = contact.id;
-        }
+        // NOTE (piece-2 coverage boundary, unchanged): the device-mailbox is NOT threaded through the
+        // holding-room gate pipeline (GateArrival → admit) yet — a gated joiner lands WITHOUT a mailbox
+        // until a re-exchange back-fills it (safe: emit under-reveals, fail-closed). Threading the gate
+        // pipeline is a tracked fast-follow (co-owned with Apollo's emit UI work).
+        await enqueueGateArrival(ownerFp, {
+          fingerprint: peer.fingerprint,
+          displayName: clampArrivalName(peer.name),
+          publicKeyArmored: peer.publicKey,
+          epoch: 0,
+          inviteNonce: code,
+          mintChannel: 'remote', // scan provenance is never "verified" — the owner's later tap is (grow-gate).
+          arrivedAt: new Date().toISOString(),
+          direction: 'scanned_giver',
+          ...(peer.pq
+            ? { pqKemPublicKey: peer.pq.pq_kem_public_key, pqSigPublicKey: peer.pq.pq_sig_public_key }
+            : {}),
+        });
+        emitContactChange({ ids: [], reason: 'ui-edit' });
       }
-      // R1: the edge is live locally — now fire the return-channel deposit to the giver (best-effort,
-      // non-blocking) so the connection becomes MUTUAL. The ceremony advances immediately regardless of
-      // whether the deposit lands (fail-soft); a locked identity or relay hiccup never blocks the UI.
+      // R1: fire the return-channel deposit to the giver (best-effort, non-blocking) so the connection
+      // becomes MUTUAL. Done advances regardless of whether the deposit lands (fail-soft).
       void depositJoinerResponse(ownerFp, peer, code);
-      // Load the constellation for the lattice step (includes the new facet).
-      try {
-        const raw = await getAllContacts(ownerFp);
-        setContacts(raw.map(contactRecordToEdge));
-      } catch { /* non-fatal — lattice will just show the owner */ }
-      ceremony.edgePersisted(edgeId); // edge -> lattice
+      setPhase('done');
     } catch (err: any) {
-      ceremony.fail(err?.message || 'Could not write the edge.');
+      setError(err?.message || 'Could not add them to your Gate.');
+    } finally {
+      setAdding(false);
     }
-  }, [peer, ownerFp, code, ceremony, presence]);
+  }, [peer, ownerFp, code, adding]);
 
-  // Unlock the identity to sign the mutual connection, then persist the edge + deposit. initSessionKey
-  // derives the key WITHOUT validating, so a wrong passphrase yields a key that can't decrypt — verify by
-  // a loadKey (which throws on a bad passphrase) and lock again on failure so isSessionUnlocked stays honest.
+  // Unlock the identity to sign the mutual connection, then add to the gate + deposit. initSessionKey
+  // derives the key WITHOUT validating, so a wrong passphrase yields a key that can't decrypt — verify by a
+  // loadKey (which throws on a bad passphrase) and lock again on failure so isSessionUnlocked stays honest.
   const submitUnlock = useCallback(async () => {
     if (!ownerFp || !unlockPass || unlockBusy) return;
     setUnlockBusy(true);
@@ -354,14 +290,14 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       await loadKey(ownerFp); // throws on a wrong passphrase (can't decrypt the stored key)
       setNeedsUnlock(false);
       setUnlockPass('');
-      await persistEdge(); // now unlocked → adds the edge + signs & deposits the joiner-response + advances
+      await addToGate(); // now unlocked → adds to the gate + signs & deposits the joiner-response + advances
     } catch {
       lockSession(); // clear the bad session key so the gate stays honest
       setUnlockError('That passphrase didn’t unlock your identity. Please try again.');
     } finally {
       setUnlockBusy(false);
     }
-  }, [ownerFp, unlockPass, unlockBusy, persistEdge]);
+  }, [ownerFp, unlockPass, unlockBusy, addToGate]);
 
   // --- Shard ("the tear") accept ---
   const acceptShard = useCallback(async () => {
@@ -390,6 +326,21 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       setShardState('idle');
     }
   }, [ownerFp]);
+
+  // ============================ NO IDENTITY — open your vault first ============================
+  if (noIdentity) {
+    return (
+      <Shell>
+        <Badge tone="gold" label="A card is waiting for you" />
+        <h2 style={headingStyle}>Open your SVRNTY vault</h2>
+        <p style={subStyle}>
+          Someone shared their card with you. To add them, open your own SVRNTY vault first — set up or
+          unlock your identity, then open this link again.
+        </p>
+        <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
+      </Shell>
+    );
+  }
 
   // ============================ SHARD LINK — focused accept ============================
   if (kind === 'shard') {
@@ -422,254 +373,139 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
             <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
           </>
         )}
-        {state.error && <ErrorLine text={state.error} />}
+        {error && <ErrorLine text={error} />}
       </Shell>
     );
   }
 
-  // ================================ CARD LINK — full stepper ================================
-  const idx = CEREMONY_STEP_ORDER.indexOf(state.step);
-
+  // ================================ CARD LINK — one screen ================================
   return (
-    <Shell wide>
-      {/* Progress rail */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 28 }}>
-        {CEREMONY_STEP_ORDER.filter((s) => s !== 'complete').map((s, i) => {
-          const done = i < idx;
-          const active = CEREMONY_STEP_ORDER[i] === state.step;
-          return (
-            <div key={s} style={{ flex: 1, textAlign: 'center' }}>
-              <div
-                style={{
-                  height: 3,
-                  borderRadius: 2,
-                  background: done || active ? C.emerald : C.emeraldDim,
-                  opacity: done ? 0.6 : active ? 1 : 0.4,
-                }}
-              />
-              <div
-                style={{
-                  marginTop: 6,
-                  fontSize: 10,
-                  letterSpacing: 1,
-                  textTransform: 'uppercase',
-                  color: active ? C.emerald : C.faint,
-                  fontFamily: "'JetBrains Mono', monospace",
-                }}
-              >
-                {stepLabel(s)}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+    <Shell>
+      {/* loading — arriving / retrieving. "Opening the secure channel" + Code render are relied on by the
+          grow-2tab / scan-to-join specs and prove the key never leaves the fragment. */}
+      {phase === 'loading' && !error && (
+        <div>
+          <Spinner />
+          <h2 style={headingStyle}>Opening the secure channel…</h2>
+          <p style={subStyle}>Retrieving and decrypting their card. Code: {code}</p>
+        </div>
+      )}
 
-      <div
-        style={{
-          background: C.panel,
-          border: `1px solid ${C.emeraldDim}`,
-          borderRadius: 16,
-          padding: 32,
-          textAlign: 'center',
-        }}
-      >
-        {STEP_LOCUS[state.step] === 'them' && <LocusTag />}
-
-        {/* handshake — arriving / retrieving */}
-        {state.step === 'handshake' && !state.error && (
-          <div>
-            <Spinner />
-            <h2 style={headingStyle}>Opening the secure channel…</h2>
-            <p style={subStyle}>Retrieving and decrypting their card. Code: {code}</p>
+      {/* card — their verified card reached your device; one tap to add them to your Gate. */}
+      {phase === 'card' && peer && (
+        <div>
+          <h2 style={headingStyle}>{peer.name} wants to connect</h2>
+          <p style={subStyle}>
+            They shared their signed card with you — decrypted on your device, no server could read it.
+          </p>
+          <div style={cardBoxStyle}>
+            <div style={{ fontSize: 10, color: C.faint, letterSpacing: 1, marginBottom: 4 }}>FINGERPRINT</div>
+            <code style={{ color: C.emerald, fontSize: 12, wordBreak: 'break-all' }}>
+              {peer.fingerprint || '—'}
+            </code>
           </div>
-        )}
-
-        {/* card — their card has reached your device */}
-        {state.step === 'card' && peer && (
-          <div>
-            <h2 style={headingStyle}>{peer.name} shared their card</h2>
-            <p style={subStyle}>
-              An identity card reached your device through the relay, encrypted — no server could read it.
+          {/* PQ disposition (spec §4 cry-wolf: loud only on an invalid signature) */}
+          {peer.alarm === 'loud' && (
+            <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>
+              ⚠ Could not verify this card&apos;s key material — possible tampering. It imports as a
+              classical contact only; ask them to re-share over a fresh link.
             </p>
-            <div style={cardBoxStyle}>
-              <div style={{ fontSize: 10, color: C.faint, letterSpacing: 1, marginBottom: 4 }}>FINGERPRINT</div>
-              <code style={{ color: C.emerald, fontSize: 12, wordBreak: 'break-all' }}>
-                {peer.fingerprint || '—'}
-              </code>
-            </div>
-            {/* PQ disposition (spec §4 cry-wolf: loud only on an invalid signature) */}
-            {peer.alarm === 'loud' && (
-              <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>
-                ⚠ Could not verify this card&apos;s key material — possible tampering. It imports as a
-                classical contact only; ask them to re-share over a fresh link.
+          )}
+          {peer.alarm === 'soft-info' && (
+            <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
+              Their post-quantum key uses an unsupported format — importing classical only.
+            </p>
+          )}
+          {peer.alarm === 'quiet' && peer.pq && (
+            isPQEncapLive() ? (
+              <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
+                ✓ Post-quantum protected — a signed card carrying a verified encryption key.
               </p>
-            )}
-            {peer.alarm === 'soft-info' && (
-              <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
-                Their post-quantum key uses an unsupported format — importing classical only.
-              </p>
-            )}
-            {peer.alarm === 'quiet' && peer.pq && (
-              isPQEncapLive() ? (
-                <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
-                  ✓ Post-quantum protected — a signed card carrying a verified encryption key.
-                </p>
-              ) : (
-                <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
-                  Post-quantum ready — this card carries a verified post-quantum encryption key;
-                  protection activates when the encryption seam is live.
-                </p>
-              )
-            )}
-            <button style={primaryBtnStyle} onClick={receiveCard}>Receive their card →</button>
-          </div>
-        )}
-
-        {/* edge — persist the connection locally */}
-        {state.step === 'edge' && peer && (
-          <div>
-            <h2 style={headingStyle}>Make the edge live</h2>
-            <p style={subStyle}>{GATE_COPY.joinPresence}</p>
-            <p style={{ ...subStyle, marginTop: 10, fontSize: 13 }}>
-              {GATE_COPY.joinPresenceHint} {TRUST_RECIPE_COPY.verifyWhy}
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 18, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto' }}>
-              <button
-                type="button"
-                data-testid="join-presence-in-person"
-                aria-pressed={presence === 'in_person'}
-                onClick={() => setPresence('in_person')}
-                style={{
-                  ...primaryBtnStyle,
-                  marginTop: 0,
-                  opacity: presence === 'in_person' ? 1 : 0.7,
-                  border: presence === 'in_person' ? '1px solid rgba(52, 211, 153, 0.55)' : primaryBtnStyle.border,
-                }}
-              >
-                {GATE_COPY.joinTogether}
-              </button>
-              <button
-                type="button"
-                data-testid="join-presence-remote"
-                aria-pressed={presence === 'remote'}
-                onClick={() => setPresence('remote')}
-                style={{
-                  ...primaryBtnStyle,
-                  marginTop: 0,
-                  opacity: presence === 'remote' ? 1 : 0.7,
-                  border: presence === 'remote' ? '1px solid rgba(52, 211, 153, 0.55)' : primaryBtnStyle.border,
-                }}
-              >
-                {GATE_COPY.joinRemote}
-              </button>
-            </div>
-            <p style={{ ...subStyle, marginTop: 12 }}>
-              {presence === 'in_person'
-                ? GATE_COPY.joinTogetherHint
-                : presence === 'remote'
-                  ? GATE_COPY.joinRemoteHint
-                  : 'Choose one to continue.'}
-            </p>
-            {!needsUnlock ? (
-              <button
-                style={{ ...primaryBtnStyle, opacity: presence ? 1 : 0.45 }}
-                disabled={!presence}
-                onClick={persistEdge}
-              >
-                Add to my network →
-              </button>
             ) : (
-              <div style={{ marginTop: 18 }}>
-                {/* Anti-phishing: a secret is demanded BY and FOR the user's OWN
-                    vault (owner act) — never framed as the price of connecting with the giver. Owner
-                    action, {peer.name} as the object. Shown only AFTER the intentional "Add" click. */}
-                <p style={{ ...subStyle, marginBottom: 12 }}>
-                  Unlock your svrnty to finish adding {peer.name}. This is your own vault — your key
-                  never leaves this device.
-                </p>
-                <input
-                  type="password"
-                  value={unlockPass}
-                  onChange={(e) => setUnlockPass(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void submitUnlock(); }}
-                  placeholder="Your passphrase"
-                  autoFocus
-                  style={unlockInputStyle}
-                />
-                <button
-                  style={{ ...primaryBtnStyle, opacity: !unlockPass || unlockBusy ? 0.5 : 1 }}
-                  disabled={!unlockPass || unlockBusy}
-                  onClick={() => void submitUnlock()}
-                >
-                  {unlockBusy ? 'Unlocking…' : 'Unlock →'}
-                </button>
-                {unlockError && (
-                  <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>{unlockError}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+              <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
+                Post-quantum ready — this card carries a verified post-quantum encryption key;
+                protection activates when the encryption seam is live.
+              </p>
+            )
+          )}
 
-        {/* lattice — your constellation gains a facet */}
-        {state.step === 'lattice' && (
-          <div>
-            <h2 style={headingStyle}>
-              {presence === 'remote' && !alreadyKnown ? 'At the Gate' : 'A facet lights up'}
-            </h2>
-            <p style={subStyle}>
-              {alreadyKnown
-                ? `${peer?.name || 'They'} — you were already connected.`
-                : presence === 'remote'
-                  ? GATE_COPY.latticeRemote
-                  : peer?.name
-                    ? GATE_COPY.latticeTogether
-                    : 'A new facet appears in your constellation.'}
-            </p>
-            {presence !== 'remote' && (
-              <div style={{ margin: '16px auto', maxWidth: 360 }}>
-                <TrustMap ownerFingerprint={ownerFp || ''} ownerName={ownerName} contacts={contacts} />
-              </div>
-            )}
-            <button style={primaryBtnStyle} onClick={() => ceremony.latticeRendered()}>
-              {presence === 'remote' && !alreadyKnown ? 'Continue →' : 'The facet is lit →'}
-            </button>
-          </div>
-        )}
+          {!needsUnlock ? (
+            <>
+              <p style={{ ...subStyle, marginTop: 16, fontSize: 13 }}>
+                Add them to your Gate. Scanning isn’t trusting — you choose when to welcome them into your
+                Galaxy.
+              </p>
+              <button
+                style={{ ...primaryBtnStyle, opacity: adding ? 0.6 : 1 }}
+                disabled={adding}
+                data-testid="join-add-to-gate"
+                onClick={() => void addToGate()}
+              >
+                {adding ? 'Adding…' : 'Add to my Gate →'}
+              </button>
+            </>
+          ) : (
+            <div style={{ marginTop: 18 }}>
+              {/* Anti-phishing: the secret is demanded BY and FOR the user's OWN vault (owner act) — never
+                  framed as the price of connecting with the giver. {peer.name} is the object, not the asker. */}
+              <p style={{ ...subStyle, marginBottom: 12 }}>
+                Unlock your SVRNTY to add {peer.name}. This is your own vault — your key never leaves this
+                device.
+              </p>
+              <input
+                type="password"
+                value={unlockPass}
+                onChange={(e) => setUnlockPass(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void submitUnlock(); }}
+                placeholder="Your passphrase"
+                autoFocus
+                style={unlockInputStyle}
+              />
+              <button
+                style={{ ...primaryBtnStyle, opacity: !unlockPass || unlockBusy ? 0.5 : 1 }}
+                disabled={!unlockPass || unlockBusy}
+                onClick={() => void submitUnlock()}
+              >
+                {unlockBusy ? 'Unlocking…' : 'Unlock →'}
+              </button>
+              {unlockError && (
+                <p style={{ color: C.err, fontSize: 12, marginTop: 8 }}>{unlockError}</p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
-        {/* tear — the giver's local act (on their device) */}
-        {state.step === 'tear' && (
-          <div>
-            <h2 style={headingStyle}>They may tear off a piece</h2>
-            <p style={subStyle}>
-              On {peer?.name || 'their'} device, they can tear off a shard of their recovery and
-              entrust it to you. If they do, it arrives as its own link — open it to become a keeper.
-            </p>
-            <button style={primaryBtnStyle} onClick={() => ceremony.shardGiven()}>Finish →</button>
-          </div>
-        )}
+      {/* done — they're at the Gate (or already known); Galaxy promotion stays a deliberate tap. */}
+      {phase === 'done' && (
+        <div>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
+          {alreadyKnown ? (
+            <>
+              <h2 style={headingStyle}>You’re already connected</h2>
+              <p style={subStyle}>{peer?.name || 'They'} are already in your network.</p>
+            </>
+          ) : (
+            <>
+              <h2 style={headingStyle}>{peer?.name || 'They'} are at your Gate</h2>
+              <p style={subStyle}>
+                Welcome them into your Galaxy whenever you’re ready — open Galaxy and tap the Gate to admit
+                them as Known. Verify stays your own later tap.
+              </p>
+            </>
+          )}
+          <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
+        </div>
+      )}
 
-        {/* complete */}
-        {state.step === 'complete' && (
-          <div>
-            <div style={{ fontSize: 40, marginBottom: 8 }}>🜂</div>
-            <h2 style={headingStyle}>You are connected</h2>
-            <p style={subStyle}>A card received, an edge live, a facet lit in your constellation.</p>
-            <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
-          </div>
-        )}
-
-        {state.error && (
-          <ErrorLine text={state.error} />
-        )}
-      </div>
+      {error && <ErrorLine text={error} />}
     </Shell>
   );
 }
 
 // ------------------------------- small presentational helpers -------------------------------
 
-function Shell({ children, wide }: { children: React.ReactNode; wide?: boolean }) {
+function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
@@ -682,26 +518,22 @@ function Shell({ children, wide }: { children: React.ReactNode; wide?: boolean }
         color: C.ink,
       }}
     >
-      <div style={{ width: '100%', maxWidth: wide ? 640 : 440 }}>
+      <div style={{ width: '100%', maxWidth: 440 }}>
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
           <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: 6, color: C.gold }}>SVRNTY</div>
           <div style={{ fontSize: 11, color: C.faint, letterSpacing: 1 }}>Secure Identity Exchange</div>
         </div>
-        {!wide ? (
-          <div
-            style={{
-              background: C.panel,
-              border: `1px solid ${C.emeraldDim}`,
-              borderRadius: 16,
-              padding: 32,
-              textAlign: 'center',
-            }}
-          >
-            {children}
-          </div>
-        ) : (
-          children
-        )}
+        <div
+          style={{
+            background: C.panel,
+            border: `1px solid ${C.emeraldDim}`,
+            borderRadius: 16,
+            padding: 32,
+            textAlign: 'center',
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -713,27 +545,6 @@ function Badge({ tone, label }: { tone: 'gold' | 'emerald'; label: string }) {
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 14 }}>
       <div style={{ width: 8, height: 8, borderRadius: 999, background: col }} />
       <span style={{ fontSize: 11, fontWeight: 500, letterSpacing: 1, color: col }}>{label}</span>
-    </div>
-  );
-}
-
-function LocusTag() {
-  return (
-    <div
-      style={{
-        display: 'inline-block',
-        fontSize: 10,
-        letterSpacing: 2,
-        textTransform: 'uppercase',
-        color: C.gold,
-        border: '1px solid rgba(200,168,78,0.3)',
-        borderRadius: 999,
-        padding: '3px 10px',
-        marginBottom: 16,
-        fontFamily: "'JetBrains Mono', monospace",
-      }}
-    >
-      On their device
     </div>
   );
 }

@@ -232,3 +232,11 @@ test('empty mailbox → no-op summary', async () => {
   assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, dropped: 0, acked: 0 });
   assert.deepEqual(ackLog, []);
 });
+
+test('refused poll (401 owner-auth) → rejected status surfaced, not an empty mailbox', async () => {
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    fetchImpl: async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }),
+  }));
+  assert.equal(summary.rejected, 401);
+  assert.equal(summary.polled, 0, 'a refused poll is not a polled mailbox');
+});

@@ -63,6 +63,25 @@ test('verified is not a publish field — strip owner_verify / notes / tags', ()
   assert.equal(stripped.fingerprint, 'aa');
 });
 
+test('#255: owner-local share_settings (known_visibility/per_contact_private/open_visibility) NEVER rides the wire', () => {
+  const payload = {
+    fingerprint: 'bb',
+    metadata: {
+      share_settings: { open_visibility: true, known_visibility: true, per_contact_private: true },
+      notes: 'keep-local',
+    },
+  };
+  const stripped = stripOwnerLocalForPublish(payload);
+  const m = stripped.metadata as Record<string, unknown>;
+  // fail-closed: the whole owner-local container is dropped, not field-by-field
+  assert.equal('share_settings' in m, false);
+  // negative control: a crafted known_visibility survives to ZERO bytes outbound (anywhere)
+  const wire = JSON.stringify(stripped);
+  assert.equal(wire.includes('known_visibility'), false, 'known_visibility must not appear on the wire');
+  assert.equal(wire.includes('per_contact_private'), false, 'per_contact_private (owner-local) must not leak either');
+  assert.equal(stripped.fingerprint, 'bb');
+});
+
 test('fingerprint grouping is for compare-aloud, not a score', () => {
   const fp = formatFingerprintForVerify('aabbccddeeff0011');
   assert.match(fp, /AABB CCDD EEFF 0011/);

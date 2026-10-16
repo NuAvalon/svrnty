@@ -98,22 +98,24 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await alice.getByTestId('nav-grow').click();
     const joinPath = await extractJoinPath(aliceCtx, alice);
 
-    // Bob: open the link on his device → walk the joiner steps → the edge persists.
+    // Bob: open the link → ONE tap adds Alice to his Gate (scan → GATE, never auto-Galaxy — Flint #170073).
     await bob.goto(joinPath);
-    await bob.getByRole('button', { name: /receive their card/i }).click();
-    await bob.getByTestId('join-presence-in-person').click();
-    await bob.getByRole('button', { name: /add to my network/i }).click();
-    // Joiner /c/ navigation drops the in-memory session key — persistEdge prompts
-    // to unlock so the return-channel deposit can be signed (R1). Then lattice.
+    await bob.getByTestId('join-add-to-gate').click();
+    // Joiner /c/ navigation drops the in-memory session key — the add prompts to unlock so the gate write +
+    // the R1 return-channel deposit can be signed. Then the "at your Gate" done screen.
     await bob.getByPlaceholder('Your passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /^unlock/i }).click();
-    await bob.getByRole('button', { name: /the facet is lit/i }).click();
+    await expect(bob.getByText(/at your Gate/i)).toBeVisible();
 
-    // The bloom: Alice now appears in Bob's constellation. The joiner is a standalone /c/<code> page with no
-    // app tab-nav, and a fresh load re-locks Bob's identity → go home, unlock, then open Contacts.
+    // Alice now WAITS at Bob's Gate — not a star yet. The bloom is the deliberate admit: go home, unlock,
+    // open Galaxy → tap the Gate → admit Alice as Known. Only then does she appear in his constellation.
     await bob.goto('/');
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
+    await bob.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+    await bob.getByTestId('galaxy-gate').click();
+    await bob.getByTestId('grow-gate-arrival').click();
+    await bob.getByTestId('grow-gate-admit-confirm').click();
     await bob.getByRole('tab', { name: 'Contacts', exact: true }).click();
     await expect(bob.getByText('Alice E2E')).toBeVisible();
 

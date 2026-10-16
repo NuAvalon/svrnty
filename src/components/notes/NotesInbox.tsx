@@ -177,7 +177,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
       setSender(owner);
       if (!owner) return;
       try {
-        if (!isNotesStoreUnlocked()) await initNotesStore(owner.passphrase);
+        if (!isNotesStoreUnlocked()) await initNotesStore(owner.passphrase, fp); // owner-scope: per-identity notes DB (P1#1)
         if (!cancelled) setStoreReady(true);
       } catch {
         if (!cancelled) setStoreReady(false);

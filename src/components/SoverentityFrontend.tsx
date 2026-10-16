@@ -33,6 +33,7 @@ import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
+import { RelaySettings } from '@/components/settings/RelaySettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 
 interface SoverentityFrontendProps {
@@ -1052,7 +1053,7 @@ export function SoverentityFrontend({
             <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateStart}</h2>
             <p style={s.heroSub}>
               A card, not an account. Generate a sovereign keypair. Your keys never leave your device.
-              Post-quantum-ready encryption. No server can read your data. No tracking.
+              Post-quantum-ready encryption. No server can read your data. No third-party trackers.
             </p>
           </div>
 
@@ -2023,6 +2024,8 @@ export function SoverentityFrontend({
             />
           )}
         </CardMorePanel>
+
+        {identity ? <RelaySettings /> : null}
 
         {/* Passphrase Dialog */}
         {showPassphraseDialog && (
