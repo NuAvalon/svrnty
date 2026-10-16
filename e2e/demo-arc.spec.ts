@@ -179,7 +179,10 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   test('beat 5 (vault export): the candle — the whole encrypted vault survives the fire', async ({ page }) => {
     await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
     await page.getByRole('tab', { name: 'Identity' }).click();
-    await page.getByRole('button', { name: /full backup/i }).click();
+    // Full Backup lives in the identity-card overflow (CardMenuItem testId=full-backup-open).
+    // Open the menu first — the old direct button is gone. Do not bypass VaultExportDialog's re-auth gate.
+    await page.getByTestId('card-actions-toggle').click();
+    await page.getByTestId('full-backup-open').click();
 
     // CUR-4 export-behind-auth: re-enter unlock passphrase before the vault packer.
     await expect(page.getByRole('heading', { name: /confirm it/i })).toBeVisible();
