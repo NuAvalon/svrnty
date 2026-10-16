@@ -1,6 +1,7 @@
 // Run: npx tsx --test src/lib/trust/peer-trust-chords.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   peerTrustNeighbors,
   witnessedPeerChords,
@@ -40,6 +41,20 @@ function openMutual(fp: string, theyTrust: string[], extra: Partial<TrustEdge> =
     ...extra,
   });
 }
+
+/** Trusted + reciprocal + they_trust, but NO per-person open_visibility — relies on the global default (#255). */
+function mutualNoVis(fp: string, theyTrust: string[], extra: Partial<TrustEdge> = {}): TrustEdge {
+  return edge(fp, {
+    trusted: true,
+    they_trust: theyTrust,
+    mutual: { they_trust_me: true, last_sync: new Date().toISOString(), reciprocal: true },
+    ...extra,
+  });
+}
+
+const TRUST_GLOBAL_ON = { known: false, trusted: true } as const;
+const KNOWN_GLOBAL_ON = { known: true, trusted: false } as const;
+const ALL_OFF = { known: false, trusted: false } as const;
 
 test('Sally↔Joe lights when I trust both, they trust me, open vis, they_trust both ways', () => {
   const contacts = [
@@ -215,4 +230,129 @@ test('Trust chord supersedes Know for the same pair', () => {
   const claudeHedy = layered.find((c) => c.a === 'claude' && c.b === 'hedy');
   assert.equal(sallyJoe?.layer, 'trust');
   assert.equal(claudeHedy?.layer, 'know');
+});
+
+// ── #255 consent toggles: global default + per-person override, per-tier ──────────
+
+test('default-off baseline: no per-person vis + no globals → no trust chord (opt-in)', () => {
+  const contacts = [mutualNoVis('sally', ['joe']), mutualNoVis('joe', ['sally'])];
+  assert.equal(witnessedPeerTrustChords(contacts).length, 0);
+  assert.equal(witnessedPeerTrustChords(contacts, ALL_OFF).length, 0);
+});
+
+test('trusted-tier GLOBAL default ON draws the chord without any per-person open_vis (neg-control)', () => {
+  const contacts = [mutualNoVis('sally', ['joe']), mutualNoVis('joe', ['sally'])];
+  assert.equal(witnessedPeerTrustChords(contacts, TRUST_GLOBAL_ON).length, 1);
+});
+
+test('per-person open_visibility:false WINS over the trusted global default ON', () => {
+  const contacts = [
+    mutualNoVis('sally', ['joe']),
+    mutualNoVis('joe', ['sally'], { open_visibility: false }),
+  ];
+  assert.equal(witnessedPeerTrustChords(contacts, TRUST_GLOBAL_ON).length, 0);
+});
+
+test('revoke: flipping the global default OFF drops the chord on the next query (no materialized edge)', () => {
+  const contacts = [mutualNoVis('sally', ['joe']), mutualNoVis('joe', ['sally'])];
+  assert.equal(witnessedPeerTrustChords(contacts, TRUST_GLOBAL_ON).length, 1);
+  assert.equal(witnessedPeerTrustChords(contacts, ALL_OFF).length, 0);
+});
+
+test('known-tier GLOBAL default ON draws the Know chord without per-person vis', () => {
+  const contacts = [
+    edge('sally', { disclosed_circle: ['joe'] }),
+    edge('joe', { disclosed_circle: ['sally'] }),
+  ];
+  assert.equal(witnessedPeerKnowChords(contacts).length, 0);
+  assert.equal(witnessedPeerKnowChords(contacts, KNOWN_GLOBAL_ON).length, 1);
+});
+
+test('per-person known_visibility overrides the known global default (both directions)', () => {
+  // known_visibility:true draws even with the global default OFF
+  assert.equal(
+    witnessedPeerKnowChords([
+      edge('sally', { disclosed_circle: ['joe'], metadata: { share_settings: { known_visibility: true } } } as unknown as TrustEdge),
+      edge('joe', { disclosed_circle: ['sally'], metadata: { share_settings: { known_visibility: true } } } as unknown as TrustEdge),
+    ]).length,
+    1,
+  );
+  // known_visibility:false blocks even with the global known default ON
+  assert.equal(
+    witnessedPeerKnowChords(
+      [
+        edge('sally', { disclosed_circle: ['joe'] }),
+        edge('joe', { disclosed_circle: ['sally'], metadata: { share_settings: { known_visibility: false } } } as unknown as TrustEdge),
+      ],
+      KNOWN_GLOBAL_ON,
+    ).length,
+    0,
+  );
+});
+
+test('known_visibility SURVIVES the #111 open_visibility severance (sibling field, un-swept)', () => {
+  // Models a post-sweep known contact: open_visibility cleared to false, but known_visibility:true persists.
+  const contacts = [
+    edge('sally', {
+      open_visibility: false,
+      disclosed_circle: ['joe'],
+      metadata: { share_settings: { known_visibility: true } },
+    } as unknown as TrustEdge),
+    edge('joe', {
+      open_visibility: false,
+      disclosed_circle: ['sally'],
+      metadata: { share_settings: { known_visibility: true } },
+    } as unknown as TrustEdge),
+  ];
+  assert.equal(witnessedPeerKnowChords(contacts).length, 1);
+});
+
+test('Flint severance gate: a BLOCKED peer never rides the trust mesh (blocked+trusted+open_vis → no chord)', () => {
+  const contacts = [
+    openMutual('sally', ['joe']),
+    openMutual('joe', ['sally'], { blocked: true }),
+  ];
+  assert.equal(witnessedPeerTrustChords(contacts).length, 0);
+  // and not via the global default either
+  assert.equal(
+    witnessedPeerTrustChords(
+      [mutualNoVis('sally', ['joe']), mutualNoVis('joe', ['sally'], { blocked: true })],
+      TRUST_GLOBAL_ON,
+    ).length,
+    0,
+  );
+});
+
+test('Flint severance gate: a BLOCKED peer never rides the known mesh', () => {
+  const contacts = [
+    edge('sally', { open_visibility: true, disclosed_circle: ['joe'] }),
+    edge('joe', { open_visibility: true, disclosed_circle: ['sally'], blocked: true }),
+  ];
+  assert.equal(witnessedPeerKnowChords(contacts).length, 0);
+});
+
+test('metadata.blocked (canonical admitContact dual) also excludes from the mesh', () => {
+  const contacts = [
+    openMutual('sally', ['joe']),
+    openMutual('joe', ['sally'], { metadata: { blocked: true } } as unknown as TrustEdge),
+  ];
+  assert.equal(witnessedPeerTrustChords(contacts).length, 0);
+});
+
+test('#255: global-known ON does NOT bypass the peer bidirectional consent gate (one-way disclosed → no chord)', () => {
+  // Owner consents to both via the global known default, but joe never disclosed sally.
+  // The 3-party "nothing mutual unless all consent" invariant must still hold: no chord.
+  const contacts = [
+    edge('sally', { disclosed_circle: ['joe'] }),
+    edge('joe', { disclosed_circle: [] }),
+  ];
+  assert.equal(witnessedPeerKnowChords(contacts, KNOWN_GLOBAL_ON).length, 0);
+});
+
+test('#255 scope boundary: peer-trust-chords does NOT import allowed-sync (discovery) — structural guard', () => {
+  // The global-visibility default must be unreachable from the allowed_senders/discovery path.
+  // Lock it structurally so a future refactor cannot silently add the edge (Flint #171527).
+  const src = readFileSync(new URL('./peer-trust-chords.ts', import.meta.url), 'utf8');
+  // match an actual import/re-export (`from '…allowed-sync…'`), not a prose mention in comments
+  assert.equal(/from\s+['"][^'"]*allowed-sync/.test(src), false, 'global visibility must never reach discovery/allowed_senders');
 });
