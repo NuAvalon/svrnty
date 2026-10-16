@@ -4,7 +4,7 @@ Work top-down: the top task first, then the next. Build to spec. Open **ONE PR p
 
 **Cursor = RENDER-GLASS ONLY** (UI/render). Crypto / keys / PSI / relay-logic / trust-derivation = TEAM (Athena/Flint/Apollo). "You render the glass, the team holds the locks." You CALL the crypto functions and READ the trust derivation named below — you NEVER implement/mutate them. Build items top-down, one PR each.
 
-*Recently completed: Camera QR-scan (#96), Mint-Build Recipe v2 KERI (#112). Over-wire note-fix (PR#212) + beta-access (A) (PR#213) + OPT-2 durable mailbox (PR#248) MERGED to main — the relay hooks are LIVE. These 3 items finish the #225 UI (lens/profile rework). [3] forged-note-gate + [4] beta-tabLabel are APOLLO's, not Cursor's.*
+*Recently completed: Camera QR-scan (#96), Mint-Build Recipe v2 KERI (#112). Over-wire receive note-fix (PR#212) + beta-access (A) (PR#213) MERGED to main — the hooks below are now LIVE.*
 
 ---
 
