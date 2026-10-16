@@ -98,10 +98,13 @@ test('Galaxy: one-way trust is not white; Mutual trust is the only white light',
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Trusted');
   await ada.dispatchEvent('click');
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual trust');
-  // NOTE: distress paint is still LIVE on this branch pre-#253; once #253 (ember no-op gate)
-  // lands, these two distress assertions must flip to absent (chaos-tracked reconcile).
+  // #253 ember no-op: inbound distress PAINT is gated off (VivreBurn returns null) while the
+  // emit-path is unwired. KEEP data-distress (raw distress value — benign data hook, proves the
+  // fixture puts ada in a REAL distress state); ASSERT the paint is absent. This pair IS the
+  // survivor-safety guard (distress-present contact ⟹ zero paint in DOM) — a premature re-enable
+  // regression must fail it (test-side partner to chaos #144; Flint-signed invariant).
   await expect(ada).toHaveAttribute('data-distress', 'true');
-  await expect(page.getByTestId('trust-node-detail').getByTestId('vivre-burn')).toBeVisible();
+  await expect(page.getByTestId('trust-node-detail').getByTestId('vivre-burn')).toHaveCount(0);
 });
 
 test('Address book chips: Ada Mutual trust, Alan Trusted (pre-wire)', async ({ page }) => {
@@ -115,11 +118,14 @@ test('Address book chips: Ada Mutual trust, Alan Trusted (pre-wire)', async ({ p
   const alanRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Alan Turing' });
   await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual trust');
   await expect(adaRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'mutual');
+  // #253 ember no-op: keep data-distress (raw value, benign) — proves ada is a real distress
+  // contact — and assert the distress PAINT is absent (vivre-burn/caution return null). The
+  // distress-present ⟹ zero-paint pair is the survivor-safety guard; don't delete it.
   await expect(adaRow).toHaveAttribute('data-distress', '1');
-  await expect(adaRow.getByTestId('vivre-burn')).toBeVisible();
+  await expect(adaRow.getByTestId('vivre-burn')).toHaveCount(0);
   await adaRow.click();
-  await expect(page.getByTestId('contact-action-card').getByTestId('vivre-burn')).toBeVisible();
-  await expect(page.getByTestId('vivre-caution')).toBeVisible();
+  await expect(page.getByTestId('contact-action-card').getByTestId('vivre-burn')).toHaveCount(0);
+  await expect(page.getByTestId('vivre-caution')).toHaveCount(0);
   await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Trusted');
   await expect(alanRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'trust-sent');
 });
