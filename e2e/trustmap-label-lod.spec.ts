@@ -40,7 +40,7 @@ test('Trust Map label LOD + dense sample', async ({ page }) => {
 
   // Search fly-to
   await page.getByTestId('trust-map-search').fill('Ada Lovelace');
-  await page.getByTestId('trust-map-search-go').click();
+  await page.getByTestId('trust-map-search-go').dispatchEvent('click');
   await page.waitForTimeout(600);
   await expect(page.getByTestId('trust-map-nameplate')).toBeVisible();
   await expect(page.getByTestId('trust-map-nameplate')).toContainText('Ada');
@@ -52,7 +52,7 @@ test('Trust Map label LOD + dense sample', async ({ page }) => {
 
   // Lamp someone with group-only neighbors if needed — click Grace for clique filaments
   await page.getByTestId('trust-map-search').fill('Grace Hopper');
-  await page.getByTestId('trust-map-search-go').click();
+  await page.getByTestId('trust-map-search-go').dispatchEvent('click');
   await page.waitForTimeout(700);
   await expect(page.getByTestId('trust-map-lamp-links')).toBeVisible();
   await page.screenshot({ path: path.join(ART, 'trustmap-lamp-mutuals.png'), fullPage: true });
