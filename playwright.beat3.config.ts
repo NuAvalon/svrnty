@@ -22,7 +22,7 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   webServer: {
-    command: 'PORT=3017 npm run start',
+    command: 'RELAY_DB_PATH=/tmp/svrnty-e2e-relay/mailbox.sqlite PORT=3017 npm run start',
     url: 'http://localhost:3017',
     reuseExistingServer: false,
     timeout: 120_000,
