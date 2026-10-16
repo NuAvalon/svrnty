@@ -113,7 +113,16 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
     await bob.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-    await bob.getByTestId('galaxy-gate').click();
+    // Galaxy elements animate (tm-ignite entrance + infinite tm-pulse/breathe/spoke-live + the gate's
+    // own spark SVG), so Playwright's click actionability wait for a "stable" element flakes under
+    // e2e-prod CI load — test-geometry, NOT a render regression (the galaxy renders fast; only the
+    // geometric click on a moving target times out). Same root + fix as the trust-visual flaky-fix
+    // (#254): freeze animations for the interaction, then dispatchEvent the gate's own onClick handler
+    // (GalaxyGateMembrane: <button onClick={…onOpen()}> → dispatchEvent fires the REAL handler).
+    await bob.addStyleTag({
+      content: '*, *::before, *::after { animation: none !important; transition: none !important; }',
+    });
+    await bob.getByTestId('galaxy-gate').dispatchEvent('click');
     await bob.getByTestId('grow-gate-arrival').click();
     await bob.getByTestId('grow-gate-admit-confirm').click();
     await bob.getByRole('tab', { name: 'Contacts', exact: true }).click();
