@@ -108,8 +108,13 @@ export type DepositResult = { ok: true } | { ok: false; status: 400 | 413 | 429 
  * `clientEnvelopeId` (optional, Apollo retry-dedup contract): when the client supplies a STABLE id,
  * a retry with the same (mailbox, id) is IDEMPOTENT — returns ok:true without a second row and
  * without re-counting against cap. Absent → the relay assigns a random id (legacy callers). The
- * idempotent-OK is uniform with a fresh OK (no read-state leak). [Flint: co-verify the dedup×cap×I-4
- * interaction — a dup-id re-deposit skips the cap check, a negligible UUID-collision residual.]
+ * idempotent-OK is uniform with a fresh OK (no read-state leak). [Flint co-verified GREEN: the only
+ * residual is AT-CAP + OWN-MESSAGE — sweepExpired runs before the dedup SELECT, so re-depositing a
+ * still-PENDING X returns ok (dedup, pre-cap) while a consumed/expired X returns 429, letting a
+ * sender learn ONLY whether their OWN X is still-pending (vs gone — consumed-vs-expired ambiguous),
+ * and ONLY when the mailbox is at cap. A sub-case of the already-accepted cap-429 residual; moving
+ * dedup after cap would break idempotent-retry-at-cap (the reliability regression OPT-2 exists to
+ * kill), so accepted as-is. Cross-sender UUID collision ≈ 2^-122, negligible.]
  */
 export function depositEnvelope(
   mailboxId: string,
