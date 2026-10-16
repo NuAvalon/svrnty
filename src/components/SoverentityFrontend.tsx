@@ -23,6 +23,7 @@ import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
+import { RelaySettings } from '@/components/settings/RelaySettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 
 interface SoverentityFrontendProps {
@@ -1939,6 +1940,8 @@ export function SoverentityFrontend({
             onLockNow={onLockNow}
           />
         )}
+
+        {identity ? <RelaySettings /> : null}
 
         {/* Set Passphrase button */}
         {identity && (
