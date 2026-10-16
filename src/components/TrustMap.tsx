@@ -52,8 +52,6 @@ import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import {
   safeEmailLink,
   safePhoneLink,
-  safeUrlLink,
-  safeHandleLink,
 } from '@/lib/contacts/safe-contact-link';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
 import {
@@ -65,7 +63,6 @@ import {
 import { MethodHistoryPanel } from '@/components/identity/MethodHistoryPanel';
 import {
   ownerHasVerified,
-  formatFingerprintForVerify,
   TRUST_RECIPE_COPY,
 } from '@/lib/trust/trust-recipe';
 import { ownerLocalBadge } from '@/lib/trust/grow-gate';

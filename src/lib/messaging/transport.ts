@@ -8,8 +8,8 @@ import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
-import type { NoteRecord, NoteThread } from './types';
-import { isTripleRatchetBody, openDirectNote, sealDirectNote } from './direct-session';
+import type { NoteRecord } from './types';
+import { isTripleRatchetBody, sealDirectNote } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
 
 export interface NoteSenderIdentity {

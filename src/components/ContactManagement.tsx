@@ -194,7 +194,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   // Dialog visibility
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
-  const [showDetailDialog, setShowDetailDialog] = useState(false);
+  const [, setShowDetailDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showShareIdentityDialog, setShowShareIdentityDialog] = useState(false);
   const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
