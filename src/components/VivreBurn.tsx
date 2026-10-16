@@ -9,9 +9,13 @@
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { DISTRESS_COPY } from '@/lib/trust/distress';
 import { useId } from 'react';
+import { isInboundDistressPaintLive } from '@/components/vivre-paint-gate';
+
+export { isInboundDistressPaintLive, paintInboundDistress } from '@/components/vivre-paint-gate';
 
 export function VivreBurn({ compact }: { compact?: boolean }) {
   const uid = useId().replace(/:/g, '');
+  if (!isInboundDistressPaintLive()) return null;
   const size = compact ? 80 : 176;
   const flameA = `vivre-fa-${uid}`;
   const flameB = `vivre-fb-${uid}`;
@@ -158,6 +162,7 @@ export function VivreBurn({ compact }: { compact?: boolean }) {
 }
 
 export function StarEmber({ x, y, r }: { x: number; y: number; r: number }) {
+  if (!isInboundDistressPaintLive()) return null;
   const id = `ember-${Math.round(x)}-${Math.round(y)}`;
   return (
     <g data-testid="star-ember" style={{ pointerEvents: 'none' }}>
@@ -191,6 +196,7 @@ export function StarEmber({ x, y, r }: { x: number; y: number; r: number }) {
 }
 
 export function VivreCaution() {
+  if (!isInboundDistressPaintLive()) return null;
   return (
     <p
       data-testid="vivre-caution"

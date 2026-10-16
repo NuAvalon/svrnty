@@ -11,6 +11,7 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { CardActionMenu, cardVerbBtnStyle } from '@/components/ui/CardActionMenu';
 import { VivreBurn } from '@/components/VivreBurn';
+import { paintInboundDistress } from '@/components/vivre-paint-gate';
 
 export function ContactActionCard({
   testId = 'contact-action-card',
@@ -60,6 +61,7 @@ export function ContactActionCard({
   banner?: ReactNode;
 }) {
   const showMore = expanded || !!edit;
+  const showDistress = paintInboundDistress(distress);
 
   return (
     <div
@@ -72,9 +74,9 @@ export function ContactActionCard({
         borderRadius: 14,
         background: E.surfaceSolid,
         border: `1px solid ${
-          distress ? E.accent2 : lit || introPending ? E.borderLit : E.border
+          showDistress ? E.accent2 : lit || introPending ? E.borderLit : E.border
         }`,
-        boxShadow: distress
+        boxShadow: showDistress
           ? '0 0 22px color-mix(in srgb, var(--se-accent2) 28%, transparent)'
           : 'var(--se-glass-shadow)',
         fontFamily: E.fontSans,
@@ -83,7 +85,7 @@ export function ContactActionCard({
       }}
       data-distress={distress ? '1' : '0'}
     >
-      {distress ? (
+      {showDistress ? (
         <div
           aria-hidden
           style={{

@@ -16,6 +16,7 @@ import {
 import type { TrustEdge } from '@/lib/trust/types';
 import { trustPhaseVisual } from '@/components/trust/trust-phase-visual';
 import { VivreBurn } from '@/components/VivreBurn';
+import { paintInboundDistress } from '@/components/vivre-paint-gate';
 
 export type MasterBookRow = {
   id: string;
@@ -112,6 +113,7 @@ export function MasterAddressBookList({
           blocked: row.blocked === true,
         });
         const chip = visual.label;
+        const showDistress = paintInboundDistress(!!row.distress);
         return (
           <li key={row.id}>
             <button
@@ -133,8 +135,8 @@ export function MasterAddressBookList({
               style={{
                 ...rowBtn,
                 position: 'relative',
-                overflow: row.distress ? 'hidden' : undefined,
-                borderColor: row.distress
+                overflow: showDistress ? 'hidden' : undefined,
+                borderColor: showDistress
                   ? E.accent2
                   : selected || opened || live
                     ? E.borderLit
@@ -153,7 +155,7 @@ export function MasterAddressBookList({
                       : undefined,
               }}
             >
-              {row.distress ? <VivreBurn compact /> : null}
+              {showDistress ? <VivreBurn compact /> : null}
               {row.fingerprint ? (
                 <span className="contact-hex" aria-hidden="true">
                   <IdentitySeal fingerprint={row.fingerprint} size={24} />
