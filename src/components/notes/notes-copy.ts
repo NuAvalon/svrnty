@@ -2,13 +2,17 @@
 // The Chat tab is the window — no essay masthead. Status floor is
 // "Sent · unconfirmed." — never Delivered / Read / Expired.
 // Essay claims ("encrypted messages…", "How notes travel") stay off this glass.
-// A Delivered confirmation is coming — do not render Delivered as live status.
+// "Delivered" renders ONLY on a cryptographically VERIFIED delivery receipt (delivery-receipt.ts);
+// the floor stays "Sent · unconfirmed." for every unverified path (notes-status.ts statusIsHonest).
 
 export const NOTES_COPY = {
   tabLabel: 'Chat',
   heading: 'Chat',
   sentUnconfirmed: 'Sent · unconfirmed.',
   notSent: 'Not sent. Saved on this device.',
+  // Rendered ONLY for a verified-receipt 'delivered' status. Hypatia owns the exact copy-graduation
+  // wording (#172182 Delivered-when-receipt-proves) — confirm/adjust this string with her.
+  delivered: 'Delivered',
   sendAction: 'Send',
   sendingAction: 'Sending…',
   composeLabel: 'Message',
