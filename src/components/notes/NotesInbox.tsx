@@ -586,10 +586,13 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
               const outbound = n.direction === 'outbound';
               const status = bubbleStatus(n);
               const label = statusLabel(status);
-              // Secondary hint under a deposited-but-unconfirmed outbound note. Honest only because the
-              // receipt flow is now LIVE (this wiring) — it resolves to "Delivered" when the recipient's
-              // receipt verifies, so the hint auto-disappears at graduation. (Athena — Nov-5, Hypatia #172212.)
-              const awaitingDelivery = outbound && status === 'sent-unconfirmed';
+              // Secondary hint under a deposited-but-unconfirmed outbound note. GATED to flow-live
+              // PER-NOTE (Hypatia #172241 + Flint #172222 caveat): render "Awaiting delivery confirmation"
+              // ONLY when a receipt is genuinely in-flight for THIS note — i.e. it was sent through the live
+              // flow, which stamps receipt_nonce. A note with no nonce (sent before the flow shipped) can
+              // never get a receipt, so it keeps the bare floor — no false "confirmation is coming" promise.
+              // The hint auto-disappears at graduation (status flips to 'delivered'). (Athena — Nov-5.)
+              const awaitingDelivery = outbound && status === 'sent-unconfirmed' && !!n.receipt_nonce;
               const day = formatNoteDay(n.sent_at);
               const prevDay = i > 0 ? formatNoteDay(notes[i - 1].sent_at) : '';
               return (
