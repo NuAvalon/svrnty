@@ -1,9 +1,12 @@
 <!--
 PROVENANCE CHAIN (v0 — "recorded provenance", see note at bottom)
 Fill the block below. The CI check (provenance-check) WARNS (does not block) if it's
-missing or incomplete. CONSEQUENTIAL changes (claim-gate / crypto / auth / relay / satellite
-/ architecture / blueprint-touching / prod) need the full block + a real Authorized-by;
-TRIVIAL changes (docs / lint / format / tests) can use "self".
+missing or incomplete. CONSEQUENTIAL changes — src/lib/{crypto,trust,relay,identity}/**,
+the message-transport files (transport / consume-mailbox / notes-send), claim-gates.ts,
+satellite backend, canonical blueprint + charter, *.config.*, CI workflows, Dockerfile /
+compose — need the full block + a real Authorized-by (Peter's go for prod/claim-flip MUST
+cite a #id / date / link). STANDARD changes (other src/ UI) need Change + Origin. TRIVIAL
+changes (docs / *.md / tests / *.css / lint / format) can use "self".
 -->
 
 ## Provenance

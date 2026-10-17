@@ -19,13 +19,27 @@
  */
 import fs from 'node:fs';
 
-// --- Archie's path→tier schema (v0 DEFAULT — Archie refines the svrnty-specific set) ---
-// CONSEQUENTIAL = claim-gate / crypto / auth / relay / satellite / config / workflows / blueprint.
+// --- Archie's path→tier schema (REFINED to svrnty's actual layout, #172575) ---
+// CONSEQUENTIAL (full trailer, would-block): the crypto/trust/relay/identity libs, the
+// message-transport chokepoints, claim-gate flips, satellite backend, canonical blueprint +
+// charter (consequential even as .md), build config, CI workflows, and container build files.
+// CONSEQUENTIAL patterns take PRECEDENCE over TRIVIAL (so a blueprint*.md stays consequential).
 const CONSEQUENTIAL = [
-  /crypto/i, /\bauth/i, /claim[-_]?gate/i, /\brelay\b/i, /satellite/i,
-  /mailbox/i, /ratchet/i, /\.config\./i, /\.github\/workflows\//i, /blueprint/i, /charter/i,
+  /^src\/lib\/crypto\//i,                                 // crypto: ratchet, pq, kdf, envelope
+  /^src\/lib\/trust\//i,                                  // trust-graph, trust-affirm, PSI / at-rest-blinder
+  /^src\/lib\/relay\//i,                                  // relay / mailbox-store (OPT-2)
+  /^src\/lib\/identity\//i,                               // keys, cards, recovery, introduction
+  /(^|\/)(transport|consume-mailbox|notes-send)\.ts$/i,   // message-transport chokepoints (excludes *.test.ts)
+  /(^|\/)claim-gates\.ts$/i,                              // any claim-gate flip
+  /satellite/i,                                           // satellite relay backend (infra/svrnty/satellite*)
+  /blueprint/i, /charter/i,                               // canonical blueprint + charter docs
+  /\.config\./i,                                          // *.config.* (next / playwright / postcss / eslint)
+  /^\.github\/workflows\//i,                              // CI workflows
+  /(^|\/)Dockerfile(\.\w+)?$/i,                           // Dockerfile(.variant)
+  /(^|\/)(docker-)?compose([.\-][\w.-]*)?\.ya?ml$/i,      // docker-compose.yml / compose.*.yml
+  /\bauthn\b|\bauthz\b|\bauth[-_]/i,                      // authn/authz anywhere (tightened — no "author" FP, Flint)
 ];
-// TRIVIAL = docs / tests / lint / format / styles.
+// TRIVIAL = docs / tests / lint / format / styles. (blueprint/charter .md caught above by precedence.)
 const TRIVIAL = [/\.md$/i, /\.test\./i, /\.spec\./i, /\.css$/i, /\.(eslintrc|prettier)/i, /^docs\//i];
 
 function classify(files) {
@@ -73,9 +87,17 @@ function main() {
     if (tier === 'consequential') {
       for (const k of ['Impact', 'Authorized-by', 'Blueprint']) if (!present(f[k])) issues.push(`${k} missing (required for a consequential change).`);
       // authz-by-name (v0 heuristic; Flint's rule): consequential must NOT self-authorize.
-      const auth = (f['Authorized-by'] || '').toLowerCase();
+      const authRaw = f['Authorized-by'] || '';
+      const auth = authRaw.toLowerCase();
       if (present(f['Authorized-by']) && /^self\b/.test(auth))
         issues.push('Authorized-by: "self" is not valid for a consequential change — needs the owner + Reviewed-by ACKs, or Peter\'s go for prod/claim-flip.');
+      // well-formedness (Flint tune #2 + Archie: a Peter authorization must be VERIFIABLE, not a bare
+      // "Peter"): require a go-ref — a #<id>, an ISO date, or a link. Still RECORDED-scope (WARN), not proof.
+      if (present(f['Authorized-by']) && /\bpeter\b/i.test(auth)) {
+        const hasGoRef = /#\d{3,}/.test(authRaw) || /\b\d{4}-\d{2}-\d{2}\b/.test(authRaw) || /\bhttps?:\/\//i.test(authRaw);
+        if (!hasGoRef)
+          issues.push('Authorized-by cites Peter but gives no go-ref — add the message-id (#NNN), an ISO date, or a link. A bare "Peter" is not a verifiable authorization for a consequential change.');
+      }
     }
   }
 
