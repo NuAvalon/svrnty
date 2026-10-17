@@ -841,7 +841,7 @@ const CONSENT_EXEMPT = new Set<'know' | 'trust'>([]);
  * layer returns ∅ — fail-CLOSED by DEFAULT (Flint ADD): a layer wired without its reveal-source reveals
  * nothing rather than falling through to a default set.
  */
-async function getLayerFingerprints(deps: OrchestratorDeps, layer: 'know' | 'trust'): Promise<string[]> {
+export async function getLayerFingerprints(deps: OrchestratorDeps, layer: 'know' | 'trust'): Promise<string[]> {
   if (layer === 'know') return getKnownFingerprints(deps);
   if (layer === 'trust') return getTrustVisibleFingerprints(deps);
   return []; // unknown/future layer ⇒ fail-closed (reveals nothing)

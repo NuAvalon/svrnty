@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import type { OrchestratorDeps, PSISyncOptions } from '@/lib/trust/mutual-trust-sync';
+import { getLayerFingerprints } from '@/lib/trust/mutual-trust-sync';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
 import {
   buildKnowOverlayDeps,
@@ -382,6 +383,22 @@ test('piece-2 getTrustVisiblePeers: reversible — flipping OFF any single conse
   assert.deepEqual(await reveals({ peer_discoverable_as_trusted: false } as Partial<ContactRecord>), []); // peer revokes theirs
   assert.deepEqual(await reveals({ per_contact_private: true } as Partial<ContactRecord>), []);           // go-private
   assert.deepEqual(await reveals({ trusted: false } as Partial<ContactRecord>), []);                      // un-trust
+});
+
+// ── piece-2 fail-closed-by-DEFAULT: an unknown/future layer reveals NOTHING (Flint regression-lock #172551) ──
+// The whole point of the gate inversion: a layer wired without its reveal-source CANNOT silently skip the
+// gate. getLayerFingerprints returns ∅ for any layer that isn't know/trust → empty blinded set → nothing is
+// ever synced/revealed for it. Regression-proofs the "a future layer can't skip consent" property.
+test('piece-2 getLayerFingerprints: known layers resolve to their opt-in subsets; an unknown/future layer fails CLOSED (∅)', async () => {
+  const { store } = fakeStore([
+    rec({ id: 'a', fingerprint: 'all-yes', trusted: true, open_visibility: true, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+  ]);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  assert.deepEqual(await getLayerFingerprints(deps, 'know'), ['all-yes']);   // know → open_visibility subset
+  assert.deepEqual(await getLayerFingerprints(deps, 'trust'), ['all-yes']);  // trust → trust_visibility opt-in subset
+  // ANY other layer string ⇒ ∅ (no reveal-source) — fail-closed, never a default/whole-set fallthrough.
+  assert.deepEqual(await getLayerFingerprints(deps, 'future-layer' as unknown as 'know' | 'trust'), []);
+  assert.deepEqual(await getLayerFingerprints(deps, '' as unknown as 'know' | 'trust'), []);
 });
 
 // ── piece-1 §G: #111-LEGACY SWEEP (migratePerContactPrivacyOnUnlock, client-store.ts) ─────────────────
