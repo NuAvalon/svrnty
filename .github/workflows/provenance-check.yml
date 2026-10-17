@@ -23,6 +23,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Self-test the provenance classifier (BLOCKS on regression)
+        # Distinct from the WARN-only PR check below: this verifies the GATE-SCRIPT's own
+        # correctness. A classifier regression (a path silently dropped to a lower tier) is a
+        # real defect — who-watches-the-watcher (#172693) — so it exits non-zero and fails the PR.
+        run: node .github/scripts/provenance-check.test.mjs
       - name: Collect changed files
         id: diff
         run: |

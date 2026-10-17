@@ -29,12 +29,15 @@ const CONSEQUENTIAL = [
   /^src\/lib\/trust\//i,                                  // trust-graph, trust-affirm, PSI / at-rest-blinder
   /^src\/lib\/relay\//i,                                  // relay / mailbox-store (OPT-2)
   /^src\/lib\/identity\//i,                               // keys, cards, recovery, introduction
+  /^src\/lib\/sync\//i,                                   // mailbox-sync crypto (consume-mailbox et al; #172693)
+  /^src\/lib\/messaging\/(seal|note-auth)\.ts$/i,         // crypto chokepoints outside crypto/ — by security-nature (#172693)
   /(^|\/)(transport|consume-mailbox|notes-send)\.ts$/i,   // message-transport chokepoints (excludes *.test.ts)
   /(^|\/)claim-gates\.ts$/i,                              // any claim-gate flip
   /satellite/i,                                           // satellite relay backend (infra/svrnty/satellite*)
   /blueprint/i, /charter/i,                               // canonical blueprint + charter docs
   /\.config\./i,                                          // *.config.* (next / playwright / postcss / eslint)
   /^\.github\/workflows\//i,                              // CI workflows
+  /^\.github\/scripts\//i,                                // the gate-script ITSELF — who-watches-the-watcher (#172693)
   /(^|\/)Dockerfile(\.\w+)?$/i,                           // Dockerfile(.variant)
   /(^|\/)(docker-)?compose([.\-][\w.-]*)?\.ya?ml$/i,      // docker-compose.yml / compose.*.yml
   /\bauthn\b|\bauthz\b|\bauth[-_]/i,                      // authn/authz anywhere (tightened — no "author" FP, Flint)
