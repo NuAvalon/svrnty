@@ -123,20 +123,26 @@ export function buildKnowOverlayDeps(
 
     getTrustVisiblePeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
-      // TRUST reveal set (piece-2, true-3-way) = the opt-in subset where ALL THREE consents hold, by
-      // construction (Peter #172418 "else it doesn't work" / Flint #172452). A peer is included ONLY if:
-      //   • e.trusted ∧ !isDecayed(e)                 — (C1) owner actually trusts them (non-decayed),
-      //   • e.trust_visibility === true               — (C1) owner opted them into trust-discovery,
-      //   • e.peer_discoverable_as_trusted === true   — (C3) the peer's OWN published consent, AND
-      //   • !e.per_contact_private                    — go-private excludes from every PSI reveal.
-      // (C2 = the OTHER party applies the same filter on their device → a shared contact lands in BOTH
-      // input sets only when all three consented → the intersection reveals them only with their consent.)
-      // Every condition is TRUTHY-exclusion = fail-closed: an absent/false flag EXCLUDES. Empty ⇒ reveals
-      // nothing. `blocked` already dropped at ownerEdges.
+      // TRUST reveal set (piece-2) = the opt-in subset over MUTUAL bonds only. BLIND-UNTIL-MUTUAL is a
+      // HARD anti-coercion floor (Peter #172746 / Archie confirmed-model-delta #172822): a one-way /
+      // PENDING trust is NEVER revealed to anyone — especially not the person trusted (else they can
+      // coerce). So the reveal gates on `reciprocal` (the MUTUAL bond), NEVER one-way `trusted`. A peer
+      // is included ONLY if:
+      //   • e.mutual?.reciprocal === true   — the bond is MUTUAL (own-trust ∧ verified inbound affirm;
+      //       set ONLY by the crypto-verified trust-affirmation, acceptTrustAffirm — Flint's floor (b)),
+      //   • !isDecayed(e)                   — the bond is non-decayed,
+      //   • e.trust_visibility === true     — owner opted this bond into trust-viz (party-controlled),
+      //   • e.peer_discoverable_as_trusted === true — the peer's OWN viz-consent (party-controlled), AND
+      //   • !e.per_contact_private          — go-private excludes from every PSI reveal.
+      // (The OTHER party applies the same filter → a bond lands in BOTH input sets only when mutual AND
+      // both parties opted it visible → the intersection reveals ONLY mutual, party-consented bonds.)
+      // Every condition is TRUTHY-exclusion = fail-closed: absent/false EXCLUDES. Empty ⇒ reveals nothing.
+      // COUPLING: `reciprocal` is populated by the mutual-emit-wire (acceptTrustAffirm) → until that wire
+      // is live this stays ~empty = correctly DARK. `blocked` already dropped at ownerEdges.
       return edges
         .filter(
           (e) =>
-            e.trusted &&
+            e.mutual?.reciprocal === true &&
             !isDecayed(e) &&
             e.trust_visibility === true &&
             e.peer_discoverable_as_trusted === true &&

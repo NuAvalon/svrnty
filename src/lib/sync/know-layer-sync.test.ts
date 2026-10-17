@@ -338,51 +338,53 @@ test('piece-1 getKnownPeers: per_contact_private is the SOLE reason an open-visi
   assert.deepEqual((await depsWithout.getKnownPeers()).map((p) => p.fingerprint), ['peer-x']); // not-private reveals
 });
 
-// ── piece-2 (trust tier, TRUE 3-way) getTrustVisiblePeers: the trust-PSI reveal source ────────────────
-// Peter #172418 ("true 3-way else it doesn't work") / Flint #172452. A peer enters the trust-visible set
-// ONLY when all three consents hold, enforced at INPUT-SET CONSTRUCTION: owner trusts them (non-decayed) ∧
-// owner opted trust_visibility (C1) ∧ the peer's OWN peer_discoverable_as_trusted (C3) ∧ !per_contact_private.
-// Every term is truthy-exclusion = fail-closed; absent flags default false ⇒ excluded. (C2 = the OTHER
-// party's device applies the same filter → a shared contact is in BOTH input sets only with all-three.)
-test('piece-2 getTrustVisiblePeers: reveals ONLY when all three consents hold; any one missing ⇒ fail-closed drop', async () => {
+// ── piece-2 getTrustVisiblePeers: the trust-PSI reveal source — BLIND-UNTIL-MUTUAL ─────────────────────
+// Peter #172746 / Archie confirmed-model-delta #172822. The reveal gates on the MUTUAL bond (reciprocal),
+// NEVER one-way `trusted` — a one-way/PENDING trust is invisible to everyone (anti-coercion). A peer enters
+// the trust-visible set ONLY when: the bond is MUTUAL (reciprocal) ∧ non-decayed ∧ owner opted trust_visibility
+// ∧ the peer's own peer_discoverable_as_trusted ∧ !per_contact_private. Truthy-exclusion = fail-closed.
+const MUTUAL = { reciprocal: true, they_trust_me: true, last_sync: null };
+const ONE_WAY = { reciprocal: false, they_trust_me: false, last_sync: null };
+
+test('piece-2 getTrustVisiblePeers: reveals ONLY a MUTUAL bond with both viz-opt-ins; one-way/pending or any missing consent ⇒ fail-closed drop', async () => {
   const contacts = [
-    // honest path — trusted + my trust_visibility (C1) + peer's own discoverable (C3) + not private ⇒ REVEALED
-    rec({ id: 'ok', fingerprint: 'carol-allyes', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
-    // C1 missing: trusted + peer-discoverable but I did NOT opt in ⇒ excluded (the silent-enrollment leak this prevents)
-    rec({ id: 'c1', fingerprint: 'no-my-optin', trusted: true, trust_visibility: false, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
-    // C3 missing: trusted + I opted in but the PEER did not publish discoverable ⇒ excluded (true-3-way third consent)
-    rec({ id: 'c3', fingerprint: 'no-peer-consent', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: false } as Partial<ContactRecord>),
-    // trust missing: opted + peer-discoverable but NOT trusted ⇒ excluded
-    rec({ id: 'nt', fingerprint: 'not-trusted', trusted: false, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
-    // go-private overrides all: all-yes but per_contact_private ⇒ excluded
-    rec({ id: 'pp', fingerprint: 'private', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: true, per_contact_private: true } as Partial<ContactRecord>),
+    // honest path — MUTUAL + my trust_visibility + peer's own discoverable + not private ⇒ REVEALED
+    rec({ id: 'ok', fingerprint: 'carol-allyes', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // ★ ONE-WAY / PENDING trust (I trust them, NOT reciprocated) + all opt-ins ⇒ EXCLUDED — the blind-until-mutual floor (anti-coercion, Peter #172746)
+    rec({ id: 'ow', fingerprint: 'one-way', trusted: true, mutual: ONE_WAY, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // my viz off: mutual + peer-discoverable but I did NOT opt in ⇒ excluded
+    rec({ id: 'c1', fingerprint: 'no-my-optin', trusted: true, mutual: MUTUAL, trust_visibility: false, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // peer viz off: mutual + I opted in but the PEER did not ⇒ excluded
+    rec({ id: 'c3', fingerprint: 'no-peer-consent', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: false } as Partial<ContactRecord>),
+    // go-private overrides all: mutual + both opt-ins but per_contact_private ⇒ excluded
+    rec({ id: 'pp', fingerprint: 'private', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: true, per_contact_private: true } as Partial<ContactRecord>),
   ];
   const { store } = fakeStore(contacts);
   const deps = buildKnowOverlayDeps(OWNER, store);
   const fps = (await deps.getTrustVisiblePeers()).map((p) => p.fingerprint).sort();
-  assert.deepEqual(fps, ['carol-allyes']); // ONLY the all-three-consent edge reveals
+  assert.deepEqual(fps, ['carol-allyes']); // ONLY the mutual, both-opted, not-private bond reveals
 });
 
-test('piece-2 getTrustVisiblePeers: fail-closed by DEFAULT — a plain trusted contact (no opt-ins) is NOT trust-visible, but IS in the whole-trusted scheduler source', async () => {
-  // Trusting someone ≠ consenting to disclose that trust. Proves getTrustVisiblePeers is the opt-in SUBSET,
-  // never the whole trusted set (the leak Flint #172393 flagged); getTrustedPeers (scheduler) stays whole-set.
-  const { store } = fakeStore([rec({ id: 't', fingerprint: 'just-trusted', trusted: true })]);
+test('piece-2 getTrustVisiblePeers: a ONE-WAY trusted contact is NOT trust-visible (blind-until-mutual) but IS in the whole-trusted scheduler source', async () => {
+  // Trusting someone (one-way) ≠ a visible bond. getTrustVisiblePeers gates on MUTUAL (reciprocal) + opt-ins;
+  // getTrustedPeers (scheduler) stays the whole one-way-trusted set. Proves the floor + the subset separation.
+  const { store } = fakeStore([rec({ id: 't', fingerprint: 'just-trusted', trusted: true })]); // one-way, no mutual, no opt-ins
   const deps = buildKnowOverlayDeps(OWNER, store);
-  assert.deepEqual((await deps.getTrustVisiblePeers()).map((p) => p.fingerprint), []); // fail-closed default
+  assert.deepEqual((await deps.getTrustVisiblePeers()).map((p) => p.fingerprint), []); // blind-until-mutual + fail-closed
   assert.deepEqual((await deps.getTrustedPeers()).map((p) => p.fingerprint), ['just-trusted']); // scheduler whole-set
 });
 
-test('piece-2 getTrustVisiblePeers: reversible — flipping OFF any single consent drops the peer next tick', async () => {
-  const allYes = { id: 'r', fingerprint: 'rev', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: true };
+test('piece-2 getTrustVisiblePeers: reversible — breaking mutuality OR flipping OFF any viz drops the peer next tick', async () => {
+  const allYes = { id: 'r', fingerprint: 'rev', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: true };
   const reveals = async (patch: Partial<ContactRecord>) => {
     const { store } = fakeStore([rec({ ...allYes, ...patch } as Partial<ContactRecord>)]);
     return (await buildKnowOverlayDeps(OWNER, store).getTrustVisiblePeers()).map((p) => p.fingerprint);
   };
-  assert.deepEqual(await reveals({}), ['rev']);                                   // all-yes reveals
-  assert.deepEqual(await reveals({ trust_visibility: false } as Partial<ContactRecord>), []);            // I revoke my opt-in
+  assert.deepEqual(await reveals({}), ['rev']);                                                        // mutual + all-yes reveals
+  assert.deepEqual(await reveals({ mutual: ONE_WAY } as Partial<ContactRecord>), []);                  // ★ mutuality broken (un-reciprocated) → blind
+  assert.deepEqual(await reveals({ trust_visibility: false } as Partial<ContactRecord>), []);          // I revoke my viz
   assert.deepEqual(await reveals({ peer_discoverable_as_trusted: false } as Partial<ContactRecord>), []); // peer revokes theirs
-  assert.deepEqual(await reveals({ per_contact_private: true } as Partial<ContactRecord>), []);           // go-private
-  assert.deepEqual(await reveals({ trusted: false } as Partial<ContactRecord>), []);                      // un-trust
+  assert.deepEqual(await reveals({ per_contact_private: true } as Partial<ContactRecord>), []);         // go-private
 });
 
 // ── piece-2 fail-closed-by-DEFAULT: an unknown/future layer reveals NOTHING (Flint regression-lock #172551) ──
@@ -391,7 +393,7 @@ test('piece-2 getTrustVisiblePeers: reversible — flipping OFF any single conse
 // ever synced/revealed for it. Regression-proofs the "a future layer can't skip consent" property.
 test('piece-2 getLayerFingerprints: known layers resolve to their opt-in subsets; an unknown/future layer fails CLOSED (∅)', async () => {
   const { store } = fakeStore([
-    rec({ id: 'a', fingerprint: 'all-yes', trusted: true, open_visibility: true, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    rec({ id: 'a', fingerprint: 'all-yes', trusted: true, mutual: MUTUAL, open_visibility: true, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
   ]);
   const deps = buildKnowOverlayDeps(OWNER, store);
   assert.deepEqual(await getLayerFingerprints(deps, 'know'), ['all-yes']);   // know → open_visibility subset
