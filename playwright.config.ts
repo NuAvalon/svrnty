@@ -14,15 +14,20 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
     trace: 'on-first-retry',
     headless: true,
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: {
-    command: 'RELAY_DB_PATH=/tmp/svrnty-e2e-relay/mailbox.sqlite npm run dev',
-    url: 'http://localhost:3000',
-    reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
-  },
+  webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER
+    ? undefined
+    : {
+        // RELAY_DB_PATH kept from main: OPT-2's durable relay store (#248) needs a writable
+        // sqlite path for the relay e2e; the #225 branch's SKIP_WEBSERVER/BASE_URL overrides
+        // are preserved around it.
+        command: 'RELAY_DB_PATH=/tmp/svrnty-e2e-relay/mailbox.sqlite npm run dev',
+        url: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000',
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      },
 });

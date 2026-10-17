@@ -27,7 +27,7 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
 
   await expect(page.getByTestId('trust-map')).toBeVisible();
   await expect(page.getByTestId('trust-map-empty')).toContainText(/Grow your galaxy/i);
-  await expect(page.getByTestId('trust-map-load-sample')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-load-sample')).toBeVisible();
   await expect(page.getByTestId('trust-map-grow')).toBeVisible();
   await page.getByTestId('trust-map-grow').click();
   await expect(page.getByTestId('grow-surface')).toBeVisible();
@@ -37,6 +37,19 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
   await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]').first()).toBeVisible();
   await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="know"]').first()).toBeVisible();
+  const search = page.getByTestId('trust-map-search');
+  await expect(search).toBeVisible();
+  await search.fill('ada');
+  await expect(page.locator('[data-testid="trust-node"][data-name="Ada Lovelace"]')).toHaveAttribute(
+    'data-search-hit',
+    '1',
+  );
+  await expect(page.locator('[data-testid="trust-node"][data-name="Alan Turing"]')).toHaveAttribute(
+    'data-search-hit',
+    '0',
+  );
+  await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_search_ada_glow.png', fullPage: true });
+  await search.fill('');
   await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_lattice_sample.png', fullPage: true });
 
   const svg = page.getByTestId('trust-map-svg');
