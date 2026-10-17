@@ -46,10 +46,15 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam } from './consume-mailbox';
+import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
-import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
-import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
+import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { initNotesStore, isNotesStoreUnlocked, getNote, putNote } from '@/lib/messaging/store';
+import type { NoteWireV0 } from '@/lib/messaging/types';
+import { buildReceiptWire, verifyReceiptWire } from '@/lib/crypto/delivery-receipt';
+import { canonicalPubsFromArmoredPublicKey } from '@/lib/identity/fingerprint';
+import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
+import { loadOwnerMessageKeys } from '@/components/encrypt-decrypt/load-owner-message-keys';
 import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
 import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
@@ -139,7 +144,15 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
  * note by its own type-checked decryptor to acceptInboundNote (authn-then-admit, fail-closed) → the
  * notes store. Exported for unit tests.
  */
-export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
+export function buildNoteSeam(
+  owner: OwnerIdentity,
+  // Optional recipient-emit (Athena — Nov-5 delivered-receipt): after a note is accepted, send a
+  // cryptographically-signed receipt back to its sender so their "Sent · unconfirmed." graduates to
+  // "Delivered". Best-effort by contract — the caller's closure must never throw (a receipt is a bonus
+  // on top of the already-persisted note; a failed emit must not fail note acceptance). Omitted by unit
+  // tests / legacy callers → exact prior behaviour (no receipt sent).
+  sendReceipt?: (wire: NoteWireV0) => Promise<void>,
+): NoteResponseSeam {
   const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
@@ -165,7 +178,19 @@ export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
           return openDirectNote(fromFp, body, self, peer);
         },
       });
-      return rec ? { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint } : null;
+      if (!rec) return null; // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept
+      // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
+      // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
+      // are trustworthy to seal+address a receipt to. Fail-closed on error: never let a receipt-emit
+      // failure undo the note we already persisted.
+      if (sendReceipt) {
+        try {
+          await sendReceipt(wire);
+        } catch (err) {
+          console.error('[live-book-poll] delivery-receipt emit failed (note still delivered locally):', err);
+        }
+      }
+      return { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
     },
   };
 }
@@ -230,6 +255,62 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseS
   };
 }
 
+/**
+ * Build the DELIVERY-RECEIPT seam bound to this owner (consume-mailbox ReceiptResponseSeam) — the SENDER
+ * side. When the owner polls their own mailbox and finds a receipt sealed to them, this recovers the
+ * OUTBOUND note it confirms and verifies the delivering recipient's signature, then marks the note
+ * delivered. Exported for unit tests.
+ *
+ * ★ THE HONESTY INVARIANT (Flint carry-forward): `delivered: true` is written on EXACTLY ONE LINE — the
+ * putNote below, reached ONLY after verifyReceiptWire returns true. Every other path (unknown note,
+ * recipient not in book, classical contact with no PQ sig key, forged/garbled receipt, nonce mismatch)
+ * returns null → the note keeps the honest 'Sent · unconfirmed.' floor. A false "Delivered" is
+ * UNREACHABLE by construction.
+ */
+export function buildReceiptSeam(owner: OwnerIdentity): ReceiptResponseSeam {
+  const decryptReceipt = receiptOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  return {
+    // null for a non-receipt (contact.update / joiner / note / affirm) → consumeOne falls through; the
+    // type-check inside receiptOpenpgpDecryptor is the discriminator, so this never eats a non-receipt.
+    verify: (blob) => decryptReceipt(blob),
+    accept: async (wire) => {
+      // Recover OUR stored outbound note — the source-of-truth for the expected (note_id, nonce, recipient).
+      const note = await getNote(wire.note_id);
+      if (!note || note.direction !== 'outbound' || !note.receipt_nonce) return null; // unknown/ineligible → drop
+      const peerFp = note.to_fingerprints[0];
+      if (!peerFp) return null;
+      // The delivering recipient's pubkeys come from THEIR card in our book (we sent them a note → admitted).
+      const card = await getContactByFingerprint(owner.fingerprint, peerFp);
+      if (!card) return null; // recipient no longer in book → can't verify → fail-safe drop (floor holds)
+      const rec = card as {
+        public_key?: string; peer_public_key?: string;
+        pq_kem_public_key?: string; peer_pq_kem_public_key?: string;
+        pq_sig_public_key?: string; peer_pq_sig_public_key?: string;
+      };
+      const armored = String(rec.public_key || rec.peer_public_key || '');
+      const kemB64 = rec.pq_kem_public_key || rec.peer_pq_kem_public_key;
+      const sigB64 = rec.pq_sig_public_key || rec.peer_pq_sig_public_key;
+      if (!armored || !kemB64 || !sigB64) return null; // classical (no-PQ) contact → no sig key → fail-safe drop
+      let pubs;
+      try {
+        pubs = await canonicalPubsFromArmoredPublicKey(armored, kemB64, sigB64);
+      } catch {
+        return null; // malformed card keys → can't verify → fail-safe drop
+      }
+      const ok = verifyReceiptWire(
+        wire,
+        { noteId: note.note_id, nonce: note.receipt_nonce, recipientFingerprint: peerFp },
+        pubs.signPub,
+        pubs.sigPub,
+      );
+      if (!ok) return null; // forged / garbled / mismatched → floor 'Sent · unconfirmed.' holds, NO false Delivered
+      // ★ THE ONE LINE: a VERIFIED receipt → mark the note delivered. Idempotent on redelivery (putNote by id).
+      await putNote({ ...note, delivered: true });
+      return { note_id: note.note_id, thread_id: note.thread_id, from_fingerprint: peerFp };
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -271,17 +352,42 @@ export async function buildConsumeDeps(
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
   }
+  // Recipient-emit for delivery receipts (Athena — Nov-5): after an inbound note is accepted, sign a
+  // receipt with OUR identity keys and deposit it (sealed) to the sender's OWN mailbox so their note
+  // graduates "Sent · unconfirmed." → "Delivered". The note wire was AUTHENTICATED on accept, so
+  // wire.public_key (seal target) + wire.from_fingerprint (mailbox) are trustworthy. Best-effort: any
+  // throw is swallowed by buildNoteSeam (the note is already persisted). Skips a note with no
+  // receipt_nonce (sender didn't opt in) or a classical owner with no PQ sig material (loadOwner → null).
+  const doFetch = opts.fetchImpl ?? fetch;
+  const sendReceipt = async (wire: NoteWireV0): Promise<void> => {
+    const nonce = wire.receipt_nonce;
+    if (!nonce || !wire.public_key || !wire.from_fingerprint) return; // nothing to confirm / can't address
+    const owned = await loadOwnerMessageKeys(fingerprint, identity);
+    if (!owned) return; // locked / no PQ sig material → no receipt (sender's floor holds — fail-safe)
+    const receipt = buildReceiptWire(wire.note_id, nonce, owner.fingerprint, owned.sender.signSeed, owned.sender.sigSecret);
+    const blob = await sealReceiptTo(receipt, wire.public_key);
+    const mailbox_id = deriveMailboxId(wire.from_fingerprint);
+    await doFetch('/api/relay/envelope', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob }),
+    });
+  };
   return {
     owner,
     decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase),
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes),
-    note: buildNoteSeam(owner),
+    note: buildNoteSeam(owner, sendReceipt),
     affirm: buildTrustAffirmSeam(owner),
+    receipt: buildReceiptSeam(owner),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)
     emitNote: (e) => emitNoteArrival(e),
+    // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
+    // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
+    emitReceipt: (e) => emitNoteArrival(e),
     // Mutual-trust flip persisted on the shared poll → repaint the contact row / trust map via the SAME
     // contact beat (reason:'live-apply') so the edge re-reads ContactRecord.mutual → phases to Mutual
     // (or inbound). Reuses the existing bus; no new emitter. (Athena — if a dedicated trust beat is wanted.)

@@ -35,6 +35,7 @@ import {
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
+import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -175,6 +176,45 @@ export interface TrustLiveEvent {
   reciprocal: boolean;
 }
 
+/**
+ * DELIVERY-RECEIPT routing seam (svrnty-receipt-v0) — the mailbox's FIFTH inbound type. A receipt is
+ * sealed to the owner with the SAME openpgp envelope as the other four (seal.ts sealReceiptTo), so —
+ * exactly like them — it DECRYPTS NON-NULL via the contact-update decryptor and would then be dropped on
+ * its missing `envelope.fingerprint` → silently ack-DELETED (the silent-loss). This seam routes a receipt
+ * FIRST, by its own type-checked decryptor, so the sender's "Delivered" graduation actually lands. It is
+ * the WIRE that makes "Sent · unconfirmed." a TRANSIENT state for a delivered note (it resolves when the
+ * recipient's receipt arrives) — the sender half of delivery-receipt.ts.
+ *   • verify — decrypt + type-check the blob as a receipt (receiptOpenpgpDecryptor returns null for a
+ *     non-receipt → fall through). Does NOT authenticate — that's accept's job (the receipt's claimed
+ *     nonce/note are meaningless until verifyReceiptWire runs against the stored outbound note).
+ *   • accept — recover the OUTBOUND note (getNote), look up the recipient's pubkeys, and
+ *     verifyReceiptWire. ★ delivered=true is written ON EXACTLY ONE LINE (inside accept, only on
+ *     verify-true) — NEVER from a bare ack, a relay flag, or any unverified signal. Returns the note's
+ *     ids for the inbox repaint, or null if DROPPED (no matching note / forged / unverifiable recipient —
+ *     silent I-1, floor 'Sent · unconfirmed.' holds, NO false Delivered). THROWS only on store I/O →
+ *     retryable (putNote is idempotent, so a redelivered receipt re-sets delivered harmlessly).
+ * Optional: a caller that omits it keeps the exact prior behaviour (a receipt, if any, falls to the
+ * contact-update path = the silent-loss; so the runtime binding MUST wire this once over-wire ships).
+ */
+export interface ReceiptResponseSeam {
+  verify: (blob: string) => Promise<ReceiptWireV0 | null>;
+  accept: (wire: ReceiptWireV0) => Promise<AcceptedReceipt | null>;
+}
+
+/** The confirmed note's handles, returned by the receipt seam's accept for the inbox delivered-repaint. */
+export interface AcceptedReceipt {
+  note_id: string;
+  thread_id: string;
+  from_fingerprint: string; // the delivering recipient's fingerprint (for the repaint)
+}
+
+/** Emitted after a receipt is verified + the note marked delivered, so the inbox repaints the status. */
+export interface ReceiptLiveEvent {
+  note_id: string;
+  thread_id: string;
+  from_fingerprint: string;
+}
+
 export interface ConsumeDeps {
   owner: OwnerIdentity;
   decrypt: EnvelopeDecryptor;
@@ -182,11 +222,13 @@ export interface ConsumeDeps {
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
   affirm?: TrustAffirmResponseSeam; // mutual-trust affirmation routing; omit → affirms fall to contact-update path (silent-loss)
+  receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
+  emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
   now?: () => string; // ISO timestamp source (inject for determinism)
 }
 
@@ -196,6 +238,7 @@ export interface ConsumeSummary {
   ignited: number;
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
   affirmed: number; // mutual-trust affirmations applied (they_trust_me / reciprocal flipped)
+  delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
@@ -205,6 +248,7 @@ type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'affirm'; event: TrustLiveEvent } // mutual-trust flip persisted → ack + trust repaint (NOT a book beat)
+  | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
   | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
   | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
 
@@ -219,7 +263,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, delivered: 0, dropped: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -280,6 +324,14 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
         deps.emitTrust?.(outcome.event);
       } catch {
         /* trust repaint is best-effort; a repaint failure must not block consume/ack */
+      }
+    } else if (outcome.kind === 'receipt') {
+      summary.delivered++;
+      toAck.push(env.envelope_id); // note marked delivered → consumed, ack-delete
+      try {
+        deps.emitReceipt?.(outcome.event);
+      } catch {
+        /* inbox delivered-repaint is best-effort; a repaint failure must not block consume/ack */
       }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
@@ -407,6 +459,38 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       }
     }
     // wire null → not an affirmation → fall through to the contact-update consume path.
+  }
+
+  // DELIVERY-RECEIPT ROUTING (svrnty-receipt-v0) — same discipline as the joiner + note + affirm seams
+  // above, same reason: a receipt decrypts NON-NULL via the contact-update decryptor, then drops on its
+  // missing `envelope.fingerprint` → silently ack-DELETED. Route it by its own type-checked decryptor.
+  // receipt.verify returns null for a non-receipt (note / joiner / affirm / contact-update → fall through
+  // unharmed), so this can never eat another type (5-way no-cross-swallow — receipt-type ≠ the others).
+  // accept recovers the outbound note + verifies the recipient's signature → marks it delivered.
+  if (deps.receipt) {
+    let wire: ReceiptWireV0 | null;
+    try {
+      wire = await deps.receipt.verify(blob);
+    } catch {
+      wire = null; // a throwing receipt-verify is treated as not-a-receipt → fall through (fail-safe)
+    }
+    if (wire) {
+      try {
+        const confirmed = await deps.receipt.accept(wire);
+        // verified (matches a stored outbound note + recipient sig checks) → receipt (ack + delivered-repaint);
+        // dropped (no matching note / forged / unverifiable recipient) → terminal (silent ack — I-1, the
+        // floor 'Sent · unconfirmed.' holds, NO false Delivered).
+        return confirmed
+          ? { kind: 'receipt', event: { note_id: confirmed.note_id, thread_id: confirmed.thread_id, from_fingerprint: confirmed.from_fingerprint } }
+          : { kind: 'terminal' };
+      } catch (err) {
+        // A store I/O failure while marking a VERIFIED note delivered → leave for retry (at-least-once).
+        // putNote is idempotent on note_id, so a redelivered receipt re-sets delivered harmlessly.
+        console.error('[return-channel] receipt accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // wire null → not a receipt → fall through to the contact-update consume path.
   }
 
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.

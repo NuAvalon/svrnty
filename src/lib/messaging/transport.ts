@@ -7,7 +7,7 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
+import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
 import type { NoteRecord } from './types';
 import { isTripleRatchetBody, sealDirectNote } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
@@ -45,6 +45,12 @@ export async function sendNoteToPeer(args: {
   const thread_id = args.threadId ?? newThreadId();
   const note_id = newNoteId();
   const sent_at = new Date().toISOString();
+  // Delivery-receipt (Athena — Nov-5): a per-note freshness nonce, carried SEALED+SIGNED inside the wire
+  // (it is part of noteSigningInput → sender-signed under DOMAIN_NOTE) and kept on the local record as the
+  // sender's source-of-truth. The recipient echoes it in a recipient-signed receipt; the sender verifies
+  // the echo against this stored value. Always generated — harmless if the peer never returns a receipt
+  // (the note simply stays the honest 'Sent · unconfirmed.' floor).
+  const receipt_nonce = newReceiptNonce();
 
   let wireBody = args.body;
   if (args.ownerRatchet && args.peerRatchet) {
@@ -66,6 +72,7 @@ export async function sendNoteToPeer(args: {
     sent_at,
     body: wireBody,
     participant_kind: args.sender.participant_kind,
+    receipt_nonce,
   };
 
   // Sign BEFORE sealing so the recipient can authenticate the sender (not just decrypt). The
@@ -99,6 +106,7 @@ export async function sendNoteToPeer(args: {
     participant_kind: args.sender.participant_kind,
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    receipt_nonce, // source-of-truth for verifying the recipient's delivery receipt (delivered stays unset until then)
   };
   await putNote(local);
 

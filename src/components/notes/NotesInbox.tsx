@@ -376,7 +376,9 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
   const bubbleStatus = (note: NoteRecord): NoteBubbleStatus => {
     if (note.direction !== 'outbound') return 'inbound';
     if (failedIds[note.note_id]) return 'not-sent';
-    return outboundStatus(true);
+    // delivered flips to 'delivered' ONLY when a verified receipt set note.delivered (consume seam);
+    // otherwise the honest floor 'sent-unconfirmed'. (Athena — Nov-5 delivered-receipt.)
+    return outboundStatus(true, note.delivered === true);
   };
 
   const sendDisabled = busy || !sender?.canonical || rows.length === 0 || !selected;
@@ -582,7 +584,12 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
           >
             {notes.map((n, i) => {
               const outbound = n.direction === 'outbound';
-              const label = statusLabel(bubbleStatus(n));
+              const status = bubbleStatus(n);
+              const label = statusLabel(status);
+              // Secondary hint under a deposited-but-unconfirmed outbound note. Honest only because the
+              // receipt flow is now LIVE (this wiring) — it resolves to "Delivered" when the recipient's
+              // receipt verifies, so the hint auto-disappears at graduation. (Athena — Nov-5, Hypatia #172212.)
+              const awaitingDelivery = outbound && status === 'sent-unconfirmed';
               const day = formatNoteDay(n.sent_at);
               const prevDay = i > 0 ? formatNoteDay(notes[i - 1].sent_at) : '';
               return (
@@ -602,6 +609,14 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                       <span>{formatNoteClock(n.sent_at)}</span>
                       {label ? <span data-testid="notes-sent-status">{label}</span> : null}
                     </p>
+                    {awaitingDelivery ? (
+                      <p
+                        data-testid="notes-awaiting-delivery"
+                        style={{ margin: '2px 0 0', fontSize: 10, color: E.dim, opacity: 0.7, textAlign: 'right' }}
+                      >
+                        {NOTES_COPY.awaitingDelivery}
+                      </p>
+                    ) : null}
                   </article>
                 </div>
               );
