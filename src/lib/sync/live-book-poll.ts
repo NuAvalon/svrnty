@@ -46,7 +46,9 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam, ReceiptResponseSeam, DiscoverableConsentResponseSeam } from './consume-mailbox';
+import { applyDiscoverableConsent, type DiscoverableConsentStore } from '@/lib/trust/discoverable-consent';
+import { discoverableConsentOpenpgpDecryptor } from '@/lib/trust/discoverable-consent-seal';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked, getNote, putNote } from '@/lib/messaging/store';
@@ -256,6 +258,43 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseS
 }
 
 /**
+ * Build the DISCOVERABLE-CONSENT seam bound to this owner (consume-mailbox DiscoverableConsentResponseSeam).
+ * The mailbox is shared by all six inbound types (SAME openpgp envelope) — so WITHOUT this seam the always-
+ * on poll decrypts a consent via the contact-update path, fails its `envelope.fingerprint` shape-check, and
+ * SILENTLY ack-DELETES it. This routes a consent by its own type-checked decryptor to Apollo's
+ * applyDiscoverableConsent (verify-before-set: scope → contact → Carol-sig → monotonic-epoch → the SINGLE
+ * edge-flag write), persisting peer_discoverable_as_trusted into the CLIENT ContactRecord.metadata — the
+ * field increment-1's contact-edge projection reads → getTrustVisiblePeers lights. Exported for unit tests.
+ *
+ * AUTH is transport-agnostic (Flint #172716): the consent is self-authenticating (Carol's envelope sig),
+ * re-verified INSIDE applyDiscoverableConsent against the SUBJECT's stored pubkeys — so this seam needn't
+ * authenticate the deposit-sender, only decrypt + route. A LOCKED/absent store makes updateContact throw →
+ * propagates as RETRYABLE (the consent waits in the mailbox, never ack-deleted-unseen). The extra `type`
+ * tag on the wire is inert in the signed preimage (discoverableConsentInput ignores it), so the wire is
+ * passed straight to apply.
+ */
+export function buildDiscoverableConsentSeam(owner: OwnerIdentity): DiscoverableConsentResponseSeam {
+  const decryptConsent = discoverableConsentOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  // ContactRecord structurally satisfies Apollo's DiscoverableConsentContact (id/fingerprint/public_key/
+  // pq_sig_public_key?/metadata?); apply reads the subject's stored pubkeys + merges the flag into metadata.
+  const store: DiscoverableConsentStore = {
+    getContactByFingerprint: (fp) => getContactByFingerprint(owner.fingerprint, fp),
+    updateContact: (id, updates) => updateContact(id, updates as Partial<ContactRecord>),
+  };
+  return {
+    // null for a non-consent (contact.update / joiner / note / affirm / receipt) → consumeOne falls
+    // through; the type-check inside discoverableConsentOpenpgpDecryptor is the discriminator (no cross-swallow).
+    verify: (blob) => decryptConsent(blob),
+    accept: async (wire) => {
+      const result = await applyDiscoverableConsent(wire, store);
+      // 'applied' → event for the trust-map repaint; any 'rejected-*' (unsupported-scope / no-contact /
+      // bad-sig / stale) → null = silent terminal (fail-closed: the flag is never set from a bad consent).
+      return result === 'applied' ? { subject_fp: wire.subject_fp, discoverable: wire.discoverable } : null;
+    },
+  };
+}
+
+/**
  * Build the DELIVERY-RECEIPT seam bound to this owner (consume-mailbox ReceiptResponseSeam) — the SENDER
  * side. When the owner polls their own mailbox and finds a receipt sealed to them, this recovers the
  * OUTBOUND note it confirms and verifies the delivering recipient's signature, then marks the note
@@ -381,6 +420,7 @@ export async function buildConsumeDeps(
     note: buildNoteSeam(owner, sendReceipt),
     affirm: buildTrustAffirmSeam(owner),
     receipt: buildReceiptSeam(owner),
+    consent: buildDiscoverableConsentSeam(owner),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)

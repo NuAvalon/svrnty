@@ -35,6 +35,7 @@ import {
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
+import type { DiscoverableConsentWireV0 } from '@/lib/trust/discoverable-consent-seal';
 import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
@@ -215,6 +216,39 @@ export interface ReceiptLiveEvent {
   from_fingerprint: string;
 }
 
+/**
+ * DISCOVERABLE-CONSENT routing seam (svrnty-discoverable-consent-v0) — the mailbox's SIXTH inbound type.
+ * A consent is sealed to the owner with the SAME openpgp envelope as the other five, so — exactly like
+ * them — it DECRYPTS NON-NULL via the contact-update decryptor and would then be dropped on its missing
+ * `envelope.fingerprint` → silently ack-DELETED. This seam routes it FIRST, by its own type-checked
+ * decryptor, so the subject's (Carol's) discoverable-as-trusted willingness actually lands on the edge.
+ *   • verify — decrypt + type-check the blob as a consent (discoverableConsentOpenpgpDecryptor returns
+ *     null for a non-consent → fall through). Does NOT authenticate — that's accept's job (the consent is
+ *     self-authenticating; applyDiscoverableConsent re-verifies Carol's sig against her stored pubkeys).
+ *   • accept — applyDiscoverableConsent(signed, store): scope → contact → verify → monotonic-epoch → the
+ *     SINGLE edge-flag write, fail-closed at every step (no TOCTOU — all checks precede the one write).
+ *     Returns the applied event (for the trust-map repaint) or null if DROPPED (rejected-* — silent I-1
+ *     terminal). THROWS only on store I/O → retryable (the apply is idempotent on redelivery).
+ * Optional: a caller that omits it keeps the exact prior behaviour (a consent, if any, falls to the
+ * contact-update path = the silent-loss; so the runtime binding MUST wire this once the transport ships).
+ */
+export interface DiscoverableConsentResponseSeam {
+  verify: (blob: string) => Promise<DiscoverableConsentWireV0 | null>;
+  accept: (wire: DiscoverableConsentWireV0) => Promise<AcceptedConsentEvent | null>;
+}
+
+/** The applied consent's handles, returned by the consent seam's accept for the trust-map live-repaint. */
+export interface AcceptedConsentEvent {
+  subject_fp: string;
+  discoverable: boolean;
+}
+
+/** Emitted after a discoverable-consent is applied to the edge, so the trust map repaints live. */
+export interface ConsentLiveEvent {
+  subject_fp: string;
+  discoverable: boolean;
+}
+
 export interface ConsumeDeps {
   owner: OwnerIdentity;
   decrypt: EnvelopeDecryptor;
@@ -223,12 +257,14 @@ export interface ConsumeDeps {
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
   affirm?: TrustAffirmResponseSeam; // mutual-trust affirmation routing; omit → affirms fall to contact-update path (silent-loss)
   receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
+  consent?: DiscoverableConsentResponseSeam; // discoverable-consent routing; omit → consents fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
   emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
+  emitConsent?: (event: ConsentLiveEvent) => void; // trust-map repaint seam (discoverable-consent applied)
   now?: () => string; // ISO timestamp source (inject for determinism)
 }
 
@@ -238,6 +274,7 @@ export interface ConsumeSummary {
   ignited: number;
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
   affirmed: number; // mutual-trust affirmations applied (they_trust_me / reciprocal flipped)
+  consented: number; // discoverable-consents applied to the edge (peer_discoverable_as_trusted set/revoked)
   delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   acked: number;
@@ -249,6 +286,7 @@ type Outcome =
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'affirm'; event: TrustLiveEvent } // mutual-trust flip persisted → ack + trust repaint (NOT a book beat)
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
+  | { kind: 'consent'; event: ConsentLiveEvent } // discoverable-consent applied to the edge → ack + trust-map repaint
   | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
   | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
 
@@ -263,7 +301,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, delivered: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, consented: 0, delivered: 0, dropped: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -332,6 +370,14 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
         deps.emitReceipt?.(outcome.event);
       } catch {
         /* inbox delivered-repaint is best-effort; a repaint failure must not block consume/ack */
+      }
+    } else if (outcome.kind === 'consent') {
+      summary.consented++;
+      toAck.push(env.envelope_id); // edge flag set/revoked → consumed, ack-delete
+      try {
+        deps.emitConsent?.(outcome.event);
+      } catch {
+        /* trust-map repaint is best-effort; a repaint failure must not block consume/ack */
       }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
@@ -491,6 +537,38 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       }
     }
     // wire null → not a receipt → fall through to the contact-update consume path.
+  }
+
+  // DISCOVERABLE-CONSENT ROUTING (svrnty-discoverable-consent-v0) — same discipline as the joiner + note
+  // + affirm + receipt seams above, same reason: a consent decrypts NON-NULL via the contact-update
+  // decryptor, then drops on its missing `envelope.fingerprint` → silently ack-DELETED. Route it by its
+  // own type-checked decryptor. consent.verify returns null for a non-consent (note / affirm / receipt /
+  // joiner / contact-update → fall through unharmed), so this can never eat another type (6-way no-cross-
+  // swallow — consent-type ≠ the others). accept = applyDiscoverableConsent (verify-before-set, fail-closed).
+  if (deps.consent) {
+    let wire: DiscoverableConsentWireV0 | null;
+    try {
+      wire = await deps.consent.verify(blob);
+    } catch {
+      wire = null; // a throwing consent-verify is treated as not-a-consent → fall through (fail-safe)
+    }
+    if (wire) {
+      try {
+        const applied = await deps.consent.accept(wire);
+        // applied (in-scope + Carol-signed + strictly-newer) → consent (ack + trust-map repaint); dropped
+        // (rejected-* — unsupported-scope / no-contact / bad-sig / stale) → terminal (silent ack — I-1,
+        // fail-closed: the edge flag is never materialized from an unverified/replayed consent).
+        return applied
+          ? { kind: 'consent', event: { subject_fp: applied.subject_fp, discoverable: applied.discoverable } }
+          : { kind: 'terminal' };
+      } catch (err) {
+        // A store I/O failure while applying a VERIFIED consent → leave for retry (at-least-once).
+        // applyDiscoverableConsent is idempotent (strict-monotonic epoch), so a redelivered consent re-applies harmlessly.
+        console.error('[return-channel] discoverable-consent accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // wire null → not a consent → fall through to the contact-update consume path.
   }
 
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
