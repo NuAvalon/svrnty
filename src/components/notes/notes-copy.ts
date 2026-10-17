@@ -10,9 +10,13 @@ export const NOTES_COPY = {
   heading: 'Chat',
   sentUnconfirmed: 'Sent · unconfirmed.',
   notSent: 'Not sent. Saved on this device.',
-  // Rendered ONLY for a verified-receipt 'delivered' status. Hypatia owns the exact copy-graduation
-  // wording (#172182 Delivered-when-receipt-proves) — confirm/adjust this string with her.
+  // Rendered ONLY for a verified-receipt 'delivered' status (recipient DEVICE received+decrypted the
+  // note — not relay-only, not "Read"). Plain "Delivered" per Hypatia #172212 (honest-by-construction
+  // via statusIsHonest; no qualifier).
   delivered: 'Delivered',
+  // Light secondary line under "Sent · unconfirmed." (NOT bare) — reads as in-progress, not failed:
+  // the delivery-receipt flow is live and will resolve to "Delivered". Hypatia #172212 floor hint.
+  awaitingDelivery: 'Awaiting delivery confirmation',
   sendAction: 'Send',
   sendingAction: 'Sending…',
   composeLabel: 'Message',
