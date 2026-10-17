@@ -337,6 +337,53 @@ test('piece-1 getKnownPeers: per_contact_private is the SOLE reason an open-visi
   assert.deepEqual((await depsWithout.getKnownPeers()).map((p) => p.fingerprint), ['peer-x']); // not-private reveals
 });
 
+// ── piece-2 (trust tier, TRUE 3-way) getTrustVisiblePeers: the trust-PSI reveal source ────────────────
+// Peter #172418 ("true 3-way else it doesn't work") / Flint #172452. A peer enters the trust-visible set
+// ONLY when all three consents hold, enforced at INPUT-SET CONSTRUCTION: owner trusts them (non-decayed) ∧
+// owner opted trust_visibility (C1) ∧ the peer's OWN peer_discoverable_as_trusted (C3) ∧ !per_contact_private.
+// Every term is truthy-exclusion = fail-closed; absent flags default false ⇒ excluded. (C2 = the OTHER
+// party's device applies the same filter → a shared contact is in BOTH input sets only with all-three.)
+test('piece-2 getTrustVisiblePeers: reveals ONLY when all three consents hold; any one missing ⇒ fail-closed drop', async () => {
+  const contacts = [
+    // honest path — trusted + my trust_visibility (C1) + peer's own discoverable (C3) + not private ⇒ REVEALED
+    rec({ id: 'ok', fingerprint: 'carol-allyes', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // C1 missing: trusted + peer-discoverable but I did NOT opt in ⇒ excluded (the silent-enrollment leak this prevents)
+    rec({ id: 'c1', fingerprint: 'no-my-optin', trusted: true, trust_visibility: false, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // C3 missing: trusted + I opted in but the PEER did not publish discoverable ⇒ excluded (true-3-way third consent)
+    rec({ id: 'c3', fingerprint: 'no-peer-consent', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: false } as Partial<ContactRecord>),
+    // trust missing: opted + peer-discoverable but NOT trusted ⇒ excluded
+    rec({ id: 'nt', fingerprint: 'not-trusted', trusted: false, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // go-private overrides all: all-yes but per_contact_private ⇒ excluded
+    rec({ id: 'pp', fingerprint: 'private', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: true, per_contact_private: true } as Partial<ContactRecord>),
+  ];
+  const { store } = fakeStore(contacts);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  const fps = (await deps.getTrustVisiblePeers()).map((p) => p.fingerprint).sort();
+  assert.deepEqual(fps, ['carol-allyes']); // ONLY the all-three-consent edge reveals
+});
+
+test('piece-2 getTrustVisiblePeers: fail-closed by DEFAULT — a plain trusted contact (no opt-ins) is NOT trust-visible, but IS in the whole-trusted scheduler source', async () => {
+  // Trusting someone ≠ consenting to disclose that trust. Proves getTrustVisiblePeers is the opt-in SUBSET,
+  // never the whole trusted set (the leak Flint #172393 flagged); getTrustedPeers (scheduler) stays whole-set.
+  const { store } = fakeStore([rec({ id: 't', fingerprint: 'just-trusted', trusted: true })]);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  assert.deepEqual((await deps.getTrustVisiblePeers()).map((p) => p.fingerprint), []); // fail-closed default
+  assert.deepEqual((await deps.getTrustedPeers()).map((p) => p.fingerprint), ['just-trusted']); // scheduler whole-set
+});
+
+test('piece-2 getTrustVisiblePeers: reversible — flipping OFF any single consent drops the peer next tick', async () => {
+  const allYes = { id: 'r', fingerprint: 'rev', trusted: true, trust_visibility: true, peer_discoverable_as_trusted: true };
+  const reveals = async (patch: Partial<ContactRecord>) => {
+    const { store } = fakeStore([rec({ ...allYes, ...patch } as Partial<ContactRecord>)]);
+    return (await buildKnowOverlayDeps(OWNER, store).getTrustVisiblePeers()).map((p) => p.fingerprint);
+  };
+  assert.deepEqual(await reveals({}), ['rev']);                                   // all-yes reveals
+  assert.deepEqual(await reveals({ trust_visibility: false } as Partial<ContactRecord>), []);            // I revoke my opt-in
+  assert.deepEqual(await reveals({ peer_discoverable_as_trusted: false } as Partial<ContactRecord>), []); // peer revokes theirs
+  assert.deepEqual(await reveals({ per_contact_private: true } as Partial<ContactRecord>), []);           // go-private
+  assert.deepEqual(await reveals({ trusted: false } as Partial<ContactRecord>), []);                      // un-trust
+});
+
 // ── piece-1 §G: #111-LEGACY SWEEP (migratePerContactPrivacyOnUnlock, client-store.ts) ─────────────────
 // The sweep fn itself is IndexedDB + session-key gated (txGetAll / updateContact / decryptContactIfNeeded,
 // not exported) → not directly runnable under node:test. We test (a) its exact per-record decision
@@ -420,6 +467,7 @@ test('piece-1 §G sweep predicate: explicit c.trusted===false WINS over trust_le
 const STUB_DEPS: OrchestratorDeps = {
   getTrustedPeers: async () => [],
   getKnownPeers: async () => [],
+  getTrustVisiblePeers: async () => [],
   applyMutualResult: async () => {},
 };
 const readyFn: CompleteTrustSyncFn = async () => ({ mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' });

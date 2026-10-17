@@ -195,6 +195,8 @@ function makeClient(fingerprint: string, book: Contact[], satelliteKeys?: Mailbo
   const deps: OrchestratorDeps = {
     getTrustedPeers: async () => book.map((c) => ({ fingerprint: c.fp })),
     getKnownPeers: async () => book.filter((c) => c.consented).map((c) => ({ fingerprint: c.fp })),
+    // trust-PSI opt-in subset — no fixture contact opts in → empty (these tests drive the KNOW layer).
+    getTrustVisiblePeers: async () => [],
     applyMutualResult: async (peerFp, _layer, disclosed) => {
       disclosedByPeer.set(peerFp, disclosed);
     },

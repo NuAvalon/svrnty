@@ -121,6 +121,30 @@ export function buildKnowOverlayDeps(
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 
+    getTrustVisiblePeers: async () => {
+      const edges = await ownerEdges(store, ownerFingerprint);
+      // TRUST reveal set (piece-2, true-3-way) = the opt-in subset where ALL THREE consents hold, by
+      // construction (Peter #172418 "else it doesn't work" / Flint #172452). A peer is included ONLY if:
+      //   • e.trusted ∧ !isDecayed(e)                 — (C1) owner actually trusts them (non-decayed),
+      //   • e.trust_visibility === true               — (C1) owner opted them into trust-discovery,
+      //   • e.peer_discoverable_as_trusted === true   — (C3) the peer's OWN published consent, AND
+      //   • !e.per_contact_private                    — go-private excludes from every PSI reveal.
+      // (C2 = the OTHER party applies the same filter on their device → a shared contact lands in BOTH
+      // input sets only when all three consented → the intersection reveals them only with their consent.)
+      // Every condition is TRUTHY-exclusion = fail-closed: an absent/false flag EXCLUDES. Empty ⇒ reveals
+      // nothing. `blocked` already dropped at ownerEdges.
+      return edges
+        .filter(
+          (e) =>
+            e.trusted &&
+            !isDecayed(e) &&
+            e.trust_visibility === true &&
+            e.peer_discoverable_as_trusted === true &&
+            !e.per_contact_private,
+        )
+        .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
+    },
+
     applyMutualResult: async (peerFingerprint, layer, disclosed) => {
       // FAIL-CLOSED validation — on anything malformed we persist NOTHING (never guess a wider set).
       if (layer !== 'know' && layer !== 'trust') {

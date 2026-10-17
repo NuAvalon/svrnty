@@ -105,7 +105,12 @@ export interface PSISyncOptions {
  *    carries named shared contacts for P2 named-mode (empty in tier-1).
  */
 export interface OrchestratorDeps {
-  /** TRUST layer (existing): the peers this owner trusts (already decrypted + trust-filtered). */
+  /**
+   * The whole trusted (non-decayed) set. STALENESS SCHEDULER ONLY — this is NOT the trust-PSI reveal
+   * source. Feeding the whole trusted set into PSI would silently enroll every trusted relationship
+   * into discovery (the leak `trust_visibility` exists to prevent, Flint #172393). The trust-layer PSI
+   * input + consent gate = getTrustVisiblePeers (the opt-in subset), NOT this.
+   */
   getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
   /**
    * KNOW layer (Flint co-review D2, 2026-09-03): the peers this owner has CONSENTED to mutual
@@ -115,6 +120,17 @@ export interface OrchestratorDeps {
    * fail-closed by construction (no consent ⇒ no participation ⇒ nothing disclosed).
    */
   getKnownPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
+  /**
+   * TRUST layer (piece-2 trust tier, true-3-way — Peter #172418, Flint #172452): the TRUST-PSI opt-in
+   * subset. A peer is included ONLY when ALL THREE consents hold, enforced at INPUT-SET CONSTRUCTION:
+   *   (C1) owner trusts the peer (edgeTrusted, non-decayed),
+   *   (C2) owner opted the peer into trust_visibility (owner-local, mirrors open_visibility), AND
+   *   (C3) the peer's OWN published peer_discoverable_as_trusted === true.
+   * So a shared contact lands in BOTH parties' PSI input sets only when all three consented → the
+   * intersection reveals them ONLY with their own consent. Mirrors getKnownPeers' role: this IS the
+   * trust-layer blinded set AND the consent-gate allowlist. Empty ⇒ fail-closed.
+   */
+  getTrustVisiblePeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
   /**
    * Sink to persist the computed visibility result. FAIL-CLOSED CONTRACT (Flint D4/F1 + Archie
    * collab-seam): the impl APPLIES this result to disclosed_circle (`know`) / they_trust (`trust`),
@@ -523,10 +539,13 @@ export async function initiateTrustSync(
   if (fps.length === 0) {
     return { error: `No ${layer === 'know' ? 'consented (open-visible)' : 'trusted'} contacts to sync` };
   }
-  // D1 consent gate (initiator, KNOW): only sync with a peer we've opted into mutual visibility
-  // with. getKnownPeers IS the consented set, so membership = consent. Fail-closed.
-  if (layer === 'know' && !fps.includes(peerFingerprint)) {
-    return { error: 'know-layer: peer not in the consented (open-visible) set — fail-closed' };
+  // CONSENT GATE (initiator) — fail-closed by DEFAULT for EVERY layer (Flint #172451 inversion of C1):
+  // only sync with a peer in this layer's consent set. getLayerFingerprints IS that opt-in set
+  // (know=open_visibility, trust=trust_visibility subset), so membership = consent. Applies to know,
+  // trust, and any future layer unless explicitly in CONSENT_EXEMPT (empty) — a new layer is gated by
+  // construction, not by someone remembering to add it.
+  if (!CONSENT_EXEMPT.has(layer) && !fps.includes(peerFingerprint)) {
+    return { error: `${layer}-layer: peer not in the consented opt-in set — fail-closed` };
   }
 
   // Ephemeral keypair — single-use per session (Flint D3: never reused across sessions/layers/peers).
@@ -658,10 +677,11 @@ export async function respondToTrustSync(
     const age = Date.now() - session.created_at * 1000;
     if (age > PSI_SESSION_TTL_MS) continue;
 
-    // D1 consent gate (responder, KNOW) — MUST be before psiRespond (Flint): only respond to a
-    // peer we've opted into mutual visibility with. Not consented ⇒ don't participate (fail-closed).
-    // (Phase-2 reads session.layer to gate per-layer; Phase-1 wires only the know-layer.)
-    if (layer === 'know' && !consentSet.has(session.initiator)) continue;
+    // CONSENT GATE (responder) — MUST be before psiRespond (Flint). Fail-closed by DEFAULT for EVERY
+    // layer (inversion of C1): only respond to a peer in this layer's consent set (consentSet =
+    // getLayerFingerprints(layer): know=open_visibility, trust=trust_visibility subset). Not consented
+    // ⇒ don't participate. Unless the layer is explicitly in CONSENT_EXEMPT (empty).
+    if (!CONSENT_EXEMPT.has(layer) && !consentSet.has(session.initiator)) continue;
 
     // Ephemeral keypair for this session (Flint D3: single-use, never reused across sessions/layers).
     const keypair = generatePSIKeypair();
@@ -788,10 +808,13 @@ export async function syncMutualTrust(
 // --- Trust Graph Helpers ---
 
 /**
- * Get fingerprints of all peers we trust (from the caller's decrypted store).
+ * TRUST layer (piece-2 true-3-way): the trust-VISIBLE opt-in subset — the fingerprints we blind/sync
+ * AND the valid-peer allowlist for the consent gate. All-three-consent enforced upstream in
+ * getTrustVisiblePeers (owner-trusts ∧ owner-opted-trust_visibility ∧ peer's-own-discoverable). NOT the
+ * whole trusted set (that would silently enroll every trust — Flint #172393). Empty ⇒ fail-closed.
  */
-async function getTrustedFingerprints(deps: OrchestratorDeps): Promise<string[]> {
-  const peers = await deps.getTrustedPeers();
+async function getTrustVisibleFingerprints(deps: OrchestratorDeps): Promise<string[]> {
+  const peers = await deps.getTrustVisiblePeers();
   return peers.map(p => p.fingerprint);
 }
 
@@ -804,9 +827,24 @@ async function getKnownFingerprints(deps: OrchestratorDeps): Promise<string[]> {
   return peers.map(p => p.fingerprint);
 }
 
-/** Layer-aware fingerprint source: KNOW = open-visible subset (consent-gated), TRUST = trusted set. */
+/**
+ * Layers EXEMPT from the fail-closed consent gate. Deliberately EMPTY (Flint #172451): every layer —
+ * know, trust, and any future layer — is consent-gated BY DEFAULT. A layer is gated unless it is
+ * explicitly listed here, so adding a new layer cannot silently skip the gate (the C1 trap). A
+ * non-empty set is a reviewable claim-honesty surface: each entry needs a comment-justified reason.
+ */
+const CONSENT_EXEMPT = new Set<'know' | 'trust'>([]);
+
+/**
+ * Layer-aware fingerprint source: KNOW = open-visible subset, TRUST = trust-visible opt-in subset.
+ * BOTH are consent-gated opt-in subsets (never the whole book / whole trusted set). Any unknown/future
+ * layer returns ∅ — fail-CLOSED by DEFAULT (Flint ADD): a layer wired without its reveal-source reveals
+ * nothing rather than falling through to a default set.
+ */
 async function getLayerFingerprints(deps: OrchestratorDeps, layer: 'know' | 'trust'): Promise<string[]> {
-  return layer === 'know' ? getKnownFingerprints(deps) : getTrustedFingerprints(deps);
+  if (layer === 'know') return getKnownFingerprints(deps);
+  if (layer === 'trust') return getTrustVisibleFingerprints(deps);
+  return []; // unknown/future layer ⇒ fail-closed (reveals nothing)
 }
 
 /**
