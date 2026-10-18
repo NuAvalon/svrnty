@@ -59,6 +59,7 @@ import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-ho
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
@@ -552,6 +553,33 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
             });
           }
         } catch { /* satellite offline — local trust still works */ }
+      }
+      // #2B mutual-emit-wire (blind-until-mutual / §1 I-F SYMMETRY PRECEDES VISIBILITY): DEPOSIT a
+      // SIGNED trust-affirmation into the peer's blind mailbox so THEY can independently verify +
+      // reciprocate. EMIT-ONLY by construction — sendTrustAffirmToPeer signs→seals→POSTs and writes
+      // NOTHING local; `reciprocal` flips only on the peer's crypto-verified RECEIVE (acceptTrustAffirm).
+      // Sending ≠ assuming mutual (anti-coercion: no unilateral visibility). Best-effort like the
+      // satellite commit above — a failed deposit never breaks the local toggle; the peer re-syncs.
+      if (contact.fingerprint && contact.public_key && identity?.identity?.public_key) {
+        try {
+          const myKey = await loadKey(fingerprint);
+          if (myKey) {
+            await sendTrustAffirmToPeer({
+              senderFingerprint: fingerprint,
+              senderPublicKeyArmored: identity.identity.public_key,
+              senderPrivateKeyArmored: myKey.privateKey,
+              passphrase: myKey.passphrase,
+              // §5 canonical-fp binding: own PQ pubkeys live at identity.post_quantum.* (base64) — NOT
+              // identity.identity.pq_* (that's the card shape). Omitting them silently drops a canonical
+              // (64-hex) sender to the classical path → the peer fails to authenticate. Thread BOTH.
+              senderPqKemPublicKey: identity.post_quantum?.kem_public_key,
+              senderPqSigPublicKey: identity.post_quantum?.sig_public_key,
+              peerFingerprint: contact.fingerprint,
+              peerPublicKeyArmored: contact.public_key,
+              trusts: newLevel === 'trusted',
+            });
+          }
+        } catch { /* deposit best-effort — local trust + satellite already applied; peer re-syncs */ }
       }
       if (selectedContact && selectedContact.id === contact.id) {
         setSelectedContact({
