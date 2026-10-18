@@ -4,6 +4,7 @@
 //   npx tsx scripts/devin-comm.ts admit <peer-card.json>
 //   npx tsx scripts/devin-comm.ts send <fingerprint> "<body>"
 //   npx tsx scripts/devin-comm.ts poll
+//   npx tsx scripts/devin-comm.ts poll-json          — decrypt inbound → durable journal (flint §B cron)
 //   npx tsx scripts/devin-comm.ts loop [intervalMs]
 //   npx tsx scripts/devin-comm.ts grow [uses]          — mint a Grow shortlink (remote, multi-use)
 //   npx tsx scripts/devin-comm.ts join <url>           — resolve a Grow link, admit giver, send joiner-response
@@ -13,7 +14,7 @@
 // Secrets live in ~/.svrnty-agent/ — outside the repo, never committed.
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
-import { readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
@@ -405,6 +406,35 @@ async function main() {
       const shown = pt ?? n.body;
       console.log(`[note ${n.note_id} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${shown}`);
     }
+    return;
+  }
+
+  if (cmd === 'poll-json') {
+    // Flint §B key-side (KB#3285): decrypt inbound notes and durably JOURNAL each SUCCESSFUL
+    // decrypt. Triple-ratchet decrypt is ONE-SHOT / forward-secret — the ratchet advances + persists
+    // the instant trOpen succeeds, so a plaintext captured now can NEVER be re-derived. Journal-at-
+    // decrypt (0600 via the process umask, inside the agent sandbox) is the durable capture; the
+    // downstream flint cron (devin_quarantine.py) sanitizes + deposits into external_quarantine.
+    // SECURITY: emit ONLY authenticated-and-decrypted notes. NEVER the ciphertext fallback that the
+    // human `poll` command uses (pt ?? n.body) — a non-tr body or a failed decrypt is dropped, so no
+    // raw wire or unauthenticated content ever reaches the quarantine table.
+    const journalPath = `${DIR}/decrypt-journal.jsonl`;
+    await pollOnce(owner, store);
+    let journaled = 0;
+    for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
+      const c = store.getContactByFingerprint(note.from_fingerprint);
+      if (!c || !trPacket(note.body)) continue;         // require an authenticated triple-ratchet packet
+      const pt = await trOpen(artifact, c, note.body);
+      if (pt === null) continue;                         // decrypt failed/already-consumed — drop, never store
+      appendFileSync(journalPath, JSON.stringify({
+        note_id: note.note_id,
+        peer_fp: note.from_fingerprint,
+        sent_at: note.sent_at,
+        plaintext: pt,
+      }) + '\n');
+      journaled++;
+    }
+    console.log(JSON.stringify({ journaled, journal: journalPath }));
     return;
   }
 
