@@ -59,7 +59,8 @@ import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-ho
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
-import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
+import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
+import type { TrustEvent } from '@/lib/trust/types';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
@@ -516,71 +517,29 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setLoading(true);
       setError(null);
-      await updateContact(contact.id, {
-        trust_level: newLevel,
-        trusted: newLevel === 'trusted',
-        trusted_since: newLevel === 'trusted' ? new Date().toISOString() : null,
-        ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
-        // #111 (survivor-safety): untrusting clears open_visibility — the UI gates
-        // open-visibility on TRUSTED contacts, so dropping trust must drop the reveal
-        // consent with it (reveal set = trusted ∩ open_vis ∩ !blocked, by construction).
-        ...(newLevel === 'unverified' && {
-          metadata: {
-            ...(contact.metadata || {}),
-            share_settings: { ...(contact.metadata?.share_settings || {}), open_visibility: false },
-          },
-        }),
-      } as any);
-      // Satellite trust commitment (blind — satellite never sees who you're trusting)
-      if (contact.fingerprint) {
-        const fps = [fingerprint, contact.fingerprint].sort();
-        const hashInput = fps.join('') + 'trust-v1';
-        const encoder = new TextEncoder();
-        const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(hashInput));
-        const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-        try {
-          if (newLevel === 'trusted') {
-            await fetch('/api/trust/commit', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ fingerprint, commitment_hash: hashHex }),
-            });
-          } else {
-            await fetch('/api/trust/revoke', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ fingerprint, commitment_hash: hashHex }),
-            });
-          }
-        } catch { /* satellite offline — local trust still works */ }
-      }
-      // #2B mutual-emit-wire (blind-until-mutual / §1 I-F SYMMETRY PRECEDES VISIBILITY): DEPOSIT a
-      // SIGNED trust-affirmation into the peer's blind mailbox so THEY can independently verify +
-      // reciprocate. EMIT-ONLY by construction — sendTrustAffirmToPeer signs→seals→POSTs and writes
-      // NOTHING local; `reciprocal` flips only on the peer's crypto-verified RECEIVE (acceptTrustAffirm).
-      // Sending ≠ assuming mutual (anti-coercion: no unilateral visibility). Best-effort like the
-      // satellite commit above — a failed deposit never breaks the local toggle; the peer re-syncs.
-      if (contact.fingerprint && contact.public_key && identity?.identity?.public_key) {
-        try {
-          const myKey = await loadKey(fingerprint);
-          if (myKey) {
-            await sendTrustAffirmToPeer({
-              senderFingerprint: fingerprint,
-              senderPublicKeyArmored: identity.identity.public_key,
-              senderPrivateKeyArmored: myKey.privateKey,
-              passphrase: myKey.passphrase,
-              // §5 canonical-fp binding: own PQ pubkeys live at identity.post_quantum.* (base64) — NOT
-              // identity.identity.pq_* (that's the card shape). Omitting them silently drops a canonical
-              // (64-hex) sender to the classical path → the peer fails to authenticate. Thread BOTH.
-              senderPqKemPublicKey: identity.post_quantum?.kem_public_key,
-              senderPqSigPublicKey: identity.post_quantum?.sig_public_key,
-              peerFingerprint: contact.fingerprint,
-              peerPublicKeyArmored: contact.public_key,
-              trusts: newLevel === 'trusted',
-            });
-          }
-        } catch { /* deposit best-effort — local trust + satellite already applied; peer re-syncs */ }
-      }
+      // Route through the single trust-transition chokepoint: local write (+trust_history +#111) +
+      // blind satellite commit/revoke + PSI reconcile + EMIT-ONLY deposit — so this surface and the
+      // trust-MAP surface (app/page.tsx) can't drift (Flint floor-verify #173014). EMIT-ONLY: nothing
+      // local flips reciprocal; the peer's verified receive does.
+      await applyTrustTransition(
+        {
+          fingerprint,
+          publicKeyArmored: identity?.identity?.public_key,
+          pqKemPublicKey: identity?.post_quantum?.kem_public_key,
+          pqSigPublicKey: identity?.post_quantum?.sig_public_key,
+        },
+        {
+          contactId: contact.id,
+          fingerprint: contact.fingerprint,
+          publicKeyArmored: contact.public_key,
+          blocked: isContactBlocked(contact),
+          openVisibility: contact.metadata?.share_settings?.open_visibility === true,
+          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
+          metadata: contact.metadata as Record<string, unknown> | undefined,
+          priorTrustHistory: (contact as { trust_history?: TrustEvent[] }).trust_history ?? [],
+        },
+        newLevel === 'trusted',
+      );
       if (selectedContact && selectedContact.id === contact.id) {
         setSelectedContact({
           ...selectedContact,
@@ -588,20 +547,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
           blocked: selectedContact.blocked,
         });
       }
-      // #572 part 2 (flip-blocker b): mirror the POST-change reveal invariant to the satellite
-      // allowed_senders row. Untrust drops trust → DELETE; (re)trust → ADD iff still open-vis ∩ !blocked.
-      // Fire-and-forget + fail-soft (gated dark pre-flip) — never blocks or breaks the local trust toggle.
-      const psiTrusted = newLevel === 'trusted';
-      void reconcileAllowedOnConsentChange({
-        ownerFp: fingerprint,
-        senderFp: contact.fingerprint,
-        consent: {
-          trusted: psiTrusted,
-          openVisibility: psiTrusted && contact.metadata?.share_settings?.open_visibility === true,
-          blocked: isContactBlocked(contact),
-          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
-        },
-      });
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trust');

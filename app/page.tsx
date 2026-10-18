@@ -22,6 +22,7 @@ import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
@@ -813,48 +814,33 @@ export default function Home() {
                   const priorHistory = ((rec as { trust_history?: TrustEvent[] })?.trust_history
                     || edge.trust_history
                     || []) as TrustEvent[];
-                  const historyEvent: TrustEvent = {
-                    timestamp: new Date().toISOString(),
-                    action: nextTrusted ? 'trust' : 'break',
-                    reason: nextTrusted ? 'owner trusted' : 'owner broke trust',
-                    initiated_by: 'self',
-                  };
-                  await updateContact(edge.id, {
-                    trust_level: nextTrusted ? 'trusted' : 'unverified',
-                    trusted: nextTrusted,
-                    trusted_since: nextTrusted ? new Date().toISOString() : null,
-                    verified_at: nextTrusted ? new Date().toISOString() : undefined,
-                    trust_history: [...priorHistory, historyEvent],
-                    // #111 (survivor-safety): untrusting clears open_visibility (TrustMap path)
-                    // — reveal consent is trust-gated, so dropping trust drops the reveal flag.
-                    ...(!nextTrusted && {
-                      metadata: {
-                        ...recMeta,
-                        share_settings: {
-                          ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
-                          open_visibility: false,
-                        },
-                      },
-                    }),
-                  } as any);
-                  // #572 part 2 (flip-blocker b, TrustMap path): mirror POST-change trust to the
-                  // satellite allowed_senders row. Untrust → DELETE; retrust → ADD iff still open-vis ∩
-                  // !blocked. Fire-and-forget + fail-soft (gated dark pre-flip).
-                  void reconcileAllowedOnConsentChange({
-                    ownerFp: identity.identity.fingerprint,
-                    senderFp: edge.peer_fingerprint,
-                    consent: {
-                      trusted: nextTrusted,
+                  // Route through the single trust-transition chokepoint (the SAME fn as the contact-
+                  // LIST toggle) so the trust-MAP surface also blind-satellite-commits AND deposits the
+                  // signed affirmation — no fork-drift (Flint floor-verify #173014). EMIT-ONLY: nothing
+                  // here flips reciprocal; the peer's crypto-verified receive does.
+                  await applyTrustTransition(
+                    {
+                      fingerprint: identity.identity.fingerprint,
+                      publicKeyArmored: identity.identity.public_key,
+                      pqKemPublicKey: identity.post_quantum?.kem_public_key,
+                      pqSigPublicKey: identity.post_quantum?.sig_public_key,
+                    },
+                    {
+                      contactId: edge.id,
+                      fingerprint: edge.peer_fingerprint,
+                      publicKeyArmored: edge.peer_public_key,
+                      blocked: edge.blocked === true,
                       openVisibility:
-                        nextTrusted &&
                         (recMeta.share_settings as { open_visibility?: boolean } | undefined)
                           ?.open_visibility === true,
-                      blocked: edge.blocked === true,
                       perContactPrivate:
                         (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
                           ?.per_contact_private === true,
+                      metadata: recMeta,
+                      priorTrustHistory: priorHistory,
                     },
-                  });
+                    nextTrusted,
+                  );
                   await refreshContacts();
                 }}
                 onRemoveContact={async (edge) => {
