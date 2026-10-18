@@ -51,6 +51,8 @@ export class BeaconMatcher {
   private slots = new Map<string, BeaconDeposit[]>(); // slot → deposits (NEVER exposed; PIN2)
   private mailboxes = new Map<string, RPointHex[]>(); // tag → delivered counterpart shares (the only read)
   private matched = new Set<string>(); // slots that have matched (delivery done; withdrawal inert)
+  private peerOf = new Map<string, string>(); // tag → its matched counterpart tag (set at match)
+  private confirmBoxes = new Map<string, string[]>(); // tag → peer bond-confirmations (FINDING-1 round)
 
   constructor(directory: Directory) {
     this.ring = directory;
@@ -85,6 +87,9 @@ export class BeaconMatcher {
       // PIN3: ATOMIC dual-delivery — each party's share into the OTHER's mailbox, in one action.
       this.deliver(a.tag, b.share);
       this.deliver(b.tag, a.share);
+      // Record the pairing so the mandatory bond-confirmation round can be relayed (FINDING-1).
+      this.peerOf.set(a.tag, b.tag);
+      this.peerOf.set(b.tag, a.tag);
       this.matched.add(slotKey);
       return { accepted: true, matched: true };
     }
@@ -94,6 +99,25 @@ export class BeaconMatcher {
   /** PIN2: the ONLY read. Poll YOUR tag's mailbox → the counterpart's share(s) iff matched. No slot peek. */
   poll(myTag: string): RPointHex[] {
     return [...(this.mailboxes.get(myTag) ?? [])];
+  }
+
+  /**
+   * FINDING-1 bond-confirmation round: after a match, each party publishes H(M) via its tag; the
+   * matcher relays it to the paired counterpart's confirm-box. Only works for a matched tag (no
+   * confirm channel exists pre-match) — so the confirmation is strictly a post-match, paired exchange.
+   */
+  confirm(myTag: string, confirmHex: string): { relayed: boolean } {
+    const peer = this.peerOf.get(myTag);
+    if (!peer) return { relayed: false }; // not part of a matched pair
+    const box = this.confirmBoxes.get(peer) ?? [];
+    box.push(confirmHex);
+    this.confirmBoxes.set(peer, box);
+    return { relayed: true };
+  }
+
+  /** Poll the peer's bond-confirmation(s) delivered to MY tag. Client lights mutual only via mutualConfirmed(). */
+  pollConfirm(myTag: string): string[] {
+    return [...(this.confirmBoxes.get(myTag) ?? [])];
   }
 
   /** Withdraw an UNMATCHED deposit. Post-match the delivery already happened → INERT (returns false). */

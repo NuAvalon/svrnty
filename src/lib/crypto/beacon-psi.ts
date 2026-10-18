@@ -20,6 +20,7 @@
 // distinctness live in the LRS + oblivious-matcher layers (separate modules).
 
 import { ristretto255, ristretto255_hasher, ed25519 } from '@noble/curves/ed25519.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes, bytesToHex } from '@noble/hashes/utils.js';
 import { deriveSharedSecret, currentEpochWeek } from './mutual-trust';
 
@@ -66,6 +67,30 @@ export function bondsMatch(mine: RPoint, theirs: RPoint): boolean {
 /** Serialize a bond token / share for transport or comparison. */
 export function pointHex(p: RPoint): string {
   return p.toHex();
+}
+
+// --- Mandatory bond-confirmation exchange (Flint hammer FINDING-1) ---
+//
+// The consistent-M check is NOT safe as "I computed a valid-looking M" — a garbage-probe lets the
+// prober compute the REAL M from the counterpart's genuine share and unilaterally "light mutual".
+// So the bond is confirmed ONLY via a MANDATORY two-sided exchange: each party publishes a
+// commitment H(M) and lights "mutual" iff the PEER's commitment equals H(my M). Genuine ⇒ equal
+// (both light); any garbage/mismatched deposit ⇒ unequal ⇒ NEITHER side lights. No party can light
+// the bond without the peer's verified agreement.
+
+const CONFIRM_DOMAIN = 'svrnty-beacon-bond-confirm-v2';
+
+/** A party's bond commitment: H(domain ‖ M). Reveals nothing about M; enables only equality-check. */
+export function bondConfirm(M: RPoint): string {
+  return bytesToHex(sha256(utf8ToBytes(`${CONFIRM_DOMAIN}|${M.toHex()}`)));
+}
+
+/**
+ * Light "mutual" IFF the peer's confirmation matches MY bond token — i.e. we derived the SAME M.
+ * This is the mandatory gate: never light mutual on own-M alone.
+ */
+export function mutualConfirmed(myM: RPoint, peerConfirm: string): boolean {
+  return bondConfirm(myM) === peerConfirm;
 }
 
 export { deriveSharedSecret };
