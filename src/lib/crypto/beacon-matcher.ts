@@ -52,7 +52,7 @@ export class BeaconMatcher {
   private mailboxes = new Map<string, RPointHex[]>(); // tag → delivered counterpart shares (the only read)
   private matched = new Set<string>(); // slots that have matched (delivery done; withdrawal inert)
   private peerOf = new Map<string, string>(); // tag → its matched counterpart tag (set at match)
-  private confirmBoxes = new Map<string, string[]>(); // tag → peer bond-confirmations (FINDING-1 round)
+  private confirmBoxes = new Map<string, { confirm: string; fromTag: string }[]>(); // tag → peer confirms (FINDING-1)
 
   constructor(directory: Directory) {
     this.ring = directory;
@@ -110,13 +110,14 @@ export class BeaconMatcher {
     const peer = this.peerOf.get(myTag);
     if (!peer) return { relayed: false }; // not part of a matched pair
     const box = this.confirmBoxes.get(peer) ?? [];
-    box.push(confirmHex);
+    // Carry the SENDER's tag so the recipient can tag-bind the check (defeats reflection, #174198).
+    box.push({ confirm: confirmHex, fromTag: myTag });
     this.confirmBoxes.set(peer, box);
     return { relayed: true };
   }
 
-  /** Poll the peer's bond-confirmation(s) delivered to MY tag. Client lights mutual only via mutualConfirmed(). */
-  pollConfirm(myTag: string): string[] {
+  /** Poll the peer's bond-confirmation(s) delivered to MY tag, each with its sender tag. Client gates via mutualConfirmed(myM, confirm, fromTag). */
+  pollConfirm(myTag: string): { confirm: string; fromTag: string }[] {
     return [...(this.confirmBoxes.get(myTag) ?? [])];
   }
 

@@ -69,28 +69,34 @@ export function pointHex(p: RPoint): string {
   return p.toHex();
 }
 
-// --- Mandatory bond-confirmation exchange (Flint hammer FINDING-1) ---
+// --- Mandatory bond-confirmation exchange (Flint hammer FINDING-1 + reflection re-verify #174198) ---
 //
 // The consistent-M check is NOT safe as "I computed a valid-looking M" — a garbage-probe lets the
-// prober compute the REAL M from the counterpart's genuine share and unilaterally "light mutual".
-// So the bond is confirmed ONLY via a MANDATORY two-sided exchange: each party publishes a
-// commitment H(M) and lights "mutual" iff the PEER's commitment equals H(my M). Genuine ⇒ equal
-// (both light); any garbage/mismatched deposit ⇒ unequal ⇒ NEITHER side lights. No party can light
-// the bond without the peer's verified agreement.
+// prober compute the REAL M from the counterpart's genuine share. So the bond is confirmed ONLY via
+// a MANDATORY two-sided exchange of a commitment to M.
+//
+// ★ The commitment MUST be SENDER-TAG-BOUND: bondConfirm(M, senderTag) = H(domain ‖ M ‖ senderTag).
+// A symmetric H(domain‖M) is reflectable — a prober reads the victim's confirm and mirrors it back,
+// and the victim's own-M check passes (false bond). Binding the sender's tag defeats reflection: the
+// verifier accepts only a confirm bound to the PEER's tag, so a reflected confirm (bound to the
+// victim's own tag) fails. Forging a peer-tag-bound confirm needs the peer's M — i.e. the peer's
+// secret — which a reflector lacks. Genuine still passes: both derive the same M, and each checks
+// the other's confirm against (its own M ‖ the other's tag).
 
 const CONFIRM_DOMAIN = 'svrnty-beacon-bond-confirm-v2';
 
-/** A party's bond commitment: H(domain ‖ M). Reveals nothing about M; enables only equality-check. */
-export function bondConfirm(M: RPoint): string {
-  return bytesToHex(sha256(utf8ToBytes(`${CONFIRM_DOMAIN}|${M.toHex()}`)));
+/** A sender's bond commitment, BOUND to the sender's tag: H(domain ‖ M ‖ senderTag). */
+export function bondConfirm(M: RPoint, senderTag: string): string {
+  return bytesToHex(sha256(utf8ToBytes(`${CONFIRM_DOMAIN}|${M.toHex()}|${senderTag}`)));
 }
 
 /**
- * Light "mutual" IFF the peer's confirmation matches MY bond token — i.e. we derived the SAME M.
- * This is the mandatory gate: never light mutual on own-M alone.
+ * Light "mutual" IFF the PEER's confirmation equals H(domain ‖ my M ‖ peerTag) — i.e. we derived the
+ * same M AND the confirm is bound to the peer's own tag (not reflected from mine). Mandatory gate:
+ * never light mutual on own-M alone, and never on a confirm not bound to the peer's tag.
  */
-export function mutualConfirmed(myM: RPoint, peerConfirm: string): boolean {
-  return bondConfirm(myM) === peerConfirm;
+export function mutualConfirmed(myM: RPoint, peerConfirm: string, peerTag: string): boolean {
+  return bondConfirm(myM, peerTag) === peerConfirm;
 }
 
 export { deriveSharedSecret };
