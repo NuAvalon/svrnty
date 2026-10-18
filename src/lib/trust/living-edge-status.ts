@@ -104,12 +104,12 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
     e.metadata?.last_moment_at || e.mutual?.last_sync || e.last_interaction || e.trusted_since;
   const lastMoment = relativeMoment(lastAt);
 
-  // MUTUAL-TRUST WIRE honesty gate (claim-gates.isMutualTrustWireLive). Pre-wire the affirmation flow
-  // isn't deposited by any FE path → reciprocal/they_trust_me can't flip (only the consume applyMutual
-  // writes them), so 'inbound'/'mutual' are structurally unreachable and ONLY 'outbound' is reachable.
-  // Pre-wire an 'outbound' edge must NOT read "awaiting mutual" (implies a transient wait for a state
-  // that can't arrive yet = the built≠wired over-claim); it reads the roadmap copy instead. The switch
-  // flips WITH the wire (deposit-hook + two-seat e2e green) — see claim-gates.ts. (Copy: Hypatia v1.)
+  // MUTUAL-TRUST WIRE honesty gate (claim-gates.isMutualTrustWireLive) — gates ONLY the 'outbound' label.
+  // Post-wire (e04eb17 deposit-hook) 'inbound' and 'mutual' ARE reachable: the consume applyMutual writes
+  // they_trust_me/reciprocal. 'inbound' (one-way, they-trust-me) is SUPPRESSED below for I-F anti-coercion
+  // (Peter #172742: a one-way trust is invisible to all, ESPECIALLY the trusted party) — UNCONDITIONALLY,
+  // independent of the wire flag. Pre-wire an 'outbound' edge must NOT read "awaiting mutual" (built≠wired
+  // over-claim); it reads the roadmap copy. The outbound label flips WITH the wire. (Copy: Hypatia v1.)
   const wireLive = isMutualTrustWireLive();
 
   let statusLine: string;
@@ -117,7 +117,8 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
   else if (connection === 'pending') statusLine = 'Pending · not linked yet';
   else if (trust === 'mutual') statusLine = 'Mutual trust';
   else if (trust === 'outbound') statusLine = wireLive ? 'Trusted · awaiting mutual' : 'Trusted';
-  else if (trust === 'inbound') statusLine = 'They trust you · you have not';
+  // 'inbound' is SUPPRESSED — renders identical to Known/Linked. I-F anti-coercion: the trusted party
+  // must NOT learn someone trusts them one-way (Peter #172742). Falls through intentionally. (Flint #173118)
   else if (canCommunicate) statusLine = 'Linked · can communicate';
   else statusLine = 'Known';
 
@@ -162,7 +163,7 @@ export function livingStatusChip(status: LivingEdgeStatus): string {
   // Pre-wire: "Trust sent" implies a wire deposit that hasn't happened (no deposit-hook yet) → "Trusted"
   // (same isMutualTrustWireLive gate as the statusLine + the phase-visual label; one flag, every path).
   if (status.trust === 'outbound') return isMutualTrustWireLive() ? 'Trust sent' : 'Trusted';
-  if (status.trust === 'inbound') return 'Trusts you';
+  // 'inbound' SUPPRESSED → Linked/Known (I-F anti-coercion, Peter #172742; Flint #173118).
   if (status.canCommunicate) return 'Linked';
   return 'Known';
 }

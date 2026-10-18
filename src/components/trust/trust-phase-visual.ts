@@ -105,7 +105,11 @@ function bondStateOf(
   if (blocked) return 'blocked';
   if (trust === 'mutual') return 'mutual';
   if (trust === 'outbound') return 'trust-sent';
-  if (trust === 'inbound') return 'trust-received';
+  // 'inbound' (they trust me, I have NOT reciprocated) is SUPPRESSED → falls through to 'known'.
+  // Peter #172742 I-F anti-coercion floor: one-way trust is invisible to all, ESPECIALLY the trusted
+  // party — a visible "they trust you" is a coercion lever. Only 'mutual' (reciprocal) ever surfaces;
+  // the truster's OWN 'outbound' stays (their choice). UNCONDITIONAL — not wireLive-gated.
+  // (Flint #173118 operational-confirm; Archie #172910 symmetry-precedes-visibility.)
   return 'known';
 }
 

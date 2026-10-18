@@ -131,20 +131,22 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(trustVisualLane(sent, false), 'trust-sent');
   });
 
-  it('inbound shares the mutual hex — no core, Known spoke, Trust pending', () => {
+  it('inbound (one-way they-trust-me) is SUPPRESSED — renders IDENTICAL to Known (I-F anti-coercion, Peter #172742; Flint #173118)', () => {
+    // The trusted party must NOT learn someone trusts them one-way — a visible "they trust you" is a
+    // coercion lever. Only mutual (reciprocal) ever surfaces. Inbound ≡ Known, by construction (bondStateOf).
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
-    const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
     const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
-    assert.equal(v.bondState, 'trust-received');
-    assert.equal(v.shape, 'solid-filled');
-    assert.equal(v.svgFill, mutual.svgFill);
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.known);
+    assert.equal(v.shape, known.shape);
+    assert.equal(v.svgFill, known.svgFill);
     assert.equal(v.spokeStyle, known.spokeStyle);
     assert.equal(v.spokeStroke, known.spokeStroke);
     assert.equal(v.coreFill, null);
     assert.equal(v.lit, false);
-    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
     assert.equal(usesWhite(v), false);
-    assert.equal(trustVisualLane(v, false), 'trust-received');
+    assert.equal(v.chipColorCss, known.chipColorCss);
+    assert.equal(trustVisualLane(v, false), 'known');
   });
 
   it('blocked is struck and not lit', () => {
@@ -217,11 +219,12 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.shape, 'outline');
   });
 
-  it('if they still hold after you drop trust, that is one-way inbound', () => {
+  it('if they still hold after you drop trust (one-way inbound), it is SUPPRESSED to Known — no "trusts you" disclosure (Peter #172742)', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
-    assert.equal(v.bondState, 'trust-received');
-    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
-    assert.equal(v.shape, 'solid-filled');
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.known);
+    assert.equal(v.shape, known.shape);
   });
 
   it('trust_history does not invent a broken paint — live boolean only', () => {
