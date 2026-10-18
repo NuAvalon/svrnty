@@ -33,7 +33,7 @@ export const TRUST_RECIPE_COPY = {
   verifyShowCode: 'Show my verify code',
   verifyHideCode: 'Hide verify code',
   verifyCodeHint:
-    'Let someone scan this in person to confirm they hold your real key. It is your public fingerprint — safe to show, it stays on this device and never expires. (Not the Share QR, which is a one-time invite link.)',
+    "Let someone scan this in person to confirm the key they hold for you is really yours — a face-to-face check against an imposter in the middle. It's your public fingerprint: safe to show, and it never expires. Scanning it grants nothing and sends nothing — it only lets them compare. (Not the Share QR — that one's a one-time invite link.)",
   growHint:
     'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
   mycelial:
