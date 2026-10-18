@@ -13,7 +13,7 @@
 // Secrets live in ~/.svrnty-agent/ — outside the repo, never committed.
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
-import { readFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
@@ -35,6 +35,13 @@ import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPack
 import { strip0x40 } from '../src/lib/identity/raw-sign';
 import { base64ToUint8, uint8ToBase64 } from '../src/lib/crypto/pq';
 import * as openpgp from 'openpgp';
+
+// Security (Flint KB#3285 / #256 finding #1): agent-local state holds LIVE tr session keys
+// (ratchet-sessions.json), plus issued-codes / gate / store. Set a restrictive umask at startup so
+// EVERY file this process writes defaults to 0600 and every dir it makes to 0700 — not 0644
+// (local-readable session keys = a channel-confidentiality hole; only mint.json was 0600 before).
+// The sandbox dir is also mkdir+chmod'd 0700 in main(). mint.json keeps its explicit chmod too.
+process.umask(0o077);
 
 const DIR = process.env.SVRNTY_AGENT_DIR ?? '/home/alpha/devin-sandbox/.svrnty-agent'; // sandboxed agent home — never $HOME/.ssh territory; per-agent override for gateway-custodied identities
 const MINT = `${DIR}/mint.json`;
@@ -210,6 +217,10 @@ function printNewArrivals(ownerFp: string, seen: Set<string>): void {
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
+  // Ensure the sandbox dir exists + is owner-only (0700) before any state is written
+  // (chmod covers the case where it pre-existed with looser perms). #256 finding #1.
+  mkdirSync(DIR, { recursive: true, mode: 0o700 });
+  chmodSync(DIR, 0o700);
   const store = new HeadlessStore({ path: STORE });
 
   if (cmd === 'mint') {
