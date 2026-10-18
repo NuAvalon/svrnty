@@ -17,7 +17,6 @@ import {
   type LivingTrustPhase,
 } from '@/lib/trust/living-edge-status';
 import type { TrustEdge } from '@/lib/trust/types';
-import { isMutualTrustWireLive } from '@/lib/claim-gates';
 
 export type TrustBondState =
   | 'known'
@@ -45,12 +44,10 @@ export const TRUST_VISUAL_LABELS = {
 } as const;
 
 /**
- * PRE-WIRE label for the one-way (trust-sent) bond while isMutualTrustWireLive() is false — the primary
- * node/chip/badge label (this map is the ONE paint source; a livingEdgeStatus-only gate would be BYPASSED
- * here). The affirmation flow isn't deposited yet, so "Trust pending" / "Awaiting mutual" over-claim
- * a wait for a state that can't arrive (built≠wired). Reuses Hypatia's approved pre-wire word
- * "Trusted". Flips to TRUST_VISUAL_LABELS['trust-sent'] ("Trust pending") WITH the wire.
- * (@Hypatia — confirm/adjust this terse node word; "Trusted" mirrors the edge statusLine pre-wire.)
+ * Label for the one-way (trust-sent) bond — the owner's OWN outbound trust. The primary node/chip/badge
+ * label (this map is the ONE paint source). #593: the affirm-wire was removed, so a one-way edge reads
+ * the honest "Trusted" (its own device trust) — never "Trust pending" / "Awaiting mutual", which would
+ * imply an affirm-in-flight that no longer exists. Mutual is PSI-discovered (#588), not an affirm wait.
  */
 export const TRUST_SENT_PRE_WIRE_LABEL = 'Trusted';
 
@@ -113,12 +110,12 @@ function bondStateOf(
   return 'known';
 }
 
-function displayLabel(bond: TrustBondState, introPending: boolean, trust: LivingTrustPhase, wireLive: boolean): string {
+function displayLabel(bond: TrustBondState, introPending: boolean, trust: LivingTrustPhase): string {
   if (bond === 'blocked') return TRUST_VISUAL_LABELS.blocked;
   if (introPending && trust === 'none') return TRUST_VISUAL_LABELS.introPending;
-  // Pre-wire: the one-way bond must NOT label "Awaiting mutual" (a transient wait for an unreachable
-  // state). The dashed-hollow affordance is unchanged; ONLY the label is gated (claim-gates.isMutualTrustWireLive).
-  if (bond === 'trust-sent' && !wireLive) return TRUST_SENT_PRE_WIRE_LABEL;
+  // #593: the affirm-wire is removed — a one-way 'trust-sent' (the owner's own outbound trust) reads the
+  // honest "Trusted", never the "Trust pending" affirm-in-flight word (no device affirm-wire exists).
+  if (bond === 'trust-sent') return TRUST_SENT_PRE_WIRE_LABEL;
   return TRUST_VISUAL_LABELS[bond];
 }
 
@@ -166,10 +163,9 @@ export function trustPhaseVisual(input: {
   const introPending = input.status.connection === 'pending';
   const bond = bondStateOf(trust, input.blocked === true);
   const lit = bond === 'mutual';
-  // Single flag, read once here (claim-gates.isMutualTrustWireLive); gates ONLY the trust-sent LABEL.
-  // white/lit stays `bond === 'mutual'` — structurally unreachable pre-wire (reciprocal can't flip without
-  // the deposit-hook), so the white-gate needs no flag; only the one-way COPY would over-claim pre-wire.
-  const label = displayLabel(bond, introPending, trust, isMutualTrustWireLive());
+  // #593: no wire flag — the trust-sent label is unconditionally the honest "Trusted". white/lit stays
+  // `bond === 'mutual'`; livingEdgeStatus no longer produces 'mutual' from a device bit (PSI #588 re-grounds it).
+  const label = displayLabel(bond, introPending, trust);
 
   if (bond === 'blocked') {
     return {

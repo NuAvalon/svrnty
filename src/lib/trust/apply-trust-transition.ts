@@ -4,23 +4,19 @@
 // WHY THIS EXISTS. Trust could be granted from more than one surface (the contact LIST toggle in
 // ContactManagement, the trust-MAP toggle in app/page.tsx, and future ones). Each fork independently
 // drifted — the map path forgot the satellite commit AND the emit; the list path forgot trust_history
-// (Flint floor-verify #173014). A surface that flips local trust WITHOUT depositing a signed
-// affirmation leaves the peer unaware → no mutual edge ever forms, with no signal to the user. That
-// fork IS the bug class.
+// (Flint floor-verify #173014). That fork IS the bug class, so every trust/break transition routes HERE.
 //
-// So every trust/break transition routes HERE, making "grant trust" and "deposit the affirmation"
-// inseparable by construction: no current or future surface can grant trust without the peer learning.
 // Order: (1) local trust write (+ trust_history + #111 open-vis clear on untrust), (2) blind satellite
-// commit/revoke, (3) PSI reveal-set reconcile (#572), (4) EMIT-ONLY deposit.
+// commit/revoke, (3) PSI reveal-set reconcile (#572).
 //
-// EMIT-ONLY: this writes NOTHING to reciprocal / they_trust_me. Reciprocal flips ONLY on the peer's
-// crypto-verified RECEIVE (acceptTrustAffirm). Sending an affirmation is not assuming mutuality
-// (anti-coercion: no unilateral visibility). Send fails OPEN (local trust holds, peer re-syncs);
-// the consume side stays fail-SAFE.
+// NO MUTUAL IS ASSERTED HERE. The device-held affirm-wire (deposit→consume→reciprocal flip) was REMOVED
+// (#593, Peter do-no-harm ruling): a device-held `they_trust_me` bit is false security (defeated by
+// inspection). Mutual is now DISCOVERED via the blind PSI intersection (#588) — never a stored bit from a
+// received affirmation. This chokepoint records only the OWNER's own sovereign trust (their book) + the
+// blind satellite commit; it writes NOTHING to reciprocal / they_trust_me.
 
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
-import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
-import { updateContact as realUpdateContact, loadKey as realLoadKey } from '@/lib/identity/client-store';
+import { updateContact as realUpdateContact } from '@/lib/identity/client-store';
 import type { TrustEvent } from '@/lib/trust/types';
 
 export interface TrustTransitionOwner {
@@ -49,15 +45,12 @@ export interface TrustTransitionPeer {
 export interface TrustTransitionDeps {
   /** injectable for tests; defaults to the real client-store ops. */
   updateContact?: (id: string, patch: Record<string, unknown>) => Promise<unknown>;
-  loadKey?: (fp: string) => Promise<{ privateKey: string; passphrase: string } | null>;
   /** injectable for tests; defaults to reconcileAllowedOnConsentChange. Fire-and-forget (return
    *  ignored) — the arg shape is pinned to the real hook, the result is not. */
   reconcile?: (args: Parameters<typeof reconcileAllowedOnConsentChange>[0]) => unknown;
   fetchImpl?: typeof fetch;
   /** satellite base (default '' → same-origin /api/trust/*). */
   satelliteBase?: string;
-  /** relay base passed through to sendTrustAffirmToPeer (default its own '/api/relay'). */
-  relayBase?: string;
   /** timestamp source (default new Date().toISOString()); injectable for deterministic tests. */
   now?: () => string;
 }
@@ -74,7 +67,6 @@ export async function applyTrustTransition(
   deps: TrustTransitionDeps = {},
 ): Promise<void> {
   const updateContact = deps.updateContact ?? realUpdateContact;
-  const loadKey = deps.loadKey ?? realLoadKey;
   const reconcile = deps.reconcile ?? reconcileAllowedOnConsentChange;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ? deps.now() : new Date().toISOString();
@@ -130,26 +122,6 @@ export async function applyTrustTransition(
     },
   });
 
-  // (4) EMIT-ONLY deposit — signed affirmation to the peer's blind mailbox. Best-effort: a failed
-  // deposit never breaks the local toggle; keyless peers (no armored pub) simply can't be sealed to.
-  if (peer.fingerprint && peer.publicKeyArmored && owner.publicKeyArmored) {
-    try {
-      const key = await loadKey(owner.fingerprint);
-      if (key) {
-        await sendTrustAffirmToPeer({
-          senderFingerprint: owner.fingerprint,
-          senderPublicKeyArmored: owner.publicKeyArmored,
-          senderPrivateKeyArmored: key.privateKey,
-          passphrase: key.passphrase,
-          senderPqKemPublicKey: owner.pqKemPublicKey,
-          senderPqSigPublicKey: owner.pqSigPublicKey,
-          peerFingerprint: peer.fingerprint,
-          peerPublicKeyArmored: peer.publicKeyArmored,
-          trusts: nextTrusted,
-          fetchImpl,
-          relayBase: deps.relayBase,
-        });
-      }
-    } catch { /* deposit best-effort — local + satellite already applied; peer re-syncs */ }
-  }
+  // (4) [REMOVED #593] The EMIT-ONLY affirm deposit (sendTrustAffirmToPeer) is gone — mutual is no longer
+  // asserted from a device-held received bit; it is discovered via the blind PSI intersection (#588).
 }

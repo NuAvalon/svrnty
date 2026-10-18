@@ -46,7 +46,7 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked, getNote, putNote } from '@/lib/messaging/store';
@@ -55,9 +55,6 @@ import { buildReceiptWire, verifyReceiptWire } from '@/lib/crypto/delivery-recei
 import { canonicalPubsFromArmoredPublicKey } from '@/lib/identity/fingerprint';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { loadOwnerMessageKeys } from '@/components/encrypt-decrypt/load-owner-message-keys';
-import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
-import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
-import { edgeTrusted } from '@/lib/trust/contact-edge';
 
 /** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
 export const DEFAULT_POLL_INTERVAL_MS = 1_500;
@@ -196,66 +193,6 @@ export function buildNoteSeam(
 }
 
 /**
- * Build the MUTUAL-TRUST AFFIRMATION seam bound to this owner (consume-mailbox TrustAffirmResponseSeam).
- * The mailbox is shared by contact.updates + joiner-responses + notes + affirmations — all the SAME
- * openpgp envelope — so WITHOUT this seam the always-on poll decrypts an affirmation via the contact-
- * update path, fails its `envelope.fingerprint` shape-check, and SILENTLY ack-DELETES it (the silent-
- * loss). This routes an affirmation by its own type-checked decryptor to acceptTrustAffirm (authn →
- * bind-to-me → admit → apply), persisting the flip into the CLIENT ContactRecord.mutual — the field
- * livingEdgeStatus reads to phase an edge mutual. Exported for unit tests.
- *
- * APPLY TARGET (grounded ☀8180 — corrects the handoff's "updateMutualState" plan): the Node-fs
- * TrustGraphManager.updateMutualState has ZERO client callers and writes a file the browser never
- * reads — wiring to it would be a VISUAL NO-OP. The field the UI actually reads is
- * ContactRecord.mutual (contactRecordToEdge → livingEdgeStatus), persisted here via updateContact.
- * reciprocal = (I independently trust them, per the shared edgeTrusted predicate) && trusts — reading
- * the EXISTING trusted state, which a remote wire can never promote (updateContact pt5 gate). So an
- * in-book affirm sets they_trust_me (inbound) but mutual requires MY own prior owner-verified trust.
- */
-export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
-  return {
-    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; the
-    // type-check inside trustAffirmOpenpgpDecryptor is the discriminator, so this never eats a non-affirm.
-    verify: (blob) => decryptAffirm(blob),
-    accept: (wire) =>
-      acceptTrustAffirm({
-        wire,
-        ownerFingerprint: owner.fingerprint,
-        // whitelist-on-fetch admit (I-2, the FALSE-MUTUAL gate): flip ONLY for an in-book sender.
-        isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
-        // apply sink — persist the flip into the CLIENT store. A LOCKED store makes updateContact throw
-        // → propagates as RETRYABLE (the affirmation waits in the mailbox, never ack-deleted-unseen).
-        applyMutual: async (fromFp, trusts, sentAt) => {
-          const rec = await getContactByFingerprint(owner.fingerprint, fromFp);
-          if (!rec) {
-            // Admitted a moment ago but gone now (removed mid-poll) — nothing to flip. Idempotent no-op;
-            // report reciprocal:false and let the ack clean up (the edge no longer exists to show mutual).
-            throw new Error('trust-affirm applyMutual: contact vanished between admit and apply');
-          }
-          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539 + NaN/future hardening #169647): apply
-          // only if the sender's SIGNED sent_at is a plausible timestamp AND not strictly older than the
-          // last applied for this sender — a stale/replayed/back-dated "I trust you" must never overwrite a
-          // newer "I broke trust" (false-Mutual revival), and a garbage/future ts must not defeat or poison
-          // the ordering. The cursor (last_affirm_at) lives INSIDE `mutual`, so it advances in the SAME
-          // updateContact tx as they_trust_me (crash-safe). `null` ⇒ terminal drop.
-          const prevAffirmAt = (rec.mutual as { last_affirm_at?: string } | undefined)?.last_affirm_at;
-          if (!affirmShouldApply(sentAt, prevAffirmAt, Date.now())) return null;
-          const iTrustThem = edgeTrusted(rec);
-          const mutual = {
-            they_trust_me: trusts,
-            last_sync: new Date().toISOString(),
-            reciprocal: iTrustThem && trusts,
-            last_affirm_at: sentAt,
-          };
-          await updateContact(rec.id, { mutual } as Partial<ContactRecord>);
-          return { id: rec.id, reciprocal: mutual.reciprocal };
-        },
-      }),
-  };
-}
-
-/**
  * Build the DELIVERY-RECEIPT seam bound to this owner (consume-mailbox ReceiptResponseSeam) — the SENDER
  * side. When the owner polls their own mailbox and finds a receipt sealed to them, this recovers the
  * OUTBOUND note it confirms and verifies the delivering recipient's signature, then marks the note
@@ -379,7 +316,6 @@ export async function buildConsumeDeps(
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes),
     note: buildNoteSeam(owner, sendReceipt),
-    affirm: buildTrustAffirmSeam(owner),
     receipt: buildReceiptSeam(owner),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
@@ -388,10 +324,6 @@ export async function buildConsumeDeps(
     // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
     // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
     emitReceipt: (e) => emitNoteArrival(e),
-    // Mutual-trust flip persisted on the shared poll → repaint the contact row / trust map via the SAME
-    // contact beat (reason:'live-apply') so the edge re-reads ContactRecord.mutual → phases to Mutual
-    // (or inbound). Reuses the existing bus; no new emitter. (Athena — if a dedicated trust beat is wanted.)
-    emitTrust: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     fetchImpl: opts.fetchImpl,
   };
 }

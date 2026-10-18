@@ -2,15 +2,15 @@
 // Run: npx tsx --test src/lib/trust/apply-trust-transition.test.ts
 //
 // OPERATION-verifies the single trust-transition CHOKEPOINT (apply-trust-transition.ts) — the fn both
-// the contact-LIST toggle (ContactManagement) and the trust-MAP toggle (app/page.tsx) route through,
-// so no surface can grant trust without depositing the signed affirmation (Flint floor-verify #173014).
+// the contact-LIST toggle (ContactManagement) and the trust-MAP toggle (app/page.tsx) route through.
 //
-// It drives A's toggle THROUGH the chokepoint (not sendTrustAffirmToPeer directly), then B consumes via
-// the real headless consume path, asserting the property Flint flagged as the hardest-watch:
-//   • EMIT-ONLY, OBSERVED (Flint #173025): A's own local write carries NO reciprocal/they_trust_me —
-//     the sender assumes nothing; the flip lands only on B's seat AFTER B consumes.
-//   • reciprocal flips IFF the recipient independently trusts the sender (mutual needs both sides).
-//   • both directions wire end-to-end (trust → satellite commit + trusts:true; break → revoke + false).
+// #593 (affirm-wire removal): the chokepoint NO LONGER deposits a signed trust-affirmation. A device-held
+// `they_trust_me` is false security (defeated by inspection), so mutual is now discovered via the blind
+// PSI intersection (#588), never a received affirm bit. These tests assert the RETAINED behavior AND the
+// removal itself:
+//   • local trust write (+ trust_history) is EMIT-ONLY — NO reciprocal / they_trust_me / mutual in the patch.
+//   • the blind satellite commit/revoke still fires (trust → commit, break → revoke), keyed on owner fp.
+//   • ★ REMOVAL PROOF: NOTHING is deposited to the peer's mailbox, and a peer poll flips NOTHING on their seat.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -83,11 +83,9 @@ async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: Re
   const patches: Array<Record<string, unknown>> = [];
   const deps: TrustTransitionDeps = {
     updateContact: async (_id, patch) => { patches.push(patch); },
-    loadKey: async () => ({ privateKey: A.priv, passphrase: A.kpass }),
     reconcile: async () => {}, // reveal-set reconcile is a separate fire-and-forget seam; no-op in this unit
     fetchImpl: relay.fetchImpl,
     satelliteBase: '',
-    relayBase: RELAY,
     now: () => FIXED_NOW,
   };
   await applyTrustTransition(
@@ -99,7 +97,7 @@ async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: Re
   return { patches };
 }
 
-test('CHOKEPOINT: A trusts B via the shared fn → B consumes → MUTUAL (B already trusts A); sender write is EMIT-ONLY', async () => {
+test('CHOKEPOINT: A trusts B → local EMIT-ONLY write + blind satellite COMMIT; ★ NO affirm deposited (removed #593), peer seat untouched', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
   const bStore = new HeadlessStore();
@@ -121,47 +119,26 @@ test('CHOKEPOINT: A trusts B via the shared fn → B consumes → MUTUAL (B alre
   assert.deepEqual(relay.trustCalls.map((c) => c.op), ['commit']);
   assert.equal(relay.trustCalls[0].body.fingerprint, A.fp);
 
-  // (emit) a sealed blob landed in B's fp-derived mailbox.
-  assert.equal(relay.boxes.get(deriveMailboxId(B.fp))?.length, 1, "deposited to B's mailbox");
+  // ★ REMOVAL PROOF (#593): the affirm deposit is GONE — NOTHING landed in B's mailbox.
+  assert.equal(relay.boxes.get(deriveMailboxId(B.fp))?.length ?? 0, 0, 'no affirmation deposited to the peer');
 
-  // ★ BEFORE B consumes: nothing has flipped on B's seat — the sender's act is silent on the peer.
-  assert.equal(bStore.getContactByFingerprint(A.fp)!.mutual?.they_trust_me ?? false, false, 'no flip before receive');
-
-  // Only after B's real consume does the flip land — on the RECIPIENT seat, mutual iff B trusts A.
+  // A peer poll flips NOTHING — there is no affirm to consume (the device-held they_trust_me path is gone).
   const summary = await pollHeadlessOnce(headlessOwner(B), bStore, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-  assert.equal(summary.affirmed, 1, 'B consumed the chokepoint-driven affirmation');
+  assert.equal(summary.applied + summary.notes + summary.delivered, 0, 'peer poll consumes nothing');
   const a = bStore.getContactByFingerprint(A.fp)!;
-  assert.equal(a.mutual?.they_trust_me, true, 'flip lands on the recipient seat');
-  assert.equal(a.mutual?.reciprocal, true, 'reciprocal → MUTUAL (both trust)');
+  assert.equal(a.mutual?.they_trust_me ?? false, false, 'peer seat: they_trust_me never flips (no affirm-wire)');
+  assert.equal(a.mutual?.reciprocal ?? false, false, 'peer seat: reciprocal never flips (mutual is PSI-only, #588)');
 });
 
-test('CHOKEPOINT: one-way — B does NOT trust A → they_trust_me set, reciprocal FALSE (no wire-driven promotion)', async () => {
+test('CHOKEPOINT: break direction — A breaks trust → local unverified write + blind satellite REVOKE; ★ no deposit', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
-  const bStore = new HeadlessStore();
-  bStore.upsertContact(asContact(A, { trusted: false, trust_level: 'known' })); // in book, NOT trusted
-
-  await toggleViaChokepoint(A, B, true, relay);
-  await pollHeadlessOnce(headlessOwner(B), bStore, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-
-  const a = bStore.getContactByFingerprint(A.fp)!;
-  assert.equal(a.mutual?.they_trust_me, true);
-  assert.equal(a.mutual?.reciprocal, false, "mutual needs the recipient's OWN prior trust — a deposit alone cannot promote");
-});
-
-test('CHOKEPOINT: break direction — A breaks trust → satellite REVOKE + trusts:false deposit clears reciprocal on consume', async () => {
-  const [A, B] = [await mint(), await mint()];
-  const relay = mockRelay();
-  const bStore = new HeadlessStore();
-  bStore.upsertContact(asContact(A, { trusted: true, trust_level: 'trusted' })); // B trusts A (so an affirm could reach mutual)
 
   const { patches } = await toggleViaChokepoint(A, B, false, relay);
   assert.equal(patches[0].trusted, false);
   assert.equal(patches[0].trust_level, 'unverified');
   assert.deepEqual(relay.trustCalls.map((c) => c.op), ['revoke'], 'break → satellite revoke');
 
-  await pollHeadlessOnce(headlessOwner(B), bStore, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-  const a = bStore.getContactByFingerprint(A.fp)!;
-  assert.equal(a.mutual?.they_trust_me, false, 'break clears they_trust_me on the recipient');
-  assert.equal(a.mutual?.reciprocal, false, 'break clears reciprocal');
+  // ★ REMOVAL PROOF (#593): break also deposits no affirmation.
+  assert.equal(relay.boxes.get(deriveMailboxId(B.fp))?.length ?? 0, 0, 'no break-affirmation deposited to the peer');
 });

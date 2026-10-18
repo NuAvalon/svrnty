@@ -8,7 +8,6 @@
 import type { TrustEdge } from '@/lib/trust/types';
 import { daysUntilDecay, isDecayed } from '@/lib/trust/types';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
-import { isMutualTrustWireLive } from '@/lib/claim-gates';
 
 export type LivingConnectionPhase = 'classical' | 'pending' | 'one-way' | 'linked';
 export type LivingTrustPhase = 'none' | 'outbound' | 'inbound' | 'mutual';
@@ -80,14 +79,14 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
   else if (isPending(e)) connection = 'pending';
   else connection = 'linked';
 
-  const theyTrustMe = e.mutual?.they_trust_me === true || e.mutual?.reciprocal === true;
-  const reciprocal = e.mutual?.reciprocal === true;
   const outboundFlag = e.metadata?.trust_outbound === true || e.metadata?.trust_probe === 'pending';
 
+  // #593: 'mutual' / 'inbound' are NO LONGER derived from a device-held mutual.{reciprocal,they_trust_me}
+  // bit — the affirm-wire was removed (a device-held "they trust me" is false security, defeated by
+  // inspection). Only the owner's OWN sovereign trust (e.trusted) phases an edge here. MUTUAL is
+  // re-grounded on the blind PSI intersection (#588); until that lands, an edge never surfaces as mutual.
   let trust: LivingTrustPhase = 'none';
-  if (reciprocal) trust = 'mutual';
-  else if (e.trusted) trust = 'outbound';
-  else if (theyTrustMe) trust = 'inbound';
+  if (e.trusted) trust = 'outbound';
   else if (outboundFlag) trust = 'outbound';
 
   const methodDelivery = deliveryOf(e);
@@ -104,21 +103,16 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
     e.metadata?.last_moment_at || e.mutual?.last_sync || e.last_interaction || e.trusted_since;
   const lastMoment = relativeMoment(lastAt);
 
-  // MUTUAL-TRUST WIRE honesty gate (claim-gates.isMutualTrustWireLive) — gates ONLY the 'outbound' label.
-  // Post-wire (e04eb17 deposit-hook) 'inbound' and 'mutual' ARE reachable: the consume applyMutual writes
-  // they_trust_me/reciprocal. 'inbound' (one-way, they-trust-me) is SUPPRESSED below for I-F anti-coercion
-  // (Peter #172742: a one-way trust is invisible to all, ESPECIALLY the trusted party) — UNCONDITIONALLY,
-  // independent of the wire flag. Pre-wire an 'outbound' edge must NOT read "awaiting mutual" (built≠wired
-  // over-claim); it reads the roadmap copy. The outbound label flips WITH the wire. (Copy: Hypatia v1.)
-  const wireLive = isMutualTrustWireLive();
-
+  // #593: the affirm-wire is removed, so an 'outbound' edge reads the honest "Trusted" (its own device
+  // trust) — never "awaiting mutual" (there is no device affirm-wire in flight). livingEdgeStatus no
+  // longer produces 'mutual' at all (the device-bit derivation is gone); MUTUAL is re-grounded on the
+  // blind PSI intersection (#588), which re-adds the 'mutual' phase + its statusLine when it lands.
+  // 'inbound' is never produced (one-way trust is invisible — I-F anti-coercion, Peter #172742; the
+  // removal makes this structural, not just suppressed).
   let statusLine: string;
   if (connection === 'classical') statusLine = 'Classical book';
   else if (connection === 'pending') statusLine = 'Pending · not linked yet';
-  else if (trust === 'mutual') statusLine = 'Mutual trust';
-  else if (trust === 'outbound') statusLine = wireLive ? 'Trusted · awaiting mutual' : 'Trusted';
-  // 'inbound' is SUPPRESSED — renders identical to Known/Linked. I-F anti-coercion: the trusted party
-  // must NOT learn someone trusts them one-way (Peter #172742). Falls through intentionally. (Flint #173118)
+  else if (trust === 'outbound') statusLine = 'Trusted';
   else if (canCommunicate) statusLine = 'Linked · can communicate';
   else statusLine = 'Known';
 
@@ -129,9 +123,6 @@ export function livingEdgeStatus(edge: TrustEdge): LivingEdgeStatus {
     detailLine = 'Method update did not get an ack';
   } else if (methodDelivery === 'acked') {
     detailLine = 'Method update acknowledged';
-  } else if (trust === 'outbound' && !wireLive) {
-    // Pre-wire: no affirmation flow yet, so "awaiting"/"signal sent" would over-claim. Roadmap copy.
-    detailLine = 'Mutual confirmation coming';
   } else if (trust === 'outbound' && e.metadata?.trust_probe === 'no-ack') {
     detailLine = 'Trust signal sent · no reciprocity ack yet';
   } else if (trust === 'outbound') {
@@ -160,10 +151,10 @@ export function livingStatusChip(status: LivingEdgeStatus): string {
   if (status.connection === 'classical') return 'Classical';
   if (status.connection === 'pending') return 'Pending';
   if (status.trust === 'mutual') return 'Mutual';
-  // Pre-wire: "Trust sent" implies a wire deposit that hasn't happened (no deposit-hook yet) → "Trusted"
-  // (same isMutualTrustWireLive gate as the statusLine + the phase-visual label; one flag, every path).
-  if (status.trust === 'outbound') return isMutualTrustWireLive() ? 'Trust sent' : 'Trusted';
-  // 'inbound' SUPPRESSED → Linked/Known (I-F anti-coercion, Peter #172742; Flint #173118).
+  // #593: the affirm-wire is removed → outbound is the honest "Trusted" (own device trust), never the
+  // "Trust sent" affirm-in-flight word. 'mutual' kept forward-compatible for #588 (PSI-discovered mutual).
+  if (status.trust === 'outbound') return 'Trusted';
+  // 'inbound' is never produced (one-way trust invisible — I-F anti-coercion, Peter #172742; Flint #173118).
   if (status.canCommunicate) return 'Linked';
   return 'Known';
 }

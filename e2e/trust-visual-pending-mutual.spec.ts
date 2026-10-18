@@ -24,8 +24,8 @@ async function genesis(page: Page, name: string) {
   });
 }
 
-// Labels assert PRE-WIRE gated copy (isMutualTrustWireLive=false → Trusted).
-// Structural attrs (bond-state/light/shape/hex fill) are ungated. Flip labels with the wire.
+// Labels assert the one-way (own-trust) copy "Trusted" (#593: affirm-wire removed — mutual is PSI-discovered, #588).
+// Structural attrs (bond-state/light/shape/hex fill) are ungated.
 test('Galaxy: one-way trust is not white; Mutual trust is the only white light', async ({
   page,
 }) => {

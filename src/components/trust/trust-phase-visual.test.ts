@@ -71,7 +71,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.svgStrokeWidth, mutual.svgStrokeWidth);
     assert.equal(v.canvasFill, mutual.canvasFill);
     assert.equal(v.spokeStyle, 'single');
-    // isMutualTrustWireLive() is false → one-way must NOT label "Trust pending" / "Awaiting mutual".
+    // #593: affirm-wire removed → a one-way (own-trust) bond labels "Trusted", never "Trust pending"/"Awaiting mutual".
     assert.equal(v.label, TRUST_SENT_PRE_WIRE_LABEL);
     assert.notEqual(v.label, TRUST_VISUAL_LABELS['trust-sent']);
     assert.equal(v.coreFill, null);
@@ -170,7 +170,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.coreFill, null);
   });
 
-  it('reads livingEdgeStatus.trust — outbound vs mutual from a real edge', () => {
+  it('reads livingEdgeStatus.trust — a device-bit reciprocal edge reads outbound, NOT mutual (#593 removal)', () => {
     const base = {
       id: 'e',
       peer_fingerprint: 'aa'.repeat(20),
@@ -202,14 +202,16 @@ describe('trust-phase visual map — white IFF mutual', () => {
     const outVis = trustPhaseVisual({ status: livingEdgeStatus(outboundEdge) });
     const mutVis = trustPhaseVisual({ status: livingEdgeStatus(mutualEdge) });
     assert.equal(livingEdgeStatus(outboundEdge).trust, 'outbound');
-    assert.equal(livingEdgeStatus(mutualEdge).trust, 'mutual');
+    // #593 REMOVAL PROOF: a device-held reciprocal:true edge NO LONGER renders mutual via the real
+    // edge→visual path — it reads 'outbound' (the owner's own trust). Mutual is PSI-discovered (#588).
+    assert.equal(livingEdgeStatus(mutualEdge).trust, 'outbound');
     assert.equal(outVis.bondState, 'trust-sent');
-    assert.equal(mutVis.bondState, 'mutual');
+    assert.equal(mutVis.bondState, 'trust-sent');
     assert.equal(outVis.white, false);
-    assert.equal(mutVis.white, true);
-    // Real edge→visual path: pre-wire the one-way bond labels "Trusted" (gated), never "Awaiting mutual".
+    assert.equal(mutVis.white, false);
+    // Real edge→visual path: the one-way bond labels "Trusted", never "Awaiting mutual".
     assert.equal(outVis.label, TRUST_SENT_PRE_WIRE_LABEL);
-    assert.equal(mutVis.label, TRUST_VISUAL_LABELS.mutual);
+    assert.equal(mutVis.label, TRUST_SENT_PRE_WIRE_LABEL);
   });
 
   it('a break with no remaining trust paints Known — no historical broken state', () => {
