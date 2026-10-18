@@ -7,6 +7,8 @@ import { useMemo, useState } from 'react';
 import { IdentitySeal } from './IdentitySeal';
 import { solarEmber as E, solarGlass } from '../recovery/solar-ember';
 import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
+import { SimpleQRCode } from '@/components/SimpleQRCode';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 
 export type MethodKind = 'email' | 'signal' | 'site';
 
@@ -211,6 +213,7 @@ export function SovereignIdentityCard({
   onExportVcf,
 }: SovereignIdentityCardProps) {
   const [reviseNote, setReviseNote] = useState<string | null>(null);
+  const [showVerifyCode, setShowVerifyCode] = useState(false);
   const displayHandle = handle
     ? (handle.startsWith('@') ? handle : `@${handle}`)
     : null;
@@ -318,6 +321,57 @@ export function SovereignIdentityCard({
         >
           key · {formatKeyGroups(fingerprint)}
         </p>
+
+        {/* In-person verify code — the raw fingerprint as a scannable QR.
+            Stable, offline, safe to display: it IS your public key id. The Verify
+            sheet's scanner reads a raw-hex QR (fingerprint-from-scan.ts) → byte-equal
+            match, so an in-person scan works in one step. Distinct from Share's
+            single-use, expiring invite QR (a relay link, not a fingerprint). */}
+        {fingerprint ? (
+          <div style={{ width: '100%', marginBottom: 22, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+            <button
+              type="button"
+              data-testid="toggle-verify-code"
+              aria-expanded={showVerifyCode}
+              onClick={() => setShowVerifyCode((v) => !v)}
+              style={{
+                padding: '8px 14px',
+                borderRadius: 999,
+                border: `1px solid ${E.borderLit}`,
+                background: 'color-mix(in srgb, var(--se-accent) 10%, transparent)',
+                color: E.accent,
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                fontWeight: 600,
+                letterSpacing: '0.04em',
+                cursor: 'pointer',
+              }}
+            >
+              {showVerifyCode ? TRUST_RECIPE_COPY.verifyHideCode : TRUST_RECIPE_COPY.verifyShowCode}
+            </button>
+            {showVerifyCode ? (
+              <div
+                data-testid="verify-code-qr"
+                style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}
+              >
+                <SimpleQRCode value={fingerprint} size={176} />
+                <p
+                  style={{
+                    margin: 0,
+                    maxWidth: 300,
+                    textAlign: 'center',
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    color: E.dim,
+                    fontFamily: E.fontSans,
+                  }}
+                >
+                  {TRUST_RECIPE_COPY.verifyCodeHint}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 22 }}>
           <MethodRow kind="email" label="Email" value={email} emptyHint="not set" onRevise={handleRevise} />

@@ -30,6 +30,10 @@ export const TRUST_RECIPE_COPY = {
     'A camera scan is provenance. This tap is verify — you are sure this key is the person you mean.',
   verifiedHere:
     'You verified this key on this device. Nobody else sees that. Trust still needs them to verify you too.',
+  verifyShowCode: 'Show my verify code',
+  verifyHideCode: 'Hide verify code',
+  verifyCodeHint:
+    'Let someone scan this in person to confirm they hold your real key. It is your public fingerprint — safe to show, it stays on this device and never expires. (Not the Share QR, which is a one-time invite link.)',
   growHint:
     'Show this so they can join you. In person, they can become a star you Know. Remote, they wait at the Gate until you admit them. Verify is a later tap.',
   mycelial:

@@ -43,6 +43,21 @@ describe('extractFingerprintFromScan', () => {
   });
 });
 
+describe('Your Card verify-code QR → in-person scan (SovereignIdentityCard contract)', () => {
+  // SovereignIdentityCard renders <SimpleQRCode value={fingerprint}/> — the raw
+  // canonical fingerprint. The whole point of the fix: a verifier scanning that
+  // QR in person must get a byte-equal match in one step (offline, no relay).
+  it('a QR encoding the raw owner fingerprint is accepted and byte-matches the stored fp', () => {
+    const ownerFp = FP64; // exactly what Your Card encodes as the verify QR value
+    const scanned = extractFingerprintFromScan(ownerFp); // what the Verify sheet reads back
+    assert.equal(scanned, ownerFp);
+    assert.equal(fingerprintsMatch(ownerFp, scanned), true);
+  });
+  it('a different key scanned against the stored fp still fails loud — no false verify from the new QR', () => {
+    assert.equal(fingerprintsMatch(FP64, extractFingerprintFromScan(OTHER64)), false);
+  });
+});
+
 describe('fingerprintsMatch — wiring gate', () => {
   it('matches byte-equal fingerprints after normalize; mismatch cannot pass', () => {
     assert.equal(fingerprintsMatch(FP64, FP64), true);
