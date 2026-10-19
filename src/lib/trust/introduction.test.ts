@@ -84,11 +84,12 @@ const rachel = () => ({ fingerprint: rachelFp, privateKeyArmored: rachelPriv, pa
 const knowsIvan = (fp: string) => (fp === ivanFp ? { publicKeyArmored: ivanPub } : null);
 
 // Build Newt's recipient-scoped consent (signed by Newt), then Ivan's honest introduction args.
-async function newtConsent(o: { recipientFp?: string; introducerFp?: string; nonce?: string } = {}) {
+async function newtConsent(o: { recipientFp?: string; introducerFp?: string; nonce?: string; displayName?: string } = {}) {
   const consent = buildIntroductionConsent({
     introducedFp: newt.fingerprint,
     introducerFp: o.introducerFp ?? ivanFp,
     recipientFp: o.recipientFp ?? rachelFp,
+    displayName: o.displayName ?? 'Newt',
     nonce: o.nonce ?? NONCE,
     ts: '2026-10-19T00:00:00Z',
   });
@@ -123,7 +124,7 @@ test('round-trip: a valid dual-signed introduction verifies → newcomer surface
 // ── Hybrid PQ + anti-downgrade ────────────────────────────────────────────────────
 test('round-trip (hybrid): Newt consent-signs hybrid + Ivan signs hybrid → verifies under requirePq', async () => {
   const consent = buildIntroductionConsent({
-    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: rachelFp, nonce: NONCE, ts: '2026-10-19T00:00:00Z',
+    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Newt', nonce: NONCE, ts: '2026-10-19T00:00:00Z',
   });
   const consentSignature = await signIntroductionConsent(consent, newt.privateKey, newt.passphrase, newt.sigSecretKey);
   assert.ok(consentSignature.pq_signature, 'consent must carry a pq half');
@@ -162,7 +163,7 @@ test('S1: a consent signed by someone OTHER than the newcomer is rejected (→ n
   // Sybil signs a consent token that claims Newt's fingerprint. The signature verifies against Sybil's key,
   // but step 8 verifies against introduced_public_key (Newt's) → mismatch → null. Consent must be the newcomer's.
   const consent = buildIntroductionConsent({
-    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: rachelFp, nonce: NONCE, ts: '2026-10-19T00:00:00Z',
+    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Newt', nonce: NONCE, ts: '2026-10-19T00:00:00Z',
   });
   const sybilSig = await signIntroductionConsent(consent, sybilPriv, pass);
   const signed = await buildSignedIntroduction(ivanArgs({ consent, consentSignature: sybilSig }), ivanPriv, pass);
@@ -174,7 +175,7 @@ test('★ consent recipient-SCOPING: a consent Newt gave for Carol cannot be reu
   // Newt consents to be introduced to CAROL. Ivan tries to forward it to RACHEL. buildIntroductionEnvelope
   // refuses at build (consent-mismatch), AND if an attacker hand-crafts the envelope, verify's step-5 drops it.
   const consentForCarol = buildIntroductionConsent({
-    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: carolFp, nonce: NONCE, ts: '2026-10-19T00:00:00Z',
+    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: carolFp, displayName: 'Newt', nonce: NONCE, ts: '2026-10-19T00:00:00Z',
   });
   const sig = await signIntroductionConsent(consentForCarol, newt.privateKey, newt.passphrase);
   // Hand-craft: claim recipient=Rachel in the envelope but embed the Carol-scoped consent token.
@@ -191,6 +192,22 @@ test('★ consent recipient-SCOPING: a consent Newt gave for Carol cannot be reu
   const blob = (await encrypt({ message: await createMessage({ text: JSON.stringify(forged) }), encryptionKeys: await readKey({ armoredKey: rachelPub }) })) as string;
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null,
     'a consent scoped to Carol must not authorize an introduction to Rachel');
+});
+
+test('★ S1 deadname-bind: a consent signed for "Newt" cannot introduce them as "Deadname" (build-throws + verify→null)', async () => {
+  // (a) Build-side: the introducer cannot assemble an envelope whose card name differs from the consented name.
+  const c = await newtConsent({ displayName: 'Newt' });
+  assert.throws(
+    () => buildIntroductionEnvelope(ivanArgs(c, { introducedName: 'Deadname' })),
+    (e: unknown) => e instanceof IntroductionSignError && e.reason === 'consent-mismatch',
+  );
+  // (b) Verify-side (hand-crafted past the build guard): rename the card AFTER signing — consent says "Newt",
+  // card says "Deadname" → dropped at the step-5 display_name cross-check (deadname/survivor-safety).
+  const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  signed.envelope.introduced_display_name = 'Deadname';
+  const blob = await encryptIntroductionTo(signed, rachelPub);
+  assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null,
+    'renaming the card away from the consented name must drop');
 });
 
 // ── Know-set gate (Fork 1 pending dismissal) ──────────────────────────────────────
@@ -248,7 +265,7 @@ test('Invariant-1: a newcomer fingerprint that does not hash to its public key i
   // Invariant-1, which must drop it because carolFp ≠ H(newt.publicKey). (Consent sig is irrelevant — step 6
   // runs before step 8.)
   const consent = buildIntroductionConsent({
-    introducedFp: carolFp, introducerFp: ivanFp, recipientFp: rachelFp, nonce: NONCE, ts: '2026-10-19T00:00:00Z',
+    introducedFp: carolFp, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'x', nonce: NONCE, ts: '2026-10-19T00:00:00Z',
   });
   const sig = await signIntroductionConsent(consent, carolPriv, pass);
   const forged = {
@@ -297,7 +314,7 @@ test('domain separation: the introducer signature verifies under DOMAIN_INTRODUC
 // ── Fail-loud at BUILD (introducer controls its own inputs) ──────────────────────────
 test('build: forwarding a consent whose recipient ≠ the envelope recipient is refused (consent-mismatch)', async () => {
   const consentForCarol = buildIntroductionConsent({
-    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: carolFp, nonce: NONCE, ts: '2026-10-19T00:00:00Z',
+    introducedFp: newt.fingerprint, introducerFp: ivanFp, recipientFp: carolFp, displayName: 'Newt', nonce: NONCE, ts: '2026-10-19T00:00:00Z',
   });
   const sig = await signIntroductionConsent(consentForCarol, newt.privateKey, newt.passphrase);
   assert.throws(

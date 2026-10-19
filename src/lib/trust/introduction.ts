@@ -112,6 +112,7 @@ export interface BuildConsentArgs {
   introducedFp: string;   // the newcomer's own durable fingerprint (= H(their public key))
   introducerFp: string;   // the introducer they consent to be introduced BY
   recipientFp: string;    // the recipient they consent to be introduced TO (scopes the consent)
+  displayName: string;    // the NAME they consent to be introduced UNDER (Flint S1 — deadname/survivor-safety); may be empty
   nonce: string;          // binds this introduction instance
   ts?: string;            // ISO-8601 UTC; inject for deterministic tests
 }
@@ -121,11 +122,13 @@ export function buildIntroductionConsent(args: BuildConsentArgs): IntroductionCo
   if (!isNonEmptyString(args.introducedFp)) throw new IntroductionSignError('bad-introduced-fingerprint');
   if (!isNonEmptyString(args.introducerFp)) throw new IntroductionSignError('bad-introducer-fingerprint');
   if (!isNonEmptyString(args.recipientFp)) throw new IntroductionSignError('bad-recipient-fingerprint');
+  if (typeof args.displayName !== 'string') throw new IntroductionSignError('bad-introduced-name', 'consent display_name');
   if (!isNonEmptyString(args.nonce)) throw new IntroductionSignError('bad-nonce');
   return {
     introduced_fingerprint: args.introducedFp,
     introducer_fingerprint: args.introducerFp,
     recipient_fingerprint: args.recipientFp,
+    display_name: args.displayName,
     nonce: args.nonce,
     ts: args.ts ?? new Date().toISOString(),
   };
@@ -185,6 +188,9 @@ export function buildIntroductionEnvelope(args: BuildIntroductionArgs): Introduc
   if (c.introduced_fingerprint !== args.introducedFp) throw new IntroductionSignError('consent-mismatch', 'introduced fp');
   if (c.introducer_fingerprint !== args.introducerFp) throw new IntroductionSignError('consent-mismatch', 'introducer fp');
   if (c.recipient_fingerprint !== args.recipientFp) throw new IntroductionSignError('consent-mismatch', 'recipient fp');
+  // S1 (Flint #175185): the card's display_name MUST equal the name the newcomer signed consent for —
+  // the introducer cannot introduce them under a different/deadname than they consented to.
+  if (c.display_name !== args.introducedName) throw new IntroductionSignError('consent-mismatch', 'display_name');
   if (!isNonEmptyString(c.nonce)) throw new IntroductionSignError('bad-nonce', 'consent nonce');
 
   const env: IntroductionEnvelope = {
@@ -266,6 +272,7 @@ function isWellFormed(signed: unknown): signed is SignedIntroduction {
   if (!isNonEmptyString(cc.introduced_fingerprint)) return false;
   if (!isNonEmptyString(cc.introducer_fingerprint)) return false;
   if (!isNonEmptyString(cc.recipient_fingerprint)) return false;
+  if (typeof cc.display_name !== 'string') return false; // S1: present (may be empty); bound by the newcomer's sig
   if (!isNonEmptyString(cc.nonce)) return false;
   if (typeof cc.ts !== 'string') return false;
   return true;
@@ -339,6 +346,10 @@ export async function verifyIntroduction(
   if (c.introducer_fingerprint !== envelope.introducer_fingerprint) return null;
   if (c.recipient_fingerprint.toUpperCase() !== recipient.fingerprint.toUpperCase()) return null;
   if (c.nonce !== envelope.nonce) return null;
+  // S1 (Flint #175185): the displayed name must be EXACTLY the one the newcomer signed consent for —
+  // reject a card that renames them (deadname/survivor-safety). Both are covered by their signers'
+  // signatures (steps 7/8), so this cheap pre-check just fails fast; the sigs make it unforgeable.
+  if (c.display_name !== envelope.introduced_display_name) return null;
 
   // 6) Invariant-1 — the newcomer's self-asserted fp must hash to the presented key (canonical recompute if PQ).
   if (!(await fingerprintMatchesKey(envelope.introduced_fingerprint, envelope.introduced_public_key, {
