@@ -3,10 +3,11 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
+import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 
 const DB_NAME = 'svrnty-notes';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const PBKDF2_ITERATIONS = 600_000;
 
 let _db: IDBDatabase | null = null;
@@ -63,6 +64,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('ratchet_sessions')) {
+        db.createObjectStore('ratchet_sessions', { keyPath: 'peer_fingerprint' });
       }
     };
     req.onsuccess = () => {
@@ -298,4 +302,22 @@ export function newThreadId(): string {
   const b = new Uint8Array(12);
   crypto.getRandomValues(b);
   return `thr_${toBase64(b).replace(/[+/=]/g, '').slice(0, 16)}`;
+}
+
+type RatchetRow = { peer_fingerprint: string; enc: EncryptedBlob };
+
+/** Persist a 1:1 triple-ratchet snapshot. Encrypted with the notes-store key. */
+export async function putRatchetSession(peerFingerprint: string, snapshot: RatchetSnapshot): Promise<void> {
+  const enc = await encryptJson(snapshot);
+  await txPut('ratchet_sessions', { peer_fingerprint: peerFingerprint, enc } satisfies RatchetRow);
+}
+
+export async function getRatchetSession(peerFingerprint: string): Promise<RatchetSnapshot | null> {
+  const row = await txGet<RatchetRow>('ratchet_sessions', peerFingerprint);
+  if (!row) return null;
+  try {
+    return await decryptJson<RatchetSnapshot>(row.enc);
+  } catch {
+    return null;
+  }
 }

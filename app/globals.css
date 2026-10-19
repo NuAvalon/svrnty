@@ -314,3 +314,268 @@ html[data-appearance="light"] .stars {
 
 .border-amber { border-color: rgba(200, 168, 78, 0.2); }
 .bg-amber-subtle { background: rgba(200, 168, 78, 0.08); }
+
+/* Inline-styled ember buttons have no :active unless we class them.
+   Press darkens; data-flash=ok is the done state so a click is obvious. */
+button.ember-act {
+  transition:
+    background-color 90ms ease,
+    border-color 90ms ease,
+    color 90ms ease,
+    box-shadow 90ms ease,
+    transform 90ms ease,
+    filter 90ms ease;
+}
+button.ember-act:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+button.ember-act:active:not(:disabled) {
+  transform: scale(0.97);
+  filter: brightness(0.72);
+  background-color: color-mix(in srgb, var(--se-accent) 28%, #1a1008) !important;
+}
+button.ember-act[data-flash="busy"]:not(:disabled) {
+  filter: brightness(0.88);
+}
+button.ember-act[data-flash="ok"] {
+  background-color: color-mix(in srgb, var(--se-ok) 22%, transparent) !important;
+  border-color: color-mix(in srgb, var(--se-ok) 50%, var(--se-border)) !important;
+  color: var(--se-ok) !important;
+  filter: none;
+}
+button[data-slot="button"]:active:not(:disabled) {
+  filter: brightness(0.78);
+  transform: scale(0.98);
+}
+@media (prefers-reduced-motion: reduce) {
+  button.ember-act,
+  button[data-slot="button"] {
+    transition: none;
+  }
+  button.ember-act:active:not(:disabled),
+  button[data-slot="button"]:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* Living Address Book — list scrolls in-frame; the shared card stays in the pane. */
+.contacts-book-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.contacts-book-scroll {
+  max-height: min(58vh, calc(100dvh - 16rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--se-accent) 35%, transparent) transparent;
+}
+.contacts-book-pane[data-card-open='1'] .contacts-book-scroll {
+  max-height: min(38vh, calc(100dvh - 26rem));
+}
+.contacts-book-card {
+  position: relative;
+  z-index: 4;
+  flex-shrink: 0;
+}
+.contacts-book-scroll:focus {
+  outline: none;
+}
+.contacts-book-scroll:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--se-accent) 40%, transparent);
+}
+@media (max-width: 640px) {
+  .contacts-book-scroll {
+    max-height: min(52vh, calc(100dvh - 14rem));
+  }
+  .contacts-book-pane[data-card-open='1'] .contacts-book-scroll {
+    max-height: min(30vh, calc(100dvh - 24rem));
+  }
+}
+
+/* Thread Field — Chat window only (app header / menu / footer stay outside). */
+.notes-field-shell {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0;
+  font-family: var(--font-sans), 'Space Grotesk', system-ui, sans-serif;
+  color: var(--se-text);
+}
+.notes-field {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  min-height: min(72vh, 780px);
+  border: 1px solid var(--se-border);
+  border-radius: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(70% 50% at 78% 8%, color-mix(in srgb, var(--se-accent) 11%, transparent), transparent 58%),
+    radial-gradient(50% 40% at 20% 100%, color-mix(in srgb, var(--se-accent2) 7%, transparent), transparent 60%),
+    var(--se-surface-solid);
+  box-shadow: var(--se-glass-shadow);
+}
+.notes-field-people {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-right: 1px solid var(--se-border);
+  background: color-mix(in srgb, var(--se-bg) 62%, transparent);
+  padding: 14px 12px;
+  overflow-y: auto;
+}
+.notes-field-thread {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+button.notes-field-peer-hop:hover {
+  color: var(--se-accent);
+}
+.notes-field-thread-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--se-border);
+  background: color-mix(in srgb, var(--se-bg) 35%, transparent);
+  backdrop-filter: blur(16px);
+}
+.notes-field-back {
+  display: none;
+}
+.notes-field-timeline {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 18px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.notes-field-compose {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--se-border);
+  background: color-mix(in srgb, var(--se-bg) 42%, transparent);
+}
+.notes-chat-list {
+  list-style: none;
+  margin: 0 -12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.notes-person {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  font-family: inherit;
+  color: var(--se-text);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--se-border);
+  border-radius: 0;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.notes-person:hover {
+  background: color-mix(in srgb, var(--se-accent) 8%, transparent);
+}
+.notes-person[data-active='true'] {
+  background: color-mix(in srgb, var(--se-accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 var(--se-accent);
+}
+.contact-hex,
+.notes-hex {
+  width: 36px;
+  height: 36px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  /* Regular pointy-top hex in a square — not a tall stretched cell. */
+  clip-path: polygon(50% 0%, 93.3% 25%, 93.3% 75%, 50% 100%, 6.7% 75%, 6.7% 25%);
+  background: color-mix(in srgb, var(--se-accent) 14%, var(--se-bg));
+}
+.notes-field-thread-head .notes-hex,
+.contact-action-card .contact-hex {
+  width: 40px;
+  height: 40px;
+}
+.notes-day {
+  align-self: center;
+  margin: 4px 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--se-dim);
+}
+.notes-bubble {
+  max-width: min(78%, 440px);
+  padding: 10px 13px;
+  border-radius: 16px;
+  animation: notes-ember-in 220ms ease-out;
+}
+.notes-bubble[data-direction='outbound'] {
+  align-self: flex-end;
+  border: 1px solid var(--se-border-lit);
+  background: color-mix(in srgb, var(--se-accent) 16%, transparent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--se-accent) 12%, transparent);
+  border-bottom-right-radius: 6px;
+}
+.notes-bubble[data-direction='inbound'] {
+  align-self: flex-start;
+  border: 1px solid var(--se-border);
+  background: rgba(30, 20, 10, 0.52);
+  border-bottom-left-radius: 6px;
+}
+@keyframes notes-ember-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (max-width: 760px) {
+  .notes-field {
+    grid-template-columns: 1fr;
+    min-height: min(74vh, 820px);
+  }
+  .notes-field[data-pane='people'] .notes-field-thread {
+    display: none;
+  }
+  .notes-field[data-pane='thread'] .notes-field-people {
+    display: none;
+  }
+  .notes-field-back {
+    display: inline-flex;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .notes-bubble {
+    animation: none;
+  }
+}
+
+.tab-ember {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--se-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--se-accent) 55%, transparent);
+  vertical-align: middle;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tab-ember {
+    box-shadow: none;
+  }
+}
