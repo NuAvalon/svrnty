@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "is.svrnty.app",
+      "sha256_cert_fingerprints": [
+        "38:6F:1E:A4:EC:B9:1E:A1:57:2C:63:22:2D:93:58:54:B6:D5:BE:52:F1:32:D4:8E:8C:8A:2E:77:3F:65:9F:FD"
+      ]
+    }
+  }
+]
