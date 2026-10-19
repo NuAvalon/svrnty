@@ -1,0 +1,44 @@
+name: provenance-check
+
+# v0: RECORDED-provenance convention check (Peter #172501). WARN-not-block —
+# surfaces a warning annotation if the PR's Provenance block is missing/incomplete,
+# never fails the PR. Spec: shared/outbox/flint/provenance_chain_spec.md.
+# (Flint = authz rule · Archie = path→tier schema · Athena = this infra.)
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  provenance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Self-test the provenance classifier (BLOCKS on regression)
+        # Distinct from the WARN-only PR check below: this verifies the GATE-SCRIPT's own
+        # correctness. A classifier regression (a path silently dropped to a lower tier) is a
+        # real defect — who-watches-the-watcher (#172693) — so it exits non-zero and fails the PR.
+        run: node .github/scripts/provenance-check.test.mjs
+      - name: Collect changed files
+        id: diff
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git diff --name-only "$base" "$head" > /tmp/changed_files.txt || true
+          echo "changed files:"; cat /tmp/changed_files.txt
+      - name: Run provenance check (WARN only)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          export CHANGED_FILES="$(cat /tmp/changed_files.txt)"
+          node .github/scripts/provenance-check.mjs
+        # v0 is non-blocking by design (the script always exits 0); no continue-on-error needed.
