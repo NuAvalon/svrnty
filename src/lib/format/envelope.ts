@@ -28,6 +28,16 @@ export const DOMAIN_ROTATION = 'svrnty:rotation:v1';
 // joiner-response signature can never verify as a contact-update / identity-card, and vice-versa.
 export const DOMAIN_JOINER_RESPONSE = 'svrnty:joiner-response:v1';
 export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
+// Introduce (3-party KNOW-layer, #173519). An introducer (already in the recipient's KNOW set) brings a
+// newcomer into the recipient's book. TWO domain-separated signatures, never cross-verifiable:
+//   - DOMAIN_INTRODUCTION         = the introducer's signature over the whole introduction envelope.
+//   - DOMAIN_INTRODUCTION_CONSENT = the introduced person's signature over a recipient-scoped consent
+//     token. BOTH required → an introducer cannot push someone into a graph without that person's
+//     consent (survivor-safety S1), and the consent names the recipient so it can't be reused elsewhere.
+// Introduce is KNOW-layer only — NOTHING to do with trust (Peter #174972); `introduced_by` is historical
+// provenance, not a live dependency.
+export const DOMAIN_INTRODUCTION = 'svrnty:introduction:v1';
+export const DOMAIN_INTRODUCTION_CONSENT = 'svrnty:introduction-consent:v1';
 // T1 DID-Document mutation (add/revoke a device verificationMethod, serviceEndpoint move, key-rotation
 // folded in). Signed by the COLD-SEED rotation-authority key (Flint X5) over canonicalize(DID-Doc w/ seq).
 // DISTINCT from DOMAIN_ROTATION so a DID-Doc-update signature can never verify as a rotation-successor and
@@ -130,6 +140,42 @@ export interface MutualVouchEnvelope {
 }
 
 /**
+ * Introduce (3-party KNOW-layer). The consent token the INTRODUCED person signs (DOMAIN_INTRODUCTION_CONSENT).
+ * Recipient-SCOPED: naming recipient_fingerprint means this consent authorizes being introduced to THIS
+ * recipient by THIS introducer only — it can't be harvested once and sprayed into other graphs (survivor-safety).
+ * The signature verifies against the introduced person's own key (the one that hashes to introduced_fingerprint).
+ */
+export interface IntroductionConsent {
+  introduced_fingerprint: string;   // the newcomer (= H(introduced_public_key), Invariant-1) — who consents
+  introducer_fingerprint: string;   // the introducer the newcomer consents to be introduced BY
+  recipient_fingerprint: string;    // the recipient the newcomer consents to be introduced TO (scopes the consent)
+  nonce: string;                    // binds this introduction instance; anti-replay (recipient dedups per (nonce, introduced_fp))
+  ts: string;                       // ISO-8601 UTC — audit/display only
+}
+
+/**
+ * The introduction envelope the INTRODUCER signs (DOMAIN_INTRODUCTION). Carries the newcomer's self-asserted
+ * card (so the recipient can add them to KNOW) plus the newcomer's recipient-scoped consent TOKEN (the raw
+ * data; the newcomer's signature over it travels top-level on SignedIntroduction, alongside the introducer's).
+ * The introducer's signature covers this whole envelope (consent token included) → it binds "I introduce N,
+ * with this consent, to R" as one unit; tampering the token breaks BOTH signatures. recipient_fingerprint
+ * binds the whole thing to its intended recipient (no replay to a third party).
+ */
+export interface IntroductionEnvelope {
+  introducer_fingerprint: string;          // the introducer (recipient already HOLDS this key — verified, not TOFU)
+  recipient_fingerprint: string;           // who this introduction is FOR — no replay to another recipient
+  introduced_fingerprint: string;          // the newcomer (= H(introduced_public_key), Invariant-1)
+  introduced_public_key: string;           // the newcomer's armored classical key — introducer-sig & consent-sig verify against it (TOFU)
+  introduced_pq_sig_public_key?: string;   // base64(ML-DSA-87); §5 canonical-fp binding. OMITTED when absent (canonical rejects null).
+  introduced_pq_kem_public_key?: string;   // base64(ML-KEM-1024, 1568B); §5 canonical-fp binding. OMITTED when absent.
+  introduced_display_name: string;         // the newcomer's self-asserted name (KNOWN = unverified)
+  consent: IntroductionConsent;            // the newcomer's recipient-scoped consent TOKEN (its signature is top-level on SignedIntroduction)
+  context: string;                         // free-text "how/why" (e.g. "met at the conference") — self-asserted
+  nonce: string;                           // MUST equal consent.nonce (bound)
+  ts: string;                              // ISO-8601 UTC — audit/display only
+}
+
+/**
  * F6 slug-claim (closes the unsigned-slug-claim gap). Server verifies the signature against
  * `public_key` AND that `fingerprint === H(public_key)` — proving private-key possession over
  * THIS claim, not merely presenting a public key. (Reuses the canonical envelope, own sub-domain.)
@@ -209,6 +255,17 @@ export function joinerResponseSigningInput(env: JoinerResponseEnvelope): string 
 /** Canonical bytes for a mutual-vouch signature (excludes any attached `signature`). */
 export function mutualVouchSigningInput(env: MutualVouchEnvelope): string {
   return canonicalize(env, { exclude: ['signature'] });
+}
+
+/** Canonical bytes for the INTRODUCER's signature over an introduction (excludes any top-level attachments).
+ *  The nested `consent` token is covered (top-level-only exclude), so the introducer's signature binds it. */
+export function introductionSigningInput(env: IntroductionEnvelope): string {
+  return canonicalize(env, { exclude: ['signature', 'consent_signature'] });
+}
+
+/** Canonical bytes for the INTRODUCED person's consent signature (over the recipient-scoped consent token). */
+export function introductionConsentSigningInput(consent: IntroductionConsent): string {
+  return canonicalize(consent, { exclude: ['signature'] });
 }
 
 /**
