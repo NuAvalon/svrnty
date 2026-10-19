@@ -155,6 +155,10 @@ export interface IntroductionConsent {
   introduced_fingerprint: string;   // the newcomer (= H(introduced_public_key), Invariant-1) — who consents
   introducer_fingerprint: string;   // the introducer the newcomer consents to be introduced BY
   recipient_fingerprint: string;    // the recipient the newcomer consents to be introduced TO (scopes the consent)
+  // The NAME the newcomer consents to be introduced UNDER (Flint S1, #175185 — deadname/survivor-safety).
+  // The newcomer SIGNS this, and verify cross-checks it === envelope.introduced_display_name, so the
+  // introducer cannot introduce them under a name they did not consent to (incl. a deadname).
+  display_name: string;
   nonce: string;                    // binds this introduction instance; anti-replay (recipient dedups per (nonce, introduced_fp))
   ts: string;                       // ISO-8601 UTC — audit/display only
 }
