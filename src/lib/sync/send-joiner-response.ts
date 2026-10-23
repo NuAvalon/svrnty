@@ -29,6 +29,7 @@
 
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { buildJoinerResponse, encryptJoinerResponseTo } from '../trust/joiner-response';
+import { postWithRetry, type RetryOptions } from './post-with-retry';
 
 /** The joiner's signing identity (from the unlocked vault) + self-asserted claim. Classical for launch. */
 export interface JoinerResponseSender {
@@ -71,6 +72,8 @@ export interface JoinerResponseSendResult {
   ok: boolean;
   /** relay status on success, or the failure classifier ('encrypt-failed' | 'network-error' | HTTP status). */
   status?: number | string;
+  /** POSTs actually made (>1 means the bounded retry/backoff ran). */
+  attempts?: number;
 }
 
 /**
@@ -121,14 +124,14 @@ export async function buildJoinerResponseDeposit(
 
 /**
  * The drop-in: build + POST the joiner-response to the giver's return-channel mailbox. Best-effort — a
- * POST failure is reported (retryable), never thrown to the ceremony (which is fail-soft and keeps the
+ * POST failure (after bounded retry) is reported, never thrown to the ceremony (which is fail-soft and keeps the
  * local edge regardless). Each deposit is idempotent-safe at the giver: a redelivered blob re-verifies
  * to the same KNOWN joiner and the per-(code, joinerFp) accept-oracle dedups it.
  */
 export async function sendJoinerResponse(
   sender: JoinerResponseSender,
   target: JoinerResponseTarget,
-  opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
+  opts: { fetchImpl?: typeof fetch; relayBase?: string; retry?: RetryOptions } = {},
 ): Promise<JoinerResponseSendResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const relayBase = opts.relayBase ?? '/api/relay';
@@ -136,14 +139,16 @@ export async function sendJoinerResponse(
   const deposit = await buildJoinerResponseDeposit(sender, target);
   if (!deposit) return { ok: false, status: 'encrypt-failed' };
 
-  try {
-    const res = await doFetch(`${relayBase}/envelope`, {
+  // Built + signed ONCE above; only the transport retries (bounded exponential backoff, Peter #174621),
+  // so every attempt carries identical bytes. A redelivery is a no-op at the giver (idempotent accept).
+  return postWithRetry(
+    doFetch,
+    `${relayBase}/envelope`,
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mailbox_id: deposit.mailbox_id, blob: deposit.blob }),
-    });
-    return res.ok ? { ok: true, status: res.status } : { ok: false, status: res.status };
-  } catch {
-    return { ok: false, status: 'network-error' };
-  }
+    },
+    opts.retry,
+  );
 }
