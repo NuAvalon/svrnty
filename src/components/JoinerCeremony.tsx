@@ -229,6 +229,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
 
     return () => {
       cancelled = true;
+      startedRef.current = false; // StrictMode dev remount: let the re-run start (run #1 is cancelled and bails)
     };
   }, [code, keyFragment]);
 
