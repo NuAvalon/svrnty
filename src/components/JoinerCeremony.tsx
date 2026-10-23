@@ -49,6 +49,7 @@ import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
 import { isPQEncapLive } from '@/lib/claim-gates';
 import { clampArrivalName } from '@/lib/trust/grow-gate';
+import { GREETING_MAX_CHARS } from '@/lib/trust/joiner-response';
 
 // Emerald/gold palette — matches the initiator (Ceremony.tsx) so the two devices read as
 // one ceremony.
@@ -86,19 +87,27 @@ type Phase = 'loading' | 'card' | 'done';
 // flow never blocks — any failure is a local-only diagnostic, NEVER surfaced to a peer/relay (I-1).
 // The giver's mailbox holds the response for ~7d, so a deposit that lands on a later unlocked open still
 // connects. IDENTITY-ONLY: carries our {fp, epoch, key, name}, never contact methods.
-async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: string): Promise<void> {
+// Returns true ONLY when the relay accepted the deposit (a DELIVERY ack — it says the blob reached the
+// giver's mailbox, never that they saw or admitted us; there is deliberately no seen/admitted signal).
+// `greeting` (optional, <= GREETING_MAX_CHARS) rides INSIDE the signed envelope (joiner-response.ts).
+async function depositJoinerResponse(
+  ownerFp: string,
+  peer: PeerCard,
+  code: string,
+  greeting?: string,
+): Promise<boolean> {
   try {
-    if (!peer.fingerprint || !peer.publicKey || !code) return; // nothing to bind the response to
+    if (!peer.fingerprint || !peer.publicKey || !code) return false; // nothing to bind the response to
     const key = await loadKey(ownerFp);
     if (!key) {
       // Locked session — cannot sign. The gate entry is already stored; the return channel simply doesn't
       // fire this time (a later unlocked open can re-deposit within the giver's ~7d mailbox window).
       console.warn('[joiner-response] identity locked — return-channel deposit deferred (gate entry stands locally)');
-      return;
+      return false;
     }
     const id = await loadIdentity(ownerFp);
     const ownPub: string = id?.identity?.public_key || '';
-    if (!ownPub) return; // no own key to present — cannot build a verifiable response
+    if (!ownPub) return false; // no own key to present — cannot build a verifiable response
     const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
     const res = await sendJoinerResponse(
       {
@@ -106,6 +115,8 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
         epoch: 0, // no key-rotation yet — the joiner ships contact.updates at epoch 0 (matches giver floor)
         publicKeyArmored: ownPub,
         displayName,
+        // Omit when empty so a no-greeting join stays byte-identical to today's envelope.
+        ...(greeting ? { greeting } : {}),
         privateKeyArmored: key.privateKey,
         passphrase: key.passphrase,
         // §5 canonical-fp binding: thread our PQ pubkeys so the giver recomputes our 64-hex canonical id.
@@ -119,8 +130,10 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
     if (!res.ok) {
       console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);
     }
+    return res.ok === true;
   } catch (err) {
     console.warn('[joiner-response] deposit failed (gate entry stands locally):', err);
+    return false;
   }
 }
 
@@ -132,6 +145,9 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
   const [noIdentity, setNoIdentity] = useState(false);
   const [alreadyKnown, setAlreadyKnown] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Pre-gate 1-greeting (optional): the one message the giver can read at the Gate before admit.
+  const [greeting, setGreeting] = useState('');
+  const [greetingStatus, setGreetingStatus] = useState<'none' | 'pending' | 'sent' | 'failed'>('none');
   const [error, setError] = useState<string | null>(null);
 
   // Unlock gate: the joiner arrives at /c/ with a LOCKED session (the memory-only session key does not
@@ -269,14 +285,21 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       }
       // R1: fire the return-channel deposit to the giver (best-effort, non-blocking) so the connection
       // becomes MUTUAL. Done advances regardless of whether the deposit lands (fail-soft).
-      void depositJoinerResponse(ownerFp, peer, code);
+      // Greeting is trimmed; empty => omitted entirely (byte-identical envelope). The status line in the
+      // done phase reports the relay's DELIVERY ack only — never a seen/admitted signal (none exists).
+      const g = greeting.trim();
+      const deposit = depositJoinerResponse(ownerFp, peer, code, g || undefined);
+      if (g) setGreetingStatus('pending');
       setPhase('done');
+      void deposit.then((ok) => {
+        if (g) setGreetingStatus(ok ? 'sent' : 'failed');
+      });
     } catch (err: any) {
       setError(err?.message || 'Could not add them to your Gate.');
     } finally {
       setAdding(false);
     }
-  }, [peer, ownerFp, code, adding]);
+  }, [peer, ownerFp, code, adding, greeting]);
 
   // Unlock the identity to sign the mutual connection, then add to the gate + deposit. initSessionKey
   // derives the key WITHOUT validating, so a wrong passphrase yields a key that can't decrypt — verify by a
@@ -435,6 +458,23 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
                 Add them to your Gate. Scanning isn’t trusting — you choose when to welcome them into your
                 Galaxy.
               </p>
+              <label htmlFor="join-greeting" style={{ ...subStyle, display: 'block', marginTop: 14, fontSize: 12 }}>
+                Say hello (optional)
+              </label>
+              <textarea
+                id="join-greeting"
+                data-testid="join-greeting"
+                value={greeting}
+                maxLength={GREETING_MAX_CHARS}
+                rows={3}
+                onChange={(e) => setGreeting(e.target.value)}
+                placeholder="Who you are, how you know them…"
+                style={{ ...unlockInputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+              />
+              <p style={{ ...subStyle, fontSize: 11, marginTop: 4 }}>
+                {greeting.length}/{GREETING_MAX_CHARS} · This is the one message {peer.name} can read before they let
+                you in. It is encrypted so only they can read it. You won’t be told if or when they read it.
+              </p>
               <button
                 style={{ ...primaryBtnStyle, opacity: adding ? 0.6 : 1 }}
                 disabled={adding}
@@ -493,6 +533,15 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
                 them as Known. Verify stays your own later tap.
               </p>
             </>
+          )}
+          {greetingStatus !== 'none' && (
+            <p data-testid="join-greeting-status" style={{ ...subStyle, fontSize: 12 }}>
+              {greetingStatus === 'pending' && 'Sending your greeting…'}
+              {greetingStatus === 'sent' &&
+                'Your greeting reached their mailbox. You won’t be told if or when they read it.'}
+              {greetingStatus === 'failed' &&
+                'Your greeting did not go through, so they won’t see it. You’re still at their Gate.'}
+            </p>
           )}
           <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
         </div>

@@ -170,6 +170,30 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
         {TRUST_RECIPE_COPY.verifyWhy} Admit is Known. Verify is a later tap on the star.
       </p>
 
+      {focus.greeting && (
+        <div data-testid="grow-gate-greeting" style={{ marginTop: 14 }}>
+          <p style={{ margin: 0, fontSize: 11, letterSpacing: '0.12em', color: E.dim }}>
+            {GATE_COPY.greetingLabel.toUpperCase()}
+          </p>
+          {/* PLAIN TEXT ONLY (Flint req-6, #583 class): untrusted pre-trust content is rendered as a React text
+              node. No dangerouslySetInnerHTML, no markdown, no auto-linking — a URL in here stays inert text.
+              pre-wrap keeps the sender's line breaks; the length is already capped at receive and at the store. */}
+          <p
+            data-testid="grow-gate-greeting-text"
+            style={{
+              margin: '4px 0 0',
+              fontSize: 13,
+              color: E.text,
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {focus.greeting}
+          </p>
+          <p style={{ margin: '4px 0 0', fontSize: 11, color: E.dim }}>{GATE_COPY.greetingHint}</p>
+        </div>
+      )}
+
       <label style={{ display: 'block', marginTop: 14, fontSize: 12, color: E.muted }}>Name</label>
       <input value={name} onChange={(e) => setName(e.target.value)} style={fieldStyle} />
 
@@ -291,6 +315,8 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
                   {a.mintChannel === 'in_person' ? GATE_COPY.scannedInPerson : GATE_COPY.remote}
                   {' · '}
                   {a.inviteNonce}
+                  {/* Marker only — the message text itself is shown in the admit detail, never in the list. */}
+                  {a.greeting ? ` · ${GATE_COPY.greetingMark}` : ''}
                 </span>
               </button>
             </li>

@@ -64,6 +64,10 @@ export const GATE_COPY = {
   groupLabel: 'Group (optional)',
   notesLabel: 'Note (optional)',
   provenance: 'Joined from',
+  greetingLabel: 'Their greeting',
+  greetingHint:
+    'Written by them and unverified: anyone holding your invite could write this. It does not prove who they are.',
+  greetingMark: '✉ greeting',
 } as const;
 
 /** Clamp an attacker-typed display name for Gate / admit (defense-in-depth, not XSS). */
