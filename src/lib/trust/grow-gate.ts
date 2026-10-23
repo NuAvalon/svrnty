@@ -29,7 +29,10 @@ import {
 } from '@/lib/identity/client-store';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
-import { type PendingJoiner, GREETING_MAX_CHARS } from '@/lib/trust/joiner-response';
+import { type PendingJoiner, clampGreeting } from '@/lib/trust/joiner-response';
+
+// Re-exported so existing callers/tests keep importing it from here; the implementation lives in joiner-response.ts.
+export { clampGreeting };
 
 export type { GateArrival, GrowMintChannel };
 
@@ -79,22 +82,6 @@ export function clampArrivalName(raw: unknown): string {
     if (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f)) out += ch;
   }
   return out.trim().slice(0, 80);
-}
-
-/** Clamp a joiner-authored pre-gate greeting for Gate display — a wider-cap sibling of clampArrivalName.
- *  Strips control bytes + C1 (0x80-0x9f) + DEL (0x7f) but ALLOWS `\n` (a greeting may wrap); trims and
- *  caps at GREETING_MAX_CHARS (single source with the build-side cap, so the two caps can't drift).
- *  Sanitizer only — the Gate UI MUST render the result as PLAIN TEXT (no HTML/markdown/auto-linkified
- *  URLs that could phish from the pre-trust surface); that text-only render is the real chokepoint
- *  (#583-class: untrusted inbound content must not be interpreted by the surface that displays it). */
-export function clampGreeting(raw: unknown): string {
-  if (typeof raw !== 'string') return '';
-  let out = '';
-  for (const ch of raw) {
-    const c = ch.codePointAt(0) ?? 0;
-    if (c === 0x0a || (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f))) out += ch;
-  }
-  return out.trim().slice(0, GREETING_MAX_CHARS);
 }
 
 export function parseTagList(raw: string): string[] {

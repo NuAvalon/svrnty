@@ -136,4 +136,120 @@ test.describe('pre-gate greeting — Gate render (giver side)', () => {
     await expect(text).toBeVisible();
     expect((await text.innerText()).length).toBeLessThanOrEqual(500);
   });
+
+  test('Trojan-Source spoof is stripped, Persian ZWNJ + emoji ZWJ survive, box is bidi-contained', async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await genesis(page, 'Bidi Giver');
+    const persian = 'سلام، می\u200cخواهم'; // contains a real ZWNJ (U+200C)
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}'; // man ZWJ woman ZWJ girl
+    // Raw stored value carries the spoof (RLO..PDF around a fake filename) + a BOM + zero-width space, exactly as a
+    // hostile or older stored arrival could — so this exercises the persistence clamp on load, not just receive.
+    const stored = `ok \u202Egnp.exe\u202C\uFEFF\u200B ${persian} ${family}`;
+    await seedArrival(page, baseArrival({ greeting: stored }));
+    const row = await openGateDetail(page);
+    await row.click();
+    const text = page.getByTestId('grow-gate-greeting-text');
+    await expect(text).toBeVisible();
+
+    const dom = await text.evaluate((el) => el.textContent || '');
+    for (const cp of [0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b, 0x2060, 0xfeff]) {
+      expect(dom.includes(String.fromCodePoint(cp)), `U+${cp.toString(16)} must not reach the DOM`).toBe(false);
+    }
+    // logical order is the order the user reads: the "spoof" is now plain, readable text
+    expect(dom).toContain('ok gnp.exe');
+    // inclusion: the linguistically essential joiners survive byte-for-byte
+    expect(dom).toContain(persian);
+    expect(dom).toContain(family);
+    // containment + per-paragraph base direction
+    expect(await text.evaluate((el) => getComputedStyle(el).unicodeBidi)).toBe('plaintext');
+  });
+});
+
+// ── FULL two-party flow, real crypto + real relay (no seeding) ───────────────────────────────────────
+// Giver mints a Grow link; a SECOND browser context (a different identity/IndexedDB) joins with it, types a
+// greeting, adds; the giver's own poll receives the signed joiner-response and the Gate shows the greeting.
+// This is the continuous receive -> persist -> render chain the seeded tests above only cover in pieces.
+test.describe('pre-gate greeting — full joiner -> giver flow', () => {
+  test('joiner types a greeting, giver sees it as inert plain text at the Gate', async ({ browser }) => {
+    test.setTimeout(240_000);
+    const GREETING = 'hi, it is Nina <b>from the conference</b>\nsecond line https://example.test/x';
+
+    const giverCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const joinerCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const giver = await giverCtx.newPage();
+    const joiner = await joinerCtx.newPage();
+    const t0 = Date.now();
+    const step = (m: string) => console.log(`[full-flow +${Math.round((Date.now() - t0) / 1000)}s] ${m}`);
+    const dump = async (tag: string) => {
+      for (const [n, pg] of [['giver', giver], ['joiner', joiner]] as const) {
+        try {
+          await pg.screenshot({ path: `/tmp/claude-1001/-app-autobots/6b74b625-97ba-42c2-95ea-02f0be1d1cb9/scratchpad/fullflow-${tag}-${n}.png` });
+          console.log(`[dump ${tag} ${n}] url=${pg.url()}\n` + (await pg.locator('body').innerText()).slice(0, 700));
+        } catch (e) { console.log(`[dump ${tag} ${n}] failed: ${String(e).slice(0, 120)}`); }
+      }
+    };
+    try {
+      step('giver genesis');
+      await genesis(giver, 'Giver Gwen');
+      step('giver mint link');
+      await giver.getByTestId('nav-grow').click();
+      const giverDialog = giver.getByTestId('grow-surface');
+      await expect(giverDialog).toBeVisible();
+      const linkEl = giverDialog.locator('code', { hasText: /\/c\/[A-Za-z0-9_-]+#/ });
+      await expect(linkEl).toBeVisible({ timeout: 30_000 });
+      const link = (await linkEl.innerText()).trim();
+
+      step(`joiner genesis; link=${link.replace(/#.*/, '#…')}`);
+      await genesis(joiner, 'Joiner Nina');
+      await joiner.getByTestId('nav-grow').click();
+      const jd = joiner.getByTestId('grow-surface');
+      step('joiner paste+join');
+      await jd.getByRole('tab', { name: 'Scan / paste' }).click();
+      await jd.getByLabel(/paste your invite link/i).fill(link);
+      await jd.getByRole('button', { name: /^join$/i }).click();
+
+      await expect(joiner.getByText(/wants to connect/i)).toBeVisible({ timeout: 30_000 });
+      step('joiner on card phase; typing greeting');
+      await joiner.getByTestId('join-greeting').fill(GREETING);
+      await joiner.getByTestId('join-add-to-gate').click();
+
+      // Joiner-side honesty: reports DELIVERY only, and says no read signal will come.
+      step('joiner clicked add; waiting for delivery status');
+      const status = joiner.getByTestId('join-greeting-status');
+      await expect(status).toContainText(/reached their mailbox/i, { timeout: 60_000 });
+      await expect(status).toContainText(/won.t be told if or when they read it/i);
+
+      // Giver side: its poll picks up the signed joiner-response; keep nudging focus (poll triggers on focus).
+      step('joiner delivered; giver polling for the arrival');
+      await giver.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+      await expect
+        .poll(
+          async () => {
+            await giver.bringToFront();
+            await giver.evaluate(() => window.dispatchEvent(new Event('focus')));
+            return giver.getByTestId('galaxy-gate').getAttribute('data-count');
+          },
+          { timeout: 90_000, intervals: [2_000, 3_000, 5_000] },
+        )
+        .toBe('1');
+
+      step('giver sees 1 arrival; opening');
+      await giver.getByTestId('galaxy-gate').click();
+      const row = giver.getByTestId('grow-gate-arrival');
+      await expect(row).toContainText('greeting'); // marker, from the REAL receive path
+      await row.click();
+      const text = giver.getByTestId('grow-gate-greeting-text');
+      await expect(text).toHaveText(GREETING);
+      expect(await text.evaluate((el) => el.children.length)).toBe(0); // <b> stayed text
+      await giver.screenshot({ path: '/opt/cursor/artifacts/pregate_greeting_full_flow.png' }).catch(() => {});
+    } catch (e) {
+      step('FAILED: ' + String(e).slice(0, 200));
+      await dump('fail');
+      throw e;
+    } finally {
+      await giverCtx.close();
+      await joinerCtx.close();
+    }
+  });
 });

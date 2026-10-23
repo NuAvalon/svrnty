@@ -13,7 +13,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { ownerHasVerified } from '../trust/trust-recipe';
-import { GREETING_MAX_CHARS } from '../trust/joiner-response';
+import { clampGreeting } from '../trust/joiner-response';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -1777,10 +1777,10 @@ export function normalizeArrival(raw: unknown): GateArrival | null {
   if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
   if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
   // Pre-gate greeting: this whitelist is the persistence chokepoint — omitting the field here drops the
-  // greeting on enqueue AND on every load (the bug this line fixes). Re-capped on every pass with the
-  // single-source GREETING_MAX_CHARS (defense-in-depth over clampGreeting, which already sanitized it at
-  // receive). Write-once is enforced upstream (acceptJoinerAtGate never re-enqueues an existing arrival).
-  if (typeof r.greeting === 'string' && r.greeting) arrival.greeting = r.greeting.slice(0, GREETING_MAX_CHARS);
+  // greeting on enqueue AND on every load (the bug this line fixes). The FULL clampGreeting runs on every
+  // pass (strip control/C1/bidi-reorderers, trim, cap) so a hand-edited or older stored value can't carry
+  // what receive would have stripped (defense-in-depth). Write-once is enforced upstream (acceptJoinerAtGate never re-enqueues an existing arrival).
+  { const g = clampGreeting(r.greeting); if (g) arrival.greeting = g; }
   return arrival;
 }
 

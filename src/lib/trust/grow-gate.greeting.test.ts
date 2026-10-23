@@ -59,3 +59,41 @@ test('persistence re-caps an oversized greeting and omits an empty one', () => {
   assert.equal('greeting' in normalizeArrival({ ...base, greeting: '' })!, false);
   assert.equal('greeting' in normalizeArrival({ ...base, greeting: 42 })!, false, 'non-string dropped');
 });
+
+// ── Trojan-Source / inclusion (Flint req-6 residual, #176525/#176532) ──
+// Strip the visual REORDERERS; KEEP what real languages and emoji need. Both directions are locked so a
+// future "strip more" can't silently corrupt legitimate greetings, and a future "strip less" can't reopen the spoof.
+test('clampGreeting strips bidi override/embedding/isolate + ZWSP/WJ/BOM', () => {
+  const reorderers = [
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200b, 0x2060, 0xfeff,
+  ];
+  for (const cp of reorderers) {
+    const ch = String.fromCodePoint(cp);
+    assert.equal(clampGreeting(`a${ch}b`), 'ab', `U+${cp.toString(16).toUpperCase()} must be stripped`);
+  }
+  // the classic spoof: RLO ... PDF wrapped around text keeps LOGICAL order once the controls are gone
+  assert.equal(clampGreeting('‮fdp.exe‬'), 'fdp.exe');
+});
+
+test('clampGreeting KEEPS ZWNJ/ZWJ + LRM/RLM/ALM byte-for-byte (Persian, emoji, mixed direction)', () => {
+  const persian = 'سلام، من نینا هستم و می‌خواهم'; // contains U+200C ZWNJ in می‌خواهم
+  assert.ok(persian.includes('‌'), 'fixture must contain a real ZWNJ');
+  assert.equal(clampGreeting(persian), persian);
+  const family = '👨‍👩‍👧'; // man ZWJ woman ZWJ girl
+  assert.ok(family.includes('‍'), 'fixture must contain real ZWJ');
+  assert.equal(clampGreeting(family), family);
+  const marks = 'a‎b‏c؜d';
+  assert.equal(clampGreeting(marks), marks, 'LRM/RLM/ALM kept (needed for mixed-direction text)');
+});
+
+test('clampGreeting: mixed LTR/RTL greeting with newline round-trips unchanged', () => {
+  const mixed = 'Hi, I am Nina — نینا هستم\nsee you at the conference';
+  assert.equal(clampGreeting(mixed), mixed);
+});
+
+test('persistence layer applies the SAME full clamp (a stored spoof is stripped on load)', () => {
+  const base = arrivalFromPendingJoiner(basePj('x'), 'remote');
+  const loaded = normalizeArrival({ ...base, greeting: 'ok‮gnp.exe‬ and سلام' });
+  assert.equal(loaded!.greeting, 'okgnp.exe and سلام', 'reorderers stripped, Persian kept');
+  assert.equal('greeting' in normalizeArrival({ ...base, greeting: '‮​' })!, false, 'strips to empty → omitted');
+});

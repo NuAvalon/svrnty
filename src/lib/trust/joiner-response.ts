@@ -85,6 +85,42 @@ import {
  *  A greeting, not a payload: bounds DoS (bloated joiner-responses + Gate/mailbox storage). */
 export const GREETING_MAX_CHARS = 500;
 
+/** Code points the greeting clamp REMOVES because they reorder or hide text on screen. The greeting is
+ *  display-only and write-once (never an identity key, never compared), so the threat is visual REORDERING
+ *  at the admit decision (Trojan-Source), not obfuscation. Stripped: the full balanced bidi
+ *  override/embedding/isolate set (U+202A-202E, U+2066-2069 — whole set, so no dangling pops) plus
+ *  U+200B ZWSP, U+2060 WJ, U+FEFF BOM (no legitimate use in a human greeting).
+ *  DELIBERATELY KEPT: U+200C ZWNJ and U+200D ZWJ (required for Persian/Arabic/Indic and for emoji
+ *  sequences — stripping them corrupts legitimate greetings), and LRM/RLM/ALM (U+200E/200F/061C, needed for
+ *  mixed-direction text). Known accepted residual: LRM/RLM keep a weak neutral-char reordering ability even
+ *  inside the contained box; the unverified-copy lowers the greeting's trust weight. (Flint, #176532.) */
+function isGreetingStrippedCodePoint(c: number): boolean {
+  return (
+    (c >= 0x202a && c <= 0x202e) ||
+    (c >= 0x2066 && c <= 0x2069) ||
+    c === 0x200b ||
+    c === 0x2060 ||
+    c === 0xfeff
+  );
+}
+
+/** Clamp a joiner-authored pre-gate greeting for Gate display — a wider-cap sibling of clampArrivalName.
+ *  Strips control bytes + C1 (0x80-0x9f) + DEL (0x7f) + the reorderer set above, but ALLOWS `\n` (a greeting
+ *  may wrap); trims and caps at GREETING_MAX_CHARS (single source with the build-side cap). Lives HERE (pure,
+ *  no store/UI imports) so receive (grow-gate.ts) AND the persistence layer (client-store.normalizeArrival)
+ *  apply the SAME clamp. Sanitizer only — the Gate UI MUST render the result as PLAIN TEXT; that text-only
+ *  render is the real chokepoint (#583-class: untrusted inbound content must not be interpreted). */
+export function clampGreeting(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  let out = '';
+  for (const ch of raw) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (isGreetingStrippedCodePoint(c)) continue;
+    if (c === 0x0a || (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f))) out += ch;
+  }
+  return out.trim().slice(0, GREETING_MAX_CHARS);
+}
+
 /** A joiner-response as it travels: the envelope plus its detached envelope signature (opaque on the wire). */
 export interface SignedJoinerResponse {
   envelope: JoinerResponseEnvelope;

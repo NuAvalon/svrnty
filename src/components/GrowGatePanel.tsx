@@ -186,6 +186,9 @@ export function GrowGatePanel({ ownerFp, variant = 'grow', onClose, onAdmitted }
               color: E.text,
               whiteSpace: 'pre-wrap',
               overflowWrap: 'anywhere',
+              // Contain + per-paragraph base direction (first-strong), so an all-RTL greeting aligns correctly and a
+              // leading mark can't force the box's direction or bleed into the surrounding UI (Flint #176532).
+              unicodeBidi: 'plaintext',
             }}
           >
             {focus.greeting}
