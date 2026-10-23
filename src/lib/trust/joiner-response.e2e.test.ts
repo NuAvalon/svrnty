@@ -9,34 +9,51 @@
 process.env.RELAY_DB_PATH = ':memory:'; // OPT-2: in-memory SQLite for tests (runner sets no NODE_ENV)
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
 import { buildJoinerResponse, encryptJoinerResponseTo, verifyJoinerResponse } from './joiner-response';
 import { depositEnvelope, pollMailbox, ackDelete } from '../relay/mailbox-store';
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { openpgpEnvelopeDecryptor } from '../sync/contact-update-envelope';
 import { mailboxConfig } from '../relay/mailbox-config';
+import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
+import { mintCanonicalFingerprint } from '../identity/fingerprint';
 
 const pass = 'test-passphrase-e2e';
 const CODE = 'A7K9QX';
 const NOW = 1_756_800_000_000; // fixed ms — deposit/poll take `now` explicitly (deterministic; no Date.now)
 
 let alicePriv: string, alicePub: string, aliceFp: string; // GIVER (mailbox owner)
-let bobPriv: string, bobPub: string, bobFp: string;        // JOINER
+let bobPriv: string, bobPub: string, bobFp: string;        // JOINER (a §5 CANONICAL identity: 64-hex fp + PQ legs)
+let bobKemB64: string, bobSigB64: string;
 
 before(async () => {
   ({ privateKey: alicePriv, publicKey: alicePub } = await generateKey({
     type: 'curve25519', userIDs: [{ name: 'Alice', email: 'alice@example.test' }], passphrase: pass, format: 'armored',
   }));
   aliceFp = (await readKey({ armoredKey: alicePub })).getFingerprint();
+  // The joiner MUST be canonical: since Res#1 fingerprintMatchesKey is canonical-only (the 40-hex OpenPGP
+  // fall-through is removed), so a classical joiner correctly fails verify (pinned in joiner-response.test.ts).
+  // This fixture predated Res#1, which is why two of these tests failed on origin/main with verify -> null.
   ({ privateKey: bobPriv, publicKey: bobPub } = await generateKey({
-    type: 'curve25519', userIDs: [{ name: 'Bob', email: 'bob@example.test' }], passphrase: pass, format: 'armored',
+    type: 'ecc',
+    // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime (same keygen as identity/core.ts).
+    curve: 'ed25519',
+    userIDs: [{ name: 'Bob', email: 'bob@example.test' }], passphrase: pass, format: 'armored',
   }));
-  bobFp = (await readKey({ armoredKey: bobPub })).getFingerprint();
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: bobPriv });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase: pass });
+  ({ fingerprint: bobFp } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked, kemPublicKey: pq.kem.publicKey, sigPublicKey: pq.signing.publicKey,
+  }));
+  bobKemB64 = uint8ToBase64(pq.kem.publicKey);
+  bobSigB64 = uint8ToBase64(pq.signing.publicKey);
 });
 
 async function bobDepositsToAlice(): Promise<{ mailboxId: string; blob: string }> {
   const signed = await buildJoinerResponse(
-    { joinerFp: bobFp, joinerEpoch: 1, joinerPubKeyArmored: bobPub, joinerName: 'Bob', giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z' },
+    { joinerFp: bobFp, joinerEpoch: 1, joinerPubKeyArmored: bobPub, joinerName: 'Bob', giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z',
+      joinerPqKemPublicKey: bobKemB64, joinerPqSigPublicKey: bobSigB64 },
     bobPriv, pass,
   );
   const blob = await encryptJoinerResponseTo(signed, alicePub);

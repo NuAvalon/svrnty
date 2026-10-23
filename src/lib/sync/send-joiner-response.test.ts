@@ -63,7 +63,10 @@ async function makeCanonicalSender(name: string) {
 
 // ── The deposit is addressed + encrypted so the giver's verifyJoinerResponse recovers the joiner ──
 test('buildJoinerResponseDeposit: addresses the giver mailbox and round-trips through verifyJoinerResponse', async () => {
-  const deposit = await buildJoinerResponseDeposit(bobSender(), aliceTarget());
+  // Canonical sender: since Res#1 the giver's verify is canonical-only, so a classical 40-hex sender (bobSender)
+  // correctly fails to verify (pinned in joiner-response.test.ts). This test predated Res#1.
+  const bob = await makeCanonicalSender('Bob');
+  const deposit = await buildJoinerResponseDeposit(bob, aliceTarget());
   assert.ok(deposit, 'a valid sender+target must produce a deposit');
   assert.equal(deposit!.mailbox_id, deriveMailboxId(aliceFp), 'addressed to the giver’s derived mailbox id');
 
@@ -74,7 +77,7 @@ test('buildJoinerResponseDeposit: addresses the giver mailbox and round-trips th
     (n) => n === CODE,
   );
   assert.ok(joiner, 'the deposited blob must verify to a PendingJoiner at the giver');
-  assert.equal(joiner!.fingerprint, bobFp);
+  assert.equal(joiner!.fingerprint, bob.fingerprint);
   assert.equal(joiner!.epoch, 0, 'epoch 0 — the giver’s future contact.update replay floor');
   assert.equal(joiner!.inviteNonce, CODE);
   assert.equal(joiner!.displayName, 'Bob');
