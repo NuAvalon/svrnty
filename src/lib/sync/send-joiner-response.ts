@@ -50,6 +50,10 @@ export interface JoinerResponseSender {
   kemPublicKeyB64?: string;
   /** §5 canonical-fp binding: the joiner's ML-DSA-87 public (base64, 2592B) — the other half. */
   sigPublicKeyB64?: string;
+  /** OPTIONAL pre-gate 1-greeting — a short "who I am" the giver reads at the Gate before admit. Text,
+   *  ≤ GREETING_MAX_CHARS (the join UI bounds it). Goes INTO the signed envelope (relay-opaque + tamper-
+   *  evident). Omitted when empty/falsy → a no-greeting join stays byte-identical to today (no regression). */
+  greeting?: string;
 }
 
 /** The giver being connected back to: fingerprint (→ mailbox + binding) + pubkey (→ encrypt-to) + code. */
@@ -99,6 +103,10 @@ export async function buildJoinerResponseDeposit(
         ...(sender.kemPublicKeyB64 && sender.sigPublicKeyB64
           ? { joinerPqKemPublicKey: sender.kemPublicKeyB64, joinerPqSigPublicKey: sender.sigPublicKeyB64 }
           : {}),
+        // Pre-gate greeting: thread it ONLY when non-empty (omit-when-absent keeps non-greeting joins
+        // byte-identical). buildJoinerResponseEnvelope throws 'bad-greeting' if over-cap → the deposit's
+        // try/catch returns null (fail-soft: the join still happens, just no greeting delivered).
+        ...(sender.greeting ? { greeting: sender.greeting } : {}),
       },
       sender.privateKeyArmored,
       sender.passphrase,

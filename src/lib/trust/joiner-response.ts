@@ -33,11 +33,19 @@
 //   (c) NOT REPLAYABLE ACROSS GIVERS — giver_fingerprint is signed and checked === our own fp, so a
 //       copied blob re-deposited to a different giver's mailbox is rejected there.
 //
-// IDENTITY-ONLY BY DESIGN. The envelope carries the joiner's identity (fp, epoch, key, optional PQ sig
-// key, name) — NOT their contact methods. Once the edge is mutual, the giver holds the joiner's card
-// and the 0.4 contact.update wire carries methods both ways. Keeping methods out of here means the
-// joiner-response inherits NO field-firewall surface — the entire method-poisoning surface stays on
-// the one already-hardened path (contact-update.ts), not duplicated here.
+// IDENTITY + OPTIONAL PRE-GATE GREETING (invariant expanded — Peter #175594 / Flint spec 2026-10-23).
+// The envelope carries the joiner's identity (fp, epoch, key, optional PQ sig key, name) AND MAY carry
+// one short joiner-authored `greeting` — a "who I am" message the giver reads from the Gate BEFORE
+// admit. It is STILL NOT a contact-methods channel: once the edge is mutual, the giver holds the
+// joiner's card and the 0.4 contact.update wire carries methods both ways. Keeping methods out of here
+// means the joiner-response inherits NO field-firewall surface — the entire method-poisoning surface
+// stays on the one already-hardened path (contact-update.ts), not duplicated here.
+//   THE GREETING IS IN THE SIGNATURE. It rides joinerResponseSigningInput (the canonical signed input),
+//   NOT bolted on outside — so the content-blind, multi-use relay cannot inject or alter it. Omitted
+//   (never null) when absent → a no-greeting response is byte-identical to a pre-greeting envelope (no
+//   regression). Build-capped to GREETING_MAX_CHARS (DoS bound); text only (no blob/artifact_ptr);
+//   sanitized + rendered PLAIN TEXT consume-side (clampGreeting in grow-gate.ts — the Gate must never
+//   HTML/markdown/auto-link it; #583-class discipline for untrusted pre-trust content).
 //
 // CORRECT-BY-CONSTRUCTION. Like contact-update-sign.ts and identity-card-sign.ts, this reuses the SAME
 // three primitives every verifier reads and re-implements none of them: the domain tag
@@ -72,6 +80,11 @@ import {
   decrypt,
 } from 'openpgp';
 
+/** Max length of a pre-gate greeting (code units). SINGLE SOURCE for the build-side cap (here) AND the
+ *  consume-side clamp (clampGreeting in grow-gate.ts) so the two caps Flint's spec names can never drift.
+ *  A greeting, not a payload: bounds DoS (bloated joiner-responses + Gate/mailbox storage). */
+export const GREETING_MAX_CHARS = 500;
+
 /** A joiner-response as it travels: the envelope plus its detached envelope signature (opaque on the wire). */
 export interface SignedJoinerResponse {
   envelope: JoinerResponseEnvelope;
@@ -95,6 +108,9 @@ export interface PendingJoiner {
    *  (fingerprintMatchesKey is canonical-only → both PQ legs are required to reach this return). */
   pqKemPublicKey?: Uint8Array;
   displayName: string;
+  /** Optional pre-gate greeting (text, ≤ GREETING_MAX_CHARS) the joiner sent — verified in-signature, so
+   *  present here only when it was authentically signed. Absent (undefined) when the joiner sent none. */
+  greeting?: string;
   inviteNonce: string;
   ts: string;
 }
@@ -110,7 +126,8 @@ export class JoinerResponseSignError extends Error {
       | 'bad-joiner-name'
       | 'bad-giver-fingerprint'
       | 'bad-invite-nonce'
-      | 'bad-pq-key',
+      | 'bad-pq-key'
+      | 'bad-greeting',
     detail?: string,
   ) {
     super(detail ? `joiner-response build refused (${reason}): ${detail}` : `joiner-response build refused (${reason})`);
@@ -132,6 +149,12 @@ export interface BuildJoinerResponseArgs {
   joinerPqKemPublicKey?: string;
   /** The joiner's self-asserted display name (KNOWN = unverified; may be empty). */
   joinerName: string;
+  /** OPTIONAL pre-gate 1-greeting — a short "who I am" message the giver reads from the Gate before
+   *  admit. Text only, ≤ GREETING_MAX_CHARS (build throws 'bad-greeting' if over — the joiner UI bounds
+   *  it; the return-channel deposit is fail-soft, so an over-long greeting just yields no deposit, never
+   *  a failed join). OMIT when absent (do not pass ''/null) so the signed envelope stays byte-identical
+   *  to a no-greeting join. Goes INTO the signature (the content-blind relay can't inject/alter it). */
+  greeting?: string;
   /** The giver's durable fingerprint — binds the response to its intended recipient. */
   giverFp: string;
   /** The giver's relay code the joiner used — the solicited-gate proof. */
@@ -165,6 +188,14 @@ export function buildJoinerResponseEnvelope(args: BuildJoinerResponseArgs): Join
     throw new JoinerResponseSignError('bad-pq-key', 'present but empty');
   if (args.joinerPqKemPublicKey !== undefined && !isNonEmptyString(args.joinerPqKemPublicKey))
     throw new JoinerResponseSignError('bad-pq-key', 'kem present but empty');
+  // Pre-gate greeting (optional): fail loud for the SENDER if present-but-invalid. Length cap here is
+  // the "cap in the canonicalizer" half of the DoS bound — an over-cap greeting can never be SIGNED,
+  // so it can never reach a verifier (the clampGreeting consume-side is the other half + sanitizer).
+  if (args.greeting !== undefined) {
+    if (typeof args.greeting !== 'string') throw new JoinerResponseSignError('bad-greeting', 'not a string');
+    if (args.greeting.length > GREETING_MAX_CHARS)
+      throw new JoinerResponseSignError('bad-greeting', `>${GREETING_MAX_CHARS} chars`);
+  }
 
   const env: JoinerResponseEnvelope = {
     joiner_fingerprint: args.joinerFp,
@@ -177,6 +208,9 @@ export function buildJoinerResponseEnvelope(args: BuildJoinerResponseArgs): Join
   };
   if (args.joinerPqSigPublicKey !== undefined) env.joiner_pq_sig_public_key = args.joinerPqSigPublicKey;
   if (args.joinerPqKemPublicKey !== undefined) env.joiner_pq_kem_public_key = args.joinerPqKemPublicKey;
+  // OMIT when absent (never set undefined/null): canonical serialization rejects null, and omission keeps
+  // a no-greeting response byte-identical to a pre-greeting envelope → zero regression for non-greeting joins.
+  if (args.greeting !== undefined) env.greeting = args.greeting;
   return env;
 }
 
@@ -264,6 +298,13 @@ function isWellFormed(signed: unknown): signed is SignedJoinerResponse {
     } catch {
       return false; // undecodable base64 ⇒ reject
     }
+  }
+  // Optional pre-gate greeting: if present it must be a string within the cap. Rejecting an oversized
+  // greeting HERE (before signature verify) is the structural-gate half of the DoS bound — a crafted
+  // blob with a bloated greeting is dropped without burning signature CPU. Never null (canonical rejects it).
+  if (e.greeting !== undefined) {
+    if (typeof e.greeting !== 'string') return false;
+    if (e.greeting.length > GREETING_MAX_CHARS) return false;
   }
   if (!isPlainObject(signature)) return false;
   if (typeof (signature as Record<string, unknown>).classical !== 'string') return false;
@@ -396,6 +437,9 @@ export async function verifyJoinerResponse(
     ...(pqSigningPublicKey ? { pqSigningPublicKey } : {}),
     ...(pqKemPublicKey ? { pqKemPublicKey } : {}),
     displayName: envelope.joiner_display_name,
+    // Surface the greeting ONLY when present + authentically signed (step 6 verified the whole envelope,
+    // greeting included). Absent → the field stays undefined on the PendingJoiner.
+    ...(envelope.greeting !== undefined ? { greeting: envelope.greeting } : {}),
     inviteNonce: envelope.invite_nonce,
     ts: envelope.ts,
   };

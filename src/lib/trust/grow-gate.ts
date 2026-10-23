@@ -29,7 +29,7 @@ import {
 } from '@/lib/identity/client-store';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
-import type { PendingJoiner } from '@/lib/trust/joiner-response';
+import { type PendingJoiner, GREETING_MAX_CHARS } from '@/lib/trust/joiner-response';
 
 export type { GateArrival, GrowMintChannel };
 
@@ -75,6 +75,22 @@ export function clampArrivalName(raw: unknown): string {
     if (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f)) out += ch;
   }
   return out.trim().slice(0, 80);
+}
+
+/** Clamp a joiner-authored pre-gate greeting for Gate display — a wider-cap sibling of clampArrivalName.
+ *  Strips control bytes + C1 (0x80-0x9f) + DEL (0x7f) but ALLOWS `\n` (a greeting may wrap); trims and
+ *  caps at GREETING_MAX_CHARS (single source with the build-side cap, so the two caps can't drift).
+ *  Sanitizer only — the Gate UI MUST render the result as PLAIN TEXT (no HTML/markdown/auto-linkified
+ *  URLs that could phish from the pre-trust surface); that text-only render is the real chokepoint
+ *  (#583-class: untrusted inbound content must not be interpreted by the surface that displays it). */
+export function clampGreeting(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  let out = '';
+  for (const ch of raw) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c === 0x0a || (c >= 0x20 && c !== 0x7f && (c < 0x80 || c > 0x9f))) out += ch;
+  }
+  return out.trim().slice(0, GREETING_MAX_CHARS);
 }
 
 export function parseTagList(raw: string): string[] {
@@ -211,6 +227,13 @@ export function arrivalFromPendingJoiner(
   // canonical fingerprintMatchesKey (needs BOTH PQ legs) refuses the joiner ("binding failed").
   const kem = pqToB64(pj.pqKemPublicKey);
   if (kem) arrival.pqKemPublicKey = kem;
+  // Pre-gate greeting — WRITE-ONCE = the 1-cap (Flint spec req 4). Set ONLY here, at initial enqueue,
+  // from the SIGNED greeting on the PendingJoiner (clampGreeting sanitizes + caps — defense-in-depth over
+  // the in-signature build cap). acceptJoinerAtGate's existing/waiting branches early-return WITHOUT
+  // calling this or touching an existing arrival, so a second joiner-response can never overwrite or
+  // append a greeting. DO NOT add a greeting write on any other path, or the one-message cap breaks.
+  const greeting = clampGreeting(pj.greeting);
+  if (greeting) arrival.greeting = greeting;
   return arrival;
 }
 

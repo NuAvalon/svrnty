@@ -1732,6 +1732,9 @@ const GROW_GATE_ARRIVALS_KEY = 'grow_gate_arrivals';
 export interface GateArrival {
   fingerprint: string;
   displayName: string;
+  /** Optional pre-gate 1-greeting the joiner sent (sanitized + capped via clampGreeting, write-once at
+   *  arrivalFromPendingJoiner). Giver-local; rendered PLAIN TEXT at the Gate. Absent when none sent. */
+  greeting?: string;
   publicKeyArmored: string;
   pqSigPublicKey?: string;
   pqKemPublicKey?: string;
