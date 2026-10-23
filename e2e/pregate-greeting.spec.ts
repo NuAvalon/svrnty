@@ -184,7 +184,7 @@ test.describe('pre-gate greeting — full joiner -> giver flow', () => {
     const dump = async (tag: string) => {
       for (const [n, pg] of [['giver', giver], ['joiner', joiner]] as const) {
         try {
-          await pg.screenshot({ path: `/tmp/claude-1001/-app-autobots/6b74b625-97ba-42c2-95ea-02f0be1d1cb9/scratchpad/fullflow-${tag}-${n}.png` });
+          await pg.screenshot({ path: test.info().outputPath(`fullflow-${tag}-${n}.png`) });
           console.log(`[dump ${tag} ${n}] url=${pg.url()}\n` + (await pg.locator('body').innerText()).slice(0, 700));
         } catch (e) { console.log(`[dump ${tag} ${n}] failed: ${String(e).slice(0, 120)}`); }
       }
@@ -209,6 +209,8 @@ test.describe('pre-gate greeting — full joiner -> giver flow', () => {
       await jd.getByLabel(/paste your invite link/i).fill(link);
       await jd.getByRole('button', { name: /^join$/i }).click();
 
+      await expect(joiner.getByTestId('joiner-ceremony-overlay')).toBeVisible({ timeout: 15_000 });
+      step('joiner ceremony overlay mounted');
       await expect(joiner.getByText(/wants to connect/i)).toBeVisible({ timeout: 30_000 });
       step('joiner on card phase; typing greeting');
       await joiner.getByTestId('join-greeting').fill(GREETING);
@@ -222,7 +224,9 @@ test.describe('pre-gate greeting — full joiner -> giver flow', () => {
 
       // Giver side: its poll picks up the signed joiner-response; keep nudging focus (poll triggers on focus).
       step('joiner delivered; giver polling for the arrival');
-      await giver.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+      await giver.getByTestId('grow-surface').click({ position: { x: 4, y: 4 } }); // backdrop click closes the giver's own Grow dialog (it would intercept the tab click)
+      await expect(giver.getByTestId('grow-surface')).toBeHidden({ timeout: 10_000 });
+      await giver.getByRole('tab', { name: 'Galaxy', exact: true }).click({ timeout: 20_000 });
       await expect
         .poll(
           async () => {
@@ -245,6 +249,7 @@ test.describe('pre-gate greeting — full joiner -> giver flow', () => {
       await giver.screenshot({ path: '/opt/cursor/artifacts/pregate_greeting_full_flow.png' }).catch(() => {});
     } catch (e) {
       step('FAILED: ' + String(e).slice(0, 200));
+      try { console.log('[overlay text] ' + (await joiner.getByTestId('joiner-ceremony-overlay').innerText({ timeout: 3000 }))); } catch { console.log('[overlay text] overlay not present'); }
       await dump('fail');
       throw e;
     } finally {
