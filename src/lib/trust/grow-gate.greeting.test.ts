@@ -38,3 +38,24 @@ test('arrivalFromPendingJoiner omits greeting when the joiner sent none (and whe
   assert.equal('greeting' in arrivalFromPendingJoiner(basePj(), 'remote'), false, 'absent → omitted on arrival');
   assert.equal('greeting' in arrivalFromPendingJoiner(basePj('\x00\x07'), 'remote'), false, 'control-only → clamps empty → omitted');
 });
+
+// ── PERSISTENCE chokepoint (regression for the greeting being dropped by the store's field whitelist) ──
+// enqueueGateArrival and every load run arrivals through normalizeArrival, which rebuilds the object from
+// an explicit field list. The earlier tests stopped at arrivalFromPendingJoiner, so a greeting missing from
+// that list was invisible: it was set at receive, then silently dropped before the Gate could show it.
+import { normalizeArrival } from '../identity/client-store';
+
+test('greeting SURVIVES the persistence whitelist (receive -> normalizeArrival round trip)', () => {
+  const arrival = arrivalFromPendingJoiner(basePj("hi, it's Nina\nfrom the conference"), 'remote');
+  const stored = normalizeArrival(JSON.parse(JSON.stringify(arrival))); // what save+load does
+  assert.ok(stored, 'arrival must normalize');
+  assert.equal(stored!.greeting, "hi, it's Nina\nfrom the conference");
+});
+
+test('persistence re-caps an oversized greeting and omits an empty one', () => {
+  const base = arrivalFromPendingJoiner(basePj('x'), 'remote');
+  const big = normalizeArrival({ ...base, greeting: 'y'.repeat(GREETING_MAX_CHARS + 300) });
+  assert.equal(big!.greeting!.length, GREETING_MAX_CHARS);
+  assert.equal('greeting' in normalizeArrival({ ...base, greeting: '' })!, false);
+  assert.equal('greeting' in normalizeArrival({ ...base, greeting: 42 })!, false, 'non-string dropped');
+});

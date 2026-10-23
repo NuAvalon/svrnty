@@ -13,6 +13,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { ownerHasVerified } from '../trust/trust-recipe';
+import { GREETING_MAX_CHARS } from '../trust/joiner-response';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -1753,7 +1754,9 @@ function isGrowMintChannel(v: unknown): v is GrowMintChannel {
   return v === 'in_person' || v === 'remote';
 }
 
-function normalizeArrival(raw: unknown): GateArrival | null {
+/** Exported as a test seam: every persist AND load of a Gate arrival runs through this field whitelist,
+ *  so a field that is not copied here is silently dropped between receive and display. */
+export function normalizeArrival(raw: unknown): GateArrival | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
@@ -1773,6 +1776,11 @@ function normalizeArrival(raw: unknown): GateArrival | null {
   };
   if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
   if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  // Pre-gate greeting: this whitelist is the persistence chokepoint — omitting the field here drops the
+  // greeting on enqueue AND on every load (the bug this line fixes). Re-capped on every pass with the
+  // single-source GREETING_MAX_CHARS (defense-in-depth over clampGreeting, which already sanitized it at
+  // receive). Write-once is enforced upstream (acceptJoinerAtGate never re-enqueues an existing arrival).
+  if (typeof r.greeting === 'string' && r.greeting) arrival.greeting = r.greeting.slice(0, GREETING_MAX_CHARS);
   return arrival;
 }
 
