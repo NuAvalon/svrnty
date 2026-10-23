@@ -258,3 +258,66 @@ test.describe('pre-gate greeting — full joiner -> giver flow', () => {
     }
   });
 });
+
+// Delivery retry/backoff (Peter #174621). Joiner-side only: the relay POST is intercepted in the browser,
+// so these prove the REAL sendJoinerResponse -> postWithRetry -> status copy path, not a unit mock.
+test.describe('pre-gate greeting — delivery retry/backoff (joiner side)', () => {
+  async function joinerAtCard(browser: import('@playwright/test').Browser) {
+    const giverCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const joinerCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const giver = await giverCtx.newPage();
+    const joiner = await joinerCtx.newPage();
+    await genesis(giver, 'Giver Gwen');
+    await giver.getByTestId('nav-grow').click();
+    const linkEl = giver.getByTestId('grow-surface').locator('code', { hasText: /\/c\/[A-Za-z0-9_-]+#/ });
+    await expect(linkEl).toBeVisible({ timeout: 30_000 });
+    const link = (await linkEl.innerText()).trim();
+    await genesis(joiner, 'Joiner Nina');
+    await joiner.getByTestId('nav-grow').click();
+    const jd = joiner.getByTestId('grow-surface');
+    await jd.getByRole('tab', { name: 'Scan / paste' }).click();
+    await jd.getByLabel(/paste your invite link/i).fill(link);
+    await jd.getByRole('button', { name: /^join$/i }).click();
+    await expect(joiner.getByText(/wants to connect/i)).toBeVisible({ timeout: 30_000 });
+    await joiner.getByTestId('join-greeting').fill('hello from Nina');
+    return { joiner, close: async () => { await giverCtx.close(); await joinerCtx.close(); } };
+  }
+
+  test('transient 503s: the greeting is retried with identical bytes and ends "reached their mailbox"', async ({ browser }) => {
+    test.setTimeout(240_000);
+    const { joiner, close } = await joinerAtCard(browser);
+    try {
+      const bodies: string[] = [];
+      await joiner.route('**/api/relay/envelope', async (route) => {
+        bodies.push(route.request().postData() || '');
+        if (bodies.length <= 2) return route.fulfill({ status: 503, body: 'down' });
+        return route.continue();
+      });
+      await joiner.getByTestId('join-add-to-gate').click();
+      const status = joiner.getByTestId('join-greeting-status');
+      await expect(status).toContainText(/sending your greeting/i); // honest "pending" while retrying
+      await expect(status).toContainText(/reached their mailbox/i, { timeout: 60_000 });
+      expect(bodies.length).toBe(3);
+      expect(new Set(bodies).size).toBe(1); // signed once, resent byte-identical
+    } finally {
+      await close();
+    }
+  });
+
+  test('relay down for good: "did not go through" appears only AFTER all 5 tries', async ({ browser }) => {
+    test.setTimeout(240_000);
+    const { joiner, close } = await joinerAtCard(browser);
+    try {
+      let posts = 0;
+      await joiner.route('**/api/relay/envelope', (route) => { posts++; return route.fulfill({ status: 503, body: 'down' }); });
+      await joiner.getByTestId('join-add-to-gate').click();
+      const status = joiner.getByTestId('join-greeting-status');
+      await expect(status).toContainText(/sending your greeting/i);
+      await expect(status).toContainText(/did not go through/i, { timeout: 60_000 });
+      expect(posts).toBe(5);
+      await expect(status).not.toContainText(/reached their mailbox/i);
+    } finally {
+      await close();
+    }
+  });
+});
