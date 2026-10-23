@@ -126,9 +126,10 @@ export async function buildJoinerResponseDeposit(
  * The drop-in: build + POST the joiner-response to the giver's return-channel mailbox. Best-effort — a
  * POST failure (after bounded retry) is reported, never thrown to the ceremony (which is fail-soft and keeps the
  * local edge regardless). Redelivery (retry after a lost ack) is NOT deduped by the relay: the
- * /api/relay/envelope route passes no client envelope id, so a repeat is a second mailbox row. Giver-side,
- * Gate arrivals are keyed by joiner fingerprint (client-store), so a duplicate collapses there; the
- * accept-code path under a duplicate is covered by Flint's co-verify, not asserted here.
+ * /api/relay/envelope route passes no client envelope id, so a repeat is a second mailbox row. The giver's
+ * consumer is idempotent by joiner fingerprint (code-read co-verified by Flint): live-book-poll
+ * alreadyAccepted() rejects before verify, acceptJoinerAtGate guards existing contact / waiting arrival,
+ * markAcceptedInMap de-dups so a duplicate row does not burn a second code slot.
  */
 export async function sendJoinerResponse(
   sender: JoinerResponseSender,
