@@ -125,8 +125,10 @@ export async function buildJoinerResponseDeposit(
 /**
  * The drop-in: build + POST the joiner-response to the giver's return-channel mailbox. Best-effort — a
  * POST failure (after bounded retry) is reported, never thrown to the ceremony (which is fail-soft and keeps the
- * local edge regardless). Each deposit is idempotent-safe at the giver: a redelivered blob re-verifies
- * to the same KNOWN joiner and the per-(code, joinerFp) accept-oracle dedups it.
+ * local edge regardless). Redelivery (retry after a lost ack) is NOT deduped by the relay: the
+ * /api/relay/envelope route passes no client envelope id, so a repeat is a second mailbox row. Giver-side,
+ * Gate arrivals are keyed by joiner fingerprint (client-store), so a duplicate collapses there; the
+ * accept-code path under a duplicate is covered by Flint's co-verify, not asserted here.
  */
 export async function sendJoinerResponse(
   sender: JoinerResponseSender,
@@ -140,7 +142,7 @@ export async function sendJoinerResponse(
   if (!deposit) return { ok: false, status: 'encrypt-failed' };
 
   // Built + signed ONCE above; only the transport retries (bounded exponential backoff, Peter #174621),
-  // so every attempt carries identical bytes. A redelivery is a no-op at the giver (idempotent accept).
+  // so every attempt carries identical bytes. A lost-ack retry can still leave two mailbox rows (no relay dedup).
   return postWithRetry(
     doFetch,
     `${relayBase}/envelope`,
