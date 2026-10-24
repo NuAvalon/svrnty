@@ -1,0 +1,12 @@
+# build outputs
+app/build/
+build/
+.gradle/
+app/release/
+app/app-release*.apk
+*.aab
+# local machine state
+local.properties
+# signing material — never commit
+*.keystore
+*.jks
