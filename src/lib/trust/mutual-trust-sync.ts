@@ -1,6 +1,10 @@
 // src/lib/trust/mutual-trust-sync.ts
 // PSI-based mutual trust discovery — client-side orchestrator.
 //
+// SCOPE: the PSI discovery protocol ("which contacts do we both hold"), run for the 'know' layer (the KNOW-layer
+// sync) or the 'trust' layer. A result is a set of shared contacts. It is NOT the "establishing mutual trust"
+// event, and this file keeps no relationship ledger.
+//
 // Implements the DH-PSI protocol against satellite endpoints.
 // Satellite never learns who trusts whom — it only relays blinded sets.
 // Client computes intersection locally, persists via deps.applyMutualResult() (storage-agnostic).
@@ -31,7 +35,7 @@ import {
 } from '../crypto/psi-wire-seal.js';
 import type { MailboxPublicKeys, MailboxEnvelopePackage } from '../crypto/mailbox-envelope.js';
 
-// ── PQ wire-wrap (psi-wire-seal.ts) — DARK until isPSIDiscoveryLive flips (claim-gates.ts) ─────────
+// ── PQ wire-wrap (psi-wire-seal.ts) — populated by the caller while isPSIDiscoveryLive() is true (claim-gates.ts) ──
 // When PSISyncOptions.pqWrap is set, 4 of the 5 wire exchanges below seal their bodies/responses in the
 // ML-KEM mailbox envelope instead of riding as classical plaintext JSON: initiate (POST, registers the
 // INITIATOR's response_pub), get_blinded (POST, registers the RESPONDER's response_pub — per-session,
@@ -85,7 +89,7 @@ export interface PSISyncOptions {
   /** Ed25519 signing function: (data, privateKey) => signature */
   signFn: (data: Uint8Array) => Uint8Array;
   /** PQ wire-wrap config (see above). Absent ⇒ classical plaintext wire (today's prod behavior). Only
-   * ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (dark until the flip). */
+   * ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (true since the 2026-10-04 dev flip). */
   pqWrap?: PsiPqWrapConfig;
 }
 
