@@ -28,6 +28,7 @@ import {
   type OwnerIdentity,
 } from './consume-mailbox';
 import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
+import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
@@ -49,7 +50,8 @@ import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
-import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
+import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner } from '@/lib/messaging/store';
+import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
 import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
@@ -119,7 +121,7 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
     verify: (blob: string): Promise<PendingJoiner | null> =>
       verifyJoinerResponse(
         blob,
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, cycle: owner.cycle },
         acceptNonce,
         { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical
       ),
@@ -139,18 +141,33 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
  * note by its own type-checked decryptor to acceptInboundNote (authn-then-admit, fail-closed) → the
  * notes store. Exported for unit tests.
  */
-export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+export interface NoteSeamDeps {
+  /** Owner the tab's unlocked notes store is open for (null = locked). Injectable so the guard wiring is testable. */
+  openOwner: () => string | null;
+  accept: typeof acceptInboundNote;
+}
+
+export function buildNoteSeam(
+  owner: OwnerIdentity,
+  deps: NoteSeamDeps = { openOwner: notesStoreOwner, accept: acceptInboundNote },
+): NoteResponseSeam {
+  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
     // the type-check inside noteOpenpgpDecryptor is the discriminator, so this never eats a non-note.
     verify: (blob: string) => decryptNote(blob),
     accept: async (wire) => {
+      // Owner guard (N10 cross-tab hardening, Flint #178309): the notes store is tab-local module state that
+      // putNote writes through. If it is not open FOR THIS owner (locked, or left open for another identity),
+      // refuse by THROWING → consumeOne maps it to RETRYABLE, so the note waits in the mailbox. Never omit the
+      // seam instead: a missing note seam lets the blob fall through to the contact-update path and get ack-DELETED.
+      assertNotesStoreOpenFor(deps.openOwner(), owner.fingerprint);
+      if (owner.cycle?.ended) throw new Error('unlock cycle ended — note held for retry'); // lock landed after verify
       // acceptInboundNote: verifyNoteSender (authn — public_key↔from_fingerprint + sig) THEN admit
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
-      const rec = await acceptInboundNote({
+      const rec = await deps.accept({
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
       });
@@ -177,7 +194,7 @@ export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
  * in-book affirm sets they_trust_me (inbound) but mutual requires MY own prior owner-verified trust.
  */
 export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   return {
     // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; the
     // type-check inside trustAffirmOpenpgpDecryptor is the discriminator, so this never eats a non-affirm.
@@ -238,6 +255,8 @@ export async function buildConsumeDeps(
     publicKeyArmored,
     privateKeyArmored: key.privateKey,
     passphrase: key.passphrase,
+    // One unlock for this poll cycle (decryptors + poll/ack signing). The caller drops it when the cycle ends.
+    cycle: makeUnlockCycle(key.privateKey, key.passphrase),
     // §5 canonical-id: thread the identity's PQ pubkeys so the owner-auth bundle lets the relay
     // recompute the 64-hex canonical fp. IdentityData.post_quantum is top-level (browser-identity.ts).
     // Absent (classical identity) → verify falls back to the 40-hex OpenPGP path.
@@ -253,6 +272,8 @@ export async function buildConsumeDeps(
   // for an UNLOCKED identity, so the credential is already in memory — no new trust boundary crossed.
   // Guarded (idempotent) + fail-soft: if it can't unlock, the note seam's putNote throws → the note is
   // held as retryable in the mailbox (never ack-deleted-unseen), so there is still no silent-loss.
+  // Only init when LOCKED. If it is already open for a DIFFERENT owner we must not init over it (openDb caches the
+  // previous identity's handle); note accept() refuses in that state (see buildNoteSeam), so notes are held, not lost.
   if (!isNotesStoreUnlocked()) {
     try {
       await initNotesStore(key.passphrase, fingerprint); // owner-scope: per-identity notes DB (P1#1)
@@ -262,7 +283,7 @@ export async function buildConsumeDeps(
   }
   return {
     owner,
-    decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase),
+    decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle),
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes),
     note: buildNoteSeam(owner),
@@ -306,7 +327,11 @@ export async function pollLiveBookOnce(
 ): Promise<void> {
   const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
   if (!deps) return;
-  await consumeInboundContactUpdates(deps);
+  try {
+    await consumeInboundContactUpdates(deps);
+  } finally {
+    deps.owner.cycle?.drop();
+  }
 }
 
 export function startLiveBookPolling(
@@ -325,7 +350,11 @@ export function startLiveBookPolling(
     try {
       const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
       if (!deps) return; // locked / no identity — stay static, retry next tick
-      await consumeInboundContactUpdates(deps);
+      try {
+        await consumeInboundContactUpdates(deps);
+      } finally {
+        deps.owner.cycle?.drop();
+      }
     } catch (err) {
       // local-only diagnostic; never surfaced to the peer/relay (I-1). One bad tick must not wedge the loop.
       console.error('[live-book-poll] poll tick failed (will retry):', err);

@@ -13,6 +13,7 @@
 
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { TRUST_AFFIRM_WIRE_TYPE, type TrustAffirmWireV0 } from './trust-affirm';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 
 /**
  * Seal a signed trust-affirmation to the recipient's OpenPGP public key. The affirmation MUST already
@@ -42,11 +43,11 @@ export async function sealTrustAffirmTo(
 export function trustAffirmOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
+  cycle?: UnlockCycle,
 ): (blob: string) => Promise<TrustAffirmWireV0 | null> {
   return async (blob: string): Promise<TrustAffirmWireV0 | null> => {
     try {
-      const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
-      const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
+      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);

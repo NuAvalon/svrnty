@@ -24,6 +24,9 @@ let _notesGeneration = 0;
 // identity's DB, never the cached previous one. Legacy single-DB 'svrnty-notes' notes are PRESERVED
 // (never opened by this scheme) — orphaned, not deleted.
 let _notesDbName: string | null = null;
+// The owner the CURRENTLY UNLOCKED notes key/DB belong to. Set together with _notesKey, cleared on lock/switch.
+// Lets a caller assert "unlocked FOR this identity" (not just "unlocked") before writing — N10 cross-tab hardening.
+let _notesOwner: string | null = null;
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -181,16 +184,23 @@ export async function initNotesStore(passphrase: string, ownerFingerprint: strin
   if (gen !== _notesGeneration) return;
   _notesKey = key;
   _notesSalt = salt;
+  _notesOwner = ownerFingerprint;
 }
 
 export function isNotesStoreUnlocked(): boolean {
   return _notesKey !== null;
 }
 
+/** Owner fingerprint the unlocked notes store was opened for (null while locked). */
+export function notesStoreOwner(): string | null {
+  return _notesKey !== null ? _notesOwner : null;
+}
+
 export function lockNotesStore(): void {
   _notesGeneration += 1; // invalidate any in-flight initNotesStore (async-init race, Codex P1 10/10)
   _notesKey = null;
   _notesSalt = null;
+  _notesOwner = null;
   // Owner-scope: close + drop the per-identity DB handle so a switch re-opens the NEXT identity's DB,
   // never the cached previous one (else B could read A's DB through the stale _db handle).
   if (_db) {
