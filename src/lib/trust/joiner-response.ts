@@ -71,6 +71,7 @@ import {
   readMessage,
   decrypt,
 } from 'openpgp';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 
 /** A joiner-response as it travels: the envelope plus its detached envelope signature (opaque on the wire). */
 export interface SignedJoinerResponse {
@@ -276,10 +277,10 @@ async function decryptJoinerBlob(
   blob: string,
   giverPrivateKeyArmored: string,
   passphrase: string,
+  cycle?: UnlockCycle,
 ): Promise<SignedJoinerResponse | null> {
   try {
-    const locked = await readPrivateKey({ armoredKey: giverPrivateKeyArmored });
-    const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
+    const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: giverPrivateKeyArmored }), passphrase });
     const message = await readMessage({ armoredMessage: blob });
     const { data } = await decrypt({ message, decryptionKeys });
     const text = typeof data === 'string' ? data : await streamToText(data);
@@ -317,11 +318,11 @@ async function decryptJoinerBlob(
  */
 export async function verifyJoinerResponse(
   blob: string,
-  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string },
+  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; cycle?: UnlockCycle },
   acceptNonce: (nonce: string, joinerFp: string) => boolean,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingJoiner | null> {
-  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase);
+  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase, giver.cycle);
   if (!signed) return null;
   const { envelope, signature } = signed;
 

@@ -47,6 +47,7 @@ import {
   decryptKey,
   sign as pgpSign,
 } from 'openpgp';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { hybridSign, hybridVerify } from './hybrid';
 
 /**
@@ -86,6 +87,7 @@ export async function signWithEnvelope(
   classicalPrivateKeyArmored: string,
   classicalPassphrase: string,
   pqSigningSecretKey?: Uint8Array,
+  cycle?: UnlockCycle,
 ): Promise<EnvelopeSignature> {
   const suiteId = pqSigningSecretKey ? SUITE_HYBRID : SUITE_CLASSICAL;
   const signedBytes = buildSignedBytes(domainTag, suiteId, canonicalInput);
@@ -100,8 +102,13 @@ export async function signWithEnvelope(
     return { classical: sig.classical, pq_signature: sig.post_quantum };
   }
 
-  const privateKeyObj = await readPrivateKey({ armoredKey: classicalPrivateKeyArmored });
-  const decryptedKey = await decryptKey({ privateKey: privateKeyObj, passphrase: classicalPassphrase });
+  // Classical branch only: a poll-cycle caller passes its UnlockCycle so poll+ack share one unlock.
+  const decryptedKey = cycle
+    ? await cycle.key()
+    : await decryptKey({
+        privateKey: await readPrivateKey({ armoredKey: classicalPrivateKeyArmored }),
+        passphrase: classicalPassphrase,
+      });
   const message = await createMessage({ text: signedBytes });
   const classicalSig = await pgpSign({ message, signingKeys: decryptedKey });
   return { classical: classicalSig.toString() };
