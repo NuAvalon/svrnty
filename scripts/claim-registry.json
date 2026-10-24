@@ -1,0 +1,440 @@
+{
+ "registry": "svrnty claim registry",
+ "version": "1.0",
+ "owner": "hypatia (content); athena reads, never edits",
+ "generated": "2026-10-24T15:35Z",
+ "grounded_at": {
+  "svrnty_main": "aca4d4f",
+  "claim_gates": "src/lib/claim-gates.ts"
+ },
+ "how_to_read": {
+  "kind": {
+   "never": "over-claim at ANY scope; no gate or hedge rescues it; the scanner fails on any match",
+   "gated": "allowed ONLY when the named claim-gates.ts function returns true; otherwise the hedge copy must be used",
+   "test_gated": "no runtime flag; allowed only when the listed test anchors exist AND pass (CI), else hedge",
+   "allowed": "honest now; listed so the scanner does not flag it (negative control)"
+  },
+  "detector": "name of an existing function exported by pq_overclaim.cjs (port it, don't duplicate)",
+  "patterns": "case-insensitive JS regex sources, matched against normalized (lowercased, whitespace-collapsed) copy",
+  "examples": "over = must be flagged, ok = must NOT be flagged; validate_registry.cjs enforces both",
+  "gate_value_at_sha": "value returned on svrnty main at grounded_at; a flipper updates claim-gates.test.ts AND this field"
+ },
+ "claims": [
+  {
+   "id": "NV-1",
+   "kind": "never",
+   "claim": "Absolute invulnerability: quantum-proof / quantum-safe / PQ-secure / unbreakable / unhackable / 100% secure / can't be hacked",
+   "detector": "invulnerabilityOverclaim",
+   "honest": "post-quantum (hybrid) encryption (only after S15 + Flint live co-verify); quantum-resistant; hard to break",
+   "source": [
+    "Flint #127688",
+    "lane:svrnty #24/#29/#33 (quantum-safe/PQ-secure added Oct-24, supersedes #127684)"
+   ],
+   "examples": {
+    "over": [
+     "svrnty is quantum-safe",
+     "PQ-secure messaging",
+     "your messages are quantum-proof",
+     "unbreakable encryption"
+    ],
+    "ok": [
+     "post-quantum (hybrid) encryption",
+     "quantum-resistant signing"
+    ]
+   }
+  },
+  {
+   "id": "NV-2",
+   "kind": "never",
+   "claim": "Totalizing PQ: fully / everything / all traffic post-quantum (PSI wire carve-out aside)",
+   "detector": "pqAbsoluteOverclaim",
+   "honest": "name the scope: which surfaces are hybrid",
+   "source": [
+    "Flint #127640",
+    "Peter #127616"
+   ],
+   "examples": {
+    "over": [
+     "svrnty is fully post-quantum",
+     "every byte is post-quantum encrypted"
+    ],
+    "ok": [
+     "post-quantum-ready identity"
+    ]
+   }
+  },
+  {
+   "id": "NV-3",
+   "kind": "never",
+   "claim": "Encrypt-only notes are anonymous / unattributable / untraceable",
+   "patterns": [
+    "\\b(?:anonymous|unattributable|untraceable)\\b"
+   ],
+   "scope_hint": "encrypt tab / notes copy",
+   "honest": "\"The recipient won't be able to verify this came from you.\" (deniable, not anonymous)",
+   "source": [
+    "DAG S48",
+    "Flint #178655"
+   ],
+   "examples": {
+    "over": [
+     "send an anonymous note",
+     "untraceable messages"
+    ],
+    "ok": [
+     "the recipient won't be able to verify this came from you"
+    ]
+   }
+  },
+  {
+   "id": "NV-4",
+   "kind": "never",
+   "claim": "Portal login is phishing-proof / unphishable",
+   "patterns": [
+    "\\b(?:phishing.?proof|unphishable|phish.?proof)\\b"
+   ],
+   "honest": "name the limit: only scan QR codes you see on your own screen",
+   "source": [
+    "DAG S50",
+    "Flint portal spec §4 (QR-hijacking honest limit)"
+   ],
+   "examples": {
+    "over": [
+     "phishing-proof login",
+     "unphishable sign-in"
+    ],
+    "ok": [
+     "scan the QR code on your own screen"
+    ]
+   }
+  },
+  {
+   "id": "NV-5",
+   "kind": "never",
+   "claim": "Deletion is forensic / secure erase / gone everywhere / unrecoverable / deleted from the other person or relay",
+   "patterns": [
+    "\\bsecure(?:ly)?.?eras",
+    "\\bforensic",
+    "\\bdelete[sd]?\\b.{0,20}\\b(?:everywhere|for everyone|from (?:their|the other)|from the (?:relay|server))",
+    "\\bunrecoverabl",
+    "\\bgone forever\\b"
+   ],
+   "honest": "\"removes these messages from this device\" (only when S44 anchors pass, see TG-3)",
+   "source": [
+    "DAG S44 claim-gate",
+    "contract 616 v0.5"
+   ],
+   "examples": {
+    "over": [
+     "securely erase your messages",
+     "deleted for everyone",
+     "messages are unrecoverable",
+     "deleted from the relay"
+    ],
+    "ok": [
+     "removes these messages from this device"
+    ]
+   }
+  },
+  {
+   "id": "NV-6",
+   "kind": "never",
+   "claim": "Distress is undetectable / deniable",
+   "patterns": [
+    "\\b(?:undetectable|invisible|deniable)\\b.{0,30}\\bdistress\\b",
+    "\\bdistress\\b.{0,30}\\b(?:undetectable|can'?t be (?:seen|detected)|deniable)\\b"
+   ],
+   "honest": "no claim until Flint's traffic-analysis verify (never done) + S51 D3",
+   "source": [
+    "DAG S51 / C9",
+    "Flint #644 D1-D4"
+   ],
+   "examples": {
+    "over": [
+     "undetectable distress signal",
+     "the distress signal can't be detected"
+    ],
+    "ok": [
+     "send a distress signal to your guardians"
+    ]
+   }
+  },
+  {
+   "id": "NV-7",
+   "kind": "never",
+   "claim": "Relay/server metadata privacy beyond what's true (\"the relay can't see who you talk to\", \"no metadata\")",
+   "detector": "relayMetadataPrivacyOverclaim",
+   "honest": "content-blind, not metadata-blind (I-B)",
+   "source": [
+    "I-B",
+    "pq_overclaim.cjs"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "G-1",
+   "kind": "gated",
+   "gate": "isPQEncapLive",
+   "gate_value_at_sha": false,
+   "claim": "Post-quantum encrypted messages / notes",
+   "patterns": [
+    "\\bpost.?quantum\\b.{0,25}\\b(?:messages?|notes?|chats?|messaging)\\b",
+    "\\bpq\\b.{0,10}\\b(?:messages?|notes?)\\b"
+   ],
+   "hedge": "(say nothing about PQ messaging until S15 flips; \"post-quantum-ready\" is honest only for identity key material)",
+   "flips_with": "S15 (+ S14), Flint live co-verify; Nov-5 gate (Peter #179080)",
+   "source": [
+    "DAG S14/S15",
+    "Oct-17 PQ-COPY"
+   ],
+   "examples": {
+    "over": [
+     "post-quantum messages",
+     "PQ notes"
+    ],
+    "ok": [
+     "post-quantum-ready identity"
+    ]
+   }
+  },
+  {
+   "id": "G-2",
+   "kind": "gated",
+   "gate": "isPQSignLive",
+   "gate_value_at_sha": false,
+   "claim": "Post-quantum signatures VERIFIED / quantum-safe identity (verify-side)",
+   "detector": "pqBadgeOverclaim",
+   "hedge": "\"signed with a post-quantum key\" (identity docs: true now, see A-2)",
+   "flips_with": "S18 verify enforcement (NOT on the Nov-5 path, Peter #179162)",
+   "source": [
+    "DAG S18",
+    "KB#93449"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "G-3",
+   "kind": "gated",
+   "gate": "isPQWireLive",
+   "gate_value_at_sha": true,
+   "claim": "PQ-blinded mutual DISCOVERY (the PSI transport wire is hybrid)",
+   "patterns": [
+    "\\bpost.?quantum\\b.{0,30}\\b(?:discovery|mutual)",
+    "\\bpq.?blinded\\b"
+   ],
+   "hedge": "n/a while true; NEVER use this gate for messaging PQ (conflation trap, #572)",
+   "scope": "dev; PROD separately gated",
+   "source": [
+    "claim-gates.ts isPQWireLive comment"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   },
+   "claim_rule": "Same as G-4: derives from isPSIDiscoveryLive, so no PROD 'PQ-blinded discovery' claim until G-4's conditions hold."
+  },
+  {
+   "id": "G-4",
+   "kind": "gated",
+   "gate": "isPSIDiscoveryLive",
+   "gate_value_at_sha": true,
+   "claim": "Find your mutual contacts (KNOW-layer trust map)",
+   "hedge": "(dev only; PROD separately gated)",
+   "scope": "dev (flip 2026-10-04); block = DIRECT only",
+   "conflict": "RULED (Flint lane:svrnty #41, Archie #39): hard-coded `return true` since ce8420b (Athena, 2026-10-04, one-branch era) → ON for ANYTHING built from main (prod, self-hosters). Prod commit UNKNOWN (svrnty.is/api/version reports \"unknown\"). Flint did NOT give a PROD/self-host go. Fix: env flag NEXT_PUBLIC_PSI_DISCOVERY_LIVE, default OFF on main, true in the dev build (PR to dev → main); prod-on = Peter's call. When it lands, set gate_value_at_sha to \"env\" (the validator enforces it).",
+   "source": [
+    "claim-gates.ts",
+    "DAG S29/C1"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   },
+   "claim_rule": "NO prod or self-host discovery claim until (a) the env flag lands, (b) Peter decides prod, (c) prod reports its real commit."
+  },
+  {
+   "id": "G-5",
+   "kind": "gated",
+   "gate": "isPiece2MutualBlockLive",
+   "gate_value_at_sha": false,
+   "claim": "Block stops newly surfacing you, including through mutual friends",
+   "patterns": [
+    "\\b(?:including |even )?through mutual (?:friends|contacts)\\b",
+    "\\bfully blocked\\b"
+   ],
+   "hedge": "\"blocked directly\"",
+   "source": [
+    "claim-gates.ts",
+    "DAG S30"
+   ],
+   "examples": {
+    "over": [
+     "fully blocked",
+     "stops surfacing you through mutual friends"
+    ],
+    "ok": [
+     "blocked directly"
+    ]
+   }
+  },
+  {
+   "id": "G-6",
+   "kind": "gated",
+   "gate": "isMutualTrustWireLive",
+   "gate_value_at_sha": false,
+   "claim": "Mutual trust is confirmed / reciprocal flip live",
+   "hedge": "(honest pre-wire copy)",
+   "source": [
+    "claim-gates.ts",
+    "DAG S22-S25"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "G-7",
+   "kind": "gated",
+   "gate": "isRelayMigrateLive",
+   "gate_value_at_sha": false,
+   "claim": "Move to another relay / your contacts follow you",
+   "hedge": "(no migrate claim)",
+   "source": [
+    "claim-gates.ts",
+    "DAG S43"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "G-8",
+   "kind": "gated",
+   "gate": "isBiometricSeamLive",
+   "gate_value_at_sha": false,
+   "claim": "Unlock with your fingerprint / face",
+   "hedge": "(no biometric claim)",
+   "source": [
+    "biometric-seam.ts",
+    "DAG S39 (#268)"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "TG-1",
+   "kind": "test_gated",
+   "claim": "Delivered / received (sender-visible delivery)",
+   "detector": "deliveredOverclaim",
+   "requires": [
+    "recipient-signed receipt e2e (S06/S07)"
+   ],
+   "source": [
+    "DAG S06/S07"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "TG-2",
+   "kind": "test_gated",
+   "claim": "Log in to the portal by scanning a QR; camera image never leaves your phone; secure session",
+   "requires": [
+    "Flint portal spec §6 tests (all)",
+    "network assertion: no image egress",
+    "passkey + Cloudflare tunnel BOTH live for \"secure session\" (Peter #179080 Q1)"
+   ],
+   "patterns": [
+    "\\bsecure session\\b",
+    "\\b(?:camera|image|photo)\\b.{0,30}\\bnever leaves\\b"
+   ],
+   "source": [
+    "DAG S50"
+   ],
+   "examples": {
+    "over": [
+     "secure session",
+     "your camera image never leaves your phone"
+    ],
+    "ok": [
+     "scan to log in"
+    ]
+   }
+  },
+  {
+   "id": "TG-3",
+   "kind": "test_gated",
+   "claim": "Delete / Empty bin / Delete permanently removes these messages from this device",
+   "requires": [
+    "store.archive.test.ts :: \"multi-delete is all-or-nothing on mid-tx failure\" (I4)",
+    "store.delete.test.ts :: \"delete makes no network call\" (I5)",
+    "e2e/message-management.spec.ts :: \"delete requires confirm, default cancel\" (I9, BEHAVIORAL Playwright)",
+    "store.bin.test.ts :: \"empty bin is all-or-nothing\" (I12)"
+   ],
+   "status_note": "#269 @3916e85: I9 is regex-over-JSX (not behavioral) → NOT satisfied (KB#93455)",
+   "source": [
+    "DAG S44",
+    "contract 616 v0.5"
+   ],
+   "examples": {
+    "over": [],
+    "ok": []
+   }
+  },
+  {
+   "id": "A-1",
+   "kind": "allowed",
+   "claim": "Smaller encrypt-only messages (no number until measured)",
+   "source": [
+    "DAG S48"
+   ],
+   "examples": {
+    "over": [],
+    "ok": [
+     "encrypt only (no signature, smaller)"
+    ]
+   }
+  },
+  {
+   "id": "A-2",
+   "kind": "allowed",
+   "claim": "Your identity is signed with a post-quantum key (DID-doc + rotation authority sign Ed25519+ML-DSA-87 on main)",
+   "grounding": "did-peer.ts:318, fingerprint.ts:466 @aca4d4f",
+   "source": [
+    "KB#93449"
+   ],
+   "examples": {
+    "over": [],
+    "ok": [
+     "signed with a post-quantum key"
+    ]
+   }
+  },
+  {
+   "id": "A-3",
+   "kind": "allowed",
+   "claim": "Skipped send for a contact without a PQ key: \"Not sent. Saved on this device. <name> needs to share an updated contact card (security upgrade).\"",
+   "source": [
+    "lane:svrnty #21/#24/#33"
+   ],
+   "examples": {
+    "over": [],
+    "ok": [
+     "not sent. saved on this device. alex needs to share an updated contact card (security upgrade)."
+    ]
+   }
+  }
+ ]
+}
