@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as realGates from '../src/lib/claim-gates';
 import {
-  loadRegistry, compileRegistry, compileClaim, scanText, parseAnnotation, checkRequires, ConfigError,
+  loadRegistry, compileRegistry, compileClaim, scanText, parseAnnotation, checkRequires, ConfigError, escapeRegExp,
   type AnchorIndex, type CompiledClaim, type EvalContext, type RegistryClaim,
 } from './claim-sweep-lib';
 
@@ -287,5 +287,17 @@ describe('gated-row annotations (Flint lane:svrnty #195, Hypatia #277): name the
     const r = scan('// claim-sweep:ok gated-by=isPQEncapLive: true-branch\nmutual trust confirmed', ALL_FALSE);
     assert.deepEqual(ids(r), ['G-6']);
     assert.match(r.violations[0].reason, /does not name this row's gate/);
+  });
+});
+
+describe('runner: a gate name is matched literally in an annotation reason (Flint #217)', () => {
+  it('escapes regex metacharacters', () => {
+    assert.equal(escapeRegExp('a.b*c'), 'a\\.b\\*c');
+    const re = new RegExp(`\\b${escapeRegExp('is.Live')}\\b`);
+    assert.ok(re.test('dead copy: is.Live is false'));
+    assert.ok(!re.test('dead copy: isXLive is false'));   // unescaped '.' would match this
+  });
+  it('a plain identifier is unchanged', () => {
+    assert.equal(escapeRegExp('isMutualTrustWireLive'), 'isMutualTrustWireLive');
   });
 });
