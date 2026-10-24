@@ -96,36 +96,52 @@ test('2. OP-5 de-anon-as-B: A\'s lone deposit is undetectable to B', () => {
   assert.deepEqual(matcher.poll(B1.dep.tag), [], 'B cannot detect A\'s lone deposit (no-peek)');
 });
 
-test('3. probe-oracle + garbage share: match-event symmetric, but NO false bond', () => {
+test('3a. R6 (Flint §11, GAP-1): a B holding a GARBAGE share learns NOTHING about whether A deposited — B\'s whole view is identical in both worlds', () => {
+  // RED on 3c30ccd BY DESIGN. The old test 3 asserted "match fires + A's mailbox gets B's share" as ACCEPTABLE; that blessed the leak
+  // (B receives A's genuine share while committing nothing). This states the actual requirement as an indistinguishability game:
+  // everything B can observe (the deposit response and its own mailbox) must be the same whether or not A has deposited.
+  const dir = Array.from({ length: 6 }, mintIdentity);
+  const ring = dir.map((d) => d.pubkey);
+  const A = dir[2];
+  const B = dir[5];
+  const epoch = 2960;
+  const sB = deriveSharedSecret(B.sk, A.pk);
+  const slot = slotId(sB, epoch);
+  const garbage = beaconPubkey(identityScalar(ed25519.utils.randomSecretKey())).toHex(); // not b·H: B commits no genuine trust
+
+  const bView = (aDeposited: boolean) => {
+    const matcher = new BeaconMatcher(ring);
+    if (aDeposited) {
+      const A1 = genuineDeposit(ring, A, 2, B, epoch);
+      matcher.deposit(A1.slot, A1.dep);
+    }
+    const lrsB = ringSign(ring, 5, B.scalar, slot, BEACON_MSG); // valid enrolled-member signature
+    const res = matcher.deposit(slot, { tag: lrsB.tag, share: garbage, lrs: lrsB });
+    return { res, mailbox: matcher.poll(lrsB.tag), confirms: matcher.pollConfirm(lrsB.tag) };
+  };
+  assert.deepEqual(bView(false), bView(false), 'control: B\'s view is deterministic within one world, so a difference below is caused by A\'s deposit, not noise');
+  assert.deepEqual(bView(true), bView(false), 'B must not be able to tell "A deposited" from "A did not" by depositing a garbage share');
+});
+
+test('3b. a garbage share never produces a bond (no false mutual), whatever else is delivered', () => {
   const dir = Array.from({ length: 6 }, mintIdentity);
   const ring = dir.map((d) => d.pubkey);
   const A = dir[2];
   const B = dir[5];
   const epoch = 2960;
   const matcher = new BeaconMatcher(ring);
-
-  // A genuinely deposits.
   const A1 = genuineDeposit(ring, A, 2, B, epoch);
   matcher.deposit(A1.slot, A1.dep);
-
-  // B PROBES: valid LRS membership, but a GARBAGE DH-PSI share (not b·H).
   const sB = deriveSharedSecret(B.sk, A.pk);
   const slot = slotId(sB, epoch);
-  const garbage = beaconPubkey(identityScalar(ed25519.utils.randomSecretKey())).toHex(); // random point
+  const garbage = beaconPubkey(identityScalar(ed25519.utils.randomSecretKey())).toHex();
   const lrsB = ringSign(ring, 5, B.scalar, slot, BEACON_MSG);
-  const rB = matcher.deposit(slot, { tag: lrsB.tag, share: garbage, lrs: lrsB });
-  assert.ok(rB.matched, 'match EVENT fires (B cannot deposit invisibly)');
-
-  // Symmetric: A learned the event too (A's mailbox got B's (garbage) share).
-  assert.equal(matcher.poll(A1.dep.tag).length, 1, 'A simultaneously learned B deposited (symmetric)');
-
-  // But the consistent-M bond gate REJECTS: A's M (from garbage) ≠ B's M (from A's real share).
-  const H = bondBase(sB, epoch);
-  const D_A = P.fromHex(matcher.poll(lrsB.tag)[0]);
-  const M_B = bondToken(D_A, B.scalar); // B's bond from A's genuine share
-  const M_A = bondToken(P.fromHex(garbage), A.scalar); // A's bond from B's garbage share
-  assert.ok(!bondsMatch(M_A, M_B), 'garbage share ⇒ inconsistent M ⇒ NO false bond');
-  void H;
+  matcher.deposit(slot, { tag: lrsB.tag, share: garbage, lrs: lrsB });
+  const toA = matcher.poll(A1.dep.tag);
+  const toB = matcher.poll(lrsB.tag);
+  // a bond can light only if BOTH sides hold a counterpart share and their M agree; a garbage share must never make them agree
+  const lit = toA.length > 0 && toB.length > 0 && bondsMatch(bondToken(P.fromHex(toA[0]), A.scalar), bondToken(P.fromHex(toB[0]), B.scalar));
+  assert.equal(lit, false, 'garbage share => inconsistent M => no bond');
 });
 
 test('4. PO-2 sybil: self-match yields a bond with SELF only, never a forged bond with B', () => {
