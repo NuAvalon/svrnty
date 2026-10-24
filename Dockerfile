@@ -16,6 +16,11 @@ ARG NEXT_PUBLIC_SVRNTY_DOMAIN=svrnty.is
 ARG NEXT_PUBLIC_SVRNTY_BASE_URL=
 ENV NEXT_PUBLIC_SVRNTY_DOMAIN=${NEXT_PUBLIC_SVRNTY_DOMAIN}
 ENV NEXT_PUBLIC_SVRNTY_BASE_URL=${NEXT_PUBLIC_SVRNTY_BASE_URL}
+# Biometric device-unlock seam: default OFF (honest "coming soon"). A build passes 'true' ONLY
+# after Flint crypto co-verify + Athena real-device test (e.g. the dev-test build). Unset /
+# anything but 'true' → isBiometricSeamLive() is false, so prod stays honest even post-merge.
+ARG NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE=
+ENV NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE=${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE}
 # Build provenance (git commit / branch / build time). Unlike the NEXT_PUBLIC_* vars
 # above, these are NOT inlined into the bundle — /api/version reads them from
 # process.env at runtime (that route is force-dynamic). NuAvalon/svrnty is a PUBLIC
