@@ -88,11 +88,12 @@ export function openTasksNotice(peerFp: string, items: { note_id: string; channe
 
 /** One notice for a peer's notes that never decrypted (tombstoned after MAX_ATTEMPTS). Without it a dead
  *  note is only a `dead` counter on stdout: nobody is told (Archie #180230, the #637 silent-loss class).
- *  Same set-hash dedup as openTasksNotice. Body-less: no ciphertext, no sender text, only count + window. */
-export function deadNotesNotice(peerFp: string, items: { note_id: string; sent_at: string }[]):
+ *  Called with only the NEWLY dead notes (the caller marks announced ones), so a later death never
+ *  re-counts old ones (Archie #180425). Same set-hash dedup as openTasksNotice. Body-less: no ciphertext, no sender text, only count + window. */
+export function deadNotesNotice(peerFp: string, items: { note_id: string; sent_at: string }[], maxAttempts: number):
     { note_id: string; text: string } {
   const ids = items.map((i) => i.note_id).sort();
   const note_id = 'dead-notes:' + createHash('sha256').update(ids.join('\n')).digest('hex').slice(0, 24);
   const times = items.map((i) => tok(i.sent_at)).sort();
-  return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be decrypted after 5 tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to resend` };
+  return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be decrypted after ${maxAttempts} tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to resend` };
 }

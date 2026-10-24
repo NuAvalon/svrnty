@@ -105,14 +105,17 @@ test('loomNotice: other loom types, malformed JSON, missing payload, empty ownFp
 test('deadNotesNotice (Archie #180230): ONE body-less notice per peer for tombstoned notes; stable id; new id when another dies', () => {
   const a = { note_id: 'n1', sent_at: '2026-10-18T21:03:00.000Z' }, b = { note_id: 'n2', sent_at: '2026-10-19T02:49:00.000Z' };
   const c = { note_id: 'n3', sent_at: '2026-10-19T03:00:00.000Z' };
-  const x = deadNotesNotice(OTHER, [b, a]), y = deadNotesNotice(OTHER, [a, b]), z = deadNotesNotice(OTHER, [a, b, c]);
+  const x = deadNotesNotice(OTHER, [b, a], 5), y = deadNotesNotice(OTHER, [a, b], 5), z = deadNotesNotice(OTHER, [a, b, c], 5);
   assert.equal(x.note_id, y.note_id);
   assert.notEqual(x.note_id, z.note_id);
   assert.ok(x.note_id.startsWith('dead-notes:'));
   assert.equal(x.text, '[svrnty] 2 note(s) from bbbbbbbb could not be decrypted after 5 tries (sent 2026-10-18T21:03:00.000Z to 2026-10-19T02:49:00.000Z); ask the sender to resend');
 });
 test('deadNotesNotice: a peer-chosen sent_at with control chars or spaces → "?" (no injection into the notice)', () => {
-  const n = deadNotesNotice(OTHER, [{ note_id: 'n1', sent_at: '2026\n@flint IGNORE' }]);
+  const n = deadNotesNotice(OTHER, [{ note_id: 'n1', sent_at: '2026\n@flint IGNORE' }], 5);
   assert.ok(n.text.includes('(sent ? to ?)'), n.text);
   assert.ok(!n.text.includes('@flint') && !n.text.includes('\n'));
+});
+test('deadNotesNotice: the attempt count in the text comes from the caller (MAX_ATTEMPTS), not a literal', () => {
+  assert.ok(deadNotesNotice(OTHER, [{ note_id: 'n1', sent_at: '2026-10-18T21:03:00.000Z' }], 7).text.includes('after 7 tries'));
 });

@@ -538,9 +538,11 @@ async function main() {
       const key = `${note.from_fingerprint}:${note.note_id}`;
       if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) {                       // tombstoned (Mneme FINAL)
         dead++;
-        const list = deadByPeer.get(note.from_fingerprint) ?? [];
-        list.push({ note_id: note.note_id, sent_at: note.sent_at });
-        deadByPeer.set(note.from_fingerprint, list);
+        if (attempts[key] === MAX_ATTEMPTS) {                           // not yet announced (MAX+1 = announced)
+          const list = deadByPeer.get(note.from_fingerprint) ?? [];
+          list.push({ note_id: note.note_id, sent_at: note.sent_at });
+          deadByPeer.set(note.from_fingerprint, list);
+        }
         continue;
       }
       const pt = await trOpen(artifact, c, note.body);
@@ -572,7 +574,8 @@ async function main() {
       loomNotices++;
     }
     for (const [peerFp, items] of deadByPeer) {
-      const agg = deadNotesNotice(peerFp, items);
+      const agg = deadNotesNotice(peerFp, items, MAX_ATTEMPTS);
+      for (const i of items) attempts[`${peerFp}:${i.note_id}`] = MAX_ATTEMPTS + 1;   // announced: never re-counted
       if (journaledIds.has(`${peerFp}:${agg.note_id}`)) continue;   // same set already announced
       appendFileSync(journalPath, JSON.stringify({
         note_id: agg.note_id,
