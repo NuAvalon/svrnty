@@ -79,6 +79,14 @@ test('buildJoinerResponseDeposit: addresses the giver mailbox and round-trips th
 // ── The response is bound to THIS giver — a different giver’s verify rejects it (no cross-giver replay) ──
 test('buildJoinerResponseDeposit: the blob is giver-bound (a wrong-fp verify rejects it)', async () => {
   const deposit = await buildJoinerResponseDeposit(bobSender(), aliceTarget());
+  // Positive control: the SAME blob verifies for its real giver. Without it this test is vacuous — if the
+  // joiner were refused earlier (fingerprint binding, decrypt) Eve's null would pass for the wrong reason.
+  const forAlice = await verifyJoinerResponse(
+    deposit!.blob,
+    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass },
+    () => true,
+  );
+  assert.ok(forAlice, 'control: the blob verifies for its real giver, so a null for Eve is attributable to giver-binding');
   // A different owner (fresh key) polling with the SAME code oracle must NOT accept Alice’s response —
   // it can’t even decrypt it (encrypted to Alice), and giver_fingerprint is signed to Alice.
   const { privateKeyArmored: evePriv, fingerprint: eveFp } = await makeCanonicalSender('Eve', pass);
