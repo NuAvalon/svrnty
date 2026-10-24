@@ -64,7 +64,8 @@ async function stripKemLeg(page: Page, contactFp: string) {
   }, contactFp);
 }
 
-const { defaultBrowserType: _ignoredBrowserType, ...pixel7Mobile } = devices['Pixel 7'];
+const pixel7Mobile: Record<string, unknown> = { ...devices['Pixel 7'] };
+delete pixel7Mobile.defaultBrowserType; // a describe-level use() may not switch the browser engine
 const MATRIX: Array<{ label: string; use: Record<string, unknown> }> = [
   { label: 'desktop-chromium', use: { viewport: { width: 1280, height: 800 } } },
   { label: 'mobile-chromium (Pixel 7)', use: pixel7Mobile },

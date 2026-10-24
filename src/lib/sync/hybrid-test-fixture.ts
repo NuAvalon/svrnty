@@ -21,7 +21,7 @@ export interface HybridRecipient {
 
 export async function mintHybridRecipient(): Promise<HybridRecipient> {
   const a = await mintHeadlessAgent({ throwaway: true });
-  const id: any = a.introduction.card.identity;
+  const id = a.introduction.card.identity as unknown as { fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
   const privateKeyArmored = a.secret_material.classicalPrivateKey;
   const passphrase = a.secret_material.classicalKpass;
   const pqKemPublicKey: string = id.pq_kem_public_key;

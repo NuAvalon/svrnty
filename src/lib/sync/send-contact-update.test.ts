@@ -15,9 +15,6 @@ import { mintHybridRecipient, openerFor, type HybridRecipient } from './hybrid-t
 import { verifyIncomingContactUpdate, type KnownContactIdentity } from '../trust/contact-update';
 import { deriveMailboxId } from '../relay/mailbox-auth';
 
-const ownerPass = 'owner-pass-0';
-const bobPass = 'bob-pass-1';
-const carolPass = 'carol-pass-2';
 
 let owner: ContactUpdateOwner;
 let bob: ContactUpdateRecipient, bobId: HybridRecipient;
