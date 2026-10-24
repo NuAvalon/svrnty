@@ -7,8 +7,9 @@
  *
  * Glass NEVER computes PSI. It only draws a chord when both edges already
  * carry fleet-filled (or demo stand-in) fields AND the local open-visibility
- * predicate holds. `isPSIDiscoveryLive()` stays false — this module does not
- * start know-layer sync. Co-membership of an owner tag is not a bond.
+ * predicate holds. This module does not start know-layer sync (that is
+ * ContactManagement -> startKnowLayerSync, gated on `isPSIDiscoveryLive()`).
+ * Co-membership of an owner tag is not a bond.
  * `metadata.mutual_contacts` (card-exchange leftover) is NOT disclosed_circle.
  *
  * CONSENT (#255, two-tier): owner visibility toward a peer is a per-person
