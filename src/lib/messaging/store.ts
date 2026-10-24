@@ -39,7 +39,11 @@ function fromBase64(b64: string): Uint8Array {
 }
 
 function openDb(): Promise<IDBDatabase> {
-  if (_db) return Promise.resolve(_db);
+  // The cached handle is only valid for the CURRENT identity's DB —
+  // a caller that inits a different fingerprint without a lock/switch
+  // must not read the previous identity's store through it.
+  if (_db && _db.name === _notesDbName) return Promise.resolve(_db);
+  if (_db) { _db.close(); _db = null; }
   const dbName = _notesDbName;
   if (!dbName) {
     return Promise.reject(
@@ -294,6 +298,13 @@ function _tx<T>(stores: string[], mode: IDBTransactionMode,
     (db) =>
       new Promise<T>((resolve, reject) => {
         const tx = db.transaction(stores, mode);
+        // An abort/error that never reaches a request's onerror (exception
+        // inside a handler, quota, external abort) must still settle —
+        // else the caller hangs forever holding a dead tx.
+        tx.onabort = () =>
+          reject(tx.error ?? new Error(`${stores.join('+')} tx aborted`));
+        tx.onerror = () =>
+          reject(tx.error ?? new Error(`${stores.join('+')} tx error`));
         Promise.resolve(fn(tx)).then(resolve, (e) => {
           try { tx.abort(); } catch {}
           reject(e);
@@ -331,12 +342,14 @@ async function _moveOpaque(ids: string[], from: string, to: string) {
 }
 
 export async function archiveNotes(ids: string[], _rows?: NoteRow_[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   // rows arg is for callers that already hold the rows (UI); the store
   // path reads them itself — either way the move is one tx.
   return _moveOpaque(ids, 'notes', 'archive');
 }
 
 export async function unarchiveNotes(ids: string[]): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   const back: NoteRow_[] = [];
   await _tx(['archive', 'notes'], 'readwrite', (tx) => {
     const src = tx.objectStore('archive');
@@ -366,14 +379,17 @@ export async function unarchiveNotes(ids: string[]): Promise<NoteRow_[]> {
 }
 
 export async function deleteNotesAtomic(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   return _moveOpaque(ids, 'notes', 'recently_deleted');
 }
 
 export async function restoreFromBin(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   return _moveOpaque(ids, 'recently_deleted', 'notes');
 }
 
 export async function deletePermanently(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   return _tx(['recently_deleted'], 'readwrite', (tx) => {
     const s = tx.objectStore('recently_deleted');
     return Promise.all(
@@ -390,6 +406,7 @@ export async function deletePermanently(ids: string[]) {
 }
 
 export async function emptyBin() {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   return _tx(['recently_deleted'], 'readwrite', (tx) =>
     new Promise<void>((res, rej) => {
       const c = tx.objectStore('recently_deleted').clear();
@@ -400,10 +417,12 @@ export async function emptyBin() {
 }
 
 export async function listArchived(): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   return txGetAll<NoteRow_>('archive');
 }
 
 export async function listBin(): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
   return txGetAll<NoteRow_>('recently_deleted');
 }
 

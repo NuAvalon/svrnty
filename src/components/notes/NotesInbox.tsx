@@ -522,7 +522,46 @@ export function NotesInbox({ identity }: Props) {
         </div>
 
         <div data-testid="notes-timeline" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '36vh', overflowY: 'auto' }}>
-          {notes.map((n) => {
+          {view !== 'live' ? (view === 'archived' ? archRows : binRows).map((r) => {
+            const checked = selectedIds.has(r.note_id);
+            return (
+              <article
+                key={r.note_id}
+                data-testid={`notes-${view === 'archived' ? 'archrow' : 'binrow'}-${r.note_id}`}
+                style={{
+                  alignSelf: 'flex-start',
+                  maxWidth: '88%',
+                  padding: '10px 12px',
+                  borderRadius: 14,
+                  border: `1px solid ${E.border}`,
+                  background: 'rgba(30,20,10,.45)',
+                  outline: manageMode && checked ? `1px solid ${E.accent}` : undefined,
+                }}
+              >
+                {manageMode ? (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: E.muted, marginBottom: 4 }}>
+                    <input
+                      type="checkbox"
+                      data-testid={`notes-check-${r.note_id}`}
+                      checked={checked}
+                      onChange={() =>
+                        setSelectedIds((s) => {
+                          const next = new Set(s);
+                          if (next.has(r.note_id)) next.delete(r.note_id);
+                          else next.add(r.note_id);
+                          return next;
+                        })
+                      }
+                    />
+                    select
+                  </label>
+                ) : null}
+                <p style={{ margin: 0, fontSize: 13, color: E.muted }}>
+                  {view === 'archived' ? 'Encrypted note — unarchive to read' : 'Encrypted note — restore to read'}
+                </p>
+              </article>
+            );
+          }) : notes.map((n) => {
             const outbound = n.direction === 'outbound';
             const label = statusLabel(bubbleStatus(n));
             const checked = selectedIds.has(n.note_id);
