@@ -53,8 +53,43 @@ export function formatNotSent(peerFingerprint: string, reason: string): string {
 }
 
 /** One bounded line from a thrown send error (e.g. undici's `fetch failed`), so it can sit inside a
- *  NOT SENT line without a newline or an unbounded message breaking the one-line contract. */
+ *  NOT SENT line without a newline or an unbounded message breaking the one-line contract. Every control
+ *  byte (ESC, BEL, NUL, DEL, CR/LF...) becomes a space first: a thrown message may carry relay-supplied
+ *  text, and an escape sequence must not ride stderr into a poller or a terminal pane (Flint #478). */
 export function errorLine(e: unknown): string {
   const m = e instanceof Error ? e.message : String(e);
-  return m.replace(/\s+/g, ' ').trim().slice(0, 120) || 'unknown error';
+  return m.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) || 'unknown error';
+}
+
+/** Where a thrown send stopped. sendNoteFromHeadless signs + seals, POSTs, THEN writes the local copy, so
+ *  a throw means different things at each point: only the first three mean "nothing was delivered". */
+export type SendStage = 'before-post' | 'unreachable' | 'refused' | 'deposited';
+
+/** Wrap fetch so a caller can tell, after a throw, how far the send got. 'deposited' = the relay answered 2xx
+ *  (the note IS in the mailbox, whatever threw afterwards); 'refused' = it answered non-2xx; 'unreachable' =
+ *  the request itself threw; 'before-post' = no request was ever made (sign/seal threw first). */
+export function trackedFetch(base: typeof fetch): { fetchImpl: typeof fetch; stage: () => SendStage } {
+  let stage: SendStage = 'before-post';
+  const fetchImpl = (async (...a: Parameters<typeof fetch>) => {
+    stage = 'unreachable';
+    const res = await base(...a);
+    stage = res.ok ? 'deposited' : 'refused';
+    return res;
+  }) as typeof fetch;
+  return { fetchImpl, stage: () => stage };
+}
+
+/** The ONE stderr line for a send that THREW, worded by what actually happened. Never claims NOT SENT for
+ *  a note the relay accepted. `ratchetIndexSpent` is for send-tr (the chain advanced before the call). */
+export function sendThrowLine(peerFingerprint: string, e: unknown, stage: SendStage, ratchetIndexSpent = false): string {
+  const msg = errorLine(e);
+  const spent = ratchetIndexSpent ? '; this ratchet index is spent' : '';
+  if (stage === 'deposited') {
+    const hex = (peerFingerprint.match(/^[0-9a-fA-F]+/)?.[0] ?? '').slice(0, 8).toLowerCase() || '?';
+    return `DEPOSITED to ${hex}, but saving the local copy failed (${msg}); do NOT resend`;
+  }
+  const why = stage === 'unreachable' ? 'the relay could not be reached'
+    : stage === 'refused' ? 'the relay did not accept the deposit, and saving the local copy failed'
+    : 'the send failed before reaching the relay';
+  return formatNotSent(peerFingerprint, `${why} (${msg})${spent}`);
 }

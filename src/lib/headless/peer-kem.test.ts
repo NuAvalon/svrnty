@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mintHeadlessAgent, serializeMintArtifact } from '../identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { resolvePeerKemForSend, formatNotSent, errorLine } from './peer-kem';
+import { resolvePeerKemForSend, formatNotSent, errorLine, trackedFetch, sendThrowLine } from './peer-kem';
 
 type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
 const idOf = (a: Minted) => a.introduction.card.identity as unknown as {
@@ -240,6 +240,11 @@ test('errorLine: one bounded line (newlines collapsed, long messages cut, non-Er
   assert.equal(errorLine(new Error('fetch\nfailed  twice')), 'fetch failed twice');
   assert.equal(errorLine(new Error('x'.repeat(500))).length, 120);
   assert.equal(errorLine('plain'), 'plain');
+  // control bytes never survive (a relay-supplied message must not smuggle an escape sequence to a pane)
+  const evil = errorLine(new Error('bad\x1b[31m red\x07 bell\x00 nul\x7f del\r\nnext'));
+  assert.equal(evil, 'bad [31m red bell nul del next');
+  assert.doesNotMatch(evil, /[\x00-\x1f\x7f]/);
+  assert.doesNotMatch(sendThrowLine('abcdef01', new Error('x\x1b]0;pwned\x07y'), 'unreachable'), /[\x00-\x1f\x7f]/);
   assert.equal(errorLine(new Error('')), 'unknown error');
 });
 
@@ -271,4 +276,76 @@ test('CLI send-tr: relay UNREACHABLE → NOT SENT line that says the ratchet ind
     assert.notEqual(r.code, 0);
     assert.match(r.err, /^NOT SENT to [0-9a-f]{8}: the relay could not be reached \(.+\); this ratchet index is spent$/m);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── a THROW is worded by how far the send got (Hypatia #477): never a false NOT SENT ───────────────
+
+test('trackedFetch: stage follows the request — before-post / unreachable / refused / deposited', async () => {
+  const mk = (impl: () => Promise<{ ok: boolean }>) => trackedFetch((async () => impl()) as unknown as typeof fetch);
+  const never = mk(async () => ({ ok: true }));
+  assert.equal(never.stage(), 'before-post');                                   // no request made (sign/seal threw first)
+  const down = mk(async () => { throw new Error('fetch failed'); });
+  await assert.rejects(() => down.fetchImpl('http://x'));
+  assert.equal(down.stage(), 'unreachable');
+  const refused = mk(async () => ({ ok: false }));
+  await refused.fetchImpl('http://x');
+  assert.equal(refused.stage(), 'refused');
+  const ok = mk(async () => ({ ok: true }));
+  await ok.fetchImpl('http://x');
+  assert.equal(ok.stage(), 'deposited');
+});
+
+test('sendThrowLine: only the stages where nothing was delivered say NOT SENT; a throw AFTER a 2xx says DEPOSITED', () => {
+  const fp = 'abcdef0123456789', e = new Error('boom');
+  assert.match(sendThrowLine(fp, e, 'before-post'), /^NOT SENT to abcdef01: the send failed before reaching the relay \(boom\)$/);
+  assert.match(sendThrowLine(fp, e, 'unreachable'), /^NOT SENT to abcdef01: the relay could not be reached \(boom\)$/);
+  assert.match(sendThrowLine(fp, e, 'refused'), /^NOT SENT to abcdef01: the relay did not accept the deposit, and saving the local copy failed \(boom\)$/);
+  const dep = sendThrowLine(fp, e, 'deposited');
+  assert.match(dep, /^DEPOSITED to abcdef01, but saving the local copy failed \(boom\); do NOT resend$/);
+  assert.doesNotMatch(dep, /NOT SENT/);
+  assert.match(sendThrowLine(fp, e, 'unreachable', true), /; this ratchet index is spent$/);
+  assert.doesNotMatch(sendThrowLine(fp, e, 'unreachable', false), /spent/);
+});
+
+test('CLI send: a throw BEFORE the POST (signing fails) is NOT blamed on the network', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const mintPath = join(dir, 'mint.json');
+  const m = JSON.parse(readFileSync(mintPath, 'utf8'));
+  m.private.classical_kpass = 'not-the-passphrase';           // the key no longer unlocks: signNoteWire throws before any request
+  writeFileSync(mintPath, JSON.stringify(m), { mode: 0o600 });
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.notEqual(r.code, 0);
+      assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the send failed before reaching the relay \(.+\)/);
+      assert.doesNotMatch(r.err, /could not be reached/);
+      assert.equal(deposits.length, 0);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: the relay ACCEPTS the note but saving the local copy then fails → DEPOSITED, never NOT SENT', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const storePath = join(dir, 'store.json');
+  const deposits: string[] = [];
+  // the relay swaps store.json for a DIRECTORY before it answers 200, so the CLI's later atomic save fails
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      deposits.push(req.url ?? '');
+      rmSync(storePath, { force: true }); mkdirSync(storePath);
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.equal(deposits.length, 1, 'the relay did receive the note');
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^DEPOSITED to [0-9a-f]{8}, but saving the local copy failed \(.+\); do NOT resend$/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
 });
