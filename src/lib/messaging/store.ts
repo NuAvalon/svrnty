@@ -6,7 +6,7 @@ import type { NoteRecord, NoteThread, RingChannel } from './types';
 import { onSessionLock } from '@/lib/identity/client-store';
 
 const DB_NAME = 'svrnty-notes';
-const DB_VERSION = 1;
+const DB_VERSION = 2;   // v2 adds 'archive' + 'recently_deleted' (616)
 const PBKDF2_ITERATIONS = 600_000;
 
 let _db: IDBDatabase | null = null;
@@ -42,7 +42,11 @@ function fromBase64(b64: string): Uint8Array {
 }
 
 function openDb(): Promise<IDBDatabase> {
-  if (_db) return Promise.resolve(_db);
+  // The cached handle is only valid for the CURRENT identity's DB —
+  // a caller that inits a different fingerprint without a lock/switch
+  // must not read the previous identity's store through it.
+  if (_db && _db.name === _notesDbName) return Promise.resolve(_db);
+  if (_db) { _db.close(); _db = null; }
   const dbName = _notesDbName;
   if (!dbName) {
     return Promise.reject(
@@ -66,6 +70,17 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      // 616: archive + bin stores — ciphertext rows move opaquely between
+      // them; never decrypted here (crypto line holds). Additive: v1
+      // rows are untouched.
+      if (!db.objectStoreNames.contains('archive')) {
+        const arch = db.createObjectStore('archive', { keyPath: 'note_id' });
+        arch.createIndex('thread_id', 'thread_id', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('recently_deleted')) {
+        const bin = db.createObjectStore('recently_deleted', { keyPath: 'note_id' });
+        bin.createIndex('thread_id', 'thread_id', { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -279,6 +294,147 @@ export async function deleteThread(threadId: string): Promise<void> {
   for (const n of notes) await txDelete('notes', n.note_id);
   await txDelete('threads', threadId);
 }
+
+// ── 616 — archive / bin / atomic multi-ops ──────────────────────────
+// All moves run in ONE IDB transaction spanning every store they touch
+// (I4): a fault midway aborts the whole move — the selection is either
+// fully moved or fully present. Rows carry `enc` ciphertext and are
+// moved opaquely (crypto line holds — no decrypt here).
+type NoteRow_ = { note_id: string; thread_id: string; enc: unknown };
+
+function _tx<T>(stores: string[], mode: IDBTransactionMode,
+                fn: (tx: IDBTransaction) => Promise<T> | T): Promise<T> {
+  return openDb().then(
+    (db) =>
+      new Promise<T>((resolve, reject) => {
+        const tx = db.transaction(stores, mode);
+        // An abort/error that never reaches a request's onerror (exception
+        // inside a handler, quota, external abort) must still settle —
+        // else the caller hangs forever holding a dead tx.
+        tx.onabort = () =>
+          reject(tx.error ?? new Error(`${stores.join('+')} tx aborted`));
+        tx.onerror = () =>
+          reject(tx.error ?? new Error(`${stores.join('+')} tx error`));
+        Promise.resolve(fn(tx)).then(resolve, (e) => {
+          try { tx.abort(); } catch {}
+          reject(e);
+        });
+      }),
+  );
+}
+
+/** Move rows opaquely from `from` into `to`, one tx — the selection is
+ *  fully moved or fully stays. */
+async function _moveOpaque(ids: string[], from: string, to: string) {
+  return _tx([from, to], 'readwrite', (tx) => {
+    const src = tx.objectStore(from);
+    const dst = tx.objectStore(to);
+    return Promise.all(
+      ids.map(
+        (id) =>
+          new Promise<void>((res, rej) => {
+            const g = src.get(id);
+            g.onsuccess = () => {
+              if (!g.result) return res();   // absent — idempotent
+              const p = dst.put(g.result);
+              p.onsuccess = () => {
+                const d = src.delete(id);
+                d.onsuccess = () => res();
+                d.onerror = () => rej(d.error);
+              };
+              p.onerror = () => rej(p.error);
+            };
+            g.onerror = () => rej(g.error);
+          }),
+      ),
+    );
+  });
+}
+
+export async function archiveNotes(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  // the store reads the rows itself — the move is one tx.
+  return _moveOpaque(ids, 'notes', 'archive');
+}
+
+export async function unarchiveNotes(ids: string[]): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  const back: NoteRow_[] = [];
+  await _tx(['archive', 'notes'], 'readwrite', (tx) => {
+    const src = tx.objectStore('archive');
+    const dst = tx.objectStore('notes');
+    return Promise.all(
+      ids.map(
+        (id) =>
+          new Promise<void>((res, rej) => {
+            const g = src.get(id);
+            g.onsuccess = () => {
+              if (!g.result) return res();
+              back.push(g.result as NoteRow_);
+              const p = dst.put(g.result);
+              p.onsuccess = () => {
+                const d = src.delete(id);
+                d.onsuccess = () => res();
+                d.onerror = () => rej(d.error);
+              };
+              p.onerror = () => rej(p.error);
+            };
+            g.onerror = () => rej(g.error);
+          }),
+      ),
+    );
+  });
+  return back;
+}
+
+export async function deleteNotesAtomic(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _moveOpaque(ids, 'notes', 'recently_deleted');
+}
+
+export async function restoreFromBin(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _moveOpaque(ids, 'recently_deleted', 'notes');
+}
+
+export async function deletePermanently(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _tx(['recently_deleted'], 'readwrite', (tx) => {
+    const s = tx.objectStore('recently_deleted');
+    return Promise.all(
+      ids.map(
+        (id) =>
+          new Promise<void>((res, rej) => {
+            const d = s.delete(id);
+            d.onsuccess = () => res();
+            d.onerror = () => rej(d.error);
+          }),
+      ),
+    );
+  });
+}
+
+export async function emptyBin() {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _tx(['recently_deleted'], 'readwrite', (tx) =>
+    new Promise<void>((res, rej) => {
+      const c = tx.objectStore('recently_deleted').clear();
+      c.onsuccess = () => res();
+      c.onerror = () => rej(c.error);
+    }),
+  );
+}
+
+export async function listArchived(): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return txGetAll<NoteRow_>('archive');
+}
+
+export async function listBin(): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return txGetAll<NoteRow_>('recently_deleted');
+}
+
 
 export async function putRingChannel(channel: RingChannel): Promise<void> {
   const enc = await encryptJson(channel);

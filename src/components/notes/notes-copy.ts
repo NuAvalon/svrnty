@@ -34,6 +34,14 @@ export const NOTES_COPY = {
     'Notes over the wire need a current svrnty identity. This book cannot send yet.',
   sendFailed: 'The note could not be sent.',
   contactNotSendable: 'This contact cannot receive a sealed note.',
+  // #616 confirm-bar copy — scope is local-only; no claim of remote
+  // deletion, secure erase, or metadata privacy.
+  deleteLocalOnly:
+    'Move to bin? Deletes notes on this device only — nothing is recalled from the relay or the recipient.',
+  deletePermLocalOnly:
+    'Delete permanently on this device? The note copy on the relay or the recipient is untouched.',
+  emptyBinLocalOnly:
+    'Empty the bin? Deletes these notes on this device only — nothing is recalled from the relay or the recipient.',
 } as const;
 
 export const NOTES_BOUNDS = {
