@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.1.9",
+ "version": "1.1.11",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T19:00Z",
+ "generated": "2026-10-24T19:20Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -747,14 +747,26 @@
    "requires": [
     {
      "file": null,
-     "test": "the shipped ring construction is identified at the SHA: A = whole enrolled directory → copy \"among everyone enrolled (N)\"; C = k-subset with decoys FIXED per pair lineage → copy \"among k\"; NEVER copy for B (fresh per-epoch decoys = intersection attack under PIN5, Archie #202)",
-     "invariant": "#588 ring scale",
+     "test": "the shipped pairing construction is identified at the SHA. Under the slot-binding ZK proof (Flint T2 §7 C1–C7) the ring no longer applies to pairing → copy \"hidden among everyone\" (no N). ONLY if a ring remains (e.g. RLN rate limiting): A = whole enrolled directory → \"among everyone enrolled (N)\"; C = k-subset, decoys FIXED per pair lineage → \"among k\"; NEVER copy for B (fresh per-epoch decoys, Archie #202)",
+     "invariant": "#588 anonymity set",
      "resolved": false
     },
     {
      "file": null,
-     "test": "Flint attack review of the chosen ring option + GAP-1/GAP-2 closed",
-     "invariant": "#588",
+     "test": "Flint circuit-statement review (T2) signed off on the concrete library/curve (T3)",
+     "invariant": "#588 T2",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "independent circuit review (not the author, not Flint)",
+     "invariant": "#588 T2",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "two-seat hostile test incl. T1 sybil-share e2e 3a/3c green under the proof (Flint #225)",
+     "invariant": "#588 T1/GAP-1",
      "resolved": false
     },
     {
@@ -764,10 +776,11 @@
      "resolved": false
     }
    ],
-   "honest_copy": "after all pass, option A: \"The server can't tell which enrolled member you are: you're hidden among everyone enrolled (N today).\" Option C: \"…among k members\". Never \"anonymous\" (NV-3), never \"among everyone\" for a k-subset, never a number larger than the real set.",
+   "honest_copy": "after all pass, under the ZK slot-binding fix: \"The server can't tell which member you are: you're hidden among everyone.\" + the residual: this protection is classical (no post-quantum claim for the beacon; NV-2/G-1). If a ring remains: option A \"…among everyone enrolled (N today)\", option C \"…among k members\". Never \"anonymous\" (NV-3), never \"among everyone\" for a k-subset, never a number larger than the real set.",
    "source": [
     "Archie #202 ring-scale note v0",
-    "Flint #200 (record O(N) as a design constraint; registry must track the claim)"
+    "Flint #200 (record O(N) as a design constraint; registry must track the claim)",
+    "Flint #213/#221 (T2 §7) + Archie #216 (ZK fix; v1.1.11)"
    ],
    "examples": {
     "over": [
@@ -820,11 +833,37 @@
      "note": "reproduced by Apollo #196 @3c30ccd; proposed fix Option 2 ring-DLEQ, unproven; KB#93530"
     },
     {
+     "file": "apollo T1 6ac33cf (test-only): e2e 3a + 3c",
+     "test": "T1 sybil-share: an enrolled C depositing a genuine share under its own key sees an IDENTICAL view whether or not A deposited (determinism control); red under Option 2, green only under the slot-binding proof",
+     "invariant": "GAP-1 / Flint R6",
+     "resolved": false,
+     "note": "Flint #225 ACK; leave red until the proof exists"
+    },
+    {
      "file": null,
-     "test": "R-P1 (Peter #179984): no free probe: any action by which B learns A's one-way trust is itself B's trust commitment, recorded as a mutual event on BOTH local ledgers (garbage / sybil / withdraw-after-learning B learns nothing)",
+     "test": "server rule: durable-before-reveal (a deposit is durable before any reveal it could trigger)",
+     "invariant": "Flint #213",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "server rule: a client may poll ONLY for a nullifier it deposited (poll/withdraw signed under the one-time key K, Flint T2 C7)",
+     "invariant": "Flint #213/#221",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "R-P1 — the \"establishing mutual trust\" event (name: Peter #180056) (Peter #179984): a match/mutual event is recorded by both honest parties and cannot be un-done (a probe that triggers a match is non-deniable to an honest A); copy may claim no more than \"an honest app remembers\"",
      "invariant": "Peter #179984",
      "resolved": false,
-     "note": "KB#93536"
+     "note": "KB#93536 + correction (Apollo #206): deterrence/evidence, not a cryptographic block"
+    },
+    {
+     "file": null,
+     "test": "R6 (Flint, NOT Peter): a garbage-share / sybil / withdraw-after-learning B learns NOTHING about A's one-way trust",
+     "invariant": "Flint R6 / GAP-1",
+     "resolved": false,
+     "note": "KB#93530"
     },
     {
      "file": null,
@@ -844,8 +883,11 @@
     "Peter #179867",
     "#588 v2 C1/C2",
     "Flint #168",
-    "Flint #179928 (C3 non-collusion; reflection re-verify PASS)"
+    "Flint #179928 (C3 non-collusion; reflection re-verify PASS)",
+    "Peter #180045/#180056 (TRUST layer only; event = \"establishing mutual trust\"; KB#93543)",
+    "Flint #213/#225 (server rules, T1) v1.1.11"
    ],
+   "terminology": "the event is \"establishing mutual trust\" (an act by both), never \"becoming mutual\" / \"you're now mutual\"; KNOW-layer (PSI discovery) results never use \"mutual trust\" wording (Peter #180045). Advisory row for KNOW surfaces deferred to v1.2.",
    "examples": {
     "over": [
      "they won't know you trusted them until it's mutual",
