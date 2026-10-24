@@ -17,6 +17,7 @@
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import type { SignedContactUpdate } from '@/lib/trust/contact-update';
 import type { EnvelopeDecryptor } from './consume-mailbox';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 
 /** Sender side: encrypt a signed contact.update to the recipient's public key → opaque armored blob. */
 export async function encryptContactUpdateTo(
@@ -32,11 +33,14 @@ export async function encryptContactUpdateTo(
  * Recipient side: an {@link EnvelopeDecryptor} bound to the owner's private key. Returns null on ANY
  * failure (not-for-us / corrupt / wrong key / not-JSON) so the caller drops it silently (I-1/I-2).
  */
-export function openpgpEnvelopeDecryptor(recipientPrivateKeyArmored: string, passphrase: string): EnvelopeDecryptor {
+export function openpgpEnvelopeDecryptor(
+  recipientPrivateKeyArmored: string,
+  passphrase: string,
+  cycle?: UnlockCycle,
+): EnvelopeDecryptor {
   return async (blob: string): Promise<SignedContactUpdate | null> => {
     try {
-      const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
-      const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
+      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);

@@ -12,6 +12,8 @@ import { signWithEnvelope } from '@/lib/crypto/sign-envelope';
 import { DOMAIN_CONTACT_UPDATE, contactUpdateSigningInput, type ContactUpdateEnvelope } from '@/lib/format/envelope';
 import type { SignedContactUpdate, KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
+import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { lockSession } from '@/lib/identity/client-store';
 import { consumeInboundContactUpdates, type ConsumeDeps, type KnownContact, type LiveApplyEvent } from './consume-mailbox';
 
 interface Identity { fingerprint: string; publicKey: string; privateKey: string; passphrase: string }
@@ -240,3 +242,104 @@ test('refused poll (401 owner-auth) → rejected status surfaced, not an empty m
   assert.equal(summary.rejected, 401);
   assert.equal(summary.polled, 0, 'a refused poll is not a polled mailbox');
 });
+
+test('N10: session locked MID-TICK → remaining blobs are NOT decrypted, NOT persisted, and NOTHING is acked (no ack-delete on a dead cycle)', async () => {
+  const ackLog: string[][] = [];
+  const { store, persisted } = aliceStore(new Map([[bob.fingerprint, bobKnownToAlice(0)]]));
+  const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
+  let decrypts = 0;
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    owner: { fingerprint: alice.fingerprint, publicKeyArmored: alice.publicKey, privateKeyArmored: alice.privateKey, passphrase: alice.passphrase, cycle },
+    // First blob: the lock lands while it is being decrypted, so it fails. A dead cycle makes EVERYTHING look
+    // undecryptable (→ terminal → ack-delete) unless the consume loop treats it as undecided.
+    decrypt: async () => { decrypts += 1; lockSession(); throw new Error('unlock cycle ended'); },
+    store,
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'B1' }, { envelope_id: 'e2', blob: 'B2' }, { envelope_id: 'e3', blob: 'B3' }], ackLog),
+  }));
+
+  assert.equal(decrypts, 1, 'the loop stopped: blobs 2 and 3 were never decrypted under the ended cycle');
+  assert.equal(persisted.length, 0, 'nothing persisted');
+  assert.deepEqual(ackLog, [], 'NOTHING acked — no envelope is ack-deleted because a lock made it look undecryptable');
+  assert.equal(summary.acked, 0);
+});
+
+test('N10: control — a live cycle behaves exactly as before (undecryptable blob is still terminal → acked)', async () => {
+  const ackLog: string[][] = [];
+  const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    owner: { fingerprint: alice.fingerprint, publicKeyArmored: alice.publicKey, privateKeyArmored: alice.privateKey, passphrase: alice.passphrase, cycle },
+    decrypt: async () => null,
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'B1' }], ackLog),
+  }));
+  assert.equal(summary.dropped, 1);
+  assert.deepEqual(ackLog, [['e1']]);
+  cycle.drop();
+});
+
+test('N10: lock lands AFTER decrypt resolved and BEFORE apply → nothing persisted, nothing acked, retryable', async () => {
+  const env: ContactUpdateEnvelope = {
+    fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',
+    changed_fields: ['display_name'], delta: { display_name: 'Bob (NEW name)' },
+  };
+  const signed = await signUpdate(env, bob);
+  const ackLog: string[][] = [];
+  const { store, persisted } = aliceStore(new Map([[bob.fingerprint, bobKnownToAlice(0)]]));
+  const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
+  const lookup = store.lookup.bind(store);
+  // decrypt resolves fine (key() already handed out); the lock lands during lookup — i.e. between decrypt and persist.
+  store.lookup = async (fp: string) => { lockSession(); return lookup(fp); };
+
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    owner: { fingerprint: alice.fingerprint, publicKeyArmored: alice.publicKey, privateKeyArmored: alice.privateKey, passphrase: alice.passphrase, cycle },
+    decrypt: async () => signed,
+    store,
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+
+  assert.equal(persisted.length, 0, 'NOTHING persisted after the lock');
+  assert.deepEqual(ackLog, [], 'retryable: the envelope stays in the mailbox (no ack-delete)');
+  assert.equal(summary.applied, 0);
+});
+
+test('N10: control — same flow with NO lock persists and acks (the guard only fires on a dead cycle)', async () => {
+  const env: ContactUpdateEnvelope = {
+    fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',
+    changed_fields: ['display_name'], delta: { display_name: 'Bob (NEW name)' },
+  };
+  const signed = await signUpdate(env, bob);
+  const ackLog: string[][] = [];
+  const { store, persisted } = aliceStore(new Map([[bob.fingerprint, bobKnownToAlice(0)]]));
+  const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    owner: { fingerprint: alice.fingerprint, publicKeyArmored: alice.publicKey, privateKeyArmored: alice.privateKey, passphrase: alice.passphrase, cycle },
+    decrypt: async () => signed,
+    store,
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(persisted.length, 1);
+  assert.deepEqual(ackLog, [['e1']]);
+  assert.equal(summary.applied, 1);
+  cycle.drop();
+});
+
+// N10 (Flint #178422 blocking 1): the cycle re-check sits before EVERY write in consumeOne, not only the contact persist.
+// Each seam: verify() succeeds but the lock lands during it → accept() must never run; nothing acked (retryable).
+for (const seam of ['joiner', 'note', 'affirm'] as const) {
+  test(`N10: lock lands after ${seam}.verify, before ${seam}.accept → accept never runs, nothing acked`, async () => {
+    const ackLog: string[][] = [];
+    const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
+    let accepted = 0;
+    const s = {
+      verify: async () => { lockSession(); return {} as never; },
+      accept: async () => { accepted++; return null as never; },
+    };
+    const summary = await consumeInboundContactUpdates(baseDeps({
+      owner: { fingerprint: alice.fingerprint, publicKeyArmored: alice.publicKey, privateKeyArmored: alice.privateKey, passphrase: alice.passphrase, cycle },
+      [seam]: s,
+      fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'B1' }], ackLog),
+    } as Partial<ConsumeDeps>));
+    assert.equal(accepted, 0, `${seam}.accept must not run on a dead cycle`);
+    assert.deepEqual(ackLog, [], 'retryable: left in the mailbox');
+    assert.equal(summary.acked, 0);
+  });
+}
