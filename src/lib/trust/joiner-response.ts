@@ -63,6 +63,11 @@ import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '..
 import { fingerprintMatchesKey, KEM_PUB_LEN } from '../identity/fingerprint';
 import { base64ToUint8 } from '../crypto/pq';
 import {
+  sealLivingBookHybrid,
+  openLivingBookHybrid,
+  type LivingBookHybridSecrets,
+} from '../crypto/living-book-sleeve';
+import {
   createMessage,
   encrypt,
   readKey,
@@ -231,7 +236,14 @@ export async function buildJoinerResponse(
 export async function encryptJoinerResponseTo(
   signed: SignedJoinerResponse,
   giverPublicKeyArmored: string,
+  giverPqKemB64?: string,
 ): Promise<string> {
+  // HYBRID (HNDL) when the giver's ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED response);
+  // classical OpenPGP otherwise (back-compat/tests — buildJoinerResponseDeposit fail-closed-SKIPS a giver
+  // with no pq_kem, never downgrades).
+  if (giverPqKemB64) {
+    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), giverPublicKeyArmored, giverPqKemB64);
+  }
   const encryptionKeys = await readKey({ armoredKey: giverPublicKeyArmored });
   const message = await createMessage({ text: JSON.stringify(signed) });
   return (await encrypt({ message, encryptionKeys })) as string;
@@ -271,21 +283,59 @@ function isWellFormed(signed: unknown): signed is SignedJoinerResponse {
   return true;
 }
 
+/**
+ * The joiner-response inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
+ * (src/lib/sync/hybrid-dual-read.ts: makeHybridOpener(openEnv, parseJoinerResponseWire)): JSON-parse the
+ * inner bytes and accept ONLY a well-formed SignedJoinerResponse (isWellFormed), null otherwise. Reproduces
+ * decryptJoinerBlob's EXACT gate (both its paths call this) so a hybrid-opened joiner-response demuxes
+ * identically to the classical path (no-cross-swallow preserved byte-for-byte).
+ *
+ * SCOPE: this is the DECRYPT/type-gate ONLY. Unlike the note/affirm/contact openers, joiner's consume
+ * step (verifyJoinerResponse) FUSES decrypt+solicited-nonce+Invariant-1+signature and returns a
+ * PendingJoiner (not a SignedJoinerResponse) — so the chokepoint cannot wrap verifyJoinerResponse the way
+ * it wraps the plain openers. The chokepoint reuses THIS parser for the hybrid opener; wiring the dual-read
+ * INTO verifyJoinerResponse (replacing its giver.hybrid branch with an injected opener) is a follow-up that
+ * must touch the verify/nonce coupling, so it is intentionally left in place here.
+ */
+export function parseJoinerResponseWire(innerUtf8: string): SignedJoinerResponse | null {
+  try {
+    const parsed = JSON.parse(innerUtf8) as unknown;
+    return isWellFormed(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Decrypt an opaque blob to a SignedJoinerResponse candidate, or null on ANY failure (not-for-us /
- *  corrupt / wrong key / not-JSON / wrong-shape). Mirrors openpgpEnvelopeDecryptor. */
+ *  corrupt / wrong key / not-JSON / wrong-shape). Mirrors openpgpEnvelopeDecryptor. The type gate is the
+ *  exported {@link parseJoinerResponseWire}, shared by both the hybrid and classical paths. */
 async function decryptJoinerBlob(
   blob: string,
   giverPrivateKeyArmored: string,
   passphrase: string,
+  hybrid?: LivingBookHybridSecrets,
   cycle?: UnlockCycle,
 ): Promise<SignedJoinerResponse | null> {
+  // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null from
+  // openLivingBookHybrid → fall through to OpenPGP; parseJoinerResponseWire is the type gate either way (a
+  // non-joiner hybrid pkg fails it → null → the consume joiner-verify falls through, preserving no-cross-swallow).
+  if (hybrid) {
+    try {
+      const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
+      if (pt) {
+        const parsed = JSON.parse(new TextDecoder().decode(pt)) as unknown;
+        return isWellFormed(parsed) ? parsed : null;
+      }
+    } catch {
+      return null;
+    }
+  }
   try {
     const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: giverPrivateKeyArmored }), passphrase });
     const message = await readMessage({ armoredMessage: blob });
     const { data } = await decrypt({ message, decryptionKeys });
     const text = typeof data === 'string' ? data : await streamToText(data);
-    const parsed = JSON.parse(text) as unknown;
-    return isWellFormed(parsed) ? parsed : null;
+    return parseJoinerResponseWire(text);
   } catch {
     return null;
   }
@@ -318,11 +368,11 @@ async function decryptJoinerBlob(
  */
 export async function verifyJoinerResponse(
   blob: string,
-  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; cycle?: UnlockCycle },
+  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; hybrid?: LivingBookHybridSecrets; cycle?: UnlockCycle },
   acceptNonce: (nonce: string, joinerFp: string) => boolean,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingJoiner | null> {
-  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase, giver.cycle);
+  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase, giver.hybrid, giver.cycle);
   if (!signed) return null;
   const { envelope, signature } = signed;
 

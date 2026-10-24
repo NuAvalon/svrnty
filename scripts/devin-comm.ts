@@ -157,7 +157,7 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
 }
 
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
-  const deps = buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
+  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }

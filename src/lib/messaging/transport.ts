@@ -30,6 +30,9 @@ export async function sendNoteToPeer(args: {
   senderPqSigPublicKey?: string;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+  /** The RECIPIENT's verified ML-KEM-1024 pubkey (base64). Present ⇒ the note is sealed PQ-hybrid (HNDL).
+   *  ABSENT ⇒ fail-closed: the note is NOT deposited (never downgraded to classical). */
+  peerPqKemPublicKey?: string;
   body: string;
   threadId?: string;
   relayBase?: string;
@@ -61,14 +64,21 @@ export async function sendNoteToPeer(args: {
     args.senderPqKemPublicKey, // §5: canonical-fp binding (both must be present to bind; else classical path)
     args.senderPqSigPublicKey,
   );
-  const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
-  const mailbox_id = deriveMailboxId(args.peerFingerprint);
-  const res = await fetchImpl(`${relayBase}/envelope`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mailbox_id, blob }),
-  });
-  const deposited = res.ok;
+  // fail-closed: no pq_kem → skip, never downgrade (HNDL). A recipient without a verified ML-KEM-1024
+  // pubkey is NOT deposited to in a classical/downgraded form; the local copy is kept as "not sent".
+  let deposited = false;
+  if (args.peerPqKemPublicKey) {
+    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+    const mailbox_id = deriveMailboxId(args.peerFingerprint);
+    const res = await fetchImpl(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob }),
+    });
+    deposited = res.ok;
+  } else {
+    console.warn('[notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
+  }
 
   // Local outbound copy (encrypted at rest in notes store — caller must have unlocked it)
   const local: NoteRecord = {
