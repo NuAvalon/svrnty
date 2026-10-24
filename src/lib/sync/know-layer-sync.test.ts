@@ -10,12 +10,17 @@ import assert from 'node:assert/strict';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import type { OrchestratorDeps, PSISyncOptions } from '@/lib/trust/mutual-trust-sync';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
+import { newPsiSessionKey, sealPsiToSatellite, openPsiSessionResponse } from '@/lib/crypto/psi-wire-seal';
+import { generateMailboxKeypair, toPublicKeys } from '@/lib/crypto/mailbox-keys';
+import type { MailboxPublicKeys } from '@/lib/crypto/mailbox-envelope';
 import {
   buildKnowOverlayDeps,
   runKnowLayerSyncTick,
   startKnowLayerSync,
   runPsiCompletionPass,
   savePsiInitiated,
+  serializePsiSession,
+  restorePsiSession,
   type KnowOverlayStore,
   type SyncMutualTrustFn,
   type CompleteTrustSyncFn,
@@ -487,4 +492,80 @@ test('completion FAIL-CLOSED: session missing its scalar → dropped, never comp
   assert.equal(completeCalled, false); // never proceeds without the persisted scalar
   assert.equal(writes.length, 1);
   assert.equal(writes[0].updates.psi_session_id, undefined); // dropped
+});
+
+// ── Chaos #183: the initiator's PQ response key must survive between ticks ──────────────────────────
+// Under pqWrap the satellite seals the result to the response key minted at initiate and delivers it ONCE. Before this fix
+// savePsiInitiated dropped that key and the completion pass never passed one, so the result could never be opened.
+
+const PQ_OPTIONS = (): PSISyncOptions => ({ ...DUMMY_OPTIONS, pqWrap: { satelliteKeys: toPublicKeys(generateMailboxKeypair()) as MailboxPublicKeys } });
+const SESSION_FIELDS = { psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0, open_visibility: true, fingerprint: 'peer-fp', id: 'c1' } as const;
+
+test('#183 savePsiInitiated persists the PQ response key, and the restored key can OPEN what is sealed to the original responsePub', async () => {
+  const pq = newPsiSessionKey();
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true })]);
+  await savePsiInitiated(store, OWNER, [{ peerFingerprint: 'peer-fp', sessionId: 'sess-1', keypair: { privateKey: 'sk', publicKey: 'pub' }, fpOrder: ['a'], pqSession: pq }]);
+  const stored = writes[0].updates.psi_pq_session;
+  assert.equal(typeof stored, 'string', 'the response key is persisted next to psi_sk_A');
+  const restored = restorePsiSession(stored);
+  assert.ok(restored, 'and restores');
+  assert.equal(restored!.responsePub.mailbox_fp, pq.responsePub.mailbox_fp, 'same mailbox fp');
+  // the decisive property: something the satellite sealed to the ORIGINAL responsePub opens with the RESTORED key
+  const sealed = await sealPsiToSatellite({ hello: 'result' }, { x25519Pub: pq.keypair.x25519Pub, mlkem1024Pub: pq.keypair.mlkem1024Pub });
+  assert.deepEqual(await openPsiSessionResponse(sealed, restored!), { hello: 'result' });
+});
+
+test('#183 a classical session (no pqSession) persists NO response key', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true })]);
+  await savePsiInitiated(store, OWNER, [{ peerFingerprint: 'peer-fp', sessionId: 's', keypair: { privateKey: 'sk', publicKey: 'pub' }, fpOrder: [] }]);
+  assert.equal(writes[0].updates.psi_pq_session, undefined);
+});
+
+test('#183 restorePsiSession fails CLOSED on every malformation', () => {
+  const good = JSON.parse(serializePsiSession(newPsiSessionKey()));
+  const bad: unknown[] = [undefined, null, '', 'not json', JSON.stringify({ ...good, v: 2 }), JSON.stringify({ ...good, x25519_sec: 'AAAA' }),
+    JSON.stringify({ ...good, mlkem1024_sec: good.mlkem1024_pub }), JSON.stringify({ ...good, x25519_pub: 5 }), JSON.stringify({ v: 1 }), 42, {}];
+  for (const b of bad) assert.equal(restorePsiSession(b), null, `must reject ${String(b).slice(0, 30)}`);
+  assert.ok(restorePsiSession(JSON.stringify(good)), 'control: the well-formed one restores');
+});
+
+test('#183 completion PASSES the restored pqSession to completeTrustSync (it used to pass none)', async () => {
+  const pq = newPsiSessionKey();
+  const { store } = fakeStore([rec({ ...SESSION_FIELDS, psi_pq_session: serializePsiSession(pq) })]);
+  let seen: unknown = 'unset';
+  const spy: CompleteTrustSyncFn = async (...args) => { seen = args[7]; return { mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, PQ_OPTIONS(), spy);
+  assert.equal((seen as { responsePub: { mailbox_fp: string } }).responsePub.mailbox_fp, pq.responsePub.mailbox_fp);
+});
+
+test('#183 pqWrap on + NO stored response key => do NOT read (the one-shot result would be destroyed); drop the session', async () => {
+  const { store, writes } = fakeStore([rec({ ...SESSION_FIELDS })]); // a session saved before the fix
+  let called = false;
+  const spy: CompleteTrustSyncFn = async () => { called = true; return { error: 'x' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, PQ_OPTIONS(), spy);
+  assert.equal(called, false, 'never reads the sealed result without the key');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_session_id, undefined);
+  assert.equal(writes[0].updates.psi_pq_session, undefined);
+});
+
+test('#183 CONTROL: no pqWrap + no stored key still completes (classical sessions unchanged)', async () => {
+  const { store, writes } = fakeStore([rec({ ...SESSION_FIELDS })]);
+  let seen: unknown = 'unset';
+  const spy: CompleteTrustSyncFn = async (...args) => { seen = args[7]; return { mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, spy);
+  assert.equal(seen, undefined, 'classical: no pqSession');
+  assert.equal(writes[0].updates.psi_session_id, undefined, 'applied -> cleared');
+});
+
+test('#183 a THROWN completion counts as an attempt, and expires at MAX (it used to retry forever with psi_attempts untouched)', async () => {
+  const thrower: CompleteTrustSyncFn = async () => { throw new TypeError('boom'); };
+  const a = fakeStore([rec({ ...SESSION_FIELDS, psi_attempts: 2 })]);
+  await runPsiCompletionPass(a.store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
+  assert.equal(a.writes.length, 1);
+  assert.equal(a.writes[0].updates.psi_attempts, 3);
+  assert.equal('psi_session_id' in a.writes[0].updates, false, 'not cleared yet');
+  const b = fakeStore([rec({ ...SESSION_FIELDS, psi_attempts: 12 })]);
+  await runPsiCompletionPass(b.store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
+  assert.equal(b.writes[0].updates.psi_session_id, undefined, 'expired at MAX');
 });
