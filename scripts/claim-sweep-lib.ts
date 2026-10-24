@@ -204,6 +204,11 @@ const ANNOTATION_RE = /claim-sweep:ok\b(.*)$/;
  * Accepts `claim-sweep:ok <reason>` (registry v1.1 form) and `claim-sweep:ok: <reason>`; a trailing
  * comment closer (`*\/`, `*\/}`, `-->`) is not part of the reason; the reason must contain a letter/digit.
  */
+/** A registry string used literally inside a RegExp (gate names are identifiers today; harden anyway, Flint #217). */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function parseAnnotation(line: string): { reason: string | null } | null {
   const m = ANNOTATION_RE.exec(line);
   if (!m) return null;
@@ -392,7 +397,7 @@ export function scanText(
         // AND that gate must be FALSE in code: a gate-guarded branch that can't render today. Never when the
         // registry overrides a gate that is TRUE in code (e.g. G-4 PSI): the branch DOES render.
         const gate = c.kind === 'gated' ? (c.gate as string) : null;
-        const namesGate = !gate || new RegExp(`\\b${gate}\\b`).test(annotation.reason);
+        const namesGate = !gate || new RegExp(`\\b${escapeRegExp(gate)}\\b`).test(annotation.reason);
         const codeFalse = !gate || !ctx.gateValue(gate);
         if (namesGate && codeFalse) {
           honored.push({ file, line: i + 1, annotationLine: annotation.at, claimId: c.id, reason: annotation.reason });
