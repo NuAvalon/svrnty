@@ -2,9 +2,9 @@ name: QA
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 # Least privilege (restored — "examinee can't tamper the exam" class, #110/#112):
