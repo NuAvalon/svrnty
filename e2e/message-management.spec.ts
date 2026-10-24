@@ -81,7 +81,8 @@ test('delete confirm: Cancel is default and deletes nothing; Confirm moves to bi
   const bar = page.getByTestId('notes-confirm-bar');
   await expect(bar).toBeVisible();
   await expect(page.getByTestId('notes-confirm-copy')).toContainText(/device only|on this device|local/i);
-  await page.getByTestId('notes-confirm-cancel').click();
+  await expect(page.getByTestId('notes-confirm-cancel')).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(bar).toHaveCount(0);
   await expect(page.getByTestId(`notes-bubble-${note_id}`)).toBeVisible();
   expect(await idbHasNote(page, aliceFp, 'notes', note_id)).toBe(true);
@@ -114,7 +115,8 @@ test('empty bin confirm: Cancel keeps bin rows; Confirm empties the bin', async 
   await page.getByTestId('notes-empty-bin-btn').click();
   const bar = page.getByTestId('notes-confirm-bar');
   await expect(bar).toBeVisible();
-  await page.getByTestId('notes-confirm-cancel').click();
+  await expect(page.getByTestId('notes-confirm-cancel')).toBeFocused();
+  await page.keyboard.press('Enter');
   expect(await idbHasNote(page, aliceFp, 'recently_deleted', note_id)).toBe(true);
 
   // Arm → Confirm: bin empties.

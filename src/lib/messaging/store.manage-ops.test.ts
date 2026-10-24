@@ -235,6 +235,7 @@ describe("I10 — moves never invoke crypto (opaque blob only)", () => {
     const imp = mock.method(crypto.subtle, "importKey");
     await putThread(thread("t-i10"));
     await putNote(note("n-i10", "t-i10"));
+    assert.ok(enc.mock.callCount() > 0, "spy sees store crypto");
     enc.mock.resetCalls(); dec.mock.resetCalls();
     der.mock.resetCalls(); imp.mock.resetCalls();
     await archiveNotes(["n-i10"]);

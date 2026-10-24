@@ -511,7 +511,7 @@ export function NotesInbox({ identity }: Props) {
                     ? NOTES_COPY.deletePermLocalOnly
                     : NOTES_COPY.emptyBinLocalOnly}
               </span>
-              <button type="button" data-testid="notes-confirm-cancel" onClick={() => setConfirmAction(null)} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', opacity: 0.9 }}>Cancel</button>
+              <button type="button" data-testid="notes-confirm-cancel" autoFocus onClick={() => setConfirmAction(null)} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', opacity: 0.9 }}>Cancel</button>
               <button type="button" data-testid="notes-confirm-ok" onClick={async () => {
                 const act = confirmAction;
                 setConfirmAction(null);
