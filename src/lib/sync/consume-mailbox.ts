@@ -20,6 +20,7 @@
 // DROPPED unread. REJECTIONS ARE SILENT (I-1/I-2): reject reasons are local diagnostics, NEVER echoed
 // to the sender or relay — so the return channel can't be turned into a "are you my contact?" oracle.
 
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { deriveMailboxId, signMailboxPollRequest, signMailboxAckRequest } from '@/lib/relay/mailbox-auth';
 import {
   verifyIncomingContactUpdate,
@@ -42,6 +43,8 @@ export interface OwnerIdentity {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  /** One unlock per poll cycle, shared by the decryptors and the poll/ack signers; the caller drops it at cycle end. */
+  cycle?: UnlockCycle;
   // §5 canonical-id: the identity's PQ public keys, threaded into the owner-auth bundle so the relay
   // can recompute the 64-hex canonical fingerprint. Absent for a classical identity (40-hex fp).
   kemPublicKey?: string;
@@ -228,6 +231,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     publicKeyArmored: deps.owner.publicKeyArmored,
     privateKeyArmored: deps.owner.privateKeyArmored,
     passphrase: deps.owner.passphrase,
+    cycle: deps.owner.cycle,
     kemPublicKey: deps.owner.kemPublicKey,
     sigPublicKey: deps.owner.sigPublicKey,
     now: Date.now(),
@@ -244,6 +248,9 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // 2) Consume each envelope independently; collect the terminal ones to ack.
   const toAck: string[] = [];
   for (const env of envelopes) {
+    // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
+    // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
+    if (deps.owner.cycle?.ended) break;
     let outcome: Outcome;
     try {
       outcome = await consumeOne(env.blob, deps, now);
@@ -256,6 +263,9 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       console.error('[return-channel] unexpected error consuming an envelope (left for retry):', err);
       outcome = { kind: 'retryable' };
     }
+    // A cycle that died DURING this blob makes it look undecryptable (decryptors throw → terminal → ack-delete).
+    // That is a lock/switch artefact, not a verdict on the blob: downgrade so it is never ack-deleted.
+    if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
@@ -291,7 +301,9 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 
   // 3) Ack-delete the terminal envelopes (owner-signed). apply is idempotent, so a crash before ack
   //    just redelivers and re-applies harmlessly (at-least-once).
-  if (toAck.length > 0) {
+  // Cycle ended mid-tick → skip the ack entirely (it can't be signed anyway): already-applied envelopes redeliver
+  //    and re-apply idempotently; the rest were never decided.
+  if (toAck.length > 0 && !deps.owner.cycle?.ended) {
     const ackHeaders = await signMailboxAckRequest({
       mailboxId,
       envelopeIds: toAck,
@@ -299,6 +311,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       publicKeyArmored: deps.owner.publicKeyArmored,
       privateKeyArmored: deps.owner.privateKeyArmored,
       passphrase: deps.owner.passphrase,
+      cycle: deps.owner.cycle,
       kemPublicKey: deps.owner.kemPublicKey,
       sigPublicKey: deps.owner.sigPublicKey,
       now: Date.now(),
@@ -315,6 +328,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
+  // N10 (Flint #178422 blocking 1): a lock can land AFTER key() handed the key out and BEFORE we persist. Re-check the
+  // cycle immediately before EVERY write below, not just at blob boundaries: a dead cycle means the identity is
+  // locked/switched, so the decided-looking result must not be applied — leave the envelope in the mailbox (retryable).
+  const dead = () => deps.owner.cycle?.ended === true;
   // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
   // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
   // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;
@@ -330,6 +347,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       pj = null; // a throwing joiner-verify is treated as not-a-joiner → fall through (fail-safe)
     }
     if (pj) {
+      if (dead()) return { kind: 'retryable' };
       try {
         const res = await deps.joiner.accept(pj);
         // accepted a fresh joiner → surface as an apply so the open book repaints (ignited); already in
@@ -361,6 +379,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     }
     if (wire) {
       try {
+        if (dead()) return { kind: 'retryable' };
         const accepted = await deps.note.accept(wire);
         // persisted (signed + admitted) → note (ack + inbox repaint); dropped (unsigned / forged /
         // stranger) → terminal (silent ack — I-1/I-2, the same custody as a stranger contact-update).
@@ -392,6 +411,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     }
     if (wire) {
       try {
+        if (dead()) return { kind: 'retryable' };
         const applied = await deps.affirm.accept(wire);
         // applied (signed + bound + admitted) → affirm (ack + trust repaint); dropped (unsigned / forged /
         // misaddressed / stranger) → terminal (silent ack — I-1/I-2, the FALSE-MUTUAL gate: no flip, no echo).
@@ -441,6 +461,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   }
 
   // persist may throw on a store I/O failure — that too propagates to the guarded loop (retryable).
+  if (dead()) return { kind: 'retryable' };
   await deps.store.persist(contact.current.id, applied.next);
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
 }
