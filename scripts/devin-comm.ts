@@ -16,6 +16,7 @@
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { routeInbound, loomNotice, openTaskChannel, openTasksNotice } from './devin-comm-inbound';
+import { readJsonStrict, writeFileAtomic } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
@@ -84,21 +85,16 @@ function ownerFrom(a: SerializedMintArtifact): HeadlessOwner {
 
 // ── agent-local JSON state (issued Grow codes + Gate arrivals) ─────────────────────────────────
 
-function loadJson<T>(path: string, empty: T): T {
-  if (!existsSync(path)) return empty;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as T;
-  } catch {
-    return empty;
-  }
-}
+// Missing = empty; present but unparseable = abort. Returning `empty` on a torn read let the next save
+// persist {} over real state (ratchet sessions, gate arrivals, issued codes). Flint 2026-10-24.
+const loadJson = readJsonStrict;
 
 function loadCodes(): IssuedCodeMap {
   return pruneIssuedCodes(loadJson<IssuedCodeMap>(CODES, {}), Date.now());
 }
 
 function saveCodes(map: IssuedCodeMap): void {
-  writeFileSync(CODES, JSON.stringify(map, null, 2));
+  writeFileAtomic(CODES, JSON.stringify(map, null, 2));
 }
 
 type GateMap = Record<string, Record<string, GateArrival>>;
@@ -108,7 +104,7 @@ function loadGate(): GateMap {
 }
 
 function saveGate(map: GateMap): void {
-  writeFileSync(GATE, JSON.stringify(map, null, 2));
+  writeFileAtomic(GATE, JSON.stringify(map, null, 2));
 }
 
 /**
@@ -158,7 +154,7 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
 const TR_BODY = 'svrnty-tr-v1';
 type TrSessions = Record<string, RatchetSnapshot>;
 const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {});
-const saveTr = (m: TrSessions) => writeFileSync(RATCHETS, JSON.stringify(m, null, 2));
+const saveTr = (m: TrSessions) => writeFileAtomic(RATCHETS, JSON.stringify(m, null, 2));
 
 function ratchetSelf(a: SerializedMintArtifact): RatchetIdentity {
   const p = a.private;
@@ -229,7 +225,7 @@ async function main() {
     if (existsSync(MINT)) throw new Error('mint.json already exists — refusing to re-mint');
     const a = await mintHeadlessAgent({ throwaway: false, recoveryMode: 'm-of-n' });
     const s = serializeMintArtifact(a);
-    writeFileSync(MINT, JSON.stringify(s));
+    writeFileSync(MINT, JSON.stringify(s), { flag: 'wx', mode: 0o600 });   // create-only: never overwrite an identity
     chmodSync(MINT, 0o600);
     const id = s.public.card.identity;
     console.log(JSON.stringify({
@@ -539,7 +535,7 @@ async function main() {
       journaled++;
       loomNotices++;
     }
-    writeFileSync(attemptsPath, JSON.stringify(attempts), { mode: 0o600 });
+    writeFileAtomic(attemptsPath, JSON.stringify(attempts));
     console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath }));
     return;
   }

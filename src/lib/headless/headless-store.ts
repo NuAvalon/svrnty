@@ -8,8 +8,7 @@
 //
 // NOTE: this is a HEADLESS-ONLY module (imports node:fs) — never import it into the browser bundle.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { readJsonStrict, writeFileAtomic } from './atomic-file';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore } from '@/lib/sync/consume-mailbox';
@@ -39,9 +38,9 @@ interface HeadlessData {
 }
 
 /**
- * In-memory book with optional JSON-file persistence. Not concurrency-safe across processes (a headless
- * agent is single-process); within a process all mutations are synchronous + flush atomically-enough for
- * an agent's scale. The consume core (consume-mailbox.ts) drives this ONLY through asContactStore() + the
+ * In-memory book with optional JSON-file persistence. Writes are atomic (tmp + rename, previous good copy
+ * kept as .bak) and an existing file that won't parse is an error, never "start fresh" (atomic-file.ts).
+ * Still not a cross-process lock: two writers can lose each other's update until one writer per dir. The consume core (consume-mailbox.ts) drives this ONLY through asContactStore() + the
  * note/affirm seams (headless-client.ts), so the shape stays swappable.
  */
 export class HeadlessStore {
@@ -50,24 +49,23 @@ export class HeadlessStore {
 
   constructor(opts: { path?: string } = {}) {
     this.path = opts.path ?? null;
-    if (this.path && existsSync(this.path)) {
-      try {
-        const parsed = JSON.parse(readFileSync(this.path, 'utf8')) as Partial<HeadlessData>;
+    if (this.path) {
+      // A torn or corrupt book must stop the command: "start fresh" here meant the next flush
+      // persisted an empty book over the real one (Flint 2026-10-24).
+      const parsed = readJsonStrict<Partial<HeadlessData> | null>(this.path, null);
+      if (parsed) {
         this.data = {
           contacts: parsed.contacts ?? [],
           notes: parsed.notes ?? [],
           threads: parsed.threads ?? [],
         };
-      } catch {
-        /* corrupt file → start fresh (don't crash the agent on a bad book) */
       }
     }
   }
 
   private flush(): void {
     if (!this.path) return;
-    mkdirSync(dirname(this.path), { recursive: true });
-    writeFileSync(this.path, JSON.stringify(this.data, null, 2));
+    writeFileAtomic(this.path, JSON.stringify(this.data, null, 2));
   }
 
   // --- contacts ---
