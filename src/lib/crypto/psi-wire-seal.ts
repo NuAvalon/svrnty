@@ -26,8 +26,9 @@
  *   Response (satellite → client): the satellite seals the result to the CLIENT's mailbox key → openPsiFromSatellite.
  *
  * ★ JOINT BUILD (Apollo client-half HERE; Athena satellite-half = /trust/psi decap+reseal, infra/satellite.py).
- *   Byte-exact co-verify like K0/S1. NOT wired or flipped until the round-trip sealed on the DEPLOYED edge
- *   (verify-then-flip, Archie's apex gate); isPSIDiscoveryLive then flipped true on 2026-10-04 (ce8420b).
+ *   Byte-exact co-verify like K0/S1. This was meant to stay unwired until a sealed round trip on the DEPLOYED edge
+ *   was verified (verify-then-flip, Archie's apex gate). isPSIDiscoveryLive was flipped true on 2026-10-04 (ce8420b);
+ *   no record here shows that check was done first.
  *
  * DEPENDS on the client holding the satellite's mailbox PUBKEY, fetched + anti-swap-verified (GET /satellite/key,
  * Athena). That fetch/verify is a separate concern (networking + the key-pinning contract) — this module is the
