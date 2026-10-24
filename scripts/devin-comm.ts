@@ -420,8 +420,28 @@ async function main() {
     // raw wire or unauthenticated content ever reaches the quarantine table.
     const journalPath = `${DIR}/decrypt-journal.jsonl`;
     await pollOnce(owner, store);
+    // poll-json-watermark-001: the journal IS the durable consumed-set —
+    // a journaled note_id already had its one-shot decrypt spent, so
+    // trOpen can only return null while re-paying readKey + importState +
+    // ML-KEM receive EVERY pass (~3min @94% CPU on node18, watchmail
+    // serializes behind it). Skip journaled ids; failed/absent notes still
+    // get their attempt (out-of-order packets can become decryptable as
+    // the ratchet advances).
+    const journaledIds = new Set<string>();
+    try {
+      for (const line of readFileSync(journalPath, 'utf8').split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try {
+          const m = JSON.parse(t);
+          if (m.note_id) journaledIds.add(m.note_id);
+        } catch { /* tolerate a torn line */ }
+      }
+    } catch { /* no journal yet — first pass */ }
     let journaled = 0;
+    let skipped = 0;
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
+      if (journaledIds.has(note.note_id)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
       if (!c || !trPacket(note.body)) continue;         // require an authenticated triple-ratchet packet
       const pt = await trOpen(artifact, c, note.body);
@@ -434,7 +454,7 @@ async function main() {
       }) + '\n');
       journaled++;
     }
-    console.log(JSON.stringify({ journaled, journal: journalPath }));
+    console.log(JSON.stringify({ journaled, skipped, journal: journalPath }));
     return;
   }
 
