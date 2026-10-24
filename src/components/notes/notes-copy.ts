@@ -34,6 +34,12 @@ export const NOTES_COPY = {
     'Notes over the wire need a current svrnty identity. This book cannot send yet.',
   sendFailed: 'The note could not be sent.',
   contactNotSendable: 'This contact cannot receive a sealed note.',
+  manageAction: 'Manage',
+  manageDoneAction: 'Done',
+  archiveAction: 'Archive',
+  deleteAction: 'Delete',
+  manageFailed: 'Could not update those notes. Nothing was moved.',
+  selectedCount: 'selected',
 } as const;
 
 export const NOTES_BOUNDS = {

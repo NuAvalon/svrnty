@@ -24,7 +24,9 @@ const inboxSrc = () =>
 const fnBody = (src: string, sig: string): string => {
   const i = src.indexOf(sig);
   assert.notStrictEqual(i, -1, `missing ${sig}`);
-  return src.slice(i, i + 4000);
+  const rest = src.slice(i + sig.length);
+  const next = rest.search(/\n(export |async function |function )/);
+  return src.slice(i, next === -1 ? i + 4000 : i + sig.length + next);
 };
 
 // ── migration: additive only, never deletes ──────────────────────────────
@@ -51,29 +53,35 @@ for (const [fn, srcStore, dstStore] of [
   ['deleteNotes', 'notes', 'recently_deleted'],
   ['restoreNotes', 'recently_deleted', 'notes'],
   ['restoreArchived', 'archive', 'notes'],
-  ['purgeDeleted', 'recently_deleted', 'recently_deleted'],
+  ['purgeDeleted', 'recently_deleted', null],
 ] as const) {
-  test(`${fn}: single readwrite tx over ${srcStore}->${dstStore}, all-or-nothing`, () => {
-    const body = fnBody(storeSrc(), `export async function ${fn}(`);
-    assert.match(
-      body,
-      new RegExp(`db\\.transaction\\(\\[['"]${srcStore}['"]`),
-      `${fn} must open ONE transaction covering ${srcStore} (atomic batch)`);
-    if (srcStore !== dstStore) {
-      assert.match(
-        body,
-        new RegExp(`db\\.transaction\\(\\[[^\\]]*['"]${dstStore}['"]`),
-        `${fn} tx must span ${dstStore} in the same transaction`);
-    }
-    assert.match(body, /tx\.onabort|tx\.onerror/,
-      `${fn} must surface tx abort/error — a half-moved batch is a lie`);
+  test(`${fn}: delegates to the single-tx mover ${srcStore}->${dstStore ?? 'purge'}`, () => {
+    const body = fnBody(storeSrc(), `export function ${fn}(`);
+    const call = dstStore
+      ? new RegExp(`_moveNotes\\('${srcStore}',\\s*'${dstStore}'`)
+      : new RegExp(`_moveNotes\\('${srcStore}',\\s*null`);
+    assert.match(body, call,
+      `${fn} must route through the shared atomic mover`);
   });
 }
 
+test('_moveNotes: ONE readwrite tx spanning source+dest, abort-safe', () => {
+  const body = fnBody(storeSrc(), 'async function _moveNotes(');
+  assert.match(body, /db\.transaction\(stores,\s*'readwrite'\)/,
+    'the mover must open exactly one readwrite transaction');
+  assert.match(body, /tx\.oncomplete/);
+  assert.match(body, /tx\.onabort\s*=|tx\.onerror\s*=/,
+    'abort/error must reject — a half-moved batch is a lie');
+  // all-or-nothing semantics live in the single tx: read→put→delete per id
+  assert.match(body, /src\.get\(id\)/);
+  assert.match(body, /dst\.put\(/);
+  assert.match(body, /src\.delete\(id\)/);
+});
+
 test('deleteNotes stamps deleted_at; archiveNotes stamps archived_at', () => {
-  assert.match(fnBody(storeSrc(), 'export async function deleteNotes('),
+  assert.match(fnBody(storeSrc(), 'export function deleteNotes('),
     /deleted_at/);
-  assert.match(fnBody(storeSrc(), 'export async function archiveNotes('),
+  assert.match(fnBody(storeSrc(), 'export function archiveNotes('),
     /archived_at/);
 });
 
@@ -92,11 +100,11 @@ test('recently_deleted self-purges past retention on read', () => {
 
 test('moved rows carry the same EncryptedBlob — no re-wrap, no new format', () => {
   // Flint line: management moves ROWS (key + enc blob), never re-encrypts
-  // and never invents a blob shape. The move helpers must write the row
-  // they read — the only added fields are the *_at stamps.
-  const body = fnBody(storeSrc(), 'export async function deleteNotes(');
+  // and never invents a blob shape. The mover must write the row it read —
+  // the only touched fields are the *_at stamp / strip keys.
+  const body = fnBody(storeSrc(), 'async function _moveNotes(');
   assert.doesNotMatch(body, /encryptJson|decryptJson/,
-    'delete moves the encrypted row verbatim — touching the blob is a crypto change');
+    'moves carry the encrypted row verbatim — touching the blob is a crypto change');
 });
 
 // ── UI: multi-select affordances in NotesInbox ───────────────────────────

@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { getAllContacts } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import {
+  archiveNotes,
+  deleteNotes,
   initNotesStore,
   isNotesStoreUnlocked,
   listNotesForThread,
@@ -93,6 +95,10 @@ export function NotesInbox({ identity }: Props) {
   const [storeReady, setStoreReady] = useState(false);
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
+  // svrnty #616: multi-select message management — device-local rows only.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [manageBusy, setManageBusy] = useState(false);
 
   const loadBook = useCallback(async () => {
     if (!fp) return;
@@ -205,6 +211,35 @@ export function NotesInbox({ identity }: Props) {
     setStatus(null);
     setError(null);
     setDraft('');
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (noteId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(noteId)) next.delete(noteId);
+      else next.add(noteId);
+      return next;
+    });
+  };
+
+  const onBulkManage = async (action: 'archive' | 'delete') => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setManageBusy(true);
+    setError(null);
+    try {
+      if (action === 'archive') await archiveNotes(ids);
+      else await deleteNotes(ids);
+      setSelectedIds(new Set());
+      setSelectMode(false);
+      await loadNotes(activeThreadId);
+    } catch {
+      setError(NOTES_COPY.manageFailed);
+    } finally {
+      setManageBusy(false);
+    }
   };
 
   const onSend = async () => {
@@ -414,19 +449,80 @@ export function NotesInbox({ identity }: Props) {
           </p>
         ) : null}
 
+        {activeThreadId && notes.length > 0 ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+            <button
+              type="button"
+              data-testid="notes-manage-toggle"
+              onClick={() => {
+                setSelectMode((m) => !m);
+                setSelectedIds(new Set());
+              }}
+              style={{
+                fontFamily: E.fontSans,
+                fontSize: 12,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                color: E.muted,
+                background: 'transparent',
+                border: `1px solid ${E.border}`,
+                borderRadius: 999,
+                padding: '6px 12px',
+                cursor: 'pointer',
+              }}
+            >
+              {selectMode ? NOTES_COPY.manageDoneAction : NOTES_COPY.manageAction}
+            </button>
+            {selectMode ? (
+              <>
+                <span style={{ fontSize: 12, color: E.muted }}>
+                  {selectedIds.size} {NOTES_COPY.selectedCount}
+                </span>
+                <button
+                  type="button"
+                  data-testid="notes-bulk-archive"
+                  disabled={selectedIds.size === 0 || manageBusy}
+                  onClick={() => void onBulkManage('archive')}
+                  style={{ ...primaryBtn, padding: '6px 14px', opacity: selectedIds.size === 0 || manageBusy ? 0.6 : 1 }}
+                >
+                  {NOTES_COPY.archiveAction}
+                </button>
+                <button
+                  type="button"
+                  data-testid="notes-bulk-delete"
+                  disabled={selectedIds.size === 0 || manageBusy}
+                  onClick={() => void onBulkManage('delete')}
+                  style={{
+                    ...primaryBtn,
+                    padding: '6px 14px',
+                    background: E.danger,
+                    opacity: selectedIds.size === 0 || manageBusy ? 0.6 : 1,
+                  }}
+                >
+                  {NOTES_COPY.deleteAction}
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
         <div data-testid="notes-timeline" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '36vh', overflowY: 'auto' }}>
           {notes.map((n) => {
             const outbound = n.direction === 'outbound';
             const label = statusLabel(bubbleStatus(n));
+            const picked = selectedIds.has(n.note_id);
             return (
               <article
                 key={n.note_id}
                 data-testid={`notes-bubble-${n.note_id}`}
                 data-direction={n.direction}
+                onClick={selectMode ? () => toggleSelect(n.note_id) : undefined}
                 style={{
                   alignSelf: outbound ? 'flex-end' : 'flex-start',
                   maxWidth: '88%',
                   padding: '10px 12px',
+                  outline: picked ? `2px solid ${E.accent}` : 'none',
+                  cursor: selectMode ? 'pointer' : 'default',
                   borderRadius: 14,
                   border: `1px solid ${outbound ? E.borderLit : E.border}`,
                   background: outbound
