@@ -11,12 +11,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
+import { createServer as createTcp } from 'node:net';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mintHeadlessAgent, serializeMintArtifact } from '../identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { resolvePeerKemForSend, formatNotSent } from './peer-kem';
+import { resolvePeerKemForSend, formatNotSent, errorLine } from './peer-kem';
 
 type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
 const idOf = (a: Minted) => a.introduction.card.identity as unknown as {
@@ -232,5 +233,42 @@ test('CLI send-tr: a swapped kem → refused, ratchet file byte-identical, ZERO 
       assert.equal(deposits.length, 0);
       assert.equal(readFileSync(ratchetFile, 'utf8'), '{}');
     });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('errorLine: one bounded line (newlines collapsed, long messages cut, non-Errors stringified)', () => {
+  assert.equal(errorLine(new Error('fetch\nfailed  twice')), 'fetch failed twice');
+  assert.equal(errorLine(new Error('x'.repeat(500))).length, 120);
+  assert.equal(errorLine('plain'), 'plain');
+  assert.equal(errorLine(new Error('')), 'unknown error');
+});
+
+/** A port nothing listens on (bind, read the port, close) — connecting is refused, so fetch THROWS. */
+async function deadRelay(): Promise<string> {
+  const s = createTcp();
+  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+  const port = (s.address() as { port: number }).port;
+  await new Promise<void>((r) => s.close(() => r()));
+  return `http://127.0.0.1:${port}/api/relay`;
+}
+
+test('CLI send: relay UNREACHABLE (fetch throws, not deposited:false) → the same NOT SENT line, non-zero exit', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, new RegExp(`^NOT SENT to ${idOf(peer).fingerprint.slice(0, 8)}: the relay could not be reached \\(.+\\)$`, 'm'));
+    assert.doesNotMatch(r.out, /"deposited":\s*true/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send-tr: relay UNREACHABLE → NOT SENT line that says the ratchet index is spent, non-zero exit', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^NOT SENT to [0-9a-f]{8}: the relay could not be reached \(.+\); this ratchet index is spent$/m);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -51,3 +51,10 @@ export function formatNotSent(peerFingerprint: string, reason: string): string {
   const hex = (peerFingerprint.match(/^[0-9a-fA-F]+/)?.[0] ?? '').slice(0, 8).toLowerCase() || '?';
   return `NOT SENT to ${hex}: ${reason}`;
 }
+
+/** One bounded line from a thrown send error (e.g. undici's `fetch failed`), so it can sit inside a
+ *  NOT SENT line without a newline or an unbounded message breaking the one-line contract. */
+export function errorLine(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e);
+  return m.replace(/\s+/g, ' ').trim().slice(0, 120) || 'unknown error';
+}

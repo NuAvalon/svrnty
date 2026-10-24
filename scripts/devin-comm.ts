@@ -21,7 +21,7 @@ import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact }
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
-import { resolvePeerKemForSend, formatNotSent } from '../src/lib/headless/peer-kem';
+import { resolvePeerKemForSend, formatNotSent, errorLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
 import { acceptJoinerAtGate, buildAdmitRecord } from '../src/lib/trust/grow-gate';
@@ -402,7 +402,12 @@ async function main() {
       return packet;
     });
     const wire = JSON.stringify({ type: TR_BODY, packet });
-    const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY });
+    let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
+    try {
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY });
+    } catch (e) {   // relay unreachable: a throw, not deposited:false. Same one-line contract, and say the index is spent.
+      console.error(formatNotSent(fp, `the relay could not be reached (${errorLine(e)}); this ratchet index is spent`)); process.exitCode = 1; return;
+    }
     console.log(JSON.stringify(r));
     if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent; this ratchet index is spent)')); process.exitCode = 1; }
     return;
@@ -414,7 +419,12 @@ async function main() {
     if (!peer) throw new Error(`peer ${fp} not admitted`);
     const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
     if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
-    const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY });
+    let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
+    try {
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY });
+    } catch (e) {   // relay unreachable: a throw, not deposited:false (that is a refused deposit)
+      console.error(formatNotSent(fp, `the relay could not be reached (${errorLine(e)})`)); process.exitCode = 1; return;
+    }
     console.log(JSON.stringify(r));
     // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
     // ping the webhook below for a reply that never left.
