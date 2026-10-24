@@ -48,8 +48,11 @@ export async function resolvePeerKemForSend(
 /** The single stderr line a refused (or not-deposited) send prints. Only a hex prefix of the
  *  fingerprint is echoed, so an operator-typed argument can never inject text into the line. */
 export function formatNotSent(peerFingerprint: string, reason: string): string {
-  const hex = (peerFingerprint.match(/^[0-9a-fA-F]+/)?.[0] ?? '').slice(0, 8).toLowerCase() || '?';
-  return `NOT SENT to ${hex}: ${reason}`;
+  return `NOT SENT to ${hex8(peerFingerprint)}: ${reason}`;
+}
+
+function hex8(peerFingerprint: string): string {
+  return (peerFingerprint.match(/^[0-9a-fA-F]+/)?.[0] ?? '').slice(0, 8).toLowerCase() || '?';
 }
 
 /** One bounded line from a thrown send error (e.g. undici's `fetch failed`), so it can sit inside a
@@ -79,17 +82,23 @@ export function trackedFetch(base: typeof fetch): { fetchImpl: typeof fetch; sta
   return { fetchImpl, stage: () => stage };
 }
 
-/** The ONE stderr line for a send that THREW, worded by what actually happened. Never claims NOT SENT for
- *  a note the relay accepted. `ratchetIndexSpent` is for send-tr (the chain advanced before the call). */
+/** The ONE stderr line for a send that THREW, worded by what actually happened. Three prefixes, and a
+ *  wrapper must treat them differently:
+ *    NOT SENT    = PROVEN not delivered (nothing left, or the relay answered non-2xx): safe to retry.
+ *    DEPOSITED   = the relay accepted it (only the local copy failed): do NOT resend.
+ *    UNCONFIRMED = the request threw, so the relay may or may not have stored it (a connection can die
+ *                  AFTER the relay stored the note): non-zero exit, and a wrapper must NOT auto-retry.
+ *  `ratchetIndexSpent` is for send-tr (the chain advanced before the call). */
 export function sendThrowLine(peerFingerprint: string, e: unknown, stage: SendStage, ratchetIndexSpent = false): string {
   const msg = errorLine(e);
   const spent = ratchetIndexSpent ? '; this ratchet index is spent' : '';
   if (stage === 'deposited') {
-    const hex = (peerFingerprint.match(/^[0-9a-fA-F]+/)?.[0] ?? '').slice(0, 8).toLowerCase() || '?';
-    return `DEPOSITED to ${hex}, but saving the local copy failed (${msg}); do NOT resend`;
+    return `DEPOSITED to ${hex8(peerFingerprint)}, but saving the local copy failed (${msg}); do NOT resend`;
   }
-  const why = stage === 'unreachable' ? 'the relay could not be reached'
-    : stage === 'refused' ? 'the relay did not accept the deposit, and saving the local copy failed'
+  if (stage === 'unreachable') {
+    return `UNCONFIRMED to ${hex8(peerFingerprint)}: no response from the relay (${msg}); it may or may not have been delivered. Check before resending${spent}`;
+  }
+  const why = stage === 'refused' ? 'the relay did not accept the deposit, and saving the local copy failed'
     : 'the send failed before reaching the relay';
   return formatNotSent(peerFingerprint, `${why} (${msg})${spent}`);
 }

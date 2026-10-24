@@ -257,24 +257,26 @@ async function deadRelay(): Promise<string> {
   return `http://127.0.0.1:${port}/api/relay`;
 }
 
-test('CLI send: relay UNREACHABLE (fetch throws, not deposited:false) → the same NOT SENT line, non-zero exit', async () => {
+test('CLI send: relay UNREACHABLE (fetch throws, not deposited:false) → UNCONFIRMED (never NOT SENT), non-zero exit', async () => {
   const peer = await mintHeadlessAgent({ throwaway: true });
   const { dir } = await senderDir([contactOf(peer)]);
   try {
     const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, new RegExp(`^NOT SENT to ${idOf(peer).fingerprint.slice(0, 8)}: the relay could not be reached \\(.+\\)$`, 'm'));
+    assert.match(r.err, new RegExp(`^UNCONFIRMED to ${idOf(peer).fingerprint.slice(0, 8)}: no response from the relay \\(.+\\); it may or may not have been delivered\\. Check before resending$`, 'm'));
+    assert.doesNotMatch(r.err, /NOT SENT/);
     assert.doesNotMatch(r.out, /"deposited":\s*true/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('CLI send-tr: relay UNREACHABLE → NOT SENT line that says the ratchet index is spent, non-zero exit', async () => {
+test('CLI send-tr: relay UNREACHABLE → UNCONFIRMED line that says the ratchet index is spent, non-zero exit', async () => {
   const peer = await mintHeadlessAgent({ throwaway: true });
   const { dir } = await senderDir([contactOf(peer)]);
   try {
     const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, /^NOT SENT to [0-9a-f]{8}: the relay could not be reached \(.+\); this ratchet index is spent$/m);
+    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay \(.+\); it may or may not have been delivered\. Check before resending; this ratchet index is spent$/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -295,15 +297,17 @@ test('trackedFetch: stage follows the request — before-post / unreachable / re
   assert.equal(ok.stage(), 'deposited');
 });
 
-test('sendThrowLine: only the stages where nothing was delivered say NOT SENT; a throw AFTER a 2xx says DEPOSITED', () => {
+test('sendThrowLine: NOT SENT only where PROVEN undelivered; DEPOSITED after a 2xx; UNCONFIRMED when the request threw', () => {
   const fp = 'abcdef0123456789', e = new Error('boom');
   assert.match(sendThrowLine(fp, e, 'before-post'), /^NOT SENT to abcdef01: the send failed before reaching the relay \(boom\)$/);
-  assert.match(sendThrowLine(fp, e, 'unreachable'), /^NOT SENT to abcdef01: the relay could not be reached \(boom\)$/);
+  const unc = sendThrowLine(fp, e, 'unreachable');
+  assert.match(unc, /^UNCONFIRMED to abcdef01: no response from the relay \(boom\); it may or may not have been delivered\. Check before resending$/);
+  assert.doesNotMatch(unc, /NOT SENT/);                                         // not PROVEN undelivered, so never NOT SENT
   assert.match(sendThrowLine(fp, e, 'refused'), /^NOT SENT to abcdef01: the relay did not accept the deposit, and saving the local copy failed \(boom\)$/);
   const dep = sendThrowLine(fp, e, 'deposited');
   assert.match(dep, /^DEPOSITED to abcdef01, but saving the local copy failed \(boom\); do NOT resend$/);
   assert.doesNotMatch(dep, /NOT SENT/);
-  assert.match(sendThrowLine(fp, e, 'unreachable', true), /; this ratchet index is spent$/);
+  assert.match(sendThrowLine(fp, e, 'unreachable', true), /Check before resending; this ratchet index is spent$/);
   assert.doesNotMatch(sendThrowLine(fp, e, 'unreachable', false), /spent/);
 });
 
@@ -347,5 +351,26 @@ test('CLI send: the relay ACCEPTS the note but saving the local copy then fails 
     assert.notEqual(r.code, 0);
     assert.match(r.err, /^DEPOSITED to [0-9a-f]{8}, but saving the local copy failed \(.+\); do NOT resend$/m);
     assert.doesNotMatch(r.err, /NOT SENT/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: the relay STORES the note then DROPS the connection → UNCONFIRMED, never NOT SENT (a retrying wrapper must not re-send)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const stored: string[] = [];
+  // the note reaches the relay and is recorded, then the socket is killed before any response is written
+  const server = createServer((req) => {
+    req.resume();
+    req.on('end', () => { stored.push(req.url ?? ''); req.socket.destroy(); });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.equal(stored.length, 1, 'the relay really did receive and record the note');
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+    assert.doesNotMatch(r.out, /"deposited":\s*true/);
   } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
 });
