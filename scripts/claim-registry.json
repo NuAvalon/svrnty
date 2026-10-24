@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.1.1",
+ "version": "1.1.2",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T15:58Z",
+ "generated": "2026-10-24T17:10Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -464,10 +464,12 @@
    "examples": {
     "over": [
      "mutual trust confirmed",
-     "trust is now reciprocal"
+     "trust is now reciprocal",
+     "Trust is mutual, after you make sure it's them."
     ],
     "ok": [
-     "waiting for them to confirm"
+     "waiting for them to confirm",
+     "Make sure it's them before you trust. Mutual confirmation is coming."
     ]
    },
    "scan_root": "A",
@@ -480,7 +482,8 @@
    "hedge_phrases": [
     "(pending|waiting for|once they) (confirm|accept)",
     "(coming|not yet)"
-   ]
+   ],
+   "ruling": "Flint lane:svrnty #136 (17:05Z): TrustMap.tsx:1260 \"Trust is mutual, after you make sure it's them.\" states mutuality as current while isMutualTrustWireLive()=false (a sent trust stays one-way, \":1321 Trusted · mutual confirmation coming\") → LOW-severity over-claim. Fix: isMutualTrustWireLive() ? \"Trust is mutual, after you make sure it's them.\" : \"Make sure it's them before you trust. Mutual confirmation is coming.\" The true-arm carries a reasoned `claim-sweep:ok gated-by=isMutualTrustWireLive` (no AST containment yet); extend the claim-gates lockstep test so flipping the flag must flip this string."
   },
   {
    "id": "G-7",

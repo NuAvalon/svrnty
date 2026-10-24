@@ -1257,6 +1257,7 @@ export function TrustMap({
               In person they can become a star you Know. Remote, they wait at the Gate.
             </p>
             <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
+              {/* claim-sweep:ok gated-by=isMutualTrustWireLive: true-branch of the ternary */}
               {isMutualTrustWireLive() ? "Trust is mutual, after you make sure it's them." : "Make sure it's them before you trust. Mutual confirmation is coming."}
             </p>
             {onGrow ? (
