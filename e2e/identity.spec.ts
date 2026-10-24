@@ -45,4 +45,19 @@ test('create an identity → land in the unlocked app', async ({ page }) => {
   expect(vcf).toContain('FN:Alice E2E');
   expect(vcf).not.toContain('CATEGORIES');
   expect(vcf).not.toMatch(/blocked/i);
+
+  // In-person verify code (Your Card) — the fix for the "clunky verify" flow.
+  // Your Card reveals a scannable QR of the raw fingerprint so an in-person verifier
+  // gets a one-step byte-equal match (fingerprint-from-scan accepts raw hex). Proven
+  // in a real browser: the toggle reveals a rendered QR + hint, and hides it again.
+  const verifyToggle = page.getByTestId('toggle-verify-code');
+  await expect(verifyToggle).toBeVisible();
+  await expect(page.getByTestId('verify-code-qr')).toHaveCount(0); // collapsed by default
+  await verifyToggle.click();
+  const verifyQr = page.getByTestId('verify-code-qr');
+  await expect(verifyQr).toBeVisible();
+  await expect(verifyQr.locator('svg').first()).toBeVisible(); // react-qr-code QR renders before the download-button icon
+  await expect(verifyQr.getByText(/scan this in person/i)).toBeVisible();
+  await verifyToggle.click();
+  await expect(page.getByTestId('verify-code-qr')).toHaveCount(0); // hides again
 });
