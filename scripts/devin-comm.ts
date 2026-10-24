@@ -15,7 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -484,6 +484,7 @@ async function main() {
     const openTasks = new Map<string, { note_id: string; channel: string; sent_at: string }[]>();
     let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
     let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
+    const deadByPeer = new Map<string, { note_id: string; sent_at: string }[]>();   // → one notice per peer
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
       if (journaledIds.has(`${note.from_fingerprint}:${note.note_id}`)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
@@ -535,7 +536,15 @@ async function main() {
         continue;
       }
       const key = `${note.from_fingerprint}:${note.note_id}`;
-      if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) { dead++; continue; }   // tombstoned (Mneme FINAL)
+      if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) {                       // tombstoned (Mneme FINAL)
+        dead++;
+        if (attempts[key] === MAX_ATTEMPTS) {                           // not yet announced (MAX+1 = announced)
+          const list = deadByPeer.get(note.from_fingerprint) ?? [];
+          list.push({ note_id: note.note_id, sent_at: note.sent_at });
+          deadByPeer.set(note.from_fingerprint, list);
+        }
+        continue;
+      }
       const pt = await trOpen(artifact, c, note.body);
       if (pt === null) {
         attempts[key] = (attempts[key] ?? 0) + 1;
@@ -563,6 +572,19 @@ async function main() {
       }) + '\n');
       journaled++;
       loomNotices++;
+    }
+    for (const [peerFp, items] of deadByPeer) {
+      const agg = deadNotesNotice(peerFp, items, MAX_ATTEMPTS);
+      for (const i of items) attempts[`${peerFp}:${i.note_id}`] = MAX_ATTEMPTS + 1;   // announced: never re-counted
+      if (journaledIds.has(`${peerFp}:${agg.note_id}`)) continue;   // same set already announced
+      appendFileSync(journalPath, JSON.stringify({
+        note_id: agg.note_id,
+        peer_fp: peerFp,
+        sent_at: items.map((i) => i.sent_at).sort().at(-1),
+        plaintext: agg.text,
+        transport: 'dead-notice',
+      }) + '\n');
+      journaled++;
     }
     writeFileAtomic(attemptsPath, JSON.stringify(attempts));
     console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath }));
