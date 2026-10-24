@@ -134,6 +134,12 @@ jobs:
             mapfile -t BASE_PATTERNS < <(bash "$BASE_DIR/sensitive-paths.sh" patterns "$BASE_DIR/CODEOWNERS")
             [ "${#BASE_PATTERNS[@]}" -gt 5 ] || { echo "::error::base CODEOWNERS parsed to nothing — refusing to skip the sensitive-paths check"; exit 1; }
           else
+            # Bootstrap is only legitimate into main (dev has had the script since #277): into any
+            # other base, a missing script means the base was rewritten, not a bootstrap (Flint #308).
+            if [ "$EVENT_NAME" = "pull_request" ] && [ "${GITHUB_BASE_REF:-}" != "main" ]; then
+              echo "::error::base $BASE ($GITHUB_BASE_REF) has no scripts/sensitive-paths.sh — refusing the bootstrap path"
+              exit 1
+            fi
             echo "::notice::base $BASE predates scripts/sensitive-paths.sh: using the head's patterns (bootstrap)"
           fi
           mapfile -t HEAD_PATTERNS < <(bash scripts/sensitive-paths.sh patterns CODEOWNERS)

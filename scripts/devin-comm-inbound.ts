@@ -39,6 +39,8 @@ export function routeInbound(contact: unknown, body: string): JournalRoute {
 // Peer-chosen identifiers are echoed into a notice: plain tokens only, else '?'.
 const SAFE_TOKEN = /^[A-Za-z0-9._:#/-]{1,64}$/;
 const tok = (v: unknown): string => (typeof v === 'string' && SAFE_TOKEN.test(v) ? v : '?');
+/** The same sanitizer for journal-row fields a renderer might show (Flint #310: notice rows carry no raw peer value). */
+export const safeToken = tok;
 
 /** A loom envelope ADDRESSED to this cell (a channel_post whose mentions include ownFp, or a
  *  task_request assigned to ownFp) → a one-line NOTICE for the journal; anything else
