@@ -23,10 +23,9 @@ permissions:
 #   collect dust.
 # - Quarantine lint (BLOCKING): expired/invalid entries fail — exceptions are enumerated
 #   and have owners + expiry, not a silent red badge.
-#
-# Claim sweep stays parked until Hypatia lands scripts/claim-sweep.ts + a CI-claimed ledger.
-# A no-op job reporting green would be false evidence — worse than nothing.
-# Re-enable when the contract exists. --Hypatia
+# - Claim sweep (BLOCKING, S42): user-facing copy vs scripts/claim-registry.json (fail-closed;
+#   exit 1 = over-claim, exit 2 = config/coverage error). Steps INSIDE `unified` on purpose — see below.
+# - Sensitive paths (report; BLOCKING on a PR that touches them without a `Sensitive-paths:` line).
 
 jobs:
   unified:
@@ -70,6 +69,107 @@ jobs:
             exit 1
           fi
 
+      # ---- Claim sweep (S42) + sensitive-paths report ---------------------------------------------
+      # These are steps of `unified`, not a separate job, because `unified` is the ONLY required status
+      # check on main AND dev (rulesets main-ci / dev-protect, verified 2026-10-24). A separate job would
+      # not gate merges at all, and a required job that `needs:` a failed job reports "skipped", which
+      # GitHub counts as passing. `!cancelled()` so a red test tier above can't hide an over-claim (or
+      # vice versa) — any red step still fails `unified`.
+      - name: Claim detectors — 176-case corpus + excuse-rule tests (blocking)
+        if: ${{ !cancelled() }}
+        env:
+          FORCE_COLOR: '0'
+        run: npx --no-install tsx --test scripts/claim-detectors.test.ts scripts/claim-sweep.test.ts scripts/sensitive-paths.test.ts
+
+      - name: Claim registry — validate vs detectors + claim-gates.ts (blocking)
+        if: ${{ !cancelled() }}
+        run: npx --no-install tsx scripts/validate-claim-registry.ts
+
+      # --assert-root=A: svrnty CI asserts the svrnty frontend root; root B (autobots satellite HTML)
+      # is asserted by the svrnty_deploy pre-deploy run (scripts/claim-sweep.ts header, two-run plan).
+      - name: Claim sweep — user-facing copy vs claim registry (blocking; exit 1 over-claim, 2 config error)
+        if: ${{ !cancelled() }}
+        run: npx --no-install tsx scripts/claim-sweep.ts --assert-root=A
+
+      # The PR body is passed via env (never interpolated into the script — that is a script-injection
+      # hole). NOTE: re-running a job reuses the ORIGINAL event payload, so after adding the
+      # `Sensitive-paths:` line to the PR body, push a commit (synchronize) to re-evaluate.
+      - name: Sensitive paths — report (blocking on a PR without a Sensitive-paths line)
+        if: ${{ !cancelled() }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          ZERO=0000000000000000000000000000000000000000
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="$PR_BASE_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "$ZERO" ]; then
+            BASE="$PUSH_BEFORE_SHA"
+          else
+            echo "SENSITIVE PATHS TOUCHED: (not computed — no base to diff for $EVENT_NAME)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null && ! git fetch --no-tags --depth=1 origin "$BASE"; then
+            if [ "$EVENT_NAME" = "pull_request" ]; then
+              echo "::error::cannot fetch PR base $BASE — refusing to skip the sensitive-paths check"
+              exit 1
+            fi
+            echo "SENSITIVE PATHS TOUCHED: (not computed — cannot fetch $BASE)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Patterns = CODEOWNERS + extras, built at run time so the two can't drift (Flint lane:svrnty #217).
+          # bash [[ == ]] globs: `*` also matches `/`, so `dir/*` covers `dir/**` (over-match = safe side).
+          # Built from the BASE ref's script + CODEOWNERS (a PR can't weaken its own exam in the same change,
+          # Flint #180120), UNION the head's (a fence the PR adds counts at once). Base yields nothing → fail.
+          # Bootstrap only: a base that predates the script (e.g. main before #277 is promoted) uses the head's.
+          BASE_PATTERNS=()
+          if git cat-file -e "$BASE:scripts/sensitive-paths.sh" 2>/dev/null; then
+            BASE_DIR=$(mktemp -d)
+            git show "$BASE:scripts/sensitive-paths.sh" > "$BASE_DIR/sensitive-paths.sh"
+            git show "$BASE:CODEOWNERS" > "$BASE_DIR/CODEOWNERS" \
+              || { echo "::error::base $BASE has scripts/sensitive-paths.sh but no CODEOWNERS"; exit 1; }
+            mapfile -t BASE_PATTERNS < <(bash "$BASE_DIR/sensitive-paths.sh" patterns "$BASE_DIR/CODEOWNERS")
+            [ "${#BASE_PATTERNS[@]}" -gt 5 ] || { echo "::error::base CODEOWNERS parsed to nothing — refusing to skip the sensitive-paths check"; exit 1; }
+          else
+            # Bootstrap is only legitimate into main (dev has had the script since #277): into any
+            # other base, a missing script means the base was rewritten, not a bootstrap (Flint #308).
+            if [ "$EVENT_NAME" = "pull_request" ] && [ "${GITHUB_BASE_REF:-}" != "main" ]; then
+              echo "::error::base $BASE ($GITHUB_BASE_REF) has no scripts/sensitive-paths.sh — refusing the bootstrap path"
+              exit 1
+            fi
+            echo "::notice::base $BASE predates scripts/sensitive-paths.sh: using the head's patterns (bootstrap)"
+          fi
+          mapfile -t HEAD_PATTERNS < <(bash scripts/sensitive-paths.sh patterns CODEOWNERS)
+          PATTERNS=("${BASE_PATTERNS[@]}" "${HEAD_PATTERNS[@]}")
+          [ "${#PATTERNS[@]}" -gt 5 ] || { echo "::error::CODEOWNERS parsed to nothing — refusing to skip the sensitive-paths check"; exit 1; }
+          HITS=()
+          while IFS= read -r -d '' f; do
+            for p in "${PATTERNS[@]}"; do
+              if [[ "$f" == $p ]]; then HITS+=("$f"); break; fi
+            done
+          done < <(git diff --name-only --no-renames -z "$BASE" HEAD)
+          if [ "${#HITS[@]}" -eq 0 ]; then
+            LIST="(none)"
+          else
+            LIST=$(printf '%s, ' "${HITS[@]}")
+            LIST="${LIST%, }"
+          fi
+          echo "SENSITIVE PATHS TOUCHED: $LIST"
+          { echo "### Sensitive paths"; echo; echo "SENSITIVE PATHS TOUCHED: $LIST"; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "${#HITS[@]}" -gt 0 ]; then
+            # pure-bash line-start match (no `| grep -q` under pipefail: an early-exit grep can SIGPIPE the writer)
+            BODY=$'\n'"${PR_BODY//$'\r'/}"
+            if [[ "$BODY" == *$'\n'Sensitive-paths:* ]]; then
+              echo "PR body declares a Sensitive-paths: line."
+            else
+              echo "::error::sensitive paths touched but the PR body has no line starting with 'Sensitive-paths:' — add one (what changed + who reviewed), then push a commit to re-run"
+              exit 1
+            fi
+          fi
+
       - name: Summary
         if: always()
         run: |
@@ -78,15 +178,3 @@ jobs:
           echo "quarantined suite last tally:"
           grep -E '^ℹ (tests|pass|fail) ' /tmp/q.log | tail -3 || true
           cat /tmp/gate.log | grep '✖' | head -50 || true
-
-  # claim-sweep:
-  #   needs: build, e2e, e2e-prod
-  #   runs-on: ubuntu-latest
-  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: actions/setup-node@v4
-  #         with: { node-version: '22' }
-  #     - run: npm ci
-  #     - name: Claim sweep (fails on over-claims vs claim-map)
-  #       run: npx --no-install tsx scripts/claim-sweep.ts

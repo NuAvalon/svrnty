@@ -426,7 +426,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           {peer.alarm === 'quiet' && peer.pq && (
             isPQEncapLive() ? (
               <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
-                ✓ Post-quantum protected — a signed card carrying a verified encryption key.
+                {/* claim-sweep:ok gated-by=isPQEncapLive: true-branch of the ternary */}
+                ✓ Post-quantum (hybrid) encryption — a signed card carrying a verified encryption key.
               </p>
             ) : (
               <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
