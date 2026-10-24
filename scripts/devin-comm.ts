@@ -428,6 +428,9 @@ async function main() {
     // serializes behind it). Skip journaled ids; failed/absent notes still
     // get their attempt (out-of-order packets can become decryptable as
     // the ratchet advances).
+    // Skip-set keyed (peer_fp, note_id) — NOT note_id alone: putNote keys
+    // on sender-chosen note_id and overwrites on collision, so a bare id
+    // could shadow a different sender's note forever (flint seam review).
     const journaledIds = new Set<string>();
     try {
       for (const line of readFileSync(journalPath, 'utf8').split('\n')) {
@@ -435,16 +438,27 @@ async function main() {
         if (!t) continue;
         try {
           const m = JSON.parse(t);
-          if (m.note_id) journaledIds.add(m.note_id);
+          if (m.note_id) journaledIds.add(`${m.peer_fp ?? ''}:${m.note_id}`);
         } catch { /* tolerate a torn line */ }
       }
     } catch { /* no journal yet — first pass */ }
+    // Dead-packet tombstone: a tr packet whose decrypt keeps failing
+    // (ratchet already advanced past it) re-pays the full importState +
+    // receive every pass FOREVER — sage measured ~45s per dead packet on
+    // node18 (4 dead notes = ~3min pass even with journaled skips). Try up
+    // to 5 passes (covers out-of-order delivery that becomes decryptable
+    // as the ratchet advances), then tombstone it out of the loop.
+    const attemptsPath = `${DIR}/decrypt-attempts.json`;
+    let attempts: Record<string, number> = {};
+    try { attempts = JSON.parse(readFileSync(attemptsPath, 'utf8')); } catch { /* first pass */ }
+    const MAX_ATTEMPTS = 5;
     let journaled = 0;
     let skipped = 0;
     let skippedLoom = 0;     // loom fan-out: visible count, not silence
-    let decryptFailed = 0;   // e.g. a tr packet with no session for its sender (Flint Bug 2)
+    let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
+    let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
-      if (journaledIds.has(note.note_id)) { skipped++; continue; }
+      if (journaledIds.has(`${note.from_fingerprint}:${note.note_id}`)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
       // in-book AND not-blocked (admitContact) for BOTH paths: a blocked sender vanishes, so its
       // stored notes must not resurface (survivor-safety v1.1; Flint #260). Loom fan-out → skip.
@@ -456,7 +470,8 @@ async function main() {
         // admitted before putNote, same as the BM store.json path in devin_quarantine.py
         // (f3e115f2), which docker cells can't use: their store stays in-container. Journal it so
         // the depositor sees every inbound note regardless of transport. Never ciphertext: a TR
-        // body is classified 'tr' and still goes through trOpen below.
+        // body is classified 'tr' and still goes through trOpen below. Journaled with peer_fp, so
+        // the (peer_fp, note_id) skip-set above skips it on the next pass.
         appendFileSync(journalPath, JSON.stringify({
           note_id: note.note_id,
           peer_fp: note.from_fingerprint,
@@ -467,8 +482,15 @@ async function main() {
         journaled++;
         continue;
       }
+      const key = `${note.from_fingerprint}:${note.note_id}`;
+      if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) { dead++; continue; }   // tombstoned (Mneme FINAL)
       const pt = await trOpen(artifact, c, note.body);
-      if (pt === null) { decryptFailed++; continue; }    // decrypt failed/already-consumed — counted, never stored
+      if (pt === null) {
+        attempts[key] = (attempts[key] ?? 0) + 1;
+        decryptFailed++;
+        continue;                                        // failed/consumed — counted, never stored
+      }
+      delete attempts[key];
       appendFileSync(journalPath, JSON.stringify({
         note_id: note.note_id,
         peer_fp: note.from_fingerprint,
@@ -477,7 +499,8 @@ async function main() {
       }) + '\n');
       journaled++;
     }
-    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, decrypt_failed: decryptFailed, journal: journalPath }));
+    writeFileSync(attemptsPath, JSON.stringify(attempts), { mode: 0o600 });
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, decrypt_failed: decryptFailed, dead, journal: journalPath }));
     return;
   }
 
