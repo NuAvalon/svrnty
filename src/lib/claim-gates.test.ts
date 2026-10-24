@@ -6,6 +6,8 @@
 // components/biometric/biometric-seam.test.ts ("seam is not live until Flint wires PRF").
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive } from './claim-gates';
 
 describe('claim-gates — honest until wired (flip WITH the wire, never ahead)', () => {
@@ -35,6 +37,15 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
 
   it('isPiece2MutualBlockLive is FALSE until emit/receive transport + §F3 churn-matrix land (spine mechanism built but inert — transitive block not yet live)', () => {
     assert.equal(isPiece2MutualBlockLive(), false);
+  });
+
+  it('TrustMap empty-state trust copy is GATED on isMutualTrustWireLive (G-6 lockstep, Flint lane:svrnty #136)', () => {
+    // Flipping isMutualTrustWireLive must flip this string too: the "mutual" sentence may only render
+    // in the true-arm; today (gate false) users see the honest "coming" arm. Static check on the source.
+    const src = readFileSync(join(__dirname, '../components/TrustMap.tsx'), 'utf8');
+    assert.ok(src.includes(`{isMutualTrustWireLive() ? "Trust is mutual, after you make sure it's them." : "Make sure it's them before you trust. Mutual confirmation is coming."}`),
+      'TrustMap.tsx empty-state copy must be the isMutualTrustWireLive() ternary');
+    assert.equal(src.split("Trust is mutual, after you make sure it").length - 1, 1, 'the mutual sentence appears exactly once (in the true-arm)');
   });
 
   it('isMutualTrustWireLive is FALSE until the FE deposit-hook + the two-seat e2e land (crypto built both sides, consume wired, but no FE deposit path yet — flip WITH the e2e-green proof)', () => {
