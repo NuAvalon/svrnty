@@ -107,6 +107,7 @@ export function NotesInbox({ identity }: Props) {
   const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setView] = useState<'live' | 'archived' | 'bin'>('live');
+  const [confirmAction, setConfirmAction] = useState<null | 'delete' | 'perm' | 'empty'>(null);
   const [binRows, setBinRows] = useState<{ note_id: string }[]>([]);
   const [archRows, setArchRows] = useState<{ note_id: string }[]>([]);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
@@ -477,9 +478,7 @@ export function NotesInbox({ identity }: Props) {
                   <button type="button" data-testid="notes-archive-btn" onClick={async () => {
                     await archiveNotes([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId);
                   }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Archive</button>
-                  <button type="button" data-testid="notes-delete-btn" onClick={async () => {
-                    await deleteNotesAtomic([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId);
-                  }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Delete</button>
+                  <button type="button" data-testid="notes-delete-btn" onClick={() => setConfirmAction('delete')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Delete</button>
                 </>
               ) : view === 'archived' ? (
                 <button type="button" data-testid="notes-unarchive-btn" onClick={async () => {
@@ -490,19 +489,36 @@ export function NotesInbox({ identity }: Props) {
                   <button type="button" data-testid="notes-restore-btn" onClick={async () => {
                     await restoreFromBin([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows);
                   }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
-                  <button type="button" data-testid="notes-delete-perm-btn" onClick={async () => {
-                    await deletePermanently([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows);
-                  }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
+                  <button type="button" data-testid="notes-delete-perm-btn" onClick={() => setConfirmAction('perm')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
                 </>
               )}
-              <button type="button" data-testid="notes-empty-bin-btn" onClick={async () => {
+              <button type="button" data-testid="notes-empty-bin-btn" onClick={() => {
                 if (view !== 'bin') return;
-                await emptyBin(); setSelectedIds(new Set()); setBinRows([]);
+                setConfirmAction('empty');
               }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>
                 Empty bin
               </button>
             </div>
           ) : null}
+          {confirmAction && (
+            <div data-testid="notes-confirm-bar" style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 8px', borderTop: '1px solid rgba(255,255,255,0.1)', fontSize: 11 }}>
+              <span data-testid="notes-confirm-copy" style={{ flex: 1, opacity: 0.85 }}>
+                {confirmAction === 'delete'
+                  ? NOTES_COPY.deleteLocalOnly
+                  : confirmAction === 'perm'
+                    ? NOTES_COPY.deletePermLocalOnly
+                    : NOTES_COPY.emptyBinLocalOnly}
+              </span>
+              <button type="button" data-testid="notes-confirm-cancel" onClick={() => setConfirmAction(null)} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', opacity: 0.9 }}>Cancel</button>
+              <button type="button" data-testid="notes-confirm-ok" onClick={async () => {
+                const act = confirmAction;
+                setConfirmAction(null);
+                if (act === 'delete') { await deleteNotesAtomic([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId); }
+                else if (act === 'perm') { await deletePermanently([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows); }
+                else if (act === 'empty') { await emptyBin(); setSelectedIds(new Set()); setBinRows([]); }
+              }} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', background: E.danger }}>Confirm</button>
+            </div>
+          )}
         </div>
 
         <div data-testid="notes-timeline" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '36vh', overflowY: 'auto' }}>
