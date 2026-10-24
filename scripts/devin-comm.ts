@@ -16,7 +16,7 @@
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { routeInbound, loomNotice, openTaskChannel, openTasksNotice } from './devin-comm-inbound';
-import { readJsonStrict, writeFileAtomic } from '../src/lib/headless/atomic-file';
+import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
@@ -153,8 +153,9 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
 
 const TR_BODY = 'svrnty-tr-v1';
 type TrSessions = Record<string, RatchetSnapshot>;
-const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {});
-const saveTr = (m: TrSessions) => writeFileAtomic(RATCHETS, JSON.stringify(m, null, 2));
+const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {}, RATCHET_HINT);
+// backup:false: a restorable stale ratchet = chain-key reuse on the next send (Flint 2026-10-24).
+const saveTr = (m: TrSessions) => writeFileAtomic(RATCHETS, JSON.stringify(m, null, 2), { backup: false });
 
 function ratchetSelf(a: SerializedMintArtifact): RatchetIdentity {
   const p = a.private;

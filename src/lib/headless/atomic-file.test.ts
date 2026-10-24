@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readJsonStrict, writeFileAtomic } from './atomic-file';
+import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from './atomic-file';
 import { HeadlessStore } from './headless-store';
 
 const dir = () => mkdtempSync(join(tmpdir(), 'atomic-file-'));
@@ -24,6 +24,7 @@ test('writeFileAtomic: previous good copy kept as .bak', () => {
   assert.equal(readFileSync(p, 'utf8'), '{"v":2}');
   assert.equal(readFileSync(`${p}.bak`, 'utf8'), '{"v":1}');
   assert.deepEqual(readdirSync(d).sort(), ['store.json', 'store.json.bak']);
+  assert.equal(statSync(`${p}.bak`).mode & 0o777, 0o600, '.bak holds contacts + notes: 0600');
 });
 
 test('writeFileAtomic: an invalid current file never overwrites the last good .bak', () => {
@@ -61,4 +62,22 @@ test('HeadlessStore: missing file = empty book; mutations persist atomically wit
   assert.ok(reloaded.getContactByFingerprint('fp1') && reloaded.getContactByFingerprint('fp2'));
   assert.equal(JSON.parse(readFileSync(`${p}.bak`, 'utf8')).contacts.length, 1);
   assert.equal(statSync(p).mode & 0o777, 0o600);
+});
+
+test('ratchet state: backup:false leaves nothing to restore, and the error forbids restoring', () => {
+  const d = dir(); const p = join(d, 'ratchet-sessions.json');
+  writeFileAtomic(p, '{"peer":{"n":1}}', { backup: false });
+  writeFileAtomic(p, '{"peer":{"n":2}}', { backup: false });
+  assert.deepEqual(readdirSync(d), ['ratchet-sessions.json']);
+  writeFileSync(p, TORN);
+  assert.throws(() => readJsonStrict(p, {}, RATCHET_HINT), /Do NOT restore a backup of ratchet state/);
+});
+
+test('writeFileAtomic: a stale tmp from a crashed run (even a symlink) is replaced, never followed', () => {
+  const d = dir(); const p = join(d, 'gate.json'); const victim = join(d, 'victim');
+  writeFileSync(victim, 'keep');
+  symlinkSync(victim, `${p}.tmp.${process.pid}`);
+  writeFileAtomic(p, '{"ok":true}');
+  assert.equal(readFileSync(victim, 'utf8'), 'keep');
+  assert.equal(readFileSync(p, 'utf8'), '{"ok":true}');
 });
