@@ -15,6 +15,7 @@ export function statusLabel(status: NoteBubbleStatus): string {
   return '';
 }
 
+// claim-sweep:ok guard regex that blocks this claim (TG-1 annotation_ok, Hypatia v1.1.1)
 const FORBIDDEN_LIVE_STATUS = /\b(Delivered|Read|Expired)\b/;
 
 export function statusIsHonestFloor(text: string): boolean {
