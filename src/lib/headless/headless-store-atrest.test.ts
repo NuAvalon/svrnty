@@ -102,3 +102,54 @@ test('at-rest: plaintext file + key = migration — loads, then next flush re-wr
   assert.equal(reopened.getContactByFingerprint('frank')?.id, 'id-frank');
   rmSync(path, { force: true });
 });
+
+// ── S14 on main's store-race fixes (Flint #179187, item 2): at-rest encryption layered on fail-closed read + writer lock ──
+import { writeFileSync, readdirSync, mkdirSync } from 'node:fs';
+
+test('at-rest + main: a TORN encrypted file THROWS on load — never an empty book, and the torn file is left untouched', () => {
+  const path = tmpBook();
+  const key = new Uint8Array(randomBytes(32));
+  const a = new HeadlessStore({ path, atRestKey: key });
+  a.upsertContact(contact('alice'));
+  const good = readFileSync(path, 'utf8');
+  const torn = good.slice(0, Math.floor(good.length / 2));
+  writeFileSync(path, torn);
+  assert.throws(() => new HeadlessStore({ path, atRestKey: key }), /./, 'a torn file must stop the command');
+  assert.equal(readFileSync(path, 'utf8'), torn, 'the torn file was not overwritten by an empty book');
+});
+
+test('at-rest + main: an undecryptable file (wrong key) THROWS and is left byte-identical', () => {
+  const path = tmpBook();
+  const a = new HeadlessStore({ path, atRestKey: new Uint8Array(randomBytes(32)) });
+  a.upsertContact(contact('alice'));
+  const before = readFileSync(path, 'utf8');
+  assert.throws(() => new HeadlessStore({ path, atRestKey: new Uint8Array(randomBytes(32)) }));
+  assert.equal(readFileSync(path, 'utf8'), before);
+});
+
+test('at-rest + writer lock: under lockDir every mutation re-reads, applies, and flushes ENCRYPTED; two stores lose nothing', () => {
+  const path = tmpBook();
+  const lockDir = join(path, '..', 'locks');
+  mkdirSync(lockDir, { recursive: true });
+  const key = new Uint8Array(randomBytes(32));
+  const a = new HeadlessStore({ path, lockDir, atRestKey: key });
+  const b = new HeadlessStore({ path, lockDir, atRestKey: key });
+  a.upsertContact(contact('from-a'));
+  b.upsertContact(contact('from-b')); // b's snapshot predates a's write: the locked re-read must keep a's record
+  a.upsertContact(contact('from-a-2'));
+  const raw = readFileSync(path, 'utf8');
+  assert.ok(!raw.includes('PUB-from-a') && !raw.includes('PUB-from-b'), 'no plaintext contact on disk');
+  assert.equal(JSON.parse(raw).svrnty_at_rest, 1, 'the file is the encrypted envelope');
+  const c = new HeadlessStore({ path, atRestKey: key });
+  assert.deepEqual(c.listContacts().map((x) => x.fingerprint).sort(), ['from-a', 'from-a-2', 'from-b']);
+  assert.ok(!readdirSync(join(path, '..')).some((f) => f.endsWith('.key')), 'the at-rest key is not written next to the file');
+});
+
+test('at-rest + main: a missing key on an encrypted file THROWS even under the lock path', () => {
+  const path = tmpBook();
+  const lockDir = join(path, '..', 'locks');
+  mkdirSync(lockDir, { recursive: true });
+  const a = new HeadlessStore({ path, lockDir, atRestKey: new Uint8Array(randomBytes(32)) });
+  a.upsertContact(contact('alice'));
+  assert.throws(() => new HeadlessStore({ path, lockDir }), /encrypted at rest/);
+});

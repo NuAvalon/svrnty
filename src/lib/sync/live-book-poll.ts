@@ -28,7 +28,7 @@ import {
   type OwnerIdentity,
 } from './consume-mailbox';
 import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from './contact-update-envelope';
-import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
@@ -47,7 +47,7 @@ import { type LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
 // L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
 // compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
-import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
+import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -166,7 +166,7 @@ export function buildNoteSeam(
   const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   const verifyNote = hybrid
     ? dualReadOpener(
-        makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseNoteWire),
+        makeHybridOpener(openHybridForCycle(owner, hybrid), parseNoteWire),
         classicalNote,
       )
     : classicalNote;
@@ -217,7 +217,7 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: LivingBookHy
   const classicalAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   const verifyAffirm = hybrid
     ? dualReadOpener(
-        makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseTrustAffirmWire),
+        makeHybridOpener(openHybridForCycle(owner, hybrid), parseTrustAffirmWire),
         classicalAffirm,
       )
     : classicalAffirm;
@@ -265,6 +265,38 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: LivingBookHy
 // deriveOwnerHybridSecrets moved to @/lib/crypto/living-book-receive (shared by the FE + headless consume
 // deps so the one dual-read chokepoint derives owner open-material the same way on both paths).
 
+/**
+ * The hybrid leg's envelope opener, bound to the poll cycle (S14 on N10; Flint #179187). The hybrid secrets are
+ * derived per tick OUTSIDE the unlock cycle, so without this gate a lock/switch mid-tick would still open a
+ * hybrid blob while only the classical leg stops. A dead cycle opens NOTHING: null falls through to the classical
+ * leg, which also refuses, so the consume loop sees a dead cycle and leaves the envelope retryable (never acked).
+ */
+export function openHybridForCycle(owner: { cycle?: UnlockCycle }, hybrid: LivingBookHybridSecrets): EnvelopeOpener {
+  return async (pkg) => (owner.cycle?.ended ? null : openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp));
+}
+
+/**
+ * Wrap the poll's unlock cycle so dropping it (the callers' `finally`) also zeroes the hybrid secrets, i.e. the
+ * hybrid key material has the lifetime of the TICK, never the session (the session-long key cache N10 rejected).
+ * `getHybrid` is read at drop time because the secrets are derived after the cycle is created.
+ */
+export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBookHybridSecrets | undefined): UnlockCycle {
+  return {
+    get ended() {
+      return base.ended;
+    },
+    key: () => base.key(),
+    drop() {
+      base.drop();
+      const h = getHybrid();
+      if (h) {
+        h.secrets.x25519Sec.fill(0);
+        h.secrets.mlkem1024Sec.fill(0);
+      }
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -279,13 +311,14 @@ export async function buildConsumeDeps(
   if (!fingerprint || !publicKeyArmored) return null;
   const key = await loadKey(fingerprint); // null while the session is locked (keys encrypted at rest)
   if (!key) return null;
+  let hybrid: LivingBookHybridSecrets | undefined; // derived below; zeroed with the cycle at tick end
   const owner: OwnerIdentity = {
     fingerprint,
     publicKeyArmored,
     privateKeyArmored: key.privateKey,
     passphrase: key.passphrase,
     // One unlock for this poll cycle (decryptors + poll/ack signing). The caller drops it when the cycle ends.
-    cycle: makeUnlockCycle(key.privateKey, key.passphrase),
+    cycle: cycleDroppingHybrid(makeUnlockCycle(key.privateKey, key.passphrase), () => hybrid),
     // §5 canonical-id: thread the identity's PQ pubkeys so the owner-auth bundle lets the relay
     // recompute the 64-hex canonical fp. IdentityData.post_quantum is top-level (browser-identity.ts).
     // Absent (classical identity) → verify falls back to the 40-hex OpenPGP path.
@@ -296,7 +329,6 @@ export async function buildConsumeDeps(
   // FIRST, falling back to classical for legacy blobs. Fail-soft — a classical identity / PQ-read error
   // → undefined → classical-only openers (receive still works for classical deposits). ML-KEM secret comes
   // from the vault PQ bundle (loadPQKeys); the enc (x25519) secret from the unlocked identity key.
-  let hybrid: LivingBookHybridSecrets | undefined;
   try {
     const pq = await loadPQKeys(fingerprint);
     const kemSecB64: string | undefined = pq?.pq_kem_secret_key ?? pq?.kem?.secretKey;
@@ -329,7 +361,7 @@ export async function buildConsumeDeps(
     owner,
     decrypt: hybrid
       ? dualReadOpener(
-          makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseContactUpdateWire),
+          makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire),
           classicalCU,
         )
       : classicalCU,

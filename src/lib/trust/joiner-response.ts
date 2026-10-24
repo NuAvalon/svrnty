@@ -319,7 +319,7 @@ async function decryptJoinerBlob(
   // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null from
   // openLivingBookHybrid → fall through to OpenPGP; parseJoinerResponseWire is the type gate either way (a
   // non-joiner hybrid pkg fails it → null → the consume joiner-verify falls through, preserving no-cross-swallow).
-  if (hybrid) {
+  if (hybrid && !cycle?.ended) { // a dead poll cycle opens nothing on the hybrid leg either (S14 on N10)
     try {
       const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
       if (pt) {
