@@ -22,9 +22,8 @@ function wired(r: HybridRecipient, opts: { kemPub?: string | null; kemSec?: stri
   const counts = { unlocks: 0, kemLoads: 0 };
   const keysSeen: unknown[] = []; // every identity key the provider derived from
   const base = makeUnlockCycle(r.privateKeyArmored, r.passphrase, { onUnlock: () => { counts.unlocks += 1; } });
-  let lazy: LazyCycleHybrid | undefined;
-  const cycle = cycleDroppingHybrid(base, () => lazy?.current());
-  lazy = lazyCycleHybrid(
+  const cycle = cycleDroppingHybrid(base, () => lazy.current());
+  const lazy: LazyCycleHybrid = lazyCycleHybrid(
     cycle,
     opts.kemPub === null ? undefined : (opts.kemPub ?? r.pqKemPublicKey),
     async () => { counts.kemLoads += 1; return 'kemSec' in opts ? opts.kemSec : r.kemSecretKeyB64; },
@@ -91,9 +90,8 @@ test('R1: a lock/drop that lands WHILE deriving: the freshly derived bytes are z
   const r = await mintHybridRecipient();
   const known: LivingBookHybridSecrets = { secrets: { x25519Sec: new Uint8Array(32).fill(7), mlkem1024Sec: new Uint8Array(3168).fill(9) }, myFp: 'f'.repeat(64) };
   const base = makeUnlockCycle(r.privateKeyArmored, r.passphrase);
-  let lazy: LazyCycleHybrid | undefined;
-  const cycle = cycleDroppingHybrid(base, () => lazy?.current());
-  lazy = lazyCycleHybrid(cycle, r.pqKemPublicKey, async () => r.kemSecretKeyB64, async () => { cycle.drop(); return known; }); // lock lands inside derive
+  const cycle = cycleDroppingHybrid(base, () => lazy.current());
+  const lazy: LazyCycleHybrid = lazyCycleHybrid(cycle, r.pqKemPublicKey, async () => r.kemSecretKeyB64, async () => { cycle.drop(); return known; }); // lock lands inside derive
   assert.equal(await lazy.source(), undefined, 'overtaken derivation returns nothing');
   assert.equal(lazy.current(), undefined);
   assert.equal(nonZero(known.secrets.x25519Sec) || nonZero(known.secrets.mlkem1024Sec), false, 'and zeroes the bytes it made');

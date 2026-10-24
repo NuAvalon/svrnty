@@ -379,8 +379,8 @@ export async function buildConsumeDeps(
   if (!fingerprint || !publicKeyArmored) return null;
   const key = await loadKey(fingerprint); // null while the session is locked (keys encrypted at rest)
   if (!key) return null;
-  let lazy: LazyCycleHybrid | undefined; // created once the cycle exists; its derived bytes are zeroed with the cycle
-  const cycle = cycleDroppingHybrid(makeUnlockCycle(key.privateKey, key.passphrase), () => lazy?.current());
+  // `lazy` is declared below because it needs the cycle; the getter only runs at drop time, after it exists.
+  const cycle = cycleDroppingHybrid(makeUnlockCycle(key.privateKey, key.passphrase), () => lazy.current());
   const owner: OwnerIdentity = {
     fingerprint,
     publicKeyArmored,
@@ -399,7 +399,7 @@ export async function buildConsumeDeps(
   // hybrid-shaped blob arrives, and then from the cycle's ONE unlock (no second decryptKey). Fail-soft: a classical
   // identity / PQ-read error → no secret → classical openers. ML-KEM secret = vault PQ bundle (loadPQKeys); the
   // enc (x25519) secret = the cycle's unlocked identity key.
-  lazy = lazyCycleHybrid(cycle, owner.kemPublicKey, async () => {
+  const lazy = lazyCycleHybrid(cycle, owner.kemPublicKey, async () => {
     const pq = await loadPQKeys(fingerprint);
     return pq?.pq_kem_secret_key ?? pq?.kem?.secretKey;
   });
