@@ -16,8 +16,10 @@
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { routeInbound, loomNotice, openTaskChannel, openTasksNotice } from './devin-comm-inbound';
+import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
+import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -84,21 +86,16 @@ function ownerFrom(a: SerializedMintArtifact): HeadlessOwner {
 
 // ── agent-local JSON state (issued Grow codes + Gate arrivals) ─────────────────────────────────
 
-function loadJson<T>(path: string, empty: T): T {
-  if (!existsSync(path)) return empty;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as T;
-  } catch {
-    return empty;
-  }
-}
+// Missing = empty; present but unparseable = abort. Returning `empty` on a torn read let the next save
+// persist {} over real state (ratchet sessions, gate arrivals, issued codes). Flint 2026-10-24.
+const loadJson = readJsonStrict;
 
 function loadCodes(): IssuedCodeMap {
   return pruneIssuedCodes(loadJson<IssuedCodeMap>(CODES, {}), Date.now());
 }
 
 function saveCodes(map: IssuedCodeMap): void {
-  writeFileSync(CODES, JSON.stringify(map, null, 2));
+  writeFileAtomic(CODES, JSON.stringify(map, null, 2));
 }
 
 type GateMap = Record<string, Record<string, GateArrival>>;
@@ -108,7 +105,7 @@ function loadGate(): GateMap {
 }
 
 function saveGate(map: GateMap): void {
-  writeFileSync(GATE, JSON.stringify(map, null, 2));
+  writeFileAtomic(GATE, JSON.stringify(map, null, 2));
 }
 
 /**
@@ -135,13 +132,26 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
       acceptJoinerAtGate(ownFp, pj, codes, {
         getContactByFingerprint: async (_o: string, fp: string) => store.getContactByFingerprint(fp) as any,
         getGateArrival: async (o: string, fp: string) => (loadGate()[o]?.[fp] ?? null) as any,
-        enqueueGateArrival: async (o: string, arrival: GateArrival) => {
-          const g = loadGate();
-          if (!g[o]) g[o] = {};
-          g[o][arrival.fingerprint] = arrival;
-          saveGate(g);
-        },
-        recordAcceptedJoiner: async () => saveCodes(codes), // map already mutated in place by markAcceptedInMap
+        enqueueGateArrival: async (o: string, arrival: GateArrival) =>
+          withWriterLock(DIR, () => {
+            const g = loadGate();
+            if (!g[o]) g[o] = {};
+            g[o][arrival.fingerprint] = arrival;
+            saveGate(g);
+          }),
+        // `codes` is this poll's snapshot, already marked in place by markAcceptedInMap. Saving it whole would
+        // drop a code minted (grow) since the poll began, so merge its accepted lists into a fresh read.
+        recordAcceptedJoiner: async () =>
+          withWriterLock(DIR, () => {
+            const fresh = loadCodes();
+            for (const [o, byCode] of Object.entries(codes)) {
+              for (const [c, entry] of Object.entries(byCode)) {
+                const cur = fresh[o]?.[c];
+                if (cur) cur.accepted = [...new Set([...cur.accepted, ...entry.accepted])];
+              }
+            }
+            saveCodes(fresh);
+          }),
       }),
   };
 }
@@ -157,8 +167,9 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
 
 const TR_BODY = 'svrnty-tr-v1';
 type TrSessions = Record<string, RatchetSnapshot>;
-const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {});
-const saveTr = (m: TrSessions) => writeFileSync(RATCHETS, JSON.stringify(m, null, 2));
+const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {}, RATCHET_HINT);
+// backup:false: a restorable stale ratchet = chain-key reuse on the next send (Flint 2026-10-24).
+const saveTr = (m: TrSessions) => writeFileAtomic(RATCHETS, JSON.stringify(m, null, 2), { backup: false });
 
 function ratchetSelf(a: SerializedMintArtifact): RatchetIdentity {
   const p = a.private;
@@ -190,22 +201,26 @@ async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body:
   const peer = await ratchetPeerOf(contact);
   if (!packet || !peer) return null;
   const self = ratchetSelf(a);
-  const sessions = loadTr();
-  const snap = sessions[contact.fingerprint];
-  if (snap) {
-    const s = TripleRatchet.importState(snap);
-    if (!s) return null;
-    const pt = await s.receive(packet);
-    if (pt === null) return null;
-    sessions[contact.fingerprint] = s.exportState();
+  // load → advance → save is one locked unit: a send-tr interleaving here would have its chain advance
+  // overwritten by this stale copy, and the next send would re-use that chain index (key reuse).
+  return withWriterLockAsync(DIR, async () => {
+    const sessions = loadTr();
+    const snap = sessions[contact.fingerprint];
+    if (snap) {
+      const s = TripleRatchet.importState(snap);
+      if (!s) return null;
+      const pt = await s.receive(packet);
+      if (pt === null) return null;
+      sessions[contact.fingerprint] = s.exportState();
+      saveTr(sessions);
+      return pt;
+    }
+    const first = await TripleRatchet.acceptFirst(self, peer, packet);
+    if (!first) return null;
+    sessions[contact.fingerprint] = first.session.exportState();
     saveTr(sessions);
-    return pt;
-  }
-  const first = await TripleRatchet.acceptFirst(self, peer, packet);
-  if (!first) return null;
-  sessions[contact.fingerprint] = first.session.exportState();
-  saveTr(sessions);
-  return first.plaintext;
+    return first.plaintext;
+  });
 }
 
 function printNewArrivals(ownerFp: string, seen: Set<string>): void {
@@ -223,13 +238,13 @@ async function main() {
   // (chmod covers the case where it pre-existed with looser perms). #256 finding #1.
   mkdirSync(DIR, { recursive: true, mode: 0o700 });
   chmodSync(DIR, 0o700);
-  const store = new HeadlessStore({ path: STORE });
+  const store = new HeadlessStore({ path: STORE, lockDir: DIR });
 
   if (cmd === 'mint') {
     if (existsSync(MINT)) throw new Error('mint.json already exists — refusing to re-mint');
     const a = await mintHeadlessAgent({ throwaway: false, recoveryMode: 'm-of-n' });
     const s = serializeMintArtifact(a);
-    writeFileSync(MINT, JSON.stringify(s));
+    writeFileSync(MINT, JSON.stringify(s), { flag: 'wx', mode: 0o600 });   // create-only: never overwrite an identity
     chmodSync(MINT, 0o600);
     const id = s.public.card.identity;
     console.log(JSON.stringify({
@@ -268,16 +283,18 @@ async function main() {
     const url = new URL(result.url);
     const relayUrl = new URL(RELAY);
     url.host = relayUrl.host; // point the link at OUR relay's domain, not the packaged default
-    const codes = loadCodes();
-    if (!codes[owner.fingerprint]) codes[owner.fingerprint] = {};
-    const prior = codes[owner.fingerprint][result.code];
-    codes[owner.fingerprint][result.code] = {
-      acceptUntil: Date.now() + ACCEPTANCE_WINDOW_MS,
-      accepted: prior?.accepted ?? [],
-      cap: uses,
-      channel: 'remote',
-    };
-    saveCodes(codes);
+    withWriterLock(DIR, () => {
+      const codes = loadCodes();
+      if (!codes[owner.fingerprint]) codes[owner.fingerprint] = {};
+      const prior = codes[owner.fingerprint][result.code];
+      codes[owner.fingerprint][result.code] = {
+        acceptUntil: Date.now() + ACCEPTANCE_WINDOW_MS,
+        accepted: prior?.accepted ?? [],
+        cap: uses,
+        channel: 'remote',
+      };
+      saveCodes(codes);
+    });
     console.log(JSON.stringify({ url: url.toString(), code: result.code, cap: uses, expiresAt: result.expiresAt }));
     return;
   }
@@ -335,23 +352,26 @@ async function main() {
 
   if (cmd === 'admit-gate') {
     const fp = rest[0];
-    const g = loadGate();
-    const arrival = g[owner.fingerprint]?.[fp];
-    if (!arrival) throw new Error(`no gate arrival ${fp}`);
-    const rec = buildAdmitRecord(arrival, {});
-    store.upsertContact({
-      id: arrival.fingerprint,
-      fingerprint: arrival.fingerprint,
-      name: rec.name,
-      public_key: rec.public_key,
-      epoch: rec.epoch,
-      trust_level: rec.trust_level,
-      pq_sig_public_key: rec.pq_sig_public_key,
-      pq_kem_public_key: rec.pq_kem_public_key,
+    const arrival = withWriterLock(DIR, () => {
+      const g = loadGate();
+      const arrival = g[owner.fingerprint]?.[fp];
+      if (!arrival) throw new Error(`no gate arrival ${fp}`);
+      const rec = buildAdmitRecord(arrival, {});
+      store.upsertContact({                       // re-entrant: same lock, one unit with the gate removal
+        id: arrival.fingerprint,
+        fingerprint: arrival.fingerprint,
+        name: rec.name,
+        public_key: rec.public_key,
+        epoch: rec.epoch,
+        trust_level: rec.trust_level,
+        pq_sig_public_key: rec.pq_sig_public_key,
+        pq_kem_public_key: rec.pq_kem_public_key,
+      });
+      delete g[owner.fingerprint][fp];
+      if (!Object.keys(g[owner.fingerprint]).length) delete g[owner.fingerprint];
+      saveGate(g);
+      return arrival;
     });
-    delete g[owner.fingerprint][fp];
-    if (!Object.keys(g[owner.fingerprint]).length) delete g[owner.fingerprint];
-    saveGate(g);
     console.log(`admitted ${arrival.fingerprint} as Known — notes now flow: send ${arrival.fingerprint} "<body>"`);
     return;
   }
@@ -363,13 +383,18 @@ async function main() {
     if (!peer) throw new Error(`peer ${fp} not admitted`);
     const rp = await ratchetPeerOf(peer);
     if (!rp) throw new Error(`peer ${fp} lacks ratchet keys (x25519/mlkem)`);
-    const sessions = loadTr();
     const self = ratchetSelf(artifact);
-    let s = sessions[fp] ? TripleRatchet.importState(sessions[fp]) : null;
-    if (!s) s = TripleRatchet.initiate(self, rp);
-    const packet = await s.send(body);
-    sessions[fp] = s.exportState();
-    saveTr(sessions);
+    // Advance + persist the chain under the lock BEFORE the relay POST: a failed POST then burns an index,
+    // it never re-uses one (key reuse is the failure mode, Flint 2026-10-24).
+    const packet = await withWriterLockAsync(DIR, async () => {
+      const sessions = loadTr();
+      let s = sessions[fp] ? TripleRatchet.importState(sessions[fp]) : null;
+      if (!s) s = TripleRatchet.initiate(self, rp);
+      const packet = await s.send(body);
+      sessions[fp] = s.exportState();
+      saveTr(sessions);
+      return packet;
+    });
     const wire = JSON.stringify({ type: TR_BODY, packet });
     const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, body: wire, store, relayBase: RELAY });
     console.log(JSON.stringify(r));
@@ -539,7 +564,7 @@ async function main() {
       journaled++;
       loomNotices++;
     }
-    writeFileSync(attemptsPath, JSON.stringify(attempts), { mode: 0o600 });
+    writeFileAtomic(attemptsPath, JSON.stringify(attempts));
     console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath }));
     return;
   }
