@@ -15,7 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -509,7 +509,7 @@ async function main() {
         appendFileSync(journalPath, JSON.stringify({
           note_id: note.note_id,
           peer_fp: note.from_fingerprint,
-          sent_at: note.sent_at,
+          sent_at: safeToken(note.sent_at),
           plaintext: notice,
           transport: 'loom-notice',
         }) + '\n');
@@ -566,7 +566,7 @@ async function main() {
       appendFileSync(journalPath, JSON.stringify({
         note_id: agg.note_id,
         peer_fp: peerFp,
-        sent_at: items.map((i) => i.sent_at).sort().at(-1),
+        sent_at: safeToken(items.map((i) => i.sent_at).sort().at(-1)),
         plaintext: agg.text,
         transport: 'loom-notice',
       }) + '\n');
@@ -580,7 +580,7 @@ async function main() {
       appendFileSync(journalPath, JSON.stringify({
         note_id: agg.note_id,
         peer_fp: peerFp,
-        sent_at: items.map((i) => i.sent_at).sort().at(-1),
+        sent_at: safeToken(items.map((i) => i.sent_at).sort().at(-1)),
         plaintext: agg.text,
         transport: 'dead-notice',
       }) + '\n');
