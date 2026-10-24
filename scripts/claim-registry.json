@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.1.2",
+ "version": "1.1.4",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T17:10Z",
+ "generated": "2026-10-24T18:25Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -25,6 +25,7 @@
   "detector_mode": "'overclaim' (default: detector(t).overclaim) | 'present_unhedged' (present && !hedged; pqBadge returns no .overclaim)",
   "requires": "test_gated: [{file, test, invariant, resolved}]; resolved=false means the anchor is not yet named in a real test file",
   "scan_root": "A = svrnty src/ + app/ (svrnty CI); B = autobots infra/satellite/*.html (svrnty_deploy pre-deploy). A run asserts its OWN root or exits 2.",
+  "sweep_gate_override": "if present, the sweep uses THIS boolean instead of the claim-gates.ts value (a gate that is true without the capability being real must not excuse a claim)",
   "console_excluded": "console.* and logger calls are not user copy; the sweep skips them for every row (Archie lane:svrnty #56)",
   "annotations": "`// claim-sweep:ok <reason>` is honored ONLY for gated / test_gated / hedge_required rows, must carry a reason, and every honored one is printed (count + file:line). Never for NEVER or caveat_required."
  },
@@ -216,6 +217,34 @@
    "disclaimer_phrases": [
     "\\bnot\\s+(that\\s+)?nothing is stored"
    ]
+  },
+  {
+   "id": "NV-10",
+   "kind": "never",
+   "claim": "Absolute pending-trust invisibility: \"zero leak\", \"no one can ever tell\", \"completely invisible until mutual\"",
+   "patterns": [
+    "\\bzero[-\\s]?leak",
+    "no ?one (can|will) ever (tell|know|see)[^.\\n]{0,30}(trust|tried)",
+    "(completely|totally|perfectly) (invisible|undetectable|private)[^.\\n]{0,30}(until|before) (it\\'?s )?mutual"
+   ],
+   "disclaimer_phrases": [
+    "\\bnot (a )?zero[-\\s]?leak"
+   ],
+   "honest": "scoped per #588 C2: \"nothing leaks beyond the existence of a deposit at a blinded slot\" (+ C1: distinct ENROLLED members, not \"the pair\")",
+   "source": [
+    "#588 construction v2 caveats C1/C2 (Hypatia #173757)",
+    "Peter #179867"
+   ],
+   "examples": {
+    "over": [
+     "zero leak: your trust is completely invisible until it's mutual",
+     "no one can ever tell you trusted them"
+    ],
+    "ok": [],
+    "disclaimer_ok": [
+     "this is not a zero-leak design"
+    ]
+   }
   },
   {
    "id": "NV-8",
@@ -419,7 +448,9 @@
    "hedge_note": "(dev only; PROD separately gated)",
    "hedge_phrases": [
     "\\b(dev|preview|experimental|coming)\\b"
-   ]
+   ],
+   "sweep_gate_override": false,
+   "override_reason": "isPSIDiscoveryLive() is hard-coded `return true` on main+dev, but the live KNOW result renders in no component and the \"mutual\" list was demo data (KB#91357). A gate that is true without the capability being real would EXCUSE over-claims. Until Flint grounds today's PSI state (Archie lane:svrnty #166) and the env-flag ruling lands, any discovery copy must carry a G-4 hedge. Sep map D.1c: do not advertise PSI/mutual discovery. GROUNDED by Flint lane:svrnty #168 (18:0xZ): dev = wired, NOT proven end-to-end (no two-seat e2e); prod satellite-key 404 = PSI inert on prod; TrustMap renders the live disclosed_circle behind isPiece2MutualBlockLive; pre-mutual leak (initiator_fingerprint in /trust/psi/pending) NOT fixed. Override stays until a two-seat e2e passes AND a prod route is decided."
   },
   {
    "id": "G-5",
@@ -483,6 +514,8 @@
     "(pending|waiting for|once they) (confirm|accept)",
     "(coming|not yet)"
    ],
+   "sweep_gate_override": false,
+   "override_reason": "Peter #179867 (to Hypatia, 18:16Z; Archie copy #179866, KB#93520): \"it is imperative trust beacon does not let one know the other trusted until mutual ... Trust PSI can't go live until we remove knowledge asymmetry\". The sweep treats mutual-trust as NOT live regardless of claim-gates.ts until (a) #588 beacon v2 (apollo/trust-psi @3c30ccd) passes Flint's re-verify incl. F2, (b) it is wired client-side with the mandatory bond-confirmation exchange, (c) a two-seat e2e passes, (d) Peter says go. Trust must never ride today's PSI /pending path (initiator_fingerprint leak, Flint #168).",
    "ruling": "Flint lane:svrnty #136 (17:05Z): TrustMap.tsx:1260 \"Trust is mutual, after you make sure it's them.\" states mutuality as current while isMutualTrustWireLive()=false (a sent trust stays one-way, \":1321 Trusted · mutual confirmation coming\") → LOW-severity over-claim. Fix: isMutualTrustWireLive() ? \"Trust is mutual, after you make sure it's them.\" : \"Make sure it's them before you trust. Mutual confirmation is coming.\" The true-arm carries a reasoned `claim-sweep:ok gated-by=isMutualTrustWireLive` (no AST containment yet); extend the claim-gates lockstep test so flipping the flag must flip this string."
   },
   {
@@ -689,6 +722,62 @@
     "(from|on) this device",
     "this device only"
    ]
+  },
+  {
+   "id": "TG-4",
+   "kind": "test_gated",
+   "scan_root": "A",
+   "claim": "Your trust stays hidden until it is mutual (pending-trust privacy)",
+   "patterns": [
+    "(they|nobody|no one) (won\\'?t|can\\'?t|cannot|will not) (know|see|tell)[^.\\n]{0,30}(you )?trust(ed)?",
+    "trust[^.\\n]{0,20}(hidden|private|secret) until (it\\'?s )?mutual",
+    "only (shows|revealed|visible) (once|when) (it\\'?s )?mutual"
+   ],
+   "hedge_phrases": [
+    "(coming|not yet|once (this|it) ships)"
+   ],
+   "requires": [
+    {
+     "file": "src/lib/crypto/beacon-e2e.test.ts (apollo/trust-psi)",
+     "test": "protocol adversarial suite incl. garbage-share + reflection",
+     "invariant": "#588 PIN2/PIN3/F1",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint re-verify of #588 @3c30ccd incl. F2 (sybil pre-match slot-burn)",
+     "invariant": "#588",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "two-seat e2e: one-way trust → counterpart sees NOTHING; mutual → both see it, atomically",
+     "invariant": "blind-until-mutual",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Peter go (hard gate #179867)",
+     "invariant": "principal",
+     "resolved": false
+    }
+   ],
+   "honest_copy": "until all pass: say nothing about pending-trust privacy; after: \"An honest app never shows your trust to them until it's mutual. The relay only sees that someone deposited at a random-looking slot.\" (C1/C2 scope; NEVER the NV-10 absolutes)",
+   "source": [
+    "Peter #179867",
+    "#588 v2 C1/C2",
+    "Flint #168"
+   ],
+   "examples": {
+    "over": [
+     "they won't know you trusted them until it's mutual",
+     "your trust is hidden until mutual"
+    ],
+    "ok": [
+     "mutual trust (coming): we're building it so neither side can see a one-way trust",
+     "they won't know you trusted them until it's mutual (coming, not yet live)"
+    ]
+   }
   },
   {
    "id": "H-1",
@@ -1015,6 +1104,18 @@
   }
  ],
  "supersedes": "v1.0 (kept for diff); Oct-3 CLAIM_MAP v1.3 (KB#92121): every one of its 18 rows maps to a v1.1 id (see oct3_coverage)",
+ "hard_gates": [
+  {
+   "id": "G-6",
+   "source": "Peter #179867 (18:16Z): trust stays OFF until knowledge asymmetry is removed",
+   "requires_override": false
+  },
+  {
+   "id": "G-4",
+   "source": "Flint #168/#172 + Archie #170: discovery not live until a two-seat e2e + a working prod satellite",
+   "requires_override": false
+  }
+ ],
  "oct3_coverage": {
   "1": "G-1",
   "2a": "G-2",

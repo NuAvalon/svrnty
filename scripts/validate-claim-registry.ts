@@ -122,6 +122,18 @@ function main(): void {
   for (const a of reg.claims.filter((c) => c.kind === 'allowed')) for (const t of (a.examples && a.examples.ok) || []) {
     for (const c of reg.claims) { const m = ms[c.id]; if (m && c.kind !== 'caveat_required') { if (m(t)) fail(`allowed: "${t}" (${a.id}) is flagged by ${c.id}`); else ok(); } }
   }
+  // v1.1.3/4: an override reason without the override itself = a hold half-removed.
+  for (const c of reg.claims) {
+    if (c.override_reason && !('sweep_gate_override' in c)) fail(`${c.id}: override_reason present but sweep_gate_override missing (hold half-removed)`); else ok();
+  }
+  // Hard gates (principal/security holds) may not be silently removed. LIMIT: deleting a row's override AND its
+  // reason AND its hard_gates entry is undetectable from inside the registry; that defence is CODEOWNERS.
+  for (const h of reg.hard_gates || []) {
+    const c = reg.claims.find((x) => x.id === h.id);
+    if (!c) { fail(`hard gate ${h.id}: row missing`); continue; }
+    if (c.sweep_gate_override !== h.requires_override) fail(`hard gate ${h.id} (${h.source}): sweep_gate_override must be ${h.requires_override}`); else ok();
+    if (!c.override_reason) fail(`hard gate ${h.id}: override_reason missing`); else ok();
+  }
   // Oct-3 coverage: no row of the Flint-blessed CLAIM_MAP v1.3 may be dropped.
   if (reg.oct3_coverage) {
     const ids = new Set(reg.claims.map((c) => c.id));

@@ -241,3 +241,29 @@ describe('developer log calls are not user copy (S42 ruling 2)', () => {
     assert.deepEqual(ids(scan("console.log(\n  'svrnty is quantum-safe',\n);")), ['NV-1']);
   });
 });
+
+describe('registry v1.1.3+: sweep_gate_override replaces the claim-gates.ts value', () => {
+  const ALL_TRUE: EvalContext = { gateValue: () => true, requiresOk: () => true };
+  it('G-4 (PSI discovery): override false beats a gate that is true in code', () => {
+    assert.equal(byId('G-4').sweep_gate_override, false);
+    const r = scan('<p>find your mutual contacts</p>', ALL_TRUE);
+    assert.deepEqual(ids(r), ['G-4']);
+    assert.match(r.violations[0].reason, /overridden to false by the registry/);
+  });
+  it('G-6 (Peter hard gate #179867): mutual-trust copy fails even with every gate true', () => {
+    assert.ok((reg.hard_gates ?? []).some((h) => h.id === 'G-6' && h.requires_override === false));
+    assert.deepEqual(ids(scan('<p>mutual trust confirmed</p>', ALL_TRUE)), ['G-6']);
+  });
+  it('the row\'s own hedge still excuses an overridden row', () => {
+    assert.deepEqual(ids(scan('<p>find your mutual contacts (preview)</p>', ALL_TRUE)), []);
+  });
+  it('a non-boolean override is a config error', () => {
+    assert.throws(() => compileRegistry({ claims: [{ ...byId('G-4'), sweep_gate_override: 'false' as unknown as boolean }] }, () => true), ConfigError);
+  });
+  it('one line per ternary arm: the false arm\'s hedge must not excuse the true arm', () => {
+    const same = "{live ? 'mutual trust confirmed' : 'Mutual confirmation is coming.'}";
+    assert.deepEqual(ids(scan(same, ALL_FALSE)), [], 'documents the same-line limit: split arms onto their own lines');
+    const split = "{live\n  ? 'mutual trust confirmed'\n  : 'Mutual confirmation is coming.'}";
+    assert.deepEqual(ids(scan(split, ALL_FALSE)), ['G-6']);
+  });
+});

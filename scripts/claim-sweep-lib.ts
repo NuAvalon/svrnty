@@ -54,6 +54,10 @@ export interface RegistryClaim {
   patterns?: string[];
   gate?: string;
   gate_value_at_sha?: boolean | 'env';
+  /** registry v1.1.3: if present, the sweep uses THIS instead of the claim-gates.ts value (a gate that is
+   *  true in code without the capability being real must not excuse a claim; Peter hard gates use it too). */
+  sweep_gate_override?: boolean;
+  override_reason?: string;
   hedge_phrases?: string[];
   disclaimer_phrases?: string[];
   required_caveat?: string[];
@@ -66,6 +70,8 @@ export interface RegistryClaim {
 export interface Registry {
   claims: RegistryClaim[];
   oct3_coverage?: Record<string, string>;
+  /** principal/security holds: each row must keep sweep_gate_override === requires_override (+ a reason). */
+  hard_gates?: { id: string; source?: string; requires_override: boolean }[];
   [k: string]: unknown;
 }
 
@@ -180,6 +186,9 @@ export function compileRegistry(reg: Registry, hasGate: (name: string) => boolea
     if (c.kind === 'gated') {
       if (typeof c.gate !== 'string' || !c.gate) throw new ConfigError(`${c.id}: kind=gated but no gate named`);
       if (!hasGate(c.gate)) throw new ConfigError(`${c.id}: gate "${c.gate}" is not exported by src/lib/claim-gates.ts`);
+    }
+    if ('sweep_gate_override' in c && typeof c.sweep_gate_override !== 'boolean') {
+      throw new ConfigError(`${c.id}: sweep_gate_override must be a boolean`);
     }
     if (c.kind === 'test_gated' && !Array.isArray(c.requires)) throw new ConfigError(`${c.id}: test_gated row has no requires array`);
     return cc;
@@ -366,8 +375,11 @@ export function scanText(
       if (cc.excusedByPhrase(line)) continue;
       if (c.kind === 'gated') {
         const gate = c.gate as string;
-        if (ctx.gateValue(gate)) continue;
-        why = `kind=gated: ${gate}()=false and no same-line hedge phrase from this row`;
+        const overridden = typeof c.sweep_gate_override === 'boolean';
+        if (overridden ? c.sweep_gate_override : ctx.gateValue(gate)) continue;
+        why = overridden
+          ? `kind=gated: ${gate}() overridden to false by the registry (sweep_gate_override; see override_reason) and no same-line hedge phrase from this row`
+          : `kind=gated: ${gate}()=false and no same-line hedge phrase from this row`;
       } else if (c.kind === 'test_gated') {
         if (ctx.requiresOk(c.id)) continue;
         why = 'kind=test_gated: requires anchors not satisfied and no same-line hedge phrase from this row';
