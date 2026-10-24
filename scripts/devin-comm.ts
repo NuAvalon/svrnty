@@ -441,13 +441,16 @@ async function main() {
     } catch { /* no journal yet — first pass */ }
     let journaled = 0;
     let skipped = 0;
+    let skippedLoom = 0;     // loom fan-out: visible count, not silence
+    let decryptFailed = 0;   // e.g. a tr packet with no session for its sender (Flint Bug 2)
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
       if (journaledIds.has(note.note_id)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
       // in-book AND not-blocked (admitContact) for BOTH paths: a blocked sender vanishes, so its
       // stored notes must not resurface (survivor-safety v1.1; Flint #260). Loom fan-out → skip.
       const route = routeInbound(c, note.body);
-      if (!c || route === 'skip') continue;
+      if (route === 'skip_loom') { skippedLoom++; continue; }   // counted, never silent (Archie #260)
+      if (!c || route === 'skip_unadmitted') continue;
       if (route === 'plain') {
         // PLAIN note (Mneme's replies, 2026-10-24: sat unseen 2h). Already sender-authenticated +
         // admitted before putNote, same as the BM store.json path in devin_quarantine.py
@@ -465,7 +468,7 @@ async function main() {
         continue;
       }
       const pt = await trOpen(artifact, c, note.body);
-      if (pt === null) continue;                         // decrypt failed/already-consumed — drop, never store
+      if (pt === null) { decryptFailed++; continue; }    // decrypt failed/already-consumed — counted, never stored
       appendFileSync(journalPath, JSON.stringify({
         note_id: note.note_id,
         peer_fp: note.from_fingerprint,
@@ -474,7 +477,7 @@ async function main() {
       }) + '\n');
       journaled++;
     }
-    console.log(JSON.stringify({ journaled, skipped, journal: journalPath }));
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, decrypt_failed: decryptFailed, journal: journalPath }));
     return;
   }
 

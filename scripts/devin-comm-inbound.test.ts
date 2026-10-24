@@ -33,16 +33,22 @@ test('routeInbound: admitted contact → plain / tr', () => {
   assert.equal(routeInbound({ fingerprint: 'a' }, TR), 'tr');
 });
 test('routeInbound: BLOCKED sender (top-level) → skip for plain AND tr (survivor-safety v1.1)', () => {
-  assert.equal(routeInbound({ fingerprint: 'a', blocked: true }, 'hello'), 'skip');
-  assert.equal(routeInbound({ fingerprint: 'a', blocked: true }, TR), 'skip');
+  assert.equal(routeInbound({ fingerprint: 'a', blocked: true }, 'hello'), 'skip_unadmitted');
+  assert.equal(routeInbound({ fingerprint: 'a', blocked: true }, TR), 'skip_unadmitted');
 });
 test('routeInbound: BLOCKED via metadata.blocked → skip', () => {
-  assert.equal(routeInbound({ fingerprint: 'a', metadata: { blocked: true } }, 'hello'), 'skip');
+  assert.equal(routeInbound({ fingerprint: 'a', metadata: { blocked: true } }, 'hello'), 'skip_unadmitted');
 });
 test('routeInbound: stranger (no contact) → skip', () => {
-  assert.equal(routeInbound(null, 'hello'), 'skip');
-  assert.equal(routeInbound(undefined, TR), 'skip');
+  assert.equal(routeInbound(null, 'hello'), 'skip_unadmitted');
+  assert.equal(routeInbound(undefined, TR), 'skip_unadmitted');
 });
 test('routeInbound: loom envelope from an admitted contact → skip', () => {
-  assert.equal(routeInbound({ fingerprint: 'a' }, JSON.stringify({ loom_v: 1 })), 'skip');
+  assert.equal(routeInbound({ fingerprint: 'a' }, JSON.stringify({ loom_v: 1 })), 'skip_loom');
+});
+test('STRICT loom_v: only the number 1 is loom; true / "1" / 0 / "x" carrying text → plain (Archie #260)', () => {
+  for (const v of [true, '1', 0, 'x', 2, null]) {
+    assert.equal(classifyInbound(JSON.stringify({ loom_v: v, text: 'read me' })), 'plain', String(v));
+  }
+  assert.equal(classifyInbound(JSON.stringify({ loom_v: 1, kind: 'claim' })), 'loom');
 });

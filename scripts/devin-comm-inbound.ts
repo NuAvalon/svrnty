@@ -14,20 +14,23 @@ export function classifyInbound(body: string): InboundKind {
     const o = JSON.parse(body);
     if (o && typeof o === 'object' && !Array.isArray(o)) {
       if (o.type === TR_BODY && o.packet) return 'tr';
-      if ('loom_v' in o) return 'loom';
+      // STRICT (Archie #260): every real envelope carries loom_v === 1 (129/129 in a live store). A
+      // bare `'loom_v' in o` let any note SKIP itself by adding a loom_v key = a message disguised as
+      // machine traffic, silently dropped. Anything else with a loom_v key is readable → 'plain'.
+      if (o.loom_v === 1) return 'loom';
     }
   } catch { /* not JSON → readable text */ }
   return 'plain';
 }
 
-export type JournalRoute = 'skip' | 'tr' | 'plain';
+export type JournalRoute = 'skip_unadmitted' | 'skip_loom' | 'tr' | 'plain';
 
 /** poll-json's whole journal decision for one inbound note. A sender must be ADMITTED (in-book AND
  *  not blocked, the live accept path's own predicate): under survivor-safety v1.1 a block makes the
  *  sender vanish, so a blocked sender's earlier-stored notes must never resurface as EXT notices
  *  (Flint #260 review). Then 'tr' → trOpen (decrypted plaintext only), 'plain' → journal, loom → skip. */
 export function routeInbound(contact: unknown, body: string): JournalRoute {
-  if (!admitContact(contact)) return 'skip';
+  if (!admitContact(contact)) return 'skip_unadmitted';
   const kind = classifyInbound(body);
-  return kind === 'loom' ? 'skip' : kind;
+  return kind === 'loom' ? 'skip_loom' : kind;
 }
