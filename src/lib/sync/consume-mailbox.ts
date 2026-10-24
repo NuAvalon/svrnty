@@ -36,6 +36,7 @@ import {
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
+import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -49,6 +50,14 @@ export interface OwnerIdentity {
   // can recompute the 64-hex canonical fingerprint. Absent for a classical identity (40-hex fp).
   kemPublicKey?: string;
   sigPublicKey?: string;
+  // HNDL receive (custody ①, Peter #168173): the owner's ML-KEM-1024 SECRET (base64). The FE path
+  // (buildConsumeDeps) instead sources this from loadPQKeys(fp) because the browser vault holds it;
+  // a HEADLESS agent has no IndexedDB, so its custody→HeadlessOwner adapter MUST carry the secret
+  // HERE (from MintSecret.mlkem1024Sec, uint8ToBase64) so buildHeadlessConsumeDeps can derive the
+  // hybrid open-material (deriveOwnerHybridSecrets) and open inbound PQ-hybrid mail. Absent for a
+  // classical identity → classical-only openers (per the loud-not-silent invariant: advertising a
+  // kem PUB while this is absent must error LOUD, never silently ack+drop a hybrid blob).
+  kemSecretKey?: string;
 }
 
 /** Decrypt an opaque relay blob to a SignedContactUpdate, or null if it isn't for us / is corrupt. */
@@ -191,6 +200,13 @@ export interface ConsumeDeps {
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
   now?: () => string; // ISO timestamp source (inject for determinism)
+  // ③ HNDL receive gate (Flint): true iff the owner ADVERTISES a kem pub but NO ML-KEM secret could be
+  // derived (OwnerIdentity.kemPublicKey present && deriveOwnerHybridSecrets → undefined). Set by the deps
+  // builders (buildConsumeDeps / buildHeadlessConsumeDeps). When true, consumeOne treats a hybrid-package
+  // blob it cannot open as RETRYABLE (loud), never terminal — so inbound hybrid is never silently lost
+  // while the secret is transiently missing (locked session / Athena-① pending). Undefined ⇒ status quo.
+  // May be a lazy check (FE: the secret is only derived once a hybrid blob arrives); consumeOne awaits it per hybrid blob.
+  hybridSecretMissing?: boolean | (() => Promise<boolean>);
 }
 
 export interface ConsumeSummary {
@@ -332,6 +348,24 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   // cycle immediately before EVERY write below, not just at blob boundaries: a dead cycle means the identity is
   // locked/switched, so the decided-looking result must not be applied — leave the envelope in the mailbox (retryable).
   const dead = () => deps.owner.cycle?.ended === true;
+  // ③ LOUD-not-silent (Flint, HNDL receive gate): a hybrid deposit we SHOULD be able to open — the owner
+  // ADVERTISES a kem pub but we currently have NO derived ML-KEM secret (Athena-① pending / a transiently
+  // locked session) — must NEVER be acked+DELETED (= silent-loss). Leave it for RETRY, loudly. KEYED ON
+  // secret-DERIVABILITY, not open-success: when we HAVE the secret, a hybrid pkg that fails to open is
+  // genuinely terminal (corrupt / wrong-recipient) and is handled by the normal decrypt path below.
+  if (
+    deps.hybridSecretMissing &&
+    asMailboxEnvelopePackage(blob) != null &&
+    (typeof deps.hybridSecretMissing === 'function' ? await deps.hybridSecretMissing() : true)
+  ) {
+    console.error(
+      `[consume] LOUD: hybrid deposit for kem-advertising owner ${deps.owner.fingerprint.slice(0, 8)} ` +
+      `with no derivable ML-KEM secret — leaving for RETRY, not acking (acking would be silent-loss). ` +
+      `Needs the owner's kem secret (OwnerIdentity.kemSecretKey / vault PQ bundle) or a session unlock.`,
+    );
+    return { kind: 'retryable' };
+  }
+
   // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
   // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
   // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;

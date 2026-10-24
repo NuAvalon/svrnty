@@ -27,12 +27,13 @@ import {
   type KnownContact,
   type OwnerIdentity,
 } from './consume-mailbox';
-import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
-import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from './contact-update-envelope';
+import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import {
   loadKey,
+  loadPQKeys,
   getContactByFingerprint,
   updateContact,
   loadIssuedCodeMap,
@@ -42,6 +43,12 @@ import {
   type ContactRecord,
   type IssuedCodeMap,
 } from '@/lib/identity/client-store';
+import { resolveHybrid, type HybridSecretsSource, type LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
+import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receive';
+// L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
+// compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
+import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
+import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
@@ -49,11 +56,11 @@ import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-res
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam, NoteResponseSeam, TrustAffirmResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
-import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner } from '@/lib/messaging/store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
-import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
+import { trustAffirmOpenpgpDecryptor, parseTrustAffirmWire } from '@/lib/trust/trust-affirm-seal';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
 
 /** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
@@ -105,7 +112,7 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
  * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
  * recordAcceptedJoiner persists the accept across polls.
  */
-export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): JoinerResponseSeam {
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
 
   // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
@@ -121,9 +128,11 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap): Joi
     verify: (blob: string): Promise<PendingJoiner | null> =>
       verifyJoinerResponse(
         blob,
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, cycle: owner.cycle },
+        // DUAL-READ: hybrid secrets (when present) let verify open a PQ-hybrid joiner-response FIRST, else
+        // it falls through to the classical OpenPGP decrypt — same giver identity either way.
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle },
         acceptNonce,
-        { requirePq: false }, // classical-era joiners accepted — the 0.4 wire is classical
+        { requirePq: false }, // classical-era joiners still accepted — the signature suite is separate from the envelope
       ),
     accept: async (pj: PendingJoiner): Promise<{ ignited: boolean } | null> => {
       // Gate, not Known: consume the return-channel and the issued-code slot, but do not addContact
@@ -150,12 +159,21 @@ export interface NoteSeamDeps {
 export function buildNoteSeam(
   owner: OwnerIdentity,
   deps: NoteSeamDeps = { openOwner: notesStoreOwner, accept: acceptInboundNote },
+  hybrid?: HybridSecretsSource,
 ): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
+  // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
+  // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
+  const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
+  const verifyNote = hybrid
+    ? dualReadOpener(
+        makeHybridOpener(openHybridForCycle(owner, hybrid), parseNoteWire),
+        classicalNote,
+      )
+    : classicalNote;
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
-    // the type-check inside noteOpenpgpDecryptor is the discriminator, so this never eats a non-note.
-    verify: (blob: string) => decryptNote(blob),
+    // parseNoteWire is the discriminator (both legs), so this never eats a non-note.
+    verify: (blob: string) => verifyNote(blob),
     accept: async (wire) => {
       // Owner guard (N10 cross-tab hardening, Flint #178309): the notes store is tab-local module state that
       // putNote writes through. If it is not open FOR THIS owner (locked, or left open for another identity),
@@ -193,12 +211,20 @@ export function buildNoteSeam(
  * the EXISTING trusted state, which a remote wire can never promote (updateContact pt5 gate). So an
  * in-book affirm sets they_trust_me (inbound) but mutual requires MY own prior owner-verified trust.
  */
-export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
+export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: HybridSecretsSource): TrustAffirmResponseSeam {
+  // Single dual-read chokepoint: hybrid-FIRST + classical FALLBACK (off the N10 unlock cycle), reusing parseTrustAffirmWire (the same
+  // asAffirm type-gate on BOTH legs → no-cross-swallow).
+  const classicalAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
+  const verifyAffirm = hybrid
+    ? dualReadOpener(
+        makeHybridOpener(openHybridForCycle(owner, hybrid), parseTrustAffirmWire),
+        classicalAffirm,
+      )
+    : classicalAffirm;
   return {
-    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; the
-    // type-check inside trustAffirmOpenpgpDecryptor is the discriminator, so this never eats a non-affirm.
-    verify: (blob) => decryptAffirm(blob),
+    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; parseTrustAffirmWire
+    // is the discriminator (both legs), so this never eats a non-affirm.
+    verify: (blob) => verifyAffirm(blob),
     accept: (wire) =>
       acceptTrustAffirm({
         wire,
@@ -236,6 +262,109 @@ export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseS
   };
 }
 
+// deriveOwnerHybridSecrets moved to @/lib/crypto/living-book-receive (shared by the FE + headless consume
+// deps so the one dual-read chokepoint derives owner open-material the same way on both paths).
+
+/**
+ * The hybrid leg's envelope opener, bound to the poll cycle (S14 on N10; Flint #179187). A lock/switch mid-tick
+ * must stop the hybrid leg exactly like the classical one. A dead cycle opens NOTHING: null falls through to the
+ * classical leg, which also refuses, so the consume loop sees a dead cycle and leaves the envelope retryable
+ * (never acked). `hybrid` may be a lazy provider (see lazyCycleHybrid); it is resolved only when a hybrid-shaped
+ * package actually reaches this opener, and the cycle is re-checked after it resolves.
+ */
+export function openHybridForCycle(owner: { cycle?: UnlockCycle }, hybrid: HybridSecretsSource): EnvelopeOpener {
+  return async (pkg) => {
+    if (owner.cycle?.ended) return null;
+    const h = await resolveHybrid(hybrid);
+    if (!h || owner.cycle?.ended) return null; // no derivable secret, or a lock landed while deriving
+    return openMailboxEnvelope(pkg, h.secrets, h.myFp);
+  };
+}
+
+export interface LazyCycleHybrid {
+  /** Memoized for the cycle. Derives on the FIRST call from the cycle's already-unlocked key (no second unlock). */
+  source: () => Promise<LivingBookHybridSecrets | undefined>;
+  /** What has been derived so far (for zeroing at cycle end); undefined before the first hybrid blob arrives. */
+  current: () => LivingBookHybridSecrets | undefined;
+}
+
+/**
+ * Flint R1/R2 (#275): derive the owner's hybrid open-material LAZILY and from the poll cycle's single unlock.
+ *  • classical identity or empty/classical mailbox → nothing is derived, no key is touched (zero cost);
+ *  • the first hybrid-shaped blob derives once, reusing cycle.key() (the unlock the classical decryptors share);
+ *  • nothing is derived before then, so an error between "cycle created" and "deps returned" finds no derived secret;
+ *  • if the cycle ended while deriving, the freshly derived bytes are zeroed immediately and never returned.
+ * Zeroing at cycle end is cycleDroppingHybrid(base, current). Fail-soft: any read error → undefined (classical).
+ */
+export function lazyCycleHybrid(
+  cycle: UnlockCycle,
+  kemPublicKey: string | undefined,
+  loadKemSecret: () => Promise<string | undefined>,
+  derive: typeof deriveOwnerHybridSecretsFromKey = deriveOwnerHybridSecretsFromKey, // injectable for tests
+): LazyCycleHybrid {
+  let pending: Promise<LivingBookHybridSecrets | undefined> | null = null;
+  let derived: LivingBookHybridSecrets | undefined;
+  return {
+    source() {
+      if (!kemPublicKey || cycle.ended) return Promise.resolve(undefined);
+      if (!pending) {
+        pending = (async () => {
+          try {
+            const kemSecretB64 = await loadKemSecret();
+            if (!kemSecretB64) return undefined;
+            const key = await cycle.key(); // throws if the cycle ended; caught below
+            const h = await derive(key, kemPublicKey, kemSecretB64);
+            if (!h) return undefined;
+            if (cycle.ended) {
+              h.secrets.x25519Sec.fill(0);
+              h.secrets.mlkem1024Sec.fill(0);
+              return undefined;
+            }
+            derived = h;
+            return h;
+          } catch {
+            return undefined; // never block the poll on a PQ-key read
+          }
+        })();
+      }
+      return pending;
+    },
+    current: () => derived,
+  };
+}
+
+/** Run `build`; if it throws, end the cycle (drops the unlocked-key reference + zeroes anything derived) and rethrow. */
+export async function dropCycleOnThrow<T>(cycle: UnlockCycle, build: () => Promise<T>): Promise<T> {
+  try {
+    return await build();
+  } catch (e) {
+    cycle.drop();
+    throw e;
+  }
+}
+
+/**
+ * Wrap the poll's unlock cycle so dropping it (the callers' `finally`) also zeroes the derived hybrid secret BYTES:
+ * the derived secret bytes have tick lifetime. Not claimed: the passphrase and the ML-KEM secret's base64 STRING are
+ * JS strings and cannot be zeroed. `getHybrid` is read at drop time because the secrets are derived lazily.
+ */
+export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBookHybridSecrets | undefined): UnlockCycle {
+  return {
+    get ended() {
+      return base.ended;
+    },
+    key: () => base.key(),
+    drop() {
+      base.drop();
+      const h = getHybrid();
+      if (h) {
+        h.secrets.x25519Sec.fill(0);
+        h.secrets.mlkem1024Sec.fill(0);
+      }
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -250,23 +379,38 @@ export async function buildConsumeDeps(
   if (!fingerprint || !publicKeyArmored) return null;
   const key = await loadKey(fingerprint); // null while the session is locked (keys encrypted at rest)
   if (!key) return null;
+  // `lazy` is declared below because it needs the cycle; the getter only runs at drop time, after it exists.
+  const cycle = cycleDroppingHybrid(makeUnlockCycle(key.privateKey, key.passphrase), () => lazy.current());
   const owner: OwnerIdentity = {
     fingerprint,
     publicKeyArmored,
     privateKeyArmored: key.privateKey,
     passphrase: key.passphrase,
     // One unlock for this poll cycle (decryptors + poll/ack signing). The caller drops it when the cycle ends.
-    cycle: makeUnlockCycle(key.privateKey, key.passphrase),
+    cycle,
     // §5 canonical-id: thread the identity's PQ pubkeys so the owner-auth bundle lets the relay
     // recompute the 64-hex canonical fp. IdentityData.post_quantum is top-level (browser-identity.ts).
     // Absent (classical identity) → verify falls back to the 40-hex OpenPGP path.
     kemPublicKey: id?.post_quantum?.kem_public_key,
     sigPublicKey: id?.post_quantum?.sig_public_key,
   };
+  // HNDL dual-read: this owner's mailbox open-material lets the openers open a PQ-hybrid deposit FIRST, falling
+  // back to classical for legacy blobs. DERIVED LAZILY (Flint R1/R2 on #275): nothing is read or unlocked until a
+  // hybrid-shaped blob arrives, and then from the cycle's ONE unlock (no second decryptKey). Fail-soft: a classical
+  // identity / PQ-read error → no secret → classical openers. ML-KEM secret = vault PQ bundle (loadPQKeys); the
+  // enc (x25519) secret = the cycle's unlocked identity key.
+  const lazy = lazyCycleHybrid(cycle, owner.kemPublicKey, async () => {
+    const pq = await loadPQKeys(fingerprint);
+    return pq?.pq_kem_secret_key ?? pq?.kem?.secretKey;
+  });
+  const hybrid = lazy.source;
+
+
   // R1 return-channel: load the issued-code snapshot ONCE per poll (this fn is called per poll cycle by
   // both pollLiveBookOnce and startLiveBookPolling.tick) so the joiner accept-oracle is sync + reflects
   // codes minted since the last poll. loadIssuedCodeMap prunes expired entries.
-  const codes: IssuedCodeMap = await loadIssuedCodeMap();
+  // If this throws, the poll never receives deps and so never runs its cycle.drop(): end the cycle here (R1).
+  const codes: IssuedCodeMap = await dropCycleOnThrow(cycle, () => loadIssuedCodeMap());
   // Unlock the notes store so received over-wire notes PERSIST on arrival (not just once /msg is open).
   // Same unlock passphrase the vault uses (store.ts initNotesStore, separate salt); the poll only runs
   // for an UNLOCKED identity, so the credential is already in memory — no new trust boundary crossed.
@@ -281,13 +425,26 @@ export async function buildConsumeDeps(
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
   }
+  // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
+  const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
   return {
     owner,
-    decrypt: openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle),
+    decrypt: hybrid
+      ? dualReadOpener(
+          makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire),
+          classicalCU,
+        )
+      : classicalCU,
     store: buildContactStore(fingerprint),
-    joiner: buildJoinerSeam(owner, codes),
-    note: buildNoteSeam(owner),
-    affirm: buildTrustAffirmSeam(owner),
+    joiner: buildJoinerSeam(owner, codes, hybrid),
+    note: buildNoteSeam(owner, undefined, hybrid),
+    affirm: buildTrustAffirmSeam(owner, hybrid),
+    // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
+    // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
+    // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
+    // poll off loadPQKeys) — a derivable owner is FALSE → opens; never retryable-forever (Flint #168382).
+    // Lazy: evaluated only when a hybrid-shaped blob arrives (consumeOne), off the same memoized derivation.
+    hybridSecretMissing: async () => !!owner.kemPublicKey && !(await hybrid()),
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)

@@ -10,6 +10,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
+import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
 import {
   type HeadlessOwner,
@@ -20,20 +21,20 @@ import {
 
 const RELAY = 'http://relay.test/api/relay';
 
-type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; sig: string };
+type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
 async function mint(): Promise<Id> {
   const a = await mintHeadlessAgent({ throwaway: true });
   const id: any = a.introduction.card.identity;
   return {
     fp: id.fingerprint, pub: id.public_key,
     priv: a.secret_material.classicalPrivateKey, kpass: a.secret_material.classicalKpass,
-    kem: id.pq_kem_public_key, sig: id.pq_sig_public_key,
+    kem: id.pq_kem_public_key, kemSec: uint8ToBase64(a.secret_material.mlkem1024Sec), sig: id.pq_sig_public_key,
   };
 }
 function owner(id: Id): HeadlessOwner {
   return {
     fingerprint: id.fp, publicKeyArmored: id.pub, privateKeyArmored: id.priv, passphrase: id.kpass,
-    kemPublicKey: id.kem, sigPublicKey: id.sig,
+    kemPublicKey: id.kem, kemSecretKey: id.kemSec, sigPublicKey: id.sig,
   };
 }
 function asContact(id: Id, over: Partial<HeadlessContact> = {}): HeadlessContact {
@@ -80,7 +81,7 @@ test('headless RECEIVE: A affirms trust → B polls → reciprocal flips (B alre
   const dep = await sendTrustAffirmToPeer({
     senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
     senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, trusts: true,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, trusts: true,
     relayBase: RELAY, fetchImpl,
   });
   assert.equal(dep.deposited, true);
@@ -104,7 +105,7 @@ test('headless RECEIVE: in-book affirm but I do NOT trust them → they_trust_me
   await sendTrustAffirmToPeer({
     senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
     senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, trusts: true, relayBase: RELAY, fetchImpl,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, trusts: true, relayBase: RELAY, fetchImpl,
   });
   await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
 
@@ -121,7 +122,7 @@ test('headless RECEIVE: a STRANGER affirmation flips nothing (FALSE-MUTUAL gate,
   await sendTrustAffirmToPeer({
     senderFingerprint: C.fp, senderPublicKeyArmored: C.pub, senderPrivateKeyArmored: C.priv, passphrase: C.kpass,
     senderPqKemPublicKey: C.kem, senderPqSigPublicKey: C.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, trusts: true, relayBase: RELAY, fetchImpl,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, trusts: true, relayBase: RELAY, fetchImpl,
   });
   const summary = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
 
@@ -139,7 +140,7 @@ test('headless RECEIVE + SEND: A sends a note → B polls → note persisted in 
   bStore.upsertContact(asContact(A, { trust_level: 'known' })); // A in B's book (admit)
 
   const sent = await sendNoteFromHeadless({
-    owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub,
+    owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
     body: 'hello from a headless agent', store: aStore, relayBase: RELAY, fetchImpl,
   });
   assert.equal(sent.deposited, true);
@@ -164,7 +165,7 @@ test('headless RECEIVE: a BLOCKED in-book sender note is NOT persisted — block
   bStore.upsertContact(asContact(A, { trust_level: 'known', blocked: true })); // A in B's book but BLOCKED
 
   const sent = await sendNoteFromHeadless({
-    owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub,
+    owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
     body: 'note from a blocked sender', store: aStore, relayBase: RELAY, fetchImpl,
   });
   assert.equal(sent.deposited, true); // the sender CAN deposit; the RECEIVER's admission must drop it
@@ -186,7 +187,7 @@ test('headless RECEIVE anti-rollback (#3 monotonic): a replayed STALE "trust" ca
   const base = {
     senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
     senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, relayBase: RELAY, fetchImpl,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, relayBase: RELAY, fetchImpl,
   };
 
   // 1) A affirms trust (OLD) → B applies → they_trust_me TRUE.
@@ -220,7 +221,7 @@ test('headless anti-rollback NaN-hardening (#3): a GARBAGE-timestamp affirm is d
   const base = {
     senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
     senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, relayBase: RELAY, fetchImpl,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, relayBase: RELAY, fetchImpl,
   };
   const OLD = '2026-10-10T10:00:00.000Z';
   const NEW = '2026-10-10T11:00:00.000Z';
@@ -257,7 +258,7 @@ test('headless RECEIVE: a BLOCKED in-book sender\'s AFFIRM is dropped — no fli
   await sendTrustAffirmToPeer({
     senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
     senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, trusts: true, relayBase: RELAY, fetchImpl,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, trusts: true, relayBase: RELAY, fetchImpl,
   });
   const s = await pollHeadlessOnce(owner(B), bStore, { relayBase: RELAY, fetchImpl });
 
@@ -272,7 +273,7 @@ test('headless SEND: deposits to the peer fp-derived mailbox (relay-independent 
   await sendTrustAffirmToPeer({
     senderFingerprint: A.fp, senderPublicKeyArmored: A.pub, senderPrivateKeyArmored: A.priv, passphrase: A.kpass,
     senderPqKemPublicKey: A.kem, senderPqSigPublicKey: A.sig,
-    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, trusts: true, relayBase: RELAY, fetchImpl,
+    peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, trusts: true, relayBase: RELAY, fetchImpl,
   });
   assert.ok(boxes.has(deriveMailboxId(B.fp)), 'deposited to B\'s fp-derived mailbox id');
   assert.equal(boxes.get(deriveMailboxId(B.fp))!.length, 1);
