@@ -25,6 +25,7 @@ import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettings
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import { RelaySettings } from '@/components/settings/RelaySettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
+import { contactUpdateSendMessage } from '@/components/contact-update-send-copy';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -1702,25 +1703,12 @@ export function SoverentityFrontend({
       const deposited = result.deposited.length;
       const skipped = result.skipped.length;
       const failed = result.failed.length;
+      // S14: a 'no-pq-kem' skip says "needs a security upgrade", never "no key" (contactUpdateSendMessage).
+      const { message } = contactUpdateSendMessage(result);
       if (deposited === 0) {
-        return {
-          ok: false,
-          reason: 'not-delivered',
-          message: `Couldn't deliver: ${skipped} had no key, ${failed} failed. Saved locally — try Send again later.`,
-        };
+        return { ok: false, reason: 'not-delivered', message };
       }
-      return {
-        ok: true,
-        status: 'sent',
-        deposited,
-        skipped,
-        failed,
-        message:
-          `Sent to ${deposited} contact${deposited === 1 ? '' : 's'}` +
-          (skipped ? `, ${skipped} skipped (no key yet)` : '') +
-          (failed ? `, ${failed} failed (retry)` : '') +
-          '.',
-      };
+      return { ok: true, status: 'sent', deposited, skipped, failed, message };
     } catch (e) {
       return { ok: false, reason: 'error', message: e instanceof Error ? e.message : 'Send failed.' };
     }

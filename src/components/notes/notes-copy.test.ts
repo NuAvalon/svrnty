@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NOTES_COPY } from './notes-copy';
+import { NOTES_COPY, notSentMessage } from './notes-copy';
 import { statusIsHonestFloor, statusLabel, outboundStatus } from './notes-status';
 
 describe('notes inbox copy — claim-honesty', () => {
@@ -61,5 +61,17 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.doesNotMatch(status, /Delivered confirmation/);
     const liveStatus = [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');
     assert.doesNotMatch(liveStatus, /\b(Delivered|Read|Expired)\b/);
+  });
+});
+
+describe('S14 needs-upgrade copy', () => {
+  it('is distinct from the network failure, names the contact, and is claim-safe', () => {
+    assert.notEqual(NOTES_COPY.notSentNeedsUpgrade, NOTES_COPY.notSent);
+    assert.match(NOTES_COPY.notSentNeedsUpgrade, /^Not sent\. \{name\} needs a security upgrade before you can message them\.$/);
+    assert.doesNotMatch(NOTES_COPY.notSentNeedsUpgrade, /Delivered|Read|Expired|unconfirmed|quantum|PQ-secure/i);
+  });
+  it('notSentMessage: no PQ key => needs-upgrade line with the name; with a PQ key => the plain not-sent line', () => {
+    assert.equal(notSentMessage({ name: 'Bob' }), 'Not sent. Bob needs a security upgrade before you can message them.');
+    assert.equal(notSentMessage({ name: 'Bob', pqKemPublicKey: 'KEM' }), NOTES_COPY.notSent);
   });
 });

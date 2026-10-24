@@ -33,8 +33,18 @@ export const NOTES_COPY = {
   needCanonical:
     'Notes over the wire need a current svrnty identity. This book cannot send yet.',
   sendFailed: 'The note could not be sent.',
+  // S14: the recipient has no verified PQ KEM key; sends are skipped, never downgraded. Claim-safe wording (no 'quantum-safe').
+  notSentNeedsUpgrade: 'Not sent. {name} needs a security upgrade before you can message them.',
   contactNotSendable: 'This contact cannot receive a sealed note.',
 } as const;
+
+/** The status line for a note that was NOT deposited: a recipient with no verified PQ KEM key was skipped (S14), which is
+ *  not a network failure and must not read like one. */
+export function notSentMessage(contact: { name: string; pqKemPublicKey?: string }): string {
+  return contact.pqKemPublicKey
+    ? NOTES_COPY.notSent
+    : NOTES_COPY.notSentNeedsUpgrade.replace('{name}', contact.name);
+}
 
 export const NOTES_BOUNDS = {
   name: 80,
