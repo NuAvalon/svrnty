@@ -307,11 +307,18 @@ export default function Home() {
     const onVis = () => {
       if (document.visibilityState === 'visible') handle.burst(8_000);
     };
+    // Idle backoff stretches the cadence to ~15 s; wake it the moment the user comes back (window focus) or
+    // the network returns (online), same as tab-visible.
+    const onWake = () => handle.burst(8_000);
     document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onWake);
+    window.addEventListener('online', onWake);
     return () => {
       livePollRef.current = null;
       handle.stop();
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onWake);
+      window.removeEventListener('online', onWake);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on stable fingerprint; identity
     // object ref is not a dep (public key stable per fp; private key re-loaded each tick).
@@ -322,7 +329,7 @@ export default function Home() {
   }, [growOpen]);
 
   useEffect(() => {
-    if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
+    if (mainTab === 'trust-map' || mainTab === 'notes') livePollRef.current?.burst(8_000);
   }, [mainTab]);
 
   const [methodHistoryTick, setMethodHistoryTick] = useState(0);
