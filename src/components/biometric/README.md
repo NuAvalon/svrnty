@@ -47,6 +47,7 @@ disableBiometric(fingerprint)
 
 ## Assumptions
 - Device unlock is **per identity × device**, optional; passphrase always remains a path (Signal-model).
+- Intended platform path is WebAuthn **user-verifying platform authenticator** (Android fingerprint / iOS Face ID or passcode, desktop Windows Hello / Touch ID). UI already probes availability. Flint must wire `credentials.create` / `get` **with PRF** to wrap the session unlock factor — the glass must not invent that wrap.
 - CUR-7 (app-lock idle timeout / lock button) is a separate queue item — this PR only adds the biometric path onto the existing lock gate.
 - No server round-trip; WebAuthn stays on-device (claim-honest line in settings).
 
