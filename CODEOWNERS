@@ -50,3 +50,10 @@
 # and is NOT path-fenced here — fencing the whole component would wall pure-render. Tracked for
 # extraction into src/lib/ so it can be fenced without walling render. Until then: fleet-owned by
 # the RULE, not the fence.
+
+# Rule 7 + fence self-protection (Flint #179198, 2026-10-24): signing/transport scripts, CI, this file,
+# and the biometric UI need Peter's code-owner review on main AND dev.
+/scripts/                     @palberts22
+/.github/                     @palberts22
+/CODEOWNERS                   @palberts22
+/src/components/biometric/    @palberts22
