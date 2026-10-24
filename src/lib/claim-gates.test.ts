@@ -43,8 +43,10 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     // Flipping isMutualTrustWireLive must flip this string too: the "mutual" sentence may only render
     // in the true-arm; today (gate false) users see the honest "coming" arm. Static check on the source.
     const src = readFileSync(join(__dirname, '../components/TrustMap.tsx'), 'utf8');
-    assert.ok(src.includes(`{isMutualTrustWireLive() ? "Trust is mutual, after you make sure it's them." : "Make sure it's them before you trust. Mutual confirmation is coming."}`),
-      'TrustMap.tsx empty-state copy must be the isMutualTrustWireLive() ternary');
+    // Each arm sits on its own line (so the false arm's hedge can't excuse the true arm in the claim sweep);
+    // the regex allows the annotation comment between the condition and the true arm.
+    assert.match(src, /\{isMutualTrustWireLive\(\)\s*(?:\/\*[^*]*\*\/\s*)?\?\s*"Trust is mutual, after you make sure it's them\."\s*:\s*"Make sure it's them before you trust\. Mutual confirmation is coming\."\}/,
+      'TrustMap.tsx empty-state copy must be the isMutualTrustWireLive() ternary (true arm = the mutual sentence)');
     assert.equal(src.split("Trust is mutual, after you make sure it").length - 1, 1, 'the mutual sentence appears exactly once (in the true-arm)');
   });
 
