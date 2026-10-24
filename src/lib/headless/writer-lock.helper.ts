@@ -5,6 +5,8 @@
  *   send  <dir> <fixture> <n> <wire> [nolock] n send-tr units on <dir>/ratchet-sessions.json, as devin-comm
  *                                             does them; appends each packet's header {dh, n} to <wire>
  *   store <dir> <tag> <n>                     n HeadlessStore.upsertContact calls with distinct ids
+ *   recv  <dir> <packets> <out> [nolock]      trOpen's unit for each packet in order: load → receive →
+ *                                             save on success; appends "ok"/"fail" per packet to <out>
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -54,6 +56,24 @@ async function main() {
     for (let i = 0; i < Number(b); i++) {
       const packet = d === 'nolock' ? await unit() : await withWriterLockAsync(dir, unit, { waitMs: 60_000, pollMs: 2 });
       appendFileSync(c, JSON.stringify({ dh: packet.header.dh, n: packet.header.n }) + '\n');
+    }
+    return;
+  }
+  if (mode === 'recv') {
+    const path = join(dir, 'ratchet-sessions.json');
+    const packets = JSON.parse(readFileSync(a, 'utf8'));
+    for (const p of packets) {
+      const unit = async () => {
+        const sessions = readJsonStrict<Record<string, RatchetSnapshot>>(path, {});
+        const s = TripleRatchet.importState(sessions.peer);
+        const pt = s ? await s.receive(p) : null;
+        if (pt === null) return false;
+        sessions.peer = s!.exportState();
+        writeFileAtomic(path, JSON.stringify(sessions), { backup: false });
+        return true;
+      };
+      const ok = c === 'nolock' ? await unit() : await withWriterLockAsync(dir, unit, { waitMs: 60_000, pollMs: 2 });
+      appendFileSync(b, ok ? 'ok\n' : 'fail\n');
     }
     return;
   }
