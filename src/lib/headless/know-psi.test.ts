@@ -15,6 +15,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { generateKey } from 'openpgp';
 import { sealPsiToSatellite, openPsiFromSatellite, PINNED_SATELLITE_MAILBOX_FP_DEV } from '@/lib/crypto/psi-wire-seal';
 import { generateMailboxKeypair, toPublicKeys, toSecretKeys, mailboxFpOf, type MailboxKeypair } from '@/lib/crypto/mailbox-keys';
@@ -24,7 +26,7 @@ import type { SerializedMintArtifact } from '@/lib/identity/headless-mint';
 import { HeadlessStore } from './headless-store';
 import {
   DEV_SATELLITE_URL, KnowDevOnlyError, assertDevOnly, headlessKnowStore, headlessPsiOptions,
-  runHeadlessKnowTick, summarizeKnowState,
+  runHeadlessKnowTick, tickCore, summarizeKnowState,
 } from './know-psi';
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────────────────
@@ -212,6 +214,10 @@ function book(opts: { consented: string[]; others: string[] }): HeadlessStore {
   return store;
 }
 
+// Drive the guarded core against the MOCK satellite: its key cannot equal the real pin, so the test supplies its own.
+const tickMock = (owner: string, store: HeadlessStore, opts: PSISyncOptions, sat: MailboxKeypair) =>
+  tickCore(owner, store, opts, { url: DEV_SATELLITE_URL, pin: mailboxFpOf(sat) });
+
 function sealedOptions(owner: string, satellite: MailboxKeypair, url = DEV_SATELLITE_URL): PSISyncOptions {
   return { satelliteUrl: url, myFingerprint: owner, signFn: () => new Uint8Array(64), pqWrap: { satelliteKeys: toPublicKeys(satellite) } };
 }
@@ -248,7 +254,7 @@ test('runHeadlessKnowTick refuses a non-dev satellite, an unsealed wire and a fo
     const store = book({ consented: [SEAT_B], others: [] });
     await assert.rejects(runHeadlessKnowTick(SEAT_A, store, sealedOptions(SEAT_A, sat, 'https://svrnty.is/api/satellite')), KnowDevOnlyError);
     await assert.rejects(runHeadlessKnowTick(SEAT_A, store, { ...sealedOptions(SEAT_A, sat), pqWrap: undefined }), KnowDevOnlyError);
-    await assert.rejects(runHeadlessKnowTick(SEAT_A, store, sealedOptions(SEAT_B, sat)), /not the owner/);
+    await assert.rejects(tickMock(SEAT_A, store, sealedOptions(SEAT_B, sat), sat), /not the owner/);
   } finally {
     (globalThis as unknown as { fetch: unknown }).fetch = original;
   }
@@ -306,6 +312,49 @@ test('headlessPsiOptions: a satellite key that is NOT the pinned dev key is reje
   assert.equal(await headlessPsiOptions(await artifact(), { fetchImpl }), null);
 });
 
+// Flint #453: the tick must refuse options whose satellite key is not the PINNED dev key, however they were built.
+test('runHeadlessKnowTick refuses a sealed wire to ANY satellite key but the pinned dev key, before any network call', async () => {
+  const other = generateMailboxKeypair();   // a perfectly valid key pair that is simply not the dev satellite's
+  let calls = 0;
+  const original = globalThis.fetch;
+  (globalThis as unknown as { fetch: unknown }).fetch = async () => { calls++; throw new Error('network must not be touched'); };
+  try {
+    const store = book({ consented: [SEAT_B], others: [] });
+    const opts = sealedOptions(SEAT_A, other);                       // dev URL, sealed, owner right, WRONG key
+    await assert.rejects(runHeadlessKnowTick(SEAT_A, store, opts), (e: unknown) => e instanceof KnowDevOnlyError && /pinned dev key/.test((e as Error).message));
+    // a truncated / malformed key must not slip through either
+    const bad = { ...opts, pqWrap: { satelliteKeys: { x25519Pub: new Uint8Array(8), mlkem1024Pub: new Uint8Array(8) } } } as PSISyncOptions;
+    await assert.rejects(runHeadlessKnowTick(SEAT_A, store, bad), KnowDevOnlyError);
+  } finally {
+    (globalThis as unknown as { fetch: unknown }).fetch = original;
+  }
+  assert.equal(calls, 0);
+});
+
+test('CONTROL: the same options pass the core when its pin names that key (so the refusal above is the pin, not something else)', async () => {
+  const sat = generateMailboxKeypair();
+  await withRelay(sat, async () => {
+    const store = book({ consented: [SEAT_B], others: [] });
+    const r = await tickMock(SEAT_A, store, sealedOptions(SEAT_A, sat), sat);   // must not throw KnowDevOnlyError
+    assert.ok(r.initiated.length >= 1);
+  });
+});
+
+test('tickCore (the target-taking core) is imported by nothing in the app, only by this module and tests', () => {
+  const root = new URL('../../../', import.meta.url).pathname;
+  const hits: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules' || e.name === '.next' || e.name === '.git') continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(ts|tsx|mjs|js)$/.test(e.name) && !/\.test\.(ts|tsx)$/.test(e.name) && !/\.spec\./.test(e.name) && /\btickCore\b/.test(readFileSync(p, 'utf8'))) hits.push(p.slice(root.length));
+    }
+  };
+  for (const d of ['src', 'app', 'scripts']) { try { walk(join(root, d)); } catch { /* dir absent */ } }
+  assert.deepEqual(hits, ['src/lib/headless/know-psi.ts'], `tickCore must stay internal; found in: ${hits.join(', ')}`);
+});
+
 // ── the store adapter ──────────────────────────────────────────────────────────────────────────────────────────────
 test('headlessKnowStore: reads the book, applies patches, and a patch to undefined clears the field', async () => {
   const store = book({ consented: [SEAT_B], others: [] });
@@ -328,12 +377,12 @@ test('two seats over the sealed one-shot relay: A learns EXACTLY the consented i
     const b = book({ consented: [SEAT_A, C1, C2, U_B], others: [C3] });
     const optA = sealedOptions(SEAT_A, sat), optB = sealedOptions(SEAT_B, sat);
 
-    const a1 = await runHeadlessKnowTick(SEAT_A, a, optA); // A initiates toward B and persists the session
+    const a1 = await tickMock(SEAT_A, a, optA, sat); // A initiates toward B and persists the session
     assert.ok(a1.initiated.length >= 1, 'A initiated');
     assert.ok(summarizeKnowState(a).some((r) => r.peer === SEAT_B.slice(0, 8) && r.sessionInFlight), 'the in-flight session survives in the store');
     const firstSession = a.getContactByFingerprint(SEAT_B)!.psi_session_id;
-    await runHeadlessKnowTick(SEAT_B, b, optB);            // B responds (and initiates toward A)
-    await runHeadlessKnowTick(SEAT_A, a, optA);            // A completes on a LATER tick, from persisted state only
+    await tickMock(SEAT_B, b, optB, sat);            // B responds (and initiates toward A)
+    await tickMock(SEAT_A, a, optA, sat);            // A completes on a LATER tick, from persisted state only
 
     const forB = a.getContactByFingerprint(SEAT_B)!;
     assert.deepEqual([...(forB.disclosed_circle as string[])].sort(), [C1, C2].sort(), 'exactly the consented intersection');
@@ -350,10 +399,10 @@ test('revocation: when A withdraws consent for B, the next tick clears B\'s circ
     const a = book({ consented: [SEAT_B, C1], others: [] });
     const b = book({ consented: [SEAT_A, C1], others: [] });
     const optA = sealedOptions(SEAT_A, sat), optB = sealedOptions(SEAT_B, sat);
-    await runHeadlessKnowTick(SEAT_A, a, optA); await runHeadlessKnowTick(SEAT_B, b, optB); await runHeadlessKnowTick(SEAT_A, a, optA);
+    await tickMock(SEAT_A, a, optA, sat); await tickMock(SEAT_B, b, optB, sat); await tickMock(SEAT_A, a, optA, sat);
     assert.deepEqual(a.getContactByFingerprint(SEAT_B)!.disclosed_circle, [C1], 'control: it landed first');
     a.updateContact(a.getContactByFingerprint(SEAT_B)!.id, { open_visibility: false });
-    await runHeadlessKnowTick(SEAT_A, a, optA);
+    await tickMock(SEAT_A, a, optA, sat);
     assert.deepEqual(a.getContactByFingerprint(SEAT_B)!.disclosed_circle ?? [], []);
   });
 });

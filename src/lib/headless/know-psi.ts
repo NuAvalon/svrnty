@@ -20,7 +20,7 @@ import type { HeadlessStore, HeadlessContact } from './headless-store';
 import type { SerializedMintArtifact } from '@/lib/identity/headless-mint';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import type { PSISyncOptions } from '@/lib/trust/mutual-trust-sync';
-import { PINNED_SATELLITE_MAILBOX_FP_DEV } from '@/lib/crypto/psi-wire-seal';
+import { PINNED_SATELLITE_MAILBOX_FP_DEV, verifySatelliteKey } from '@/lib/crypto/psi-wire-seal';
 import {
   buildPsiSyncOptions,
   buildKnowOverlayDeps,
@@ -103,18 +103,38 @@ export async function headlessPsiOptions(
 /**
  * One KNOW tick for a headless seat, in startKnowLayerSync's order: complete earlier sessions + forward-revoke,
  * respond + initiate (layer 'know'), persist the newly initiated sessions. Unlike the browser loop it does NOT
- * swallow errors: a dogfood run must see a failing tick. Requires the sealed wire (options.pqWrap), as the
- * deployed satellite does, and the dev satellite URL.
+ * swallow errors: a dogfood run must see a failing tick. DEV ONLY, fail closed BY CONSTRUCTION: the target (URL and
+ * pinned satellite key) is the module's constants, so no caller can name another one. Requires the sealed wire
+ * (options.pqWrap) AND that pqWrap's satellite key is the pinned dev key, so options built any other way (some other
+ * satellite's key) are refused here too, not only inside headlessPsiOptions (Flint #453).
  */
 export async function runHeadlessKnowTick(
   ownerFingerprint: string,
   store: HeadlessStore,
   options: PSISyncOptions,
 ): Promise<KnowTickResult> {
-  if (typeof options?.satelliteUrl !== 'string' || normUrl(options.satelliteUrl) !== DEV_SATELLITE_URL) {
+  return tickCore(ownerFingerprint, store, options, { url: DEV_SATELLITE_URL, pin: PINNED_SATELLITE_MAILBOX_FP_DEV });
+}
+
+/**
+ * INTERNAL. The guarded tick with its target spelled out, so tests can drive it against a mock satellite whose key
+ * cannot equal the real pin. Production code must go through runHeadlessKnowTick, whose target is fixed; a test pins
+ * that nothing outside this file and the tests imports tickCore.
+ */
+export async function tickCore(
+  ownerFingerprint: string,
+  store: HeadlessStore,
+  options: PSISyncOptions,
+  target: { url: string; pin: string },
+): Promise<KnowTickResult> {
+  if (typeof options?.satelliteUrl !== 'string' || normUrl(options.satelliteUrl) !== normUrl(target.url)) {
     throw new KnowDevOnlyError('a satellite URL that is not the dev satellite');
   }
   if (!options.pqWrap) throw new KnowDevOnlyError('an unsealed PSI wire (no pqWrap)');
+  const sk = options.pqWrap.satelliteKeys;
+  if (!sk || verifySatelliteKey(sk.x25519Pub, sk.mlkem1024Pub, target.pin) === null) {
+    throw new KnowDevOnlyError('a satellite key that is not the pinned dev key');
+  }
   if (options.myFingerprint !== ownerFingerprint) throw new Error('know-psi: options.myFingerprint is not the owner');
 
   const kos = headlessKnowStore(store);
