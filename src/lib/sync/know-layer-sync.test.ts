@@ -569,3 +569,32 @@ test('#183 a THROWN completion counts as an attempt, and expires at MAX (it used
   await runPsiCompletionPass(b.store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
   assert.equal(b.writes[0].updates.psi_session_id, undefined, 'expired at MAX');
 });
+
+// Flint S54 cond.1: the response key has EXACTLY psi_sk_A's lifetime — cleared on completion, expiry AND de-consent.
+// A key left behind is a standing decrypt oracle for any future envelope sealed to that response_pub. `in` (not just
+// === undefined) so an update that simply OMITS the field — leaving the stored secret untouched — cannot pass.
+test('#183 / S54 cond.1: psi_pq_session is cleared with psi_sk_A on completion, expiry (not-ready AND thrown) and de-consent', async () => {
+  const stored = serializePsiSession(newPsiSessionKey());
+  const withKey = (extra: Record<string, unknown> = {}) => rec({ ...SESSION_FIELDS, psi_pq_session: stored, ...extra });
+  const cleared = (w: { updates: Partial<ContactRecord> }[], why: string) => {
+    assert.equal(w.length, 1, why);
+    assert.ok('psi_pq_session' in w[0].updates, `${why}: the update must NAME psi_pq_session`);
+    assert.equal(w[0].updates.psi_pq_session, undefined, why);
+    assert.ok('psi_sk_A' in w[0].updates && w[0].updates.psi_sk_A === undefined, `${why}: cleared together with psi_sk_A`);
+  };
+  const ok: CompleteTrustSyncFn = async () => ({ mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' });
+  const notReady: CompleteTrustSyncFn = async () => ({ error: 'not ready' });
+  const thrower: CompleteTrustSyncFn = async () => { throw new TypeError('boom'); };
+
+  const a = fakeStore([withKey()]); await runPsiCompletionPass(a.store, OWNER, STUB_DEPS, PQ_OPTIONS(), ok);
+  cleared(a.writes, 'completion');
+  const b = fakeStore([withKey({ psi_attempts: 12 })]); await runPsiCompletionPass(b.store, OWNER, STUB_DEPS, PQ_OPTIONS(), notReady);
+  cleared(b.writes, 'expiry (not-ready past MAX)');
+  const c = fakeStore([withKey({ psi_attempts: 12 })]); await runPsiCompletionPass(c.store, OWNER, STUB_DEPS, PQ_OPTIONS(), thrower);
+  cleared(c.writes, 'expiry (thrown past MAX)');
+  const d = fakeStore([withKey({ open_visibility: false })]); await runPsiCompletionPass(d.store, OWNER, STUB_DEPS, PQ_OPTIONS(), ok);
+  cleared(d.writes, 'de-consent');
+  // control: an in-flight not-ready tick must KEEP the key (the next tick needs it)
+  const e = fakeStore([withKey({ psi_attempts: 2 })]); await runPsiCompletionPass(e.store, OWNER, STUB_DEPS, PQ_OPTIONS(), notReady);
+  assert.equal('psi_pq_session' in e.writes[0].updates, false, 'control: a still-in-flight session keeps its key');
+});
