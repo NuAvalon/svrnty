@@ -4,7 +4,7 @@
 // Run: npx tsx --test src/lib/sync/send-joiner-response.test.ts
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKey, readKey, readPrivateKey, decryptKey } from 'openpgp';
+import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
 import { buildJoinerResponseDeposit, sendJoinerResponse } from './send-joiner-response';
 import { verifyJoinerResponse } from '../trust/joiner-response';
 import { deriveMailboxId } from '../relay/mailbox-auth';
@@ -15,30 +15,26 @@ const pass = 'test-passphrase-sjr';
 const CODE = 'GROW42';
 
 let alicePriv: string, alicePub: string, aliceFp: string; // GIVER (mailbox owner / recipient)
-let bobPriv: string, bobPub: string, bobFp: string;        // JOINER (sender)
+let bob: Awaited<ReturnType<typeof makeCanonicalSender>>;  // JOINER (sender)
 
+// Both parties are §5 CANONICAL identities (64-hex fp). Post-res1 the giver's fingerprintMatchesKey is
+// canonical-only, so a classical 40-hex joiner can no longer verify (pinned in joiner-response.test.ts).
 before(async () => {
-  ({ privateKey: alicePriv, publicKey: alicePub } = await generateKey({
-    type: 'curve25519', userIDs: [{ name: 'Alice', email: 'alice@example.test' }], passphrase: pass, format: 'armored',
-  }));
-  aliceFp = (await readKey({ armoredKey: alicePub })).getFingerprint();
-  ({ privateKey: bobPriv, publicKey: bobPub } = await generateKey({
-    type: 'curve25519', userIDs: [{ name: 'Bob', email: 'bob@example.test' }], passphrase: pass, format: 'armored',
-  }));
-  bobFp = (await readKey({ armoredKey: bobPub })).getFingerprint();
+  ({ privateKeyArmored: alicePriv, publicKeyArmored: alicePub, fingerprint: aliceFp } = await makeCanonicalSender('Alice', pass));
+  bob = await makeCanonicalSender('Bob', pass);
 });
 
 function bobSender() {
-  return { fingerprint: bobFp, epoch: 0, publicKeyArmored: bobPub, displayName: 'Bob', privateKeyArmored: bobPriv, passphrase: pass };
+  return bob;
 }
 function aliceTarget(overrides: Partial<{ fingerprint: string; publicKeyArmored: string; inviteNonce: string }> = {}) {
   return { fingerprint: aliceFp, publicKeyArmored: alicePub, inviteNonce: CODE, ...overrides };
 }
 
-// A §5 CANONICAL joiner sender: openpgp (sign+enc) + ML-KEM/ML-DSA → a 64-hex SHA256(sign‖enc‖kem‖sig)
-// fingerprint, plus the base64 PQ pubkeys the send-side threads so the giver recomputes that canonical id.
-async function makeCanonicalSender(name: string) {
-  const passphrase = 'pw-' + name;
+// A §5 CANONICAL identity shaped as a joiner sender: openpgp (sign+enc) + ML-KEM/ML-DSA → a 64-hex
+// SHA256(sign‖enc‖kem‖sig) fingerprint, plus the base64 PQ pubkeys the send-side threads so the giver
+// recomputes that canonical id. Also used for the giver (Alice) and the wrong-recipient (Eve).
+async function makeCanonicalSender(name: string, passphrase = 'pw-' + name) {
   const { privateKey, publicKey } = await generateKey({
     type: 'ecc',
     // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime (same as src/lib/identity/core.ts).
@@ -74,7 +70,7 @@ test('buildJoinerResponseDeposit: addresses the giver mailbox and round-trips th
     (n) => n === CODE,
   );
   assert.ok(joiner, 'the deposited blob must verify to a PendingJoiner at the giver');
-  assert.equal(joiner!.fingerprint, bobFp);
+  assert.equal(joiner!.fingerprint, bob.fingerprint);
   assert.equal(joiner!.epoch, 0, 'epoch 0 — the giver’s future contact.update replay floor');
   assert.equal(joiner!.inviteNonce, CODE);
   assert.equal(joiner!.displayName, 'Bob');
@@ -83,12 +79,17 @@ test('buildJoinerResponseDeposit: addresses the giver mailbox and round-trips th
 // ── The response is bound to THIS giver — a different giver’s verify rejects it (no cross-giver replay) ──
 test('buildJoinerResponseDeposit: the blob is giver-bound (a wrong-fp verify rejects it)', async () => {
   const deposit = await buildJoinerResponseDeposit(bobSender(), aliceTarget());
+  // Positive control: the SAME blob verifies for its real giver. Without it this test is vacuous — if the
+  // joiner were refused earlier (fingerprint binding, decrypt) Eve's null would pass for the wrong reason.
+  const forAlice = await verifyJoinerResponse(
+    deposit!.blob,
+    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass },
+    () => true,
+  );
+  assert.ok(forAlice, 'control: the blob verifies for its real giver, so a null for Eve is attributable to giver-binding');
   // A different owner (fresh key) polling with the SAME code oracle must NOT accept Alice’s response —
   // it can’t even decrypt it (encrypted to Alice), and giver_fingerprint is signed to Alice.
-  const { privateKey: evePriv, publicKey: evePub } = await generateKey({
-    type: 'curve25519', userIDs: [{ name: 'Eve', email: 'eve@example.test' }], passphrase: pass, format: 'armored',
-  });
-  const eveFp = (await readKey({ armoredKey: evePub })).getFingerprint();
+  const { privateKeyArmored: evePriv, fingerprint: eveFp } = await makeCanonicalSender('Eve', pass);
   const notForEve = await verifyJoinerResponse(
     deposit!.blob,
     { fingerprint: eveFp, privateKeyArmored: evePriv, passphrase: pass },
@@ -157,7 +158,7 @@ test('buildJoinerResponseDeposit: a CANONICAL sender threads its PQ pubkeys → 
 test('buildJoinerResponseDeposit: a CANONICAL sender WITHOUT its PQ pubkeys → the giver fails-closed (send-side threading is load-bearing)', async () => {
   const canon = await makeCanonicalSender('canon-joiner-2');
   // Strip the PQ pubkeys the send-side would thread → the deposit carries a 64-hex fp but no kem/sig, so
-  // the giver can't recompute the canonical id → 64 !== 40 (OpenPGP fallback) → refused (→ null).
+  // the giver can't recompute the canonical id → fingerprintMatchesKey (canonical-only) refuses (→ null).
   const deposit = await buildJoinerResponseDeposit(
     { ...canon, kemPublicKeyB64: undefined, sigPublicKeyB64: undefined },
     aliceTarget(),

@@ -9,34 +9,68 @@
 process.env.RELAY_DB_PATH = ':memory:'; // OPT-2: in-memory SQLite for tests (runner sets no NODE_ENV)
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKey, readKey } from 'openpgp';
+import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
 import { buildJoinerResponse, encryptJoinerResponseTo, verifyJoinerResponse } from './joiner-response';
 import { depositEnvelope, pollMailbox, ackDelete } from '../relay/mailbox-store';
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { openpgpEnvelopeDecryptor } from '../sync/contact-update-envelope';
 import { mailboxConfig } from '../relay/mailbox-config';
+import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
+import { mintCanonicalFingerprint } from '../identity/fingerprint';
 
 const pass = 'test-passphrase-e2e';
 const CODE = 'A7K9QX';
 const NOW = 1_756_800_000_000; // fixed ms — deposit/poll take `now` explicitly (deterministic; no Date.now)
 
+// §5 CANONICAL identities: openpgp (sign+enc) + ML-KEM/ML-DSA pubkeys → a 64-hex SHA256(sign‖enc‖kem‖sig)
+// fingerprint (NOT the 40-hex OpenPGP fp). Post-res1 fingerprintMatchesKey is canonical-only, so the
+// joiner MUST be canonical and thread its PQ pubkeys for verifyJoinerResponse's Invariant-1 step to pass.
+// Mirrors makeCanonicalIdentity in joiner-response.test.ts.
+interface CanonicalIdentity {
+  fingerprint: string;
+  publicKey: string;
+  privateKey: string;
+  kemPublicKeyB64: string;
+  sigPublicKeyB64: string;
+}
+async function makeCanonicalIdentity(name: string, email: string): Promise<CanonicalIdentity> {
+  const { privateKey, publicKey } = await generateKey({
+    type: 'ecc',
+    // @ts-expect-error openpgp v6 curve-type wart: 'ed25519' is valid at runtime (same as src/lib/identity/core.ts).
+    curve: 'ed25519',
+    userIDs: [{ name, email }],
+    passphrase: pass,
+    format: 'armored',
+  });
+  const pq = generatePQKeypairBundle();
+  const locked = await readPrivateKey({ armoredKey: privateKey });
+  const unlocked = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase: pass });
+  const { fingerprint } = await mintCanonicalFingerprint({
+    decryptedIdentityKey: unlocked, kemPublicKey: pq.kem.publicKey, sigPublicKey: pq.signing.publicKey,
+  });
+  return {
+    fingerprint, publicKey, privateKey,
+    kemPublicKeyB64: uint8ToBase64(pq.kem.publicKey),
+    sigPublicKeyB64: uint8ToBase64(pq.signing.publicKey),
+  };
+}
+
 let alicePriv: string, alicePub: string, aliceFp: string; // GIVER (mailbox owner)
 let bobPriv: string, bobPub: string, bobFp: string;        // JOINER
+let bobKemB64: string, bobSigB64: string;                  // JOINER's PQ pubkeys (canonical-fp binding)
 
 before(async () => {
-  ({ privateKey: alicePriv, publicKey: alicePub } = await generateKey({
-    type: 'curve25519', userIDs: [{ name: 'Alice', email: 'alice@example.test' }], passphrase: pass, format: 'armored',
-  }));
-  aliceFp = (await readKey({ armoredKey: alicePub })).getFingerprint();
-  ({ privateKey: bobPriv, publicKey: bobPub } = await generateKey({
-    type: 'curve25519', userIDs: [{ name: 'Bob', email: 'bob@example.test' }], passphrase: pass, format: 'armored',
-  }));
-  bobFp = (await readKey({ armoredKey: bobPub })).getFingerprint();
+  ({ privateKey: alicePriv, publicKey: alicePub, fingerprint: aliceFp } = await makeCanonicalIdentity('Alice', 'alice@example.test'));
+  ({ privateKey: bobPriv, publicKey: bobPub, fingerprint: bobFp, kemPublicKeyB64: bobKemB64, sigPublicKeyB64: bobSigB64 } =
+    await makeCanonicalIdentity('Bob', 'bob@example.test'));
 });
 
 async function bobDepositsToAlice(): Promise<{ mailboxId: string; blob: string }> {
   const signed = await buildJoinerResponse(
-    { joinerFp: bobFp, joinerEpoch: 1, joinerPubKeyArmored: bobPub, joinerName: 'Bob', giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z' },
+    {
+      joinerFp: bobFp, joinerEpoch: 1, joinerPubKeyArmored: bobPub, joinerName: 'Bob', giverFp: aliceFp, inviteNonce: CODE, ts: '2026-09-02T00:00:00Z',
+      joinerPqKemPublicKey: bobKemB64, joinerPqSigPublicKey: bobSigB64,
+    },
     bobPriv, pass,
   );
   const blob = await encryptJoinerResponseTo(signed, alicePub);
