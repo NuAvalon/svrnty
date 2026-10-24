@@ -427,6 +427,9 @@ async function main() {
     // serializes behind it). Skip journaled ids; failed/absent notes still
     // get their attempt (out-of-order packets can become decryptable as
     // the ratchet advances).
+    // Skip-set keyed (peer_fp, note_id) — NOT note_id alone: putNote keys
+    // on sender-chosen note_id and overwrites on collision, so a bare id
+    // could shadow a different sender's note forever (flint seam review).
     const journaledIds = new Set<string>();
     try {
       for (const line of readFileSync(journalPath, 'utf8').split('\n')) {
@@ -434,18 +437,34 @@ async function main() {
         if (!t) continue;
         try {
           const m = JSON.parse(t);
-          if (m.note_id) journaledIds.add(m.note_id);
+          if (m.note_id) journaledIds.add(`${m.peer_fp ?? ''}:${m.note_id}`);
         } catch { /* tolerate a torn line */ }
       }
     } catch { /* no journal yet — first pass */ }
+    // Dead-packet tombstone: a tr packet whose decrypt keeps failing
+    // (ratchet already advanced past it) re-pays the full importState +
+    // receive every pass FOREVER — sage measured ~45s per dead packet on
+    // node18 (4 dead notes = ~3min pass even with journaled skips). Try up
+    // to 5 passes (covers out-of-order delivery that becomes decryptable
+    // as the ratchet advances), then tombstone it out of the loop.
+    const attemptsPath = `${DIR}/decrypt-attempts.json`;
+    let attempts: Record<string, number> = {};
+    try { attempts = JSON.parse(readFileSync(attemptsPath, 'utf8')); } catch { /* first pass */ }
+    const MAX_ATTEMPTS = 5;
     let journaled = 0;
     let skipped = 0;
+    let dead = 0;
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
-      if (journaledIds.has(note.note_id)) { skipped++; continue; }
+      if (journaledIds.has(`${note.from_fingerprint}:${note.note_id}`)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
       if (!c || !trPacket(note.body)) continue;         // require an authenticated triple-ratchet packet
+      if ((attempts[`${note.from_fingerprint}:${note.note_id}`] ?? 0) >= MAX_ATTEMPTS) { dead++; continue; }
       const pt = await trOpen(artifact, c, note.body);
-      if (pt === null) continue;                         // decrypt failed/already-consumed — drop, never store
+      if (pt === null) {
+        attempts[`${note.from_fingerprint}:${note.note_id}`] = (attempts[`${note.from_fingerprint}:${note.note_id}`] ?? 0) + 1;
+        continue;                                        // failed/consumed — counted, never stored
+      }
+      delete attempts[`${note.from_fingerprint}:${note.note_id}`];
       appendFileSync(journalPath, JSON.stringify({
         note_id: note.note_id,
         peer_fp: note.from_fingerprint,
@@ -454,7 +473,8 @@ async function main() {
       }) + '\n');
       journaled++;
     }
-    console.log(JSON.stringify({ journaled, skipped, journal: journalPath }));
+    writeFileSync(attemptsPath, JSON.stringify(attempts), { mode: 0o600 });
+    console.log(JSON.stringify({ journaled, skipped, dead, journal: journalPath }));
     return;
   }
 
