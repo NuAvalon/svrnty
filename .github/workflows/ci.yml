@@ -15,9 +15,9 @@ name: ci
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   push:
-    branches: [main]
+    branches: [main, dev]
 
 # Least privilege (same class as qa.yml, Flint ruling #157350): PR-triggered jobs
 # check out + run PR-modifiable code, so the GITHUB_TOKEN must NOT fall back to the
