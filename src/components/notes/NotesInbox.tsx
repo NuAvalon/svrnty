@@ -473,9 +473,9 @@ export function NotesInbox({ identity }: Props) {
               ))}
             </div>
           ) : null}
-          {manageMode && selectedIds.size > 0 ? (
+          {manageMode && (selectedIds.size > 0 || (view === 'bin' && binRows.length > 0)) ? (
             <div data-testid="notes-action-bar" style={{ display: 'flex', gap: 8, fontSize: 12, marginLeft: 'auto' }}>
-              {view === 'live' ? (
+              {selectedIds.size > 0 ? (view === 'live' ? (
                 <>
                   <button type="button" data-testid="notes-archive-btn" onClick={async () => {
                     await archiveNotes([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId);
@@ -493,13 +493,12 @@ export function NotesInbox({ identity }: Props) {
                   }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
                   <button type="button" data-testid="notes-delete-perm-btn" onClick={() => setConfirmAction('perm')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
                 </>
-              )}
-              <button type="button" data-testid="notes-empty-bin-btn" onClick={() => {
-                if (view !== 'bin') return;
-                setConfirmAction('empty');
-              }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>
-                Empty bin
-              </button>
+              )) : null}
+              {view === 'bin' && binRows.length > 0 ? (
+                <button type="button" data-testid="notes-empty-bin-btn" onClick={() => setConfirmAction('empty')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>
+                  Empty bin
+                </button>
+              ) : null}
             </div>
           ) : null}
           {confirmAction && (

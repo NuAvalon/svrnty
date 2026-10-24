@@ -19,7 +19,7 @@ import "fake-indexeddb/auto";
 
 // node18: globalThis.crypto only exists under --experimental-global-webcrypto;
 // the shim keeps the file runnable under a plain `tsx --test`.
-if (!globalThis.crypto) (globalThis as any).crypto = webcrypto;
+if (!globalThis.crypto) Object.assign(globalThis, { crypto: webcrypto });
 
 import {
   initNotesStore,
@@ -36,7 +36,6 @@ import {
   emptyBin,
   listArchived,
   listBin,
-  newNoteId,
 } from "./store";
 
 const FP_A = "a".repeat(64);
@@ -73,15 +72,23 @@ function thread(id: string) {
   };
 }
 
+/** Raw IDB row — opaque fields; only note_id is asserted on directly. */
+type RawRow = {
+  note_id: string;
+  enc?: { iv?: unknown; ciphertext?: unknown };
+  body?: unknown;
+  plaintext?: unknown;
+};
+
 /** Raw row read straight from IndexedDB — bypasses every store helper. */
-async function rawRows(dbName: string, store: string): Promise<any[]> {
+async function rawRows(dbName: string, store: string): Promise<RawRow[]> {
   const db = await new Promise<IDBDatabase>((res, rej) => {
     const r = indexedDB.open(dbName);
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
     r.onupgradeneeded = () => r.result.close(); // never upgrade on read
   });
-  const rows = await new Promise<any[]>((res, rej) => {
+  const rows = await new Promise<RawRow[]>((res, rej) => {
     const req = db.transaction(store, "readonly").objectStore(store).getAll();
     req.onsuccess = () => res(req.result);
     req.onerror = () => rej(req.error);
@@ -134,8 +141,8 @@ describe("I1 — archived records are ciphertext at rest", () => {
     const row = arch.find((r) => r.note_id === "n-i1");
     assert.ok(row?.enc?.iv, "row carries an enc.iv");
     assert.ok(row?.enc?.ciphertext, "row carries an enc.ciphertext");
-    assert.equal(row.body, undefined);
-    assert.equal(row.plaintext, undefined);
+    assert.equal(row?.body, undefined);
+    assert.equal(row?.plaintext, undefined);
     // ciphertext, not the plaintext body
     assert.ok(!JSON.stringify(row).includes("plaintext-body-marker"));
   });
@@ -154,8 +161,8 @@ describe("I7 — archive→unarchive round-trips, blob verbatim", () => {
     const after = (await rawRows(DB_A, "notes")).find(
       (r) => r.note_id === "n-i7");
     // same ciphertext bytes at every hop — never re-encrypted
-    assert.deepEqual(mid.enc, before.enc);
-    assert.deepEqual(after.enc, before.enc);
+    assert.deepEqual(mid?.enc, before?.enc);
+    assert.deepEqual(after?.enc, before?.enc);
     assert.equal(
       (await rawRows(DB_A, "archive")).some((r) => r.note_id === "n-i7"),
       false);
@@ -169,7 +176,8 @@ describe("I4 — multi-move is atomic on mid-tx fault", () => {
     // real fault: the second dst.put throws inside its onsuccess handler
     let calls = 0;
     const orig = IDBObjectStore.prototype.put;
-    IDBObjectStore.prototype.put = function (v: any, k?: any) {
+    IDBObjectStore.prototype.put = function (
+      this: IDBObjectStore, v: unknown, k?: IDBValidKey) {
       calls += 1;
       if (calls === 2) throw new Error("injected mid-tx fault");
       return orig.call(this, v, k);
@@ -209,7 +217,7 @@ describe("I6 — ops are owner-scoped to the unlocked identity DB", () => {
   it("only the bound svrnty-notes-<fp> DB is ever opened", async () => {
     const opened: string[] = [];
     const orig = indexedDB.open.bind(indexedDB);
-    (indexedDB as any).open = (name: string, v?: number) => {
+    indexedDB.open = (name: string, v?: number) => {
       opened.push(name);
       return orig(name, v);
     };
@@ -220,7 +228,7 @@ describe("I6 — ops are owner-scoped to the unlocked identity DB", () => {
       await archiveNotes(["n-i6"]);
       await deleteNotesAtomic(["n-i6"]);
     } finally {
-      (indexedDB as any).open = orig;
+      indexedDB.open = orig;
     }
     assert.ok(opened.length > 0, "expected real indexedDB.open calls");
     for (const name of opened) assert.equal(name, DB_A);
@@ -309,7 +317,7 @@ describe("I2 — v1→v2 migration is additive and lossless", () => {
        "archive", "recently_deleted"]) {
       assert.ok(db.objectStoreNames.contains(s), `${s} survived/added`);
     }
-    const legacy = await new Promise<any>((res, rej) => {
+    const legacy = await new Promise<RawRow>((res, rej) => {
       const q = db.transaction("notes", "readonly")
         .objectStore("notes").get("legacy-n1");
       q.onsuccess = () => res(q.result);

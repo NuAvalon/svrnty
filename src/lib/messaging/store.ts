@@ -351,10 +351,9 @@ async function _moveOpaque(ids: string[], from: string, to: string) {
   });
 }
 
-export async function archiveNotes(ids: string[], _rows?: NoteRow_[]) {
+export async function archiveNotes(ids: string[]) {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
-  // rows arg is for callers that already hold the rows (UI); the store
-  // path reads them itself — either way the move is one tx.
+  // the store reads the rows itself — the move is one tx.
   return _moveOpaque(ids, 'notes', 'archive');
 }
 
