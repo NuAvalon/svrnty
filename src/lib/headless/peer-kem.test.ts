@@ -263,7 +263,7 @@ test('CLI send: relay UNREACHABLE (fetch throws, not deposited:false) → UNCONF
   try {
     const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, new RegExp(`^UNCONFIRMED to ${idOf(peer).fingerprint.slice(0, 8)}: no response from the relay \\(.+\\); it may or may not have been delivered\\. Check before resending$`, 'm'));
+    assert.match(r.err, new RegExp(`^UNCONFIRMED to ${idOf(peer).fingerprint.slice(0, 8)}: no response from the relay \\(.+\\); it may or may not be in their mailbox\\. Check before resending$`, 'm'));
     assert.doesNotMatch(r.err, /NOT SENT/);
     assert.doesNotMatch(r.out, /"deposited":\s*true/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -275,7 +275,7 @@ test('CLI send-tr: relay UNREACHABLE → UNCONFIRMED line that says the ratchet 
   try {
     const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay \(.+\); it may or may not have been delivered\. Check before resending; this ratchet index is spent$/m);
+    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay \(.+\); it may or may not be in their mailbox\. Check before resending; this ratchet index is spent$/m);
     assert.doesNotMatch(r.err, /NOT SENT/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -301,7 +301,7 @@ test('sendThrowLine: NOT SENT only where PROVEN undelivered; DEPOSITED after a 2
   const fp = 'abcdef0123456789', e = new Error('boom');
   assert.match(sendThrowLine(fp, e, 'before-post'), /^NOT SENT to abcdef01: the send failed before reaching the relay \(boom\)$/);
   const unc = sendThrowLine(fp, e, 'unreachable');
-  assert.match(unc, /^UNCONFIRMED to abcdef01: no response from the relay \(boom\); it may or may not have been delivered\. Check before resending$/);
+  assert.match(unc, /^UNCONFIRMED to abcdef01: no response from the relay \(boom\); it may or may not be in their mailbox\. Check before resending$/);
   assert.doesNotMatch(unc, /NOT SENT/);                                         // not PROVEN undelivered, so never NOT SENT
   assert.match(sendThrowLine(fp, e, 'refused'), /^NOT SENT to abcdef01: the relay did not accept the deposit, and saving the local copy failed \(boom\)$/);
   const dep = sendThrowLine(fp, e, 'deposited');

@@ -96,7 +96,7 @@ export function sendThrowLine(peerFingerprint: string, e: unknown, stage: SendSt
     return `DEPOSITED to ${hex8(peerFingerprint)}, but saving the local copy failed (${msg}); do NOT resend`;
   }
   if (stage === 'unreachable') {
-    return `UNCONFIRMED to ${hex8(peerFingerprint)}: no response from the relay (${msg}); it may or may not have been delivered. Check before resending${spent}`;
+    return `UNCONFIRMED to ${hex8(peerFingerprint)}: no response from the relay (${msg}); it may or may not be in their mailbox. Check before resending${spent}`;
   }
   const why = stage === 'refused' ? 'the relay did not accept the deposit, and saving the local copy failed'
     : 'the send failed before reaching the relay';
