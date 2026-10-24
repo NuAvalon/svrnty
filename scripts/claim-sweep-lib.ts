@@ -260,6 +260,8 @@ export interface EvalContext {
  * comments. Tracks /* *\/ blocks and lines whose trimmed form starts with // or *. (Carried over verbatim
  * from the Oct-18 v1 runner; an inline trailing // on a copy line is still scanned.)
  */
+const LOG_CALL = /^(console|logger)\.(log|info|warn|error|debug|trace)\s*\(/;
+
 export function commentMask(lines: string[]): boolean[] {
   const isComment: boolean[] = [];
   let inBlock = false;
@@ -269,6 +271,10 @@ export function commentMask(lines: string[]): boolean[] {
     if (inBlock) { comment = true; if (t.includes('*/')) inBlock = false; }
     else if (t.startsWith('/*')) { comment = true; if (!t.includes('*/')) inBlock = true; }
     else if (t.startsWith('//') || t.startsWith('*')) { comment = true; }
+    // Developer log calls are not user-facing copy (Archie/Hypatia S42 ruling (2), 2026-10-24): skip a
+    // line that STARTS a console.*/logger.* call. Continuation lines of a multi-line call are still
+    // scanned (fail-closed); copy that reaches the user (JSX, toasts, alerts) is never skipped.
+    else if (LOG_CALL.test(t)) { comment = true; }
     isComment.push(comment);
   }
   return isComment;

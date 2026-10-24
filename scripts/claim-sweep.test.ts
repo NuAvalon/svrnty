@@ -161,3 +161,18 @@ describe('scanner mechanics', () => {
     }
   });
 });
+
+describe('developer log calls are not user copy (S42 ruling 2)', () => {
+  it('an over-claim inside a console.*/logger.* call line is skipped', () => {
+    assert.deepEqual(ids(scan("    console.warn('svrnty is quantum-safe', err);")), []);
+    assert.deepEqual(ids(scan("logger.info('quantum-safe');")), []);
+  });
+  it('the same phrase in rendered copy still fails', () => {
+    assert.deepEqual(ids(scan("<p>svrnty is quantum-safe</p>")), ['NV-1']);
+    assert.deepEqual(ids(scan("toast('svrnty is quantum-safe');")), ['NV-1']);
+  });
+  it('only a line that STARTS a log call is skipped (assignment / continuation lines are scanned)', () => {
+    assert.deepEqual(ids(scan("const msg = 'quantum-safe'; console.log(msg);")), ['NV-1']);
+    assert.deepEqual(ids(scan("console.log(\n  'svrnty is quantum-safe',\n);")), ['NV-1']);
+  });
+});
