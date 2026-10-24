@@ -1,5 +1,6 @@
 // Classify an inbound svrnty note body for poll-json (= the depositor's _is_protocol_body,
 // outpost/flint/devin_quarantine.py). Pure: no I/O, no keys. Shared by devin-comm.ts + its test.
+import { createHash } from 'node:crypto';
 import { admitContact } from '../src/lib/trust/admit-contact';
 
 export const TR_BODY = 'svrnty-tr-v1';
@@ -40,7 +41,7 @@ const SAFE_TOKEN = /^[A-Za-z0-9._:#/-]{1,64}$/;
 const tok = (v: unknown): string => (typeof v === 'string' && SAFE_TOKEN.test(v) ? v : '?');
 
 /** A loom envelope ADDRESSED to this cell (a channel_post whose mentions include ownFp, or a
- *  task_request assigned to ownFp or left open) → a one-line NOTICE for the journal; anything else
+ *  task_request assigned to ownFp) → a one-line NOTICE for the journal; anything else
  *  → null (stays a counted skip). The notice never carries the post body or brief (M8): only type,
  *  channel, seq / task id, so a mention can't sit unseen until our loom reader (L2) lands
  *  (Archie #177969: Mneme's lane:ops posts to Archie). Call only for routeInbound === 'skip_loom'. */
@@ -56,10 +57,31 @@ export function loomNotice(body: string, ownFp: string): string | null {
     const seq = Number.isInteger(p.seq) ? ` seq ${p.seq}` : '';
     return `[loom channel_post ${where}${seq}] mentions you; body withheld until our loom reader lands, read it in your store.json`;
   }
-  if (o.type === 'task_request') {
-    const assignee = typeof p.assignee === 'string' ? p.assignee : '';
-    if (assignee && assignee !== ownFp) return null;
-    return `[loom task_request ${where} task ${tok(p.task_id)}] ${assignee ? 'assigned to you' : 'open to the lane'}; brief withheld until our loom reader lands, read it in your store.json`;
+  if (o.type === 'task_request' && p.assignee === ownFp) {
+    return `[loom task_request ${where} task ${tok(p.task_id)}] assigned to you; brief withheld until our loom reader lands, read it in your store.json`;
   }
-  return null;
+  return null;   // open task_requests are lane-ambient: see openTaskChannel / openTasksNotice
+}
+
+/** The channel of a task_request left OPEN to the lane (no assignee), else null. Open tasks are
+ *  lane-ambient (Lever A): poll-json collapses them into ONE notice per peer per pass, so a peer
+ *  posting N open tasks can't cause N wakes for every cell in the lane (Flint #263). */
+export function openTaskChannel(body: string): string | null {
+  try {
+    const o = JSON.parse(body);
+    const p = o && typeof o.payload === 'object' && o.payload ? o.payload : null;
+    if (o?.type !== 'task_request' || !p) return null;
+    if (typeof p.assignee === 'string' && p.assignee !== '') return null;
+    return tok(p.channel_id ?? p.channel);
+  } catch { return null; }
+}
+
+/** One notice for a peer's open task_requests. note_id is a hash of the sorted note ids, so the
+ *  journal's (peer_fp, note_id) skip-set dedups it; a new open task changes the set → one new notice. */
+export function openTasksNotice(peerFp: string, items: { note_id: string; channel: string }[]):
+    { note_id: string; text: string } {
+  const ids = items.map((i) => i.note_id).sort();
+  const note_id = 'open-tasks:' + createHash('sha256').update(ids.join('\n')).digest('hex').slice(0, 24);
+  const chans = [...new Set(items.map((i) => i.channel))].sort().join(', ');
+  return { note_id, text: `[loom] ${ids.length} open task_request(s) in ${chans} from ${tok(peerFp).slice(0, 8)}; briefs withheld until our loom reader lands, read them in your store.json` };
 }

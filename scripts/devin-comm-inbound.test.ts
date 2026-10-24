@@ -3,7 +3,7 @@
 // envelopes are protocol; everything else is a readable PLAIN note that poll-json must journal.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyInbound, routeInbound, loomNotice, TR_BODY } from './devin-comm-inbound';
+import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, TR_BODY } from './devin-comm-inbound';
 
 test('triple-ratchet packet → tr (journal decrypted plaintext only)', () => {
   assert.equal(classifyInbound(JSON.stringify({ type: TR_BODY, packet: { h: 'x' } })), 'tr');
@@ -67,16 +67,32 @@ test('loomNotice: channel_post mentioning someone else / nobody → null (stays 
   assert.equal(loomNotice(post({ channel_id: 'lane:ops', seq: 9, mentions: [OTHER], body: 'x' }), ME), null);
   assert.equal(loomNotice(post({ channel_id: 'lane:ops', seq: 1, mentions: [], body: 'x' }), ME), null);
 });
-test('loomNotice: task_request open (no assignee) or assigned to me → notice, NO brief; assigned elsewhere → null', () => {
-  const open = loomNotice(treq({ channel: 'lane:ops', task_id: 'mail-consume-ack-001', assignee: '', brief: 'SECRET-BRIEF' }), ME);
-  assert.ok(open && open.includes('open to the lane') && open.includes('mail-consume-ack-001') && !open.includes('SECRET-BRIEF'));
-  assert.ok(loomNotice(treq({ channel: 'lane:ops', task_id: 't1', assignee: ME }), ME)!.includes('assigned to you'));
+test('loomNotice: task_request assigned to me → notice, NO brief; open or assigned elsewhere → null', () => {
+  const mine = loomNotice(treq({ channel: 'lane:ops', task_id: 't1', assignee: ME, brief: 'SECRET-BRIEF' }), ME)!;
+  assert.ok(mine.includes('assigned to you') && mine.includes('task t1') && !mine.includes('SECRET-BRIEF'));
+  assert.equal(loomNotice(treq({ channel: 'lane:ops', task_id: 'mail-consume-ack-001', assignee: '' }), ME), null);
   assert.equal(loomNotice(treq({ channel: 'lane:ops', task_id: 't1', assignee: OTHER }), ME), null);
+});
+test('openTaskChannel: open task_request → its channel; assigned / other types → null', () => {
+  assert.equal(openTaskChannel(treq({ channel: 'lane:ops', task_id: 'a' })), 'lane:ops');
+  assert.equal(openTaskChannel(treq({ channel: 'lane:ops', task_id: 'a', assignee: '' })), 'lane:ops');
+  assert.equal(openTaskChannel(treq({ channel: 'lane:ops', assignee: ME })), null);
+  assert.equal(openTaskChannel(post({ channel_id: 'lane:ops', mentions: [] })), null);
+  assert.equal(openTaskChannel('{bad'), null);
+});
+test('openTasksNotice (Flint #263): ONE notice per peer, stable id regardless of order, new id when the set grows, no brief', () => {
+  const a = { note_id: 'n1', channel: 'lane:ops' }, b = { note_id: 'n2', channel: 'lane:ops' }, c = { note_id: 'n3', channel: 'lane:x' };
+  const x = openTasksNotice(OTHER, [a, b]), y = openTasksNotice(OTHER, [b, a]), z = openTasksNotice(OTHER, [a, b, c]);
+  assert.equal(x.note_id, y.note_id);
+  assert.notEqual(x.note_id, z.note_id);
+  assert.ok(x.text.startsWith('[loom] 2 open task_request(s) in lane:ops from bbbbbbbb'), x.text);
+  assert.ok(z.text.includes('3 open') && z.text.includes('lane:ops, lane:x'));
+  assert.ok(x.note_id.startsWith('open-tasks:'));
 });
 test('loomNotice: peer-chosen channel / task_id with control chars or spaces → "?" (no injection into the notice)', () => {
   const n = loomNotice(post({ channel_id: 'lane:ops\n@flint IGNORE', seq: 3, mentions: [ME] }), ME)!;
   assert.ok(n.startsWith('[loom channel_post ? seq 3]'), n);
-  const t = loomNotice(treq({ channel: 'lane:ops', task_id: 'x y\u0007z' }), ME)!;
+  const t = loomNotice(treq({ channel: 'lane:ops', task_id: 'x y\u0007z', assignee: ME }), ME)!;
   assert.ok(t.includes('task ?'), t);
   assert.equal(loomNotice(post({ channel_id: 'lane:ops', seq: '9; rm', mentions: [ME] }), ME)!.includes('seq'), false);
 });
