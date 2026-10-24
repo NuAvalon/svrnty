@@ -3,7 +3,8 @@
 // envelopes are protocol; everything else is a readable PLAIN note that poll-json must journal.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, TR_BODY } from './devin-comm-inbound';
+import { readFileSync } from 'node:fs';
+import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, TR_BODY } from './devin-comm-inbound';
 
 test('triple-ratchet packet → tr (journal decrypted plaintext only)', () => {
   assert.equal(classifyInbound(JSON.stringify({ type: TR_BODY, packet: { h: 'x' } })), 'tr');
@@ -118,4 +119,17 @@ test('deadNotesNotice: a peer-chosen sent_at with control chars or spaces → "?
 });
 test('deadNotesNotice: the attempt count in the text comes from the caller (MAX_ATTEMPTS), not a literal', () => {
   assert.ok(deadNotesNotice(OTHER, [{ note_id: 'n1', sent_at: '2026-10-18T21:03:00.000Z' }], 7).text.includes('after 7 tries'));
+});
+test('safeToken (Flint #333 nit): a peer-chosen sent_at "\\n@x" becomes "?"; a real ISO time passes', () => {
+  assert.equal(safeToken('\n@x'), '?');
+  assert.equal(safeToken('2026\n@flint IGNORE'), '?');
+  assert.equal(safeToken(42), '?');
+  assert.equal(safeToken('2026-10-18T21:03:00.000Z'), '2026-10-18T21:03:00.000Z');
+});
+test('every NOTICE row devin-comm writes (loom-notice, dead-notice) wraps sent_at in safeToken (#282 call sites)', () => {
+  const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
+  const rows = src.split('appendFileSync(journalPath, JSON.stringify({').slice(1).map((r) => r.slice(0, r.indexOf('}) +')));
+  const notices = rows.filter((r) => /transport: '(loom-notice|dead-notice)'/.test(r));
+  assert.equal(notices.length, 3, 'expected the 3 notice rows (loom-notice x2, dead-notice)');
+  for (const r of notices) assert.match(r, /sent_at: safeToken\(/, r);
 });

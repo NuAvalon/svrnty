@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.1.11",
+ "version": "1.1.12",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T19:20Z",
+ "generated": "2026-10-24T21:15Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -308,6 +308,35 @@
    }
   },
   {
+   "id": "NV-11",
+   "kind": "never",
+   "claim": "\"128-bit\" security for the #588 trust-beacon proof",
+   "patterns": [
+    "128[-\\s]?bit[^.\\n]{0,40}\\b(beacon|trust|proof|zero[-\\s]?knowledge|zk|snark)",
+    "\\b(beacon|trust proof|zero[-\\s]?knowledge proof|zk proof|snark)[^.\\n]{0,40}128[-\\s]?bit"
+   ],
+   "disclaimer_phrases": [
+    "\\b(not|isn'?t)\\s+128[-\\s]?bit"
+   ],
+   "honest": "BN254 ≈100-bit classical (Groth16); halo2-Pasta ≈126-bit if it ships. Never \"128-bit\" (Flint T2 FINAL R4).",
+   "source": [
+    "Flint #239 R4",
+    "Apollo T3 #236"
+   ],
+   "examples": {
+    "over": [
+     "the trust proof gives you 128-bit security",
+     "zero-knowledge proof with 128-bit security"
+    ],
+    "ok": [
+     "messages are encrypted with AES-256-GCM"
+    ],
+    "disclaimer_ok": [
+     "the beacon proof is not 128-bit"
+    ]
+   }
+  },
+  {
    "id": "G-1",
    "kind": "gated",
    "gate": "isPQEncapLive",
@@ -457,7 +486,7 @@
     "\\b(dev|preview|experimental|coming)\\b"
    ],
    "sweep_gate_override": false,
-   "override_reason": "isPSIDiscoveryLive() is hard-coded `return true` on main+dev, but the live KNOW result renders in no component and the \"mutual\" list was demo data (KB#91357). A gate that is true without the capability being real would EXCUSE over-claims. Until Flint grounds today's PSI state (Archie lane:svrnty #166) and the env-flag ruling lands, any discovery copy must carry a G-4 hedge. Sep map D.1c: do not advertise PSI/mutual discovery. GROUNDED by Flint lane:svrnty #168 (18:0xZ): dev = wired, NOT proven end-to-end (no two-seat e2e); prod satellite-key 404 = PSI inert on prod; TrustMap renders the live disclosed_circle behind isPiece2MutualBlockLive; pre-mutual leak (initiator_fingerprint in /trust/psi/pending) NOT fixed. Override stays until a two-seat e2e passes AND a prod route is decided."
+   "override_reason": "isPSIDiscoveryLive() is hard-coded `return true` on main+dev, but the live KNOW result renders in no component and the \"mutual\" list was demo data (KB#91357). A gate that is true without the capability being real would EXCUSE over-claims. Until Flint grounds today's PSI state (Archie lane:svrnty #166) and the env-flag ruling lands, any discovery copy must carry a G-4 hedge. Sep map D.1c: do not advertise PSI/mutual discovery. GROUNDED by Flint lane:svrnty #168 (18:0xZ): dev = wired, NOT proven end-to-end (no two-seat e2e); prod satellite-key 404 = PSI inert on prod; TrustMap renders the live disclosed_circle behind isPiece2MutualBlockLive; pre-mutual leak (initiator_fingerprint in /trust/psi/pending) NOT fixed. Override stays until a two-seat e2e passes AND a prod route is decided. v1.1.12: Apollo #240 found the PQ-wrapped KNOW result had never reached disclosed_circle through the real app path; fixed in source by S54 (#278, c79efd18, NOT deployed). The override stays FALSE until S54 is deployed to dev AND the S53 two-seat DEV run passes."
   },
   {
    "id": "G-5",
@@ -747,6 +776,30 @@
    "requires": [
     {
      "file": null,
+     "test": "Peter's T5 decision on the proof system's setup (Groth16 per-circuit trusted setup with an independent ceremony vs PLONK/halo2 MEASURED first)",
+     "invariant": "Flint #239 R4 / Apollo T3",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint R1: the satellite REJECTS any public input >= the field modulus p and dedupes nullifiers on the canonical value (tests N+p / H_e+p / e+p / K+p rejected)",
+     "invariant": "Flint #239 R1 (fake bond)",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint R2: every public input constrained (keep K*K; a changed K fails)",
+     "invariant": "Flint #239 R2",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint R5: independent review of the REAL circuit, circomlib pinned, P soundness confirmed",
+     "invariant": "Flint #239 R5",
+     "resolved": false
+    },
+    {
+     "file": null,
      "test": "the shipped pairing construction is identified at the SHA. Under the slot-binding ZK proof (Flint T2 §7 C1–C7) the ring no longer applies to pairing → copy \"hidden among everyone\" (no N). ONLY if a ring remains (e.g. RLN rate limiting): A = whole enrolled directory → \"among everyone enrolled (N)\"; C = k-subset, decoys FIXED per pair lineage → \"among k\"; NEVER copy for B (fresh per-epoch decoys, Archie #202)",
      "invariant": "#588 anonymity set",
      "resolved": false
@@ -776,7 +829,7 @@
      "resolved": false
     }
    ],
-   "honest_copy": "after all pass, under the ZK slot-binding fix: \"The server can't tell which member you are: you're hidden among everyone.\" + the residual: this protection is classical (no post-quantum claim for the beacon; NV-2/G-1). If a ring remains: option A \"…among everyone enrolled (N today)\", option C \"…among k members\". Never \"anonymous\" (NV-3), never \"among everyone\" for a k-subset, never a number larger than the real set.",
+   "honest_copy": "after all pass, under the ZK slot-binding fix: \"The server can't tell which member you are: you're hidden among everyone.\" + the residual: this protection is classical (no post-quantum claim for the beacon; NV-2/G-1). If a ring remains: option A \"…among everyone enrolled (N today)\", option C \"…among k members\". Never \"anonymous\" (NV-3), never \"among everyone\" for a k-subset, never a number larger than the real set. Classical residual: the beacon rests on BN254 (~100-bit) under Groth16; say no more than the shipped curve supports (never \"128-bit\", NV-11).",
    "source": [
     "Archie #202 ring-scale note v0",
     "Flint #200 (record O(N) as a design constraint; registry must track the claim)",
@@ -790,7 +843,8 @@
     "ok": [
      "hidden among everyone enrolled (coming, not yet live)"
     ]
-   }
+   },
+   "scope": "unlinkability is claimed against the satellite + the counterpart, NOT against anyone holding your identity seed (Flint #247; metadata ledger L7)"
   },
   {
    "id": "TG-4",
@@ -806,6 +860,24 @@
     "(coming|not yet|once (this|it) ships)"
    ],
    "requires": [
+    {
+     "file": null,
+     "test": "Flint R1: the satellite REJECTS any public input >= the field modulus p and dedupes nullifiers on the canonical value (tests N+p / H_e+p / e+p / K+p rejected)",
+     "invariant": "Flint #239 R1 (fake bond)",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint R2: every public input constrained (keep K*K; a changed K fails)",
+     "invariant": "Flint #239 R2",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint R5: independent review of the REAL circuit, circomlib pinned, P soundness confirmed",
+     "invariant": "Flint #239 R5",
+     "resolved": false
+    },
     {
      "file": "src/lib/crypto/beacon-e2e.test.ts (apollo/trust-psi)",
      "test": "protocol adversarial suite incl. garbage-share + reflection",
@@ -895,9 +967,12 @@
     ],
     "ok": [
      "mutual trust (coming): we're building it so neither side can see a one-way trust",
-     "they won't know you trusted them until it's mutual (coming, not yet live)"
+     "they won't know you trusted them until it's mutual (coming, not yet live)",
+     "Mutual trust isn't available with this contact yet: their app doesn't support it.",
+     "This contact's card has a trust key we can't use, so mutual trust isn't available with them. Ask them to share their card again."
     ]
-   }
+   },
+   "scope": "unlinkability is claimed against the satellite + the counterpart, NOT against anyone holding your identity seed (Flint #247; metadata ledger L7)"
   },
   {
    "id": "H-1",
@@ -1140,6 +1215,138 @@
     ],
     "ok": [
      "your relay data is safe: backed up off-site, restore-verified"
+    ]
+   }
+  },
+  {
+   "id": "TG-6",
+   "kind": "test_gated",
+   "scan_root": "A",
+   "claim": "Setup-free / trustless claims for the #588 beacon proof (\"no trusted setup\", \"trustless\", \"zero ceremony\")",
+   "patterns": [
+    "\\bno trusted setup\\b",
+    "\\btrustless\\b[^.\\n]{0,40}\\b(proof|beacon|trust|zk|zero[-\\s]?knowledge)",
+    "\\bzero[-\\s]?ceremony\\b",
+    "\\bsetup[-\\s]?free\\b[^.\\n]{0,30}\\b(proof|zk|snark)"
+   ],
+   "hedge_phrases": [],
+   "requires": [
+    {
+     "file": null,
+     "test": "the SHIPPED proof system is transparent (no per-circuit trusted setup, e.g. halo2-Pasta), MEASURED first (Apollo T3: PLONK/halo2 unmeasured)",
+     "invariant": "Flint #239 R4",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint sign-off on the concrete system; for Groth16 this row can NEVER resolve (per-circuit setup); Groth16 ships only with a ceremony with >=1 independent contributor",
+     "invariant": "Flint #239 R4",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Peter go (T5 setup decision)",
+     "invariant": "principal",
+     "resolved": false
+    }
+   ],
+   "honest_copy": "until resolved: say nothing about setup, not even hedged (Flint #333). Under Groth16 with a ceremony: \"set up in a ceremony with independent contributors\" (name them), never \"trustless\".",
+   "source": [
+    "Flint #239 R4",
+    "Apollo T3 #236",
+    "Hypatia v1.1.12"
+   ],
+   "examples": {
+    "over": [
+     "no trusted setup needed",
+     "a trustless zero-knowledge proof",
+     "no trusted setup (coming, not yet live)"
+    ],
+    "ok": [
+     "the proof is set up in a ceremony"
+    ]
+   }
+  },
+  {
+   "id": "TG-7",
+   "kind": "test_gated",
+   "scan_root": "A",
+   "claim": "Mutual trust works on hardened / JIT-off browsers",
+   "patterns": [
+    "(works|runs) (on|in|with) (hardened|jit[-\\s]?off|jitless|vanadium|lockdown)",
+    "(jit[-\\s]?off|jitless|hardened browsers?)[^.\\n]{0,30}(supported|works|compatible)"
+   ],
+   "hedge_phrases": [
+    "(coming|not yet|once (this|it) ships)"
+   ],
+   "requires": [
+    {
+     "file": null,
+     "test": "proving MEASURED on a real Vanadium JIT-off device (DrumBrake WASM interpreter; Apollo #236: --jitless = WebAssembly undefined)",
+     "invariant": "#588 T3/T5",
+     "resolved": false
+    }
+   ],
+   "honest_copy": "until measured: \"mutual trust may not work with JavaScript JIT turned off\"",
+   "source": [
+    "Apollo T3 #236",
+    "Flint #239",
+    "Hypatia v1.1.12"
+   ],
+   "examples": {
+    "over": [
+     "mutual trust works on hardened browsers"
+    ],
+    "ok": [
+     "mutual trust may not work with JavaScript JIT turned off"
+    ]
+   }
+  },
+  {
+   "id": "TG-8",
+   "kind": "test_gated",
+   "scan_root": "A",
+   "claim": "Pending trusts survive recovery / a restore / a new device / a key rotation",
+   "patterns": [
+    "pending trusts?[^.\\n]{0,40}(survive|kept|preserved|carry over|come back)",
+    "(survive|preserved|kept)[^.\\n]{0,30}(recovery|restore|new device|key rotation)[^.\\n]{0,30}pending trust"
+   ],
+   "hedge_phrases": [
+    "(coming|not yet|once (this|it) ships)"
+   ],
+   "requires": [
+    {
+     "file": null,
+     "test": "T4 Option B implemented: x = HKDF(Ed25519 seed, \"svrnty:beacon-key:v1\" || key_generation) (Flint #247)",
+     "invariant": "T4 §4",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "T4 recovery test: recover (vault restore) -> a pending trust still completes",
+     "invariant": "T4 §4",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "for \"survives key rotation\" ONLY: the 2-epoch grace re-deposit (spread + jitter) tested (T4 §5, Flint #248)",
+     "invariant": "T4 §5",
+     "resolved": false
+    }
+   ],
+   "honest_copy": "until resolved: say nothing about pending trusts surviving recovery; never \"survives key rotation\" before the grace re-deposit is tested",
+   "source": [
+    "Apollo #244",
+    "Flint #247/#248",
+    "Archie T4 v0.2",
+    "Hypatia lane #245"
+   ],
+   "examples": {
+    "over": [
+     "your pending trusts survive recovery"
+    ],
+    "ok": [
+     "your pending trusts survive recovery (coming, not yet live)"
     ]
    }
   },
