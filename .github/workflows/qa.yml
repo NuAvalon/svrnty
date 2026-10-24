@@ -122,7 +122,28 @@ jobs:
           fi
           # Patterns = CODEOWNERS + extras, built at run time so the two can't drift (Flint lane:svrnty #217).
           # bash [[ == ]] globs: `*` also matches `/`, so `dir/*` covers `dir/**` (over-match = safe side).
-          mapfile -t PATTERNS < <(bash scripts/sensitive-paths.sh patterns CODEOWNERS)
+          # Built from the BASE ref's script + CODEOWNERS (a PR can't weaken its own exam in the same change,
+          # Flint #180120), UNION the head's (a fence the PR adds counts at once). Base yields nothing → fail.
+          # Bootstrap only: a base that predates the script (e.g. main before #277 is promoted) uses the head's.
+          BASE_PATTERNS=()
+          if git cat-file -e "$BASE:scripts/sensitive-paths.sh" 2>/dev/null; then
+            BASE_DIR=$(mktemp -d)
+            git show "$BASE:scripts/sensitive-paths.sh" > "$BASE_DIR/sensitive-paths.sh"
+            git show "$BASE:CODEOWNERS" > "$BASE_DIR/CODEOWNERS" \
+              || { echo "::error::base $BASE has scripts/sensitive-paths.sh but no CODEOWNERS"; exit 1; }
+            mapfile -t BASE_PATTERNS < <(bash "$BASE_DIR/sensitive-paths.sh" patterns "$BASE_DIR/CODEOWNERS")
+            [ "${#BASE_PATTERNS[@]}" -gt 5 ] || { echo "::error::base CODEOWNERS parsed to nothing — refusing to skip the sensitive-paths check"; exit 1; }
+          else
+            # Bootstrap is only legitimate into main (dev has had the script since #277): into any
+            # other base, a missing script means the base was rewritten, not a bootstrap (Flint #308).
+            if [ "$EVENT_NAME" = "pull_request" ] && [ "${GITHUB_BASE_REF:-}" != "main" ]; then
+              echo "::error::base $BASE ($GITHUB_BASE_REF) has no scripts/sensitive-paths.sh — refusing the bootstrap path"
+              exit 1
+            fi
+            echo "::notice::base $BASE predates scripts/sensitive-paths.sh: using the head's patterns (bootstrap)"
+          fi
+          mapfile -t HEAD_PATTERNS < <(bash scripts/sensitive-paths.sh patterns CODEOWNERS)
+          PATTERNS=("${BASE_PATTERNS[@]}" "${HEAD_PATTERNS[@]}")
           [ "${#PATTERNS[@]}" -gt 5 ] || { echo "::error::CODEOWNERS parsed to nothing — refusing to skip the sensitive-paths check"; exit 1; }
           HITS=()
           while IFS= read -r -d '' f; do
