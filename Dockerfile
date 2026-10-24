@@ -41,6 +41,12 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+# OPT-2 durable relay mailbox: the SQLite store (RELAY_DB_PATH) lives on a named volume
+# mounted at /data/relay. Pre-create that dir owned by the non-root runtime user so a FRESH
+# named volume inherits nextjs ownership (Docker copies the image dir's owner/mode into an
+# empty volume on first mount). Without this the volume mounts root-owned and `nextjs` cannot
+# create the SQLite file -> every deposit 500s. chmod 700 keeps the at-rest store private.
+RUN mkdir -p /data/relay && chown -R nextjs:nodejs /data/relay && chmod 700 /data/relay
 # Build provenance for the runtime stage. ARGs are stage-scoped in Docker, so re-declare
 # them here — the same --build-arg values the pipeline passes populate both stages. These
 # ENVs are what /api/version actually reads from process.env at request time (next start
