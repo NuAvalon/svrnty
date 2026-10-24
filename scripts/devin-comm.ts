@@ -15,6 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { classifyInbound } from './devin-comm-inbound';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
@@ -443,7 +444,25 @@ async function main() {
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
       if (journaledIds.has(note.note_id)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
-      if (!c || !trPacket(note.body)) continue;         // require an authenticated triple-ratchet packet
+      if (!c) continue;                                  // not an admitted contact — never journal
+      const kind = classifyInbound(note.body);
+      if (kind === 'loom') continue;                     // machine fan-out, not a message to read
+      if (kind === 'plain') {
+        // PLAIN note (Mneme's replies, 2026-10-24: sat unseen 2h). Already sender-authenticated +
+        // admitted before putNote, same as the BM store.json path in devin_quarantine.py
+        // (f3e115f2), which docker cells can't use: their store stays in-container. Journal it so
+        // the depositor sees every inbound note regardless of transport. Never ciphertext: a TR
+        // body is classified 'tr' and still goes through trOpen below.
+        appendFileSync(journalPath, JSON.stringify({
+          note_id: note.note_id,
+          peer_fp: note.from_fingerprint,
+          sent_at: note.sent_at,
+          plaintext: note.body,
+          transport: 'plain',
+        }) + '\n');
+        journaled++;
+        continue;
+      }
       const pt = await trOpen(artifact, c, note.body);
       if (pt === null) continue;                         // decrypt failed/already-consumed — drop, never store
       appendFileSync(journalPath, JSON.stringify({
