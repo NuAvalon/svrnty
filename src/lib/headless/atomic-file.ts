@@ -23,7 +23,7 @@ import { dirname } from 'node:path';
 export const RESTORE_BAK_HINT = 'Restore from <path>.bak or repair it by hand.';
 export const RATCHET_HINT =
   'Do NOT restore a backup of ratchet state (a stale ratchet reuses chain keys): move the file aside and ' +
-  're-handshake; sessions re-establish, send plain until each is confirmed.';
+  're-handshake; sessions re-establish. Until each is confirmed, send sealed classical notes (not tr-v1).';
 
 function isValidJson(path: string): boolean {
   try {

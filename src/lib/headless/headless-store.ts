@@ -117,9 +117,12 @@ export class HeadlessStore {
   // --- notes (mirror the messaging store surface the note-accept uses) ---
   putNote(n: NoteRecord): void {
     this.mutate(() => {
-      const i = this.data.notes.findIndex((x) => x.note_id === n.note_id);
+      // note_id is sender-chosen: keyed on it alone, a peer who knew one of our ids (our outbound copies)
+      // could replace that row. Same sender + direction + id = redelivery, re-persisted harmlessly (Chaos #170).
+      const i = this.data.notes.findIndex((x) =>
+        x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
       if (i === -1) this.data.notes.push(n);
-      else this.data.notes[i] = n; // idempotent on note_id (redelivery re-persists harmlessly)
+      else this.data.notes[i] = n;
     });
   }
   listNotes(): NoteRecord[] {
