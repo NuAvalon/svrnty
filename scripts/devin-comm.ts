@@ -15,7 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound } from './devin-comm-inbound';
+import { routeInbound, loomNotice } from './devin-comm-inbound';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
@@ -455,6 +455,7 @@ async function main() {
     let journaled = 0;
     let skipped = 0;
     let skippedLoom = 0;     // loom fan-out: visible count, not silence
+    let loomNotices = 0;     // loom envelopes addressed to us → body-less journal notice (Archie #177969)
     let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
     let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
@@ -463,7 +464,22 @@ async function main() {
       // in-book AND not-blocked (admitContact) for BOTH paths: a blocked sender vanishes, so its
       // stored notes must not resurface (survivor-safety v1.1; Flint #260). Loom fan-out → skip.
       const route = routeInbound(c, note.body);
-      if (route === 'skip_loom') { skippedLoom++; continue; }   // counted, never silent (Archie #260)
+      if (route === 'skip_loom') {
+        // Addressed to us (mention / our or open task_request) → a body-less notice in the journal,
+        // so the depositor badges it (Archie #177969). Other fan-out: counted, never silent (#260).
+        const notice = loomNotice(note.body, owner.fingerprint);
+        if (!notice) { skippedLoom++; continue; }
+        appendFileSync(journalPath, JSON.stringify({
+          note_id: note.note_id,
+          peer_fp: note.from_fingerprint,
+          sent_at: note.sent_at,
+          plaintext: notice,
+          transport: 'loom-notice',
+        }) + '\n');
+        journaled++;
+        loomNotices++;
+        continue;
+      }
       if (!c || route === 'skip_unadmitted') continue;
       if (route === 'plain') {
         // PLAIN note (Mneme's replies, 2026-10-24: sat unseen 2h). Already sender-authenticated +
@@ -500,7 +516,7 @@ async function main() {
       journaled++;
     }
     writeFileSync(attemptsPath, JSON.stringify(attempts), { mode: 0o600 });
-    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, decrypt_failed: decryptFailed, dead, journal: journalPath }));
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath }));
     return;
   }
 

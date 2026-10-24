@@ -34,3 +34,32 @@ export function routeInbound(contact: unknown, body: string): JournalRoute {
   const kind = classifyInbound(body);
   return kind === 'loom' ? 'skip_loom' : kind;
 }
+
+// Peer-chosen identifiers are echoed into a notice: plain tokens only, else '?'.
+const SAFE_TOKEN = /^[A-Za-z0-9._:#/-]{1,64}$/;
+const tok = (v: unknown): string => (typeof v === 'string' && SAFE_TOKEN.test(v) ? v : '?');
+
+/** A loom envelope ADDRESSED to this cell (a channel_post whose mentions include ownFp, or a
+ *  task_request assigned to ownFp or left open) → a one-line NOTICE for the journal; anything else
+ *  → null (stays a counted skip). The notice never carries the post body or brief (M8): only type,
+ *  channel, seq / task id, so a mention can't sit unseen until our loom reader (L2) lands
+ *  (Archie #177969: Mneme's lane:ops posts to Archie). Call only for routeInbound === 'skip_loom'. */
+export function loomNotice(body: string, ownFp: string): string | null {
+  let o: { type?: unknown; payload?: Record<string, unknown> };
+  try { o = JSON.parse(body); } catch { return null; }
+  const p = o && typeof o.payload === 'object' && o.payload ? o.payload : null;
+  if (!p || !ownFp) return null;
+  const where = tok(p.channel_id ?? p.channel);
+  if (o.type === 'channel_post') {
+    const mentions = Array.isArray(p.mentions) ? p.mentions : [];
+    if (!mentions.includes(ownFp)) return null;
+    const seq = Number.isInteger(p.seq) ? ` seq ${p.seq}` : '';
+    return `[loom channel_post ${where}${seq}] mentions you; body withheld until our loom reader lands, read it in your store.json`;
+  }
+  if (o.type === 'task_request') {
+    const assignee = typeof p.assignee === 'string' ? p.assignee : '';
+    if (assignee && assignee !== ownFp) return null;
+    return `[loom task_request ${where} task ${tok(p.task_id)}] ${assignee ? 'assigned to you' : 'open to the lane'}; brief withheld until our loom reader lands, read it in your store.json`;
+  }
+  return null;
+}
