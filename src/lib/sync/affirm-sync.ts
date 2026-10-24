@@ -456,3 +456,4 @@ export function startAffirmSync(
     },
   };
 }
+// TEST: protection check 2026-10-24, do not merge
