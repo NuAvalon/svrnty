@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import path from 'path';
 
 // The 0.12 "import the gray sea" demo-arc flow (T11). Drives the REAL app end-to-end:
@@ -11,7 +11,7 @@ const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 distinct gray
 
 // Reuses the create-identity foundation (mirrors e2e/identity.spec.ts). Each test = fresh context
 // → empty IndexedDB, so the first import lands into an empty book.
-async function createIdentity(page) {
+async function createIdentity(page: Page) {
   await page.goto('/');
   await page.getByRole('button', { name: /generate a new cryptographic identity/i }).click();
   await page.getByPlaceholder('Your name').fill('Alice E2E');
