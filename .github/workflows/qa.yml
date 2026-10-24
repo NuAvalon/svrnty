@@ -79,7 +79,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           FORCE_COLOR: '0'
-        run: npx --no-install tsx --test scripts/claim-detectors.test.ts scripts/claim-sweep.test.ts
+        run: npx --no-install tsx --test scripts/claim-detectors.test.ts scripts/claim-sweep.test.ts scripts/sensitive-paths.test.ts
 
       - name: Claim registry — validate vs detectors + claim-gates.ts (blocking)
         if: ${{ !cancelled() }}
@@ -120,10 +120,10 @@ jobs:
             echo "SENSITIVE PATHS TOUCHED: (not computed — cannot fetch $BASE)" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # Patterns = CODEOWNERS + extras, built at run time so the two can't drift (Flint lane:svrnty #217).
           # bash [[ == ]] globs: `*` also matches `/`, so `dir/*` covers `dir/**` (over-match = safe side).
-          PATTERNS=('scripts/*sign*' 'scripts/tr-*' 'scripts/devin-comm*' 'scripts/loom-*' 'scripts/mkcard*'
-                    'src/lib/crypto/*' 'src/lib/identity/*' 'src/lib/trust/*' 'src/lib/sync/*'
-                    'src/components/biometric/*' '.github/*' 'CODEOWNERS')
+          mapfile -t PATTERNS < <(bash scripts/sensitive-paths.sh patterns CODEOWNERS)
+          [ "${#PATTERNS[@]}" -gt 5 ] || { echo "::error::CODEOWNERS parsed to nothing — refusing to skip the sensitive-paths check"; exit 1; }
           HITS=()
           while IFS= read -r -d '' f; do
             for p in "${PATTERNS[@]}"; do
