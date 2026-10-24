@@ -7,7 +7,8 @@ import { base64ToUint8 } from '../src/lib/crypto/pq';
 async function peerX25519(armored: string): Promise<Uint8Array> {
   const key = await openpgp.readKey({ armoredKey: armored });
   const enc = await key.getEncryptionKey();
-  const q = enc.keyPacket.publicParams.Q ?? enc.keyPacket.publicParams.A;
+  const pp = enc.keyPacket.publicParams as { Q?: Uint8Array; A?: Uint8Array };
+  const q = (pp.Q ?? pp.A) as Uint8Array;   // type-only: same value as before
   return strip0x40(q);
 }
 
