@@ -6,22 +6,27 @@
  * claim. Honest counterpart to src/lib/claim-gates.ts — one source of truth, CI-enforced (a step of the
  * required `unified` job in .github/workflows/qa.yml), copy can't run ahead of the wire.
  *
- * CLAIMS: scripts/claim-registry.json (Hypatia's registry v1; kinds never / gated / test_gated / allowed).
- * Detectors it names: scripts/claim-detectors.ts. Rule engine: scripts/claim-sweep-lib.ts.
+ * CLAIMS: scripts/claim-registry.json (Hypatia's registry v1.1; kinds never / gated / test_gated /
+ * hedge_required / caveat_required / allowed; each row has a scan_root). Detectors it names:
+ * scripts/claim-detectors.ts. Rule engine + full excuse rules: scripts/claim-sweep-lib.ts.
  *
  * EXCUSES (FAIL-CLOSED, Flint #157069 — proximity fails OPEN and is NOT used):
- *   never      → NO excuse. A same-line hedge or a `claim-sweep:ok` annotation does NOT excuse it.
- *   gated      → excused IFF gate()===true  OR  the line carries THIS entry's own hedge wording
- *                OR  a reasoned `claim-sweep:ok: <reason>` annotation on the same line / line directly above.
- *   test_gated → excused IFF every `requires` anchor is present (and not quarantined) OR a reasoned annotation.
- *   allowed    → negative controls; never flagged.
- *   A reasonless `claim-sweep:ok` is treated as no annotation. Every HONORED annotation is printed
- *   (count + file:line) so reviewers see each escape hatch used.
+ *   never           → only THIS row's listed disclaimer_phrases on the same line. NO annotation.
+ *   gated           → gate()===true OR THIS row's hedge_phrases on the same line OR a reasoned annotation.
+ *   hedge_required  → THIS row's hedge_phrases on the same line OR a reasoned annotation.
+ *   test_gated      → every requires anchor resolved:true + present (not quarantined) OR THIS row's
+ *                     hedge_phrases on the same line OR a reasoned annotation.
+ *   caveat_required → the same FILE carries one of required_caveat. NO annotation.
+ *   allowed         → negative controls; never flagged.
+ *   Annotation = `claim-sweep:ok <reason>` on the same line or the line directly above (in JSX children
+ *   use `{/* claim-sweep:ok <reason> *\/}` — a bare // there would render as text). Reasonless = ignored.
+ *   Every HONORED annotation is printed (count + file:line). console.* / logger.* call lines are skipped.
  *   A gate-GUARDED claim (isXLive() ? <claim> : <hedge>) is honest but NOT auto-excused (no AST); the
  *   author annotates it, which is the reviewed escape hatch.
  *
  * COVERAGE-ASSERTION (Flint hard requirement): every asserted root must be reachable; a
- * required-but-unreachable root => CONFIG-ERROR (exit 2), NEVER a silent green. Prints coverage.
+ * required-but-unreachable (or empty) root => CONFIG-ERROR (exit 2), NEVER a silent green. Prints
+ * coverage. A run scans ONLY the root(s) it asserts (default: all), so local output == CI output.
  * An --assert-root id that names no known root is also a CONFIG-ERROR (it would assert nothing).
  *   Two-run plan: svrnty CI `--assert-root=A`; svrnty_deploy pre-deploy `--assert-root=B`.
  *   Root B (autobots infra/satellite) path override: SATELLITE_HTML_DIR.
@@ -34,11 +39,11 @@
  * Exit: 0 clean · 1 claim violations · 2 config error.
  */
 import { readFileSync, existsSync } from 'fs';
-import { resolve } from 'path';
+import { resolve, relative, sep } from 'path';
 import * as gates from '../src/lib/claim-gates';
 import { SCAN_ROOTS } from './claim-sweep.map';
 import {
-  ConfigError, loadRegistry, compileRegistry, buildAnchorIndex, checkRequires, scanText,
+  ConfigError, loadRegistry, compileRegistry, buildAnchorIndex, checkRequires, scanText, walkFiles,
   type AnchorStatus, type Violation, type HonoredAnnotation, type CompiledClaim, type RegistryClaim,
 } from './claim-sweep-lib';
 
@@ -74,16 +79,23 @@ function resolveRoots(assertRoots: Set<string>): ResolvedFile[] {
   const reachable: ResolvedFile[] = [];
   const coverage: string[] = [];
   for (const root of SCAN_ROOTS) {
-    const present = root.files
-      .map((f) => ({ root: root.id, rel: `${root.baseDir}/${f}`, abs: resolve(cwd, root.baseDir, f) }))
-      .filter((rf) => existsSync(rf.abs));
     const asserted = assertRoots.has(root.id);
-    coverage.push(`  root ${root.id} [${root.label}] ${asserted ? 'ASSERTED' : 'bonus'}: ${present.length}/${root.files.length} files at ${root.baseDir}`);
+    const present: ResolvedFile[] = [];
+    for (const d of root.dirs) {
+      const absDir = resolve(cwd, root.baseDir, d);
+      if (!existsSync(absDir)) continue;
+      for (const abs of walkFiles(absDir, root.include, root.recursive)) {
+        present.push({ root: root.id, rel: relative(cwd, abs).split(sep).join('/'), abs });
+      }
+    }
+    coverage.push(`  root ${root.id} [${root.label}] ${asserted ? 'ASSERTED' : 'not asserted (skipped)'}: ${present.length} files under ${root.baseDir} (${root.dirs.join(', ')})`);
     if (asserted && present.length === 0) {
       console.error(coverage.join('\n'));
-      configError(`required root ${root.id} (${root.label}) is UNREACHABLE at "${root.baseDir}". Refusing to pass — a gate blind to a required surface is a silent false-green. (Set SATELLITE_HTML_DIR, or run this root where its repo is checked out.)`);
+      configError(`required root ${root.id} (${root.label}) is UNREACHABLE or EMPTY at "${root.baseDir}". Refusing to pass — a gate blind to a required surface is a silent false-green. (Set SATELLITE_HTML_DIR, or run this root where its repo is checked out.)`);
     }
-    reachable.push(...present);
+    // Each run scans only the root(s) it asserts (registry v1.1: "a run asserts its OWN root"), so a
+    // local run sees exactly what CI sees.
+    if (asserted) reachable.push(...present);
   }
   console.log(`  asserting roots [${[...assertRoots].join(',')}]`);
   console.log(coverage.join('\n'));
@@ -102,7 +114,9 @@ function main(): void {
     throw e;
   }
   const byKind = (k: string) => registryClaims.filter((c) => c.kind === k).length;
-  console.log(`claim-sweep: registry ${registryClaims.length} claims (never ${byKind('never')} · gated ${byKind('gated')} · test_gated ${byKind('test_gated')} · allowed ${byKind('allowed')})`);
+  console.log(`claim-sweep: registry ${registryClaims.length} claims (never ${byKind('never')} · gated ${byKind('gated')} · test_gated ${byKind('test_gated')} · hedge_required ${byKind('hedge_required')} · caveat_required ${byKind('caveat_required')} · allowed ${byKind('allowed')})`);
+  const rootless = registryClaims.filter((c) => c.kind !== 'allowed' && !c.scan_root).map((c) => c.id);
+  if (rootless.length) console.log(`  ⚠ no scan_root (applied to EVERY root, fail-closed): ${rootless.join(', ')}`);
 
   const enforced = compiled.filter((cc) => cc.claim.kind !== 'allowed' && !cc.unenforceable);
   if (enforced.length === 0) configError('no enforceable claims (no patterns/detectors) — refusing to pass (would be fake-green)');
@@ -128,7 +142,7 @@ function main(): void {
   const violations: Violation[] = [];
   const honored: HonoredAnnotation[] = [];
   for (const rf of files) {
-    const r = scanText(rf.rel, readFileSync(rf.abs, 'utf8'), compiled, ctx);
+    const r = scanText(rf.rel, readFileSync(rf.abs, 'utf8'), compiled, ctx, rf.root);
     violations.push(...r.violations);
     honored.push(...r.honored);
   }

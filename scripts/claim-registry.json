@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.0",
+ "version": "1.1",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T15:35Z",
+ "generated": "2026-10-24T15:50Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -12,12 +12,21 @@
    "never": "over-claim at ANY scope; no gate or hedge rescues it; the scanner fails on any match",
    "gated": "allowed ONLY when the named claim-gates.ts function returns true; otherwise the hedge copy must be used",
    "test_gated": "no runtime flag; allowed only when the listed test anchors exist AND pass (CI), else hedge",
-   "allowed": "honest now; listed so the scanner does not flag it (negative control)"
+   "allowed": "honest now; listed so the scanner does not flag it (negative control)",
+   "hedge_required": "no runtime gate exists; a match passes ONLY if the same line carries one of hedge_phrases",
+   "caveat_required": "a match passes ONLY if the same FILE carries one of required_caveat (W4 timing caveat)"
   },
   "detector": "name of an existing function exported by pq_overclaim.cjs (port it, don't duplicate)",
   "patterns": "case-insensitive JS regex sources, matched against normalized (lowercased, whitespace-collapsed) copy",
   "examples": "over = must be flagged, ok = must NOT be flagged; validate_registry.cjs enforces both",
-  "gate_value_at_sha": "value returned on svrnty main at grounded_at; a flipper updates claim-gates.test.ts AND this field"
+  "gate_value_at_sha": "value returned on svrnty main at grounded_at; a flipper updates claim-gates.test.ts AND this field",
+  "hedge_phrases": "regex array; for gated rows a same-line hedge excuses a match while the gate is false; THIS row's phrases only, never any hedge-ish word",
+  "disclaimer_phrases": "NEVER rows only: a same-line honest negation listed here passes; NO annotation or free-text excuse ever rescues a NEVER match",
+  "detector_mode": "'overclaim' (default: detector(t).overclaim) | 'present_unhedged' (present && !hedged; pqBadge returns no .overclaim)",
+  "requires": "test_gated: [{file, test, invariant, resolved}]; resolved=false means the anchor is not yet named in a real test file",
+  "scan_root": "A = svrnty src/ + app/ (svrnty CI); B = autobots infra/satellite/*.html (svrnty_deploy pre-deploy). A run asserts its OWN root or exits 2.",
+  "console_excluded": "console.* and logger calls are not user copy; the sweep skips them for every row (Archie lane:svrnty #56)",
+  "annotations": "`// claim-sweep:ok <reason>` is honored ONLY for gated / test_gated / hedge_required rows, must carry a reason, and every honored one is printed (count + file:line). Never for NEVER or caveat_required."
  },
  "claims": [
   {
@@ -41,7 +50,8 @@
      "post-quantum (hybrid) encryption",
      "quantum-resistant signing"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "NV-2",
@@ -61,30 +71,46 @@
     "ok": [
      "post-quantum-ready identity"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "NV-3",
    "kind": "never",
-   "claim": "Encrypt-only notes are anonymous / unattributable / untraceable",
+   "claim": "Anonymous / untraceable / can't be tracked (any feature, incl. encrypt-only notes)",
    "patterns": [
-    "\\b(?:anonymous|unattributable|untraceable)\\b"
+    "\\b(?:anonymous|unattributable|untraceable)\\b",
+    "\\banonymous\\b",
+    "\\buntraceable\\b",
+    "can'?t be tracked"
    ],
    "scope_hint": "encrypt tab / notes copy",
-   "honest": "\"The recipient won't be able to verify this came from you.\" (deniable, not anonymous)",
+   "honest": "metadata-reduced, not anonymous",
    "source": [
     "DAG S48",
-    "Flint #178655"
+    "Flint #178655",
+    "Oct-3 map row 6",
+    "KB#90768"
    ],
    "examples": {
     "over": [
      "send an anonymous note",
-     "untraceable messages"
+     "untraceable messages",
+     "svrnty is anonymous",
+     "untraceable messaging"
     ],
     "ok": [
      "the recipient won't be able to verify this came from you"
+    ],
+    "disclaimer_ok": [
+     "svrnty is not anonymous: the relay sees that you sent something"
     ]
-   }
+   },
+   "scan_root": "A",
+   "disclaimer_phrases": [
+    "\\b(not|isn'?t|aren'?t|never)\\s+(fully\\s+)?anonymous\\b",
+    "\\bnot\\s+untraceable\\b"
+   ]
   },
   {
    "id": "NV-4",
@@ -106,7 +132,8 @@
     "ok": [
      "scan the QR code on your own screen"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "NV-5",
@@ -134,7 +161,8 @@
     "ok": [
      "removes these messages from this device"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "NV-6",
@@ -157,7 +185,8 @@
     "ok": [
      "send a distress signal to your guardians"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "NV-7",
@@ -167,11 +196,79 @@
    "honest": "content-blind, not metadata-blind (I-B)",
    "source": [
     "I-B",
-    "pq_overclaim.cjs"
+    "pq_overclaim.cjs",
+    "Oct-3 map row 9",
+    "inv#11",
+    "KB#90772"
    ],
    "examples": {
-    "over": [],
+    "over": [
+     "the relay can't see anything",
+     "nothing is stored"
+    ],
     "ok": []
+   },
+   "scan_root": "A",
+   "patterns": [
+    "(relay|server)[^.\\n]{0,20}can'?t (read|see) anything",
+    "nothing is stored"
+   ],
+   "disclaimer_phrases": [
+    "\\bnot\\s+(that\\s+)?nothing is stored"
+   ]
+  },
+  {
+   "id": "NV-8",
+   "kind": "never",
+   "claim": "Coercion-proof / safe even if your phone is taken",
+   "patterns": [
+    "coercion[-\\s]?proof",
+    "safe even if your (phone|device)[^.\\n]{0,20}(taken|seized)"
+   ],
+   "disclaimer_phrases": [
+    "\\b(not|isn'?t)\\s+coercion[-\\s]?proof"
+   ],
+   "honest": "at compromise, data-minimisation only; coercion resistance is v2",
+   "source": [
+    "Oct-3 map row 7",
+    "KB#90761"
+   ],
+   "examples": {
+    "over": [
+     "coercion-proof by design",
+     "safe even if your phone is seized"
+    ],
+    "ok": [],
+    "disclaimer_ok": [
+     "svrnty is not coercion-proof"
+    ]
+   }
+  },
+  {
+   "id": "NV-9",
+   "kind": "never",
+   "claim": "Non-transferable (invites/credentials can't be forwarded)",
+   "patterns": [
+    "non[-\\s]?transferable"
+   ],
+   "disclaimer_phrases": [
+    "\\b(not|aren'?t|isn'?t)\\s+non[-\\s]?transferable"
+   ],
+   "honest": "bearer secrets; anyone holding the link can use it (OPRF binding is v2)",
+   "source": [
+    "Oct-3 map row 8",
+    "KB#90767"
+   ],
+   "examples": {
+    "over": [
+     "non-transferable invites"
+    ],
+    "ok": [
+     "anyone with this link can use it"
+    ],
+    "disclaimer_ok": [
+     "invites are not non-transferable yet"
+    ]
    }
   },
   {
@@ -182,41 +279,87 @@
    "claim": "Post-quantum encrypted messages / notes",
    "patterns": [
     "\\bpost.?quantum\\b.{0,25}\\b(?:messages?|notes?|chats?|messaging)\\b",
-    "\\bpq\\b.{0,10}\\b(?:messages?|notes?)\\b"
+    "\\bpq\\b.{0,10}\\b(?:messages?|notes?)\\b",
+    "post-quantum(?:[-\\s]+\\w+){0,4}[-\\s]+(protected|encrypted|encryption(?![-\\s]+keys?\\b))",
+    "\\bpq[-\\s]?protected\\b",
+    "ml-kem[^.\\n]{0,20}(encrypts|encrypting)",
+    "(are|is|gets?) encrypted[^.\\n]{0,20}(with |using |via )?(ml-kem|post-quantum)",
+    "post-quantum(?:[-\\s]+\\w+){0,4}[-\\s]+(encrypts|encrypting)"
    ],
-   "hedge": "(say nothing about PQ messaging until S15 flips; \"post-quantum-ready\" is honest only for identity key material)",
    "flips_with": "S15 (+ S14), Flint live co-verify; Nov-5 gate (Peter #179080)",
    "source": [
     "DAG S14/S15",
-    "Oct-17 PQ-COPY"
+    "Oct-17 PQ-COPY",
+    "Oct-3 map rows 1/2b/3",
+    "KB#92121"
    ],
    "examples": {
     "over": [
      "post-quantum messages",
-     "PQ notes"
+     "PQ notes",
+     "✓ post-quantum protected",
+     "your notes are encrypted with ML-KEM",
+     "post-quantum encryption for every note"
     ],
     "ok": [
-     "post-quantum-ready identity"
+     "post-quantum-ready identity",
+     "post-quantum encryption ready: activates when live",
+     "post-quantum messages (hybrid-ready)",
+     "This backup failed an integrity check (its post-quantum encryption key does not match its identity)",
+     "post-quantum ready: carries a verified post-quantum encryption key; protection activates when the seam is live",
+     "post-quantum key uses an unsupported format — importing classical only"
     ]
-   }
+   },
+   "scan_root": "A",
+   "detector": "pqBadgeOverclaim",
+   "detector_mode": "present_unhedged",
+   "hedge_note": "(say nothing about PQ messaging until S15 flips; \"post-quantum-ready\" is honest only for identity key material)",
+   "hedge_phrases": [
+    "post-quantum[-\\s]?ready",
+    "quantum[-\\s]?ready",
+    "hybrid[-\\s]?ready",
+    "ml-kem[-\\s]?(ready|carried)",
+    "encryption[-\\s]?ready",
+    "activates?[-\\s]when[-\\s]live",
+    "when (it'?s )?live"
+   ],
+   "ruling": "JoinerCeremony \"✓ Post-quantum protected\" is G-1 (KEM), not G-2 (Hypatia lane:svrnty #57, Archie #56). \"protected\" does not stay: copy -> \"✓ Post-quantum (hybrid) encryption\" inside isPQEncapLive(). PROPOSED to Flint: promote \"post-quantum protected/secured\" to NEVER (unbounded); until he rules it stays gated here."
   },
   {
    "id": "G-2",
    "kind": "gated",
    "gate": "isPQSignLive",
    "gate_value_at_sha": false,
-   "claim": "Post-quantum signatures VERIFIED / quantum-safe identity (verify-side)",
-   "detector": "pqBadgeOverclaim",
-   "hedge": "\"signed with a post-quantum key\" (identity docs: true now, see A-2)",
+   "claim": "Post-quantum signatures VERIFIED (verify-side, per message / per card)",
    "flips_with": "S18 verify enforcement (NOT on the Nov-5 path, Peter #179162)",
    "source": [
     "DAG S18",
-    "KB#93449"
+    "KB#93449",
+    "Oct-3 map row 2a"
    ],
    "examples": {
-    "over": [],
-    "ok": []
-   }
+    "over": [
+     "post-quantum signature verified",
+     "ML-DSA signature verified on every message"
+    ],
+    "ok": [
+     "your identity is signed with a post-quantum key"
+    ]
+   },
+   "scan_root": "A",
+   "patterns": [
+    "ml-dsa[^.\\n]{0,24}(verif|verified|verifies)",
+    "(post-quantum|pq)[-\\s]+signatures?[^.\\n]{0,15}(verified|checked|enforced)",
+    "(✓|verified)\\s*[·:]?\\s*post[- ]?quantum[-\\s]+sign",
+    "quantum[-\\s]?signed"
+   ],
+   "hedge_note": "\"signed with a post-quantum key\" (identity docs: true now, see A-2)",
+   "hedge_phrases": [
+    "ml-dsa[-\\s]?(ready|carried)",
+    "signing[-\\s]?ready",
+    "signed with a post-quantum key"
+   ],
+   "ruling": "Encrypt badges are G-1. G-2 is sign/verify only. \"quantum-safe identity\" removed: NV-1 (NEVER) owns it."
   },
   {
    "id": "G-3",
@@ -228,7 +371,6 @@
     "\\bpost.?quantum\\b.{0,30}\\b(?:discovery|mutual)",
     "\\bpq.?blinded\\b"
    ],
-   "hedge": "n/a while true; NEVER use this gate for messaging PQ (conflation trap, #572)",
    "scope": "dev; PROD separately gated",
    "source": [
     "claim-gates.ts isPQWireLive comment"
@@ -237,7 +379,13 @@
     "over": [],
     "ok": []
    },
-   "claim_rule": "Same as G-4: derives from isPSIDiscoveryLive, so no PROD 'PQ-blinded discovery' claim until G-4's conditions hold."
+   "claim_rule": "Same as G-4: derives from isPSIDiscoveryLive, so no PROD 'PQ-blinded discovery' claim until G-4's conditions hold.",
+   "scan_root": "A",
+   "hedge_note": "n/a while true; NEVER use this gate for messaging PQ (conflation trap, #572)",
+   "hedge_phrases": [
+    "classical (wire|transport)",
+    "(coming|not yet)"
+   ]
   },
   {
    "id": "G-4",
@@ -245,7 +393,6 @@
    "gate": "isPSIDiscoveryLive",
    "gate_value_at_sha": true,
    "claim": "Find your mutual contacts (KNOW-layer trust map)",
-   "hedge": "(dev only; PROD separately gated)",
    "scope": "dev (flip 2026-10-04); block = DIRECT only",
    "conflict": "RULED (Flint lane:svrnty #41, Archie #39): hard-coded `return true` since ce8420b (Athena, 2026-10-04, one-branch era) → ON for ANYTHING built from main (prod, self-hosters). Prod commit UNKNOWN (svrnty.is/api/version reports \"unknown\"). Flint did NOT give a PROD/self-host go. Fix: env flag NEXT_PUBLIC_PSI_DISCOVERY_LIVE, default OFF on main, true in the dev build (PR to dev → main); prod-on = Peter's call. When it lands, set gate_value_at_sha to \"env\" (the validator enforces it).",
    "source": [
@@ -253,10 +400,26 @@
     "DAG S29/C1"
    ],
    "examples": {
-    "over": [],
-    "ok": []
+    "over": [
+     "find your mutual contacts",
+     "discover who you both know"
+    ],
+    "ok": [
+     "add a contact by invite"
+    ]
    },
-   "claim_rule": "NO prod or self-host discovery claim until (a) the env flag lands, (b) Peter decides prod, (c) prod reports its real commit."
+   "claim_rule": "NO prod or self-host discovery claim until (a) the env flag lands, (b) Peter decides prod, (c) prod reports its real commit.",
+   "scan_root": "A",
+   "patterns": [
+    "find (your )?mutual (contacts|friends|connections)",
+    "discover (who|people) you (both )?know",
+    "\\bmutual contacts\\b",
+    "see who your mutuals are"
+   ],
+   "hedge_note": "(dev only; PROD separately gated)",
+   "hedge_phrases": [
+    "\\b(dev|preview|experimental|coming)\\b"
+   ]
   },
   {
    "id": "G-5",
@@ -268,7 +431,6 @@
     "\\b(?:including |even )?through mutual (?:friends|contacts)\\b",
     "\\bfully blocked\\b"
    ],
-   "hedge": "\"blocked directly\"",
    "source": [
     "claim-gates.ts",
     "DAG S30"
@@ -281,7 +443,13 @@
     "ok": [
      "blocked directly"
     ]
-   }
+   },
+   "scan_root": "A",
+   "hedge_note": "\"blocked directly\"",
+   "hedge_phrases": [
+    "(direct|directly) (only|connections)",
+    "(coming|not yet)"
+   ]
   },
   {
    "id": "G-6",
@@ -289,15 +457,30 @@
    "gate": "isMutualTrustWireLive",
    "gate_value_at_sha": false,
    "claim": "Mutual trust is confirmed / reciprocal flip live",
-   "hedge": "(honest pre-wire copy)",
    "source": [
     "claim-gates.ts",
     "DAG S22-S25"
    ],
    "examples": {
-    "over": [],
-    "ok": []
-   }
+    "over": [
+     "mutual trust confirmed",
+     "trust is now reciprocal"
+    ],
+    "ok": [
+     "waiting for them to confirm"
+    ]
+   },
+   "scan_root": "A",
+   "patterns": [
+    "mutual(ly)?[-\\s]+trust(ed)?[^.\\n]{0,15}(confirmed|verified|live)",
+    "trust is (now )?(reciprocal|mutual)",
+    "(both|each) of you (now )?trust"
+   ],
+   "hedge_note": "(honest pre-wire copy)",
+   "hedge_phrases": [
+    "(pending|waiting for|once they) (confirm|accept)",
+    "(coming|not yet)"
+   ]
   },
   {
    "id": "G-7",
@@ -305,15 +488,31 @@
    "gate": "isRelayMigrateLive",
    "gate_value_at_sha": false,
    "claim": "Move to another relay / your contacts follow you",
-   "hedge": "(no migrate claim)",
    "source": [
     "claim-gates.ts",
     "DAG S43"
    ],
    "examples": {
-    "over": [],
-    "ok": []
-   }
+    "over": [
+     "move to another relay any time",
+     "your contacts follow you"
+    ],
+    "ok": [
+     "Switch relay?",
+     "Switching relay…"
+    ]
+   },
+   "scan_root": "A",
+   "patterns": [
+    "move to (another|a different|your own) relay",
+    "contacts follow you",
+    "(friends|contacts|people you trust) (move|come) with you"
+   ],
+   "hedge_note": "(no migrate claim)",
+   "hedge_phrases": [
+    "(coming|roadmap|not yet)"
+   ],
+   "note": "Action labels (Switch relay?) are not claims. src/components/settings/relay-copy.ts is Flint-authored claim surface (do not paraphrase); whether the switch UI shows while isRelayMigrateLive()=false is Flint's call."
   },
   {
    "id": "G-8",
@@ -321,15 +520,31 @@
    "gate": "isBiometricSeamLive",
    "gate_value_at_sha": false,
    "claim": "Unlock with your fingerprint / face",
-   "hedge": "(no biometric claim)",
    "source": [
     "biometric-seam.ts",
     "DAG S39 (#268)"
    ],
    "examples": {
-    "over": [],
-    "ok": []
-   }
+    "over": [
+     "unlock with your fingerprint",
+     "biometric unlock"
+    ],
+    "ok": [
+     "unlock with your passphrase",
+     "const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);",
+     "<BiometricUnlockButton",
+     "data-testid=\"biometric-unlock-btn\""
+    ]
+   },
+   "scan_root": "A",
+   "patterns": [
+    "unlock with (your )?(fingerprint|face( id)?|touch id|biometrics?)",
+    "\\bbiometric[-\\s]unlock(?![-\\w])"
+   ],
+   "hedge_note": "(no biometric claim)",
+   "hedge_phrases": [
+    "(coming|not yet|soon)"
+   ]
   },
   {
    "id": "TG-1",
@@ -337,24 +552,58 @@
    "claim": "Delivered / received (sender-visible delivery)",
    "detector": "deliveredOverclaim",
    "requires": [
-    "recipient-signed receipt e2e (S06/S07)"
+    {
+     "file": "e2e (S06/S07)",
+     "test": "recipient-signed receipt shown only after receipt verifies",
+     "invariant": "S06/S07",
+     "resolved": false,
+     "note": "test name not yet fixed; S06/S07 owners name it"
+    }
    ],
    "source": [
     "DAG S06/S07"
    ],
    "examples": {
-    "over": [],
-    "ok": []
-   }
+    "over": [
+     "delivered ✓",
+     "your message was received"
+    ],
+    "ok": [
+     "sent to the relay",
+     "queued, will send when online"
+    ]
+   },
+   "scan_root": "A",
+   "patterns": [
+    "\\b(message|note)s? (was |were |has been |have been )?(received|read by)\\b",
+    "\\b(they|recipient) (got|received) (it|your)"
+   ],
+   "console_excluded": true,
+   "ruling": "console.* / logger lines are not user copy and are excluded from the sweep (Archie #56); JoinerCeremony.tsx:120 console.warn FP resolved by that rule, not an annotation."
   },
   {
    "id": "TG-2",
    "kind": "test_gated",
    "claim": "Log in to the portal by scanning a QR; camera image never leaves your phone; secure session",
    "requires": [
-    "Flint portal spec §6 tests (all)",
-    "network assertion: no image egress",
-    "passkey + Cloudflare tunnel BOTH live for \"secure session\" (Peter #179080 Q1)"
+    {
+     "file": null,
+     "test": "Flint portal spec §6 tests (all)",
+     "invariant": null,
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "network assertion: no image egress",
+     "invariant": null,
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "passkey + Cloudflare tunnel BOTH live for \"secure session\" (Peter #179080 Q1)",
+     "invariant": null,
+     "resolved": false
+    }
    ],
    "patterns": [
     "\\bsecure session\\b",
@@ -371,17 +620,38 @@
     "ok": [
      "scan to log in"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "TG-3",
    "kind": "test_gated",
    "claim": "Delete / Empty bin / Delete permanently removes these messages from this device",
    "requires": [
-    "store.archive.test.ts :: \"multi-delete is all-or-nothing on mid-tx failure\" (I4)",
-    "store.delete.test.ts :: \"delete makes no network call\" (I5)",
-    "e2e/message-management.spec.ts :: \"delete requires confirm, default cancel\" (I9, BEHAVIORAL Playwright)",
-    "store.bin.test.ts :: \"empty bin is all-or-nothing\" (I12)"
+    {
+     "file": "store.archive.test.ts",
+     "test": "multi-delete is all-or-nothing on mid-tx failure",
+     "invariant": "I4",
+     "resolved": false
+    },
+    {
+     "file": "store.delete.test.ts",
+     "test": "delete makes no network call",
+     "invariant": "I5",
+     "resolved": false
+    },
+    {
+     "file": "e2e/message-management.spec.ts",
+     "test": "delete requires confirm, default cancel",
+     "invariant": "I9",
+     "resolved": false
+    },
+    {
+     "file": "store.bin.test.ts",
+     "test": "empty bin is all-or-nothing",
+     "invariant": "I12",
+     "resolved": false
+    }
    ],
    "status_note": "#269 @3916e85: I9 is regex-over-JSX (not behavioral) → NOT satisfied (KB#93455)",
    "source": [
@@ -389,8 +659,299 @@
     "contract 616 v0.5"
    ],
    "examples": {
-    "over": [],
+    "over": [
+     "messages are permanently deleted"
+    ],
+    "ok": [
+     "delete permanently removes these messages from this device"
+    ]
+   },
+   "scan_root": "A",
+   "patterns": [
+    "(permanently|forever) (deleted|removed|gone)",
+    "delete[sd]? (them |these |messages )?permanently",
+    "empty(ing)? (the )?bin (removes|deletes|erases)"
+   ],
+   "hedge_phrases": [
+    "(from|on) this device",
+    "this device only"
+   ]
+  },
+  {
+   "id": "H-1",
+   "kind": "hedge_required",
+   "scan_root": "A",
+   "claim": "Social recovery: guardians can rebuild you",
+   "patterns": [
+    "social[-\\s]?recovery[^.\\n]{0,30}(restores?|rebuilds?|recovers? you|gets? you back|brings? you back)",
+    "guardians? (can )?(rebuild|restore|recover) you",
+    "social[-\\s]?recovery\\s*$"
+   ],
+   "hedge_phrases": [
+    "(coming|on the roadmap|not yet|soon)"
+   ],
+   "note": "give-side live; rebuild NOT live",
+   "source": [
+    "Oct-3 row 4",
+    "map R.3"
+   ],
+   "examples": {
+    "over": [
+     "social recovery: your guardians rebuild you",
+     "social recovery restores your identity"
+    ],
+    "ok": [
+     "social recovery (coming)",
+     "social-recovery shards stay local for the tear ceremony"
+    ]
+   }
+  },
+  {
+   "id": "H-2",
+   "kind": "hedge_required",
+   "scan_root": "A",
+   "claim": "Your social graph is private",
+   "patterns": [
+    "social[-\\s]?graph[-\\s]?(is[-\\s]?)?private",
+    "social-graph-private"
+   ],
+   "hedge_phrases": [
+    "identity[-\\s]?blind",
+    "can'?t read who your contacts are"
+   ],
+   "note": "NO gate: PSI discovery being live does NOT earn this (needs federation + padding/mixing). NEVER excuse on isPSIDiscoveryLive.",
+   "source": [
+    "Oct-3 row 5",
+    "KB#90744",
+    "KB#90772"
+   ],
+   "examples": {
+    "over": [
+     "your social graph is private"
+    ],
     "ok": []
+   }
+  },
+  {
+   "id": "H-3",
+   "kind": "hedge_required",
+   "scan_root": "A",
+   "claim": "Nothing sent to a server / one-time relay",
+   "patterns": [
+    "nothing sent to a server",
+    "one-time relay"
+   ],
+   "hedge_phrases": [
+    "reached them through the relay, encrypted",
+    "no server could read it"
+   ],
+   "note": "fixed on main at Oct-3; blocks if the misleading phrasing reappears without the content-blind reassurance",
+   "source": [
+    "Oct-3 row 10"
+   ],
+   "examples": {
+    "over": [
+     "nothing sent to a server"
+    ],
+    "ok": []
+   }
+  },
+  {
+   "id": "H-4",
+   "kind": "hedge_required",
+   "scan_root": "A",
+   "claim": "Invite link is single-use / expires in 15 minutes",
+   "patterns": [
+    "(link|qr)[^.\\n]{0,40}single[-\\s]?use",
+    "single[-\\s]?use[^.\\n]{0,20}(link|qr)",
+    "it(&apos;|')?s single[-\\s]?use",
+    "(link|qr|expires?)[^.\\n]{0,40}\\b15[-\\s]?min(ute)?s?\\b"
+   ],
+   "hedge_phrases": [
+    "multi[-\\s]?use",
+    "7[-\\s]?day",
+    "content[-\\s]?blind"
+   ],
+   "note": "relay SHARE LINK is 7-day MULTI-USE (scoped to link/QR copy; grow-gate codes are a separate mechanism, see open question). Known real hits: ContactShareDialog.tsx :309/:322/:463 (Oct-3) -> copy fix #523; re-verify on the current head.",
+   "source": [
+    "Oct-3 row 11",
+    "#523"
+   ],
+   "examples": {
+    "over": [
+     "this link is single-use",
+     "expires in 15 minutes",
+     "Creates a private, single-use link and shows it as a QR to scan. The server cannot read your data.",
+     "it&apos;s single-use and expires in 15 minutes.",
+     "Link expires after first use or 15 minutes. The server cannot read your data."
+    ],
+    "ok": [
+     "multi-use link, valid 7 days",
+     "{ value: 15, label: '15 minutes' },"
+    ]
+   }
+  },
+  {
+   "id": "H-5",
+   "kind": "hedge_required",
+   "scan_root": "A",
+   "claim": "Distress sends / alerts / notifies",
+   "patterns": [
+    "distress[^.\\n]{0,24}(sends|alerts|notifies)"
+   ],
+   "hedge_phrases": [
+    "distress[^.\\n]{0,24}(coming|soon|roadmap|not yet)"
+   ],
+   "note": "present tense needs a hedge until verified live (Peter: send-path must WORK by launch). Distinct from NV-6 (undetectable = NEVER).",
+   "source": [
+    "Oct-3 row 12",
+    "map DS.1"
+   ],
+   "examples": {
+    "over": [
+     "distress alerts your guardians"
+    ],
+    "ok": [
+     "distress (coming): not built yet"
+    ]
+   }
+  },
+  {
+   "id": "H-6",
+   "kind": "hedge_required",
+   "scan_root": "B",
+   "claim": "Run your own relay / self-host",
+   "patterns": [
+    "run your own relay",
+    "self[-\\s]?host(ed)?( relay)?",
+    "host it yourself"
+   ],
+   "hedge_phrases": [
+    "(on the roadmap|coming|not yet)"
+   ],
+   "note": "roadmap until W1+W6. Surface: infra/satellite/sovereignty.html",
+   "source": [
+    "Oct-3 W1"
+   ],
+   "examples": {
+    "over": [
+     "run your own relay"
+    ],
+    "ok": [
+     "run your own relay (on the roadmap)"
+    ]
+   }
+  },
+  {
+   "id": "H-7",
+   "kind": "hedge_required",
+   "scan_root": "B",
+   "claim": "Federated / survives if svrnty.is vanishes",
+   "patterns": [
+    "federat(ed|ion)",
+    "survives if svrnty\\.is vanishes",
+    "no dependency on svrnty\\.is",
+    "network continues if we vanish"
+   ],
+   "hedge_phrases": [
+    "(on the roadmap|coming|designed to)"
+   ],
+   "note": "roadmap until W2 + failover + W6 (I-C #136130)",
+   "source": [
+    "Oct-3 W2"
+   ],
+   "examples": {
+    "over": [
+     "the network continues if we vanish"
+    ],
+    "ok": [
+     "federation is on the roadmap"
+    ]
+   }
+  },
+  {
+   "id": "H-8",
+   "kind": "hedge_required",
+   "scan_root": "B",
+   "claim": "Migration is unlinkable",
+   "patterns": [
+    "migration[^.\\n]{0,30}unlinkable",
+    "unlinkable[^.\\n]{0,30}(content|identity|credential)"
+   ],
+   "hedge_phrases": [
+    "(once w4 ships|coming|roadmap)"
+   ],
+   "note": "roadmap until W4 enforced + Flint-verified",
+   "source": [
+    "Oct-3 W3"
+   ],
+   "examples": {
+    "over": [
+     "migration is unlinkable"
+    ],
+    "ok": []
+   }
+  },
+  {
+   "id": "H-9",
+   "kind": "hedge_required",
+   "scan_root": "B",
+   "claim": "Your (relay) data is safe",
+   "patterns": [
+    "\\b(your )?(relay )?data is safe\\b"
+   ],
+   "hedge_phrases": [
+    "backed up",
+    "restore[-\\s]?verified",
+    "off-site",
+    "no single point of failure",
+    "durab"
+   ],
+   "note": "\"safe\" bleeds into confidentiality W5-0 never established; excused only when durability-scoped on the same line. W5a ALLOWED, not scanned.",
+   "source": [
+    "Oct-3 W5b",
+    "Archie #157013"
+   ],
+   "examples": {
+    "over": [
+     "your data is safe"
+    ],
+    "ok": [
+     "your relay data is safe: backed up off-site, restore-verified"
+    ]
+   }
+  },
+  {
+   "id": "CR-1",
+   "kind": "caveat_required",
+   "scan_root": "B",
+   "claim": "Unlinkable (anything)",
+   "patterns": [
+    "\\bunlinkable\\b"
+   ],
+   "required_caveat": [
+    "correlate[^.\\n]{0,30}by timing",
+    "watch both[^.\\n]{0,20}relay",
+    "cover for that is coming"
+   ],
+   "note": "APEX life-safety: NEVER a flat \"unlinkable\"; the FILE must carry the timing caveat (an adversary watching BOTH relays). KB#91416.",
+   "source": [
+    "Oct-3 W4",
+    "KB#91416"
+   ],
+   "examples": {
+    "over": [
+     "your identity is unlinkable"
+    ],
+    "ok": []
+   },
+   "caveat_examples": {
+    "pass": [
+     "unlinkable to the relay. someone who can watch both relays could still correlate you by timing; cover for that is coming."
+    ],
+    "fail": [
+     "fully unlinkable migration"
+    ]
    }
   },
   {
@@ -405,7 +966,8 @@
     "ok": [
      "encrypt only (no signature, smaller)"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "A-2",
@@ -420,7 +982,8 @@
     "ok": [
      "signed with a post-quantum key"
     ]
-   }
+   },
+   "scan_root": "A"
   },
   {
    "id": "A-3",
@@ -434,7 +997,29 @@
     "ok": [
      "not sent. saved on this device. alex needs to share an updated contact card (security upgrade)."
     ]
-   }
+   },
+   "scan_root": "A"
   }
- ]
+ ],
+ "supersedes": "v1.0 (kept for diff); Oct-3 CLAIM_MAP v1.3 (KB#92121): every one of its 18 rows maps to a v1.1 id (see oct3_coverage)",
+ "oct3_coverage": {
+  "1": "G-1",
+  "2a": "G-2",
+  "2b": "G-1",
+  "3": "G-1",
+  "4": "H-1",
+  "5": "H-2",
+  "6": "NV-3",
+  "7": "NV-8",
+  "8": "NV-9",
+  "9": "NV-7",
+  "10": "H-3",
+  "11": "H-4",
+  "12": "H-5",
+  "W1": "H-6",
+  "W2": "H-7",
+  "W3": "H-8",
+  "W4": "CR-1",
+  "W5b": "H-9"
+ }
 }

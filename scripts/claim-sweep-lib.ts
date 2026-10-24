@@ -3,20 +3,26 @@
 // Pure (no process.exit, no gate import) so the excuse rules can be unit-tested with injected gate values
 // (scripts/claim-sweep.test.ts). The CLI wires in the REAL src/lib/claim-gates.ts.
 //
-// SOURCE OF CLAIMS: scripts/claim-registry.json (Hypatia's svrnty claim registry v1 — content owner
+// SOURCE OF CLAIMS: scripts/claim-registry.json (Hypatia's svrnty claim registry v1.1 — content owner
 // Hypatia; this repo reads it, never re-words it). Detectors named by the registry come from
 // scripts/claim-detectors.ts (a faithful port of pq_overclaim.cjs).
 //
-// EXCUSE RULES (registry owner, mandatory — so the excuse paths can't reopen the NEVER list):
-//   kind=never      → FORBIDDEN, NO excuse: neither a same-line hedge nor a `claim-sweep:ok` annotation.
-//   kind=gated      → excused iff the named claim-gates.ts function returns true, OR the line carries THIS
-//                     entry's own hedge wording (not any hedge-ish word), OR a reasoned annotation.
-//   kind=test_gated → excused iff every `requires` anchor is present (see checkRequires), OR a reasoned
-//                     annotation.
-//   kind=allowed    → negative controls; never matched, never flagged.
-//   Annotation = `claim-sweep:ok: <reason>` on the same line or the line directly above. A reasonless
-//   `claim-sweep:ok` (or `claim-sweep:ok:` with nothing after it) is treated as NO annotation. Every
-//   honored annotation is returned so the CLI prints it (count + file:line).
+// EXCUSE RULES (registry v1.1 `how_to_read`, mandatory — so the excuse paths can't reopen the NEVER list).
+// A row FLAGS a line when one of its patterns / its detector matches the normalized line, and then:
+//   never           → violation unless THIS row's `disclaimer_phrases` match the same line (listed honest
+//                     negations, e.g. "not anonymous"). NO annotation ever excuses it.
+//   gated           → excused iff the named claim-gates.ts function returns true, OR THIS row's
+//                     `hedge_phrases` match the same line, OR a reasoned annotation.
+//   hedge_required  → excused iff THIS row's `hedge_phrases` match the same line, OR a reasoned annotation.
+//   test_gated      → excused iff every `requires` anchor is resolved:true AND present (checkRequires),
+//                     OR THIS row's `hedge_phrases` match the same line, OR a reasoned annotation.
+//   caveat_required → excused iff the same FILE carries one of `required_caveat`. NO annotation.
+//   allowed         → negative controls; never matched, never flagged.
+//   Annotation = `claim-sweep:ok <reason>` (or `claim-sweep:ok: <reason>`) on the same line or the line
+//   directly above. A reasonless `claim-sweep:ok` is treated as NO annotation. Every honored annotation is
+//   returned so the CLI prints it (count + file:line).
+// SCOPE: a row applies to files of its `scan_root` (A/B). A row WITHOUT scan_root applies to EVERY root
+// (fail-closed: a missing field must not silently exempt a surface).
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { resolve, join, relative, sep } from 'path';
 import * as detectors from './claim-detectors';
@@ -25,25 +31,41 @@ export const REPO_ROOT = resolve(__dirname, '..');
 export const REGISTRY_PATH = resolve(REPO_ROOT, 'scripts/claim-registry.json');
 export const QUARANTINE_PATH = resolve(REPO_ROOT, 'qa/quarantine.json');
 
-export type Kind = 'never' | 'gated' | 'test_gated' | 'allowed';
-const KINDS: readonly Kind[] = ['never', 'gated', 'test_gated', 'allowed'];
+export type Kind = 'never' | 'gated' | 'test_gated' | 'hedge_required' | 'caveat_required' | 'allowed';
+const KINDS: readonly Kind[] = ['never', 'gated', 'test_gated', 'hedge_required', 'caveat_required', 'allowed'];
+/** kinds a reasoned `claim-sweep:ok` annotation may excuse (registry how_to_read.annotations) */
+const ANNOTATABLE: readonly Kind[] = ['gated', 'test_gated', 'hedge_required'];
+
+export interface Requirement {
+  file: string | null;
+  test: string;
+  invariant: string | null;
+  resolved: boolean;
+  [k: string]: unknown;
+}
 
 export interface RegistryClaim {
   id: string;
   kind: Kind;
   claim: string;
+  scan_root?: string;
   detector?: string;
+  detector_mode?: 'overclaim' | 'present_unhedged';
   patterns?: string[];
   gate?: string;
-  gate_value_at_sha?: boolean;
-  hedge?: string;
-  requires?: string[];
-  examples?: { over?: string[]; ok?: string[] };
+  gate_value_at_sha?: boolean | 'env';
+  hedge_phrases?: string[];
+  disclaimer_phrases?: string[];
+  required_caveat?: string[];
+  requires?: Requirement[];
+  examples?: { over?: string[]; ok?: string[]; disclaimer_ok?: string[] };
+  caveat_examples?: { pass: string[]; fail: string[] };
   [k: string]: unknown;
 }
 
 export interface Registry {
   claims: RegistryClaim[];
+  oct3_coverage?: Record<string, string>;
   [k: string]: unknown;
 }
 
@@ -65,64 +87,65 @@ export function loadRegistry(path: string = REGISTRY_PATH): Registry {
   return reg;
 }
 
-type DetectorResult = { overclaim?: boolean; present?: boolean };
+type DetectorResult = { overclaim?: boolean; present?: boolean; hedged?: boolean };
 
 /**
- * Does the named detector flag `text`? Uses `.overclaim`; for the two detectors whose result has no
- * `overclaim` field (pqBadgeOverclaim, pqResistantIdentityOverclaim) it falls back to `.present`, which
- * those detectors document as the over-claim signal (and which their corpus asserts).
+ * Does the named detector flag `text` under the row's `detector_mode`?
+ *   'overclaim' (default)  → result.overclaim; a detector whose result has NO overclaim field is a CONFIG ERROR
+ *                            (the v1 bug: reading .overclaim off pqBadgeOverclaim was always undefined → never fired).
+ *   'present_unhedged'     → result.present && !result.hedged (pqBadgeOverclaim / pqResistantIdentityOverclaim).
  */
-export function detectorFlags(name: string, text: string): boolean {
+export function detectorFlags(name: string, text: string, mode: RegistryClaim['detector_mode'] = 'overclaim'): boolean {
   const fn = (detectors as Record<string, unknown>)[name];
   if (typeof fn !== 'function') throw new ConfigError(`unknown detector "${name}" — not exported by scripts/claim-detectors.ts`);
   const res = (fn as (t: string) => DetectorResult)(text);
-  return res.overclaim !== undefined ? Boolean(res.overclaim) : Boolean(res.present);
+  if (mode === 'present_unhedged') return Boolean(res.present) && !res.hedged;
+  if (mode !== 'overclaim') throw new ConfigError(`unknown detector_mode "${String(mode)}"`);
+  if (!('overclaim' in res)) throw new ConfigError(`detector ${name} returns no .overclaim; the registry row must set detector_mode`);
+  return Boolean(res.overclaim);
 }
 
-/**
- * The registry's OWN hedge wording for a gated claim. The registry's `hedge` field is prose: when it
- * LEADS with quoted copy (G-2 `"signed with a post-quantum key" (…)`, G-5 `"blocked directly"`) the quoted
- * phrases are the hedge wording. When it leads with a parenthetical note (G-1 "(say nothing about PQ
- * messaging …)", G-4, G-6, G-7, G-8) it is guidance, not copy → NO hedge excuse exists for that claim
- * (fail-closed: G-1's note quotes "post-quantum-ready" as honest ONLY for identity key material, so it
- * must not excuse a PQ-messaging line).
- */
-export function hedgePhrases(hedge: string | undefined): string[] {
-  if (!hedge || !hedge.trim().startsWith('"')) return [];
-  const out: string[] = [];
-  for (const m of hedge.matchAll(/"([^"]+)"/g)) {
-    const p = normalize(m[1]);
-    if (p) out.push(p);
-  }
-  return out;
+function compileList(id: string, tag: string, srcs: string[] | undefined): RegExp[] {
+  return (srcs ?? []).map((src) => {
+    try {
+      return new RegExp(src, 'i');
+    } catch (e) {
+      throw new ConfigError(`${id}: ${tag} regex does not compile: ${src} (${(e as Error).message})`);
+    }
+  });
 }
 
 export interface CompiledClaim {
   claim: RegistryClaim;
   /** true when the registry gives this claim no patterns and no detector — the scanner cannot see it. */
   unenforceable: boolean;
-  hedges: string[];
   /** Evidence strings for every pattern/detector hit on this line (empty = no match). */
   match(line: string): string[];
+  /** THIS row's same-line excuse phrases (hedge_phrases, or disclaimer_phrases for never) match the line. */
+  excusedByPhrase(line: string): boolean;
+  /** caveat_required: the FILE carries one of required_caveat. */
+  fileHasCaveat(content: string): boolean;
+  appliesTo(root: string): boolean;
 }
 
 export function compileClaim(c: RegistryClaim): CompiledClaim {
   if (!c || typeof c.id !== 'string') throw new ConfigError(`registry claim without an id: ${JSON.stringify(c)}`);
   if (!KINDS.includes(c.kind)) throw new ConfigError(`${c.id}: unknown kind "${String(c.kind)}" (expected ${KINDS.join('/')})`);
-  const regs: RegExp[] = [];
-  for (const src of c.patterns ?? []) {
-    try {
-      regs.push(new RegExp(src, 'i'));
-    } catch (e) {
-      throw new ConfigError(`${c.id}: pattern does not compile: ${src} (${(e as Error).message})`);
-    }
+  const regs = compileList(c.id, 'pattern', c.patterns);
+  if (c.kind === 'never' && c.hedge_phrases) throw new ConfigError(`${c.id}: NEVER rows take no hedge_phrases (disclaimer_phrases only)`);
+  if (c.kind !== 'never' && c.disclaimer_phrases) throw new ConfigError(`${c.id}: disclaimer_phrases are for NEVER rows only`);
+  const excuses = compileList(c.id, c.kind === 'never' ? 'disclaimer' : 'hedge', c.kind === 'never' ? c.disclaimer_phrases : c.hedge_phrases);
+  if ((c.kind === 'gated' || c.kind === 'hedge_required') && excuses.length === 0) {
+    throw new ConfigError(`${c.id}: ${c.kind} row has no hedge_phrases`);
   }
-  if (c.detector) detectorFlags(c.detector, ''); // existence check → ConfigError if unknown
+  const caveats = compileList(c.id, 'required_caveat', c.required_caveat);
+  if (c.kind === 'caveat_required' && caveats.length === 0) throw new ConfigError(`${c.id}: caveat_required row has no required_caveat`);
   const detector = c.detector;
+  const mode = c.detector_mode ?? 'overclaim';
+  if (detector) detectorFlags(detector, '', mode); // existence + mode check → ConfigError
   return {
     claim: c,
     unenforceable: regs.length === 0 && !detector,
-    hedges: c.kind === 'gated' ? hedgePhrases(c.hedge) : [],
     match(line: string): string[] {
       const t = normalize(line);
       const ev: string[] = [];
@@ -130,8 +153,19 @@ export function compileClaim(c: RegistryClaim): CompiledClaim {
         const m = re.exec(t);
         if (m) ev.push(m[0]);
       }
-      if (detector && detectorFlags(detector, line)) ev.push(`detector:${detector}`);
+      if (detector && detectorFlags(detector, line, mode)) ev.push(`detector:${detector}`);
       return ev;
+    },
+    excusedByPhrase(line: string): boolean {
+      const t = normalize(line);
+      return excuses.some((re) => re.test(t));
+    },
+    fileHasCaveat(content: string): boolean {
+      const t = normalize(content);
+      return caveats.some((re) => re.test(t));
+    },
+    appliesTo(root: string): boolean {
+      return !c.scan_root || c.scan_root === root;
     },
   };
 }
@@ -147,6 +181,7 @@ export function compileRegistry(reg: Registry, hasGate: (name: string) => boolea
       if (typeof c.gate !== 'string' || !c.gate) throw new ConfigError(`${c.id}: kind=gated but no gate named`);
       if (!hasGate(c.gate)) throw new ConfigError(`${c.id}: gate "${c.gate}" is not exported by src/lib/claim-gates.ts`);
     }
+    if (c.kind === 'test_gated' && !Array.isArray(c.requires)) throw new ConfigError(`${c.id}: test_gated row has no requires array`);
     return cc;
   });
 }
@@ -155,13 +190,18 @@ export function compileRegistry(reg: Registry, hasGate: (name: string) => boolea
 
 const ANNOTATION_RE = /claim-sweep:ok\b(.*)$/;
 
-/** null = no annotation on this line; {reason:null} = annotation present but REASONLESS (not honored). */
+/**
+ * null = no annotation on this line; {reason:null} = annotation present but REASONLESS (not honored).
+ * Accepts `claim-sweep:ok <reason>` (registry v1.1 form) and `claim-sweep:ok: <reason>`; a trailing
+ * comment closer (`*\/`, `*\/}`, `-->`) is not part of the reason; the reason must contain a letter/digit.
+ */
 export function parseAnnotation(line: string): { reason: string | null } | null {
   const m = ANNOTATION_RE.exec(line);
   if (!m) return null;
-  const rest = m[1];
-  if (!rest.startsWith(':')) return { reason: null };
-  const reason = rest.slice(1).replace(/\s*(?:\*\/\s*\}?|-->)\s*$/, '').trim();
+  let rest = m[1];
+  if (rest.startsWith(':')) rest = rest.slice(1);
+  else if (rest !== '' && !/^\s/.test(rest)) return { reason: null };
+  const reason = rest.replace(/\s*(?:\*\/\s*\}?|-->)\s*$/, '').trim();
   return { reason: /[a-z0-9]/i.test(reason) ? reason : null };
 }
 
@@ -180,48 +220,53 @@ export interface AnchorIndex {
   quarantined: Set<string>;
 }
 
-const ANCHOR_RE = /^\s*(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\s*::\s*"([^"]+)"/;
-
 /**
- * A `requires` entry is satisfied iff it is a machine-checkable anchor `<file>.test.ts :: "<test name>"`,
- * a file with that path (or path suffix) exists, it contains the test name verbatim, and it is not in
+ * A `requires` entry ({file, test, invariant, resolved}) is satisfied iff resolved === true AND a test/spec
+ * file with that path (or path suffix) exists, contains the test name verbatim, and is not in
  * qa/quarantine.json (the unified gate skips quarantined files, so their tests do not have to pass).
- * Anything else (prose like "Flint portal spec §6 tests (all)") cannot be verified → UNSATISFIED.
+ * resolved:false (the anchor is not yet named in a real test file) → UNSATISFIED, without looking.
  * Running the anchors is NOT done here: src/**\/*.test.ts anchors are run by the unified gate step that
  * precedes this sweep in CI; e2e/*.spec.ts anchors are run only by ci.yml (not a required check).
  */
-export function checkRequires(requires: string[] | undefined, idx: AnchorIndex): AnchorStatus[] {
+export function checkRequires(requires: Requirement[] | undefined, idx: AnchorIndex): AnchorStatus[] {
   if (!requires || requires.length === 0) {
     return [{ requirement: '(none listed)', ok: false, why: 'test_gated claim lists no requires anchors' }];
   }
-  return requires.map((req) => {
-    const m = ANCHOR_RE.exec(req);
-    if (!m) return { requirement: req, ok: false, why: 'not a machine-checkable anchor (expected `<file>.test.ts :: "<test name>"`)' };
-    const [, file, name] = m;
+  return requires.map((r) => {
+    const label = `${r.file ?? '(no file)'} :: "${r.test}"${r.invariant ? ` (${r.invariant})` : ''}`;
+    if (r.resolved !== true) return { requirement: label, ok: false, why: 'resolved:false — anchor not yet named in a real test file' };
+    if (!r.file || !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(r.file)) return { requirement: label, ok: false, why: 'resolved:true but file is not a test/spec path' };
+    const file = r.file;
     const cands = idx.files.filter((f) => f === file || f.endsWith('/' + file));
-    if (cands.length === 0) return { requirement: req, ok: false, why: `anchor file ${file} not found` };
-    const live = cands.filter((f) => !idx.quarantined.has(f) && idx.read(f).includes(name));
-    if (live.length) return { requirement: req, ok: true, why: `found in ${live.join(', ')}` };
-    const quarantinedHit = cands.filter((f) => idx.quarantined.has(f) && idx.read(f).includes(name));
-    if (quarantinedHit.length) return { requirement: req, ok: false, why: `anchor only in quarantined ${quarantinedHit.join(', ')}` };
-    return { requirement: req, ok: false, why: `test name not found in ${cands.join(', ')}` };
+    if (cands.length === 0) return { requirement: label, ok: false, why: `anchor file ${file} not found` };
+    const live = cands.filter((f) => !idx.quarantined.has(f) && idx.read(f).includes(r.test));
+    if (live.length) return { requirement: label, ok: true, why: `found in ${live.join(', ')}` };
+    const quarantinedHit = cands.filter((f) => idx.quarantined.has(f) && idx.read(f).includes(r.test));
+    if (quarantinedHit.length) return { requirement: label, ok: false, why: `anchor only in quarantined ${quarantinedHit.join(', ')}` };
+    return { requirement: label, ok: false, why: `test name not found in ${cands.join(', ')}` };
   });
 }
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'test-results', 'playwright-report', 'coverage', 'out', 'build']);
 
-export function buildAnchorIndex(root: string = REPO_ROOT): AnchorIndex {
-  const files: string[] = [];
-  const walk = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
+/** Recursively list files under `dir` (skipping build/vendor dirs) whose name passes `keep`. */
+export function walkFiles(dir: string, keep: (name: string) => boolean, recursive = true): string[] {
+  const out: string[] = [];
+  const walk = (d: string): void => {
+    for (const name of readdirSync(d)) {
       if (SKIP_DIRS.has(name)) continue;
-      const abs = join(dir, name);
+      const abs = join(d, name);
       const st = statSync(abs);
-      if (st.isDirectory()) walk(abs);
-      else if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(name)) files.push(relative(root, abs).split(sep).join('/'));
+      if (st.isDirectory()) { if (recursive) walk(abs); }
+      else if (keep(name)) out.push(abs);
     }
   };
-  walk(root);
+  walk(dir);
+  return out.sort();
+}
+
+export function buildAnchorIndex(root: string = REPO_ROOT): AnchorIndex {
+  const files = walkFiles(root, (n) => /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(n)).map((abs) => relative(root, abs).split(sep).join('/'));
   const quarantined = new Set<string>();
   if (existsSync(resolve(root, 'qa/quarantine.json'))) {
     const q = JSON.parse(readFileSync(resolve(root, 'qa/quarantine.json'), 'utf8')) as { quarantined?: Array<{ file?: string }> };
@@ -285,11 +330,14 @@ export function scanText(
   content: string,
   claims: CompiledClaim[],
   ctx: EvalContext,
+  root = 'A',
 ): { violations: Violation[]; honored: HonoredAnnotation[] } {
   const lines = content.split(/\r?\n/);
   const isComment = commentMask(lines);
   const violations: Violation[] = [];
   const honored: HonoredAnnotation[] = [];
+  const active = claims.filter((cc) => cc.claim.kind !== 'allowed' && !cc.unenforceable && cc.appliesTo(root));
+  const caveatCache = new Map<string, boolean>();
   for (let i = 0; i < lines.length; i++) {
     if (isComment[i]) continue;
     const line = lines[i];
@@ -297,35 +345,40 @@ export function scanText(
     const above = i > 0 ? parseAnnotation(lines[i - 1]) : null;
     const annotation = here?.reason ? { reason: here.reason, at: i + 1 } : above?.reason ? { reason: above.reason, at: i } : null;
     const reasonless = !annotation && (here !== null || above !== null);
-    const normLine = normalize(line);
-    for (const cc of claims) {
+    for (const cc of active) {
       const c = cc.claim;
-      if (c.kind === 'allowed' || cc.unenforceable) continue;
       const evidence = cc.match(line);
       if (evidence.length === 0) continue;
       const push = (reason: string) => violations.push({ file, line: i + 1, claimId: c.id, kind: c.kind, evidence, reason });
       if (c.kind === 'never') {
+        if (cc.excusedByPhrase(line)) continue; // a listed honest negation (disclaimer_phrases), same line
         const extra = annotation || reasonless ? ' (a claim-sweep:ok annotation does NOT excuse kind=never)' : '';
-        push(`kind=never: forbidden at any scope — no hedge or annotation excuses it${extra}`);
+        push(`kind=never: forbidden at any scope — only this row's listed disclaimer phrases pass${extra}`);
         continue;
       }
-      let excused = false;
+      if (c.kind === 'caveat_required') {
+        if (!caveatCache.has(c.id)) caveatCache.set(c.id, cc.fileHasCaveat(content));
+        if (caveatCache.get(c.id)) continue;
+        push('kind=caveat_required: this FILE carries none of the required caveats (annotations do not apply)');
+        continue;
+      }
       let why = '';
+      if (cc.excusedByPhrase(line)) continue;
       if (c.kind === 'gated') {
         const gate = c.gate as string;
-        if (ctx.gateValue(gate)) excused = true;
-        else if (cc.hedges.some((h) => normLine.includes(h))) excused = true;
-        else why = `kind=gated: ${gate}()=false and no same-line hedge from this entry${cc.hedges.length ? ` (${cc.hedges.map((h) => `"${h}"`).join(' / ')})` : ' (entry has no hedge wording)'}`;
+        if (ctx.gateValue(gate)) continue;
+        why = `kind=gated: ${gate}()=false and no same-line hedge phrase from this row`;
       } else if (c.kind === 'test_gated') {
-        if (ctx.requiresOk(c.id)) excused = true;
-        else why = 'kind=test_gated: requires anchors not satisfied';
+        if (ctx.requiresOk(c.id)) continue;
+        why = 'kind=test_gated: requires anchors not satisfied and no same-line hedge phrase from this row';
+      } else {
+        why = 'kind=hedge_required: no same-line hedge phrase from this row';
       }
-      if (excused) continue;
-      if (annotation) {
+      if (annotation && ANNOTATABLE.includes(c.kind)) {
         honored.push({ file, line: i + 1, annotationLine: annotation.at, claimId: c.id, reason: annotation.reason });
         continue;
       }
-      push(`${why}${reasonless ? '; a REASONLESS claim-sweep:ok annotation is ignored (write `claim-sweep:ok: <reason>`)' : '; no claim-sweep:ok annotation'}`);
+      push(`${why}${reasonless ? '; a REASONLESS claim-sweep:ok annotation is ignored (write `claim-sweep:ok <reason>`)' : '; no claim-sweep:ok annotation'}`);
     }
   }
   return { violations, honored };
