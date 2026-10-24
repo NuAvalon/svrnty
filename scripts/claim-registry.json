@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.1",
+ "version": "1.1.1",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T15:50Z",
+ "generated": "2026-10-24T15:58Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -566,11 +566,14 @@
    "examples": {
     "over": [
      "delivered ✓",
-     "your message was received"
+     "your message was received",
+     "your message was delivered"
     ],
     "ok": [
      "sent to the relay",
-     "queued, will send when online"
+     "queued, will send when online",
+     "When you send, you'll see Sent — your message left your device sealed and reached the relay. (A Delivered confirmation is coming.)",
+     "reason: 'not-delivered',"
     ]
    },
    "scan_root": "A",
@@ -578,7 +581,14 @@
     "\\b(message|note)s? (was |were |has been |have been )?(received|read by)\\b",
     "\\b(they|recipient) (got|received) (it|your)"
    ],
+   "hedge_phrases": [
+    "\\bdelivered\\b[^.\\n]{0,30}\\b(is |are )?coming\\b",
+    "\\bnot[-\\s]delivered\\b"
+   ],
    "console_excluded": true,
+   "annotation_ok": [
+    "src/components/notes/notes-status.ts:18 FORBIDDEN_LIVE_STATUS guard regex: code that BLOCKS the claim; one reasoned // claim-sweep:ok (Hypatia, Athena #78)"
+   ],
    "ruling": "console.* / logger lines are not user copy and are excluded from the sweep (Archie #56); JoinerCeremony.tsx:120 console.warn FP resolved by that rule, not an annotation."
   },
   {

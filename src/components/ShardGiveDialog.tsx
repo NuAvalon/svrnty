@@ -274,7 +274,7 @@ export function ShardGiveDialog({
               </div>
 
               <p className="text-xs text-gray-500 text-center">
-                Link expires after first use or 15 minutes. {contact.name} now holds 1 of your {total} pieces.
+                Share this link only with {contact.name}. It stays valid for up to 7 days. {contact.name} now holds 1 of your {total} pieces.
               </p>
             </div>
           )}

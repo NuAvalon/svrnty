@@ -306,7 +306,7 @@ export function ContactShareDialog({
                     <p className="text-sm text-red-400">{shortCode.error}</p>
                   )}
                   <p className="text-xs text-gray-500 text-center max-w-xs">
-                    Creates a private, multi-use link, valid ~7 days, and shows it as a QR to scan. The server can&apos;t read its content.
+                    Creates a multi-use link, valid up to 7 days, and shows it as a QR to scan. Anyone with the full link can open it; the server can&apos;t read its content.
                   </p>
                 </>
               ) : (
@@ -319,7 +319,7 @@ export function ContactShareDialog({
                   <p className="text-xs text-gray-500 text-center max-w-xs">
                     Scan with a phone camera to open the link and import this identity.
                     Anyone who can see this code can scan it, so don&apos;t leave it on display —
-                    it&apos;s a multi-use link, valid ~7 days.
+                    it&apos;s a multi-use link, valid up to 7 days.
                   </p>
                 </>
               )}
@@ -460,7 +460,7 @@ export function ContactShareDialog({
                     </Button>
                   </div>
                   <p className="text-xs text-gray-500 text-center max-w-xs">
-                    Multi-use link, valid ~7 days; the server can&apos;t read its content.
+                    Multi-use link, valid up to 7 days. Anyone with the full link can open it; the server can&apos;t read its content.
                   </p>
                 </>
               )}
