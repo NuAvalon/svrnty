@@ -123,6 +123,35 @@ test('3a. R6 (Flint §11, GAP-1): a B holding a GARBAGE share learns NOTHING abo
   assert.deepEqual(bView(true), bView(false), 'B must not be able to tell "A deposited" from "A did not" by depositing a garbage share');
 });
 
+test('3c. R6 (Flint attack review): a B with a SYBIL key C who deposits a WELL-FORMED share learns NOTHING about whether A deposited', () => {
+  // RED on 4df13ce BY DESIGN, and it must stay red under "Option 2" (a DLEQ saying "the share belongs to SOME enrolled key"):
+  // C is a genuinely enrolled key and C's share is a genuine DH share (c·H), so every such check passes. B hands C the slot and the
+  // pair base H (both derivable from S_pair), C deposits at the A–B slot, the match fires, and A's genuine share lands in C's
+  // mailbox: B learns "A trusts B" at the cost of one enrollment. It goes green only when a deposit must be bound to the PAIR.
+  const dir = Array.from({ length: 6 }, mintIdentity);
+  const ring = dir.map((d) => d.pubkey);
+  const A = dir[2];
+  const B = dir[5];
+  const C = dir[1]; // a second enrolled identity B controls
+  const epoch = 2960;
+  const sAB = deriveSharedSecret(B.sk, A.pk);
+  const slot = slotId(sAB, epoch);
+  const H = bondBase(sAB, epoch);
+
+  const cView = (aDeposited: boolean) => {
+    const matcher = new BeaconMatcher(ring);
+    if (aDeposited) {
+      const A1 = genuineDeposit(ring, A, 2, B, epoch);
+      matcher.deposit(A1.slot, A1.dep);
+    }
+    const lrsC = ringSign(ring, 1, C.scalar, slot, BEACON_MSG); // valid enrolled-member signature (C's own key)
+    const res = matcher.deposit(slot, { tag: lrsC.tag, share: depositShare(H, C.scalar).toHex(), lrs: lrsC }); // genuine c·H
+    return { res, mailbox: matcher.poll(lrsC.tag), confirms: matcher.pollConfirm(lrsC.tag) };
+  };
+  assert.deepEqual(cView(false), cView(false), 'control: C\'s view is deterministic within one world');
+  assert.deepEqual(cView(true), cView(false), 'a sybil with a well-formed share must not be able to tell "A deposited" from "A did not"');
+});
+
 test('3b. a garbage share never produces a bond (no false mutual), whatever else is delivered', () => {
   const dir = Array.from({ length: 6 }, mintIdentity);
   const ring = dir.map((d) => d.pubkey);
