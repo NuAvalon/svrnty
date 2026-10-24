@@ -120,14 +120,14 @@ test('sendJoinerResponse: POSTs {mailbox_id, blob} to /api/relay/envelope and re
 
 test('sendJoinerResponse: a relay non-2xx is reported (not thrown), status carried', async () => {
   const failFetch = (async () => ({ ok: false, status: 503 })) as unknown as typeof fetch;
-  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: failFetch });
-  assert.deepEqual(res, { ok: false, status: 503 });
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: failFetch, retry: { sleep: async () => {} } });
+  assert.deepEqual(res, { ok: false, status: 503, attempts: 5 });
 });
 
 test('sendJoinerResponse: a network error is caught and reported (fail-soft)', async () => {
   const throwFetch = (async () => { throw new Error('offline'); }) as unknown as typeof fetch;
-  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: throwFetch });
-  assert.deepEqual(res, { ok: false, status: 'network-error' });
+  const res = await sendJoinerResponse(bobSender(), aliceTarget(), { fetchImpl: throwFetch, retry: { sleep: async () => {} } });
+  assert.deepEqual(res, { ok: false, status: 'network-error', attempts: 5 });
 });
 
 test('sendJoinerResponse: an unbuildable deposit never POSTs (encrypt-failed)', async () => {

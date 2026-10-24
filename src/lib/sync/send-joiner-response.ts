@@ -29,6 +29,7 @@
 
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { buildJoinerResponse, encryptJoinerResponseTo } from '../trust/joiner-response';
+import { postWithRetry, type RetryOptions } from './post-with-retry';
 
 /** The joiner's signing identity (from the unlocked vault) + self-asserted claim. Classical for launch. */
 export interface JoinerResponseSender {
@@ -50,6 +51,10 @@ export interface JoinerResponseSender {
   kemPublicKeyB64?: string;
   /** §5 canonical-fp binding: the joiner's ML-DSA-87 public (base64, 2592B) — the other half. */
   sigPublicKeyB64?: string;
+  /** OPTIONAL pre-gate 1-greeting — a short "who I am" the giver reads at the Gate before admit. Text,
+   *  ≤ GREETING_MAX_CHARS (the join UI bounds it). Goes INTO the signed envelope (relay-opaque + tamper-
+   *  evident). Omitted when empty/falsy → a no-greeting join stays byte-identical to today (no regression). */
+  greeting?: string;
 }
 
 /** The giver being connected back to: fingerprint (→ mailbox + binding) + pubkey (→ encrypt-to) + code. */
@@ -67,6 +72,8 @@ export interface JoinerResponseSendResult {
   ok: boolean;
   /** relay status on success, or the failure classifier ('encrypt-failed' | 'network-error' | HTTP status). */
   status?: number | string;
+  /** POSTs actually made (>1 means the bounded retry/backoff ran). */
+  attempts?: number;
 }
 
 /**
@@ -99,6 +106,10 @@ export async function buildJoinerResponseDeposit(
         ...(sender.kemPublicKeyB64 && sender.sigPublicKeyB64
           ? { joinerPqKemPublicKey: sender.kemPublicKeyB64, joinerPqSigPublicKey: sender.sigPublicKeyB64 }
           : {}),
+        // Pre-gate greeting: thread it ONLY when non-empty (omit-when-absent keeps non-greeting joins
+        // byte-identical). buildJoinerResponseEnvelope throws 'bad-greeting' if over-cap → the deposit's
+        // try/catch returns null (fail-soft: the join still happens, just no greeting delivered).
+        ...(sender.greeting ? { greeting: sender.greeting } : {}),
       },
       sender.privateKeyArmored,
       sender.passphrase,
@@ -113,14 +124,17 @@ export async function buildJoinerResponseDeposit(
 
 /**
  * The drop-in: build + POST the joiner-response to the giver's return-channel mailbox. Best-effort — a
- * POST failure is reported (retryable), never thrown to the ceremony (which is fail-soft and keeps the
- * local edge regardless). Each deposit is idempotent-safe at the giver: a redelivered blob re-verifies
- * to the same KNOWN joiner and the per-(code, joinerFp) accept-oracle dedups it.
+ * POST failure (after bounded retry) is reported, never thrown to the ceremony (which is fail-soft and keeps the
+ * local edge regardless). Redelivery (retry after a lost ack) is NOT deduped by the relay: the
+ * /api/relay/envelope route passes no client envelope id, so a repeat is a second mailbox row. The giver's
+ * consumer is idempotent by joiner fingerprint (code-read co-verified by Flint): live-book-poll
+ * alreadyAccepted() rejects before verify, acceptJoinerAtGate guards existing contact / waiting arrival,
+ * markAcceptedInMap de-dups so a duplicate row does not burn a second code slot.
  */
 export async function sendJoinerResponse(
   sender: JoinerResponseSender,
   target: JoinerResponseTarget,
-  opts: { fetchImpl?: typeof fetch; relayBase?: string } = {},
+  opts: { fetchImpl?: typeof fetch; relayBase?: string; retry?: RetryOptions } = {},
 ): Promise<JoinerResponseSendResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const relayBase = opts.relayBase ?? '/api/relay';
@@ -128,14 +142,16 @@ export async function sendJoinerResponse(
   const deposit = await buildJoinerResponseDeposit(sender, target);
   if (!deposit) return { ok: false, status: 'encrypt-failed' };
 
-  try {
-    const res = await doFetch(`${relayBase}/envelope`, {
+  // Built + signed ONCE above; only the transport retries (bounded exponential backoff, Peter #174621),
+  // so every attempt carries identical bytes. A lost-ack retry can still leave two mailbox rows (no relay dedup).
+  return postWithRetry(
+    doFetch,
+    `${relayBase}/envelope`,
+    {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mailbox_id: deposit.mailbox_id, blob: deposit.blob }),
-    });
-    return res.ok ? { ok: true, status: res.status } : { ok: false, status: res.status };
-  } catch {
-    return { ok: false, status: 'network-error' };
-  }
+    },
+    opts.retry,
+  );
 }

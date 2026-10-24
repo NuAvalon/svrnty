@@ -29,7 +29,10 @@ import {
 } from '@/lib/identity/client-store';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
-import type { PendingJoiner } from '@/lib/trust/joiner-response';
+import { type PendingJoiner, clampGreeting } from '@/lib/trust/joiner-response';
+
+// Re-exported so existing callers/tests keep importing it from here; the implementation lives in joiner-response.ts.
+export { clampGreeting };
 
 export type { GateArrival, GrowMintChannel };
 
@@ -64,6 +67,10 @@ export const GATE_COPY = {
   groupLabel: 'Group (optional)',
   notesLabel: 'Note (optional)',
   provenance: 'Joined from',
+  greetingLabel: 'Their greeting',
+  greetingHint:
+    'Written by them and unverified: anyone holding your invite could write this. It does not prove who they are.',
+  greetingMark: '✉ greeting',
 } as const;
 
 /** Clamp an attacker-typed display name for Gate / admit (defense-in-depth, not XSS). */
@@ -211,6 +218,13 @@ export function arrivalFromPendingJoiner(
   // canonical fingerprintMatchesKey (needs BOTH PQ legs) refuses the joiner ("binding failed").
   const kem = pqToB64(pj.pqKemPublicKey);
   if (kem) arrival.pqKemPublicKey = kem;
+  // Pre-gate greeting — WRITE-ONCE = the 1-cap (Flint spec req 4). Set ONLY here, at initial enqueue,
+  // from the SIGNED greeting on the PendingJoiner (clampGreeting sanitizes + caps — defense-in-depth over
+  // the in-signature build cap). acceptJoinerAtGate's existing/waiting branches early-return WITHOUT
+  // calling this or touching an existing arrival, so a second joiner-response can never overwrite or
+  // append a greeting. DO NOT add a greeting write on any other path, or the one-message cap breaks.
+  const greeting = clampGreeting(pj.greeting);
+  if (greeting) arrival.greeting = greeting;
   return arrival;
 }
 

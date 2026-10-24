@@ -96,10 +96,15 @@ export interface ContactUpdateEnvelope {
  * mutual edge → the contact.update wire can't reach the joiner). After the joiner adds the giver, the
  * joiner SIGNS this self-asserted identity claim and deposits it (per-peer-encrypted) to the giver's
  * mailbox; the giver verifies and surfaces the joiner as KNOWN (unverified TOFU — the 3-state floor)
- * Identity-only BY DESIGN: once the edge is mutual the giver holds the joiner's card,
- * so the already-live contact.update wire (0.4) carries METHODS both ways — this envelope only needs
- * to make the edge exist. NOT a monotonic stream (a one-shot handshake) → no `version`; replay is
- * bounded by the single-use `invite_nonce` (the giver's own relay code), not a version floor.
+ * IDENTITY + OPTIONAL PRE-GATE GREETING (invariant expanded, Peter #175594 / Flint spec 2026-10-23):
+ * originally identity-only; it now MAY carry one short joiner-authored `greeting` (a "who I am" message
+ * the giver reads from the Gate before admit). The greeting is IN the signed canonical input (below) —
+ * NOT bolted on outside — so the content-blind multi-use relay cannot inject or alter it; authenticity,
+ * anti-replay (giver-bound), and anti-downgrade (suite-in-sig) all extend to it for free. It is still
+ * NOT a methods channel: once the edge is mutual the giver holds the joiner's card and the already-live
+ * contact.update wire (0.4) carries METHODS both ways — this envelope only makes the edge exist (+ the
+ * one greeting). NOT a monotonic stream (a one-shot handshake) → no `version`; replay is bounded by the
+ * `invite_nonce` (the giver's own relay code), not a version floor.
  */
 export interface JoinerResponseEnvelope {
   joiner_fingerprint: string;         // self-asserted; the verifier re-derives H(joiner_public_key) (Invariant-1)
@@ -108,6 +113,7 @@ export interface JoinerResponseEnvelope {
   joiner_pq_sig_public_key?: string;  // base64(ML-DSA-87 pubkey); present iff hybrid. Bound by the classical sig (anti-swap). OMITTED when absent (canonical rejects null).
   joiner_pq_kem_public_key?: string;  // base64(ML-KEM-1024 pubkey, 1568B); §5 canonical-fp binding — with sign‖enc‖sig the verifier recomputes the 64-hex canonical id. OMITTED when absent (canonical rejects null).
   joiner_display_name: string;        // self-asserted (KNOWN = unverified, so a self-asserted name is the correct trust level)
+  greeting?: string;                  // OPTIONAL pre-gate 1-greeting (text only, ≤ GREETING_MAX_CHARS, build-capped). In-signature so the relay can't inject/alter. OMITTED when absent (canonical rejects null) → a no-greeting join is byte-identical to pre-greeting envelopes (no regression).
   giver_fingerprint: string;          // the giver this response is FOR — binds it so a copied blob can't be replayed to another giver's mailbox
   invite_nonce: string;               // the giver's relay code the joiner used — proves the joiner used THIS giver's invite (anti-unsolicited); single-use, giver-side
   ts: string;                         // ISO-8601 UTC — audit/display only

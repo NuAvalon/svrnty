@@ -13,6 +13,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { ownerHasVerified } from '../trust/trust-recipe';
+import { clampGreeting } from '../trust/joiner-response';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -1732,6 +1733,9 @@ const GROW_GATE_ARRIVALS_KEY = 'grow_gate_arrivals';
 export interface GateArrival {
   fingerprint: string;
   displayName: string;
+  /** Optional pre-gate 1-greeting the joiner sent (sanitized + capped via clampGreeting, write-once at
+   *  arrivalFromPendingJoiner). Giver-local; rendered PLAIN TEXT at the Gate. Absent when none sent. */
+  greeting?: string;
   publicKeyArmored: string;
   pqSigPublicKey?: string;
   pqKemPublicKey?: string;
@@ -1750,7 +1754,9 @@ function isGrowMintChannel(v: unknown): v is GrowMintChannel {
   return v === 'in_person' || v === 'remote';
 }
 
-function normalizeArrival(raw: unknown): GateArrival | null {
+/** Exported as a test seam: every persist AND load of a Gate arrival runs through this field whitelist,
+ *  so a field that is not copied here is silently dropped between receive and display. */
+export function normalizeArrival(raw: unknown): GateArrival | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   if (typeof r.fingerprint !== 'string' || !r.fingerprint) return null;
@@ -1770,6 +1776,11 @@ function normalizeArrival(raw: unknown): GateArrival | null {
   };
   if (typeof r.pqSigPublicKey === 'string' && r.pqSigPublicKey) arrival.pqSigPublicKey = r.pqSigPublicKey;
   if (typeof r.pqKemPublicKey === 'string' && r.pqKemPublicKey) arrival.pqKemPublicKey = r.pqKemPublicKey;
+  // Pre-gate greeting: this whitelist is the persistence chokepoint — omitting the field here drops the
+  // greeting on enqueue AND on every load (the bug this line fixes). The FULL clampGreeting runs on every
+  // pass (strip control/C1/bidi-reorderers, trim, cap) so a hand-edited or older stored value can't carry
+  // what receive would have stripped (defense-in-depth). Write-once is enforced upstream (acceptJoinerAtGate never re-enqueues an existing arrival).
+  { const g = clampGreeting(r.greeting); if (g) arrival.greeting = g; }
   return arrival;
 }
 
