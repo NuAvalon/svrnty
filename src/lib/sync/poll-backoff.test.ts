@@ -28,3 +28,22 @@ test('burst always wins, and activity (idleTicks=0) restores full speed', () => 
 test('worst-case added latency for an idle arrival is bounded by MAX', () => {
   for (let k = 0; k < 50; k++) assert.ok(d(k) <= MAX);
 });
+
+// ── Flint #276: pure jitter helpers ──
+import { jitterDelayMs, burstStartDelayMs, IDLE_JITTER_FRACTION as JF, BURST_START_JITTER_MS as BSJ } from './live-book-poll';
+
+test('jitterDelayMs: random 0 -> -25%, 0.5 -> exact, ~1 -> +25%; always within the band', () => {
+  assert.equal(jitterDelayMs(1000, () => 0), 750);
+  assert.equal(jitterDelayMs(1000, () => 0.5), 1000);
+  assert.equal(jitterDelayMs(1000, () => 0.999999), 1250);
+  for (let i = 0; i <= 100; i++) {
+    const d = jitterDelayMs(15_000, () => i / 100);
+    assert.ok(d >= 15_000 * (1 - JF) - 1 && d <= 15_000 * (1 + JF) + 1);
+  }
+});
+
+test('burstStartDelayMs: 0 <= delay < 1000 for any random in [0,1)', () => {
+  assert.equal(burstStartDelayMs(() => 0), 0);
+  assert.equal(burstStartDelayMs(() => 0.999999), BSJ - 1);
+  assert.ok(burstStartDelayMs() >= 0 && burstStartDelayMs() < BSJ);
+});

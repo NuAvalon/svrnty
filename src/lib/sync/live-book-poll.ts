@@ -64,6 +64,10 @@ export const DEFAULT_BURST_MS = 12_000;
 /** Idle backoff ceiling and how many empty polls before the cadence starts doubling. */
 export const MAX_IDLE_POLL_INTERVAL_MS = 15_000;
 export const IDLE_TICKS_BEFORE_BACKOFF = 4;
+/** Relay-visible timing is metadata (Flint #276): idle delays get ±25% random jitter, and a burst's first poll waits 0-1 s,
+ *  so the relay sees "active-ish" rather than an exact focus/online timestamp. Timing depends ONLY on local UI state. */
+export const IDLE_JITTER_FRACTION = 0.25;
+export const BURST_START_JITTER_MS = 1000;
 
 /**
  * Project a stored contact record into the verify seam's KnownContactIdentity.
@@ -329,6 +333,16 @@ export function nextPollDelayMs(a: { idleTicks: number; bursting: boolean; inter
   return over <= 0 ? a.intervalMs : Math.min(a.maxIdleMs, a.intervalMs * 2 ** Math.min(over, 10));
 }
 
+/** base ± IDLE_JITTER_FRACTION, uniformly. `random` is injectable for tests (default Math.random). Never keyed on content. */
+export function jitterDelayMs(baseMs: number, random: () => number = Math.random): number {
+  return Math.round(baseMs * (1 + (random() * 2 - 1) * IDLE_JITTER_FRACTION));
+}
+
+/** 0..BURST_START_JITTER_MS random wait before a burst's first poll. */
+export function burstStartDelayMs(random: () => number = Math.random): number {
+  return Math.floor(random() * BURST_START_JITTER_MS);
+}
+
 /**
  * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
  * identity is a no-op (the book is still re-read by the caller). Does not invent
@@ -349,10 +363,11 @@ export async function pollLiveBookOnce(
 
 export function startLiveBookPolling(
   identity: unknown,
-  opts: { intervalMs?: number; maxIdleIntervalMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { intervalMs?: number; maxIdleIntervalMs?: number; fetchImpl?: typeof fetch; random?: () => number } = {},
 ): LiveBookPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const maxIdleMs = opts.maxIdleIntervalMs ?? MAX_IDLE_POLL_INTERVAL_MS;
+  const random = opts.random ?? Math.random;
   let stopped = false;
   let inFlight = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -360,7 +375,11 @@ export function startLiveBookPolling(
   let bursting = false;
   let idleTicks = 0; // consecutive ticks that found nothing; reset by any activity or burst
 
-  const nextDelay = () => nextPollDelayMs({ idleTicks, bursting, intervalMs, maxIdleMs });
+  // Burst cadence stays exact; every idle delay is jittered (see IDLE_JITTER_FRACTION).
+  const nextDelay = () => {
+    const base = nextPollDelayMs({ idleTicks, bursting, intervalMs, maxIdleMs });
+    return bursting ? base : jitterDelayMs(base, random);
+  };
 
   const schedule = () => {
     if (timer) clearTimeout(timer);
@@ -402,8 +421,12 @@ export function startLiveBookPolling(
       bursting = false;
       idleTicks = 0;
     }, durationMs);
-    void tick();
-    // if a tick is already in flight its finally{} reschedules at burst speed; otherwise tick() above did.
+    // First poll after a wake waits 0-1 s (not an exact focus timestamp). If a tick is already in flight, its
+    // finally{} reschedules at burst speed instead.
+    if (!inFlight) {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void tick(), burstStartDelayMs(random));
+    }
   };
 
   void tick(); // immediate first poll; each tick reschedules itself
