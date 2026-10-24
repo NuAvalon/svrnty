@@ -292,23 +292,31 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // 3) Ack-delete the terminal envelopes (owner-signed). apply is idempotent, so a crash before ack
   //    just redelivers and re-applies harmlessly (at-least-once).
   if (toAck.length > 0) {
-    const ackHeaders = await signMailboxAckRequest({
-      mailboxId,
-      envelopeIds: toAck,
-      fingerprint: deps.owner.fingerprint,
-      publicKeyArmored: deps.owner.publicKeyArmored,
-      privateKeyArmored: deps.owner.privateKeyArmored,
-      passphrase: deps.owner.passphrase,
-      kemPublicKey: deps.owner.kemPublicKey,
-      sigPublicKey: deps.owner.sigPublicKey,
-      now: Date.now(),
-    });
-    const ackRes = await doFetch(`${relayBase}/ack`, {
-      method: 'POST',
-      headers: { ...ackHeaders, 'content-type': 'application/json' },
-      body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: toAck }),
-    });
-    if (ackRes.ok) summary.acked = toAck.length;
+    // ack-wedge fix (sage-local, 2026-10-24): a single ack POST carrying a large id-list gets
+    // HTTP 431 at the edge (~26-99 ids; 25 verified safe) — the batch ack then fails wholesale,
+    // nothing deletes, and the same envelopes re-decrypt EVERY pass = self-reinforcing 3min wedge.
+    // Chunk the acks so a backlog can always drain.
+    const ACK_CHUNK = 25;
+    for (let i = 0; i < toAck.length; i += ACK_CHUNK) {
+      const chunk = toAck.slice(i, i + ACK_CHUNK);
+      const ackHeaders = await signMailboxAckRequest({
+        mailboxId,
+        envelopeIds: chunk,
+        fingerprint: deps.owner.fingerprint,
+        publicKeyArmored: deps.owner.publicKeyArmored,
+        privateKeyArmored: deps.owner.privateKeyArmored,
+        passphrase: deps.owner.passphrase,
+        kemPublicKey: deps.owner.kemPublicKey,
+        sigPublicKey: deps.owner.sigPublicKey,
+        now: Date.now(),
+      });
+      const ackRes = await doFetch(`${relayBase}/ack`, {
+        method: 'POST',
+        headers: { ...ackHeaders, 'content-type': 'application/json' },
+        body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: chunk }),
+      });
+      if (ackRes.ok) summary.acked += chunk.length;
+    }
   }
 
   return summary;

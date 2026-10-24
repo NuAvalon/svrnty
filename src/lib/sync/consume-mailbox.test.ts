@@ -240,3 +240,46 @@ test('refused poll (401 owner-auth) → rejected status surfaced, not an empty m
   assert.equal(summary.rejected, 401);
   assert.equal(summary.polled, 0, 'a refused poll is not a polled mailbox');
 });
+
+test('ack batches chunk below the edge header cap — a deep backlog still drains', async () => {
+  // sage-local 2026-10-24 (ack-wedge): the ack auth header carries an ATTACHED
+  // armored signature over the full id list — at ~90 ids it crosses the ~16KB
+  // request-header cap and dev.svrnty.is 431s, so a deep backlog could never
+  // drain (measured: 606 envelopes re-decrypted every pass ≈ 3min). Chunked
+  // acks keep every POST under the cap; 25 is ~15% of it (PQ-sig headroom).
+  const ackLog: string[][] = [];
+  const envs = Array.from({ length: 60 }, (_, i) => ({ envelope_id: `e${i}`, blob: 'dead' }));
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    decrypt: async () => null,          // undecryptable → terminal → acked
+    fetchImpl: recordingFetch(envs, ackLog),
+  }));
+  assert.equal(summary.acked, 60);
+  assert.deepEqual(ackLog.map((c) => c.length), [25, 25, 10], 'acks split into ≤25-id POSTs');
+  assert.deepEqual(ackLog.flat(), envs.map((e) => e.envelope_id), 'every terminal id acked exactly once');
+});
+
+test('a 431-sized-ack failure only holds that chunk — earlier chunks still drain', async () => {
+  const ackLog: string[][] = [];
+  const envs = Array.from({ length: 40 }, (_, i) => ({ envelope_id: `e${i}`, blob: 'dead' }));
+  let n = 0;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes('/queue')) {
+      return new Response(JSON.stringify(envs), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url).includes('/ack')) {
+      n++;
+      const body = JSON.parse(String(init?.body ?? '{}'));
+      ackLog.push(body.envelope_ids);
+      // second chunk wedge — simulates the 431 partial-drain path
+      if (n === 2) return new Response('Request Header Fields Too Large', { status: 431 });
+      return new Response(JSON.stringify({ deleted: body.envelope_ids.length }), { status: 200 });
+    }
+    return new Response('not found', { status: 404 });
+  }) as unknown as typeof fetch;
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    decrypt: async () => null,
+    fetchImpl,
+  }));
+  assert.equal(summary.acked, 25, 'chunk 0 acked; chunk 1 left for next poll');
+  assert.equal(ackLog.length, 2);
+});
