@@ -14,12 +14,35 @@
 // CALL SITE (buildConsumeDeps / buildHeadlessConsumeDeps), not here: this derivation only reports
 // present-or-undefined; the caller decides advertise-but-cannot-open ⇒ LOUD.
 
-import { readPrivateKey, decryptKey } from 'openpgp';
+import { readPrivateKey, decryptKey, type PrivateKey } from 'openpgp';
 import { extractRawEnc } from '@/lib/identity/raw-sign';
 import { base64ToUint8 } from './pq';
 import { deriveMailboxFp } from './mailbox-envelope';
 import type { LivingBookHybridSecrets } from './living-book-sleeve';
 
+/**
+ * Same derivation from an ALREADY-UNLOCKED identity key (the poll cycle's one unlock, N10): no second
+ * decryptKey / S2K pass. Returns undefined for a classical identity or any read error (degrade to classical).
+ * The returned byte arrays are the only secret material created here; the caller owns zeroing them.
+ */
+export async function deriveOwnerHybridSecretsFromKey(
+  decrypted: PrivateKey,
+  kemPublicKeyB64?: string,
+  kemSecretKeyB64?: string,
+): Promise<LivingBookHybridSecrets | undefined> {
+  if (!kemPublicKeyB64 || !kemSecretKeyB64) return undefined; // classical identity → classical-only openers
+  try {
+    const { encSec, encPub } = await extractRawEnc(decrypted); // x25519 enc secret+pub (fail-closed invariant)
+    const mlkem1024Sec = base64ToUint8(kemSecretKeyB64);
+    const mlkem1024Pub = base64ToUint8(kemPublicKeyB64);
+    const myFp = deriveMailboxFp(encPub, mlkem1024Pub); // MUST equal what a sender sealed to (same pubs)
+    return { secrets: { x25519Sec: encSec, mlkem1024Sec }, myFp };
+  } catch {
+    return undefined; // never block the poll on a PQ-key read — degrade to classical openers
+  }
+}
+
+/** Unlocks the armored key itself (one decryptKey). Headless uses this; the FE poll uses the FromKey variant. */
 export async function deriveOwnerHybridSecrets(
   privateKeyArmored: string,
   passphrase: string,
@@ -30,11 +53,7 @@ export async function deriveOwnerHybridSecrets(
   try {
     const locked = await readPrivateKey({ armoredKey: privateKeyArmored });
     const decrypted = locked.isDecrypted() ? locked : await decryptKey({ privateKey: locked, passphrase });
-    const { encSec, encPub } = await extractRawEnc(decrypted); // x25519 enc secret+pub (fail-closed invariant)
-    const mlkem1024Sec = base64ToUint8(kemSecretKeyB64);
-    const mlkem1024Pub = base64ToUint8(kemPublicKeyB64);
-    const myFp = deriveMailboxFp(encPub, mlkem1024Pub); // MUST equal what a sender sealed to (same pubs)
-    return { secrets: { x25519Sec: encSec, mlkem1024Sec }, myFp };
+    return await deriveOwnerHybridSecretsFromKey(decrypted, kemPublicKeyB64, kemSecretKeyB64);
   } catch {
     return undefined; // never block the poll on a PQ-key read — degrade to classical openers
   }

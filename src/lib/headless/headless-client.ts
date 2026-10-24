@@ -157,6 +157,8 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
   // Derive THIS owner's hybrid OPEN-material from the custody-threaded ML-KEM secret (OwnerIdentity.kemSecretKey,
   // ① — the SAME helper + B64 contract the FE path uses). undefined for a classical identity OR when the secret
   // is absent/un-derivable (① pending / wrong-length) → classical-only openers + the ③ loud-retry gate below.
+  // Headless key lifetime = PROCESS lifetime: the owner object holds the passphrase and the kem secret (base64) for the
+  // whole run, so this is derived per poll and its bytes are not zeroed. No tick-scope claim here (that is the FE poll).
   const hybrid = await deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey);
   const classicalCU = openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase);
   return {

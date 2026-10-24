@@ -36,6 +36,17 @@ export interface LivingBookHybridSecrets {
 }
 
 /**
+ * The hybrid open-material, either already derived or a provider that derives it on FIRST USE (FE poll: from the
+ * cycle's single unlock, only when a hybrid-shaped blob actually arrives). A provider keeps the secrets' lifetime
+ * inside the tick and costs nothing on a classical / empty mailbox.
+ */
+export type HybridSecretsSource = LivingBookHybridSecrets | (() => Promise<LivingBookHybridSecrets | undefined>);
+
+export async function resolveHybrid(src: HybridSecretsSource | undefined): Promise<LivingBookHybridSecrets | undefined> {
+  return typeof src === 'function' ? src() : src;
+}
+
+/**
  * SEAL already-signed wire bytes to a recipient, PQ-hybrid. The X25519 leg is derived from the recipient's
  * armored OpenPGP public key; the ML-KEM-1024 leg is the recipient's `pq_kem_public_key` (base64). Returns
  * the armored MailboxEnvelopePackage string (same shape as contact-message.ts). Throws (fail-LOUD for the

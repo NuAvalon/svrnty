@@ -153,3 +153,66 @@ test('at-rest + main: a missing key on an encrypted file THROWS even under the l
   a.upsertContact(contact('alice'));
   assert.throws(() => new HeadlessStore({ path, lockDir }), /encrypted at rest/);
 });
+
+// ── Flint R3 on #275: migrating plaintext -> encrypted must not leave the plaintext book in <path>.bak ──
+import { existsSync, copyFileSync } from 'node:fs';
+
+const MARK = 'PLAINTEXT-MARKER-9f3a';
+const noteWithMarker = { note_id: 'n-mark', thread_id: 't-mark', from_fingerprint: 'zed', body: MARK, direction: 'inbound', sent_at: '2026-01-01T00:00:00Z' } as never;
+
+/** A legacy plaintext book flushed three times, so BOTH <path> and <path>.bak are plaintext and carry MARK. */
+function legacyPlaintextBook(): string {
+  const path = tmpBook();
+  const legacy = new HeadlessStore({ path });
+  legacy.upsertContact(contact('zed'));
+  legacy.putNote(noteWithMarker);
+  legacy.upsertContact(contact('wes')); // .bak is the PREVIOUS version: this third flush is what puts MARK into it
+  assert.ok(readFileSync(path, 'utf8').includes(MARK), 'control: the legacy book is plaintext');
+  assert.ok(existsSync(`${path}.bak`) && readFileSync(`${path}.bak`, 'utf8').includes(MARK), 'control: the legacy .bak is plaintext too');
+  return path;
+}
+
+test('R3: after migrating to at-rest encryption NO plaintext remains on disk — neither the book nor its .bak', () => {
+  const path = legacyPlaintextBook();
+  const key = new Uint8Array(randomBytes(32));
+  const m = new HeadlessStore({ path, atRestKey: key });
+  m.upsertContact(contact('yan')); // first keyed flush = the migration
+
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).svrnty_at_rest, 1);
+  assert.ok(!readFileSync(path, 'utf8').includes(MARK), 'book is encrypted');
+  const bak = readFileSync(`${path}.bak`, 'utf8');
+  assert.ok(!bak.includes(MARK), 'the .bak holds NO plaintext marker (this was the leak)');
+  assert.equal(JSON.parse(bak).svrnty_at_rest, 1, 'the .bak is a sealed at-rest envelope');
+  rmSync(path, { force: true });
+});
+
+test('R3: the sealed .bak is still a usable rollback — same key opens it and the pre-migration book is intact', () => {
+  const path = legacyPlaintextBook();
+  const key = new Uint8Array(randomBytes(32));
+  new HeadlessStore({ path, atRestKey: key }).upsertContact(contact('yan'));
+  const restored = `${path}.restored`;
+  copyFileSync(`${path}.bak`, restored);
+  const r = new HeadlessStore({ path: restored, atRestKey: key });
+  assert.equal(r.getContactByFingerprint('zed')?.id, 'id-zed', 'pre-migration contact restorable');
+  assert.equal(r.listNotes()[0]?.body, MARK, 'pre-migration note restorable');
+  assert.ok(r.getContactByFingerprint('yan') == null, 'and it really is the PREVIOUS version (yan was added by the migrating flush)');
+  rmSync(path, { force: true });
+});
+
+test('R3: later flushes keep the .bak sealed (no regression on the second flush)', () => {
+  const path = legacyPlaintextBook();
+  const key = new Uint8Array(randomBytes(32));
+  const m = new HeadlessStore({ path, atRestKey: key });
+  m.upsertContact(contact('yan'));
+  m.upsertContact(contact('xi'));
+  const bak = readFileSync(`${path}.bak`, 'utf8');
+  assert.ok(!bak.includes(MARK) && JSON.parse(bak).svrnty_at_rest === 1);
+  rmSync(path, { force: true });
+});
+
+test('R3 control: with NO key (dev/test parity) the .bak stays a plain byte copy — behaviour unchanged', () => {
+  const path = legacyPlaintextBook();
+  new HeadlessStore({ path }).upsertContact(contact('yan'));
+  assert.ok(readFileSync(`${path}.bak`, 'utf8').includes(MARK), 'plaintext mode keeps plaintext backups, as before');
+  rmSync(path, { force: true });
+});

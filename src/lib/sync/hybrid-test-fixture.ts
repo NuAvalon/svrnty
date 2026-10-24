@@ -16,6 +16,8 @@ export interface HybridRecipient {
   passphrase: string;
   pqKemPublicKey: string;
   pqSigPublicKey: string;
+  /** base64 ML-KEM-1024 secret, as the vault PQ bundle hands it to the FE poll (lazy derivation input). */
+  kemSecretKeyB64: string;
   hybrid: LivingBookHybridSecrets;
 }
 
@@ -25,13 +27,12 @@ export async function mintHybridRecipient(): Promise<HybridRecipient> {
   const privateKeyArmored = a.secret_material.classicalPrivateKey;
   const passphrase = a.secret_material.classicalKpass;
   const pqKemPublicKey: string = id.pq_kem_public_key;
-  const hybrid = await deriveOwnerHybridSecrets(
-    privateKeyArmored, passphrase, pqKemPublicKey, uint8ToBase64(a.secret_material.mlkem1024Sec),
-  );
+  const kemSecretKeyB64 = uint8ToBase64(a.secret_material.mlkem1024Sec);
+  const hybrid = await deriveOwnerHybridSecrets(privateKeyArmored, passphrase, pqKemPublicKey, kemSecretKeyB64);
   if (!hybrid) throw new Error('fixture: could not derive hybrid secrets');
   return {
     fingerprint: id.fingerprint, publicKeyArmored: id.public_key, privateKeyArmored, passphrase,
-    pqKemPublicKey, pqSigPublicKey: id.pq_sig_public_key, hybrid,
+    pqKemPublicKey, pqSigPublicKey: id.pq_sig_public_key, kemSecretKeyB64, hybrid,
   };
 }
 

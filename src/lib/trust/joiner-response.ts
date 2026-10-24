@@ -65,8 +65,10 @@ import { base64ToUint8 } from '../crypto/pq';
 import {
   sealLivingBookHybrid,
   openLivingBookHybrid,
-  type LivingBookHybridSecrets,
+  resolveHybrid,
+  type HybridSecretsSource,
 } from '../crypto/living-book-sleeve';
+import { asMailboxEnvelopePackage } from '@/lib/sync/hybrid-dual-read';
 import {
   createMessage,
   encrypt,
@@ -313,15 +315,17 @@ async function decryptJoinerBlob(
   blob: string,
   giverPrivateKeyArmored: string,
   passphrase: string,
-  hybrid?: LivingBookHybridSecrets,
+  hybrid?: HybridSecretsSource,
   cycle?: UnlockCycle,
 ): Promise<SignedJoinerResponse | null> {
   // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null from
   // openLivingBookHybrid → fall through to OpenPGP; parseJoinerResponseWire is the type gate either way (a
   // non-joiner hybrid pkg fails it → null → the consume joiner-verify falls through, preserving no-cross-swallow).
-  if (hybrid && !cycle?.ended) { // a dead poll cycle opens nothing on the hybrid leg either (S14 on N10)
+  // Only a hybrid-SHAPED blob resolves the (lazy) secrets, so a classical blob never pays the derivation.
+  if (hybrid && !cycle?.ended && asMailboxEnvelopePackage(blob) != null) { // a dead poll cycle opens nothing on the hybrid leg either (S14 on N10)
     try {
-      const pt = await openLivingBookHybrid(blob, hybrid.secrets, hybrid.myFp);
+      const h = await resolveHybrid(hybrid);
+      const pt = h && !cycle?.ended ? await openLivingBookHybrid(blob, h.secrets, h.myFp) : null;
       if (pt) {
         const parsed = JSON.parse(new TextDecoder().decode(pt)) as unknown;
         return isWellFormed(parsed) ? parsed : null;
@@ -368,7 +372,7 @@ async function decryptJoinerBlob(
  */
 export async function verifyJoinerResponse(
   blob: string,
-  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; hybrid?: LivingBookHybridSecrets; cycle?: UnlockCycle },
+  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; hybrid?: HybridSecretsSource; cycle?: UnlockCycle },
   acceptNonce: (nonce: string, joinerFp: string) => boolean,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingJoiner | null> {

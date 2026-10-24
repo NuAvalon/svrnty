@@ -42,12 +42,16 @@ interface HeadlessData {
 /**
  * At-rest encryption envelope for the headless book. When the agent supplies an at-rest key (32 bytes,
  * derived ONCE upstream from its custody master-secret), the on-disk file is an AES-256-GCM envelope
- * instead of plaintext JSON — closing the device-at-rest + cloud-backup-exfil leak (a headless agent's
- * notes/contacts must not sit plaintext on a volume that iCloud/Android auto-backup can exfiltrate; Flint
+ * instead of plaintext JSON, so a headless agent's notes/contacts are not plaintext on a volume that
+ * iCloud/Android auto-backup can copy (the book and its .bak are both sealed; Flint
  * #168811). Symmetric + SYNCHRONOUS (node:crypto) so flush() stays sync (no ripple into the consume seams);
  * the key is already KDF-derived upstream, this is not a per-flush KDF. No key → plaintext JSON (dev/test
  * parity). The HNDL hybrid envelope is a WIRE concern and is stripped on receive — at rest we keep ONE
  * symmetric key, not per-message hybrid (Peter #168761 / Flint #168811 / Archie: keep-at-rest-enc).
+ *
+ * NOT covered (known residuals, Flint #275 N1/N2): this is confidentiality + per-file integrity only. A writer on
+ * the filesystem can still roll the book back to an older valid envelope (e.g. the .bak), and with a key present a
+ * plaintext file is still accepted as a one-way migration.
  */
 interface AtRestEnvelope {
   svrnty_at_rest: 1;
@@ -80,6 +84,18 @@ function decryptAtRest(env: AtRestEnvelope, key: Uint8Array): string {
 
 function isAtRestEnvelope(obj: unknown): obj is AtRestEnvelope {
   return !!obj && typeof obj === 'object' && (obj as { svrnty_at_rest?: unknown }).svrnty_at_rest === 1;
+}
+
+/**
+ * The previous file kept as <path>.bak must never be MORE exposed than the file it backs up. When we hold an
+ * at-rest key and the previous file is still plaintext (the first flush after migrating), keep it sealed with the
+ * same key: still restorable with that key, but no plaintext copy of the book stays on disk (Flint R3 on #275).
+ */
+function sealBackup(previousText: string, key: Uint8Array): string {
+  try {
+    if (isAtRestEnvelope(JSON.parse(previousText))) return previousText; // already sealed
+  } catch { /* not JSON: seal it anyway */ }
+  return JSON.stringify(encryptAtRest(previousText, key));
 }
 
 /**
@@ -133,7 +149,12 @@ export class HeadlessStore {
     if (!this.path) return;
     const json = JSON.stringify(this.data, null, 2);
     // at-rest: encrypt when a key is present (prod agents MUST pass one); plaintext only for dev/test parity.
-    writeFileAtomic(this.path, this.atRestKey ? JSON.stringify(encryptAtRest(json, this.atRestKey)) : json);
+    const key = this.atRestKey;
+    writeFileAtomic(
+      this.path,
+      key ? JSON.stringify(encryptAtRest(json, key)) : json,
+      key ? { backupTransform: (prev) => sealBackup(prev, key) } : {},
+    );
   }
 
   /** One read-modify-write unit: under the writer lock, re-read, apply, flush (see class doc). */

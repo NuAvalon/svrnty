@@ -205,7 +205,8 @@ export interface ConsumeDeps {
   // builders (buildConsumeDeps / buildHeadlessConsumeDeps). When true, consumeOne treats a hybrid-package
   // blob it cannot open as RETRYABLE (loud), never terminal — so inbound hybrid is never silently lost
   // while the secret is transiently missing (locked session / Athena-① pending). Undefined ⇒ status quo.
-  hybridSecretMissing?: boolean;
+  // May be a lazy check (FE: the secret is only derived once a hybrid blob arrives); consumeOne awaits it per hybrid blob.
+  hybridSecretMissing?: boolean | (() => Promise<boolean>);
 }
 
 export interface ConsumeSummary {
@@ -352,7 +353,11 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   // locked session) — must NEVER be acked+DELETED (= silent-loss). Leave it for RETRY, loudly. KEYED ON
   // secret-DERIVABILITY, not open-success: when we HAVE the secret, a hybrid pkg that fails to open is
   // genuinely terminal (corrupt / wrong-recipient) and is handled by the normal decrypt path below.
-  if (deps.hybridSecretMissing && asMailboxEnvelopePackage(blob) != null) {
+  if (
+    deps.hybridSecretMissing &&
+    asMailboxEnvelopePackage(blob) != null &&
+    (typeof deps.hybridSecretMissing === 'function' ? await deps.hybridSecretMissing() : true)
+  ) {
     console.error(
       `[consume] LOUD: hybrid deposit for kem-advertising owner ${deps.owner.fingerprint.slice(0, 8)} ` +
       `with no derivable ML-KEM secret — leaving for RETRY, not acking (acking would be silent-loss). ` +
