@@ -4,8 +4,8 @@
 //
 // WHY A SEPARATE HOOK (part 1 = allowed-sync.ts is the signed ADD/DELETE + reconcile-by-invariant
 // crypto core): this wrapper adds the three FE concerns that must NOT live inline in the UI handlers —
-//   1. GATE    — runs only while isPSIDiscoveryLive() is true (claim-gates.ts; true since the 2026-10-04 dev flip,
-//                ce8420b). If the gate is ever false again there is no /allowed traffic, by construction.
+//   1. GATE    — runs only while isPSIDiscoveryLive() is true (claim-gates.ts; true in this codebase since 2026-10-04, on
+//                dev and main; ce8420b). If the gate is ever false again there is no /allowed traffic, by construction.
 //   2. SEED    — unlock the owner identity (loadKey -> readPrivateKey -> decryptKey -> extractRawSign)
 //                to recover the BOUND Ed25519 sign seed the satellite verifies /allowed against. The
 //                seed is in-memory only and is a reference INTO the decrypted key packet — never persist

@@ -6,7 +6,8 @@
 // event, and this file keeps no relationship ledger.
 //
 // Implements the DH-PSI protocol against satellite endpoints.
-// Satellite never learns who trusts whom — it only relays blinded sets.
+// The satellite never sees contact sets (they are blinded); it does see which two fingerprints run a session,
+// and when.
 // Client computes intersection locally, persists via deps.applyMutualResult() (storage-agnostic).
 //
 // Protocol (5-step DH-PSI):
@@ -88,8 +89,9 @@ export interface PSISyncOptions {
   myFingerprint: string;
   /** Ed25519 signing function: (data, privateKey) => signature */
   signFn: (data: Uint8Array) => Uint8Array;
-  /** PQ wire-wrap config (see above). Absent ⇒ classical plaintext wire (today's prod behavior). Only
-   * ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (true since the 2026-10-04 dev flip). */
+  /** PQ wire-wrap config (see above). Absent ⇒ classical plaintext wire (whether a satellite accepts it is
+   * deployment-specific). Only ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (true in
+   * this codebase since 2026-10-04, on dev and main). */
   pqWrap?: PsiPqWrapConfig;
 }
 
