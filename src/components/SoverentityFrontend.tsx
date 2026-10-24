@@ -25,6 +25,7 @@ import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettings
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import { RelaySettings } from '@/components/settings/RelaySettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
+import { contactUpdateSendMessage } from '@/components/contact-update-send-copy';
 
 interface SoverentityFrontendProps {
   existingIdentity?: any;
@@ -298,7 +299,7 @@ export function SoverentityFrontend({
   const [shareError, setShareError] = useState<string | null>(null);
   const [localMethods, setLocalMethods] = useState<{ signal?: string; site?: string }>({});
   const [audience, setAudience] = useState<
-    { fingerprint: string; name: string; public_key?: string; trusted?: boolean; tags?: string[] }[]
+    { fingerprint: string; name: string; public_key?: string; pq_kem_public_key?: string; trusted?: boolean; tags?: string[] }[]
   >([]);
   const [fullBackupError, setFullBackupError] = useState<string | null>(null);
   const [showPassphraseDialog, setShowPassphraseDialog] = useState(false);
@@ -346,6 +347,7 @@ export function SoverentityFrontend({
               fingerprint: peerFp,
               name: c.name || 'Unnamed',
               public_key: c.public_key || undefined,
+              pq_kem_public_key: c.pq_kem_public_key || undefined, // HNDL: the recipient's ML-KEM-1024 pubkey
               trusted:
                 String(c.trust_level || '').toLowerCase() === 'trusted' ||
                 String(c.trust_level || '').toLowerCase() === 'verified' ||
@@ -1687,6 +1689,9 @@ export function SoverentityFrontend({
     const recipients = req.recipientFingerprints.map((rfp) => ({
       fingerprint: rfp,
       publicKeyArmored: byFp.get(rfp)?.public_key ?? '',
+      // HNDL: thread the recipient's ML-KEM-1024 pubkey → hybrid seal; a recipient without it is
+      // fail-closed-SKIPPED by buildContactUpdateDeposits (reason 'no-pq-kem'), never downgraded.
+      pqKemPublicKey: byFp.get(rfp)?.pq_kem_public_key,
     }));
 
     try {
@@ -1698,25 +1703,12 @@ export function SoverentityFrontend({
       const deposited = result.deposited.length;
       const skipped = result.skipped.length;
       const failed = result.failed.length;
+      // S14: a 'no-pq-kem' skip says "needs a security upgrade", never "no key" (contactUpdateSendMessage).
+      const { message } = contactUpdateSendMessage(result);
       if (deposited === 0) {
-        return {
-          ok: false,
-          reason: 'not-delivered',
-          message: `Couldn't deliver: ${skipped} had no key, ${failed} failed. Saved locally — try Send again later.`,
-        };
+        return { ok: false, reason: 'not-delivered', message };
       }
-      return {
-        ok: true,
-        status: 'sent',
-        deposited,
-        skipped,
-        failed,
-        message:
-          `Sent to ${deposited} contact${deposited === 1 ? '' : 's'}` +
-          (skipped ? `, ${skipped} skipped (no key yet)` : '') +
-          (failed ? `, ${failed} failed (retry)` : '') +
-          '.',
-      };
+      return { ok: true, status: 'sent', deposited, skipped, failed, message };
     } catch (e) {
       return { ok: false, reason: 'error', message: e instanceof Error ? e.message : 'Send failed.' };
     }

@@ -20,7 +20,7 @@ import {
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { toNoteableContacts, type NoteableContact } from './notes-contacts';
-import { NOTES_BOUNDS, NOTES_COPY } from './notes-copy';
+import { NOTES_BOUNDS, NOTES_COPY, notSentMessage } from './notes-copy';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
 import { sendNoteFromInbox } from './notes-send';
 import { outboundStatus, statusLabel, type NoteBubbleStatus } from './notes-status';
@@ -236,6 +236,7 @@ export function NotesInbox({ identity }: Props) {
         sender,
         peerFingerprint: selected.fingerprint,
         peerPublicKeyArmored: selected.publicKeyArmored,
+        peerPqKemPublicKey: selected.pqKemPublicKey, // HNDL: present ⇒ hybrid seal; absent ⇒ fail-closed skip
         body,
         threadId: existing?.thread_id,
       });
@@ -247,7 +248,8 @@ export function NotesInbox({ identity }: Props) {
       setActiveThreadId(result.thread_id);
       if (!result.deposited) {
         setFailedIds((prev) => ({ ...prev, [result.note_id]: true }));
-        setStatus(NOTES_COPY.notSent);
+        // A recipient with no verified PQ KEM key was skipped (S14), not a network failure: say so.
+        setStatus(notSentMessage(selected));
       } else {
         setStatus(NOTES_COPY.sentUnconfirmed);
       }

@@ -58,6 +58,9 @@ export interface JoinerResponseTarget {
   fingerprint: string;
   /** The giver's armored public key — the E2E encryption recipient. */
   publicKeyArmored: string;
+  /** The giver's verified ML-KEM-1024 pubkey (base64). Present ⇒ the response is sealed PQ-hybrid (HNDL).
+   *  ABSENT ⇒ fail-closed: no deposit (null), never a classical/downgraded send. */
+  giverPqKemPublicKey?: string;
   /** The giver's relay code the joiner used — the solicited-gate proof (invite_nonce). */
   inviteNonce: string;
 }
@@ -85,6 +88,11 @@ export async function buildJoinerResponseDeposit(
   ) {
     return null;
   }
+  // fail-closed: no pq_kem → skip, never downgrade (HNDL). A giver whose card carries no verified
+  // ML-KEM-1024 pubkey gets NO joiner-response deposit (null) — not a classical/downgraded send.
+  if (typeof target.giverPqKemPublicKey !== 'string' || target.giverPqKemPublicKey.length === 0) {
+    return null;
+  }
   try {
     const signed = await buildJoinerResponse(
       {
@@ -103,7 +111,7 @@ export async function buildJoinerResponseDeposit(
       sender.privateKeyArmored,
       sender.passphrase,
     );
-    const blob = await encryptJoinerResponseTo(signed, target.publicKeyArmored);
+    const blob = await encryptJoinerResponseTo(signed, target.publicKeyArmored, target.giverPqKemPublicKey);
     return { mailbox_id: deriveMailboxId(target.fingerprint), blob };
   } catch {
     // A malformed input / unreadable recipient key must not throw to the ceremony — report as no-deposit.

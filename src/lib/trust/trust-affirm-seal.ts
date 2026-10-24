@@ -14,23 +14,54 @@
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { TRUST_AFFIRM_WIRE_TYPE, type TrustAffirmWireV0 } from './trust-affirm';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
 
 /**
- * Seal a signed trust-affirmation to the recipient's OpenPGP public key. The affirmation MUST already
- * carry its {public_key, signature} (signTrustAffirm) — sealing is confidentiality only; authentication
- * is the sender signature the consumer re-checks. Refuses a non-affirm wire type (fail-loud) so a
- * mis-routed object can never be sealed under the wrong discriminator.
+ * Seal a signed trust-affirmation to the recipient. The affirmation MUST already carry its {public_key,
+ * signature} (signTrustAffirm) — sealing is confidentiality only; authentication is the sender signature
+ * the consumer re-checks. Refuses a non-affirm wire type (fail-loud). HYBRID (HNDL) when the recipient's
+ * ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED wire); classical OpenPGP otherwise (back-compat/
+ * tests — the SEND site sendTrustAffirmToPeer fail-closed-SKIPS a peer with no pq_kem, never downgrades).
  */
 export async function sealTrustAffirmTo(
   affirm: TrustAffirmWireV0,
   recipientPublicKeyArmored: string,
+  recipientPqKemB64?: string,
 ): Promise<string> {
   if (affirm.type !== TRUST_AFFIRM_WIRE_TYPE) {
     throw new Error('sealTrustAffirmTo: refusing non-affirm wire type');
   }
+  if (recipientPqKemB64) {
+    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(affirm)), recipientPublicKeyArmored, recipientPqKemB64);
+  }
   const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
   const message = await createMessage({ text: JSON.stringify(affirm) });
   return (await encrypt({ message, encryptionKeys })) as string;
+}
+
+/** Minimal shape+type gate (mirrors parseNoteWire): the discriminator for the consume 4-way demux. A
+ *  note / joiner / contact-update wire decrypts fine but fails `type !== TRUST_AFFIRM_WIRE_TYPE` → null
+ *  → never eaten as an affirmation. */
+function asAffirm(parsed: TrustAffirmWireV0 | null): TrustAffirmWireV0 | null {
+  if (parsed?.type !== TRUST_AFFIRM_WIRE_TYPE) return null;
+  if (typeof parsed.from_fingerprint !== 'string') return null;
+  if (typeof parsed.to_fingerprint !== 'string') return null;
+  if (typeof parsed.trusts !== 'boolean') return null;
+  return parsed;
+}
+
+/**
+ * The trust-affirm inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
+ * (src/lib/sync/hybrid-dual-read.ts: makeHybridOpener(openEnv, parseTrustAffirmWire)) so the hybrid
+ * opener reuses the EXACT same asAffirm discriminator the classical opener uses → no-cross-swallow is
+ * byte-identical. Null on non-JSON or any non-affirm wire.
+ */
+export function parseTrustAffirmWire(innerUtf8: string): TrustAffirmWireV0 | null {
+  try {
+    return asAffirm(JSON.parse(innerUtf8) as TrustAffirmWireV0);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -39,6 +70,10 @@ export async function sealTrustAffirmTo(
  * discriminator: a note / joiner / contact-update blob decrypts fine but fails `type !==
  * TRUST_AFFIRM_WIRE_TYPE` → null → never eaten as an affirmation. Does NOT authenticate — that is
  * verifyTrustAffirmSender's job in acceptTrustAffirm (sign-before-admit, mirroring the note path).
+ * Classical-ONLY: the PQ-hybrid dual-read now lives in the SINGLE chokepoint (dualReadOpener over
+ * makeHybridOpener(openEnv, parseTrustAffirmWire)) composed by the consume deps builders — this opener is
+ * its classical fallback. The type-gate is the exported {@link parseTrustAffirmWire} (asAffirm), reused by
+ * the hybrid opener so no-cross-swallow is byte-identical across both legs.
  */
 export function trustAffirmOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
@@ -51,14 +86,7 @@ export function trustAffirmOpenpgpDecryptor(
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      const parsed = JSON.parse(text) as TrustAffirmWireV0;
-      if (parsed?.type !== TRUST_AFFIRM_WIRE_TYPE) return null;
-      // Minimal shape gate (mirrors noteOpenpgpDecryptor): the fields the consume seam binds/reads MUST
-      // be present + the right primitive type, or it is not a well-formed affirmation → null (fall through).
-      if (typeof parsed.from_fingerprint !== 'string') return null;
-      if (typeof parsed.to_fingerprint !== 'string') return null;
-      if (typeof parsed.trusts !== 'boolean') return null;
-      return parsed;
+      return parseTrustAffirmWire(text);
     } catch {
       return null;
     }
