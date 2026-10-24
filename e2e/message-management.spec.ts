@@ -1,6 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
-  makeE2EIdentity,
   seedAliceWithBob,
   depositNote,
 } from './fixtures/deposit-note';
@@ -43,7 +42,7 @@ async function idbHasNote(page: Page, fp: string, store: string, noteId: string)
       r.onerror = () => rej(r.error);
     });
     if (!db.objectStoreNames.contains(storeName as string)) { db.close(); return false; }
-    const rows: any[] = await new Promise((res, rej) => {
+    const rows: { note_id?: string }[] = await new Promise((res, rej) => {
       const q = db.transaction(storeName as string, 'readonly').objectStore(storeName as string).getAll();
       q.onsuccess = () => res(q.result);
       q.onerror = () => rej(q.error);
@@ -134,7 +133,7 @@ test('archive round-trips the same ciphertext blob — no re-wrap (I7/I10)', asy
     const db = await new Promise<IDBDatabase>((res, rej) => {
       const r = indexedDB.open(dbName as string); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     });
-    const row = await new Promise<any>((res, rej) => {
+    const row = await new Promise<{ enc?: unknown } | undefined>((res, rej) => {
       const q = db.transaction('notes', 'readonly').objectStore('notes').get(id as string);
       q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
     });
@@ -143,15 +142,27 @@ test('archive round-trips the same ciphertext blob — no re-wrap (I7/I10)', asy
   }, [`svrnty-notes-${aliceFp}`, note_id]);
   expect(encBefore).toBeTruthy();
 
-  const cryptoCalls = await page.evaluate(() => {
-    (window as any).__cryptoCalls = 0;
-    for (const m of ['encrypt', 'decrypt', 'importKey', 'deriveKey'] as const) {
-      const orig = (crypto.subtle as any)[m].bind(crypto.subtle);
-      (crypto.subtle as any)[m] = (...a: any[]) => { (window as any).__cryptoCalls++; return orig(...a); };
+  // Spy records every subtle call WITH its stack. The page-wide count is
+  // NOT the I10 signal — the store reread timer (NotesInbox tick) and the
+  // live-book poll legitimately decrypt on their own cadence. The real
+  // assertion: no call's stack flows through a manage op. (I10 is proven
+  // at store level by store.manage-ops.test.ts + its positive control.)
+  const MANAGE_OP = /archiveNotes|_moveOpaque|unarchiveNotes|deleteNotesAtomic|restoreFromBin|deletePermanently|emptyBin/;
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __cryptoCalls: { method: string; stack: string }[];
+    };
+    w.__cryptoCalls = [];
+    const subtle = crypto.subtle as unknown as
+      Record<string, (...a: never[]) => unknown>;
+    for (const m of ['encrypt', 'decrypt', 'importKey', 'deriveKey']) {
+      const orig = subtle[m].bind(crypto.subtle);
+      subtle[m] = (...a: never[]) => {
+        w.__cryptoCalls.push({ method: m, stack: new Error().stack ?? '' });
+        return orig(...a);
+      };
     }
-    return true;
   });
-  expect(cryptoCalls).toBe(true);
 
   await page.getByRole('button', { name: 'Manage', exact: true }).click();
   await page.getByTestId(`notes-check-${note_id}`).check();
@@ -164,7 +175,7 @@ test('archive round-trips the same ciphertext blob — no re-wrap (I7/I10)', asy
     const db = await new Promise<IDBDatabase>((res, rej) => {
       const r = indexedDB.open(dbName as string); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
     });
-    const row = await new Promise<any>((res, rej) => {
+    const row = await new Promise<{ enc?: unknown } | undefined>((res, rej) => {
       const q = db.transaction('archive', 'readonly').objectStore('archive').get(id as string);
       q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
     });
@@ -173,7 +184,16 @@ test('archive round-trips the same ciphertext blob — no re-wrap (I7/I10)', asy
   }, [`svrnty-notes-${aliceFp}`, note_id]);
   expect(encAfter).toBe(encBefore);
 
-  expect(await page.evaluate(() => (window as any).__cryptoCalls)).toBe(0);
+  const calls = await page.evaluate(() =>
+    (window as unknown as {
+      __cryptoCalls: { method: string; stack: string }[];
+    }).__cryptoCalls);
+  const fromManageOps = calls.filter((c) => MANAGE_OP.test(c.stack));
+  // On failure print every stack — the cause must be legible, not guessed.
+  expect(
+    fromManageOps,
+    `crypto calls through a manage op:\n${calls.map((c) => `${c.method}\n${c.stack}`).join('\n---\n')}`,
+  ).toHaveLength(0);
 
   // Archived view renders the row; unarchive brings it back live.
   await page.getByTestId('notes-view-archived').click();
