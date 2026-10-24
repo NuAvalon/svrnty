@@ -9,6 +9,7 @@
 // NOTE: this is a HEADLESS-ONLY module (imports node:fs) — never import it into the browser bundle.
 
 import { readJsonStrict, writeFileAtomic } from './atomic-file';
+import { withWriterLock } from './writer-lock';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore } from '@/lib/sync/consume-mailbox';
@@ -40,32 +41,51 @@ interface HeadlessData {
 /**
  * In-memory book with optional JSON-file persistence. Writes are atomic (tmp + rename, previous good copy
  * kept as .bak) and an existing file that won't parse is an error, never "start fresh" (atomic-file.ts).
- * Still not a cross-process lock: two writers can lose each other's update until one writer per dir. The consume core (consume-mailbox.ts) drives this ONLY through asContactStore() + the
+ * With lockDir set, every mutation is one locked unit: take the agent-dir writer lock, RE-READ the file,
+ * apply this one change, flush, release. A concurrent writer's records survive (writer-lock.ts). Reads use
+ * the snapshot from the last load or mutation. The consume core (consume-mailbox.ts) drives this ONLY through asContactStore() + the
  * note/affirm seams (headless-client.ts), so the shape stays swappable.
  */
 export class HeadlessStore {
   private data: HeadlessData = { contacts: [], notes: [], threads: [] };
   private readonly path: string | null;
+  private readonly lockDir: string | null;
 
-  constructor(opts: { path?: string } = {}) {
+  constructor(opts: { path?: string; lockDir?: string } = {}) {
     this.path = opts.path ?? null;
-    if (this.path) {
-      // A torn or corrupt book must stop the command: "start fresh" here meant the next flush
-      // persisted an empty book over the real one (Flint 2026-10-24).
-      const parsed = readJsonStrict<Partial<HeadlessData> | null>(this.path, null);
-      if (parsed) {
-        this.data = {
-          contacts: parsed.contacts ?? [],
-          notes: parsed.notes ?? [],
-          threads: parsed.threads ?? [],
-        };
-      }
-    }
+    this.lockDir = opts.lockDir ?? null;
+    this.load();
+  }
+
+  private load(): void {
+    if (!this.path) return;
+    // A torn or corrupt book must stop the command: "start fresh" here meant the next flush
+    // persisted an empty book over the real one (Flint 2026-10-24).
+    const parsed = readJsonStrict<Partial<HeadlessData> | null>(this.path, null);
+    this.data = {
+      contacts: parsed?.contacts ?? [],
+      notes: parsed?.notes ?? [],
+      threads: parsed?.threads ?? [],
+    };
   }
 
   private flush(): void {
     if (!this.path) return;
     writeFileAtomic(this.path, JSON.stringify(this.data, null, 2));
+  }
+
+  /** One read-modify-write unit: under the writer lock, re-read, apply, flush (see class doc). */
+  private mutate(apply: () => void): void {
+    if (!this.path || !this.lockDir) {
+      apply();
+      this.flush();
+      return;
+    }
+    withWriterLock(this.lockDir, () => {
+      this.load();
+      apply();
+      this.flush();
+    });
   }
 
   // --- contacts ---
@@ -75,17 +95,19 @@ export class HeadlessStore {
 
   /** Add or merge a contact (by id, else by fingerprint). */
   upsertContact(c: HeadlessContact): void {
-    const i = this.data.contacts.findIndex((x) => x.id === c.id || x.fingerprint === c.fingerprint);
-    if (i === -1) this.data.contacts.push(c);
-    else this.data.contacts[i] = { ...this.data.contacts[i], ...c };
-    this.flush();
+    this.mutate(() => {
+      const i = this.data.contacts.findIndex((x) => x.id === c.id || x.fingerprint === c.fingerprint);
+      if (i === -1) this.data.contacts.push(c);
+      else this.data.contacts[i] = { ...this.data.contacts[i], ...c };
+    });
   }
 
   updateContact(id: string, patch: Partial<HeadlessContact>): void {
-    const i = this.data.contacts.findIndex((x) => x.id === id);
-    if (i === -1) throw new Error(`headless updateContact: contact ${id} not found`);
-    this.data.contacts[i] = { ...this.data.contacts[i], ...patch, id };
-    this.flush();
+    this.mutate(() => {
+      const i = this.data.contacts.findIndex((x) => x.id === id);
+      if (i === -1) throw new Error(`headless updateContact: contact ${id} not found`);
+      this.data.contacts[i] = { ...this.data.contacts[i], ...patch, id };
+    });
   }
 
   listContacts(): HeadlessContact[] {
@@ -94,19 +116,21 @@ export class HeadlessStore {
 
   // --- notes (mirror the messaging store surface the note-accept uses) ---
   putNote(n: NoteRecord): void {
-    const i = this.data.notes.findIndex((x) => x.note_id === n.note_id);
-    if (i === -1) this.data.notes.push(n);
-    else this.data.notes[i] = n; // idempotent on note_id (redelivery re-persists harmlessly)
-    this.flush();
+    this.mutate(() => {
+      const i = this.data.notes.findIndex((x) => x.note_id === n.note_id);
+      if (i === -1) this.data.notes.push(n);
+      else this.data.notes[i] = n; // idempotent on note_id (redelivery re-persists harmlessly)
+    });
   }
   listNotes(): NoteRecord[] {
     return [...this.data.notes];
   }
   putThread(t: NoteThread): void {
-    const i = this.data.threads.findIndex((x) => x.thread_id === t.thread_id);
-    if (i === -1) this.data.threads.push(t);
-    else this.data.threads[i] = t;
-    this.flush();
+    this.mutate(() => {
+      const i = this.data.threads.findIndex((x) => x.thread_id === t.thread_id);
+      if (i === -1) this.data.threads.push(t);
+      else this.data.threads[i] = t;
+    });
   }
   listThreads(): NoteThread[] {
     return [...this.data.threads];
