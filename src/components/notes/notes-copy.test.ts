@@ -67,11 +67,11 @@ describe('notes inbox copy — claim-honesty', () => {
 describe('S14 needs-upgrade copy', () => {
   it('is distinct from the network failure, names the contact, and is claim-safe', () => {
     assert.notEqual(NOTES_COPY.notSentNeedsUpgrade, NOTES_COPY.notSent);
-    assert.match(NOTES_COPY.notSentNeedsUpgrade, /^Not sent\. \{name\} needs a security upgrade before you can message them\.$/);
+    assert.match(NOTES_COPY.notSentNeedsUpgrade, /^Not sent\. Saved on this device\. \{name\} needs to share an updated contact card \(security upgrade\)\. Ask them to re-share, then re-add\.$/);
     assert.doesNotMatch(NOTES_COPY.notSentNeedsUpgrade, /Delivered|Read|Expired|unconfirmed|quantum|PQ-secure/i);
   });
   it('notSentMessage: no PQ key => needs-upgrade line with the name; with a PQ key => the plain not-sent line', () => {
-    assert.equal(notSentMessage({ name: 'Bob' }), 'Not sent. Bob needs a security upgrade before you can message them.');
+    assert.equal(notSentMessage({ name: 'Bob' }), 'Not sent. Saved on this device. Bob needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.');
     assert.equal(notSentMessage({ name: 'Bob', pqKemPublicKey: 'KEM' }), NOTES_COPY.notSent);
   });
 });

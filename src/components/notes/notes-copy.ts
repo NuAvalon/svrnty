@@ -34,7 +34,8 @@ export const NOTES_COPY = {
     'Notes over the wire need a current svrnty identity. This book cannot send yet.',
   sendFailed: 'The note could not be sent.',
   // S14: the recipient has no verified PQ KEM key; sends are skipped, never downgraded. Claim-safe wording (no 'quantum-safe').
-  notSentNeedsUpgrade: 'Not sent. {name} needs a security upgrade before you can message them.',
+  notSentNeedsUpgrade:
+    'Not sent. Saved on this device. {name} needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.',
   contactNotSendable: 'This contact cannot receive a sealed note.',
 } as const;
 

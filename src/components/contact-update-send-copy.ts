@@ -13,9 +13,11 @@ export function contactUpdateSendMessage(
   const needsUpgrade = result.skipped.filter((s) => s.reason === 'no-pq-kem').length;
   const noKey = result.skipped.length - needsUpgrade;
   const plural = (n: number) => (n === 1 ? 'contact needs' : 'contacts need');
+  // A legacy contact (pre-canonical card: no kem leg) is fixed by an UPDATED CARD from them, so name that remedy.
+  const upgrade = (n: number) => `${n} ${plural(n)} to share an updated contact card (security upgrade)`;
   if (deposited === 0) {
     const parts = [
-      needsUpgrade ? `${needsUpgrade} ${plural(needsUpgrade)} a security upgrade` : '',
+      needsUpgrade ? upgrade(needsUpgrade) : '',
       noKey ? `${noKey} had no key` : '',
       failed ? `${failed} failed` : '',
     ].filter(Boolean);
@@ -28,7 +30,7 @@ export function contactUpdateSendMessage(
     ok: true,
     message:
       `Sent to ${deposited} contact${deposited === 1 ? '' : 's'}` +
-      (needsUpgrade ? `, ${needsUpgrade} ${plural(needsUpgrade)} a security upgrade (not sent)` : '') +
+      (needsUpgrade ? `, ${upgrade(needsUpgrade)} (not sent)` : '') +
       (noKey ? `, ${noKey} skipped (no key yet)` : '') +
       (failed ? `, ${failed} failed (retry)` : '') +
       '.',
