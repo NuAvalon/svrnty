@@ -386,11 +386,23 @@ export function scanText(
       } else {
         why = 'kind=hedge_required: no same-line hedge phrase from this row';
       }
+      let annotationNote = reasonless ? '; a REASONLESS claim-sweep:ok annotation is ignored (write `claim-sweep:ok <reason>`)' : '; no claim-sweep:ok annotation';
       if (annotation && ANNOTATABLE.includes(c.kind)) {
-        honored.push({ file, line: i + 1, annotationLine: annotation.at, claimId: c.id, reason: annotation.reason });
-        continue;
+        // Gated rows (Flint lane:svrnty #195, Hypatia #277 review): the annotation must NAME this row's gate
+        // AND that gate must be FALSE in code: a gate-guarded branch that can't render today. Never when the
+        // registry overrides a gate that is TRUE in code (e.g. G-4 PSI): the branch DOES render.
+        const gate = c.kind === 'gated' ? (c.gate as string) : null;
+        const namesGate = !gate || new RegExp(`\\b${gate}\\b`).test(annotation.reason);
+        const codeFalse = !gate || !ctx.gateValue(gate);
+        if (namesGate && codeFalse) {
+          honored.push({ file, line: i + 1, annotationLine: annotation.at, claimId: c.id, reason: annotation.reason });
+          continue;
+        }
+        annotationNote = !namesGate
+          ? `; the claim-sweep:ok annotation does not name this row's gate (${gate}), so it is NOT honored`
+          : `; the claim-sweep:ok annotation is NOT honored: ${gate}() is TRUE in code (overridden to not-live), so the branch renders`;
       }
-      push(`${why}${reasonless ? '; a REASONLESS claim-sweep:ok annotation is ignored (write `claim-sweep:ok <reason>`)' : '; no claim-sweep:ok annotation'}`);
+      push(`${why}${annotationNote}`);
     }
   }
   return { violations, honored };

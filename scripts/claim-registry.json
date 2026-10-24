@@ -1,8 +1,8 @@
 {
  "registry": "svrnty claim registry",
- "version": "1.1.4",
+ "version": "1.1.9",
  "owner": "hypatia (content); athena reads, never edits",
- "generated": "2026-10-24T18:25Z",
+ "generated": "2026-10-24T19:00Z",
  "grounded_at": {
   "svrnty_main": "aca4d4f",
   "claim_gates": "src/lib/claim-gates.ts"
@@ -27,7 +27,7 @@
   "scan_root": "A = svrnty src/ + app/ (svrnty CI); B = autobots infra/satellite/*.html (svrnty_deploy pre-deploy). A run asserts its OWN root or exits 2.",
   "sweep_gate_override": "if present, the sweep uses THIS boolean instead of the claim-gates.ts value (a gate that is true without the capability being real must not excuse a claim)",
   "console_excluded": "console.* and logger calls are not user copy; the sweep skips them for every row (Archie lane:svrnty #56)",
-  "annotations": "`// claim-sweep:ok <reason>` is honored ONLY for gated / test_gated / hedge_required rows, must carry a reason, and every honored one is printed (count + file:line). Never for NEVER or caveat_required."
+  "annotations": "`// claim-sweep:ok <reason>` is honored ONLY for gated / test_gated / hedge_required rows, must carry a reason, and every honored one is printed (count + file:line). Never for NEVER or caveat_required. For a row under a sweep_gate_override / hard gate (Flint #195): an annotation may excuse it ONLY IF it names the gate AND the text sits in that gate's dominated (true) branch AND claim-gates.ts returns FALSE for that gate (dead copy, e.g. G-6). If the code value is TRUE but the registry overrides it to not-live (e.g. G-4), NO annotation excuses it: the copy goes until the override is lifted."
  },
  "claims": [
   {
@@ -205,18 +205,25 @@
    "examples": {
     "over": [
      "the relay can't see anything",
-     "nothing is stored"
+     "nothing is stored",
+     "the relay can't see when you're online",
+     "the server never knows when you're active"
     ],
-    "ok": []
+    "ok": [
+     "the relay can see when your app is open, but not what you send"
+    ]
    },
    "scan_root": "A",
    "patterns": [
     "(relay|server)[^.\\n]{0,20}can'?t (read|see) anything",
-    "nothing is stored"
+    "nothing is stored",
+    "(relay|server)[^.\\n]{0,30}(can'?t|cannot|doesn'?t|never) (see|know|tell)[^.\\n]{0,20}when you('?re| are)? (online|active|using|use|open)",
+    "no one (can|will) (see|know) when you('?re| are)? (online|active)"
    ],
    "disclaimer_phrases": [
     "\\bnot\\s+(that\\s+)?nothing is stored"
-   ]
+   ],
+   "ledger": "claim_registry/metadata_ledger.md (L1–L6; Flint #190)"
   },
   {
    "id": "NV-10",
@@ -724,6 +731,55 @@
    ]
   },
   {
+   "id": "TG-5",
+   "kind": "test_gated",
+   "scan_root": "A",
+   "claim": "Anonymity-set claims for the #588 trust beacon (\"the server can't tell which member you are, among N / among everyone enrolled / among k\")",
+   "patterns": [
+    "(hidden|indistinguishable|one) among (everyone|all|every) ?(enrolled|members?|users?|people)?",
+    "among (all|every) \\d+ (members|people|users)",
+    "(server|relay|satellite) (can\\'?t|cannot) tell which (member|user|one) (you are|sent)",
+    "hidden among \\d+"
+   ],
+   "hedge_phrases": [
+    "(coming|not yet|once (this|it) ships)"
+   ],
+   "requires": [
+    {
+     "file": null,
+     "test": "the shipped ring construction is identified at the SHA: A = whole enrolled directory → copy \"among everyone enrolled (N)\"; C = k-subset with decoys FIXED per pair lineage → copy \"among k\"; NEVER copy for B (fresh per-epoch decoys = intersection attack under PIN5, Archie #202)",
+     "invariant": "#588 ring scale",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Flint attack review of the chosen ring option + GAP-1/GAP-2 closed",
+     "invariant": "#588",
+     "resolved": false
+    },
+    {
+     "file": null,
+     "test": "Peter go (hard gate #179867)",
+     "invariant": "principal",
+     "resolved": false
+    }
+   ],
+   "honest_copy": "after all pass, option A: \"The server can't tell which enrolled member you are: you're hidden among everyone enrolled (N today).\" Option C: \"…among k members\". Never \"anonymous\" (NV-3), never \"among everyone\" for a k-subset, never a number larger than the real set.",
+   "source": [
+    "Archie #202 ring-scale note v0",
+    "Flint #200 (record O(N) as a design constraint; registry must track the claim)"
+   ],
+   "examples": {
+    "over": [
+     "you are hidden among everyone enrolled",
+     "the server cannot tell which member you are"
+    ],
+    "ok": [
+     "hidden among everyone enrolled (coming, not yet live)"
+    ]
+   }
+  },
+  {
    "id": "TG-4",
    "kind": "test_gated",
    "scan_root": "A",
@@ -745,9 +801,30 @@
     },
     {
      "file": null,
-     "test": "Flint re-verify of #588 @3c30ccd incl. F2 (sybil pre-match slot-burn)",
+     "test": "Flint re-verify of the #588 reflection fix @3c30ccd",
+     "invariant": "#588 F1",
+     "resolved": true,
+     "note": "PASS per Flint #179928 (KB#92960/92961)"
+    },
+    {
+     "file": null,
+     "test": "#588 open pins closed: PIN5 per-week re-deposit, pending-trust backup, F2 slot-burn; Apollo gap check vs Flint spec; wiring; Flint hostile two-person test",
      "invariant": "#588",
      "resolved": false
+    },
+    {
+     "file": "shared/outbox/apollo/gap_demos/zz-gap-scratch.test.ts (→ a real red-to-green test)",
+     "test": "GAP-1: a valid-LRS deposit with a GARBAGE share never triggers delivery of the counterpart's genuine share (B learns nothing)",
+     "invariant": "blind-until-mutual / Peter #179867",
+     "resolved": false,
+     "note": "reproduced by Apollo #196 @3c30ccd; proposed fix Option 2 ring-DLEQ, unproven; KB#93530"
+    },
+    {
+     "file": null,
+     "test": "R-P1 (Peter #179984): no free probe: any action by which B learns A's one-way trust is itself B's trust commitment, recorded as a mutual event on BOTH local ledgers (garbage / sybil / withdraw-after-learning B learns nothing)",
+     "invariant": "Peter #179984",
+     "resolved": false,
+     "note": "KB#93536"
     },
     {
      "file": null,
@@ -762,11 +839,12 @@
      "resolved": false
     }
    ],
-   "honest_copy": "until all pass: say nothing about pending-trust privacy; after: \"An honest app never shows your trust to them until it's mutual. The relay only sees that someone deposited at a random-looking slot.\" (C1/C2 scope; NEVER the NV-10 absolutes)",
+   "honest_copy": "until all pass: say nothing about pending-trust privacy; after: \"Your contact can't see a one-way trust: the only way to find out is to trust you back, and then you both see it at once. The server sees that two members met at an opaque slot, not who. This assumes the server doesn't collude with your contact.\" (C1/C2 + C3 non-collusion, Flint #179928; NEVER the NV-10 absolutes)",
    "source": [
     "Peter #179867",
     "#588 v2 C1/C2",
-    "Flint #168"
+    "Flint #168",
+    "Flint #179928 (C3 non-collusion; reflection re-verify PASS)"
    ],
    "examples": {
     "over": [

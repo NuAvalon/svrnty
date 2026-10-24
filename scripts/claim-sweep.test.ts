@@ -83,13 +83,16 @@ describe('kind=gated — gate true OR own hedge_phrases OR reasoned annotation',
     assert.deepEqual(ids(r), []);
     assert.deepEqual(r.honored.map((h) => [h.line, h.annotationLine, h.claimId, h.reason]), [[2, 1, 'G-1', 'gated-by=isPQEncapLive: true-branch of the ternary']]);
   });
-  it('is excused by a REASONED annotation (same line or line above) and the annotation is reported', () => {
-    const same = scan("{live ? 'fully blocked' : 'blocked'} {/* claim-sweep:ok: gate-guarded ternary */}");
+  it('is excused by a REASONED annotation naming its gate (same line or line above) and the annotation is reported', () => {
+    const g = byId('G-5').gate as string;   // since Flint #195: a gated row's annotation must name that row's gate
+    const same = scan(`{live ? 'fully blocked' : 'blocked'} {/* claim-sweep:ok: gated-by=${g}: gate-guarded ternary */}`);
     assert.deepEqual(ids(same), []);
-    assert.deepEqual({ ...same.honored[0] }, { file: 't.tsx', line: 1, annotationLine: 1, claimId: 'G-5', reason: 'gate-guarded ternary' });
-    const above = scan("// claim-sweep:ok gate-guarded ternary\n{live ? 'fully blocked' : 'blocked'}");
+    assert.deepEqual({ ...same.honored[0] }, { file: 't.tsx', line: 1, annotationLine: 1, claimId: 'G-5', reason: `gated-by=${g}: gate-guarded ternary` });
+    const above = scan(`// claim-sweep:ok gated-by=${g}: gate-guarded ternary\n{live ? 'fully blocked' : 'blocked'}`);
     assert.deepEqual(ids(above), []);
     assert.deepEqual(above.honored.map((h) => [h.line, h.annotationLine, h.claimId]), [[2, 1, 'G-5']]);
+    const unnamed = scan("{live ? 'fully blocked' : 'blocked'} {/* claim-sweep:ok: gate-guarded ternary */}");
+    assert.deepEqual(ids(unnamed), ['G-5'], 'an annotation that names no gate is no longer honored on a gated row');
   });
   it('a REASONLESS annotation on a gated claim fails (bare, empty-colon, punctuation-only, glued suffix)', () => {
     for (const ann of ['// claim-sweep:ok', '// claim-sweep:ok:', '{/* claim-sweep:ok */}', '{/* claim-sweep:ok: */}', '// claim-sweep:ok: --', '// claim-sweep:ok-because']) {
@@ -265,5 +268,24 @@ describe('registry v1.1.3+: sweep_gate_override replaces the claim-gates.ts valu
     assert.deepEqual(ids(scan(same, ALL_FALSE)), [], 'documents the same-line limit: split arms onto their own lines');
     const split = "{live\n  ? 'mutual trust confirmed'\n  : 'Mutual confirmation is coming.'}";
     assert.deepEqual(ids(scan(split, ALL_FALSE)), ['G-6']);
+  });
+});
+
+describe('gated-row annotations (Flint lane:svrnty #195, Hypatia #277): name the gate AND the gate is false in code', () => {
+  const CODE_TRUE: EvalContext = { gateValue: () => true, requiresOk: () => false };
+  it('annotated G-4 while isPSIDiscoveryLive() is TRUE in code (overridden) → still a violation', () => {
+    const r = scan('// claim-sweep:ok gated-by=isPSIDiscoveryLive: true-branch\nfind your mutual contacts', CODE_TRUE);
+    assert.deepEqual(ids(r), ['G-4']);
+    assert.match(r.violations[0].reason, /TRUE in code/);
+  });
+  it('annotated G-6 naming its gate, gate FALSE in code → honored', () => {
+    const r = scan('// claim-sweep:ok gated-by=isMutualTrustWireLive: true-branch\nmutual trust confirmed', ALL_FALSE);
+    assert.deepEqual(ids(r), []);
+    assert.equal(r.honored.length, 1);
+  });
+  it('annotation naming the WRONG gate → violation', () => {
+    const r = scan('// claim-sweep:ok gated-by=isPQEncapLive: true-branch\nmutual trust confirmed', ALL_FALSE);
+    assert.deepEqual(ids(r), ['G-6']);
+    assert.match(r.violations[0].reason, /does not name this row's gate/);
   });
 });
