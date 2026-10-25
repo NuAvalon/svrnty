@@ -17,10 +17,11 @@
 // code ever needs them.
 
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { canonicalize } from '@/lib/format/canonical';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
-import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
+import { signWithEnvelope, verifyWithEnvelope, buildSignedBytes, SUITE_CLASSICAL, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
 
@@ -33,6 +34,42 @@ export const DOMAIN_MAILBOX_ACK = 'svrnty:mailbox-ack:v1';
 // poll-auth can never be replayed as a claim (and vice-versa). This is what makes a beta-access token
 // non-transferable: only deriveMailboxId(sub)'s key-holder can redeem it.
 export const DOMAIN_MAILBOX_CLAIM = 'svrnty:mailbox-claim:v1';
+
+// ── N12 (#703): a POLL-ONLY subkey, so an idle poll does not unlock the long-term identity key ──
+// The long-term key signs ONE delegation (below) per cert lifetime; idle polls are then signed by an ephemeral Ed25519
+// key that exists only in memory (poll-subkey.ts) and travels with that delegation in a NEW header, so ack and claim
+// (which read only OWNER_AUTH_HEADER) can never be satisfied by it. Three distinct domains keep every signature apart.
+export const DOMAIN_MAILBOX_POLL_DELEGATION = 'svrnty:mailbox-poll-delegation:v1';
+export const DOMAIN_MAILBOX_POLL_V2 = 'svrnty:mailbox-poll:v2';
+/** The HTTP header carrying the v2 poll bundle. Poll only: ack and claim never read it. */
+export const POLL_AUTH_HEADER = 'x-svrnty-poll-auth';
+/** Cert lifetime: 1 h by default; the RELAY refuses anything over 24 h, or issued more than 60 s in the future (Flint #1306). */
+export const POLL_LIFETIME_DEFAULT_MS = 60 * 60 * 1000;
+export const POLL_LIFETIME_MAX_MS = 24 * 60 * 60 * 1000;
+export const POLL_ISSUED_FUTURE_SKEW_MS = 60 * 1000;
+
+/** What the long-term key signs, once: this poll key may poll THIS mailbox until expires_ts. */
+export interface PollDelegation {
+  mailbox_id: string;
+  poll_pub: string; // 64 hex: the ephemeral Ed25519 public key
+  issued_ts: number;
+  expires_ts: number;
+}
+/** The delegation plus what the verifier needs to check it (public material only, like OwnerAuthBundle). */
+export interface PollCert {
+  delegation: PollDelegation;
+  fingerprint: string;
+  public_key: string; // openpgp armored: the delegation signature verifies against this; fp<->key bound by the verifier
+  signature: string; // classical signature over the delegation (like v1 poll/ack: no PQ leg today)
+  kem_public_key?: string;
+  sig_public_key?: string;
+}
+export interface PollAuthBundle {
+  cert: PollCert;
+  nonce: string;
+  ts: number;
+  signature: string; // 128 hex: Ed25519 by the poll key over {mailbox_id, nonce, ts} under DOMAIN_MAILBOX_POLL_V2
+}
 
 /** The HTTP header carrying the base64url(JSON) owner-auth bundle for both poll (GET) and ack (POST). */
 export const OWNER_AUTH_HEADER = 'x-svrnty-owner-auth';
@@ -243,11 +280,70 @@ export async function signMailboxClaimRequest(args: {
   return { [OWNER_AUTH_HEADER]: encodeBundle(bundleFrom(args, nonce, sig)) };
 }
 
+
+// ── N12 CLIENT: mint a delegation (the ONLY step that touches the long-term key), then sign polls without it ──
+
+/**
+ * Mint a poll key and have the long-term key delegate to it. This is the one place the identity key is used for polling:
+ * one unlock per cert, none per idle poll. The lifetime is clamped to [1 ms, 24 h]; the relay enforces the cap again.
+ */
+export async function mintPollDelegation(args: {
+  mailboxId: string;
+  fingerprint: string;
+  publicKeyArmored: string;
+  privateKeyArmored: string;
+  passphrase: string;
+  cycle?: UnlockCycle;
+  now: number;
+  lifetimeMs?: number;
+  kemPublicKey?: string;
+  sigPublicKey?: string;
+}): Promise<{ cert: PollCert; secretKey: Uint8Array }> {
+  const life = Math.min(Math.max(args.lifetimeMs ?? POLL_LIFETIME_DEFAULT_MS, 1), POLL_LIFETIME_MAX_MS);
+  const { secretKey, publicKey } = ed25519.keygen();
+  const delegation: PollDelegation = {
+    mailbox_id: args.mailboxId,
+    poll_pub: bytesToHex(publicKey),
+    issued_ts: args.now,
+    expires_ts: args.now + life,
+  };
+  const sig = await signWithEnvelope(
+    DOMAIN_MAILBOX_POLL_DELEGATION,
+    canonicalize(delegation),
+    args.privateKeyArmored,
+    args.passphrase,
+    undefined,
+    args.cycle,
+  );
+  const cert: PollCert = { delegation, fingerprint: args.fingerprint, public_key: args.publicKeyArmored, signature: sig.classical };
+  if (args.kemPublicKey && args.sigPublicKey) {
+    cert.kem_public_key = args.kemPublicKey;
+    cert.sig_public_key = args.sigPublicKey;
+  }
+  return { cert, secretKey };
+}
+
+/** Build the v2 poll header. SYNCHRONOUS and key-free: it needs only the in-memory poll key, never the identity key. */
+export function signMailboxPollV2(args: { cert: PollCert; secretKey: Uint8Array; mailboxId: string; now: number }): Record<string, string> {
+  const nonce = randomNonce();
+  const input = pollSigningInput({ mailbox_id: args.mailboxId, nonce, ts: args.now });
+  const sig = ed25519.sign(utf8ToBytes(buildSignedBytes(DOMAIN_MAILBOX_POLL_V2, SUITE_CLASSICAL, input)), args.secretKey);
+  const bundle: PollAuthBundle = { cert: args.cert, nonce, ts: args.now, signature: bytesToHex(sig) };
+  return { [POLL_AUTH_HEADER]: b64urlEncode(JSON.stringify(bundle)) };
+}
+
 // ── SERVER (Next API route): verify a poll / ack request is from the mailbox owner ──
 // Verified BEFORE any store access → a non-owner never reaches the store (I-4 anti-oracle). Returns
 // false, never throws — a verifier refuses.
 
 export async function verifyMailboxPollAuth(request: Request, mailboxId: string, now: number): Promise<boolean> {
+  // N12: a PRESENT v2 header is verified as v2 and ONLY as v2. An invalid one refuses; it never falls through to the v1 header
+  // (no silent downgrade), and an empty/garbled value is "present", not "absent".
+  const v2 = request.headers.get(POLL_AUTH_HEADER);
+  if (v2 !== null) {
+    const b = decodePollBundle(v2);
+    return b ? verifyPollV2(b, mailboxId, now) : false;
+  }
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
@@ -276,6 +372,67 @@ export async function verifyMailboxClaimAuth(request: Request, mailboxId: string
   if (!bundle) return false;
   const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
   return verifyOwner(bundle, DOMAIN_MAILBOX_CLAIM, input, mailboxId, now);
+}
+
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const HEX128 = /^[0-9a-f]{128}$/;
+
+/** Strict shape check for the v2 bundle. Anything unexpected (extra keys, wrong types, half-present PQ pair) is null. */
+function decodePollBundle(headerValue: string): PollAuthBundle | null {
+  try {
+    const b = JSON.parse(b64urlDecode(headerValue));
+    const c = b?.cert;
+    const d = c?.delegation;
+    if (
+      typeof b?.nonce !== 'string' || typeof b?.ts !== 'number' || typeof b?.signature !== 'string' ||
+      typeof c?.fingerprint !== 'string' || typeof c?.public_key !== 'string' || typeof c?.signature !== 'string' ||
+      typeof d?.mailbox_id !== 'string' || typeof d?.poll_pub !== 'string' ||
+      typeof d?.issued_ts !== 'number' || typeof d?.expires_ts !== 'number'
+    ) return null;
+    // exact delegation keys: what the long-term key signed is exactly these four fields
+    if (Object.keys(d).sort().join(',') !== 'expires_ts,issued_ts,mailbox_id,poll_pub') return null;
+    if ((c.kem_public_key === undefined) !== (c.sig_public_key === undefined)) return null; // half-present pair
+    if (c.kem_public_key !== undefined) {
+      if (typeof c.kem_public_key !== 'string' || typeof c.sig_public_key !== 'string') return null;
+      if (atob(c.kem_public_key).length !== KEM_PUB_LEN || atob(c.sig_public_key).length !== SIG_PUB_LEN) return null;
+    }
+    return b as PollAuthBundle;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Verify a v2 poll: the cert (the long-term key delegated to this poll key, for THIS mailbox, within its lifetime and the
+ * relay's caps) and the poll signature over exactly this request. Cheap checks first; any exception refuses.
+ */
+async function verifyPollV2(b: PollAuthBundle, mailboxId: string, now: number): Promise<boolean> {
+  try {
+    const { cert } = b;
+    const d = cert.delegation;
+    // (1) freshness of this poll
+    if (!Number.isFinite(b.ts) || Math.abs(now - b.ts) > mailboxConfig().ownerAuthWindowMs) return false;
+    // (2) mailbox binding: the delegation names THIS mailbox and the presenting fingerprint derives it
+    if (d.mailbox_id !== mailboxId || deriveMailboxId(cert.fingerprint) !== mailboxId) return false;
+    // (3) lifetime caps, enforced by the relay whatever the client asked for
+    if (!Number.isFinite(d.issued_ts) || !Number.isFinite(d.expires_ts)) return false;
+    if (d.expires_ts <= d.issued_ts || d.expires_ts - d.issued_ts > POLL_LIFETIME_MAX_MS) return false;
+    if (d.issued_ts > now + POLL_ISSUED_FUTURE_SKEW_MS) return false;
+    if (d.expires_ts <= now) return false;
+    if (!HEX64.test(d.poll_pub) || !HEX128.test(b.signature)) return false;
+    // (4) fp<->key binding, then the delegation signature by the long-term key under its own domain
+    if (!(await fingerprintMatchesKey(cert.fingerprint, cert.public_key, {
+      kem_public_key: cert.kem_public_key,
+      sig_public_key: cert.sig_public_key,
+    }))) return false;
+    if (!(await verifyWithEnvelope(DOMAIN_MAILBOX_POLL_DELEGATION, canonicalize(d), { classical: cert.signature }, cert.public_key))) return false;
+    // (5) the poll signature by the delegated key over exactly this request, under the v2 poll domain
+    const msg = utf8ToBytes(buildSignedBytes(DOMAIN_MAILBOX_POLL_V2, SUITE_CLASSICAL, pollSigningInput({ mailbox_id: mailboxId, nonce: b.nonce, ts: b.ts })));
+    return ed25519.verify(hexToBytes(b.signature), msg, hexToBytes(d.poll_pub));
+  } catch {
+    return false; // noble throws on malformed keys: a verifier refuses, never throws
+  }
 }
 
 async function verifyOwner(

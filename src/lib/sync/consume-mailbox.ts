@@ -22,6 +22,7 @@
 
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { deriveMailboxId, signMailboxPollRequest, signMailboxAckRequest } from '@/lib/relay/mailbox-auth';
+import { pollHeaders as pollSubkeyHeaders } from '@/lib/relay/poll-subkey';
 import {
   verifyIncomingContactUpdate,
   ContactUpdateRejected,
@@ -196,6 +197,8 @@ export interface ConsumeDeps {
   affirm?: TrustAffirmResponseSeam; // mutual-trust affirmation routing; omit → affirms fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  /** N12 (#703): sign idle polls with the in-memory poll subkey (x-svrnty-poll-auth) instead of unlocking the identity key every poll. OFF by default: turn it on only once the relay accepts v2. Ack and decrypt still use the identity key. */
+  pollSubkey?: boolean;
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
@@ -241,17 +244,31 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, dropped: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
-  const pollHeaders = await signMailboxPollRequest({
-    mailboxId,
-    fingerprint: deps.owner.fingerprint,
-    publicKeyArmored: deps.owner.publicKeyArmored,
-    privateKeyArmored: deps.owner.privateKeyArmored,
-    passphrase: deps.owner.passphrase,
-    cycle: deps.owner.cycle,
-    kemPublicKey: deps.owner.kemPublicKey,
-    sigPublicKey: deps.owner.sigPublicKey,
-    now: Date.now(),
-  });
+  const pollHeaders = deps.pollSubkey
+    ? await pollSubkeyHeaders({
+        owner: {
+          fingerprint: deps.owner.fingerprint,
+          publicKeyArmored: deps.owner.publicKeyArmored,
+          privateKeyArmored: deps.owner.privateKeyArmored,
+          passphrase: deps.owner.passphrase,
+          kemPublicKey: deps.owner.kemPublicKey,
+          sigPublicKey: deps.owner.sigPublicKey,
+        },
+        mailboxId,
+        now: Date.now(),
+        cycle: deps.owner.cycle,
+      })
+    : await signMailboxPollRequest({
+        mailboxId,
+        fingerprint: deps.owner.fingerprint,
+        publicKeyArmored: deps.owner.publicKeyArmored,
+        privateKeyArmored: deps.owner.privateKeyArmored,
+        passphrase: deps.owner.passphrase,
+        cycle: deps.owner.cycle,
+        kemPublicKey: deps.owner.kemPublicKey,
+        sigPublicKey: deps.owner.sigPublicKey,
+        now: Date.now(),
+      });
   const res = await doFetch(`${relayBase}/queue?mailbox_id=${encodeURIComponent(mailboxId)}`, { headers: pollHeaders });
   if (!res.ok) {
     summary.rejected = res.status;
