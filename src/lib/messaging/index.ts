@@ -9,6 +9,7 @@ export { createRingChannel, rotateRingMembership, ringDepositTargets } from './r
 export {
   initNotesStore,
   isNotesStoreUnlocked,
+  notesStoreOwner,
   lockNotesStore,
   putThread,
   listThreads,
@@ -19,6 +20,16 @@ export {
   listRingChannels,
   newNoteId,
   newThreadId,
+  // 616: multi-select delete/archive — atomic IDB moves on the
+  // per-identity store
+  archiveNotes,
+  unarchiveNotes,
+  deleteNotesAtomic,
+  restoreFromBin,
+  deletePermanently,
+  emptyBin,
+  listArchived,
+  listBin,
 } from './store';
 export {
   sendNoteToPeer,
