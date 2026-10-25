@@ -340,7 +340,7 @@ async function main() {
         kemPublicKeyB64: myId.pq_kem_public_key,
         sigPublicKeyB64: myId.pq_sig_public_key,
       },
-      { fingerprint: giverFp, publicKeyArmored: id.public_key, inviteNonce: code },
+      { fingerprint: giverFp, publicKeyArmored: id.public_key, giverPqKemPublicKey: id.pq_kem_public_key, inviteNonce: code },
       { relayBase: RELAY },
     );
     console.log(JSON.stringify({ admitted: giverFp, joinerResponse: r }));
