@@ -5,7 +5,8 @@
 // isPQEncapLive() stays false until Flint flips it. Do not market this as Signal-grade.
 
 import { TripleRatchet, type RatchetIdentity, type RatchetPacket, type RatchetPeer, type RatchetSnapshot } from '@/lib/crypto/message-ratchet';
-import { readRatchetSession, putRatchetSession, type RatchetSessionRead } from './store';
+import { readRatchetSession, putRatchetSession, notesStoreOwner, type RatchetSessionRead } from './store';
+import { assertNotesStoreOpenFor } from './notes-owner-guard';
 
 export const TRIPLE_RATCHET_BODY = 'svrnty-tr-v1';
 
@@ -46,7 +47,25 @@ export interface RatchetIO {
   read: (peerFingerprint: string) => Promise<RatchetSessionRead>;
   put: (peerFingerprint: string, snapshot: RatchetSnapshot) => Promise<void>;
 }
+/** The raw store handle, with NO owner check. Production code never uses it directly: it goes through {@link ownerBoundRatchetIO}. */
 export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatchetSession };
+
+/**
+ * R2: the session store is tab-local module state, open for ONE identity. Bind every session read AND write to the owner the
+ * caller is acting for: if the store is locked or open for a different identity (a cross-tab switch), the operation THROWS before
+ * touching anything, so a wrong-owner open can never advance, create or overwrite a session. A throw is load-bearing: send fails
+ * closed, and the receive path maps it to RETRYABLE (the note waits in the mailbox), never dropped.
+ */
+export function ownerBoundRatchetIO(
+  ownerFingerprint: string,
+  openOwner: () => string | null = notesStoreOwner,
+  inner: RatchetIO = realRatchetIO,
+): RatchetIO {
+  return {
+    read: async (peerFp) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.read(peerFp); },
+    put: async (peerFp, snapshot) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.put(peerFp, snapshot); },
+  };
+}
 
 /** A session row exists for this peer but cannot be read. Never treated as "no session" (R3). */
 export class RatchetSessionUnreadableError extends Error {
@@ -89,14 +108,25 @@ export async function sealDirectNote(
   return encodeBody(packet);
 }
 
-/** Open a ratchet body from one peer. Persists the session. Null on tamper / missing keys. */
-export async function openDirectNote(
+/**
+ * An opened ratchet message whose session advance has NOT been persisted yet. R4: the advanced session is committed only AFTER the
+ * note it carried is durably stored. Otherwise a store failure after the open leaves the envelope retryable but the session already
+ * moved past that message key, so the retry cannot open it (receive() returns null) and the message is lost although it sat safely
+ * in the mailbox.
+ */
+export interface StagedOpen {
+  plaintext: string;
+  commit: () => Promise<void>;
+}
+
+/** Open a ratchet body from one peer WITHOUT persisting the advanced session; the caller commits once the note is stored (R4). */
+export async function openDirectNoteStaged(
   peerFingerprint: string,
   body: string,
   self: RatchetIdentity,
   peer: RatchetPeer,
   io: RatchetIO = realRatchetIO,
-): Promise<string | null> {
+): Promise<StagedOpen | null> {
   const packet = decodeBody(body);
   if (!packet) return null;
   const cur = await io.read(peerFingerprint);
@@ -106,13 +136,25 @@ export async function openDirectNote(
     if (!session) return null;
     const pt = await session.receive(packet);
     if (pt === null) return null;
-    await io.put(peerFingerprint, session.exportState());
-    return pt;
+    return { plaintext: pt, commit: () => io.put(peerFingerprint, session.exportState()) };
   }
   const first = await TripleRatchet.acceptFirst(self, peer, packet);
   if (!first) return null;
-  await io.put(peerFingerprint, first.session.exportState());
-  return first.plaintext;
+  return { plaintext: first.plaintext, commit: () => io.put(peerFingerprint, first.session.exportState()) };
+}
+
+/** Open a ratchet body from one peer and persist the session immediately. Null on tamper / missing keys. Kept for callers that have nothing to store. */
+export async function openDirectNote(
+  peerFingerprint: string,
+  body: string,
+  self: RatchetIdentity,
+  peer: RatchetPeer,
+  io: RatchetIO = realRatchetIO,
+): Promise<string | null> {
+  const staged = await openDirectNoteStaged(peerFingerprint, body, self, peer, io);
+  if (!staged) return null;
+  await staged.commit();
+  return staged.plaintext;
 }
 
 /**

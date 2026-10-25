@@ -9,7 +9,7 @@ import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
 import type { NoteRecord } from './types';
-import { isTripleRatchetBody, chooseWireBody, type RatchetIO } from './direct-session';
+import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type RatchetIO, type StagedOpen } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
 
 export interface NoteSenderIdentity {
@@ -69,7 +69,7 @@ export async function sendNoteToPeer(args: {
       ownerRatchet: args.ownerRatchet,
       peerRatchet: args.peerRatchet,
     },
-    args.io?.ratchet,
+    args.io?.ratchet ?? ownerBoundRatchetIO(args.sender.fingerprint),   // R2: every session read/write is checked against the acting owner
   );
 
   const unsignedWire: NoteWireV0 = {
@@ -174,8 +174,11 @@ export async function acceptInboundNote(args: {
   isAdmitted: (fingerprint: string) => Promise<boolean>;
   peerDisplayName?: string;
   peerKind?: ParticipantKind;
-  /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. */
-  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | null>;
+  /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. May return the plaintext (already committed, legacy)
+   *  or a {@link StagedOpen}, whose session advance is committed HERE only after the note and thread are stored (R4). */
+  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | null>;
+  /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
+  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -187,11 +190,17 @@ export async function acceptInboundNote(args: {
     return null; // spam / stranger — structural drop
   }
   let body = args.wire.body;
+  let commitRatchet: (() => Promise<void>) | undefined;
   if (isTripleRatchetBody(body)) {
     if (!args.openRatchet) return null;
     const opened = await args.openRatchet(args.wire.from_fingerprint, body);
     if (opened === null) return null;
-    body = opened;
+    if (typeof opened === 'string') {
+      body = opened;
+    } else {
+      body = opened.plaintext;
+      commitRatchet = opened.commit;
+    }
   }
   const sent_at = args.wire.sent_at || new Date().toISOString();
   const record: NoteRecord = {
@@ -206,9 +215,9 @@ export async function acceptInboundNote(args: {
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
   };
-  await putNote(record);
+  await (args.io?.putNote ?? putNote)(record);
 
-  const threads = await listThreads();
+  const threads = await (args.io?.listThreads ?? listThreads)();
   let thread = threads.find((t) => t.thread_id === record.thread_id);
   if (!thread) {
     thread = {
@@ -229,6 +238,10 @@ export async function acceptInboundNote(args: {
   } else {
     thread = { ...thread, last_activity_at: sent_at };
   }
-  await putThread(thread);
+  await (args.io?.putThread ?? putThread)(thread);
+  // R4: ONLY NOW is the ratchet advance persisted: the note and its thread are durably stored. A failure anywhere above leaves the
+  // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
+  // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
+  if (commitRatchet) await commitRatchet();
   return record;
 }

@@ -198,14 +198,15 @@ export function buildNoteSeam(
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
         openRatchet: async (fromFp, body) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
-          const { openDirectNote } = await import('@/lib/messaging/direct-session');
+          const { openDirectNoteStaged, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
           const self = await loadOwnerRatchetIdentity(owner.fingerprint, {
             identity: { fingerprint: owner.fingerprint, public_key: owner.publicKeyArmored },
             post_quantum: { kem_public_key: owner.kemPublicKey, sig_public_key: owner.sigPublicKey },
           });
           const peer = await loadPeerRatchet(owner.fingerprint, fromFp);
           if (!self || !peer) return null;
-          return openDirectNote(fromFp, body, self, peer);
+          // R4 + R2: open WITHOUT persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
+          return openDirectNoteStaged(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint));
         },
       });
       if (!rec) return null; // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept
