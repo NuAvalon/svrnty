@@ -24,6 +24,7 @@ import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact }
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, sealNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, consumeInboundBlob, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { deriveMailboxId } from '../src/lib/relay/mailbox-auth';
@@ -78,15 +79,12 @@ function loadMint(): SerializedMintArtifact {
 }
 
 function ownerFrom(a: SerializedMintArtifact): HeadlessOwner {
-  const id = a.public.card.identity;
-  return {
-    fingerprint: a.public.durable_id,
-    publicKeyArmored: id.public_key,
-    privateKeyArmored: a.private.classical_private_key,
-    passphrase: a.private.classical_kpass,
-    kemPublicKey: id.pq_kem_public_key,
-    sigPublicKey: id.pq_sig_public_key,
-  };
+  // Custody ① (Apollo #168442): the canonical adapter threads
+  // private.mlkem1024_sec → owner.kemSecretKey so the consume path can
+  // derive hybrid open-material. The previous hand-rolled mapping dropped
+  // kemSecretKey → every inbound PQ-hybrid blob hit the ③ loud-retry gate
+  // (hybridSecretMissing) → 'retryable' forever on intake + poll.
+  return custodyToHeadlessOwner(a);
 }
 
 // ── agent-local JSON state (issued Grow codes + Gate arrivals) ─────────────────────────────────
