@@ -24,5 +24,8 @@ export default defineConfig({
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    // The check-words production switch (compose-words-gate.ts) is baked into the bundle, so it is set HERE, for this e2e server only, and only when the run
+    // asks for it (COMPOSE_WORDS_E2E=1). Never in a workflow, Dockerfile or .env: compose-words-gate.test.ts fails if a deploy file mentions it.
+    env: { NEXT_PUBLIC_COMPOSE_WORDS_CONFIRMED: process.env.COMPOSE_WORDS_E2E === '1' ? '1' : '' },
   },
 });
