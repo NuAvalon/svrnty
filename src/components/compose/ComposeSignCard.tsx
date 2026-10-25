@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
 import type { CardModel, SignCardModel, RefusedCardModel } from '@/lib/compose/compose-card-model';
+import { CARD_COPY } from '@/lib/compose/compose-card-copy';
 import type { HandBackModel } from '@/lib/compose/compose-handback';
 
 /** How long a freshly shown card ignores Approve. */
@@ -154,6 +155,19 @@ function RefusedCard({ card, onClose }: { card: RefusedCardModel; onClose: () =>
       ) : null}
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" data-testid="compose-close" data-default-focus="true" onClick={onClose} style={btn(false)}>{card.close}</button>
+      </div>
+    </Shell>
+  );
+}
+
+/** A signature attempt failed (Hypatia §6d): fixed text and ONE Close. Never the error's own text; nothing here says anything was signed or posted. */
+export function ComposeFailedCard({ notice, close, onClose }: { notice: string; close: string; onClose: () => void }) {
+  return (
+    <Shell testId="compose-failed" labelId="compose-failed-title" onEscape={onClose}>
+      <h2 id="compose-failed-title" style={{ margin: '0 0 8px', fontSize: 16, color: E.text }}>{CARD_COPY.post.title}</h2>
+      <p data-testid="compose-failed-notice" style={{ margin: '0 0 16px', fontSize: 13, lineHeight: 1.45, color: E.muted }}>{notice}</p>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" data-testid="compose-failed-close" data-default-focus="true" onClick={onClose} style={btn(false)}>{close}</button>
       </div>
     </Shell>
   );

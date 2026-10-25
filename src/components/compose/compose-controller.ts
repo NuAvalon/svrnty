@@ -12,10 +12,20 @@
 //     derivation, a Weft request or the production switch being off can never be bypassed by calling it).
 //   - A second approve() while one is signing is ignored (no double signature, no second hand-back).
 //   - A pin read that throws is `unreadable` (blocked), never `absent` (Flint P2).
+//   - C1 (Flint #1489): a request that was signed, declined or closed is REMEMBERED (compose-memory.ts, persisted encrypted, owner-scoped) until its own
+//     expires_at, so a reload or a second tab cannot raise it again; the other tab's open card closes ("Handled in another tab."). Simultaneous Approve
+//     in two tabs inside the same few milliseconds is NOT prevented here (no cross-tab lock); the portal's single-use nonce (C2) is the backstop.
+//   - C3: the passive blocked-key notice is fixed copy, shown at most once per sender per 24 h; the sender's key is only ever a Settings candidate.
+//   - A failed signature keeps a notice on screen with one Close (Hypatia §6d); nothing is claimed signed.
 import { current, emptyQueue, prune, resolve, type QueueItem, type QueueState } from '@/lib/compose/compose-queue';
 import { buildCardModel, type CardModel, type DeriveWords } from '@/lib/compose/compose-card-model';
 import { buildHandBackModel, type HandBackModel } from '@/lib/compose/compose-handback';
-import { receiveComposeNote } from '@/lib/compose/compose-receive';
+import { isComposeShaped, receiveComposeNote } from '@/lib/compose/compose-receive';
+import { CARD_COPY } from '@/lib/compose/compose-card-copy';
+import { COMPOSE_MAX_WINDOW_MS } from '@/lib/compose/compose-request';
+import { REFUSAL_TTL_MS } from '@/lib/compose/compose-queue';
+import { addResolved, emptyMemory, isResolved, markNoticed, mergeMemory, shouldNotice, type ComposeMemory } from '@/lib/compose/compose-memory';
+import type { ResolvedBus } from './compose-bus';
 import { rememberCandidate, dropCandidate, type PinState } from '@/lib/compose/compose-pin';
 import type { SignResult } from '@/lib/compose/compose-sign';
 
@@ -42,6 +52,11 @@ export interface ControllerDeps {
   wordsConfirmed: boolean;
   /** Fixed text only. Never a request's own text, never a key, never an IP. */
   log: (line: string) => void;
+  /** The persisted memory (C1/C3). An unreadable record must come back as an EMPTY memory (see client-store.getComposeMemory). */
+  loadMemory: () => Promise<ComposeMemory>;
+  saveMemory: (m: ComposeMemory) => Promise<void>;
+  /** Cross-tab "handled" messages. */
+  bus: ResolvedBus;
 }
 
 export interface ControllerSnapshot {
@@ -55,6 +70,10 @@ export interface ControllerSnapshot {
   waiting: number;
   /** A signature is being made. */
   signing: boolean;
+  /** A signature attempt failed: fixed text and one Close (Hypatia §6d). Takes the screen like the hand-back. */
+  failed: { notice: string; close: string } | null;
+  /** Shown briefly when another tab handled the card this tab was showing. */
+  handledElsewhere: string | null;
   /** PASSIVE, no buttons: a blocked-key notice. */
   passiveNotice: string | null;
   /** Recently seen VERIFIED sender fps (newest first) the Settings panel may offer to compare. */
@@ -63,11 +82,20 @@ export interface ControllerSnapshot {
 
 type Listener = () => void;
 
+/** How long "Handled in another tab." stays up. */
+const HANDLED_ELSEWHERE_MS = 3000;
+
 export class ComposeController {
   private queue: QueueState = emptyQueue();
   private candidates: readonly string[] = [];
   private passiveNotice: string | null = null;
   private handBack: HandBackModel | null = null;
+  private failed = false;
+  private handledElsewhere = false;
+  private memory: ComposeMemory = emptyMemory();
+  private persistChain: Promise<void> = Promise.resolve();
+  private handledUntilMs = 0;
+  private unsubBus: () => void;
   private signing = false;
   private chain: Promise<void> = Promise.resolve();
   private listeners = new Set<Listener>();
@@ -75,6 +103,12 @@ export class ComposeController {
 
   constructor(private readonly deps: ControllerDeps) {
     this.snapshot = this.build();
+    this.unsubBus = deps.bus.subscribe((nonce) => this.onRemoteResolved(nonce));
+  }
+
+  /** Stop listening to other tabs (the host calls this when it unmounts). */
+  dispose(): void {
+    this.unsubBus();
   }
 
   subscribe = (l: Listener): (() => void) => {
@@ -90,7 +124,7 @@ export class ComposeController {
   private build(): ControllerSnapshot {
     const now = this.deps.now();
     const pending = prune(this.queue, now).pending;
-    const item = this.handBack ? null : current(this.queue, now);
+    const item = this.handBack || this.failed ? null : current(this.queue, now);
     const card = item ? buildCardModel(item, this.deps.deriveWords, { wordsConfirmed: this.deps.wordsConfirmed }) : null;
     return {
       handBack: this.handBack,
@@ -98,6 +132,8 @@ export class ComposeController {
       cardNonce: item ? item.nonce : null,
       waiting: Math.max(0, pending.length - (item ? 1 : 0)),
       signing: this.signing,
+      failed: this.failed ? { notice: CARD_COPY.signFailed.notice, close: CARD_COPY.signFailed.close } : null,
+      handledElsewhere: this.handledElsewhere ? CARD_COPY.handledElsewhere : null,
       passiveNotice: this.passiveNotice,
       candidates: this.candidates,
     };
@@ -127,7 +163,15 @@ export class ComposeController {
     } catch {
       rec = null;
     }
-    if (!rec) return;
+    // Only an inbound, compose-shaped note matters; plain chat touches nothing (no memory read, no log, no candidate).
+    if (!rec || rec.direction !== 'inbound' || !isComposeShaped(rec.body)) return;
+    const nowMs = this.deps.now().getTime();
+    await this.refreshMemory(nowMs);
+    const nonce = nonceOfBody(rec.body);
+    if (nonce !== null && isResolved(this.memory, nonce, nowMs)) {
+      this.deps.log('A sign request that was already handled arrived again. It was not shown.');
+      return; // C1: signed, declined or closed already (in this tab, another tab, or before a reload): never a second card
+    }
     let pin: PinState;
     try {
       pin = await this.deps.getPin();
@@ -155,7 +199,12 @@ export class ComposeController {
         return;
       case 'blocked':
         this.candidates = rememberCandidate(this.candidates, event.candidate);
-        this.passiveNotice = event.notice;
+        // C3: the notice is fixed copy and appears at most once per sender per 24 h; the key itself only ever becomes a Settings candidate.
+        if (shouldNotice(this.memory, rec.from_fingerprint, now.getTime())) {
+          this.passiveNotice = event.notice;
+          this.memory = markNoticed(this.memory, rec.from_fingerprint, now.getTime());
+          void this.persist();
+        }
         this.emit();
         return;
       case 'bad-note':
@@ -166,8 +215,66 @@ export class ComposeController {
     }
   }
 
+  private async refreshMemory(nowMs: number): Promise<void> {
+    let stored: ComposeMemory;
+    try {
+      stored = await this.deps.loadMemory();
+    } catch {
+      stored = emptyMemory(); // a lost memory only costs one extra card for a still-unexpired replay
+    }
+    this.memory = mergeMemory(this.memory, stored, nowMs);
+  }
+
+  /** Write the memory, merged with whatever another tab wrote since we read. Serialised; a failure is logged and the in-memory copy still protects this tab. */
+  private persist(): Promise<void> {
+    this.persistChain = this.persistChain.then(async () => {
+      try {
+        const nowMs = this.deps.now().getTime();
+        const stored = await this.deps.loadMemory().catch(() => emptyMemory());
+        const merged = mergeMemory(stored, this.memory, nowMs);
+        this.memory = merged;
+        await this.deps.saveMemory(merged);
+      } catch {
+        this.deps.log('The compose memory could not be saved.');
+      }
+    });
+    return this.persistChain;
+  }
+
+  /** Remember that this item is finished with (signed, declined, failed or closed) until its own expires_at, in this tab, on disk and in other tabs. */
+  private markResolved(item: QueueItem): void {
+    if (item.nonce === null) return; // a refusal with no readable nonce cannot be remembered
+    const nowMs = this.deps.now().getTime();
+    const until = item.kind === 'sign' ? item.expiresAtMs : item.receivedAtMs + REFUSAL_TTL_MS;
+    this.memory = addResolved(this.memory, item.nonce, until, nowMs);
+    void this.persist();
+    this.deps.bus.emit(item.nonce);
+  }
+
+  /** Another tab finished with this request. Close our copy of the card (briefly saying so), unless we are in the middle of signing it ourselves. */
+  private onRemoteResolved(nonce: string): void {
+    const nowMs = this.deps.now().getTime();
+    const it = this.queue.pending.find((i) => i.nonce === nonce);
+    const until = it ? (it.kind === 'sign' ? it.expiresAtMs : it.receivedAtMs + REFUSAL_TTL_MS) : nowMs + COMPOSE_MAX_WINDOW_MS;
+    this.memory = addResolved(this.memory, nonce, until, nowMs);
+    if (!it) return;
+    const shown = current(this.queue, this.deps.now());
+    if (this.signing && shown === it) return; // we are signing it right now; the person already pressed Approve here
+    this.queue = resolve(this.queue, it);
+    if (shown === it && !this.handBack && !this.failed) {
+      this.handledElsewhere = true;
+      this.handledUntilMs = nowMs + HANDLED_ELSEWHERE_MS;
+    }
+    this.emit();
+  }
+
   /** Re-evaluate time (an expired card disappears). Call on an interval. Emits only when what is shown changed. */
   tick(): void {
+    if (this.handledElsewhere && this.deps.now().getTime() >= this.handledUntilMs) {
+      this.handledElsewhere = false;
+      this.emit();
+      return;
+    }
     const next = this.build();
     const prev = this.snapshot;
     if (next.cardNonce !== prev.cardNonce || next.waiting !== prev.waiting || (next.card === null) !== (prev.card === null)) this.emit();
@@ -175,7 +282,7 @@ export class ComposeController {
 
   /** Approve the card the person was LOOKING AT (`shownNonce`). Does nothing unless that card is still the current one and offers an Approve. */
   async approve(shownNonce: string): Promise<void> {
-    if (this.signing || this.handBack) return;
+    if (this.signing || this.handBack || this.failed) return;
     const now = this.deps.now();
     const item = current(this.queue, now);
     if (!item || item.kind !== 'sign' || item.nonce !== shownNonce) return;
@@ -191,22 +298,24 @@ export class ComposeController {
     }
     this.signing = false;
     this.queue = resolve(this.queue, item);
+    this.markResolved(item); // finished with, whatever the outcome: a retry is a NEW request from the portal
     if (res.ok) {
       this.handBack = buildHandBackModel(res.signed);
     } else {
-      // No copy exists for a failed signature (open item for Hypatia): the card goes away, nothing is claimed, a fixed line is logged.
+      this.failed = true; // Hypatia §6d: fixed text + one Close; never the error's own text
       this.deps.log(`A sign request was not signed (${res.reason}).`);
     }
     this.emit();
   }
 
-  /** "Don't sign", or Close on a refusal card. Removes the shown card; its nonce stays remembered so a replay cannot raise it again. */
+  /** "Don't sign", or Close on a refusal card. Removes the shown card and remembers it as handled so a replay cannot raise it again. */
   dismissCard(shownNonce: string | null): void {
-    if (this.signing || this.handBack) return;
+    if (this.signing || this.handBack || this.failed) return;
     const item = current(this.queue, this.deps.now());
     if (!item) return;
     if (item.nonce !== shownNonce) return;
     this.queue = resolve(this.queue, item);
+    this.markResolved(item);
     this.emit();
   }
 
@@ -214,6 +323,13 @@ export class ComposeController {
   dismissHandBack(): void {
     if (!this.handBack) return;
     this.handBack = null;
+    this.emit();
+  }
+
+  /** Close on the "couldn't sign" notice. */
+  dismissFailed(): void {
+    if (!this.failed) return;
+    this.failed = false;
     this.emit();
   }
 
@@ -231,14 +347,28 @@ export class ComposeController {
     this.emit();
   }
 
-  /** Test seam / lock: forget everything held in memory (the queue, candidates, notices). */
+  /** Lock / identity switch: forget everything held in this tab's memory (the persisted memory stays on disk, encrypted). */
   reset(): void {
     this.queue = emptyQueue();
     this.candidates = [];
     this.passiveNotice = null;
     this.handBack = null;
+    this.failed = false;
+    this.handledElsewhere = false;
+    this.memory = emptyMemory();
     this.signing = false;
     this.emit();
+  }
+}
+
+const NONCE_RE = /^[0-9a-f]{32}$/;
+/** The request nonce of a compose-shaped note body (already sniffed and size-bounded by isComposeShaped), or null. Never throws. */
+function nonceOfBody(body: string): string | null {
+  try {
+    const n = (JSON.parse(body) as { request?: { nonce?: unknown } } | null)?.request?.nonce;
+    return typeof n === 'string' && NONCE_RE.test(n) ? n : null;
+  } catch {
+    return null;
   }
 }
 

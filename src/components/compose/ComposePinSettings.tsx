@@ -94,14 +94,20 @@ export function ComposePinSettings({ identity }: { identity: unknown }) {
   const view = settingsView(pin, snap?.candidates ?? []);
   if (!fp || view.status === 'locked') return null;
 
-  const act = (action: PinAction) => {
+  // Candidates are a capped list of recently seen keys. NONE is pre-selected: each row has its own button, and the person compares the characters first.
+  const pinnedFp = pin.state === 'pinned' ? pin.record.fp : null;
+  const list = (snap?.candidates ?? []).filter((c) => c !== pinnedFp);
+  const rowAction: PinAction | null = view.status === 'not-pinned' ? 'pin' : view.status === 'blocked-unreadable' ? 're-pin' : view.status === 'blocked-changed' ? 'compare-new' : null;
+  const showRows = rowAction !== null && view.actions.includes(rowAction) && list.length > 0;
+
+  const act = (action: PinAction, candidate: string | null) => {
     setResult(null);
     if (action === 'keep-blocked') {
-      if (view.candidate) controller?.forgetCandidate(view.candidate);
+      for (const c of list) controller?.forgetCandidate(c);
       return;
     }
-    if (!view.candidate) return;
-    setScreen(startCeremony(pin, action, view.candidate));
+    if (!candidate) return;
+    setScreen(startCeremony(pin, action, candidate));
   };
 
   const choose = async (choice: 'match' | 'no-match') => {
@@ -133,20 +139,20 @@ export function ComposePinSettings({ identity }: { identity: unknown }) {
     >
       <h3 id={titleId} style={{ margin: '0 0 4px', fontSize: 13, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', color: E.accent }}>Compose key</h3>
       <p data-testid="compose-pin-line" data-status={view.status} style={{ margin: '0 0 12px', fontSize: 13, color: E.text, wordBreak: 'break-all' }}>{view.line}</p>
-      {view.actions.length > 0 ? (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {view.actions.map((a) => (
-            <button
-              key={a}
-              type="button"
-              data-testid={`compose-pin-action-${a}`}
-              data-default-focus={a === 'keep-blocked' ? 'true' : undefined}
-              onClick={() => act(a)}
-              style={button(a !== 'keep-blocked')}
-            >
-              {ACTION_LABEL[a]}
-            </button>
+      {showRows && rowAction ? (
+        <div data-testid="compose-pin-candidates" style={{ marginBottom: 10 }}>
+          <p data-testid="compose-pin-candidates-header" style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.45, color: E.muted }}>{PIN_COPY.candidatesHeader}</p>
+          {list.map((c) => (
+            <div key={c} data-testid="compose-pin-candidate" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ flex: 1, fontFamily: E.fontMono, fontSize: 14, color: E.text }}>{fp16Groups(c)}</span>
+              <button type="button" data-testid={`compose-pin-action-${rowAction}`} onClick={() => act(rowAction, c)} style={{ ...button(true), flex: 'none', padding: '0 12px' }}>{ACTION_LABEL[rowAction]}</button>
+            </div>
           ))}
+        </div>
+      ) : null}
+      {view.actions.includes('keep-blocked') ? (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button type="button" data-testid="compose-pin-action-keep-blocked" data-default-focus="true" onClick={() => act('keep-blocked', null)} style={button(false)}>{ACTION_LABEL['keep-blocked']}</button>
         </div>
       ) : null}
       {result ? (

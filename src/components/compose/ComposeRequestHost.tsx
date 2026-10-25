@@ -14,7 +14,7 @@
 import { useEffect, useMemo } from 'react';
 import { subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { listNotesForThread, isNotesStoreUnlocked, notesStoreOwner } from '@/lib/messaging/store';
-import { getComposePinState, onSessionLock } from '@/lib/identity/client-store';
+import { getComposeMemory, getComposePinState, onSessionLock, setComposeMemory } from '@/lib/identity/client-store';
 import { normalizeFingerprintHex } from '@/lib/identity/fingerprint';
 import { loadOwnerNoteSender } from '@/components/notes/notes-keys';
 import { signComposeRequest } from '@/lib/compose/compose-sign';
@@ -23,7 +23,8 @@ import { composeWordsConfirmed } from '@/lib/compose/compose-words-gate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { ComposeController, type ArrivalEvent, type StoredNote } from './compose-controller';
 import { getActiveComposeController, setActiveComposeController, useComposeSnapshot } from './compose-registry';
-import { ComposeCardView, ComposeHandBack } from './ComposeSignCard';
+import { ComposeCardView, ComposeFailedCard, ComposeHandBack } from './ComposeSignCard';
+import { createBroadcastResolvedBus } from './compose-bus';
 
 // The session lock hooks cannot be removed, so register exactly once for the module and let it find whichever controller is active.
 let lockHookRegistered = false;
@@ -63,6 +64,9 @@ export function ComposeRequestHost({ identity }: { identity: unknown }) {
       deriveWords: deriveComposeWords,
       wordsConfirmed: composeWordsConfirmed(),
       log: (line) => console.info(line),
+      loadMemory: () => getComposeMemory(fp),
+      saveMemory: (m) => setComposeMemory(fp, m),
+      bus: createBroadcastResolvedBus(fp),
     });
     setActiveComposeController(controller);
     const off = subscribeNoteArrivals((evt) => {
@@ -72,6 +76,7 @@ export function ComposeRequestHost({ identity }: { identity: unknown }) {
     return () => {
       clearInterval(timer);
       off();
+      controller.dispose();
       controller.reset();
       setActiveComposeController(null);
     };
@@ -85,7 +90,7 @@ export function ComposeRequestHost({ identity }: { identity: unknown }) {
 
   return (
     <>
-      {snap.passiveNotice !== null && snap.card === null && snap.handBack === null ? (
+      {snap.passiveNotice !== null && snap.card === null && snap.handBack === null && snap.failed === null ? (
         <div
           role="status"
           data-testid="compose-passive-notice"
@@ -95,8 +100,19 @@ export function ComposeRequestHost({ identity }: { identity: unknown }) {
           <button type="button" aria-label="Close" data-testid="compose-passive-close" onClick={() => controller.dismissPassiveNotice()} style={{ background: 'transparent', border: 'none', color: E.muted, cursor: 'pointer', fontSize: 16, lineHeight: 1, minWidth: 32, minHeight: 32 }}>×</button>
         </div>
       ) : null}
+      {snap.handledElsewhere !== null && snap.card === null && snap.handBack === null && snap.failed === null ? (
+        <div
+          role="status"
+          data-testid="compose-handled-elsewhere"
+          style={{ position: 'fixed', left: 12, right: 12, bottom: 12, zIndex: 85, maxWidth: 520, margin: '0 auto', padding: '10px 12px', border: `1px solid ${E.border}`, borderRadius: 10, background: E.surfaceSolid, color: E.text, fontFamily: E.fontSans, fontSize: 13 }}
+        >
+          {snap.handledElsewhere}
+        </div>
+      ) : null}
       {snap.handBack !== null ? (
         <ComposeHandBack model={snap.handBack} onDone={() => controller.dismissHandBack()} />
+      ) : snap.failed !== null ? (
+        <ComposeFailedCard notice={snap.failed.notice} close={snap.failed.close} onClose={() => controller.dismissFailed()} />
       ) : snap.card !== null ? (
         <ComposeCardView
           card={snap.card}

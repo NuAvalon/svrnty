@@ -34,6 +34,13 @@ export const CARD_COPY = {
     copy: 'Copy',
     copied: 'Copied.',
   },
+  /** Hypatia doc §6d (sha1 a0aefd34, lane:portal #1490): a failed signature keeps a card on screen with fixed text and ONE Close. Never the error's own text. */
+  signFailed: {
+    notice: "Couldn't sign this request. Nothing was signed or posted. Ask the portal to send it again.",
+    close: 'Close',
+  },
+  /** Hypatia lane:portal #1493: shown briefly when another tab signed or declined this request, so the card does not just vanish. */
+  handledElsewhere: 'Handled in another tab.',
   /**
    * NOT IN HYPATIA'S DOC (pending her words, flagged in the PR): shown only when the card cannot compute the four check-words. The card then offers NO approve
    * button, so a missing word derivation fails closed. Plain and true; contains none of the forbidden words.

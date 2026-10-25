@@ -69,6 +69,15 @@ async function sendRequest(request: APIRequestContext, bob: E2EIdentity, aliceFp
 
 const groups = (fp: string) => fp.slice(0, 16).replace(/(.{4})(?=.)/g, '$1 ');
 
+
+/** A reload drops the in-memory session key; unlock again with the same passphrase. Identity, contacts, the pin and the compose memory live in IndexedDB and survive. */
+async function reloadAndUnlock(page: Page) {
+  await page.goto('/');
+  await page.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
+  await page.getByRole('button', { name: /unlock/i }).click();
+  await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 20_000 });
+}
+
 /** Open Identity -> Settings panel, wait for the compose pin panel. */
 async function openPinPanel(page: Page) {
   await page.getByRole('tab', { name: 'Identity', exact: true }).click();
@@ -86,6 +95,8 @@ async function pinBob(page: Page, bob: E2EIdentity, request: APIRequestContext, 
   const pinAction = panel.getByTestId('compose-pin-action-pin');
   await expect(pinAction).toBeVisible({ timeout: 25_000 });
   await expect(page.getByTestId('compose-card')).toHaveCount(0);
+  // The candidate is offered under Hypatia's header ("None of these is checked..."); nothing is pre-selected, the person presses the button on a row.
+  await expect(panel.getByTestId('compose-pin-candidates-header')).toHaveText(/^Recently seen keys\. None of these is checked:/);
 
   // "They don't match" pins nothing, and it is the focused (safe) button.
   await pinAction.click();
@@ -192,6 +203,51 @@ for (const variant of MATRIX) {
       await expect(refused.getByRole('button')).toHaveCount(1);
       await refused.getByTestId('compose-close').click();
       await expect(refused).toHaveCount(0);
+    });
+
+    test('C1: after a SIGN, a reload + unlock and a replay of the SAME request raises NO card; a fresh request does (the poll is alive, the pin survived)', async ({ page, request }) => {
+      test.skip(!WORDS_ON, 'needs the e2e build with COMPOSE_WORDS_E2E=1');
+      test.setTimeout(150_000);
+      await genesisReceiver(page, 'Peter Replay Signed');
+      const { aliceFp, aliceArmoredPub, bob } = await seedAliceWithBob(page);
+      await pinBob(page, bob, request, aliceFp, aliceArmoredPub);
+      const req = postRequest({ body: 'sign me once' });
+      await sendRequest(request, bob, aliceFp, aliceArmoredPub, req);
+      const card = page.getByTestId('compose-card');
+      await expect(card).toBeVisible({ timeout: 25_000 });
+      await expect(card.getByTestId('compose-approve')).toBeEnabled({ timeout: 5_000 });
+      await card.getByTestId('compose-approve').click();
+      await expect(page.getByTestId('compose-handback')).toBeVisible({ timeout: 20_000 });
+      await page.getByTestId('compose-handback-done').click();
+
+      await reloadAndUnlock(page);
+      await sendRequest(request, bob, aliceFp, aliceArmoredPub, req); // the same nonce again, a new note
+      await page.waitForTimeout(6_000);
+      await expect(page.getByTestId('compose-card')).toHaveCount(0);
+      await expect(page.getByText('sign me once')).toHaveCount(0);
+      // CONTROL: a new request (new nonce) still raises its card after the reload, so the silence above is the memory, not a dead poll or a lost pin.
+      await sendRequest(request, bob, aliceFp, aliceArmoredPub, postRequest({ body: 'fresh after reload' }));
+      await expect(page.getByTestId('compose-card-body')).toHaveText('fresh after reload', { timeout: 25_000 });
+    });
+
+    test('C1: after a DECLINE (Escape), a reload + unlock and a replay of the SAME request raises NO card', async ({ page, request }) => {
+      test.skip(!WORDS_ON, 'needs the e2e build with COMPOSE_WORDS_E2E=1');
+      test.setTimeout(150_000);
+      await genesisReceiver(page, 'Peter Replay Declined');
+      const { aliceFp, aliceArmoredPub, bob } = await seedAliceWithBob(page);
+      await pinBob(page, bob, request, aliceFp, aliceArmoredPub);
+      const req = postRequest({ body: 'decline me once' });
+      await sendRequest(request, bob, aliceFp, aliceArmoredPub, req);
+      await expect(page.getByTestId('compose-card')).toBeVisible({ timeout: 25_000 });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('compose-card')).toHaveCount(0);
+
+      await reloadAndUnlock(page);
+      await sendRequest(request, bob, aliceFp, aliceArmoredPub, req);
+      await page.waitForTimeout(6_000);
+      await expect(page.getByTestId('compose-card')).toHaveCount(0);
+      await sendRequest(request, bob, aliceFp, aliceArmoredPub, postRequest({ body: 'fresh after decline' }));
+      await expect(page.getByTestId('compose-card-body')).toHaveText('fresh after decline', { timeout: 25_000 });
     });
 
     test('production default (words switch OFF): the card is readable but has NO Approve of any kind', async ({ page, request }) => {

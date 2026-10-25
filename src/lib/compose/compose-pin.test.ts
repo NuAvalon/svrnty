@@ -237,7 +237,7 @@ test('CONSISTENCY with the receive seam: decideSender says accept IFF parseCompo
 
 // ───────────────────────────── The words ─────────────────────────────
 
-test('COPY is verbatim Hypatia §7 (sha1 64c94d76), pinned literally here', () => {
+test('COPY is verbatim Hypatia §7 (sha1 64c94d76; changedNotice + candidatesHeader from the corrected doc sha1 9a7d704e), pinned literally here', () => {
   assert.deepEqual({ ...PIN_COPY }, {
     stateNotPinned: 'Not pinned',
     statePinnedPrefix: 'Pinned: ',
@@ -261,7 +261,8 @@ test('COPY is verbatim Hypatia §7 (sha1 64c94d76), pinned literally here', () =
     replaceMatch: 'They match, replace it',
     notReplaced: "Not replaced. The old key stays pinned and the new one stays blocked. Tell the fleet the characters didn't match.",
     replaced: "Replaced. Sign requests from the new key will appear here. Pinning doesn't make a request safe: always read the card before you sign.",
-    changedNotice: "The portal's compose key changed. Requests from it are blocked. To compare the new key, open Settings › Compose key.",
+    changedNotice: "A sign request arrived from a key that isn't your pinned compose key. It was blocked. If the portal told you its key changed, compare it in Settings › Compose key.",
+    candidatesHeader: 'Recently seen keys. None of these is checked: compare the characters with the noosphere page AND with what you were told separately before pinning one.',
     unreadableNotice: "Your compose pin couldn't be read, so sign requests are blocked. Re-pin it in Settings › Compose key.",
     unpinnedLog: "A sign request arrived from a key you haven't pinned. It wasn't shown.",
   });

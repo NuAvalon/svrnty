@@ -162,3 +162,10 @@ test('PRODUCTION SWITCH: wordsConfirmed defaults to OFF, so even when the words 
   assert.equal(on.wordsLine, 'Check these words match the portal: alpha bravo charlie delta');
   assert.equal((buildCardModel(item, WORDS, { wordsConfirmed: 'yes' as unknown as boolean }) as SignCardModel).approve, null, 'only the boolean true turns it on');
 });
+
+test('Hypatia §6d / #1493 copy is pinned literally (sha1 a0aefd34 + doc 9a7d704e), and none of it uses a word the doc forbids', () => {
+  assert.deepEqual({ ...CARD_COPY.signFailed }, { notice: "Couldn't sign this request. Nothing was signed or posted. Ask the portal to send it again.", close: 'Close' });
+  assert.equal(CARD_COPY.handledElsewhere, 'Handled in another tab.');
+  const FORBIDDEN = /\b(sent|delivered|secure|verified|end-to-end|auto-approve|quantum)\b/i;
+  for (const s of [CARD_COPY.signFailed.notice, CARD_COPY.signFailed.close, CARD_COPY.handledElsewhere]) assert.doesNotMatch(s, FORBIDDEN, s);
+});

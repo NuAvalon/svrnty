@@ -39,7 +39,11 @@ export const PIN_COPY = {
   notReplaced: "Not replaced. The old key stays pinned and the new one stays blocked. Tell the fleet the characters didn't match.",
   replaced: "Replaced. Sign requests from the new key will appear here. Pinning doesn't make a request safe: always read the card before you sign.",
   // PASSIVE notices (no buttons, no key shown): an arriving note can only ever produce these, never a ceremony
-  changedNotice: "The portal's compose key changed. Requests from it are blocked. To compare the new key, open Settings › Compose key.",
+  // Hypatia doc sha1 9a7d704e (lane:portal #1493): the app only knows a DIFFERENT key sent a request, not that the portal's key changed, so it does not say so.
+  // Fixed text: nothing from the sender, shown at most once per sender per 24 h (compose-memory.ts, Flint #1489 C3).
+  changedNotice: "A sign request arrived from a key that isn't your pinned compose key. It was blocked. If the portal told you its key changed, compare it in Settings › Compose key.",
+  // Header over the capped list of recently seen keys in Settings: never pre-selected, none of them checked.
+  candidatesHeader: 'Recently seen keys. None of these is checked: compare the characters with the noosphere page AND with what you were told separately before pinning one.',
   unreadableNotice: "Your compose pin couldn't be read, so sign requests are blocked. Re-pin it in Settings › Compose key.",
   unpinnedLog: "A sign request arrived from a key you haven't pinned. It wasn't shown.",
 } as const;

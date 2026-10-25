@@ -13,6 +13,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { isComposePinRecord, type ComposePinRecord, type PinState } from '../compose/compose-pin';
+import { emptyMemory, isComposeMemory, type ComposeMemory } from '../compose/compose-memory';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -611,6 +612,35 @@ export async function setComposePin(ownerFingerprint: string, rec: ComposePinRec
   if (!isComposePinRecord(rec)) throw new Error('Refusing to store a malformed compose pin');
   const payload = await encryptContactRecord(_sessionKey, COMPOSE_PIN_RECORD_ID, ownerFingerprint, rec);
   await txPut('settings', { key: composePinSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── Compose MEMORY (Flint #1489 C1/C3): resolved request nonces + the passive-notice limiter, so a reload or a second tab cannot raise a request again ──
+// Same shape as the pin above: the 'settings' store, AES-GCM under the session key, a reserved AAD id. UNLIKE the pin, a damaged or missing record is NOT a
+// security state: the worst a lost memory does is let a replay of a still-unexpired request (<= 5 min) raise one more card, so an unreadable record reads as
+// EMPTY and the next write replaces it. (A damaged PIN must block; a damaged memory must not.)
+const COMPOSE_MEMORY_RECORD_ID = 'compose:memory'; // reserved AAD id
+function composeMemorySettingKey(ownerFingerprint: string): string {
+  return `compose_memory:${ownerFingerprint}`;
+}
+
+export async function getComposeMemory(ownerFingerprint: string): Promise<ComposeMemory> {
+  if (!_sessionKey) return emptyMemory();
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>('settings', composeMemorySettingKey(ownerFingerprint));
+    if (!row || !row.value) return emptyMemory();
+    const rec = await decryptContactRecord<unknown>(_sessionKey, COMPOSE_MEMORY_RECORD_ID, ownerFingerprint, row.value);
+    return isComposeMemory(rec) ? rec : emptyMemory();
+  } catch {
+    return emptyMemory();
+  }
+}
+
+/** Throws if locked (never writes plaintext) or if `mem` is not a well-formed memory. */
+export async function setComposeMemory(ownerFingerprint: string, mem: ComposeMemory): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the compose memory unencrypted (fail-closed)');
+  if (!isComposeMemory(mem)) throw new Error('Refusing to store a malformed compose memory');
+  const payload = await encryptContactRecord(_sessionKey, COMPOSE_MEMORY_RECORD_ID, ownerFingerprint, mem);
+  await txPut('settings', { key: composeMemorySettingKey(ownerFingerprint), value: payload });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
