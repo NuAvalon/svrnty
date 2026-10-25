@@ -14,7 +14,7 @@
 // Secrets live in ~/.svrnty-agent/ — outside the repo, never committed.
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
-import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
@@ -40,6 +40,7 @@ import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPack
 import { strip0x40 } from '../src/lib/identity/raw-sign';
 import { fingerprintMatchesKey } from '../src/lib/identity/fingerprint';
 import { runJoin, parseJoinFlags } from '../src/lib/headless/join-grow-link';
+import { backupStoreBeforeJoin } from '../src/lib/headless/join-backup';
 import { base64ToUint8, uint8ToBase64 } from '../src/lib/crypto/pq';
 import * as openpgp from 'openpgp';
 
@@ -316,11 +317,7 @@ async function main() {
     // --expect-fp is the fingerprint the person read out of band; the link alone proves nothing about who minted it. The petname is ours, never the card's.
     const myId = artifact.public.card.identity;
     const out = await runJoin(parseJoinFlags(rest), {
-      backup: () => {
-        const bak = `${STORE}.bak-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
-        copyFileSync(STORE, bak);
-        chmodSync(bak, 0o600);
-      },
+      backup: () => { backupStoreBeforeJoin(STORE); }, // J5: dated 0600 copy; skips ONLY when lstat says ENOENT, refuses a symlink or any other error (join-backup.ts)
       resolve: (code, fragment) => resolveRelay(code, fragment),
       derives: (fp, publicKey, pq) => fingerprintMatchesKey(fp, publicKey, pq),
       deposit: (target) =>
