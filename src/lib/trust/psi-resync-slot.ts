@@ -2,9 +2,10 @@
 // #704 D-S51 option (A): distress rides the PSI resync (contract svrnty_704A_distress_rides_resync_v3.md).
 //
 // Every tick sends a constant number (K) of initiate-shaped PSI requests. Each one:
-//   - pads its blinded set to exactly N entries with random dummy points (a dummy never matches: it is a
-//     uniformly random u-coordinate, not H(fp) for any fp), so the set size is hidden from the satellite AND
-//     the responder;
+//   - pads its blinded set to exactly N entries with dummies made the SAME way as real entries (x25519 with the
+//     request's own PSI scalar over a uniform 32-byte input, which is distributed like H(fp)), so the set size is
+//     hidden from the satellite AND the responder. Raw random bytes would NOT do: real outputs always have the
+//     top bit clear and no torsion component, so ~half of random dummies are recognizable (Apollo F-4, #1282);
 //   - carries exactly ONE slot = a full K1 onion (sealForRoute: uniform 2048B frame → guardian DEVICE seal →
 //     satellite seal + route_id). A queued cry → a 'distress' onion; otherwise a 'cover' onion built the same
 //     way to a dummy device + random route, so the two are the same length and the PSI satellite (which
@@ -23,10 +24,12 @@
 // The reply bucket is S58.
 
 import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
+import { x25519 } from '@noble/curves/ed25519.js';
 import { sealForRoute } from '../sync/onion-transport.js';
 import { buildCoverPayload } from '../crypto/distress-mark.js';
 import { generateMailboxKeypair, toPublicKeys } from '../crypto/mailbox-keys.js';
 import type { MailboxEnvelopePackage, MailboxPublicKeys } from '../crypto/mailbox-envelope.js';
+import { deriveSubRouteId, currentSubRouteIndex } from '../crypto/route-ratchet.js';
 
 /** N: blinded entries per request (product number, Peter; proposed 64). */
 export const PSI_BLINDED_BUCKET_N = 64;
@@ -47,8 +50,10 @@ export interface CryInput {
   guardianDevice: MailboxPublicKeys;
   /** Guardian's satellite routing keys (the outer seal). */
   guardianSatellite: MailboxPublicKeys;
-  /** The K1 route_id for the CURRENT window (G3: called at seal time, so a cry spanning a window re-routes). */
-  routeIdAt: (nowMs: number) => string;
+  /** The guardian-direction ratchet key rk_W for the window containing nowMs (G3: called at seal time, so a cry
+   *  spanning a window re-routes). The slot goes to the per-TICK sub-route of that window (DW10), never the
+   *  per-window route_id, so a cry riding 3 ticks shows 3 different ids, like cover. */
+  routeKeyAt: (nowMs: number) => Uint8Array;
 }
 
 /**
@@ -61,9 +66,12 @@ export class ResyncSlotSource {
   constructor(
     /** Satellite keys used for the cover onion's outer seal: the same satellite a real cry goes to today (G2). */
     private readonly coverSatellite: MailboxPublicKeys,
+    /** Clock (injectable for tests). Sub-route index comes from wall-clock time so the guardian can derive it. */
+    private readonly now: () => number = Date.now,
   ) {}
 
-  /** Record a cry for the next scheduled ticks. A new cry replaces an unfinished one (same guardian dedup). */
+  /** Record a cry for the next scheduled ticks. A new cry REPLACES an unfinished one and rides its own full 3 ticks
+   *  (the guardian dedups by mark epoch). */
   enqueueCry(input: CryInput): void {
     this.cry = { input, ticksLeft: CRY_TICKS };
   }
@@ -77,7 +85,7 @@ export class ResyncSlotSource {
    * The ONE slot for the next request: the cry (re-sealed fresh) while it has ticks left, else a cover onion.
    * Both go through sealForRoute with a 2048B frame, 32-hex route and same-size keys → identical length.
    */
-  async nextSlot(nowMs: number = Date.now()): Promise<MailboxEnvelopePackage> {
+  async nextSlot(nowMs: number = this.now()): Promise<MailboxEnvelopePackage> {
     if (this.cry && this.cry.ticksLeft > 0) {
       const { input } = this.cry;
       this.cry.ticksLeft -= 1;
@@ -90,7 +98,7 @@ export class ResyncSlotSource {
         frameType: 'distress',
         recipientDevice: input.guardianDevice,
         satellite: input.guardianSatellite,
-        routeId: input.routeIdAt(nowMs),
+        routeId: deriveSubRouteId(input.routeKeyAt(nowMs), currentSubRouteIndex(nowMs)),
       });
     }
     return sealCoverSlot(this.coverSatellite);
@@ -108,9 +116,16 @@ export async function sealCoverSlot(satellite: MailboxPublicKeys): Promise<Mailb
   });
 }
 
-/** A dummy blinded entry: 32 random bytes as base64 (same shape as a real x25519 output). */
-function dummyBlinded(): string {
-  return Buffer.from(randomBytes(32)).toString('base64');
+/** A dummy blinded entry: x25519(sk, uniform 32 bytes), the same map real entries go through (H(fp) is a uniform
+ *  HKDF output), with the same request scalar. A degenerate (low-order) input is rejected by getSharedSecret → retry. */
+function dummyBlinded(sk: Uint8Array): string {
+  for (;;) {
+    try {
+      return Buffer.from(x25519.getSharedSecret(sk, randomBytes(32))).toString('base64');
+    } catch {
+      // ~2^-250: a low-order input; draw again.
+    }
+  }
 }
 
 /**
@@ -122,12 +137,14 @@ export function padBlindedSet(
   blinded: string[],
   fpOrder: string[],
   shuffle: <T>(a: T[]) => T[],
+  psiPrivateKeyB64: string,
 ): { blinded: string[]; fpOrder: string[] } {
   if (blinded.length > PSI_BLINDED_BUCKET_N) {
     throw new Error(`padBlindedSet: ${blinded.length} entries exceed the bucket N=${PSI_BLINDED_BUCKET_N}`);
   }
+  const sk = Buffer.from(psiPrivateKeyB64, 'base64');
   const pairs = blinded.map((b, i) => ({ b, fp: fpOrder[i] ?? '' }));
-  while (pairs.length < PSI_BLINDED_BUCKET_N) pairs.push({ b: dummyBlinded(), fp: '' });
+  while (pairs.length < PSI_BLINDED_BUCKET_N) pairs.push({ b: dummyBlinded(sk), fp: '' });
   const shuffled = shuffle(pairs);
   return { blinded: shuffled.map(p => p.b), fpOrder: shuffled.map(p => p.fp) };
 }

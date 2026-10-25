@@ -616,7 +616,7 @@ async function sendResyncRequest(
     } else {
       const keypair = generatePSIKeypair();
       const b = blindFingerprintsWithOrder(fps, keypair.privateKey);
-      real = { keypair, ...padBlindedSet(b.blinded, b.fpOrder, shuffle) };
+      real = { keypair, ...padBlindedSet(b.blinded, b.fpOrder, shuffle, keypair.privateKey) };
     }
   }
 
@@ -639,7 +639,8 @@ async function sendResyncRequest(
 
   const coverPeer = bytesToHex(randomBytes(Math.max(1, Math.ceil(options.myFingerprint.length / 2))));
   const res = await psiInitiate(
-    options.satelliteUrl, options.myFingerprint, coverPeer, padBlindedSet([], [], shuffle).blinded,
+    options.satelliteUrl, options.myFingerprint, coverPeer,
+    padBlindedSet([], [], shuffle, generatePSIKeypair().privateKey).blinded,
     options.signFn, layer, options.pqWrap, { slot, cover: true }
   );
   const errs = [gateError, 'error' in res ? res.error : undefined].filter(Boolean);
