@@ -1499,7 +1499,7 @@ export function TrustMap({
             <FirstVisitHint id="galaxy-empty" label="How this grows">
               <p style={{ margin: 0 }}>
                 In person they can become a star you Know. Remote, they wait at the Gate.
-                Trust is mutual, after you make sure it&apos;s them.
+                Make sure it&apos;s them before you trust. Mutual confirmation is coming.
               </p>
               {onLoadSample ? (
                 <p style={{ margin: '8px 0 0' }}>

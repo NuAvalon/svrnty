@@ -129,8 +129,8 @@ export function buildKnowOverlayDeps(
       // PENDING trust is NEVER revealed to anyone — especially not the person trusted (else they can
       // coerce). So the reveal gates on `reciprocal` (the MUTUAL bond), NEVER one-way `trusted`. A peer
       // is included ONLY if:
-      //   • e.mutual?.reciprocal === true   — the bond is MUTUAL (own-trust ∧ verified inbound affirm;
-      //       set ONLY by the crypto-verified trust-affirmation, acceptTrustAffirm — Flint's floor (b)),
+      //   • e.mutual?.reciprocal === true   — the bond is MUTUAL. reciprocal has NO writer in this build
+      //       (#593 removed the affirm wire), so nothing passes this test and the mutual reveal stays dark,
       //   • !isDecayed(e)                   — the bond is non-decayed,
       //   • e.trust_visibility === true     — owner opted this bond into trust-viz (party-controlled),
       //   • e.peer_discoverable_as_trusted === true — the peer's OWN viz-consent (party-controlled), AND
@@ -138,8 +138,8 @@ export function buildKnowOverlayDeps(
       // (The OTHER party applies the same filter → a bond lands in BOTH input sets only when mutual AND
       // both parties opted it visible → the intersection reveals ONLY mutual, party-consented bonds.)
       // Every condition is TRUTHY-exclusion = fail-closed: absent/false EXCLUDES. Empty ⇒ reveals nothing.
-      // COUPLING: `reciprocal` is populated by the mutual-emit-wire (acceptTrustAffirm) → until that wire
-      // is live this stays ~empty = correctly DARK. `blocked` already dropped at ownerEdges.
+      // COUPLING: `reciprocal` has no writer since #593 → this stays empty = correctly DARK. A future writer
+      // must be a reviewed affirmation wire (Flint's floor (b)), never a local shortcut. `blocked` already dropped at ownerEdges.
       return edges
         .filter(
           (e) =>
