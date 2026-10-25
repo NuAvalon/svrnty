@@ -275,6 +275,8 @@ async function main() {
       pq_kem_public_key: card.pq_kem_public_key,
     };
     store.upsertContact(contact);
+    // Defensive and UNTESTABLE by construction: the store's writer lock throws first on a failed write, so no test can reach "written but absent".
+    // Kept on purpose (Archie #1366); this is not a proven guarantee.
     const back = store.getContactByFingerprint(contact.fingerprint);
     if (!back || back.public_key !== contact.public_key) throw new Error(`admit failed: ${contact.fingerprint.slice(0, 16)} is not in the store after the write. Nothing is trusted.`);
     console.log(`admitted ${contact.fingerprint}`);
