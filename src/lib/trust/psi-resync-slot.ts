@@ -29,7 +29,7 @@ import { sealForRoute } from '../sync/onion-transport.js';
 import { buildCoverPayload } from '../crypto/distress-mark.js';
 import { generateMailboxKeypair, toPublicKeys } from '../crypto/mailbox-keys.js';
 import type { MailboxEnvelopePackage, MailboxPublicKeys } from '../crypto/mailbox-envelope.js';
-import { deriveSubRouteId, currentSubRouteIndex } from '../crypto/route-ratchet.js';
+import { deriveSubRouteId, currentSubRouteIndex, currentWindowIndex, SUB_ROUTES_PER_WINDOW } from '../crypto/route-ratchet.js';
 
 /** N: blinded entries per request (product number, Peter; proposed 64). */
 export const PSI_BLINDED_BUCKET_N = 64;
@@ -61,7 +61,7 @@ export interface CryInput {
  * enqueueCry never sends (R6/D-6). nextSlot is called exactly once per request.
  */
 export class ResyncSlotSource {
-  private cry: { input: CryInput; ticksLeft: number } | null = null;
+  private cry: { input: CryInput; ticksLeft: number; used: Set<string> } | null = null;
 
   constructor(
     /** Satellite keys used for the cover onion's outer seal: the same satellite a real cry goes to today (G2). */
@@ -73,7 +73,27 @@ export class ResyncSlotSource {
   /** Record a cry for the next scheduled ticks. A new cry REPLACES an unfinished one and rides its own full 3 ticks
    *  (the guardian dedups by mark epoch). */
   enqueueCry(input: CryInput): void {
-    this.cry = { input, ticksLeft: CRY_TICKS };
+    this.cry = { input, ticksLeft: CRY_TICKS, used: new Set() };
+  }
+
+  /**
+   * F-6 (DW10): the sub-route index must be UNIQUE PER CRY, not just the clock bucket of the seal time. Seals happen
+   * after the tick's network pass, so two ticks can land < SUB_ROUTE_SECONDS apart in one bucket; reusing the bucket
+   * index would repeat a route (the F-5 tell). Start from the clock's index and take the next one this cry hasn't
+   * used in this window. The guardian polls all indices of the window (+ the previous), so any index is received.
+   */
+  private claimSubRoute(nowMs: number): number {
+    const cry = this.cry!;
+    const w = currentWindowIndex(nowMs);
+    const start = currentSubRouteIndex(nowMs);
+    for (let k = 0; k < SUB_ROUTES_PER_WINDOW; k++) {
+      const i = (start + k) % SUB_ROUTES_PER_WINDOW;
+      if (!cry.used.has(`${w}:${i}`)) {
+        cry.used.add(`${w}:${i}`);
+        return i;
+      }
+    }
+    throw new Error('psi-resync-slot: no unused sub-route left in this window'); // unreachable: CRY_TICKS < 12
   }
 
   /** True while a cry still has ticks to ride. Local state only; never on the wire. */
@@ -88,6 +108,7 @@ export class ResyncSlotSource {
   async nextSlot(nowMs: number = this.now()): Promise<MailboxEnvelopePackage> {
     if (this.cry && this.cry.ticksLeft > 0) {
       const { input } = this.cry;
+      const routeId = deriveSubRouteId(input.routeKeyAt(nowMs), this.claimSubRoute(nowMs)); // before any state change
       this.cry.ticksLeft -= 1;
       // Equal work: the cover path mints a throwaway device keypair (ML-KEM keygen). Do the same here and
       // discard it, so a distress slot does not come out measurably faster than a cover slot.
@@ -98,7 +119,7 @@ export class ResyncSlotSource {
         frameType: 'distress',
         recipientDevice: input.guardianDevice,
         satellite: input.guardianSatellite,
-        routeId: deriveSubRouteId(input.routeKeyAt(nowMs), currentSubRouteIndex(nowMs)),
+        routeId,
       });
     }
     return sealCoverSlot(this.coverSatellite);

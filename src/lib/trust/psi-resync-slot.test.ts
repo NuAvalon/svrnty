@@ -349,3 +349,61 @@ test('G-3 / DW12: a new cry replaces an unfinished one and rides its own 3 ticks
   }
   assert.deepEqual(seen, ['cry-B', 'cry-B', 'cry-B', null]);
 });
+
+// ── v6: F-6 / DW10 (unique per cry), DW13 (boundary poll), DW14 (known-answer vectors) ─────────────────────────────
+import { deriveSubRouteId, deriveRouteId, currentSubRouteIndex } from '@/lib/crypto/route-ratchet';
+
+async function cryRoutesAt(sealTimesMs: number[]): Promise<string[]> {
+  const b = book(2);
+  let t = 0;
+  const slots = new ResyncSlotSource(toPublicKeys(sat), () => sealTimesMs[t]);
+  queueCry(slots);
+  const routes: string[] = [];
+  for (t = 0; t < sealTimesMs.length; t++) {
+    posts = [];
+    await syncMutualTrust(b.deps, options(slots), 'trust');
+    routes.push(await satelliteRoute(posts[0].body.slot));
+  }
+  return routes;
+}
+
+test('F-6 / DW10: seals 299 s apart in ONE 5-min bucket still get distinct routes', async () => {
+  const base = Date.UTC(2026, 9, 25, 9, 0, 0); // bucket 0 of window
+  const routes = await cryRoutesAt([base, base + 299_000]);
+  assert.equal(currentSubRouteIndex(base), currentSubRouteIndex(base + 299_000), 'precondition: same bucket');
+  assert.equal(new Set(routes).size, 2, `repeated route: ${routes}`);
+});
+
+test('F-6 / DW10: 3 seals inside one bucket get 3 distinct routes, all in the guardian poll set', async () => {
+  const base = Date.UTC(2026, 9, 25, 9, 10, 0);
+  const times = [base, base + 1_000, base + 2_000];
+  const routes = await cryRoutesAt(times);
+  assert.equal(new Set(routes).size, 3, `repeated route: ${routes}`);
+  const w = currentWindowIndex(base);
+  for (const r of routes) assert.ok(subRoutePollSet(rkFor(w), rkFor(w - 1)).includes(r));
+});
+
+test('F-6 / DW13: a cry across a window boundary: distinct routes, each polled (seal before, poll after)', async () => {
+  const end = Date.UTC(2026, 9, 25, 9, 59, 59);
+  const times = [end, end + 1_000, end + 300_000]; // :59:59 of W, :00:00 and :04:59 of W+1
+  const routes = await cryRoutesAt(times);
+  assert.equal(new Set(routes).size, 3);
+  // DW13: the route sealed at :59:59 of W is found by a guardian polling just AFTER the boundary (current = W+1).
+  const wNext = currentWindowIndex(end + 1_000);
+  assert.equal(wNext, currentWindowIndex(end) + 1, 'precondition: crossed a window');
+  assert.ok(subRoutePollSet(rkFor(wNext), rkFor(wNext - 1)).includes(routes[0]), 'previous-window route is polled');
+  for (const r of routes.slice(1)) assert.ok(subRoutePollSet(rkFor(wNext), rkFor(wNext - 1)).includes(r));
+});
+
+test('DW14: known-answer vectors for the sub-route label, index and the untouched route-id-v1', () => {
+  // Computed independently with RFC 5869 HKDF-SHA256 in Python (salt = 32 zero bytes, info = label || u8(i)).
+  const rk = Uint8Array.from({ length: 32 }, (_, i) => i);
+  assert.equal(deriveSubRouteId(rk, 0), 'a2c2a05c95c7ce6b1f29ccf3da9d7925');
+  assert.equal(deriveSubRouteId(rk, 1), 'daf0c479258b1e4c07ec7e789955dc61');
+  assert.equal(deriveSubRouteId(rk, 11), '2a74e04d77b978dc485153e39a6979e7');
+  assert.equal(deriveRouteId(rk), '19551f05041fce7f25e99cbb97ee71ab', 'route-id-v1 unchanged');
+  assert.equal(currentSubRouteIndex(1792922399000), 11); // 2026-10-25T09:59:59Z
+  assert.equal(currentSubRouteIndex(1792922699000), 0); //  2026-10-25T10:04:59Z
+  assert.equal(currentSubRouteIndex(1792922700000), 1); //  2026-10-25T10:05:00Z
+  assert.throws(() => deriveSubRouteId(rk, 12));
+});
