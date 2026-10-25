@@ -469,7 +469,13 @@ async function main() {
     // human `poll` command uses (pt ?? n.body) — a non-tr body or a failed decrypt is dropped, so no
     // raw wire or unauthenticated content ever reaches the quarantine table.
     const journalPath = `${DIR}/decrypt-journal.jsonl`;
-    await pollOnce(owner, store);
+    const consumed = await pollOnce(owner, store);
+    // "journaled 0" must not hide WHY (Athena #593, Archie #595): a poll the relay REFUSED looks identical to an
+    // empty mailbox in the journal summary. consume reports the refusal as `rejected` (the HTTP status);
+    // say it on stderr here and carry it in the stdout JSON below. Exit code is unchanged (0) on purpose.
+    if (consumed.rejected !== undefined) {
+      console.error(`POLL REFUSED by the relay: HTTP ${consumed.rejected} (a refused poll is not an empty mailbox)`);
+    }
     // poll-json-watermark-001: the journal IS the durable consumed-set —
     // a journaled note_id already had its one-shot decrypt spent, so
     // trOpen can only return null while re-paying readKey + importState +
@@ -611,7 +617,11 @@ async function main() {
       journaled++;
     }
     writeFileAtomic(attemptsPath, JSON.stringify(attempts));
-    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath }));
+    // polled / rejected / dropped come straight from consume's summary (see ConsumeSummary). `dropped` is an
+    // AGGREGATE for THIS poll with no sender in it, and it has two kinds: a terminal drop (undecryptable,
+    // bad signature, not-in-book) is counted once and acked away, but a RETRYABLE envelope stays in the mailbox
+    // and is counted again on every poll until it resolves. So a steady dropped>0 can be one stuck envelope.
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped }));
     return;
   }
 
