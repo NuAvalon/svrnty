@@ -10,13 +10,16 @@
 // by Peter after comparing its first 16 hex with the portal page), NEVER taken from the note, AND the envelope's sender-auth must have verified against that
 // pinned card (`senderVerified`). The login-code (passcode) sender is a different, throwaway, unverified identity: it must NEVER be pinned here. An unpinned
 // app accepts nothing: there is no trust-on-first-use. (This code does not know which fingerprint is pinned; the setting's label and the screens carry that.)
-/** PROPOSED wire type string (Archie #1032). */
+/** Wire type string. CONFIRMED by Athena (lane:portal #1163): top level is exactly {"type","request"}. */
 export const COMPOSE_NOTE_TYPE = 'svrnty-compose-request-v1';
 /**
- * Parse-time ceiling on the plaintext, in UTF-16 code units. A DoS bound only: the real size control is the validator's cost cap (2900) plus the fixed
- * fields (~550 chars of JSON). The portal's stated number is still pending (Archie #1032: "must be a stated number, not assumed"), so this is generous.
+ * Parse-time ceiling on the plaintext, in UTF-16 code units. = the portal's STATED number (Athena, lane:portal #1163): 4096. Flint: set it equal to hers,
+ * never above it. Measured, not assumed (compose-note-cap.test.ts): the largest LEGAL task note (every fixed field at its max, title+body at the
+ * 2900 cost cap) is 3351 units compact, 3429 indent-2, so 4096 leaves ~22% headroom. The portal sends COMPACT JSON. This is a DoS/size bound and runs
+ * BEFORE any parse: a note that spends its units on \u-escapes (6 units for one ASCII char) is refused 'too-long', which is the safe failure.
+ * If any field max in compose-request.ts changes, the test fails: re-measure before raising this.
  */
-export const COMPOSE_NOTE_MAX_CHARS = 8192;
+export const COMPOSE_NOTE_MAX_CHARS = 4096;
 
 export type InboundRefusalCode =
   | 'no-pinned-sender'
