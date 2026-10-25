@@ -61,6 +61,12 @@ export type CardModel = SignCardModel | RefusedCardModel;
 export interface CardOptions {
   /** True once the Weft's side accepts signed posts. Default false: Weft requests are view-only. */
   weftAccepted?: boolean;
+  /**
+   * True ONLY once the PORTAL's own test shows it derives the same four words from the object it serializes into the note (Flint lane:portal #1474 (3),
+   * Hypatia: the card stays no-Approve until the vectors are pinned and green on both sides). Default false: with it off the words are treated as
+   * unavailable, so there is NO Approve even when the app could derive them. The host reads composeWordsConfirmed().
+   */
+  wordsConfirmed?: boolean;
 }
 
 const WORD = /^[^\s]+$/u;
@@ -104,7 +110,7 @@ export function buildCardModel(item: QueueItem, deriveWords?: DeriveWords, opts:
   const o = request.object;
   let words: readonly string[] | null = null;
   try {
-    const w = deriveWords ? deriveWords(o) : undefined;
+    const w = deriveWords && opts.wordsConfirmed === true ? deriveWords(o) : undefined;
     words = validWords(w) ? w : null;
   } catch {
     words = null; // a throwing derivation fails closed like a missing one

@@ -20,7 +20,7 @@ function itemOf(raw: unknown): QueueItem {
   return it;
 }
 // `null` means "no derivation function" (a default parameter would swallow `undefined` and silently substitute WORDS).
-const sign = (raw: unknown, words: DeriveWords | null = WORDS, opts = {}) => buildCardModel(itemOf(raw), words ?? undefined, opts) as SignCardModel;
+const sign = (raw: unknown, words: DeriveWords | null = WORDS, opts: Record<string, unknown> = {}) => buildCardModel(itemOf(raw), words ?? undefined, { wordsConfirmed: true, ...opts }) as SignCardModel;
 const allStrings = (m: object): string[] => Object.values(m).flatMap((v) => (typeof v === 'string' ? [v] : Array.isArray(v) ? v.flatMap((x) => (typeof x === 'object' && x ? Object.values(x).filter((y) => typeof y === 'string') : [])) : []));
 
 test('POST card: every element is Hypatia\'s string; location is `<fleet> · <thread>`; the body is the request body EXACTLY; Approve exists', () => {
@@ -146,4 +146,19 @@ test('the card never uses the words doc §5 forbids (sent, delivered, secure, ve
     for (const s of allStrings(m)) assert.doesNotMatch(s, FORBIDDEN, s);
   }
   assert.match('Delivered', /\b(sent|delivered)\b/i, 'control: the pattern is not dead');
+});
+
+test('PRODUCTION SWITCH: wordsConfirmed defaults to OFF, so even when the words derive perfectly there is NO Approve (the portal has not confirmed it shows the same words)', () => {
+  const item = itemOf(post());
+  for (const opts of [undefined, {}, { wordsConfirmed: false }, { wordsConfirmed: undefined }]) {
+    const m = buildCardModel(item, WORDS, opts) as SignCardModel;
+    assert.equal(m.approve, null, JSON.stringify(opts));
+    assert.equal(m.wordsLine, null);
+    assert.equal(m.noWordsNotice, "Can't show the check words, so this request can't be signed.");
+    assert.equal(m.decline, "Don't sign");
+  }
+  const on = buildCardModel(item, WORDS, { wordsConfirmed: true }) as SignCardModel;
+  assert.equal(on.approve, 'Sign and post as me');
+  assert.equal(on.wordsLine, 'Check these words match the portal: alpha bravo charlie delta');
+  assert.equal((buildCardModel(item, WORDS, { wordsConfirmed: 'yes' as unknown as boolean }) as SignCardModel).approve, null, 'only the boolean true turns it on');
 });

@@ -109,9 +109,11 @@ test('the words are always 4 distinct-shape list words (lowercase a-z, 3-8 lette
 test('WIRED INTO THE CARD: the real derivation gives the card its words line and Approve; a corrupted derivation (empty list) leaves NO Approve', () => {
   const { state } = enqueue(emptyQueue(), post(), new Date('2026-10-25T07:20:00.000Z'));
   const item = current(state, new Date('2026-10-25T07:20:00.000Z'))!;
-  const ok = buildCardModel(item, deriveComposeWords) as { wordsLine: string | null; approve: string | null };
+  const ok = buildCardModel(item, deriveComposeWords, { wordsConfirmed: true }) as { wordsLine: string | null; approve: string | null };
   assert.equal(ok.wordsLine, 'Check these words match the portal: ' + VEC['V1 plain post'].words.join(' '));
   assert.equal(ok.approve, 'Sign and post as me');
-  const closed = buildCardModel(item, () => []) as { approve: string | null };
+  const unconfirmed = buildCardModel(item, deriveComposeWords) as { approve: string | null };
+  assert.equal(unconfirmed.approve, null, 'the production switch is off by default: perfect words, still no Approve');
+  const closed = buildCardModel(item, () => [], { wordsConfirmed: true }) as { approve: string | null };
   assert.equal(closed.approve, null);
 });
