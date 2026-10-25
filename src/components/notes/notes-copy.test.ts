@@ -45,7 +45,11 @@ describe('notes inbox copy — claim-honesty', () => {
     const blob = JSON.stringify(NOTES_COPY);
     assert.doesNotMatch(blob, /Encrypted messages/);
     assert.doesNotMatch(blob, /How notes travel/);
-    assert.doesNotMatch(blob, /end-to-end encrypted/i);
+    // "end-to-end encrypted" stays off this glass EXCEPT in the one ruled D2 line (Hypatia #776, KB#93726), which renders only for a
+    // peer we can actually send to (showRatchetOffLine requires a verified kem key). Everywhere else the ban holds.
+    const { ratchetOff, ...rest } = NOTES_COPY;
+    assert.doesNotMatch(JSON.stringify(rest), /end-to-end encrypted/i);
+    assert.match(ratchetOff, /Messages are still end-to-end encrypted\.$/);
   });
 
   it('inbox source never renders Delivered/Read/Expired as a live status', () => {

@@ -102,6 +102,20 @@ export async function ratchetCapabilityObserved(peerFingerprint: string, io: Rat
   return cur.state === 'ok' && cur.snapshot.recvCk !== null;
 }
 
+/**
+ * For the UI (D2): has this peer's app sent us a ratchet frame we opened? READ-ONLY (no lock, no write, no advance), bound to the owner
+ * the caller acts for. 'unknown' when we cannot tell (store locked or open for someone else, or an unreadable row): the UI then says
+ * NOTHING about the ratchet rather than guess either way.
+ */
+export type PeerRatchetStatus = 'observed' | 'not-observed' | 'unknown';
+export async function peerRatchetStatus(ownerFingerprint: string, peerFingerprint: string, io?: RatchetIO): Promise<PeerRatchetStatus> {
+  try {
+    return (await ratchetCapabilityObserved(peerFingerprint, io ?? ownerBoundRatchetIO(ownerFingerprint))) ? 'observed' : 'not-observed';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /** Seal plaintext for one peer. Persists the session (CAS on the version it read). The CALLER holds the per-peer lock (R5); see chooseWireBody. Null if the ratchet cannot start. */
 export async function sealDirectNote(
   peerFingerprint: string,

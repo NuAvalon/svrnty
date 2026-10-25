@@ -25,7 +25,8 @@ import {
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { RECEIPT_WIRE_TYPE, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
-import { sealNoteTo, noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { sealNoteClassicalFixture } from '@/lib/messaging/seal-classical-fixture';
 
 // The owner (Alice, the ORIGINAL SENDER polling for receipts) needs REAL keys — consumeInboundContactUpdates
 // signs the poll/ack requests with them.
@@ -235,7 +236,7 @@ test('real crypto: receipt/note decryptors round-trip their own type and reject 
   const receipt = fakeReceiptWire(OWNER.fingerprint);
   const note = fakeNoteWire(OWNER.fingerprint);
   const receiptBlob = await sealReceiptTo(receipt, OWNER.publicKeyArmored);
-  const noteBlob = await sealNoteTo(note, OWNER.publicKeyArmored);
+  const noteBlob = await sealNoteClassicalFixture(note, OWNER.publicKeyArmored);
 
   const decReceipt = receiptOpenpgpDecryptor(OWNER.privateKeyArmored, OWNER.passphrase);
   const decNote = noteOpenpgpDecryptor(OWNER.privateKeyArmored, OWNER.passphrase);

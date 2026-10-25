@@ -27,12 +27,14 @@ import {
   type NoteRecord,
   type NoteThread,
 } from '@/lib/messaging';
+import { peerRatchetStatus, type PeerRatchetStatus } from '@/lib/messaging';
+import { peerRatchetFromCard } from '@/lib/messaging/ratchet-keys';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
-import { NOTES_BOUNDS, NOTES_COPY, notSentMessage } from './notes-copy';
+import { NOTES_BOUNDS, NOTES_COPY, notSentMessage, ratchetOffMessage } from './notes-copy';
 import {
   displayNameFor,
   filterFieldPeople,
@@ -45,7 +47,7 @@ import {
 } from './notes-field';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
 import { sendNoteFromInbox } from './notes-send';
-import { outboundStatus, statusLabel, peerSendsReceipts, showAwaitingHint, type NoteBubbleStatus } from './notes-status';
+import { outboundStatus, statusLabel, peerSendsReceipts, showAwaitingHint, showRatchetOffLine, type NoteBubbleStatus } from './notes-status';
 import { boundDisplayText, formatFingerprintShort } from './notes-text';
 
 type Props = {
@@ -299,6 +301,34 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
   );
 
   const peerName = displayNameFor(selectedFp, names, focusName);
+
+  // D2: is the triple ratchet running with this peer? READ-ONLY look at the session (no lock, no advance). Re-read when the thread
+  // changes (a frame from them arrives as a note), so the line disappears once their app has sent us one. Unknown shows nothing.
+  const [ratchetStatus, setRatchetStatus] = useState<PeerRatchetStatus>('unknown');
+  const [peerHasRatchetKeys, setPeerHasRatchetKeys] = useState(false);
+  const selPub = selected?.publicKeyArmored;
+  const selKem = selected?.pqKemPublicKey;
+  const selSig = selected?.pqSigPublicKey;
+  useEffect(() => {
+    if (!storeReady || !fp || !selectedFp || !selPub) {
+      setRatchetStatus('unknown');
+      setPeerHasRatchetKeys(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const [status, peer] = await Promise.all([
+        peerRatchetStatus(fp, selectedFp),
+        peerRatchetFromCard({ publicKeyArmored: selPub, pqKemPublicKey: selKem, pqSigPublicKey: selSig }),
+      ]);
+      if (cancelled) return;
+      setRatchetStatus(status);
+      setPeerHasRatchetKeys(peer !== null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [storeReady, fp, selectedFp, selPub, selKem, selSig, notes.length]);
   const visiblePeople = useMemo(
     () => filterFieldPeople(sortFieldPeople(people), query),
     [people, query],
@@ -579,6 +609,13 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
               </p>
             )}
           </div>
+
+          {selected &&
+          showRatchetOffLine({ canSend: !!selected.pqKemPublicKey, hasRatchetKeys: peerHasRatchetKeys, status: ratchetStatus }) ? (
+            <p data-testid="notes-ratchet-off" style={{ margin: '6px 0 0', fontSize: 12, color: E.dim }}>
+              {ratchetOffMessage(peerName)}
+            </p>
+          ) : null}
 
           <div
             ref={timelineRef}

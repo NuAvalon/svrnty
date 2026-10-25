@@ -47,6 +47,20 @@ export function showAwaitingHint(a: {
   return a.outbound && a.status === 'sent-unconfirmed' && a.hasReceiptNonce && a.peerSendsReceipts;
 }
 
+/**
+ * D2: say "Triple ratchet is off for <name>" only when it is TRUE and useful: we can send to them (a verified kem key, else the send
+ * is "not sent" and the line would be beside the point), their card carries ratchet keys, and we have NOT opened a ratchet frame from
+ * them. An observed peer (their app sent us a frame, so the session continues) gets nothing extra; an unknown state gets nothing
+ * (we do not guess). There is no "on" line: nothing in this app starts a ratchet, so we never announce one.
+ */
+export function showRatchetOffLine(a: {
+  canSend: boolean;
+  hasRatchetKeys: boolean;
+  status: 'observed' | 'not-observed' | 'unknown';
+}): boolean {
+  return a.canSend && a.hasRatchetKeys && a.status === 'not-observed';
+}
+
 // claim-sweep:ok guard regex that blocks this claim (TG-1 annotation_ok, Hypatia v1.1.1)
 const FORBIDDEN_LIVE_STATUS = /\b(Delivered|Read|Expired)\b/;
 

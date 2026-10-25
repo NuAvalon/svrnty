@@ -39,6 +39,9 @@ export const NOTES_COPY = {
   notSentNeedsUpgrade:
     'Not sent. Saved on this device. {name} needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.',
   contactNotSendable: 'This contact cannot receive a sealed message.',
+  // D2 (Hypatia #776, KB#93726). Shown ONLY for a sendable contact with ratchet keys whose session has NOT received a frame from them (see
+  // showRatchetOffLine). It never says the ratchet is on / enabled / forward secrecy: after commit 4a nothing in this app STARTS a ratchet.
+  ratchetOff: "Triple ratchet is off for {name}: this app doesn't start one yet. Messages are still end-to-end encrypted.",
   fieldPeople: 'Conversations',
   fieldBack: 'Chats',
   fieldPick: 'Pick someone to open a conversation.',
@@ -55,6 +58,10 @@ export function notSentMessage(contact: { name: string; pqKemPublicKey?: string 
   return contact.pqKemPublicKey
     ? NOTES_COPY.notSent
     : NOTES_COPY.notSentNeedsUpgrade.replace('{name}', contact.name);
+}
+
+export function ratchetOffMessage(name: string): string {
+  return NOTES_COPY.ratchetOff.replace('{name}', name);
 }
 
 export const NOTES_BOUNDS = {

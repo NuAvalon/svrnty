@@ -19,7 +19,7 @@
 // seed path, never a drifting copy.
 
 import type { APIRequestContext } from '@playwright/test';
-import { sealNoteTo } from '../../src/lib/messaging/seal';
+import { sealNoteClassicalFixture } from '../../src/lib/messaging/seal-classical-fixture';
 import { signNoteWire } from '../../src/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '../../src/lib/messaging/domains';
 import type { NoteWireV0, ParticipantKind } from '../../src/lib/messaging/types';
@@ -79,7 +79,7 @@ export async function buildSealedNote(
     sender.kemPublicKeyB64, // §5 canonical-fp binding (both present ⇒ canonical path)
     sender.sigPublicKeyB64,
   );
-  const blob = await sealNoteTo(signed, recipientPublicKeyArmored);
+  const blob = await sealNoteClassicalFixture(signed, recipientPublicKeyArmored);
   return { blob, note_id, thread_id };
 }
 
