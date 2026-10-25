@@ -206,3 +206,8 @@ test('isolated refusals (each checked alone): same fp with two cards, a human ca
   for (const k of [new Uint8Array(0), undefined as unknown as Uint8Array])
     await assert.rejects(signAgentCertSet(base, human.privateKey, human.passphrase, k), /PQ signing key is required/);
 });
+
+test('hygiene (Apollo A18): one card hash listed under two different fps is refused', () => {
+  const base = setOf(1, [[agA, cardA, 'collaborate'], [agB, cardB, 'collaborate']]);
+  assert.equal(checkAgentCertSetShape({ ...base, agents: [base.agents[0], { ...base.agents[1], agent_card_sha256: base.agents[0].agent_card_sha256 }] }), 'shape');
+});
