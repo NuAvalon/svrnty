@@ -504,7 +504,7 @@ export function NotesInbox({ identity }: Props) {
                   <button type="button" data-testid="notes-restore-btn" onClick={() => runManage(
                     restoreFromBin([...selectedIds], notesStoreOwner() ?? '')
                   ).then(() => { setSelectedIds(new Set()); void listBin().then(setBinRows); })} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
-                  <button type="button" data-testid="notes-delete-perm-btn" onClick={() => { setArmedOwner(notesStoreOwner()); setConfirmAction('perm'); }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
+                  <button type="button" data-testid="notes-delete-perm-btn" onClick={() => { setArmedOwner(notesStoreOwner()); setConfirmAction('perm'); }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently on this device</button>
                 </>
               )) : null}
               {view === 'bin' && binRows.length > 0 ? (
