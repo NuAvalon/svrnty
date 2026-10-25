@@ -115,7 +115,7 @@ test('settingsView: the state line is verbatim §7 for each state, and the actio
   assert.deepEqual(settingsView(ABSENT, [FP_B]), { status: 'not-pinned', line: 'Not pinned', actions: ['pin'], candidate: FP_B });
   assert.deepEqual(settingsView(PINNED_A, []), { status: 'pinned', line: 'Pinned: 0123 4567 89ab cdef', actions: [], candidate: null });
   assert.deepEqual(settingsView(PINNED_A, [FP_A]), settingsView(PINNED_A, []), 'a candidate equal to the pin is not a change');
-  assert.deepEqual(settingsView(PINNED_A, [FP_B]), { status: 'blocked-changed', line: 'Blocked: the key changed', actions: ['compare-new', 'keep-blocked'], candidate: FP_B });
+  assert.deepEqual(settingsView(PINNED_A, [FP_B]), { status: 'blocked-changed', line: 'Blocked: a different key sent a request', actions: ['compare-new', 'keep-blocked'], candidate: FP_B });
   assert.deepEqual(settingsView(UNREADABLE, []), { status: 'blocked-unreadable', line: "Blocked: your pin couldn't be read", actions: [], candidate: null });
   assert.deepEqual(settingsView(UNREADABLE, [FP_B]), { status: 'blocked-unreadable', line: "Blocked: your pin couldn't be read", actions: ['re-pin'], candidate: FP_B });
   assert.deepEqual(settingsView(LOCKED, [FP_B]), { status: 'locked', line: '', actions: [], candidate: null });
@@ -241,7 +241,7 @@ test('COPY is verbatim Hypatia §7 (sha1 64c94d76; changedNotice + candidatesHea
   assert.deepEqual({ ...PIN_COPY }, {
     stateNotPinned: 'Not pinned',
     statePinnedPrefix: 'Pinned: ',
-    stateBlockedChanged: 'Blocked: the key changed',
+    stateBlockedChanged: 'Blocked: a different key sent a request',
     stateBlockedUnreadable: "Blocked: your pin couldn't be read",
     actionPin: 'Pin the key',
     actionCompareNew: 'Compare the new key',

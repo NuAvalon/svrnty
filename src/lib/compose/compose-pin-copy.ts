@@ -11,7 +11,8 @@ export const PIN_COPY = {
   // Settings › Compose key: state line (the "Pinned: " prefix is followed by the 16 hex) and the actions
   stateNotPinned: 'Not pinned',
   statePinnedPrefix: 'Pinned: ',
-  stateBlockedChanged: 'Blocked: the key changed',
+  // Hypatia doc sha1 d1dacc91 (lane:portal #1513): the old line claimed the portal's key changed; the app only knows a different key sent a request.
+  stateBlockedChanged: 'Blocked: a different key sent a request',
   stateBlockedUnreadable: "Blocked: your pin couldn't be read",
   actionPin: 'Pin the key',
   actionCompareNew: 'Compare the new key',
