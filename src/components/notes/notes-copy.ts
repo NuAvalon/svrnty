@@ -45,6 +45,8 @@ export const NOTES_COPY = {
     'Delete permanently on this device? The note copy on the relay or the recipient is untouched.',
   emptyBinLocalOnly:
     'Empty the bin? Deletes these notes on this device only — nothing is recalled from the relay or the recipient.',
+  manageOpFailed:
+    'The action failed — nothing was changed.',
 } as const;
 
 /** The status line for a note that was NOT deposited: a recipient with no verified PQ KEM key was skipped (S14), which is
