@@ -27,8 +27,8 @@ export type ReceiveEvent =
   | { kind: 'no-card'; logLine: string }
   /** A verified sender, nothing pinned: remember the fp as a CANDIDATE (Settings may offer it). Nothing shown. */
   | { kind: 'unpinned'; candidate: string; logLine: string }
-  /** Pinned, but a different verified key: blocked, PASSIVE notice only. */
-  | { kind: 'blocked'; notice: string }
+  /** Pinned (or the pin is unreadable) and a different/any verified key arrived: blocked, PASSIVE notice only; the key is a CANDIDATE for Settings to compare. */
+  | { kind: 'blocked'; notice: string; candidate: string }
   /** Pinned sender, but the note did not parse as a compose request. The code is for a counter, never for display. */
   | { kind: 'bad-note'; code: InboundRefusalCode }
   /** Handed to the queue. `logLine` is set only for the thread-drop case (fixed text + the note id as the token). */
@@ -61,8 +61,8 @@ export function receiveComposeNote(
   switch (d.kind) {
     case 'no-card': return same({ kind: 'no-card', logLine: d.logLine });
     case 'unpinned': return same({ kind: 'unpinned', candidate: d.candidate, logLine: d.logLine });
-    case 'blocked-changed': return same({ kind: 'blocked', notice: d.notice });
-    case 'blocked-unreadable': return same({ kind: 'blocked', notice: d.notice });
+    case 'blocked-changed': return same({ kind: 'blocked', notice: d.notice, candidate: d.candidate });
+    case 'blocked-unreadable': return same({ kind: 'blocked', notice: d.notice, candidate: d.candidate });
     case 'accept': break;
     default: return same({ kind: 'ignored' }); // an unknown decision is never trusted
   }

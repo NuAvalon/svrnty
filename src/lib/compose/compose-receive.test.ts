@@ -65,13 +65,13 @@ test('LOCKED store: no card, no candidate, the fixed line', () => {
 
 test('PINNED but a DIFFERENT verified key: blocked with the passive notice, no card, and the note is never parsed', () => {
   const { queue, event } = run(note({ from_fingerprint: OTHER }));
-  assert.deepEqual(event, { kind: 'blocked', notice: PIN_COPY.changedNotice });
+  assert.deepEqual(event, { kind: 'blocked', notice: PIN_COPY.changedNotice, candidate: OTHER });
   assert.deepEqual(queue.pending, []);
 });
 
 test('an UNREADABLE pin blocks everything with the passive notice', () => {
   const { queue, event } = run(note(), { state: 'unreadable' });
-  assert.deepEqual(event, { kind: 'blocked', notice: PIN_COPY.unreadableNotice });
+  assert.deepEqual(event, { kind: 'blocked', notice: PIN_COPY.unreadableNotice, candidate: PORTAL });
   assert.deepEqual(queue.pending, []);
 });
 

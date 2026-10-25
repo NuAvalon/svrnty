@@ -21,6 +21,7 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { ComposeRequestHost } from '@/components/compose/ComposeRequestHost';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -575,6 +576,7 @@ export default function Home() {
   // Gate (no identity) or main app
   return (
     <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
+      {identity ? <ComposeRequestHost identity={identity} /> : null}
       <TopNav
         hasIdentity={Boolean(identity)}
         canLock={canLock}

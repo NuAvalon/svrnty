@@ -24,6 +24,7 @@ import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import { RelaySettings } from '@/components/settings/RelaySettings';
+import { ComposePinSettings } from '@/components/compose/ComposePinSettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
 import { contactUpdateSendMessage } from '@/components/contact-update-send-copy';
 
@@ -1934,6 +1935,7 @@ export function SoverentityFrontend({
         )}
 
         {identity ? <RelaySettings /> : null}
+        {identity ? <ComposePinSettings identity={identity} /> : null}
 
         {/* Set Passphrase button */}
         {identity && (
