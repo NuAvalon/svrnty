@@ -12,6 +12,7 @@ import type { VaultContents } from '../sync/vault';
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
+import { isComposePinRecord, type ComposePinRecord } from '../compose/compose-pin';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -562,6 +563,44 @@ export async function setHeldAffirmatives(ownerFingerprint: string, map: HeldAff
   if (!_sessionKey) throw new Error('Session locked — refusing to store held-affirmatives unencrypted (§C/enc-b fail-closed)');
   const payload = await encryptContactRecord(_sessionKey, HELD_AFFIRMS_RECORD_ID, ownerFingerprint, map);
   await txPut('settings', { key: heldAffirmsSettingKey(ownerFingerprint), value: payload });
+}
+
+// ── Compose-key PIN (Flint K1-K5, lane:portal #1035): the ONE sender allowed to put a sign card in front of the owner ─────────────────
+// Stored like the other owner-local security records: the existing 'settings' store (no DB_VERSION bump), AES-GCM under the session key, with a
+// reserved AAD id so a ciphertext copied from any other record or owner cannot decrypt as a pin. The decision logic lives in compose/compose-pin.ts.
+const COMPOSE_PIN_RECORD_ID = 'compose:pin'; // reserved AAD id (contacts use random UUIDs — never this)
+function composePinSettingKey(ownerFingerprint: string): string {
+  return `compose_pin:${ownerFingerprint}`;
+}
+
+/**
+ * Read the owner's compose-key pin. ★ FAIL-CLOSED: null on ANY doubt (session locked, record absent, decrypt/tag failure, malformed shape). null means
+ * "nothing is pinned", which means NO sign card is ever shown (K2) and the first-pin ceremony is the only way forward; a lost or damaged pin therefore
+ * makes Peter re-compare 16 characters, it can never make a request pass.
+ */
+export async function getComposePin(ownerFingerprint: string): Promise<ComposePinRecord | null> {
+  if (!_sessionKey) return null;
+  try {
+    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+      'settings', composePinSettingKey(ownerFingerprint),
+    );
+    if (!row?.value) return null;
+    const rec = await decryptContactRecord<unknown>(_sessionKey, COMPOSE_PIN_RECORD_ID, ownerFingerprint, row.value);
+    return isComposePinRecord(rec) ? rec : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist the pin, encrypted at rest. Throws if locked (never write plaintext) or if `rec` is not a well-formed pin (a prefix or damaged record can never
+ * be stored). CALLER CONTRACT: call this only with the pin that applyPinChoice() returned for a confirmed "They match, pin it" press (K3: no auto-pin).
+ */
+export async function setComposePin(ownerFingerprint: string, rec: ComposePinRecord): Promise<void> {
+  if (!_sessionKey) throw new Error('Session locked — refusing to store the compose pin unencrypted (fail-closed)');
+  if (!isComposePinRecord(rec)) throw new Error('Refusing to store a malformed compose pin');
+  const payload = await encryptContactRecord(_sessionKey, COMPOSE_PIN_RECORD_ID, ownerFingerprint, rec);
+  await txPut('settings', { key: composePinSettingKey(ownerFingerprint), value: payload });
 }
 
 export async function listIdentities(): Promise<IdentityRecord[]> {
