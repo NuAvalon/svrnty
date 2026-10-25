@@ -12,7 +12,7 @@ import type { VaultContents } from '../sync/vault';
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
-import { isComposePinRecord, type ComposePinRecord } from '../compose/compose-pin';
+import { isComposePinRecord, type ComposePinRecord, type PinState } from '../compose/compose-pin';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -574,27 +574,37 @@ function composePinSettingKey(ownerFingerprint: string): string {
 }
 
 /**
- * Read the owner's compose-key pin. ★ FAIL-CLOSED: null on ANY doubt (session locked, record absent, decrypt/tag failure, malformed shape). null means
- * "nothing is pinned", which means NO sign card is ever shown (K2) and the first-pin ceremony is the only way forward; a lost or damaged pin therefore
- * makes Peter re-compare 16 characters, it can never make a request pass.
+ * Read the owner's compose-key pin as a four-way PinState (Flint P2: DAMAGED != ABSENT). ★ FAIL-CLOSED:
+ *   - session locked                         -> {state:'locked'}     (nothing can be read; no card can be shown anyway)
+ *   - no row at all (never set)              -> {state:'absent'}     (the ONLY state from which a first pin is offered)
+ *   - a row is PRESENT but cannot be decrypted, or decrypts to a malformed shape, or the read itself throws
+ *                                            -> {state:'unreadable'} (every request blocked; re-pin through the full compare; never treated as absent,
+ *                                                because that would silently reopen trust-on-first-use)
+ *   - a well-formed record                   -> {state:'pinned', record}
  */
-export async function getComposePin(ownerFingerprint: string): Promise<ComposePinRecord | null> {
-  if (!_sessionKey) return null;
+export async function getComposePinState(ownerFingerprint: string): Promise<PinState> {
+  if (!_sessionKey) return { state: 'locked' };
+  let row: { key: string; value: { iv: string; ciphertext: string; enc_version?: number } } | null | undefined;
   try {
-    const row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
+    row = await txGet<{ key: string; value: { iv: string; ciphertext: string; enc_version?: number } }>(
       'settings', composePinSettingKey(ownerFingerprint),
     );
-    if (!row?.value) return null;
-    const rec = await decryptContactRecord<unknown>(_sessionKey, COMPOSE_PIN_RECORD_ID, ownerFingerprint, row.value);
-    return isComposePinRecord(rec) ? rec : null;
   } catch {
-    return null;
+    return { state: 'unreadable' }; // we could not even look: do not pretend it is absent
+  }
+  if (!row) return { state: 'absent' };
+  if (!row.value) return { state: 'unreadable' }; // a row exists but carries no payload
+  try {
+    const rec = await decryptContactRecord<unknown>(_sessionKey, COMPOSE_PIN_RECORD_ID, ownerFingerprint, row.value);
+    return isComposePinRecord(rec) ? { state: 'pinned', record: rec } : { state: 'unreadable' };
+  } catch {
+    return { state: 'unreadable' };
   }
 }
 
 /**
  * Persist the pin, encrypted at rest. Throws if locked (never write plaintext) or if `rec` is not a well-formed pin (a prefix or damaged record can never
- * be stored). CALLER CONTRACT: call this only with the pin that applyPinChoice() returned for a confirmed "They match, pin it" press (K3: no auto-pin).
+ * be stored). CALLER CONTRACT: call this ONLY with the non-null `write` that applyPinChoice() returned for a confirmed "They match" press (K3: no auto-pin).
  */
 export async function setComposePin(ownerFingerprint: string, rec: ComposePinRecord): Promise<void> {
   if (!_sessionKey) throw new Error('Session locked — refusing to store the compose pin unencrypted (fail-closed)');
