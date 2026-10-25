@@ -250,8 +250,6 @@ export function TrustMap({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState<string | null>(null);
   const pullRef = useRef<{ y: number; x: number; armed: boolean; pulling: boolean } | null>(null);
-  const [crystallizeNote, setCrystallizeNote] = useState<string | null>(null);
-  const prevMutualRef = useRef<Set<string>>(new Set());
   const [gateCount, setGateCount] = useState(0);
   const [gateSparks, setGateSparks] = useState<string[]>([]);
   const [gateOpen, setGateOpen] = useState(false);
@@ -730,27 +728,6 @@ export function TrustMap({
       setBusy(false);
     }
   };
-
-  useEffect(() => {
-    const now = new Set<string>();
-    for (const c of visibleContacts) {
-      if (c.mutual?.reciprocal) now.add(c.peer_fingerprint);
-    }
-    const prev = prevMutualRef.current;
-    if (prev.size === 0 && now.size > 0) {
-      prevMutualRef.current = now;
-      return;
-    }
-    for (const id of now) {
-      if (!prev.has(id)) {
-        const name = edgeByFp.get(id)?.peer_name || 'Someone';
-        setCrystallizeNote(`Mutual trust crystallised with ${name}`);
-        window.setTimeout(() => setCrystallizeNote(null), 3200);
-        break;
-      }
-    }
-    prevMutualRef.current = now;
-  }, [visibleContacts, edgeByFp]);
 
   useEffect(() => {
     if (normalizeGalaxyQuery(searchQuery).length < 2 || searchHitIds.size === 0) return;
@@ -1349,29 +1326,6 @@ export function TrustMap({
                 : 'Pull for updates'}
           </div>
         )}
-
-        {crystallizeNote ? (
-          <div
-            data-testid="trust-map-crystallize"
-            style={{
-              position: 'absolute',
-              left: '50%',
-              top: 16,
-              transform: 'translateX(-50%)',
-              zIndex: 5,
-              padding: '10px 16px',
-              borderRadius: 12,
-              background: 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))',
-              border: `1px solid ${E.accent2}`,
-              color: E.text,
-              fontFamily: E.fontSans,
-              fontSize: 13,
-              pointerEvents: 'none',
-            }}
-          >
-            {crystallizeNote}
-          </div>
-        ) : null}
 
         <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 2 }}>
           {labels

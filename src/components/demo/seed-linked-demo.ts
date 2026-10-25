@@ -44,7 +44,6 @@ async function addLiving(
   peer: VaultCard,
   extra: {
     trusted: boolean;
-    reciprocal: boolean;
     notes: string;
     tags?: string[];
   },
@@ -68,10 +67,12 @@ async function addLiving(
     tags: extra.tags || ['linked-demo'],
     notes: extra.notes,
     contact_info: { emails: peer.email ? [peer.email] : undefined },
+    // Demo data models only states the app can PRODUCE. Since #593 nothing in-app makes an edge mutual (PSI #588 re-grounds it), so there is no
+    // `reciprocal` parameter to pass: every seeded edge is one-way, and living-edge-no-inbound.test.ts pins that this file has no pass-through.
     mutual: {
-      they_trust_me: extra.reciprocal,
-      last_sync: extra.reciprocal ? now : null,
-      reciprocal: extra.reciprocal,
+      they_trust_me: false,
+      last_sync: null,
+      reciprocal: false,
     },
     verification: extra.trusted
       ? { method: 'in_person', verified_at: now }
@@ -153,15 +154,13 @@ export async function seedLinkedDemo(owner: VaultCard): Promise<{ vaults: number
   if (river) {
     await addLiving(owner.fingerprint, river, {
       trusted: true,
-      reciprocal: true,
-      notes: 'Living SVRNTY card — bound key, mutual trust. Switch identity to open their book.',
+      notes: 'Living SVRNTY card — bound key. Switch identity to open their book.',
     });
   }
   if (sage) {
     await addLiving(owner.fingerprint, sage, {
       trusted: true,
-      reciprocal: false,
-      notes: 'Living SVRNTY card — bound key; you trust them. They have not affirmed back.',
+      notes: 'Living SVRNTY card — bound key. Switch identity to open their book.',
     });
   }
 
@@ -172,7 +171,6 @@ export async function seedLinkedDemo(owner: VaultCard): Promise<{ vaults: number
       if (a.fingerprint === owner.fingerprint) continue;
       await addLiving(a.fingerprint, b, {
         trusted: true,
-        reciprocal: true,
         notes: 'Linked demo vault — switch identity to open their book.',
       });
     }

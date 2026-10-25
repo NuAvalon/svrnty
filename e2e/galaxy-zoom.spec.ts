@@ -38,7 +38,9 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await expect(page.getByTestId('grow-surface')).toHaveCount(0);
   await seedSampleGalaxy(page);
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]').first()).toBeVisible();
+  // A TRUST-layer chord joins two people who MUTUALLY trust me. Since #593 nothing in-app can produce a mutual bond (PSI #588 re-grounds it) and the
+  // sample circle is one-way (Hypatia #959), so none may render; the KNOW-layer chords (open visibility, no mutual claim) still do.
+  await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]')).toHaveCount(0);
   await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="know"]').first()).toBeVisible();
   const search = page.getByTestId('trust-map-search');
   await expect(search).toBeVisible();
