@@ -7,6 +7,7 @@
 import { TripleRatchet, type RatchetIdentity, type RatchetPacket, type RatchetPeer, type RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { readRatchetSession, putRatchetSession, notesStoreOwner, type RatchetSessionRead } from './store';
 import { assertNotesStoreOpenFor } from './notes-owner-guard';
+import { acquirePeerSessionLock, peerSessionLockName, type LockRelease } from './peer-session-lock';
 
 export const TRIPLE_RATCHET_BODY = 'svrnty-tr-v1';
 
@@ -45,7 +46,17 @@ function decodeBody(body: string): RatchetPacket | null {
  */
 export interface RatchetIO {
   read: (peerFingerprint: string) => Promise<RatchetSessionRead>;
-  put: (peerFingerprint: string, snapshot: RatchetSnapshot) => Promise<void>;
+  /** CAS write (R5): succeeds only if the stored row is still at `expectedVersion` (0 = no row yet); otherwise throws RatchetSessionConflictError. */
+  put: (peerFingerprint: string, snapshot: RatchetSnapshot, expectedVersion: number) => Promise<void>;
+  /** Who the session store is open for; scopes the per-peer lock name so two identities never block each other. */
+  scope?: string;
+  /** Test seam: replaces the real per-peer lock. Production leaves it unset and gets navigator.locks (or the in-process queue). */
+  acquireLock?: (peerFingerprint: string) => Promise<LockRelease>;
+}
+
+/** Take the exclusive per-peer session lock (R5). Held across load -> advance -> persist; the caller MUST release it. */
+function lockSession(io: RatchetIO, peerFingerprint: string): Promise<LockRelease> {
+  return io.acquireLock ? io.acquireLock(peerFingerprint) : acquirePeerSessionLock(peerSessionLockName(io.scope, peerFingerprint));
 }
 /** The raw store handle, with NO owner check. Production code never uses it directly: it goes through {@link ownerBoundRatchetIO}. */
 export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatchetSession };
@@ -54,7 +65,8 @@ export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatc
  * R2: the session store is tab-local module state, open for ONE identity. Bind every session read AND write to the owner the
  * caller is acting for: if the store is locked or open for a different identity (a cross-tab switch), the operation THROWS before
  * touching anything, so a wrong-owner open can never advance, create or overwrite a session. A throw is load-bearing: send fails
- * closed, and the receive path maps it to RETRYABLE (the note waits in the mailbox), never dropped.
+ * closed, and the receive path maps it to RETRYABLE (the note stays in the mailbox for a later retry, within the relay's hold,
+ * instead of being dropped here).
  */
 export function ownerBoundRatchetIO(
   ownerFingerprint: string,
@@ -63,7 +75,9 @@ export function ownerBoundRatchetIO(
 ): RatchetIO {
   return {
     read: async (peerFp) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.read(peerFp); },
-    put: async (peerFp, snapshot) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.put(peerFp, snapshot); },
+    put: async (peerFp, snapshot, expectedVersion) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.put(peerFp, snapshot, expectedVersion); },
+    scope: ownerFingerprint,
+    acquireLock: inner.acquireLock,
   };
 }
 
@@ -88,7 +102,7 @@ export async function ratchetCapabilityObserved(peerFingerprint: string, io: Rat
   return cur.state === 'ok' && cur.snapshot.recvCk !== null;
 }
 
-/** Seal plaintext for one peer. Persists the session. Null if the ratchet cannot start. */
+/** Seal plaintext for one peer. Persists the session (CAS on the version it read). The CALLER holds the per-peer lock (R5); see chooseWireBody. Null if the ratchet cannot start. */
 export async function sealDirectNote(
   peerFingerprint: string,
   plaintext: string,
@@ -104,22 +118,29 @@ export async function sealDirectNote(
     session = TripleRatchet.initiate(self, peer);
   }
   const packet = await session.send(plaintext);
-  await io.put(peerFingerprint, session.exportState());
+  await io.put(peerFingerprint, session.exportState(), cur.state === 'ok' ? cur.version : 0);
   return encodeBody(packet);
 }
 
 /**
  * An opened ratchet message whose session advance has NOT been persisted yet. R4: the advanced session is committed only AFTER the
  * note it carried is durably stored. Otherwise a store failure after the open leaves the envelope retryable but the session already
- * moved past that message key, so the retry cannot open it (receive() returns null) and the message is lost although it sat safely
- * in the mailbox.
+ * moved past that message key, so the retry cannot open it (receive() returns null) and the message is lost although the relay still
+ * held it.
+ *
+ * R5: a StagedOpen HOLDS the per-peer session lock from the read until it is finished, because commit() is the write half of a
+ * read-modify-write. Exactly one of commit() / release() ends it, and both release the lock (idempotent). commit() writes with a CAS
+ * on the version that was read; if another context moved the session meanwhile it throws RatchetSessionConflictError, nothing is
+ * written, and the envelope stays retryable.
  */
 export interface StagedOpen {
   plaintext: string;
   commit: () => Promise<void>;
+  /** Give the lock back without committing (the note was not stored). Safe to call after commit() and more than once. */
+  release: () => void;
 }
 
-/** Open a ratchet body from one peer WITHOUT persisting the advanced session; the caller commits once the note is stored (R4). */
+/** Open a ratchet body from one peer WITHOUT persisting the advanced session; the caller commits once the note is stored (R4) and MUST end the StagedOpen (commit or release) so the lock is freed (R5). */
 export async function openDirectNoteStaged(
   peerFingerprint: string,
   body: string,
@@ -129,18 +150,41 @@ export async function openDirectNoteStaged(
 ): Promise<StagedOpen | null> {
   const packet = decodeBody(body);
   if (!packet) return null;
-  const cur = await io.read(peerFingerprint);
-  if (cur.state === 'unreadable') return null; // R3: never acceptFirst over an unreadable row (it would overwrite the real session)
-  if (cur.state === 'ok') {
-    const session = TripleRatchet.importState(cur.snapshot);
-    if (!session) return null;
-    const pt = await session.receive(packet);
-    if (pt === null) return null;
-    return { plaintext: pt, commit: () => io.put(peerFingerprint, session.exportState()) };
+  const unlock = await lockSession(io, peerFingerprint);
+  let handedOver = false;
+  try {
+    const cur = await io.read(peerFingerprint);
+    if (cur.state === 'unreadable') return null; // R3: never acceptFirst over an unreadable row (it would overwrite the real session)
+    let plaintext: string;
+    let next: RatchetSnapshot;
+    if (cur.state === 'ok') {
+      const session = TripleRatchet.importState(cur.snapshot);
+      if (!session) return null;
+      const pt = await session.receive(packet);
+      if (pt === null) return null;
+      plaintext = pt;
+      next = session.exportState();
+    } else {
+      const first = await TripleRatchet.acceptFirst(self, peer, packet);
+      if (!first) return null;
+      plaintext = first.plaintext;
+      next = first.session.exportState();
+    }
+    const expected = cur.state === 'ok' ? cur.version : 0;
+    let ended = false;
+    const release = () => { if (!ended) { ended = true; unlock(); } };
+    handedOver = true;
+    return {
+      plaintext,
+      release,
+      commit: async () => {
+        if (ended) throw new Error('staged ratchet open already ended');
+        try { await io.put(peerFingerprint, next, expected); } finally { release(); }
+      },
+    };
+  } finally {
+    if (!handedOver) unlock();
   }
-  const first = await TripleRatchet.acceptFirst(self, peer, packet);
-  if (!first) return null;
-  return { plaintext: first.plaintext, commit: () => io.put(peerFingerprint, first.session.exportState()) };
 }
 
 /** Open a ratchet body from one peer and persist the session immediately. Null on tamper / missing keys. Kept for callers that have nothing to store. */
@@ -170,8 +214,14 @@ export async function chooseWireBody(
   io: RatchetIO = realRatchetIO,
 ): Promise<{ wireBody: string; ratcheted: boolean }> {
   if (!a.canDeposit || !a.ownerRatchet || !a.peerRatchet) return { wireBody: a.body, ratcheted: false };
-  if (!(await ratchetCapabilityObserved(a.peerFingerprint, io))) return { wireBody: a.body, ratcheted: false };
-  const sealed = await sealDirectNote(a.peerFingerprint, a.body, a.ownerRatchet, a.peerRatchet, io);
-  if (!sealed) throw new Error('direct ratchet could not seal');
-  return { wireBody: sealed, ratcheted: true };
+  // R5: the capability check, the advance and the persist are ONE read-modify-write; two tabs must not both advance from the same state.
+  const unlock = await lockSession(io, a.peerFingerprint);
+  try {
+    if (!(await ratchetCapabilityObserved(a.peerFingerprint, io))) return { wireBody: a.body, ratcheted: false };
+    const sealed = await sealDirectNote(a.peerFingerprint, a.body, a.ownerRatchet, a.peerRatchet, io);
+    if (!sealed) throw new Error('direct ratchet could not seal');
+    return { wireBody: sealed, ratcheted: true };
+  } finally {
+    unlock();
+  }
 }

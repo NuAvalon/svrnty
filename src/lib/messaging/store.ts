@@ -334,12 +334,48 @@ export function newReceiptNonce(): string {
   return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-type RatchetRow = { peer_fingerprint: string; enc: EncryptedBlob };
+/** `version` counts writes to this row (R5). A row written before it existed has none and counts as 1; no row counts as 0. */
+type RatchetRow = { peer_fingerprint: string; enc: EncryptedBlob; version?: number };
 
-/** Persist a 1:1 triple-ratchet snapshot. Encrypted with the notes-store key. */
-export async function putRatchetSession(peerFingerprint: string, snapshot: RatchetSnapshot): Promise<void> {
+/** The version a CAS write must expect for what is currently stored: 0 = no row, a legacy row without a counter = 1. Pure, so it is unit-tested without IndexedDB. */
+export function ratchetRowVersion(row: { version?: number } | undefined): number {
+  return row ? (row.version ?? 1) : 0;
+}
+
+/** The session row changed between our read and our write (another tab or task advanced it). Nothing was written. */
+export class RatchetSessionConflictError extends Error {
+  constructor() {
+    super('ratchet session changed under us: nothing was written; retry from the current state');
+    this.name = 'RatchetSessionConflictError';
+  }
+}
+
+/**
+ * Persist a 1:1 triple-ratchet snapshot, encrypted with the notes-store key, ONLY IF the stored row is still at `expectedVersion`
+ * (the version we read). The compare and the put share one readwrite transaction, so no other tab can slip a write between them.
+ * A mismatch aborts the transaction and throws RatchetSessionConflictError. This is the net under the per-peer lock (R5).
+ */
+export async function putRatchetSession(peerFingerprint: string, snapshot: RatchetSnapshot, expectedVersion: number): Promise<void> {
   const enc = await encryptJson(snapshot);
-  await txPut('ratchet_sessions', { peer_fingerprint: peerFingerprint, enc } satisfies RatchetRow);
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('ratchet_sessions', 'readwrite');
+    const os = tx.objectStore('ratchet_sessions');
+    const cur = os.get(peerFingerprint);
+    cur.onsuccess = () => {
+      const have = ratchetRowVersion(cur.result as RatchetRow | undefined);
+      if (have !== expectedVersion) {
+        reject(new RatchetSessionConflictError());
+        tx.abort();
+        return;
+      }
+      os.put({ peer_fingerprint: peerFingerprint, enc, version: have + 1 } satisfies RatchetRow);
+    };
+    cur.onerror = () => reject(cur.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new RatchetSessionConflictError());
+  });
 }
 
 /**
@@ -350,13 +386,13 @@ export async function putRatchetSession(peerFingerprint: string, snapshot: Ratch
 export type RatchetSessionRead =
   | { state: 'absent' }
   | { state: 'unreadable' }
-  | { state: 'ok'; snapshot: RatchetSnapshot };
+  | { state: 'ok'; snapshot: RatchetSnapshot; version: number };
 
 export async function readRatchetSession(peerFingerprint: string): Promise<RatchetSessionRead> {
   const row = await txGet<RatchetRow>('ratchet_sessions', peerFingerprint);
   if (!row) return { state: 'absent' };
   try {
-    return { state: 'ok', snapshot: await decryptJson<RatchetSnapshot>(row.enc) };
+    return { state: 'ok', snapshot: await decryptJson<RatchetSnapshot>(row.enc), version: ratchetRowVersion(row) };
   } catch {
     return { state: 'unreadable' };
   }

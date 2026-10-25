@@ -13,12 +13,12 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { generateKEMKeypair } from '../crypto/pq';
 import type { RatchetIdentity, RatchetPeer, RatchetSnapshot } from '../crypto/message-ratchet';
 import { mintHeadlessAgent } from '../identity/headless-mint';
-import type { RatchetSessionRead } from './store';
 import {
   chooseWireBody, openDirectNote, sealDirectNote, ratchetCapabilityObserved, isTripleRatchetBody,
   RatchetSessionUnreadableError, type RatchetIO,
 } from './direct-session';
 import { sendNoteToPeer } from './transport';
+import { memIO } from './ratchet-test-io';
 import type { NoteRecord } from './types';
 
 function ratchetIdentity(): RatchetIdentity {
@@ -28,16 +28,6 @@ function ratchetIdentity(): RatchetIdentity {
 }
 const peerOf = (id: RatchetIdentity): RatchetPeer => ({ x25519Pub: id.x25519Pub, mlkem1024Pub: id.mlkem1024Pub });
 
-/** In-memory ratchet session storage that records every call. */
-function memIO() {
-  const rows = new Map<string, RatchetSessionRead>();
-  const log: string[] = [];
-  const io: RatchetIO = {
-    read: async (fp) => { log.push(`read:${fp}`); return rows.get(fp) ?? { state: 'absent' }; },
-    put: async (fp, snapshot: RatchetSnapshot) => { log.push(`put:${fp}`); rows.set(fp, { state: 'ok', snapshot }); },
-  };
-  return { rows, log, io, puts: () => log.filter((l) => l.startsWith('put:')).length };
-}
 
 const ME = 'fp-me', THEM = 'fp-them';
 
@@ -115,7 +105,7 @@ test('R3: an UNREADABLE session row is never overwritten: seal and open fail clo
 
 test('R3: a readable-but-corrupt snapshot also fails closed: no parallel session, no write', async () => {
   const me = ratchetIdentity(), them = ratchetIdentity(), s = memIO();
-  s.rows.set(THEM, { state: 'ok', snapshot: { garbage: true } as unknown as RatchetSnapshot });
+  s.rows.set(THEM, { state: 'ok', snapshot: { garbage: true } as unknown as RatchetSnapshot, version: 1 });
   assert.equal(await sealDirectNote(THEM, 'x', me, peerOf(them), s.io), null);
   assert.equal(s.puts(), 0);
 });

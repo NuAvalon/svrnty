@@ -193,7 +193,7 @@ export async function acceptInboundNote(args: {
     return null; // spam / stranger — structural drop
   }
   let body = args.wire.body;
-  let commitRatchet: (() => Promise<void>) | undefined;
+  let staged: StagedOpen | undefined;
   if (isTripleRatchetBody(body)) {
     if (!args.openRatchet) return null;
     const opened = await args.openRatchet(args.wire.from_fingerprint, body);
@@ -202,9 +202,12 @@ export async function acceptInboundNote(args: {
       body = opened;
     } else {
       body = opened.plaintext;
-      commitRatchet = opened.commit;
+      staged = opened;
     }
   }
+  // R5: a StagedOpen holds the per-peer session lock. It is freed by commit() below, or HERE on any other exit (putNote/putThread
+  // throwing included), so a failed store write can never leave a peer's session locked.
+  try {
   const sent_at = args.wire.sent_at || new Date().toISOString();
   const record: NoteRecord = {
     note_id: args.wire.note_id,
@@ -245,6 +248,9 @@ export async function acceptInboundNote(args: {
   // R4: ONLY NOW is the ratchet advance persisted: the note and its thread are durably stored. A failure anywhere above leaves the
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
-  if (commitRatchet) await commitRatchet();
+  if (staged) await staged.commit();
   return record;
+  } finally {
+    staged?.release();
+  }
 }

@@ -17,13 +17,13 @@ import { x25519 } from '@noble/curves/ed25519.js';
 import { generateKEMKeypair } from '../crypto/pq';
 import type { RatchetIdentity, RatchetPeer, RatchetSnapshot } from '../crypto/message-ratchet';
 import { mintHeadlessAgent } from '../identity/headless-mint';
-import type { RatchetSessionRead } from './store';
+import { memIO } from './ratchet-test-io';
 import { signNoteWire } from './note-auth';
 import { acceptInboundNote } from './transport';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteRecord, NoteThread, NoteWireV0 } from './types';
 import {
-  sealDirectNote, openDirectNoteStaged, ownerBoundRatchetIO, chooseWireBody, type RatchetIO,
+  sealDirectNote, openDirectNoteStaged, ownerBoundRatchetIO, chooseWireBody,
 } from './direct-session';
 
 function ratchetIdentity(): RatchetIdentity {
@@ -33,19 +33,6 @@ function ratchetIdentity(): RatchetIdentity {
 }
 const peerOf = (id: RatchetIdentity): RatchetPeer => ({ x25519Pub: id.x25519Pub, mlkem1024Pub: id.mlkem1024Pub });
 
-function memIO(opts: { failPuts?: number } = {}) {
-  const rows = new Map<string, RatchetSessionRead>();
-  const log: string[] = [];
-  let failPuts = opts.failPuts ?? 0;
-  const io: RatchetIO = {
-    read: async (fp) => { log.push(`read:${fp}`); return rows.get(fp) ?? { state: 'absent' }; },
-    put: async (fp, snapshot: RatchetSnapshot) => {
-      if (failPuts > 0) { failPuts--; log.push(`put-FAILED:${fp}`); throw new Error('session store write failed'); }
-      log.push(`put:${fp}`); rows.set(fp, { state: 'ok', snapshot });
-    },
-  };
-  return { rows, log, io, puts: () => log.filter((l) => l.startsWith('put:')).length };
-}
 
 type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
 const idOf = (a: Minted) => a.introduction.card.identity as unknown as { fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
@@ -146,7 +133,7 @@ test('R2: a store open for ANOTHER identity, or locked, throws before any sessio
     const inner = memIO();
     const bound = ownerBoundRatchetIO(ME, () => openOwner, inner.io);
     await assert.rejects(() => bound.read(THEM), /not open for this owner/);
-    await assert.rejects(() => bound.put(THEM, {} as RatchetSnapshot), /not open for this owner/);
+    await assert.rejects(() => bound.put(THEM, {} as RatchetSnapshot, 0), /not open for this owner/);
     assert.deepEqual(inner.log, [], `inner storage untouched (store owner = ${openOwner})`);
   }
   const ok = memIO();
