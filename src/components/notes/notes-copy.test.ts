@@ -61,7 +61,10 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.doesNotMatch(inbox, /notes-receiving/);
     assert.doesNotMatch(inbox, /How notes travel/);
     assert.doesNotMatch(inbox, /Encrypted messages/);
-    assert.match(copy, /A Delivered confirmation is coming/);
+    // Receipts are LIVE in this build (verified-receipt Delivered, notes-delivered-display.test.ts + receipt-seam.test.ts), so the
+    // old "A Delivered confirmation is coming" promise would now be false and must not come back. The replacement helper line is
+    // Hypatia's wording (TG-1 repoint); this pins only the invariant: no stale future-tense promise of a delivery confirmation.
+    assert.doesNotMatch(copy, /Delivered confirmation is coming/);
     assert.doesNotMatch(status, /Delivered confirmation/);
     const liveStatus = [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');
     assert.doesNotMatch(liveStatus, /\b(Delivered|Read|Expired)\b/);

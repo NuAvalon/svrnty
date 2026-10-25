@@ -237,7 +237,24 @@ export function buildNoteSeam(
  * returns null → the note keeps the honest 'Sent · unconfirmed.' floor. A false "Delivered" is
  * UNREACHABLE by construction.
  */
-export function buildReceiptSeam(owner: OwnerIdentity, hybrid?: HybridSecretsSource): ReceiptResponseSeam {
+/**
+ * The I/O the receipt ACCEPT performs: OUR stored outbound note (source of truth for the expected note_id / nonce / recipient),
+ * the recipient's card in OUR book (the ONLY source of the keys a receipt is checked against), and the one write.
+ * Injectable so the verify-then-mark-delivered path can be tested with REAL crypto and no IndexedDB (same pattern as
+ * {@link NoteSeamDeps}). Defaults are the real stores. The accept body is 620cd7b's, with exactly these three calls routed
+ * through `deps` and nothing else changed.
+ */
+export interface ReceiptSeamDeps {
+  getNote: typeof getNote;
+  putNote: typeof putNote;
+  getContactByFingerprint: typeof getContactByFingerprint;
+}
+
+export function buildReceiptSeam(
+  owner: OwnerIdentity,
+  hybrid?: HybridSecretsSource,
+  deps: ReceiptSeamDeps = { getNote, putNote, getContactByFingerprint },
+): ReceiptResponseSeam {
   // Single dual-read chokepoint, same discipline as the note seam: hybrid-FIRST + classical FALLBACK (off the N10 unlock
   // cycle). parseReceiptWire is the type-gate on BOTH legs → no-cross-swallow is byte-identical.
   const classicalReceipt = receiptOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
@@ -253,12 +270,12 @@ export function buildReceiptSeam(owner: OwnerIdentity, hybrid?: HybridSecretsSou
     verify: (blob) => verifyReceipt(blob),
     accept: async (wire) => {
       // Recover OUR stored outbound note — the source-of-truth for the expected (note_id, nonce, recipient).
-      const note = await getNote(wire.note_id);
+      const note = await deps.getNote(wire.note_id);
       if (!note || note.direction !== 'outbound' || !note.receipt_nonce) return null; // unknown/ineligible → drop
       const peerFp = note.to_fingerprints[0];
       if (!peerFp) return null;
       // The delivering recipient's pubkeys come from THEIR card in our book (we sent them a note → admitted).
-      const card = await getContactByFingerprint(owner.fingerprint, peerFp);
+      const card = await deps.getContactByFingerprint(owner.fingerprint, peerFp);
       if (!card) return null; // recipient no longer in book → can't verify → fail-safe drop (floor holds)
       const rec = card as {
         public_key?: string; peer_public_key?: string;
@@ -283,7 +300,7 @@ export function buildReceiptSeam(owner: OwnerIdentity, hybrid?: HybridSecretsSou
       );
       if (!ok) return null; // forged / garbled / mismatched → floor 'Sent · unconfirmed.' holds, NO false Delivered
       // ★ THE ONE LINE: a VERIFIED receipt → mark the note delivered. Idempotent on redelivery (putNote by id).
-      await putNote({ ...note, delivered: true });
+      await deps.putNote({ ...note, delivered: true });
       return { note_id: note.note_id, thread_id: note.thread_id, from_fingerprint: peerFp };
     },
   };
