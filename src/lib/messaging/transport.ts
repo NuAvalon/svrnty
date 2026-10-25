@@ -22,7 +22,7 @@ export interface NoteSenderIdentity {
  * How a send failed, keyed by WHERE it failed (Flint #823 T1; the same three-way split as devin-comm #285). It matters because the
  * three need three different things from the user:
  *  - 'not-sent'       threw before the POST was made (gate/ratchet/sign/seal). Nothing left this device.
- *  - 'refused'        the relay ANSWERED and turned the deposit down (4xx/5xx) and then a local save failed. The relay holds nothing, but the
+ *  - 'refused'        the relay ANSWERED and turned the deposit down (4xx) and then a local save failed. The relay holds nothing, but the
  *                     sealed message DID reach it, so this must not say "nothing left this device". (A refusal with a good local save resolves
  *                     {deposited:false} instead of throwing.)
  *  - 'unconfirmed'    the POST itself threw or timed out with no answer. The relay MAY have it: a network error after the server received the

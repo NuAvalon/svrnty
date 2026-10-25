@@ -395,7 +395,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
       setActiveThreadId(result.thread_id);
       if (!result.deposited) {
         setFailedIds((prev) => ({ ...prev, [result.note_id]: true }));
-        // A recipient with no verified PQ KEM key was skipped (S14), not a network failure: say so.
+        // deposited:false = the relay refused it (a 4xx) or the recipient was skipped (S14, no verified PQ KEM key). Either way it is not sent.
         setStatus(notSentMessage(selected));
       } else {
         setStatus(NOTES_COPY.sentUnconfirmed);
