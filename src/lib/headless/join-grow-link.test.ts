@@ -148,6 +148,27 @@ test('NO HALF-STATE: a failed or throwing deposit refuses with deposit-failed an
   }
 });
 
+test('LIVENESS (Flint #1304): if admit THROWS after a successful deposit the result is admit-failed-after-deposit (not deposit-failed), the deposit is NOT retried, and the unadmitted contact is handed back', async () => {
+  const { deps, calls } = fakeDeps({ admit: (c) => { calls.order.push('admit'); calls.admits.push(c); throw new Error('store lock wait 120s'); } });
+  const r = await runJoin(good, deps);
+  assert.equal(refusal(r), 'admit-failed-after-deposit');
+  assert.equal(calls.deposits.length, 1, 'the response is already sent; a second deposit would count against the link cap');
+  assert.deepEqual(calls.order.filter((x) => x === 'deposit' || x === 'admit'), ['deposit', 'admit']);
+  if (r.ok) throw new Error('unreachable');
+  assert.match(r.detail ?? '', /store lock wait/);
+  assert.deepEqual(r.pending, calls.admits[0], 'pending is exactly the contact that failed to be admitted: --name as the name, the card keys, trust known');
+  assert.equal(r.pending?.name, 'topos');
+  assert.equal(r.pending?.fingerprint, FP);
+});
+
+test('LIVENESS control: only deposit-failed and admit-failed-after-deposit carry different meanings (a failed deposit has NO pending contact)', async () => {
+  const { deps } = fakeDeps({ deposit: async () => ({ ok: false, status: 500 }) });
+  const r = await runJoin(good, deps);
+  assert.equal(refusal(r), 'deposit-failed');
+  if (r.ok) throw new Error('unreachable');
+  assert.equal(r.pending, undefined);
+});
+
 test('parseJoinFlags: flags in any position, the URL is the first non-flag token, a flag with no value is undefined', () => {
   assert.deepEqual(parseJoinFlags([URL_OK, '--expect-fp', FP, '--name', 'topos']), { url: URL_OK, expectFp: FP, name: 'topos' });
   assert.deepEqual(parseJoinFlags(['--name', 'topos', '--expect-fp', FP, URL_OK]), { url: URL_OK, expectFp: FP, name: 'topos' });

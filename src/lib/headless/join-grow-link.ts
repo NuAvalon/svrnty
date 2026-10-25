@@ -24,7 +24,8 @@ const FRAGMENT = new RegExp(`^[A-Za-z0-9_-]{${GROW_FRAGMENT_CHARS}}$`);
 
 export type JoinRefusal =
   | 'missing-expect-fp' | 'bad-expect-fp' | 'missing-name' | 'bad-name' | 'bad-url' | 'bad-fragment'
-  | 'resolve-failed' | 'bad-card' | 'fp-mismatch' | 'fp-not-derived' | 'no-kem-key' | 'backup-failed' | 'deposit-failed';
+  | 'resolve-failed' | 'bad-card' | 'fp-mismatch' | 'fp-not-derived' | 'no-kem-key' | 'backup-failed' | 'deposit-failed'
+  | 'admit-failed-after-deposit';
 
 export interface JoinGiverCard {
   fingerprint: string;
@@ -43,14 +44,19 @@ export interface JoinDeps {
   /** sendJoinerResponse: the target MUST carry the giver's verified KEM key. Returns the relay outcome. */
   deposit(target: { fingerprint: string; publicKeyArmored: string; giverPqKemPublicKey: string; inviteNonce: string }): Promise<{ ok: boolean; status?: number | string }>;
   /** Write the contact. Called ONLY after a successful deposit. */
-  admit(contact: {
-    id: string; fingerprint: string; name: string; public_key: string; pq_sig_public_key?: string; pq_kem_public_key?: string; trust_level: 'known';
-  }): void;
+  admit(contact: JoinContact): void;
 }
+
+// A `type`, not an interface: HeadlessContact has a string index signature and only a type alias is implicitly assignable to it.
+export type JoinContact = {
+  id: string; fingerprint: string; name: string; public_key: string; pq_sig_public_key?: string; pq_kem_public_key?: string; trust_level: 'known';
+};
 
 export type JoinResult =
   | { ok: true; admitted: string; fp8: string; name: string; joinerResponse: { ok: boolean; status?: number | string } }
-  | { ok: false; refusal: JoinRefusal; detail?: string };
+  // `pending` is set ONLY for admit-failed-after-deposit: the deposit already went out, so the giver may have added us.
+  // The caller must persist this contact for a manual admit; never re-run the join (a second deposit counts against the link's cap).
+  | { ok: false; refusal: JoinRefusal; detail?: string; pending?: JoinContact };
 
 const refuse = (refusal: JoinRefusal, detail?: string): JoinResult => ({ ok: false, refusal, ...(detail ? { detail } : {}) });
 
@@ -96,7 +102,14 @@ export async function runJoin(args: { url?: string; expectFp?: string; name?: st
   } catch (e) { return refuse('deposit-failed', String((e as Error)?.message ?? e).slice(0, 120)); }
   if (!sent || sent.ok !== true) return refuse('deposit-failed', String(sent?.status ?? 'unknown'));
 
-  deps.admit({ id: fp, fingerprint: fp, name: args.name, public_key: id.public_key, pq_sig_public_key: sig, pq_kem_public_key: kem, trust_level: 'known' });
+  const contact: JoinContact = { id: fp, fingerprint: fp, name: args.name, public_key: id.public_key, pq_sig_public_key: sig, pq_kem_public_key: kem, trust_level: 'known' };
+  try {
+    deps.admit(contact);
+  } catch (e) {
+    // Liveness, not security (Flint #1304): the response is SENT but we did not admit them, so their replies would drop silently.
+    // Fail loud, hand back the contact for a manual admit, and never retry the deposit.
+    return { ok: false, refusal: 'admit-failed-after-deposit', detail: String((e as Error)?.message ?? e).slice(0, 120), pending: contact };
+  }
   return { ok: true, admitted: fp, fp8: fp.slice(0, 8), name: args.name, joinerResponse: { ok: true, status: sent.status } };
 }
 

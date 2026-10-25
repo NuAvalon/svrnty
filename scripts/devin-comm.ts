@@ -262,6 +262,10 @@ async function main() {
 
   if (cmd === 'admit') {
     const card = JSON.parse(readFileSync(rest[0], 'utf8'));
+    // Never exit 0 when nothing usable was written (Archie #1310): a card with no fingerprint or no public key is refused, not stored.
+    if (typeof (card.fingerprint ?? card.durable_id) !== 'string' || !(card.fingerprint ?? card.durable_id) || typeof card.public_key !== 'string' || !card.public_key) {
+      throw new Error('admit refused: the card needs a fingerprint (or durable_id) and a public_key. Nothing was written.');
+    }
     const contact: HeadlessContact = {
       id: card.durable_id ?? card.fingerprint,
       fingerprint: card.fingerprint ?? card.durable_id,
@@ -271,6 +275,8 @@ async function main() {
       pq_kem_public_key: card.pq_kem_public_key,
     };
     store.upsertContact(contact);
+    const back = store.getContactByFingerprint(contact.fingerprint);
+    if (!back || back.public_key !== contact.public_key) throw new Error(`admit failed: ${contact.fingerprint.slice(0, 16)} is not in the store after the write. Nothing is trusted.`);
     console.log(`admitted ${contact.fingerprint}`);
     return;
   }
@@ -332,6 +338,20 @@ async function main() {
         ),
       admit: (contact) => store.upsertContact(contact),
     });
+    if (!out.ok && out.refusal === 'admit-failed-after-deposit' && out.pending) {
+      // The deposit already succeeded, so the giver may have added us. Save their card (public material only) for a manual admit; do NOT re-run join.
+      const pend = `${STORE}.pending-admit-${out.pending.fingerprint.slice(0, 8)}.json`;
+      let saved = false;
+      try {
+        writeFileSync(pend, JSON.stringify({ fingerprint: out.pending.fingerprint, durable_id: out.pending.id, name: out.pending.name, public_key: out.pending.public_key, pq_sig_public_key: out.pending.pq_sig_public_key, pq_kem_public_key: out.pending.pq_kem_public_key }), { mode: 0o600 });
+        chmodSync(pend, 0o600);
+        saved = true;
+      } catch { /* reported below */ }
+      console.error(`joiner-response DEPOSITED, but admitting ${out.pending.name} failed${out.detail ? `: ${out.detail}` : ''}. They can add you; their replies will be dropped until you admit them. Do NOT re-run join (a second deposit counts against the link).`);
+      console.error(saved ? `Run: npx tsx scripts/devin-comm.ts admit ${pend}` : `Could not save their card either. Their fingerprint is ${out.pending.fingerprint}: get their card file from them and run: npx tsx scripts/devin-comm.ts admit <card.json>`);
+      process.exitCode = 1;
+      return;
+    }
     if (!out.ok) {
       console.error(`join refused: ${out.refusal}${out.detail ? ` (${out.detail})` : ''}. Nothing was admitted.`);
       process.exitCode = 1;
