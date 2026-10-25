@@ -6,7 +6,7 @@ import type { NoteRecord, NoteThread, RingChannel } from './types';
 import { onSessionLock } from '@/lib/identity/client-store';
 
 const DB_NAME = 'svrnty-notes';
-const DB_VERSION = 2;
+const DB_VERSION = 2;   // v2 adds 'archive' + 'recently_deleted' (616)
 const PBKDF2_ITERATIONS = 600_000;
 
 let _db: IDBDatabase | null = null;
@@ -24,6 +24,9 @@ let _notesGeneration = 0;
 // identity's DB, never the cached previous one. Legacy single-DB 'svrnty-notes' notes are PRESERVED
 // (never opened by this scheme) — orphaned, not deleted.
 let _notesDbName: string | null = null;
+// The owner the CURRENTLY UNLOCKED notes key/DB belong to. Set together with _notesKey, cleared on lock/switch.
+// Lets a caller assert "unlocked FOR this identity" (not just "unlocked") before writing — N10 cross-tab hardening.
+let _notesOwner: string | null = null;
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -39,7 +42,11 @@ function fromBase64(b64: string): Uint8Array {
 }
 
 function openDb(): Promise<IDBDatabase> {
-  if (_db) return Promise.resolve(_db);
+  // The cached handle is only valid for the CURRENT identity's DB —
+  // a caller that inits a different fingerprint without a lock/switch
+  // must not read the previous identity's store through it.
+  if (_db && _db.name === _notesDbName) return Promise.resolve(_db);
+  if (_db) { _db.close(); _db = null; }
   const dbName = _notesDbName;
   if (!dbName) {
     return Promise.reject(
@@ -64,14 +71,12 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
       }
-      // svrnty #616 (v2): message-management stores — additive only. 'archive'
-      // holds hidden-from-inbox notes; 'recently_deleted' is the recoverable
-      // bin. Rows are the SAME {note_id, thread_id, enc} shape plus a *_at
-      // stamp — the EncryptedBlob is moved verbatim (Flint line: no new
-      // key/blob format). Legacy data is never touched by the migration.
+      // 616: archive + bin stores — ciphertext rows move opaquely between
+      // them; never decrypted here (crypto line holds). Additive: v1
+      // rows are untouched.
       if (!db.objectStoreNames.contains('archive')) {
-        const archive = db.createObjectStore('archive', { keyPath: 'note_id' });
-        archive.createIndex('thread_id', 'thread_id', { unique: false });
+        const arch = db.createObjectStore('archive', { keyPath: 'note_id' });
+        arch.createIndex('thread_id', 'thread_id', { unique: false });
       }
       if (!db.objectStoreNames.contains('recently_deleted')) {
         const bin = db.createObjectStore('recently_deleted', { keyPath: 'note_id' });
@@ -194,16 +199,23 @@ export async function initNotesStore(passphrase: string, ownerFingerprint: strin
   if (gen !== _notesGeneration) return;
   _notesKey = key;
   _notesSalt = salt;
+  _notesOwner = ownerFingerprint;
 }
 
 export function isNotesStoreUnlocked(): boolean {
   return _notesKey !== null;
 }
 
+/** Owner fingerprint the unlocked notes store was opened for (null while locked). */
+export function notesStoreOwner(): string | null {
+  return _notesKey !== null ? _notesOwner : null;
+}
+
 export function lockNotesStore(): void {
   _notesGeneration += 1; // invalidate any in-flight initNotesStore (async-init race, Codex P1 10/10)
   _notesKey = null;
   _notesSalt = null;
+  _notesOwner = null;
   // Owner-scope: close + drop the per-identity DB handle so a switch re-opens the NEXT identity's DB,
   // never the cached previous one (else B could read A's DB through the stale _db handle).
   if (_db) {
@@ -283,129 +295,146 @@ export async function deleteThread(threadId: string): Promise<void> {
   await txDelete('threads', threadId);
 }
 
-// ── svrnty #616: message management (archive / recently_deleted) ──────────
-// Rows move between stores with their EncryptedBlob VERBATIM — management is
-// a row operation, never a crypto one. Every batch runs inside ONE readwrite
-// transaction spanning source+dest, so a multi-select action is all-or-
-// nothing (abort leaves zero rows moved, never a partial state).
+// ── 616 — archive / bin / atomic multi-ops ──────────────────────────
+// All moves run in ONE IDB transaction spanning every store they touch
+// (I4): a fault midway aborts the whole move — the selection is either
+// fully moved or fully present. Rows carry `enc` ciphertext and are
+// moved opaquely (crypto line holds — no decrypt here).
+type NoteRow_ = { note_id: string; thread_id: string; enc: unknown };
 
-/** How long a binned note stays recoverable before listDeletedNotes purges it. */
-export const DELETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+function _tx<T>(stores: string[], mode: IDBTransactionMode,
+                fn: (tx: IDBTransaction) => Promise<T> | T): Promise<T> {
+  return openDb().then(
+    (db) =>
+      new Promise<T>((resolve, reject) => {
+        const tx = db.transaction(stores, mode);
+        // An abort/error that never reaches a request's onerror (exception
+        // inside a handler, quota, external abort) must still settle —
+        // else the caller hangs forever holding a dead tx.
+        tx.onabort = () =>
+          reject(tx.error ?? new Error(`${stores.join('+')} tx aborted`));
+        tx.onerror = () =>
+          reject(tx.error ?? new Error(`${stores.join('+')} tx error`));
+        Promise.resolve(fn(tx)).then(resolve, (e) => {
+          try { tx.abort(); } catch {}
+          reject(e);
+        });
+      }),
+  );
+}
 
-type MovedRow = { note_id: string; thread_id: string; enc: EncryptedBlob } &
-  Record<string, unknown>;
-
-async function _moveNotes(
-  srcStore: 'notes' | 'archive' | 'recently_deleted',
-  dstStore: 'notes' | 'archive' | 'recently_deleted' | null,
-  noteIds: string[],
-  stamp?: { field: 'archived_at' | 'deleted_at' },
-  strip?: string[],
-): Promise<number> {
-  const db = await openDb();
-  const stores = dstStore ? [srcStore, dstStore] : [srcStore];
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(stores, 'readwrite');
-    const src = tx.objectStore(srcStore);
-    const dst = dstStore ? tx.objectStore(dstStore) : null;
-    let moved = 0;
-    for (const id of noteIds) {
-      const get = src.get(id);
-      get.onsuccess = () => {
-        const row = get.result as MovedRow | undefined;
-        if (!row) return; // already absent — absent is not an error
-        if (dst) {
-          const out: MovedRow = { ...row };
-          for (const k of strip ?? []) delete out[k];
-          if (stamp) out[stamp.field] = new Date().toISOString();
-          dst.put(out);
-        }
-        src.delete(id);
-        moved += 1;
-      };
-    }
-    tx.oncomplete = () => resolve(moved);
-    tx.onabort = tx.onerror = () => reject(tx.error);
+/** Move rows opaquely from `from` into `to`, one tx — the selection is
+ *  fully moved or fully stays. */
+async function _moveOpaque(ids: string[], from: string, to: string) {
+  return _tx([from, to], 'readwrite', (tx) => {
+    const src = tx.objectStore(from);
+    const dst = tx.objectStore(to);
+    return Promise.all(
+      ids.map(
+        (id) =>
+          new Promise<void>((res, rej) => {
+            const g = src.get(id);
+            g.onsuccess = () => {
+              if (!g.result) return res();   // absent — idempotent
+              const p = dst.put(g.result);
+              p.onsuccess = () => {
+                const d = src.delete(id);
+                d.onsuccess = () => res();
+                d.onerror = () => rej(d.error);
+              };
+              p.onerror = () => rej(p.error);
+            };
+            g.onerror = () => rej(g.error);
+          }),
+      ),
+    );
   });
 }
 
-/** Archive: hide from inbox, recoverable forever. Atomic batch. */
-export function archiveNotes(noteIds: string[]): Promise<number> {
-  return _moveNotes('notes', 'archive', noteIds, { field: 'archived_at' });
+export async function archiveNotes(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  // the store reads the rows itself — the move is one tx.
+  return _moveOpaque(ids, 'notes', 'archive');
 }
 
-/** Soft delete: notes → recently_deleted bin. Atomic batch. */
-export function deleteNotes(noteIds: string[]): Promise<number> {
-  return _moveNotes('notes', 'recently_deleted', noteIds, { field: 'deleted_at' });
-}
-
-/** Restore from the bin back to the live store (stamp removed). */
-export function restoreNotes(noteIds: string[]): Promise<number> {
-  return _moveNotes('recently_deleted', 'notes', noteIds, undefined, ['deleted_at']);
-}
-
-/** Restore from archive back to the live store (stamp removed). */
-export function restoreArchived(noteIds: string[]): Promise<number> {
-  return _moveNotes('archive', 'notes', noteIds, undefined, ['archived_at']);
-}
-
-/** Permanent delete from the bin. Irreversible — caller confirms first. */
-export function purgeDeleted(noteIds: string[]): Promise<number> {
-  return _moveNotes('recently_deleted', null, noteIds);
-}
-
-async function _listManaged(
-  storeName: 'archive' | 'recently_deleted',
-  stampField: 'archived_at' | 'deleted_at',
-  threadId?: string,
-): Promise<(NoteRecord & { [k: string]: unknown })[]> {
-  const db = await openDb();
-  const rows: MovedRow[] = await new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const req = threadId
-      ? tx.objectStore(storeName).index('thread_id').getAll(threadId)
-      : tx.objectStore(storeName).getAll();
-    req.onsuccess = () => resolve((req.result as MovedRow[]) || []);
-    req.onerror = () => reject(req.error);
+export async function unarchiveNotes(ids: string[]): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  const back: NoteRow_[] = [];
+  await _tx(['archive', 'notes'], 'readwrite', (tx) => {
+    const src = tx.objectStore('archive');
+    const dst = tx.objectStore('notes');
+    return Promise.all(
+      ids.map(
+        (id) =>
+          new Promise<void>((res, rej) => {
+            const g = src.get(id);
+            g.onsuccess = () => {
+              if (!g.result) return res();
+              back.push(g.result as NoteRow_);
+              const p = dst.put(g.result);
+              p.onsuccess = () => {
+                const d = src.delete(id);
+                d.onsuccess = () => res();
+                d.onerror = () => rej(d.error);
+              };
+              p.onerror = () => rej(p.error);
+            };
+            g.onerror = () => rej(g.error);
+          }),
+      ),
+    );
   });
-  const out: (NoteRecord & { [k: string]: unknown })[] = [];
-  const now = Date.now();
-  for (const row of rows) {
-    try {
-      const note = await decryptJson<NoteRecord>(row.enc);
-      const stamp = row[stampField] as string | undefined;
-      if (
-        storeName === 'recently_deleted' &&
-        stamp &&
-        now - new Date(stamp).getTime() > DELETED_RETENTION_MS
-      ) {
-        await txDelete('recently_deleted', row.note_id); // bin retention purge
-        continue;
-      }
-      out.push({ ...note, [stampField]: stamp });
-    } catch {
-      // corrupt / wrong key — skip
-    }
-  }
-  return out.sort((a, b) =>
-    String(b[stampField] ?? '').localeCompare(String(a[stampField] ?? '')));
+  return back;
 }
 
-/** Archived notes, newest-archived first. */
-export function listArchivedNotes(
-  threadId?: string,
-): Promise<(NoteRecord & { archived_at?: string })[]> {
-  return _listManaged('archive', 'archived_at', threadId);
+export async function deleteNotesAtomic(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _moveOpaque(ids, 'notes', 'recently_deleted');
 }
 
-/** Binned notes still inside retention, newest-deleted first. Rows past
- * DELETED_RETENTION_MS are hard-purged on this read (lazy sweep — same
- * convention as expires_at in listNotesForThread). */
-export function listDeletedNotes(
-  threadId?: string,
-): Promise<(NoteRecord & { deleted_at?: string })[]> {
-  return _listManaged('recently_deleted', 'deleted_at', threadId);
+export async function restoreFromBin(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _moveOpaque(ids, 'recently_deleted', 'notes');
 }
+
+export async function deletePermanently(ids: string[]) {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _tx(['recently_deleted'], 'readwrite', (tx) => {
+    const s = tx.objectStore('recently_deleted');
+    return Promise.all(
+      ids.map(
+        (id) =>
+          new Promise<void>((res, rej) => {
+            const d = s.delete(id);
+            d.onsuccess = () => res();
+            d.onerror = () => rej(d.error);
+          }),
+      ),
+    );
+  });
+}
+
+export async function emptyBin() {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return _tx(['recently_deleted'], 'readwrite', (tx) =>
+    new Promise<void>((res, rej) => {
+      const c = tx.objectStore('recently_deleted').clear();
+      c.onsuccess = () => res();
+      c.onerror = () => rej(c.error);
+    }),
+  );
+}
+
+export async function listArchived(): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return txGetAll<NoteRow_>('archive');
+}
+
+export async function listBin(): Promise<NoteRow_[]> {
+  if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  return txGetAll<NoteRow_>('recently_deleted');
+}
+
 
 export async function putRingChannel(channel: RingChannel): Promise<void> {
   const enc = await encryptJson(channel);

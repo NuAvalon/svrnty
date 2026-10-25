@@ -10,12 +10,20 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'r
 import { getAllContacts } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import {
-  archiveNotes,
-  deleteNotes,
   initNotesStore,
   isNotesStoreUnlocked,
   listNotesForThread,
   listThreads,
+  // 616: multi-select delete/archive ops — atomic IDB moves on the
+  // per-identity store; never touch crypto here.
+  archiveNotes,
+  unarchiveNotes,
+  deleteNotesAtomic,
+  restoreFromBin,
+  deletePermanently,
+  emptyBin,
+  listArchived,
+  listBin,
   type NoteRecord,
   type NoteThread,
 } from '@/lib/messaging';
@@ -94,11 +102,15 @@ export function NotesInbox({ identity }: Props) {
   const [busy, setBusy] = useState(false);
   const [storeReady, setStoreReady] = useState(false);
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
-  const [failedIds, setFailedIds] = useState<Record<string, true>>({});
-  // svrnty #616: multi-select message management — device-local rows only.
-  const [selectMode, setSelectMode] = useState(false);
+  // 616 multi-select manage mode — selection over the active thread's
+  // notes + the view switcher (live | archived | bin).
+  const [manageMode, setManageMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [manageBusy, setManageBusy] = useState(false);
+  const [view, setView] = useState<'live' | 'archived' | 'bin'>('live');
+  const [confirmAction, setConfirmAction] = useState<null | 'delete' | 'perm' | 'empty'>(null);
+  const [binRows, setBinRows] = useState<{ note_id: string }[]>([]);
+  const [archRows, setArchRows] = useState<{ note_id: string }[]>([]);
+  const [failedIds, setFailedIds] = useState<Record<string, true>>({});
 
   const loadBook = useCallback(async () => {
     if (!fp) return;
@@ -211,35 +223,6 @@ export function NotesInbox({ identity }: Props) {
     setStatus(null);
     setError(null);
     setDraft('');
-    setSelectMode(false);
-    setSelectedIds(new Set());
-  };
-
-  const toggleSelect = (noteId: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(noteId)) next.delete(noteId);
-      else next.add(noteId);
-      return next;
-    });
-  };
-
-  const onBulkManage = async (action: 'archive' | 'delete') => {
-    const ids = [...selectedIds];
-    if (ids.length === 0) return;
-    setManageBusy(true);
-    setError(null);
-    try {
-      if (action === 'archive') await archiveNotes(ids);
-      else await deleteNotes(ids);
-      setSelectedIds(new Set());
-      setSelectMode(false);
-      await loadNotes(activeThreadId);
-    } catch {
-      setError(NOTES_COPY.manageFailed);
-    } finally {
-      setManageBusy(false);
-    }
   };
 
   const onSend = async () => {
@@ -449,87 +432,173 @@ export function NotesInbox({ identity }: Props) {
           </p>
         ) : null}
 
-        {activeThreadId && notes.length > 0 ? (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-            <button
-              type="button"
-              data-testid="notes-manage-toggle"
-              onClick={() => {
-                setSelectMode((m) => !m);
-                setSelectedIds(new Set());
-              }}
-              style={{
-                fontFamily: E.fontSans,
-                fontSize: 12,
-                letterSpacing: '0.08em',
-                textTransform: 'uppercase',
-                color: E.muted,
-                background: 'transparent',
-                border: `1px solid ${E.border}`,
-                borderRadius: 999,
-                padding: '6px 12px',
-                cursor: 'pointer',
-              }}
-            >
-              {selectMode ? NOTES_COPY.manageDoneAction : NOTES_COPY.manageAction}
-            </button>
-            {selectMode ? (
-              <>
-                <span style={{ fontSize: 12, color: E.muted }}>
-                  {selectedIds.size} {NOTES_COPY.selectedCount}
-                </span>
+        {/* 616 manage mode — selection + view switcher + action bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '0 0 8px' }}>
+          <button
+            type="button"
+            data-testid="notes-manage-toggle"
+            onClick={() => {
+              setManageMode((m) => !m);
+              setSelectedIds(new Set());
+            }}
+            style={{ ...primaryBtn, fontSize: 11, padding: '6px 12px' }}
+          >
+            {manageMode ? 'Done' : 'Manage'}
+          </button>
+          {manageMode ? (
+            <div data-testid="notes-view-switcher" style={{ display: 'flex', gap: 8, fontSize: 12 }}>
+              {(['live', 'archived', 'bin'] as const).map((v) => (
                 <button
+                  key={v}
                   type="button"
-                  data-testid="notes-bulk-archive"
-                  disabled={selectedIds.size === 0 || manageBusy}
-                  onClick={() => void onBulkManage('archive')}
-                  style={{ ...primaryBtn, padding: '6px 14px', opacity: selectedIds.size === 0 || manageBusy ? 0.6 : 1 }}
-                >
-                  {NOTES_COPY.archiveAction}
-                </button>
-                <button
-                  type="button"
-                  data-testid="notes-bulk-delete"
-                  disabled={selectedIds.size === 0 || manageBusy}
-                  onClick={() => void onBulkManage('delete')}
+                  data-testid={`notes-view-${v}`}
+                  onClick={() => {
+                    setView(v);
+                    if (v === 'archived') void listArchived().then(setArchRows);
+                    if (v === 'bin') void listBin().then(setBinRows);
+                  }}
                   style={{
-                    ...primaryBtn,
-                    padding: '6px 14px',
-                    background: E.danger,
-                    opacity: selectedIds.size === 0 || manageBusy ? 0.6 : 1,
+                    background: 'transparent',
+                    border: `1px solid ${view === v ? E.accent : E.border}`,
+                    borderRadius: 999,
+                    color: view === v ? E.accent : E.muted,
+                    padding: '4px 10px',
+                    cursor: 'pointer',
                   }}
                 >
-                  {NOTES_COPY.deleteAction}
+                  {v === 'live' ? 'Live' : v === 'archived' ? 'Archived' : 'Recently deleted'}
                 </button>
-              </>
-            ) : null}
-          </div>
-        ) : null}
+              ))}
+            </div>
+          ) : null}
+          {manageMode && (selectedIds.size > 0 || (view === 'bin' && binRows.length > 0)) ? (
+            <div data-testid="notes-action-bar" style={{ display: 'flex', gap: 8, fontSize: 12, marginLeft: 'auto' }}>
+              {selectedIds.size > 0 ? (view === 'live' ? (
+                <>
+                  <button type="button" data-testid="notes-archive-btn" onClick={async () => {
+                    await archiveNotes([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId);
+                  }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Archive</button>
+                  <button type="button" data-testid="notes-delete-btn" onClick={() => setConfirmAction('delete')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Delete</button>
+                </>
+              ) : view === 'archived' ? (
+                <button type="button" data-testid="notes-unarchive-btn" onClick={async () => {
+                  await unarchiveNotes([...selectedIds]); setSelectedIds(new Set()); void listArchived().then(setArchRows);
+                }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
+              ) : (
+                <>
+                  <button type="button" data-testid="notes-restore-btn" onClick={async () => {
+                    await restoreFromBin([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows);
+                  }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
+                  <button type="button" data-testid="notes-delete-perm-btn" onClick={() => setConfirmAction('perm')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
+                </>
+              )) : null}
+              {view === 'bin' && binRows.length > 0 ? (
+                <button type="button" data-testid="notes-empty-bin-btn" onClick={() => setConfirmAction('empty')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>
+                  Empty bin
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {confirmAction && (
+            <div data-testid="notes-confirm-bar" style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 8px', borderTop: '1px solid rgba(255,255,255,0.1)', fontSize: 11 }}>
+              <span data-testid="notes-confirm-copy" style={{ flex: 1, opacity: 0.85 }}>
+                {confirmAction === 'delete'
+                  ? NOTES_COPY.deleteLocalOnly
+                  : confirmAction === 'perm'
+                    ? NOTES_COPY.deletePermLocalOnly
+                    : NOTES_COPY.emptyBinLocalOnly}
+              </span>
+              <button type="button" data-testid="notes-confirm-cancel" autoFocus onClick={() => setConfirmAction(null)} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', opacity: 0.9 }}>Cancel</button>
+              <button type="button" data-testid="notes-confirm-ok" onClick={async () => {
+                const act = confirmAction;
+                setConfirmAction(null);
+                if (act === 'delete') { await deleteNotesAtomic([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId); }
+                else if (act === 'perm') { await deletePermanently([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows); }
+                else if (act === 'empty') { await emptyBin(); setSelectedIds(new Set()); setBinRows([]); }
+              }} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', background: E.danger }}>Confirm</button>
+            </div>
+          )}
+        </div>
 
         <div data-testid="notes-timeline" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '36vh', overflowY: 'auto' }}>
-          {notes.map((n) => {
+          {view !== 'live' ? (view === 'archived' ? archRows : binRows).map((r) => {
+            const checked = selectedIds.has(r.note_id);
+            return (
+              <article
+                key={r.note_id}
+                data-testid={`notes-${view === 'archived' ? 'archrow' : 'binrow'}-${r.note_id}`}
+                style={{
+                  alignSelf: 'flex-start',
+                  maxWidth: '88%',
+                  padding: '10px 12px',
+                  borderRadius: 14,
+                  border: `1px solid ${E.border}`,
+                  background: 'rgba(30,20,10,.45)',
+                  outline: manageMode && checked ? `1px solid ${E.accent}` : undefined,
+                }}
+              >
+                {manageMode ? (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: E.muted, marginBottom: 4 }}>
+                    <input
+                      type="checkbox"
+                      data-testid={`notes-check-${r.note_id}`}
+                      checked={checked}
+                      onChange={() =>
+                        setSelectedIds((s) => {
+                          const next = new Set(s);
+                          if (next.has(r.note_id)) next.delete(r.note_id);
+                          else next.add(r.note_id);
+                          return next;
+                        })
+                      }
+                    />
+                    select
+                  </label>
+                ) : null}
+                <p style={{ margin: 0, fontSize: 13, color: E.muted }}>
+                  {view === 'archived' ? 'Encrypted note — unarchive to read' : 'Encrypted note — restore to read'}
+                </p>
+              </article>
+            );
+          }) : notes.map((n) => {
             const outbound = n.direction === 'outbound';
             const label = statusLabel(bubbleStatus(n));
-            const picked = selectedIds.has(n.note_id);
+            const checked = selectedIds.has(n.note_id);
             return (
               <article
                 key={n.note_id}
                 data-testid={`notes-bubble-${n.note_id}`}
                 data-direction={n.direction}
-                onClick={selectMode ? () => toggleSelect(n.note_id) : undefined}
                 style={{
                   alignSelf: outbound ? 'flex-end' : 'flex-start',
                   maxWidth: '88%',
                   padding: '10px 12px',
-                  outline: picked ? `2px solid ${E.accent}` : 'none',
-                  cursor: selectMode ? 'pointer' : 'default',
                   borderRadius: 14,
                   border: `1px solid ${outbound ? E.borderLit : E.border}`,
                   background: outbound
                     ? 'color-mix(in srgb, var(--se-accent) 10%, transparent)'
                     : 'rgba(30,20,10,.45)',
+                  outline: manageMode && checked ? `1px solid ${E.accent}` : undefined,
                 }}
               >
+                {manageMode ? (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: E.muted, marginBottom: 4 }}>
+                    <input
+                      type="checkbox"
+                      data-testid={`notes-check-${n.note_id}`}
+                      checked={checked}
+                      onChange={() =>
+                        setSelectedIds((s) => {
+                          const next = new Set(s);
+                          if (next.has(n.note_id)) next.delete(n.note_id);
+                          else next.add(n.note_id);
+                          return next;
+                        })
+                      }
+                    />
+                    select
+                  </label>
+                ) : null}
                 <p style={{ margin: '0 0 6px', whiteSpace: 'pre-wrap', fontSize: 14 }}>
                   {boundDisplayText(n.body, NOTES_BOUNDS.body)}
                 </p>

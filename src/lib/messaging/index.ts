@@ -15,18 +15,20 @@ export {
   putNote,
   listNotesForThread,
   deleteThread,
-  archiveNotes,
-  deleteNotes,
-  restoreNotes,
-  restoreArchived,
-  purgeDeleted,
-  listArchivedNotes,
-  listDeletedNotes,
-  DELETED_RETENTION_MS,
   putRingChannel,
   listRingChannels,
   newNoteId,
   newThreadId,
+  // 616: multi-select delete/archive — atomic IDB moves on the
+  // per-identity store
+  archiveNotes,
+  unarchiveNotes,
+  deleteNotesAtomic,
+  restoreFromBin,
+  deletePermanently,
+  emptyBin,
+  listArchived,
+  listBin,
 } from './store';
 export {
   sendNoteToPeer,

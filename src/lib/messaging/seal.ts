@@ -6,6 +6,7 @@
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0 } from './types';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 
 export async function sealNoteTo(
   note: NoteWireV0,
@@ -23,11 +24,11 @@ export async function sealNoteTo(
 export function noteOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
+  cycle?: UnlockCycle,
 ): (blob: string) => Promise<NoteWireV0 | null> {
   return async (blob: string): Promise<NoteWireV0 | null> => {
     try {
-      const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
-      const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
+      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
