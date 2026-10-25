@@ -6,9 +6,10 @@
 // sealed note is exactly ONE JSON object {"type":"svrnty-compose-request-v1","request":<the object validateComposeRequest accepts>} and nothing else; any other
 // top-level key is refused.
 //
-// SENDER (Flint #996 Q3): requests are accepted ONLY from the portal's login-code card fingerprint, PINNED in the app's settings (set once by Peter after
-// comparing its first 16 hex with the portal page), NEVER taken from the note, AND the envelope's sender-auth must have verified against that pinned card
-// (`senderVerified`). An unpinned app accepts nothing: there is no trust-on-first-use.
+// SENDER (Flint #996 Q3, K1-K5 #1035): requests are accepted ONLY from the portal's separate "portal-compose" identity, PINNED in the app's settings (set once
+// by Peter after comparing its first 16 hex with the portal page), NEVER taken from the note, AND the envelope's sender-auth must have verified against that
+// pinned card (`senderVerified`). The login-code (passcode) sender is a different, throwaway, unverified identity: it must NEVER be pinned here. An unpinned
+// app accepts nothing: there is no trust-on-first-use. (This code does not know which fingerprint is pinned; the setting's label and the screens carry that.)
 /** PROPOSED wire type string (Archie #1032). */
 export const COMPOSE_NOTE_TYPE = 'svrnty-compose-request-v1';
 /**
