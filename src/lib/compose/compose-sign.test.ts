@@ -10,7 +10,7 @@ import { signWithEnvelope } from '../crypto/sign-envelope';
 import { DOMAIN_LOOM_POST, DOMAIN_LOOM_TASK } from '../format/envelope';
 import { buildSignedBytes } from '../crypto/sign-envelope';
 import { composeSignedBytes, jcs } from './compose-rules';
-import { signComposeRequest, verifyComposePacket, type SignDeps } from './compose-sign';
+import { signComposeRequest, selfCheckComposePacket, type SignDeps } from './compose-sign';
 
 const fx = JSON.parse(readFileSync(join(__dirname, 'compose-vectors-v1.json'), 'utf8'));
 const NOW = new Date('2026-10-25T03:02:00.000Z');
@@ -18,6 +18,9 @@ const POST = fx.preimage[0].object as Record<string, string>;
 const HOSTILE = fx.preimage[1].object as Record<string, string>;
 const TASK = fx.preimage[2].object as Record<string, string>;
 const PASS = 'compose-sign-test';
+
+/** What the card displayed: in these tests the person was shown exactly the object being signed (the G1 tests below break that on purpose). */
+const shownOf = (raw: unknown): Record<string, string> => (raw !== null && typeof raw === 'object' ? { ...(raw as Record<string, string>) } : {});
 
 let identity: { privateKeyArmored: string; passphrase: string };
 let pub: Awaited<ReturnType<typeof readKey>>;
@@ -28,7 +31,7 @@ before(async () => {
 });
 
 test('signs a post: {object, sig_packet_b64}; the packet verifies DETACHED over the bytes rebuilt from the object; the object comes back unchanged', async () => {
-  const r = await signComposeRequest(POST, NOW, identity);
+  const r = await signComposeRequest(POST, shownOf(POST), NOW, identity);
   assert.equal(r.ok, true);
   if (!r.ok) return;
   assert.equal(r.signed.kind, 'post');
@@ -37,7 +40,7 @@ test('signs a post: {object, sig_packet_b64}; the packet verifies DETACHED over 
   assert.notEqual(r.signed.object, POST, 'a fresh copy');
   assert.match(r.signed.sig_packet_b64, /^[A-Za-z0-9+/]+=*$/);
   const bytes = composeSignedBytes('post', 'ed25519', POST);
-  assert.equal(await verifyComposePacket(pub, r.signed.sig_packet_b64, bytes), true);
+  assert.equal(await selfCheckComposePacket(pub, r.signed.sig_packet_b64, bytes), true);
   // The packet is the small detached form, not the ~4.8 KB attached message (fits a URL fragment).
   assert.ok(r.signed.sig_packet_b64.length < 400, `packet is ${r.signed.sig_packet_b64.length} chars`);
 });
@@ -47,16 +50,16 @@ test('signs the hostile-JSON post and the task; the task signs under the TASK do
     [HOSTILE, 'post', DOMAIN_LOOM_POST, DOMAIN_LOOM_TASK],
     [TASK, 'task', DOMAIN_LOOM_TASK, DOMAIN_LOOM_POST],
   ] as const) {
-    const r = await signComposeRequest(obj, NOW, identity);
+    const r = await signComposeRequest(obj, shownOf(obj), NOW, identity);
     assert.equal(r.ok, true, kind);
     if (!r.ok) continue;
     assert.equal(r.signed.kind, kind);
     const canonical = jcs(obj);
-    assert.equal(await verifyComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(domain, 'ed25519', canonical)), true, `${kind}: own domain`);
-    assert.equal(await verifyComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(other, 'ed25519', canonical)), false, `${kind}: other loom domain`);
-    assert.equal(await verifyComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes('svrnty:identity-card:v1', 'ed25519', canonical)), false, `${kind}: card domain`);
-    assert.equal(await verifyComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(domain, 'ed25519+ml-dsa-87', canonical)), false, `${kind}: other suite`);
-    assert.equal(await verifyComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(domain, 'ed25519', canonical.replace(/.$/, ' }'))), false, `${kind}: tampered`);
+    assert.equal(await selfCheckComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(domain, 'ed25519', canonical)), true, `${kind}: own domain`);
+    assert.equal(await selfCheckComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(other, 'ed25519', canonical)), false, `${kind}: other loom domain`);
+    assert.equal(await selfCheckComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes('svrnty:identity-card:v1', 'ed25519', canonical)), false, `${kind}: card domain`);
+    assert.equal(await selfCheckComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(domain, 'ed25519+ml-dsa-87', canonical)), false, `${kind}: other suite`);
+    assert.equal(await selfCheckComposePacket(pub, r.signed.sig_packet_b64, buildSignedBytes(domain, 'ed25519', canonical.replace(/.$/, ' }'))), false, `${kind}: tampered`);
   }
 });
 
@@ -71,7 +74,7 @@ test('a request the validator refuses is NEVER signed: the signer is not even ca
     [{ ...POST, body: 'a'.repeat(2901) }, 'over cap'],
     [null, 'not an object'],
   ] as const) {
-    const r = await signComposeRequest(bad, NOW, identity, deps);
+    const r = await signComposeRequest(bad, shownOf(bad), NOW, identity, deps);
     assert.equal(r.ok, false, why);
     if (!r.ok) assert.equal(r.reason, 'refused', why);
   }
@@ -81,10 +84,10 @@ test('a request the validator refuses is NEVER signed: the signer is not even ca
 test('NEVER SIGN LATE: a card valid when shown is refused at approval time once expires_at has passed (fresh clock, Flint #996 Q6)', async () => {
   let calls = 0;
   const deps: SignDeps = { sign: (async (...a: Parameters<typeof signWithEnvelope>) => (calls++, signWithEnvelope(...a))) as typeof signWithEnvelope };
-  const shown = await signComposeRequest(POST, new Date('2026-10-25T03:04:59.000Z'), identity, deps); // valid then
+  const shown = await signComposeRequest(POST, shownOf(POST), new Date('2026-10-25T03:04:59.000Z'), identity, deps); // valid then
   assert.equal(shown.ok, true);
   calls = 0;
-  const late = await signComposeRequest(POST, new Date('2026-10-25T03:05:00.000Z'), identity, deps); // expires_at == now
+  const late = await signComposeRequest(POST, shownOf(POST), new Date('2026-10-25T03:05:00.000Z'), identity, deps); // expires_at == now
   assert.equal(late.ok, false);
   if (!late.ok && late.reason === 'refused') assert.equal(late.refusal.code, 'expired');
   else assert.fail('expected a refused/expired result');
@@ -93,40 +96,73 @@ test('NEVER SIGN LATE: a card valid when shown is refused at approval time once 
 
 test('a wrong passphrase or a garbage key fails closed with no detail and no packet', async () => {
   for (const id of [{ ...identity, passphrase: 'wrong' }, { privateKeyArmored: 'not a key', passphrase: PASS }]) {
-    const r = await signComposeRequest(POST, NOW, id);
+    const r = await signComposeRequest(POST, shownOf(POST), NOW, id);
     assert.deepEqual(r, { ok: false, reason: 'sign-failed' });
   }
 });
 
 test('fails closed when the signature does not cover the bytes WE rebuilt (a signer that signs the wrong domain)', async () => {
   const wrongDomain: SignDeps = { sign: ((_d: string, input: string, k: string, p: string) => signWithEnvelope(DOMAIN_LOOM_TASK, input, k, p)) as typeof signWithEnvelope };
-  assert.deepEqual(await signComposeRequest(POST, NOW, identity, wrongDomain), { ok: false, reason: 'literal-mismatch' });
+  assert.deepEqual(await signComposeRequest(POST, shownOf(POST), NOW, identity, wrongDomain), { ok: false, reason: 'literal-mismatch' });
   const wrongInput: SignDeps = { sign: ((d: string, _i: string, k: string, p: string) => signWithEnvelope(d, '{"a":"b"}', k, p)) as typeof signWithEnvelope };
-  assert.deepEqual(await signComposeRequest(POST, NOW, identity, wrongInput), { ok: false, reason: 'literal-mismatch' });
+  assert.deepEqual(await signComposeRequest(POST, shownOf(POST), NOW, identity, wrongInput), { ok: false, reason: 'literal-mismatch' });
 });
 
 test('the SELF-VERIFY guard is load-bearing: when the extracted packet does not verify detached, nothing is returned', async () => {
   let asked = 0;
   const failing: SignDeps = { verifyDetached: async () => (asked++, false) };
-  assert.deepEqual(await signComposeRequest(POST, NOW, identity, failing), { ok: false, reason: 'self-verify-failed' });
+  assert.deepEqual(await signComposeRequest(POST, shownOf(POST), NOW, identity, failing), { ok: false, reason: 'self-verify-failed' });
   assert.equal(asked, 1, 'the guard ran exactly once, over the bytes the module rebuilt');
   // Control: with the real verifier the same request succeeds, so the refusal above is the guard and not a broken fixture.
-  assert.equal((await signComposeRequest(POST, NOW, identity)).ok, true);
+  assert.equal((await signComposeRequest(POST, shownOf(POST), NOW, identity)).ok, true);
+});
+
+test('SHOWN = SIGNED (Flint G1): a valid request that is NOT the one displayed is refused, and the signer is never called', async () => {
+  let calls = 0;
+  const deps: SignDeps = { sign: (async (...a: Parameters<typeof signWithEnvelope>) => (calls++, signWithEnvelope(...a))) as typeof signWithEnvelope };
+  const other = { ...POST, body: 'a DIFFERENT but equally valid body' }; // same shape, passes the validator
+  assert.equal((await signComposeRequest(other, shownOf(other), NOW, identity)).ok, true, 'control: the other request is itself valid');
+  calls = 0;
+  // The card showed POST; a slip handed Approve `other`.
+  assert.deepEqual(await signComposeRequest(other, shownOf(POST), NOW, identity, deps), { ok: false, reason: 'shown-mismatch' });
+  // Any single differing field counts, including ones the person might not read (nonce, thread, expiry).
+  for (const k of ['body', 'thread', 'nonce', 'issued_at', 'expires_at', 'fleet'] as const) {
+    const shownDiff = { ...POST, [k]: k === 'fleet' ? 'weft' : k === 'nonce' ? 'f'.repeat(32) : k === 'thread' ? 'lane:svrnty' : k === 'body' ? 'x' : POST[k].replace('0', '1') };
+    const r = await signComposeRequest(POST, shownDiff, NOW, identity, deps);
+    assert.deepEqual(r, { ok: false, reason: 'shown-mismatch' }, `shown differs in ${k}`);
+  }
+  // Extra, missing, non-object or non-string shown values are mismatches too (never a throw).
+  const missing: Record<string, string> = { ...POST };
+  delete missing.body;
+  for (const bad of [{ ...POST, extra: 'x' }, missing, null, undefined, 'POST', [POST], { ...POST, body: 5 }, { 'k\u00E9y': 'v' }] as unknown[]) {
+    assert.deepEqual(await signComposeRequest(POST, bad as Record<string, string>, NOW, identity, deps), { ok: false, reason: 'shown-mismatch' }, JSON.stringify(bad));
+  }
+  assert.equal(calls, 0, 'no mismatched request reached the signer');
+  // Key order of the displayed object does not matter (JCS sorts), so a re-render that reorders keys is NOT a mismatch.
+  const reordered = Object.fromEntries(Object.entries(POST).reverse());
+  assert.equal((await signComposeRequest(POST, reordered, NOW, identity)).ok, true);
+});
+
+test('a request that is refused by the validator stays "refused" even when shown matches it (the validator still gates first)', async () => {
+  const bad = { ...POST, body: 'pe\u200Bter' };
+  const r = await signComposeRequest(bad, shownOf(bad), NOW, identity);
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.reason, 'refused');
 });
 
 test('fails closed on a malformed or foreign-signed attached message', async () => {
   const garbage: SignDeps = { sign: (async () => ({ classical: 'this is not an armored message' })) as unknown as typeof signWithEnvelope };
-  assert.deepEqual(await signComposeRequest(POST, NOW, identity, garbage), { ok: false, reason: 'extract-failed' });
+  assert.deepEqual(await signComposeRequest(POST, shownOf(POST), NOW, identity, garbage), { ok: false, reason: 'extract-failed' });
   // Signed by a DIFFERENT key: the literal matches but the issuer is not the key we hold.
   const other = await generateKey({ type: 'ecc', curve: 'curve25519Legacy', userIDs: [{ name: 'other' }], passphrase: PASS, format: 'armored' });
   const foreign: SignDeps = { sign: ((d: string, i: string) => signWithEnvelope(d, i, other.privateKey, PASS)) as typeof signWithEnvelope };
-  const r = await signComposeRequest(POST, NOW, identity, foreign);
+  const r = await signComposeRequest(POST, shownOf(POST), NOW, identity, foreign);
   assert.equal(r.ok, false);
   if (!r.ok) assert.ok(['extract-failed', 'self-verify-failed'].includes(r.reason), r.reason);
 });
 
 test('the result carries no key material and no passphrase', async () => {
-  const r = await signComposeRequest(POST, NOW, identity);
+  const r = await signComposeRequest(POST, shownOf(POST), NOW, identity);
   assert.equal(r.ok, true);
   const json = JSON.stringify(r);
   assert.doesNotMatch(json, /PRIVATE KEY|BEGIN PGP/);
