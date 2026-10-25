@@ -3,6 +3,9 @@
 //   npx tsx scripts/devin-comm.ts mint
 //   npx tsx scripts/devin-comm.ts admit <peer-card.json>
 //   npx tsx scripts/devin-comm.ts send <fingerprint> "<body>"
+//   npx tsx scripts/devin-comm.ts seal-note <fp> "<body>" — dh-fleet-comms R-1: sign+seal+local copy, NO deposit (stdout = the wire blob)
+//   npx tsx scripts/devin-comm.ts deposit <fp> [blob|stdin]   — R-1 relay leg: POST an already-sealed blob to the peer mailbox
+//   npx tsx scripts/devin-comm.ts intake [blob|stdin]         — R-4 receive: fold a locally-delivered sealed blob through the normal consume seam
 //   npx tsx scripts/devin-comm.ts poll
 //   npx tsx scripts/devin-comm.ts poll-json          — decrypt inbound → durable journal (flint §B cron)
 //   npx tsx scripts/devin-comm.ts loop [intervalMs]
@@ -21,9 +24,10 @@ import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact }
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
-import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { sendNoteFromHeadless, sealNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
-import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
+import { consumeInboundContactUpdates, consumeInboundBlob, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
+import { deriveMailboxId } from '../src/lib/relay/mailbox-auth';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
 import { deriveOwnerHybridSecrets } from '../src/lib/crypto/living-book-receive';
 import type { LivingBookHybridSecrets } from '../src/lib/crypto/living-book-sleeve';
@@ -169,6 +173,13 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
   const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
+}
+
+/** Read an already-sealed blob from stdin (route payloads are large; argv is for small args). */
+async function readStdinBlob(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const c of process.stdin) chunks.push(c as Buffer);
+  return Buffer.concat(chunks).toString('utf8').trim();
 }
 
 // ── triple-ratchet (tr-v1) headless consume/send — mirrors messaging/direct-session.ts ─────────
@@ -470,6 +481,69 @@ async function main() {
         }
       } catch (e) { console.log('webhook: skipped', (e as Error).message); }
     }
+    return;
+  }
+
+  if (cmd === 'seal-note') {
+    // dh-fleet-comms §route R-1 (the local-delivery router's seal leg):
+    // sign → seal → local-copy WITHOUT the relay deposit; stdout carries the
+    // sealed wire form for the caller's DeliveryRouter. The SAME blob then
+    // rides whichever route the registry picks — a local unix intake or the
+    // `deposit` verb below. Peer kem resolution is identical to `send`
+    // (admitted record, fingerprint-bound #456); a kem-less peer fails loud
+    // + nonzero, never a classical downgrade (HNDL).
+    const [fp, body] = rest;
+    const peer = store.getContactByFingerprint(fp);
+    if (!peer) throw new Error(`peer ${fp} not admitted`);
+    const kem = await resolvePeerKemForSend(peer);
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
+    const r = await sealNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store });
+    if (r.blob === null) { console.error(formatNotSent(fp, 'recipient has no verified ML-KEM key (seal refused, never downgrade)')); process.exitCode = 1; return; }
+    console.log(JSON.stringify(r));
+    return;
+  }
+
+  if (cmd === 'deposit') {
+    // dh-fleet-comms §route R-1 (the router's relay leg): POST an ALREADY-SEALED
+    // blob to the peer's mailbox — the same bytes a local intake would have
+    // carried. No crypto here (sealing lives in seal-note); pure transport.
+    const [fp, blobArg] = rest;
+    if (!/^[0-9a-f]{64}$/.test(fp ?? '')) throw new Error('deposit needs the recipient 64-hex fp');
+    const blob = blobArg ?? (await readStdinBlob());
+    if (!blob) throw new Error('deposit: empty blob (argv[2] or stdin)');
+    const mailbox_id = deriveMailboxId(fp);
+    const tf = trackedFetch(globalThis.fetch);
+    let res: Response;
+    try {
+      res = await tf.fetchImpl(`${RELAY}/envelope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mailbox_id, blob }),
+      });
+    } catch (e) {
+      console.error(`deposit to ${fp.slice(0, 12)}… threw at stage ${tf.stage()}: ${(e as Error).message}`);
+      process.exitCode = 1; return;
+    }
+    console.log(JSON.stringify({ deposited: res.ok }));
+    if (!res.ok) { console.error(formatNotSent(fp, `the relay did not accept the deposit (HTTP ${res.status})`)); process.exitCode = 1; }
+    return;
+  }
+
+  if (cmd === 'intake') {
+    // dh-fleet-comms §route R-4 (the local unix intake's ingest callable): a
+    // sealed blob delivered host-locally folds through the SAME consumeOne
+    // seam the relay poll uses — same decryptors, same verify order, same
+    // dedupe (note_id) and accept rules — minus the mailbox ack (nothing was
+    // ever in the mailbox). Prints {ok, outcome}: ok=false/'retryable' means
+    // "undecided now" — the sender's router falls back to the relay, which
+    // parks the envelope for a later poll exactly as usual.
+    const blob = rest[0] ?? (await readStdinBlob());
+    if (!blob) throw new Error('intake: empty blob (argv[1] or stdin)');
+    const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
+    deps.joiner = buildLocalJoinerSeam(owner, store);
+    const outcome = await consumeInboundBlob(deps, blob);
+    const ok = outcome.kind !== 'retryable';
+    console.log(JSON.stringify({ ok, outcome: outcome.kind }));
     return;
   }
 
