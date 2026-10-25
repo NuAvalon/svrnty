@@ -37,8 +37,11 @@ describe('beta-messaging copy — claim-honesty', () => {
     assert.doesNotMatch(BETA_COPY.whatItIs, /who you talk to|communication relationships|never learns who/i);
     assert.match(BETA_COPY.sending, /you'll see Sent/);
     assert.match(BETA_COPY.sending, /A Delivered confirmation is coming/);
-    assert.match(BETA_COPY.sendingWait, /waits for them/);
-    assert.match(BETA_COPY.sendingWait, /will eventually expire/);
+    // Hypatia #786/#791 + Flint #788: a hard 7-day relay hold, loss is silent, no delivery assertion.
+    // Verified for DEV's durable relay only; a PROD line needs "A relay restart can also lose it."
+    assert.match(BETA_COPY.sendingWait, /the relay holds your message for up to 7 days/);
+    assert.match(BETA_COPY.sendingWait, /it's lost, and you won't be told/);
+    assert.doesNotMatch(BETA_COPY.sendingWait, /waits for them|it delivers|eventually/);
     assert.doesNotMatch(BETA_COPY.sendingWait, /you'll be notified it expired/);
     assert.doesNotMatch(BETA_COPY.sendingWait, /no message ever lost/);
     assert.match(BETA_COPY.receiving, /saved to this device/);
