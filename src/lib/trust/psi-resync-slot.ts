@@ -87,6 +87,8 @@ export class ResyncSlotSource {
    */
   private claimSubRoute(nowMs: number): number | null {
     const w = currentWindowIndex(nowMs);
+    // Keep W-1 too: if the clock steps BACKWARDS across a boundary, a seal can land in W-1 after one in W, and its
+    // used set must still be there (Apollo W9: pruning to W alone only differs in that case, so it has no test).
     for (const old of this.usedSubRoutes.keys()) if (old < w - 1) this.usedSubRoutes.delete(old);
     const used = this.usedSubRoutes.get(w) ?? new Set<number>();
     this.usedSubRoutes.set(w, used);
