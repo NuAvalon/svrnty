@@ -17,7 +17,7 @@ export const BETA_COPY = {
   whatItIs:
     "Send and receive end-to-end encrypted messages with your contacts. Every message is sealed on your device — the relay only ever moves sealed blobs, so it can't read your messages.",
   sending:
-    "When you send, you'll see Sent — your message left your device sealed and reached the relay. (A Delivered confirmation is coming.)",
+    "When you send, you'll see Sent — your message left your device sealed and reached the relay. You'll see Delivered if their app confirms it arrived.",
   sendingWait:
     "If they haven't joined yet, the relay holds your message for up to 7 days. If they don't collect it in time, it's lost, and you won't be told.",
   receiving:
