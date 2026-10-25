@@ -21,6 +21,7 @@ import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact }
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
 import { acceptJoinerAtGate, buildAdmitRecord } from '../src/lib/trust/grow-gate';
@@ -381,6 +382,11 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    // The outer hybrid seal needs the peer's ML-KEM key, taken from the ADMITTED record and re-checked
+    // against its fingerprint (#456). Resolve it BEFORE the ratchet chain is advanced + persisted: a refusal
+    // must leave ratchet-sessions.json untouched, not burn an index for a message that was never sent.
+    const kem = await resolvePeerKemForSend(peer);
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
     const rp = await ratchetPeerOf(peer);
     if (!rp) throw new Error(`peer ${fp} lacks ratchet keys (x25519/mlkem)`);
     const self = ratchetSelf(artifact);
@@ -396,8 +402,15 @@ async function main() {
       return packet;
     });
     const wire = JSON.stringify({ type: TR_BODY, packet });
-    const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, body: wire, store, relayBase: RELAY });
+    let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
+    const tf = trackedFetch(globalThis.fetch);
+    try {
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+    } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT; the chain already advanced
+      console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
+    }
     console.log(JSON.stringify(r));
+    if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent; this ratchet index is spent)')); process.exitCode = 1; }
     return;
   }
 
@@ -405,8 +418,19 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
-    const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, body, store, relayBase: RELAY });
+    const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
+    let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
+    const tf = trackedFetch(globalThis.fetch);
+    try {
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+    } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
+      console.error(sendThrowLine(fp, e, tf.stage())); process.exitCode = 1; return;
+    }
     console.log(JSON.stringify(r));
+    // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
+    // ping the webhook below for a reply that never left.
+    if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent)')); process.exitCode = 1; return; }
     // Peter's rule: replies to devin-cloud must also ping his automation webhook (wakes his session).
     if (fp === 'b0d61d883e39edb9a85ceb3ff3472e0cfd6cc6a4a0007c25eaa9275c9c5bea81') {
       try {
