@@ -9,7 +9,7 @@ import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
 import type { NoteRecord } from './types';
-import { isTripleRatchetBody, sealDirectNote } from './direct-session';
+import { isTripleRatchetBody, chooseWireBody, type RatchetIO } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
 
 export interface NoteSenderIdentity {
@@ -39,9 +39,12 @@ export async function sendNoteToPeer(args: {
   threadId?: string;
   relayBase?: string;
   fetchImpl?: typeof fetch;
-  /** When both sides have X25519 + ML-KEM, the inner body is a triple-ratchet packet. */
+  /** When both sides have X25519 + ML-KEM AND the peer has been observed to send ratchet frames (D1), the inner body is a
+   *  triple-ratchet packet; otherwise it is the plain body, which still travels inside the hybrid outer seal. */
   ownerRatchet?: RatchetIdentity;
   peerRatchet?: RatchetPeer;
+  /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
+  io?: { ratchet?: RatchetIO; putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
@@ -55,17 +58,19 @@ export async function sendNoteToPeer(args: {
   // (the note simply stays the honest 'Sent · unconfirmed.' floor).
   const receipt_nonce = newReceiptNonce();
 
-  let wireBody = args.body;
-  if (args.ownerRatchet && args.peerRatchet) {
-    const sealed = await sealDirectNote(
-      args.peerFingerprint,
-      args.body,
-      args.ownerRatchet,
-      args.peerRatchet,
-    );
-    if (!sealed) throw new Error('direct ratchet could not seal');
-    wireBody = sealed;
-  }
+  // R1 + D1: the wire-body policy is one function, in the only safe order (gate -> ratchet -> sign -> seal -> POST). A note that
+  // cannot be deposited (no verified ML-KEM key) touches NO ratchet state, and a peer not yet observed to send ratchet frames
+  // gets the plain body. See chooseWireBody (direct-session.ts).
+  const { wireBody } = await chooseWireBody(
+    {
+      body: args.body,
+      peerFingerprint: args.peerFingerprint,
+      canDeposit: !!args.peerPqKemPublicKey,
+      ownerRatchet: args.ownerRatchet,
+      peerRatchet: args.peerRatchet,
+    },
+    args.io?.ratchet,
+  );
 
   const unsignedWire: NoteWireV0 = {
     type: NOTE_WIRE_TYPE,
@@ -118,9 +123,9 @@ export async function sendNoteToPeer(args: {
     wire_type: NOTE_WIRE_TYPE,
     receipt_nonce, // source-of-truth for verifying the recipient's delivery receipt (delivered stays unset until then)
   };
-  await putNote(local);
+  await (args.io?.putNote ?? putNote)(local);
 
-  const threads = await listThreads();
+  const threads = await (args.io?.listThreads ?? listThreads)();
   let thread = threads.find((t) => t.thread_id === thread_id);
   if (!thread) {
     thread = {
@@ -140,7 +145,7 @@ export async function sendNoteToPeer(args: {
   } else {
     thread = { ...thread, last_activity_at: sent_at };
   }
-  await putThread(thread);
+  await (args.io?.putThread ?? putThread)(thread);
 
   return { note_id, thread_id, deposited };
 }

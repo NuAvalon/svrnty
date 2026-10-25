@@ -342,12 +342,28 @@ export async function putRatchetSession(peerFingerprint: string, snapshot: Ratch
   await txPut('ratchet_sessions', { peer_fingerprint: peerFingerprint, enc } satisfies RatchetRow);
 }
 
-export async function getRatchetSession(peerFingerprint: string): Promise<RatchetSnapshot | null> {
+/**
+ * What is stored for this peer. THREE states, on purpose (R3): a row that EXISTS but cannot be read (wrong key, torn write,
+ * corruption) is NOT "no session". Collapsing the two made the caller start a fresh initiator session and overwrite the
+ * unreadable row, silently replacing the real session with a parallel one the peer's chain no longer matches.
+ */
+export type RatchetSessionRead =
+  | { state: 'absent' }
+  | { state: 'unreadable' }
+  | { state: 'ok'; snapshot: RatchetSnapshot };
+
+export async function readRatchetSession(peerFingerprint: string): Promise<RatchetSessionRead> {
   const row = await txGet<RatchetRow>('ratchet_sessions', peerFingerprint);
-  if (!row) return null;
+  if (!row) return { state: 'absent' };
   try {
-    return await decryptJson<RatchetSnapshot>(row.enc);
+    return { state: 'ok', snapshot: await decryptJson<RatchetSnapshot>(row.enc) };
   } catch {
-    return null;
+    return { state: 'unreadable' };
   }
+}
+
+/** Back-compat for existing callers/exports: the snapshot, or null for BOTH absent and unreadable. New code uses readRatchetSession. */
+export async function getRatchetSession(peerFingerprint: string): Promise<RatchetSnapshot | null> {
+  const r = await readRatchetSession(peerFingerprint);
+  return r.state === 'ok' ? r.snapshot : null;
 }
