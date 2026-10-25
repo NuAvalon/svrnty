@@ -1,0 +1,149 @@
+// src/lib/trust/psi-resync-slot.ts
+// #704 D-S51 option (A): distress rides the PSI resync (contract svrnty_704A_distress_rides_resync_v3.md).
+//
+// Every tick sends a constant number (K) of initiate-shaped PSI requests. Each one:
+//   - pads its blinded set to exactly N entries with random dummy points (a dummy never matches: it is a
+//     uniformly random u-coordinate, not H(fp) for any fp), so the set size is hidden from the satellite AND
+//     the responder;
+//   - carries exactly ONE slot = a full K1 onion (sealForRoute: uniform 2048B frame → guardian DEVICE seal →
+//     satellite seal + route_id). A queued cry → a 'distress' onion; otherwise a 'cover' onion built the same
+//     way to a dummy device + random route, so the two are the same length and the PSI satellite (which
+//     forwards the slot opaque, S59) cannot tell them apart;
+//   - is padded as a WHOLE JSON body to one fixed byte length BEFORE the satellite seal (inside the AEAD, R1).
+// A tick with no due peer sends a cover initiate (cover:true inside the seal; the satellite creates no session).
+//
+// No new crypto: composition over sealForRoute / sealPsiToSatellite (G4). Timing (R6): nothing here sends;
+// enqueueCry only records the cry, and the next scheduled tick picks it up.
+//
+// KNOWN RESIDUAL (G2), true in the current single-satellite deployment: the PSI satellite and the guardian's
+// satellite are the same operator, so it can link a route-R deposit to the guardian's poll of R within a
+// window. No "metadata-private" claim until guardian-poll batching lands (Flint C5).
+// NOT covered here: the respond-phase traffic (pending / blinded / respond) stays per-session. It carries no
+// slot and is PSI metadata the satellite already holds, so it does not decide distress indistinguishability.
+// The reply bucket is S58.
+
+import { bytesToHex, randomBytes } from '@noble/hashes/utils.js';
+import { sealForRoute } from '../sync/onion-transport.js';
+import { buildCoverPayload } from '../crypto/distress-mark.js';
+import { generateMailboxKeypair, toPublicKeys } from '../crypto/mailbox-keys.js';
+import type { MailboxEnvelopePackage, MailboxPublicKeys } from '../crypto/mailbox-envelope.js';
+
+/** N: blinded entries per request (product number, Peter; proposed 64). */
+export const PSI_BLINDED_BUCKET_N = 64;
+/** K: initiate-shaped requests per tick (product number, Peter; proposed 1). */
+export const PSI_REQUESTS_PER_TICK_K = 1;
+/** R5: a cry rides this many consecutive ticks, re-sealed fresh each time; the guardian dedups by epoch. */
+export const CRY_TICKS = 3;
+/** Whole initiate body length in bytes before the satellite seal (R1). Measured max real body at N=64 =
+ *  14738B (N blinded + one ~10KB slot + response_pub + fixed fields); 16384 leaves 1.6KB headroom. Sealed wire
+ *  ≈ 24KB per request. padInitiateBody throws if exceeded (and the length test catches it). Re-measure if N moves. */
+export const PSI_INITIATE_BODY_BYTES = 16384;
+
+/** What a cry needs to be sealed again each tick (fresh KEM + nonce every time: the seal is re-run, never reused). */
+export interface CryInput {
+  /** The signed distress cell (buildDistressCell). Must fit one uniform frame. */
+  payload: Uint8Array;
+  /** Guardian DEVICE mailbox keys (the inner seal). */
+  guardianDevice: MailboxPublicKeys;
+  /** Guardian's satellite routing keys (the outer seal). */
+  guardianSatellite: MailboxPublicKeys;
+  /** The K1 route_id for the CURRENT window (G3: called at seal time, so a cry spanning a window re-routes). */
+  routeIdAt: (nowMs: number) => string;
+}
+
+/**
+ * The per-device slot source the tick draws from. One instance per running sync loop.
+ * enqueueCry never sends (R6/D-6). nextSlot is called exactly once per request.
+ */
+export class ResyncSlotSource {
+  private cry: { input: CryInput; ticksLeft: number } | null = null;
+
+  constructor(
+    /** Satellite keys used for the cover onion's outer seal: the same satellite a real cry goes to today (G2). */
+    private readonly coverSatellite: MailboxPublicKeys,
+  ) {}
+
+  /** Record a cry for the next scheduled ticks. A new cry replaces an unfinished one (same guardian dedup). */
+  enqueueCry(input: CryInput): void {
+    this.cry = { input, ticksLeft: CRY_TICKS };
+  }
+
+  /** True while a cry still has ticks to ride. Local state only; never on the wire. */
+  hasPendingCry(): boolean {
+    return this.cry !== null && this.cry.ticksLeft > 0;
+  }
+
+  /**
+   * The ONE slot for the next request: the cry (re-sealed fresh) while it has ticks left, else a cover onion.
+   * Both go through sealForRoute with a 2048B frame, 32-hex route and same-size keys → identical length.
+   */
+  async nextSlot(nowMs: number = Date.now()): Promise<MailboxEnvelopePackage> {
+    if (this.cry && this.cry.ticksLeft > 0) {
+      const { input } = this.cry;
+      this.cry.ticksLeft -= 1;
+      // Equal work: the cover path mints a throwaway device keypair (ML-KEM keygen). Do the same here and
+      // discard it, so a distress slot does not come out measurably faster than a cover slot.
+      void generateMailboxKeypair();
+      if (this.cry.ticksLeft === 0) this.cry = null;
+      return sealForRoute({
+        payload: input.payload,
+        frameType: 'distress',
+        recipientDevice: input.guardianDevice,
+        satellite: input.guardianSatellite,
+        routeId: input.routeIdAt(nowMs),
+      });
+    }
+    return sealCoverSlot(this.coverSatellite);
+  }
+}
+
+/** G1/R3: a cover onion to a throwaway device on a random route, through the SAME construction as a cry. */
+export async function sealCoverSlot(satellite: MailboxPublicKeys): Promise<MailboxEnvelopePackage> {
+  return sealForRoute({
+    payload: buildCoverPayload(),
+    frameType: 'cover',
+    recipientDevice: toPublicKeys(generateMailboxKeypair()),
+    satellite,
+    routeId: bytesToHex(randomBytes(16)),
+  });
+}
+
+/** A dummy blinded entry: 32 random bytes as base64 (same shape as a real x25519 output). */
+function dummyBlinded(): string {
+  return Buffer.from(randomBytes(32)).toString('base64');
+}
+
+/**
+ * Pad a blinded set (with its parallel fp order) to exactly N entries. Dummies get fp '' so
+ * completeTrustSync's `if (fp)` skips any (negligible-probability) dummy match. The caller must already have
+ * refused a set larger than N. Shuffles real + dummy together so position says nothing.
+ */
+export function padBlindedSet(
+  blinded: string[],
+  fpOrder: string[],
+  shuffle: <T>(a: T[]) => T[],
+): { blinded: string[]; fpOrder: string[] } {
+  if (blinded.length > PSI_BLINDED_BUCKET_N) {
+    throw new Error(`padBlindedSet: ${blinded.length} entries exceed the bucket N=${PSI_BLINDED_BUCKET_N}`);
+  }
+  const pairs = blinded.map((b, i) => ({ b, fp: fpOrder[i] ?? '' }));
+  while (pairs.length < PSI_BLINDED_BUCKET_N) pairs.push({ b: dummyBlinded(), fp: '' });
+  const shuffled = shuffle(pairs);
+  return { blinded: shuffled.map(p => p.b), fpOrder: shuffled.map(p => p.fp) };
+}
+
+/**
+ * R1: serialize the initiate body and pad it to exactly PSI_INITIATE_BODY_BYTES with a `pad` field. Returns
+ * the padded OBJECT (the satellite seal re-serializes it; JSON.stringify of the same object is deterministic,
+ * so the sealed plaintext length is exactly PSI_INITIATE_BODY_BYTES). Throws if the body is already too large:
+ * a short or oversized request would be a tell, so it must fail loudly in tests, never send.
+ */
+export function padInitiateBody(body: Record<string, unknown>): Record<string, unknown> {
+  const withEmptyPad = { ...body, pad: '' };
+  const baseLen = new TextEncoder().encode(JSON.stringify(withEmptyPad)).length;
+  const fill = PSI_INITIATE_BODY_BYTES - baseLen;
+  if (fill < 0) {
+    throw new Error(`padInitiateBody: body ${baseLen}B exceeds the fixed ${PSI_INITIATE_BODY_BYTES}B bucket`);
+  }
+  return { ...body, pad: '0'.repeat(fill) };
+}

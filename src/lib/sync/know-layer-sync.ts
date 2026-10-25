@@ -104,9 +104,20 @@ export function buildKnowOverlayDeps(
   return {
     getTrustedPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
+      // #704 (A) due queue: a peer with a live initiator session is `pending` (skipped until it completes or
+      // expires), so K-per-tick rotates through the book instead of re-initiating the first peer forever.
+      const withSession = new Set(
+        (await store.getAllContacts(ownerFingerprint))
+          .filter((c) => typeof c.psi_session_id === 'string' && c.psi_session_id.length > 0)
+          .map((c) => c.fingerprint),
+      );
       return edges
         .filter((e) => e.trusted && !isDecayed(e))
-        .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
+        .map((e) => ({
+          fingerprint: e.peer_fingerprint,
+          lastSync: lastSyncOf(e),
+          pending: withSession.has(e.peer_fingerprint),
+        }));
     },
 
     getKnownPeers: async () => {
