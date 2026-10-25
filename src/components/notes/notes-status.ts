@@ -23,6 +23,30 @@ export function statusLabel(status: NoteBubbleStatus): string {
   return '';
 }
 
+/**
+ * Has this peer already PROVEN it sends delivery receipts? True iff at least one OUTBOUND note in the conversation carries a
+ * VERIFIED receipt (`delivered === true`, set only by the receipt consume seam after verifyReceiptWire). Derived from stored
+ * notes, so there is nothing new to persist. Strict `=== true`: a truthy non-boolean does not count.
+ */
+export function peerSendsReceipts(notes: ReadonlyArray<{ direction: string; delivered?: unknown }>): boolean {
+  return notes.some((n) => n.direction === 'outbound' && n.delivered === true);
+}
+
+/**
+ * The secondary hint "Awaiting delivery confirmation" PROMISES that a receipt may arrive. Only the browser sends receipts: our
+ * agents never do, and a classical contact cannot. So the promise is made only for a peer who has already proven it sends them
+ * (observed capability, same shape as the ratchet's D1 rule); otherwise the note shows the bare floor "Sent · unconfirmed." and
+ * nothing that implies a confirmation is coming. (Hypatia #745.)
+ */
+export function showAwaitingHint(a: {
+  outbound: boolean;
+  status: NoteBubbleStatus;
+  hasReceiptNonce: boolean;
+  peerSendsReceipts: boolean;
+}): boolean {
+  return a.outbound && a.status === 'sent-unconfirmed' && a.hasReceiptNonce && a.peerSendsReceipts;
+}
+
 // claim-sweep:ok guard regex that blocks this claim (TG-1 annotation_ok, Hypatia v1.1.1)
 const FORBIDDEN_LIVE_STATUS = /\b(Delivered|Read|Expired)\b/;
 

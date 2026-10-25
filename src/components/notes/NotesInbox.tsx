@@ -45,7 +45,7 @@ import {
 } from './notes-field';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
 import { sendNoteFromInbox } from './notes-send';
-import { outboundStatus, statusLabel, type NoteBubbleStatus } from './notes-status';
+import { outboundStatus, statusLabel, peerSendsReceipts, showAwaitingHint, type NoteBubbleStatus } from './notes-status';
 import { boundDisplayText, formatFingerprintShort } from './notes-text';
 
 type Props = {
@@ -383,6 +383,8 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
   };
 
   const sendDisabled = busy || !sender?.canonical || rows.length === 0 || !selected;
+  // Has THIS conversation's peer already sent us a verified receipt? Gates the "Awaiting delivery confirmation" promise (Hypatia #745).
+  const peerReceipts = peerSendsReceipts(notes);
 
   return (
     <section data-testid="notes-inbox" className="notes-field-shell" aria-label={NOTES_COPY.tabLabel}>
@@ -587,13 +589,17 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
               const outbound = n.direction === 'outbound';
               const status = bubbleStatus(n);
               const label = statusLabel(status);
-              // Secondary hint under a deposited-but-unconfirmed outbound note. GATED to flow-live
-              // PER-NOTE (Hypatia #172241 + Flint #172222 caveat): render "Awaiting delivery confirmation"
-              // ONLY when a receipt is genuinely in-flight for THIS note — i.e. it was sent through the live
-              // flow, which stamps receipt_nonce. A note with no nonce (sent before the flow shipped) can
-              // never get a receipt, so it keeps the bare floor — no false "confirmation is coming" promise.
-              // The hint auto-disappears at graduation (status flips to 'delivered'). (Athena — Nov-5.)
-              const awaitingDelivery = outbound && status === 'sent-unconfirmed' && !!n.receipt_nonce;
+              // Secondary hint under a deposited-but-unconfirmed outbound note. It PROMISES a receipt may come, so it is
+              // gated twice: (1) PER-NOTE, only a note sent through the live flow (it carries receipt_nonce; Hypatia #172241 +
+              // Flint #172222), and (2) PER-PEER, only a peer who has ALREADY sent us a verified receipt (Hypatia #745): our
+              // agents never send receipts and a classical contact cannot, so for them the note keeps the bare floor
+              // "Sent · unconfirmed." and nothing implies a confirmation is coming. The hint disappears at graduation.
+              const awaitingDelivery = showAwaitingHint({
+                outbound,
+                status,
+                hasReceiptNonce: !!n.receipt_nonce,
+                peerSendsReceipts: peerReceipts,
+              });
               const day = formatNoteDay(n.sent_at);
               const prevDay = i > 0 ? formatNoteDay(notes[i - 1].sent_at) : '';
               return (
