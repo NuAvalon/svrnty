@@ -112,3 +112,18 @@ test('hasDuplicateJsonKeys: nested, arrays, escapes, strings that look like JSON
   for (const t of no) assert.equal(hasDuplicateJsonKeys(t), false, t);
   for (const t of ['', '{', '{"a"', '{"a":}', 'nul', '{"a":1', '[1,2', '{"a":1 "b":2}']) assert.equal(hasDuplicateJsonKeys(t), true, `fail closed on ${JSON.stringify(t)}`);
 });
+
+// compose-words v1 W4 (Flint lane:portal #1465): a request string with a lone surrogate is refused as wrong-shape, because TS and Python escape it differently
+// and two honest sides would then show different check-words. Raw JSON can say it with an escape such as "\ud800".
+test('W4: a LONE surrogate in a request value or key is refused as wrong-shape (JSON \\uD800 escapes); a valid surrogate PAIR still passes', () => {
+  const withBody = (escaped: string) => `{"type":"${COMPOSE_NOTE_TYPE}","request":${JSON.stringify({ ...POST, body: 'X' }).replace('"X"', `"${escaped}"`)}}`;
+  for (const bad of ['\\ud800', 'a\\udc00b', 'x\\ud83dy', '\\udc00\\ud800']) {
+    assert.equal(code(parseComposeNote(ok({ plaintext: withBody(bad) }), PIN64)), 'wrong-shape', bad);
+  }
+  assert.equal(code(parseComposeNote(ok({ plaintext: withBody('\\ud83d\\ude00') }), PIN64)), 'OK', 'a valid pair (U+1F600) passes the parser');
+  // a lone surrogate in a KEY (the validator would refuse unknown-field, but the parser must not hand the words a divergent string either)
+  const keyed = `{"type":"${COMPOSE_NOTE_TYPE}","request":${JSON.stringify(POST).replace('"body"', '"bo\\ud800dy"')}}`;
+  assert.equal(code(parseComposeNote(ok({ plaintext: keyed }), PIN64)), 'wrong-shape');
+  // the sender gate still comes first: an unpinned app says no-pinned-sender, not wrong-shape
+  assert.equal(code(parseComposeNote(ok({ plaintext: withBody('\\ud800') }), null)), 'no-pinned-sender');
+});

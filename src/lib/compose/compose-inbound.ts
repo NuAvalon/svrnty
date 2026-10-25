@@ -10,6 +10,8 @@
 // by Peter after comparing its first 16 hex with the portal page), NEVER taken from the note, AND the envelope's sender-auth must have verified against that
 // pinned card (`senderVerified`). The login-code (passcode) sender is a different, throwaway, unverified identity: it must NEVER be pinned here. An unpinned
 // app accepts nothing: there is no trust-on-first-use. (This code does not know which fingerprint is pinned; the setting's label and the screens carry that.)
+import { hasLoneSurrogate } from './compose-rules';
+
 /** Wire type string. CONFIRMED by Athena (lane:portal #1163): top level is exactly {"type","request"}. */
 export const COMPOSE_NOTE_TYPE = 'svrnty-compose-request-v1';
 /**
@@ -33,6 +35,14 @@ export type InboundRefusalCode =
   | 'wrong-type';
 
 export type InboundResult = { ok: true; raw: unknown } | { ok: false; code: InboundRefusalCode };
+
+/** True if any string in `v` (values and keys, any depth) holds a lone UTF-16 surrogate. */
+function hasLoneSurrogateDeep(v: unknown): boolean {
+  if (typeof v === 'string') return hasLoneSurrogate(v);
+  if (Array.isArray(v)) return v.some(hasLoneSurrogateDeep);
+  if (v !== null && typeof v === 'object') return Object.entries(v as Record<string, unknown>).some(([k, x]) => hasLoneSurrogate(k) || hasLoneSurrogateDeep(x));
+  return false;
+}
 
 /** A usable pin is the FULL fingerprint (lowercase hex, 40 or 64): a prefix pin would let a different identity with the same first 16 hex through. */
 export function isUsablePin(fp: unknown): fp is string {
@@ -169,5 +179,8 @@ export function parseComposeNote(
   const o = parsed as { type?: unknown; request?: unknown };
   if (o.type !== COMPOSE_NOTE_TYPE) return { ok: false, code: 'wrong-type' };
   if (o.request === null || typeof o.request !== 'object' || Array.isArray(o.request)) return { ok: false, code: 'wrong-shape' };
+  // compose-words v1 W4 (Flint lane:portal #1465): TS and Python escape a lone surrogate differently, so two honest sides would show different check-words.
+  // Refuse it here, like any other malformed shape, before the validator or the words ever see it.
+  if (hasLoneSurrogateDeep(o.request)) return { ok: false, code: 'wrong-shape' };
   return { ok: true, raw: o.request };
 }

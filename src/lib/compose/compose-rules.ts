@@ -169,6 +169,20 @@ export function jcs(obj: Record<string, string>): string {
   return out;
 }
 
+/** True if `s` contains a UTF-16 surrogate that is not half of a valid pair. TS and Python escape those differently, so two honest sides would show different words. */
+export function hasLoneSurrogate(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const n = s.charCodeAt(i + 1);
+      if (n >= 0xdc00 && n <= 0xdfff) { i++; continue; }
+      return true;
+    }
+    if (c >= 0xdc00 && c <= 0xdfff) return true;
+  }
+  return false;
+}
+
 /** The exact bytes (as a string) the app signs: LP(domain) || LP(suite) || JCS(object). The old NUL-tag preimage is withdrawn (spec §8). */
 export function composeSignedBytes(kind: ComposeKind, suite: ComposeSuite, obj: Record<string, string>): string {
   if (!COMPOSE_SUITES.includes(suite)) throw new Error(`compose: unknown suite ${String(suite)}`);

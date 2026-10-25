@@ -17,7 +17,9 @@ export const REFUSAL_TTL_MS = 10 * 60 * 1000;
 
 export type QueueItem =
   | { kind: 'sign'; nonce: string; request: ValidRequest; raw: unknown; expiresAtMs: number; receivedAtMs: number }
-  | { kind: 'refusal'; nonce: string | null; refusal: Refusal; receivedAtMs: number };
+  | { kind: 'refusal'; nonce: string | null; refusal: Refusal; receivedAtMs: number;
+      /** The text of the ONE field the refusal names (<= the note cap), so the card can show it with [U+XXXX] markers; absent if the field is not a string. */
+      shownText?: string };
 
 export interface QueueState {
   readonly pending: readonly QueueItem[];
@@ -69,7 +71,9 @@ export function enqueue(state: QueueState, raw: unknown, now: Date): { state: Qu
   if (!v.ok) {
     if (v.refusal.code !== 'refused-characters') return { state: base, result: { outcome: 'dropped', code: v.refusal.code } };
     if (base.pending.length >= QUEUE_CAP) return { state: base, result: { outcome: 'full' } };
-    const item: QueueItem = { kind: 'refusal', nonce, refusal: v.refusal, receivedAtMs: now.getTime() };
+    const f = v.refusal.field;
+    const t = f !== undefined && typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>)[f] : undefined;
+    const item: QueueItem = { kind: 'refusal', nonce, refusal: v.refusal, receivedAtMs: now.getTime(), ...(typeof t === 'string' ? { shownText: t } : {}) };
     return { state: { pending: [...base.pending, item], seen: remember(base.seen, nonce) }, result: { outcome: 'queued', kind: 'refusal' } };
   }
   if (base.pending.length >= QUEUE_CAP) return { state: base, result: { outcome: 'full' } };
