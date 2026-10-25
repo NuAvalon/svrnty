@@ -593,6 +593,10 @@ async function main() {
       journaled++;
     }
     writeFileAtomic(attemptsPath, JSON.stringify(attempts));
+    // polled / rejected / dropped come straight from consume's summary (see ConsumeSummary). `dropped` is an
+    // AGGREGATE for THIS poll with no sender in it, and it has two kinds: a terminal drop (undecryptable,
+    // bad signature, not-in-book) is counted once and acked away, but a RETRYABLE envelope stays in the mailbox
+    // and is counted again on every poll until it resolves. So a steady dropped>0 can be one stuck envelope.
     console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped }));
     return;
   }
