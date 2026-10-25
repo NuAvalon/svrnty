@@ -9,13 +9,9 @@
 import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0 } from './types';
-<<<<<<< ours
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
-||||||| base
-=======
 import { RECEIPT_WIRE_TYPE, tryParseReceiptWire, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
->>>>>>> theirs
 
 export async function sealNoteTo(
   note: NoteWireV0,
@@ -100,19 +96,38 @@ export async function sealReceiptTo(
   return (await encrypt({ message, encryptionKeys })) as string;
 }
 
-/** Decrypt opaque blob → ReceiptWireV0, or null on any failure / non-receipt (I-1 silent drop). */
+/**
+ * The receipt inner-wire type-gate, string in → ReceiptWireV0 | null. Exported as a `WireParser` for the single
+ * dual-read chokepoint (hybrid-dual-read.ts: makeHybridOpener(openEnv, parseReceiptWire)) so the hybrid leg and
+ * the classical leg run the EXACT same discriminator → no-cross-swallow is byte-identical on both (same shape as
+ * {@link parseNoteWire}). Null on non-JSON or any non-receipt shape.
+ */
+export function parseReceiptWire(innerUtf8: string): ReceiptWireV0 | null {
+  try {
+    return tryParseReceiptWire(JSON.parse(innerUtf8));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decrypt opaque blob → ReceiptWireV0, or null on any failure / non-receipt (I-1 silent drop). Classical
+ * fallback leg of the dual-read; like {@link noteOpenpgpDecryptor} it runs OFF the poll's N10 unlock cycle when one
+ * is given (a lock / identity switch mid-tick must stop THIS decryptor too: a receipt must not be opened, and so
+ * not accepted, after the cycle ended).
+ */
 export function receiptOpenpgpDecryptor(
   recipientPrivateKeyArmored: string,
   passphrase: string,
+  cycle?: UnlockCycle,
 ): (blob: string) => Promise<ReceiptWireV0 | null> {
   return async (blob: string): Promise<ReceiptWireV0 | null> => {
     try {
-      const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
-      const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
+      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      return tryParseReceiptWire(JSON.parse(text)); // null for any non-receipt shape → caller falls through
+      return parseReceiptWire(text); // null for any non-receipt shape → caller falls through
     } catch {
       return null;
     }

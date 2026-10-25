@@ -56,28 +56,14 @@ import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-res
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
-<<<<<<< ours
-import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
-import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner } from '@/lib/messaging/store';
+import { noteOpenpgpDecryptor, parseNoteWire, sealReceiptTo, receiptOpenpgpDecryptor, parseReceiptWire } from '@/lib/messaging/seal';
+import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
-import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
-import { trustAffirmOpenpgpDecryptor, parseTrustAffirmWire } from '@/lib/trust/trust-affirm-seal';
-import { edgeTrusted } from '@/lib/trust/contact-edge';
-||||||| base
-import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
-import { initNotesStore, isNotesStoreUnlocked } from '@/lib/messaging/store';
-import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
-import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
-import { edgeTrusted } from '@/lib/trust/contact-edge';
-=======
-import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
-import { initNotesStore, isNotesStoreUnlocked, getNote, putNote } from '@/lib/messaging/store';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { buildReceiptWire, verifyReceiptWire } from '@/lib/crypto/delivery-receipt';
 import { canonicalPubsFromArmoredPublicKey } from '@/lib/identity/fingerprint';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { loadOwnerMessageKeys } from '@/components/encrypt-decrypt/load-owner-message-keys';
->>>>>>> theirs
 
 /** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
 export const DEFAULT_POLL_INTERVAL_MS = 1_500;
@@ -166,7 +152,6 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybr
  * note by its own type-checked decryptor to acceptInboundNote (authn-then-admit, fail-closed) → the
  * notes store. Exported for unit tests.
  */
-<<<<<<< ours
 export interface NoteSeamDeps {
   /** Owner the tab's unlocked notes store is open for (null = locked). Injectable so the guard wiring is testable. */
   openOwner: () => string | null;
@@ -177,6 +162,12 @@ export function buildNoteSeam(
   owner: OwnerIdentity,
   deps: NoteSeamDeps = { openOwner: notesStoreOwner, accept: acceptInboundNote },
   hybrid?: HybridSecretsSource,
+  // Optional recipient-emit (Athena — Nov-5 delivered-receipt): after a note is accepted, send a
+  // cryptographically-signed receipt back to its sender so their "Sent · unconfirmed." graduates to
+  // "Delivered". Best-effort by contract — the caller's closure must never throw (a receipt is a bonus
+  // on top of the already-persisted note; a failed emit must not fail note acceptance). Omitted by unit
+  // tests / legacy callers → exact prior behaviour (no receipt sent).
+  sendReceipt?: (wire: NoteWireV0) => Promise<void>,
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
@@ -187,21 +178,6 @@ export function buildNoteSeam(
         classicalNote,
       )
     : classicalNote;
-||||||| base
-export function buildNoteSeam(owner: OwnerIdentity): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
-=======
-export function buildNoteSeam(
-  owner: OwnerIdentity,
-  // Optional recipient-emit (Athena — Nov-5 delivered-receipt): after a note is accepted, send a
-  // cryptographically-signed receipt back to its sender so their "Sent · unconfirmed." graduates to
-  // "Delivered". Best-effort by contract — the caller's closure must never throw (a receipt is a bonus
-  // on top of the already-persisted note; a failed emit must not fail note acceptance). Omitted by unit
-  // tests / legacy callers → exact prior behaviour (no receipt sent).
-  sendReceipt?: (wire: NoteWireV0) => Promise<void>,
-): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
->>>>>>> theirs
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
     // parseNoteWire is the discriminator (both legs), so this never eats a non-note.
@@ -261,41 +237,20 @@ export function buildNoteSeam(
  * returns null → the note keeps the honest 'Sent · unconfirmed.' floor. A false "Delivered" is
  * UNREACHABLE by construction.
  */
-<<<<<<< ours
-export function buildTrustAffirmSeam(owner: OwnerIdentity, hybrid?: HybridSecretsSource): TrustAffirmResponseSeam {
-  // Single dual-read chokepoint: hybrid-FIRST + classical FALLBACK (off the N10 unlock cycle), reusing parseTrustAffirmWire (the same
-  // asAffirm type-gate on BOTH legs → no-cross-swallow).
-  const classicalAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
-  const verifyAffirm = hybrid
+export function buildReceiptSeam(owner: OwnerIdentity, hybrid?: HybridSecretsSource): ReceiptResponseSeam {
+  // Single dual-read chokepoint, same discipline as the note seam: hybrid-FIRST + classical FALLBACK (off the N10 unlock
+  // cycle). parseReceiptWire is the type-gate on BOTH legs → no-cross-swallow is byte-identical.
+  const classicalReceipt = receiptOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
+  const verifyReceipt = hybrid
     ? dualReadOpener(
-        makeHybridOpener(openHybridForCycle(owner, hybrid), parseTrustAffirmWire),
-        classicalAffirm,
+        makeHybridOpener(openHybridForCycle(owner, hybrid), parseReceiptWire),
+        classicalReceipt,
       )
-    : classicalAffirm;
-||||||| base
-export function buildTrustAffirmSeam(owner: OwnerIdentity): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
-=======
-export function buildReceiptSeam(owner: OwnerIdentity): ReceiptResponseSeam {
-  const decryptReceipt = receiptOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
->>>>>>> theirs
+    : classicalReceipt;
   return {
-<<<<<<< ours
-    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; parseTrustAffirmWire
-    // is the discriminator (both legs), so this never eats a non-affirm.
-    verify: (blob) => verifyAffirm(blob),
-    accept: (wire) =>
-      acceptTrustAffirm({
-||||||| base
-    // null for a non-affirmation (contact.update / joiner / note) → consumeOne falls through; the
-    // type-check inside trustAffirmOpenpgpDecryptor is the discriminator, so this never eats a non-affirm.
-    verify: (blob) => decryptAffirm(blob),
-    accept: (wire) =>
-      acceptTrustAffirm({
-=======
-    // null for a non-receipt (contact.update / joiner / note / affirm) → consumeOne falls through; the
-    // type-check inside receiptOpenpgpDecryptor is the discriminator, so this never eats a non-receipt.
-    verify: (blob) => decryptReceipt(blob),
+    // null for a non-receipt (contact.update / joiner / note) → consumeOne falls through; parseReceiptWire
+    // is the discriminator (both legs), so this never eats a non-receipt.
+    verify: (blob) => verifyReceipt(blob),
     accept: async (wire) => {
       // Recover OUR stored outbound note — the source-of-truth for the expected (note_id, nonce, recipient).
       const note = await getNote(wire.note_id);
@@ -321,7 +276,6 @@ export function buildReceiptSeam(owner: OwnerIdentity): ReceiptResponseSeam {
         return null; // malformed card keys → can't verify → fail-safe drop
       }
       const ok = verifyReceiptWire(
->>>>>>> theirs
         wire,
         { noteId: note.note_id, nonce: note.receipt_nonce, recipientFingerprint: peerFp },
         pubs.signPub,
@@ -498,11 +452,6 @@ export async function buildConsumeDeps(
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
   }
-<<<<<<< ours
-  // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
-  const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
-||||||| base
-=======
   // Recipient-emit for delivery receipts (Athena — Nov-5): after an inbound note is accepted, sign a
   // receipt with OUR identity keys and deposit it (sealed) to the sender's OWN mailbox so their note
   // graduates "Sent · unconfirmed." → "Delivered". The note wire was AUTHENTICATED on accept, so
@@ -515,6 +464,7 @@ export async function buildConsumeDeps(
     if (!nonce || !wire.public_key || !wire.from_fingerprint) return; // nothing to confirm / can't address
     const owned = await loadOwnerMessageKeys(fingerprint, identity);
     if (!owned) return; // locked / no PQ sig material → no receipt (sender's floor holds — fail-safe)
+    if (owner.cycle?.ended) return; // a lock/switch landed while the keys loaded (N10): emit nothing
     const receipt = buildReceiptWire(wire.note_id, nonce, owner.fingerprint, owned.sender.signSeed, owned.sender.sigSecret);
     const blob = await sealReceiptTo(receipt, wire.public_key);
     const mailbox_id = deriveMailboxId(wire.from_fingerprint);
@@ -524,7 +474,9 @@ export async function buildConsumeDeps(
       body: JSON.stringify({ mailbox_id, blob }),
     });
   };
->>>>>>> theirs
+
+  // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
+  const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
   return {
     owner,
     decrypt: hybrid
@@ -534,25 +486,15 @@ export async function buildConsumeDeps(
         )
       : classicalCU,
     store: buildContactStore(fingerprint),
-<<<<<<< ours
     joiner: buildJoinerSeam(owner, codes, hybrid),
-    note: buildNoteSeam(owner, undefined, hybrid),
-    affirm: buildTrustAffirmSeam(owner, hybrid),
+    note: buildNoteSeam(owner, undefined, hybrid, sendReceipt),
+    receipt: buildReceiptSeam(owner, hybrid),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
     // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
     // poll off loadPQKeys) — a derivable owner is FALSE → opens; never retryable-forever (Flint #168382).
     // Lazy: evaluated only when a hybrid-shaped blob arrives (consumeOne), off the same memoized derivation.
     hybridSecretMissing: async () => !!owner.kemPublicKey && !(await hybrid()),
-||||||| base
-    joiner: buildJoinerSeam(owner, codes),
-    note: buildNoteSeam(owner),
-    affirm: buildTrustAffirmSeam(owner),
-=======
-    joiner: buildJoinerSeam(owner, codes),
-    note: buildNoteSeam(owner, sendReceipt),
-    receipt: buildReceiptSeam(owner),
->>>>>>> theirs
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)

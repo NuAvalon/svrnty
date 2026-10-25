@@ -27,26 +27,18 @@ export const NOTES_COPY = {
   threadEmpty: 'No messages yet.',
   inboxEmpty: 'No conversations yet. Pick a contact to write one.',
   noSendableContacts:
-    'No contacts to write to. Import a signed svrnty card first. Keyless contacts cannot receive a sealed note.',
+    'No contacts to write to. Import a signed svrnty card first. Keyless contacts cannot receive a sealed message.',
   noContactSelected: 'Pick a contact first.',
   emptyBody: 'Write a message first.',
   identityLocked: 'Unlock your identity first.',
-  identityKeysMissing: 'This identity is missing the keys a note needs.',
+  identityKeysMissing: 'This identity is missing the keys a message needs.',
   needCanonical:
-<<<<<<< ours
-    'Notes over the wire need a current svrnty identity. This book cannot send yet.',
-  sendFailed: 'The note could not be sent.',
+    'Chat over the wire needs a current svrnty identity. This book cannot send yet.',
+  sendFailed: 'The message could not be sent.',
   // S14: the recipient has no verified PQ KEM key; sends are skipped, never downgraded. Claim-safe wording (no 'quantum-safe').
   notSentNeedsUpgrade:
     'Not sent. Saved on this device. {name} needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.',
-||||||| base
-    'Notes over the wire need a current svrnty identity. This book cannot send yet.',
-  sendFailed: 'The note could not be sent.',
-=======
-    'Chat over the wire needs a current svrnty identity. This book cannot send yet.',
-  sendFailed: 'The message could not be sent.',
->>>>>>> theirs
-  contactNotSendable: 'This contact cannot receive a sealed note.',
+  contactNotSendable: 'This contact cannot receive a sealed message.',
   fieldPeople: 'Conversations',
   fieldBack: 'Chats',
   fieldPick: 'Pick someone to open a conversation.',

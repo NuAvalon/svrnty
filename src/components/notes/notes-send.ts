@@ -14,14 +14,10 @@ export async function sendNoteFromInbox(args: {
   ownerIdentity?: unknown;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
-<<<<<<< ours
   /** Recipient's ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); absent ⇒ fail-closed skip. */
   peerPqKemPublicKey?: string;
-||||||| base
-=======
-  peerPqKemPublicKey?: string;
+  /** Recipient's ML-DSA-87 pubkey (base64): with the KEM key it binds the canonical fingerprint (isCanonicalNoteSender). */
   peerPqSigPublicKey?: string;
->>>>>>> theirs
   body: string;
   threadId?: string;
 }): Promise<SendNoteResult> {

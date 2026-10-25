@@ -31,15 +31,8 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
-<<<<<<< ours
-import { toNoteableContacts, type NoteableContact } from './notes-contacts';
-import { NOTES_BOUNDS, NOTES_COPY, notSentMessage } from './notes-copy';
-||||||| base
-import { toNoteableContacts, type NoteableContact } from './notes-contacts';
-import { NOTES_BOUNDS, NOTES_COPY } from './notes-copy';
-=======
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
-import { NOTES_BOUNDS, NOTES_COPY } from './notes-copy';
+import { NOTES_BOUNDS, NOTES_COPY, notSentMessage } from './notes-copy';
 import {
   displayNameFor,
   filterFieldPeople,
@@ -50,7 +43,6 @@ import {
   sortFieldPeople,
   type FieldName,
 } from './notes-field';
->>>>>>> theirs
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
 import { sendNoteFromInbox } from './notes-send';
 import { outboundStatus, statusLabel, type NoteBubbleStatus } from './notes-status';
@@ -350,13 +342,8 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
         ownerIdentity: identity,
         peerFingerprint: selected.fingerprint,
         peerPublicKeyArmored: selected.publicKeyArmored,
-<<<<<<< ours
         peerPqKemPublicKey: selected.pqKemPublicKey, // HNDL: present ⇒ hybrid seal; absent ⇒ fail-closed skip
-||||||| base
-=======
-        peerPqKemPublicKey: selected.pqKemPublicKey,
         peerPqSigPublicKey: selected.pqSigPublicKey,
->>>>>>> theirs
         body,
         threadId: existing?.thread_id,
       });

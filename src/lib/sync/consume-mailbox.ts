@@ -35,14 +35,8 @@ import {
 } from '@/lib/contacts/apply-contact-update';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
-<<<<<<< ours
-import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
-||||||| base
-import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
-=======
 import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
->>>>>>> theirs
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -449,27 +443,13 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     }
     if (wire) {
       try {
-<<<<<<< ours
         if (dead()) return { kind: 'retryable' };
-        const applied = await deps.affirm.accept(wire);
-        // applied (signed + bound + admitted) → affirm (ack + trust repaint); dropped (unsigned / forged /
-        // misaddressed / stranger) → terminal (silent ack — I-1/I-2, the FALSE-MUTUAL gate: no flip, no echo).
-        return applied
-          ? { kind: 'affirm', event: { id: applied.id, from_fingerprint: applied.from_fingerprint, trusts: applied.trusts, reciprocal: applied.reciprocal } }
-||||||| base
-        const applied = await deps.affirm.accept(wire);
-        // applied (signed + bound + admitted) → affirm (ack + trust repaint); dropped (unsigned / forged /
-        // misaddressed / stranger) → terminal (silent ack — I-1/I-2, the FALSE-MUTUAL gate: no flip, no echo).
-        return applied
-          ? { kind: 'affirm', event: { id: applied.id, from_fingerprint: applied.from_fingerprint, trusts: applied.trusts, reciprocal: applied.reciprocal } }
-=======
         const confirmed = await deps.receipt.accept(wire);
         // verified (matches a stored outbound note + recipient sig checks) → receipt (ack + delivered-repaint);
         // dropped (no matching note / forged / unverifiable recipient) → terminal (silent ack — I-1, the
         // floor 'Sent · unconfirmed.' holds, NO false Delivered).
         return confirmed
           ? { kind: 'receipt', event: { note_id: confirmed.note_id, thread_id: confirmed.thread_id, from_fingerprint: confirmed.from_fingerprint } }
->>>>>>> theirs
           : { kind: 'terminal' };
       } catch (err) {
         // A store I/O failure while marking a VERIFIED note delivered → leave for retry (at-least-once).

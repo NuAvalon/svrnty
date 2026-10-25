@@ -12,15 +12,12 @@ export type NoteableContact = {
   name: string;
   fingerprint: string;
   publicKeyArmored: string;
-<<<<<<< ours
   /** The recipient's verified ML-KEM-1024 pubkey (base64), if any. Present ⇒ the note is sealed PQ-hybrid
    *  (HNDL); absent ⇒ the send site fail-closed-skips (never downgrades to classical). */
   pqKemPublicKey?: string;
-||||||| base
-=======
-  pqKemPublicKey?: string;
+  /** The recipient's ML-DSA-87 pubkey (base64), if any. With the KEM key it binds the canonical fingerprint
+   *  (isCanonicalNoteSender); the send site threads BOTH. */
   pqSigPublicKey?: string;
->>>>>>> theirs
 };
 
 export type ContactRow = {
@@ -35,7 +32,6 @@ export type ContactRow = {
   peer_pq_sig_public_key?: string | null;
   peer_fingerprint?: string | null;
   peer_name?: string | null;
-  pq_kem_public_key?: string | null;
   blocked?: boolean;
   metadata?: { blocked?: boolean; sample_fingerprint?: string } | null;
 };
@@ -50,29 +46,16 @@ function noteableFromRow(row: ContactRow): NoteableContact | null {
   const fingerprint = normalizeFingerprintHex(String(row.fingerprint || row.peer_fingerprint || ''));
   if (!publicKeyArmored || fingerprint.length < 16) return null;
   if (!isSvrnNetworkContact({ fingerprint, public_key: publicKeyArmored })) return null;
-<<<<<<< ours
-  const pqKemPublicKey = String(row.pq_kem_public_key || '').trim() || undefined;
-||||||| base
-=======
-  const pqKem = String((row as { pq_kem_public_key?: string; peer_pq_kem_public_key?: string }).pq_kem_public_key
-    || (row as { peer_pq_kem_public_key?: string }).peer_pq_kem_public_key
-    || '').trim();
-  const pqSig = String((row as { pq_sig_public_key?: string; peer_pq_sig_public_key?: string }).pq_sig_public_key
-    || (row as { peer_pq_sig_public_key?: string }).peer_pq_sig_public_key
-    || '').trim();
->>>>>>> theirs
+  // Same admitted record, read tolerantly: a contact row carries the PQ keys as pq_* OR (edge-shaped rows) peer_pq_*.
+  const pqKemPublicKey = String(row.pq_kem_public_key || row.peer_pq_kem_public_key || '').trim() || undefined;
+  const pqSigPublicKey = String(row.pq_sig_public_key || row.peer_pq_sig_public_key || '').trim() || undefined;
   return {
     id: String(row.id || fingerprint),
     name: boundDisplayText(row.name || row.peer_name) || `Contact ${fingerprint.slice(0, 8)}`,
     fingerprint,
     publicKeyArmored,
-<<<<<<< ours
     ...(pqKemPublicKey ? { pqKemPublicKey } : {}),
-||||||| base
-=======
-    pqKemPublicKey: pqKem || undefined,
-    pqSigPublicKey: pqSig || undefined,
->>>>>>> theirs
+    ...(pqSigPublicKey ? { pqSigPublicKey } : {}),
   };
 }
 

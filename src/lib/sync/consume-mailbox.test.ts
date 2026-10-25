@@ -324,7 +324,7 @@ test('N10: control — same flow with NO lock persists and acks (the guard only 
 
 // N10 (Flint #178422 blocking 1): the cycle re-check sits before EVERY write in consumeOne, not only the contact persist.
 // Each seam: verify() succeeds but the lock lands during it → accept() must never run; nothing acked (retryable).
-for (const seam of ['joiner', 'note', 'affirm'] as const) {
+for (const seam of ['joiner', 'note', 'receipt'] as const) {   // 'affirm' left with the affirm wire (#593); 'receipt' is the 4th write path
   test(`N10: lock lands after ${seam}.verify, before ${seam}.accept → accept never runs, nothing acked`, async () => {
     const ackLog: string[][] = [];
     const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
