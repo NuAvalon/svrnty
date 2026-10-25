@@ -116,7 +116,7 @@ export async function resolveRelay(code: string, keyFragment: string): Promise<s
 
   if (!res.ok) {
     if (res.status === 404) {
-      throw new Error('This link has expired or already been used.');
+      throw new Error("This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
     }
     const err = await res.json().catch(() => ({ error: 'Relay request failed' }));
     throw new Error(err.error || `Relay GET failed: ${res.status}`);
