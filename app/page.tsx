@@ -675,6 +675,7 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="trust-map"
+                aria-label={galaxyActivity ? 'Galaxy, new activity' : undefined}
                 data-testid="tab-galaxy"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
@@ -682,7 +683,7 @@ export default function Home() {
                 Galaxy
                 <TabActivityEmber
                   on={galaxyActivity}
-                  label="Galaxy has new activity"
+                  label="new activity"
                   testId="tab-galaxy-activity"
                 />
               </TabsTrigger>
@@ -704,7 +705,7 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="notes"
-                aria-label={BETA_COPY.tabLabel}
+                aria-label={notesActivity ? `${BETA_COPY.tabLabel}, new messages` : undefined}
                 data-testid="tab-notes"
                 className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
@@ -712,7 +713,7 @@ export default function Home() {
                 {BETA_COPY.tabLabel}
                 <TabActivityEmber
                   on={notesActivity}
-                  label="New messages"
+                  label="new messages"
                   testId="tab-notes-activity"
                 />
               </TabsTrigger>

@@ -88,7 +88,12 @@ for (const variant of MATRIX) {
 
       // The ALWAYS-ON shell poll (bursting at 350ms for 12s post-genesis) decrypts + admits + persists
       // the note into the notes store — independent of which tab is open. Then open Notes to read it.
+      // A11y (Hypatia #915): while Alice is on another tab the arrival must be ANNOUNCED, not just painted. The ember is aria-hidden and the
+      // same fact is visually-hidden text inside the tab, so its accessible name is "Chat, new messages" (it used to stay plain "Chat" because a
+      // static aria-label overrode the content). Opening the tab clears it back to plain "Chat".
+      await expect(page.getByRole('tab', { name: 'Chat, new messages', exact: true })).toBeVisible({ timeout: 25_000 });
       await openNotesTab(page);
+      await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
 
       // The inbound thread surfaces in the thread list within a poll+reread cycle; open it.
       const threadBtn = page.getByTestId(`notes-thread-${thread_id}`);

@@ -78,7 +78,7 @@ test('Galaxy: one-way trust is the only state; nothing is white-lit or mutual (#
   await expect(page.getByTestId('trust-legend-glyph-known').locator('polygon')).toHaveCount(1);
   await expect(page.getByTestId('trust-legend-glyph-trust-sent').locator('circle')).toHaveCount(0);
   // The honest negatives: no CONTACT is described as mutual, pending trust, or awaiting one (node titles carry "<name> — <label>").
-  // The legend's own "Mutual trust" KEY is a separate open question: see the test.fixme below (Hypatia/Flint to rule).
+  // The legend is pinned separately, below.
   await expect(page.getByTestId('trust-lifecycle-legend')).not.toContainText(/outer|half|awaiting|unverified|Trust pending/i);
   const titles = await page.locator('[data-testid="trust-node"] title').allTextContents();
   expect(titles.length, 'node titles were read').toBeGreaterThan(0);
@@ -140,11 +140,10 @@ test('Address book chips: Ada and Alan both read exactly "Trusted" (#593); no ch
   await expect(alanRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'trust-sent');
 });
 
-// OPEN (lane:svrnty, Apollo ☀8714): the Galaxy legend (trustLifecycleLegendItems) still lists a "Mutual trust" key with a white-core glyph,
-// although since #593 nothing in-app can produce that state (PSI #588 re-grounds it). Hypatia's pin (#912) says no "Mutual trust" text on the
-// sample galaxy; a legend key advertising a state nobody can reach is the same dormant-overclaim shape as the removed "Trust is mutual" arm.
-// Needs a Hypatia/Flint ruling: (a) drop the mutual key until #588 (then flip this to a real test), or (b) keep it as a key and delete this.
-test.fixme('Galaxy legend does not list a "Mutual trust" key while no in-app path can produce one (#593)', async ({ page }) => {
+// The Galaxy legend lists only the keys a user can actually reach. Since #593 nothing in-app can produce a mutual edge (PSI #588 re-grounds it),
+// so a "Mutual trust" key with a white-core glyph would say the state exists (Hypatia #924: the same dormant-overclaim shape as the removed
+// "Trust is mutual" arm). When #588 lands, add the key back TOGETHER with a fixture that can reach it, and flip this test.
+test('Galaxy legend does not list a "Mutual trust" key while no in-app path can produce one (#593)', async ({ page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1280, height: 800 });
   await genesis(page, 'Legend Honest');

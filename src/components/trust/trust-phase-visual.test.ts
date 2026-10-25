@@ -73,7 +73,8 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.spokeStyle, 'single');
     // #593: affirm-wire removed → a one-way (own-trust) bond labels "Trusted", never "Trust pending"/"Awaiting mutual".
     assert.equal(v.label, TRUST_SENT_PRE_WIRE_LABEL);
-    assert.notEqual(v.label, TRUST_VISUAL_LABELS['trust-sent']);
+    assert.notEqual(v.label, 'Trust pending');
+    assert.equal(TRUST_VISUAL_LABELS['trust-sent'], TRUST_SENT_PRE_WIRE_LABEL); // the map's own word is honest too, not just the override
     assert.equal(v.coreFill, null);
     assert.equal(v.haloStroke, null);
     assert.notEqual(v.coreFill, mutual.coreFill);
@@ -275,17 +276,18 @@ describe('trust-phase visual map — consumers inherit the one map', () => {
 
   it('lifecycle legend items reuse the same paints as the stars', () => {
     const items = trustLifecycleLegendItems();
-    assert.equal(items.length, 3);
-    assert.deepEqual(items.map((i) => i.visual.bondState), ['known', 'trust-sent', 'mutual']);
+    // No 'mutual' key while nothing in-app can produce one (Hypatia #924); #588 adds it back with a fixture that reaches it.
+    assert.equal(items.length, 2);
+    assert.deepEqual(items.map((i) => i.visual.bondState), ['known', 'trust-sent']);
     assert.equal(items[0].label, TRUST_VISUAL_LABELS.known);
     assert.equal(items[0].visual.shape, 'outline');
     assert.equal(items[0].visual.coreFill, null);
     assert.equal(items[1].label, TRUST_SENT_PRE_WIRE_LABEL);
     assert.equal(items[1].visual.shape, 'solid-filled');
     assert.equal(items[1].visual.coreFill, null);
-    assert.equal(items[1].visual.svgFill, items[2].visual.svgFill);
-    assert.equal(items[2].label, TRUST_VISUAL_LABELS.mutual);
-    assert.equal(items[2].visual.coreFill, TRUST_VISUAL_WHITE_CORE);
+    // The one-way hex shares the mutual hex fill (asserted on the star above, not via a legend key).
+    assert.equal(items[1].visual.svgFill, trustPhaseVisual({ status: status({ trust: 'mutual' }) }).svgFill);
+    assert.ok(items.every((i) => i.label !== TRUST_VISUAL_LABELS.mutual && i.visual.coreFill !== TRUST_VISUAL_WHITE_CORE), 'no legend key is mutual / white');
   });
 
   it('TrustMap paints those hexes in the legend, not text-only labels', () => {

@@ -112,7 +112,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.goto('/');
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
-    // The Galaxy tab carries an activity dot once something arrives (its accessible name then reads "Galaxy Galaxy has new activity"), so
+    // The Galaxy tab carries an activity dot once something arrives (its accessible name then reads "Galaxy, new activity"), so
     // match the name by prefix instead of exactly.
     await bob.getByRole('tab', { name: /^Galaxy\b/ }).click();
     // Galaxy elements animate (tm-ignite entrance + infinite tm-pulse/breathe/spoke-live + the gate's

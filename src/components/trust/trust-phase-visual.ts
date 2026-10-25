@@ -36,7 +36,8 @@ export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
 
 export const TRUST_VISUAL_LABELS = {
   known: 'Known',
-  'trust-sent': 'Trust pending',
+  // displayLabel overrides this with TRUST_SENT_PRE_WIRE_LABEL; kept equal to it so the dead word "Trust pending" cannot light up either (Hypatia #924).
+  'trust-sent': 'Trusted',
   // 'trust-received' is never produced (bondStateOf folds 'inbound' into 'known': one-way trust is invisible to the trusted party, Peter's
   // hard gate #179866 / Flint #913). If it ever DID render, it must read exactly what a stranger with no trust reads, so a receiver cannot tell.
   'trust-received': 'Known',
@@ -146,7 +147,10 @@ export function trustLifecycleLegendItems(): Array<{
   visual: TrustPhaseVisual;
   label: string;
 }> {
-  return (['none', 'outbound', 'mutual'] as const).map((trust) => {
+  // No 'mutual' key (Hypatia #924, Flint #913): since #593 nothing in-app can produce a mutual edge (PSI #588 re-grounds it), and a legend key
+  // for a state nobody can reach says the state exists: the same dormant-overclaim shape as the removed "Trust is mutual" arm. When #588 lands,
+  // add 'mutual' back HERE together with a fixture that can actually reach it.
+  return (['none', 'outbound'] as const).map((trust) => {
     const visual = trustPhaseVisual({ status: legendStatus(trust) });
     return { visual, label: visual.label };
   });

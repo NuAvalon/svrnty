@@ -10,7 +10,7 @@ Render-glass for CURSOR_QUEUE item 1: pending (one-way) trust must be unmistakab
 |---|---|---|---|
 | `none` | `known` | dim outline, no fill | Known |
 | `outbound` | `trust-sent` | dashed hollow, muted, **never white** | Trusted (your own trust, one-way) |
-| `inbound` | `trust-received` | gold, actionable, not white | Trusts you · trust back? |
+| `inbound` | `trust-received` | never produced: `bondStateOf` folds it into `known` | Known (one-way trust is never shown; I-F, Peter #172742) |
 | `mutual` | `mutual` | solid fill + **white core** (the only lit bond) | Mutual |
 | blocked | `blocked` | muted / struck | Blocked |
 
