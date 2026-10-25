@@ -33,6 +33,11 @@ export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
 // DISTINCT from DOMAIN_ROTATION so a DID-Doc-update signature can never verify as a rotation-successor and
 // vice-versa (domain separation). PENDING Flint's concur ☀7490 (this-vs-reuse-DOMAIN_ROTATION).
 export const DOMAIN_DID_DOC = 'svrnty:did-doc:v1';
+// Portal compose (spec v0.7 §8, Flint #808): a loom POST or TASK signed in the svrnty app for the portal to carry. signed_bytes use the
+// app's existing LP framing (LP(domain) ‖ LP(suite) ‖ JCS(object)); the old NUL-tag preimage is withdrawn. Distinct from every other tag so a
+// post/task signature can never verify as a card, signal, note, rotation or each other (cross-domain tests in compose-rules.test.ts).
+export const DOMAIN_LOOM_POST = 'svrnty:loom-post:v1';
+export const DOMAIN_LOOM_TASK = 'svrnty:loom-task:v1';
 
 // --- A2: Durable identity + epoch/lineage (formats-cheap: fields only, no rotation UX) ---
 

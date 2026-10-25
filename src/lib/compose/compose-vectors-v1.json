@@ -1,0 +1,1218 @@
+{
+ "fixture": "svrnty compose vectors",
+ "version": 1,
+ "spec": "portal compose spec v0.7 (Archie) + Flint #808/#831",
+ "WARNING": "The signing identity below is a THROWAWAY TEST key minted for this fixture. Never trust it for anything.",
+ "cap": 2900,
+ "cost_rule": {
+  "quote_or_backslash": 4,
+  "newline": 3,
+  "ascii_printable": 1,
+  "other_bmp": 6,
+  "astral": 12
+ },
+ "domains": {
+  "post": "svrnty:loom-post:v1",
+  "task": "svrnty:loom-task:v1"
+ },
+ "suites": [
+  "ed25519",
+  "ed25519+ml-dsa-87"
+ ],
+ "signed_bytes_rule": "LP(domain) || LP(suite_id) || JCS(object); LP(s) = decimal UTF-8 byte length + ':' + s",
+ "ext_pict_ranges": [
+  "A9-A9",
+  "AE-AE",
+  "203C-203C",
+  "2049-2049",
+  "2122-2122",
+  "2139-2139",
+  "2194-2199",
+  "21A9-21AA",
+  "231A-231B",
+  "2328-2328",
+  "23CF-23CF",
+  "23E9-23F3",
+  "23F8-23FA",
+  "24C2-24C2",
+  "25AA-25AB",
+  "25B6-25B6",
+  "25C0-25C0",
+  "25FB-25FE",
+  "2600-2604",
+  "260E-260E",
+  "2611-2611",
+  "2614-2615",
+  "2618-2618",
+  "261D-261D",
+  "2620-2620",
+  "2622-2623",
+  "2626-2626",
+  "262A-262A",
+  "262E-262F",
+  "2638-263A",
+  "2640-2640",
+  "2642-2642",
+  "2648-2653",
+  "265F-2660",
+  "2663-2663",
+  "2665-2666",
+  "2668-2668",
+  "267B-267B",
+  "267E-267F",
+  "2692-2697",
+  "2699-2699",
+  "269B-269C",
+  "26A0-26A1",
+  "26A7-26A7",
+  "26AA-26AB",
+  "26B0-26B1",
+  "26BD-26BE",
+  "26C4-26C5",
+  "26C8-26C8",
+  "26CE-26CF",
+  "26D1-26D1",
+  "26D3-26D4",
+  "26E9-26EA",
+  "26F0-26F5",
+  "26F7-26FA",
+  "26FD-26FD",
+  "2702-2702",
+  "2705-2705",
+  "2708-270D",
+  "270F-270F",
+  "2712-2712",
+  "2714-2714",
+  "2716-2716",
+  "271D-271D",
+  "2721-2721",
+  "2728-2728",
+  "2733-2734",
+  "2744-2744",
+  "2747-2747",
+  "274C-274C",
+  "274E-274E",
+  "2753-2755",
+  "2757-2757",
+  "2763-2764",
+  "2795-2797",
+  "27A1-27A1",
+  "27B0-27B0",
+  "27BF-27BF",
+  "2934-2935",
+  "2B05-2B07",
+  "2B1B-2B1C",
+  "2B50-2B50",
+  "2B55-2B55",
+  "3030-3030",
+  "303D-303D",
+  "3297-3297",
+  "3299-3299",
+  "1F004-1F004",
+  "1F02C-1F02F",
+  "1F094-1F09F",
+  "1F0AF-1F0B0",
+  "1F0C0-1F0C0",
+  "1F0CF-1F0D0",
+  "1F0F6-1F0FF",
+  "1F170-1F171",
+  "1F17E-1F17F",
+  "1F18E-1F18E",
+  "1F191-1F19A",
+  "1F1AE-1F1E5",
+  "1F201-1F20F",
+  "1F21A-1F21A",
+  "1F22F-1F22F",
+  "1F232-1F23A",
+  "1F23C-1F23F",
+  "1F249-1F25F",
+  "1F266-1F321",
+  "1F324-1F393",
+  "1F396-1F397",
+  "1F399-1F39B",
+  "1F39E-1F3F0",
+  "1F3F3-1F3F5",
+  "1F3F7-1F3FA",
+  "1F400-1F4FD",
+  "1F4FF-1F53D",
+  "1F549-1F54E",
+  "1F550-1F567",
+  "1F56F-1F570",
+  "1F573-1F57A",
+  "1F587-1F587",
+  "1F58A-1F58D",
+  "1F590-1F590",
+  "1F595-1F596",
+  "1F5A4-1F5A5",
+  "1F5A8-1F5A8",
+  "1F5B1-1F5B2",
+  "1F5BC-1F5BC",
+  "1F5C2-1F5C4",
+  "1F5D1-1F5D3",
+  "1F5DC-1F5DE",
+  "1F5E1-1F5E1",
+  "1F5E3-1F5E3",
+  "1F5E8-1F5E8",
+  "1F5EF-1F5EF",
+  "1F5F3-1F5F3",
+  "1F5FA-1F64F",
+  "1F680-1F6C5",
+  "1F6CB-1F6D2",
+  "1F6D5-1F6E5",
+  "1F6E9-1F6E9",
+  "1F6EB-1F6F0",
+  "1F6F3-1F6FF",
+  "1F7DA-1F7FF",
+  "1F80C-1F80F",
+  "1F848-1F84F",
+  "1F85A-1F85F",
+  "1F888-1F88F",
+  "1F8AE-1F8AF",
+  "1F8BC-1F8BF",
+  "1F8C2-1F8CF",
+  "1F8D9-1F8FF",
+  "1F90C-1F93A",
+  "1F93C-1F945",
+  "1F947-1F9FF",
+  "1FA58-1FA5F",
+  "1FA6E-1FAFF",
+  "1FC00-1FFFD"
+ ],
+ "zwj_rule": "allowed only as ExtPict (FE0F | U+1F3FB..U+1F3FF)? ZWJ ExtPict, with ExtPict = ext_pict_ranges",
+ "text": [
+  {
+   "id": "plain",
+   "note": "control",
+   "input_cps": [
+    "0068",
+    "0065",
+    "006C",
+    "006C",
+    "006F",
+    "0020",
+    "006E",
+    "006F",
+    "006F",
+    "0073",
+    "0070",
+    "0068",
+    "0065",
+    "0072",
+    "0065"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "0068",
+    "0065",
+    "006C",
+    "006C",
+    "006F",
+    "0020",
+    "006E",
+    "006F",
+    "006F",
+    "0073",
+    "0070",
+    "0068",
+    "0065",
+    "0072",
+    "0065"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "crlf",
+   "note": "CRLF -> LF (portal); receivers reject the CR",
+   "input_cps": [
+    "006C",
+    "0069",
+    "006E",
+    "0065",
+    "0020",
+    "006F",
+    "006E",
+    "0065",
+    "000D",
+    "000A",
+    "006C",
+    "0069",
+    "006E",
+    "0065",
+    "0020",
+    "0074",
+    "0077",
+    "006F"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    8
+   ],
+   "portal_normalised_cps": [
+    "006C",
+    "0069",
+    "006E",
+    "0065",
+    "0020",
+    "006F",
+    "006E",
+    "0065",
+    "000A",
+    "006C",
+    "0069",
+    "006E",
+    "0065",
+    "0020",
+    "0074",
+    "0077",
+    "006F"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "lone-cr",
+   "note": "CR alone: removed by the portal, rejected by receivers (load-bearing for the text-mode sig)",
+   "input_cps": [
+    "0061",
+    "000D",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "tab",
+   "note": "TAB -> one space (portal); receivers reject TAB",
+   "input_cps": [
+    "0061",
+    "0009",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0020",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "nul",
+   "note": "C0",
+   "input_cps": [
+    "0061",
+    "0000",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "del",
+   "note": "DEL",
+   "input_cps": [
+    "0061",
+    "007F",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "c1-nel",
+   "note": "C1",
+   "input_cps": [
+    "0061",
+    "0085",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "ls",
+   "note": "U+2028",
+   "input_cps": [
+    "0061",
+    "2028",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "ps",
+   "note": "U+2029",
+   "input_cps": [
+    "0061",
+    "2029",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "bidi-rlo",
+   "note": "bidi override",
+   "input_cps": [
+    "0070",
+    "0061",
+    "0079",
+    "0020",
+    "202E",
+    "0065",
+    "006D",
+    "006F",
+    "0063",
+    "002E",
+    "006C",
+    "0069",
+    "0076",
+    "0065"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    4
+   ],
+   "portal_normalised_cps": [
+    "0070",
+    "0061",
+    "0079",
+    "0020",
+    "0065",
+    "006D",
+    "006F",
+    "0063",
+    "002E",
+    "006C",
+    "0069",
+    "0076",
+    "0065"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "bidi-isolate",
+   "note": "bidi isolates",
+   "input_cps": [
+    "0061",
+    "2067",
+    "0062",
+    "2069"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1,
+    3
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 2,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "zwsp",
+   "note": "ZWSP (Flint #521)",
+   "input_cps": [
+    "0070",
+    "0065",
+    "200B",
+    "0074",
+    "0065",
+    "0072"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    2
+   ],
+   "portal_normalised_cps": [
+    "0070",
+    "0065",
+    "0074",
+    "0065",
+    "0072"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "zwnj",
+   "note": "ZWNJ",
+   "input_cps": [
+    "0061",
+    "200C",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "bom",
+   "note": "BOM",
+   "input_cps": [
+    "FEFF",
+    "0068",
+    "0069"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    0
+   ],
+   "portal_normalised_cps": [
+    "0068",
+    "0069"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "wj",
+   "note": "word joiner",
+   "input_cps": [
+    "0061",
+    "2060",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "tag-smuggle",
+   "note": "TAG chars: invisible ASCII smuggling (Flint #808)",
+   "input_cps": [
+    "0068",
+    "0069",
+    "E0041",
+    "E0042"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    2,
+    3
+   ],
+   "portal_normalised_cps": [
+    "0068",
+    "0069"
+   ],
+   "portal_changed": 2,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "vs16-ok",
+   "note": "FE0F allowed",
+   "input_cps": [
+    "2764",
+    "FE0F"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "2764",
+    "FE0F"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "vs15-ok",
+   "note": "FE0E allowed",
+   "input_cps": [
+    "2764",
+    "FE0E"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "2764",
+    "FE0E"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "vs1",
+   "note": "FE00-FE0D refused",
+   "input_cps": [
+    "0061",
+    "FE00"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "vs17",
+   "note": "E0100-E01EF refused",
+   "input_cps": [
+    "0061",
+    "E0100"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "family",
+   "note": "must pass",
+   "input_cps": [
+    "1F468",
+    "200D",
+    "1F469",
+    "200D",
+    "1F467"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "1F468",
+    "200D",
+    "1F469",
+    "200D",
+    "1F467"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "heart-on-fire",
+   "note": "must pass (FE0F before the ZWJ)",
+   "input_cps": [
+    "2764",
+    "FE0F",
+    "200D",
+    "1F525"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "2764",
+    "FE0F",
+    "200D",
+    "1F525"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "rainbow-flag",
+   "note": "must pass",
+   "input_cps": [
+    "1F3F3",
+    "FE0F",
+    "200D",
+    "1F308"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "1F3F3",
+    "FE0F",
+    "200D",
+    "1F308"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "skin-tone-dev",
+   "note": "must pass (skin tone before the ZWJ)",
+   "input_cps": [
+    "1F469",
+    "1F3FD",
+    "200D",
+    "1F4BB"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "1F469",
+    "1F3FD",
+    "200D",
+    "1F4BB"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "kiss-skin",
+   "note": "must pass",
+   "input_cps": [
+    "1F9D1",
+    "1F3FD",
+    "200D",
+    "2764",
+    "FE0F",
+    "200D",
+    "1F48B",
+    "200D",
+    "1F9D1",
+    "1F3FB"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "1F9D1",
+    "1F3FD",
+    "200D",
+    "2764",
+    "FE0F",
+    "200D",
+    "1F48B",
+    "200D",
+    "1F9D1",
+    "1F3FB"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "zwj-letters",
+   "note": "ZWJ between letters: refused",
+   "input_cps": [
+    "0061",
+    "200D",
+    "0062"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "0062"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "zwj-letter-vs16",
+   "note": "letter + FE0F + ZWJ: refused (Flint #808)",
+   "input_cps": [
+    "0061",
+    "FE0F",
+    "200D",
+    "1F600"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    2
+   ],
+   "portal_normalised_cps": [
+    "0061",
+    "FE0F",
+    "1F600"
+   ],
+   "portal_changed": 1,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "zwj-edge",
+   "note": "ZWJ at the start / end: refused",
+   "input_cps": [
+    "200D",
+    "1F600",
+    "200D"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    0,
+    2
+   ],
+   "portal_normalised_cps": [
+    "1F600"
+   ],
+   "portal_changed": 2,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "zwj-double",
+   "note": "two ZWJs: refused",
+   "input_cps": [
+    "1F600",
+    "200D",
+    "200D",
+    "1F600"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1,
+    2
+   ],
+   "portal_normalised_cps": [
+    "1F600",
+    "1F600"
+   ],
+   "portal_changed": 2,
+   "flag_addendum": false,
+   "mention_hint": false
+  },
+  {
+   "id": "england-flag",
+   "note": "subdivision flag: refused + Hypatia's addendum",
+   "input_cps": [
+    "1F3F4",
+    "E0067",
+    "E0062",
+    "E0065",
+    "E006E",
+    "E0067",
+    "E007F"
+   ],
+   "receiver_rejects": true,
+   "refused_indices": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "portal_normalised_cps": [
+    "1F3F4"
+   ],
+   "portal_changed": 6,
+   "flag_addendum": true,
+   "mention_hint": false
+  },
+  {
+   "id": "mention",
+   "note": "posted as plain text; hint, no badge (Hypatia #832)",
+   "input_cps": [
+    "0040",
+    "0061",
+    "0072",
+    "0063",
+    "0068",
+    "0069",
+    "0065",
+    "0020",
+    "0068",
+    "0065",
+    "006C",
+    "006C",
+    "006F"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "0040",
+    "0061",
+    "0072",
+    "0063",
+    "0068",
+    "0069",
+    "0065",
+    "0020",
+    "0068",
+    "0065",
+    "006C",
+    "006C",
+    "006F"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": true
+  },
+  {
+   "id": "lone-surrogate-free",
+   "note": "BMP + astral, all allowed",
+   "input_cps": [
+    "0063",
+    "0061",
+    "0066",
+    "00E9",
+    "0020",
+    "4E2D",
+    "0020",
+    "1F600"
+   ],
+   "receiver_rejects": false,
+   "refused_indices": [],
+   "portal_normalised_cps": [
+    "0063",
+    "0061",
+    "0066",
+    "00E9",
+    "0020",
+    "4E2D",
+    "0020",
+    "1F600"
+   ],
+   "portal_changed": 0,
+   "flag_addendum": false,
+   "mention_hint": false
+  }
+ ],
+ "cost": [
+  {
+   "id": "ascii-2900",
+   "recipe": {
+    "repeat": "0061",
+    "times": 2900,
+    "then_ascii_a": 0
+   },
+   "sha256_utf8": "76755721a6cbcb30bce21f7798031ce7f1d257064e25296aa4ceed7a7b2ee424",
+   "cost": 2900,
+   "within_cap": true
+  },
+  {
+   "id": "ascii-2901",
+   "recipe": {
+    "repeat": "0061",
+    "times": 2901,
+    "then_ascii_a": 0
+   },
+   "sha256_utf8": "60a86c27a6051b97e1dae39bbf93ee9006dc97dee149aa51e5068feda8090c22",
+   "cost": 2901,
+   "within_cap": false
+  },
+  {
+   "id": "newline-2900",
+   "recipe": {
+    "repeat": "000A",
+    "times": 966,
+    "then_ascii_a": 2
+   },
+   "sha256_utf8": "a4eac00cc1047c7387f14aca482be9b5b90a53726fdf1171cb6053bb30015447",
+   "cost": 2900,
+   "within_cap": true
+  },
+  {
+   "id": "newline-2901",
+   "recipe": {
+    "repeat": "000A",
+    "times": 967,
+    "then_ascii_a": 0
+   },
+   "sha256_utf8": "eacdaabc92468327cd32d2cb1aac303dca0f64926d0431352aac390b86e8dafe",
+   "cost": 2901,
+   "within_cap": false
+  },
+  {
+   "id": "quote-2900",
+   "recipe": {
+    "repeat": "0022",
+    "times": 725,
+    "then_ascii_a": 0
+   },
+   "sha256_utf8": "ba9d9d36157b0ad08767fef958b18288da271222f56ff78bf588c308285f5af8",
+   "cost": 2900,
+   "within_cap": true
+  },
+  {
+   "id": "quote-2901",
+   "recipe": {
+    "repeat": "0022",
+    "times": 725,
+    "then_ascii_a": 1
+   },
+   "sha256_utf8": "83fc89a89307c01e86ed40c437f82810c324ec9b50d986c521edbd94715652ca",
+   "cost": 2901,
+   "within_cap": false
+  },
+  {
+   "id": "backslash-2900",
+   "recipe": {
+    "repeat": "005C",
+    "times": 725,
+    "then_ascii_a": 0
+   },
+   "sha256_utf8": "605bc4a362bc580f6fa9ff7f2d50cc8debb9f4f7a313f337270e009cf42baa19",
+   "cost": 2900,
+   "within_cap": true
+  },
+  {
+   "id": "backslash-2901",
+   "recipe": {
+    "repeat": "005C",
+    "times": 725,
+    "then_ascii_a": 1
+   },
+   "sha256_utf8": "7bbd2fc8c431475a5e45d70f9f42a90b9becd93265e215066ebddd592535500c",
+   "cost": 2901,
+   "within_cap": false
+  },
+  {
+   "id": "cjk-2900",
+   "recipe": {
+    "repeat": "4E2D",
+    "times": 483,
+    "then_ascii_a": 2
+   },
+   "sha256_utf8": "088807ba31fab1a8f25d2ed4a0a8019daf464912255f37608447d185d4c98620",
+   "cost": 2900,
+   "within_cap": true
+  },
+  {
+   "id": "cjk-2901",
+   "recipe": {
+    "repeat": "4E2D",
+    "times": 483,
+    "then_ascii_a": 3
+   },
+   "sha256_utf8": "f66859d0dd5baf4223e54f5d997aa9db0228fddbde1f09d1ee6d4faf07b48c94",
+   "cost": 2901,
+   "within_cap": false
+  },
+  {
+   "id": "emoji-2900",
+   "recipe": {
+    "repeat": "1F600",
+    "times": 241,
+    "then_ascii_a": 8
+   },
+   "sha256_utf8": "fe7753d89105845ae05e027e9db95c9b271fd17db75bbe826086810fe4e9c8dd",
+   "cost": 2900,
+   "within_cap": true
+  },
+  {
+   "id": "emoji-2901",
+   "recipe": {
+    "repeat": "1F600",
+    "times": 241,
+    "then_ascii_a": 9
+   },
+   "sha256_utf8": "7f5e79a33270e4930c1e9cdb959447e6ca4dec87892f9426d8cf6ea8197cb0d0",
+   "cost": 2901,
+   "within_cap": false
+  }
+ ],
+ "preimage": [
+  {
+   "id": "post-plain",
+   "domain": "svrnty:loom-post:v1",
+   "suite": "ed25519",
+   "object": {
+    "fleet": "autobots",
+    "thread": "lane:portal",
+    "nonce": "00112233445566778899aabbccddeeff",
+    "issued_at": "2026-10-25T03:00:00.000Z",
+    "expires_at": "2026-10-25T03:05:00.000Z",
+    "origin": "noosphere.nuavalon.com",
+    "purpose": "svrnty-loom-post-v1",
+    "body": "hello from the portal"
+   },
+   "jcs": "{\"body\":\"hello from the portal\",\"expires_at\":\"2026-10-25T03:05:00.000Z\",\"fleet\":\"autobots\",\"issued_at\":\"2026-10-25T03:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"origin\":\"noosphere.nuavalon.com\",\"purpose\":\"svrnty-loom-post-v1\",\"thread\":\"lane:portal\"}",
+   "signed_bytes_utf8": "19:svrnty:loom-post:v17:ed25519{\"body\":\"hello from the portal\",\"expires_at\":\"2026-10-25T03:05:00.000Z\",\"fleet\":\"autobots\",\"issued_at\":\"2026-10-25T03:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"origin\":\"noosphere.nuavalon.com\",\"purpose\":\"svrnty-loom-post-v1\",\"thread\":\"lane:portal\"}",
+   "sha256": "19d41c5304e7eb1a09810673d2559cdb485323aad9b539aa8dbaaecb046b24c9"
+  },
+  {
+   "id": "post-hostile-json",
+   "domain": "svrnty:loom-post:v1",
+   "suite": "ed25519",
+   "object": {
+    "fleet": "autobots",
+    "thread": "lane:portal",
+    "nonce": "00112233445566778899aabbccddeeff",
+    "issued_at": "2026-10-25T03:00:00.000Z",
+    "expires_at": "2026-10-25T03:05:00.000Z",
+    "origin": "noosphere.nuavalon.com",
+    "purpose": "svrnty-loom-post-v1",
+    "body": "line 1\nline 2 \"quoted\" back\\slash 中 😀 ❤️‍🔥"
+   },
+   "jcs": "{\"body\":\"line 1\\nline 2 \\\"quoted\\\" back\\\\slash 中 😀 ❤️‍🔥\",\"expires_at\":\"2026-10-25T03:05:00.000Z\",\"fleet\":\"autobots\",\"issued_at\":\"2026-10-25T03:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"origin\":\"noosphere.nuavalon.com\",\"purpose\":\"svrnty-loom-post-v1\",\"thread\":\"lane:portal\"}",
+   "signed_bytes_utf8": "19:svrnty:loom-post:v17:ed25519{\"body\":\"line 1\\nline 2 \\\"quoted\\\" back\\\\slash 中 😀 ❤️‍🔥\",\"expires_at\":\"2026-10-25T03:05:00.000Z\",\"fleet\":\"autobots\",\"issued_at\":\"2026-10-25T03:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"origin\":\"noosphere.nuavalon.com\",\"purpose\":\"svrnty-loom-post-v1\",\"thread\":\"lane:portal\"}",
+   "sha256": "109412f36ffbee3879c404e39c77746bbaaf40e7fa78ea6bf8fc0e9bc389c3be"
+  },
+  {
+   "id": "task-route",
+   "domain": "svrnty:loom-task:v1",
+   "suite": "ed25519",
+   "object": {
+    "fleet": "autobots",
+    "thread": "lane:orch",
+    "nonce": "00112233445566778899aabbccddeeff",
+    "issued_at": "2026-10-25T03:00:00.000Z",
+    "expires_at": "2026-10-25T03:05:00.000Z",
+    "origin": "noosphere.nuavalon.com",
+    "purpose": "svrnty-loom-task-v1",
+    "title": "Check the relay volume",
+    "body": "see #661",
+    "target": "route"
+   },
+   "jcs": "{\"body\":\"see #661\",\"expires_at\":\"2026-10-25T03:05:00.000Z\",\"fleet\":\"autobots\",\"issued_at\":\"2026-10-25T03:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"origin\":\"noosphere.nuavalon.com\",\"purpose\":\"svrnty-loom-task-v1\",\"target\":\"route\",\"thread\":\"lane:orch\",\"title\":\"Check the relay volume\"}",
+   "signed_bytes_utf8": "19:svrnty:loom-task:v17:ed25519{\"body\":\"see #661\",\"expires_at\":\"2026-10-25T03:05:00.000Z\",\"fleet\":\"autobots\",\"issued_at\":\"2026-10-25T03:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"origin\":\"noosphere.nuavalon.com\",\"purpose\":\"svrnty-loom-task-v1\",\"target\":\"route\",\"thread\":\"lane:orch\",\"title\":\"Check the relay volume\"}",
+   "sha256": "4faff0a654825766fcc95c2a8478fabe449ef6631e846e78a8c6940c1372d58e"
+  }
+ ],
+ "signature": {
+  "test_public_key": "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nxjMEat1p0RYJKwYBBAHaRw8BAQdAh56MOACSmXTwMz+m2yFW+YlA7tXHMvj9\nZOAUjfyk0GHNBWFnZW50wsATBBMWCgCFBYJq3WnRAwsJBwmQYJfgE3WPHGNF\nFAAAAAAAHAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ7uv8DOnexvG\n19AeCNjGu3e7xCQynItLoqoIsLfuRlNEBRUKCA4MBBYAAgECGQECmwMCHgEW\nIQRfZlIG5j0beg3nS9Ngl+ATdY8cYwAAf3UBAMtqtZYQzO4zSyw4FG4gDY+q\ncpZE0obFH+jpciE17aBLAP4rgJWmjkI3CNg6ecpS9ktkMHg6u7pon4oOgMhf\nP+T/CM44BGrdadESCisGAQQBl1UBBQEBB0DxTpi8Ypfx0kM1WzLkeWB7Y2cu\nXZCbSuVm9MuqHfkoSwMBCAfCvgQYFgoAcAWCat1p0QmQYJfgE3WPHGNFFAAA\nAAAAHAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZx060TyJqTtLNI1k\n/DsjIQj4C53l5gMitjpMqMx3nQxAApsMFiEEX2ZSBuY9G3oN50vTYJfgE3WP\nHGMAAKBKAP0XsxcbW5/+2p+XzoMAFmYiG5Z79cN/iHd67edBnB39mgEAjqXJ\nhfMWKjEOnrq3Q54PwjedW4rKaUqB4NMtu3aQEg4=\n=EDyo\n-----END PGP PUBLIC KEY BLOCK-----\n",
+  "test_fp": "651819cd46f6747e18e11155d2fbad6e0a0559cefe24a320ea6301ea7c867e8e",
+  "signing_key_fpr": "5f665206e63d1b7a0de74bd36097e013758f1c63",
+  "vectors": [
+   {
+    "id": "post-plain",
+    "attached_classical": "-----BEGIN PGP MESSAGE-----\n\nxA0DAQoWYJfgE3WPHGMBy8BrdQBq3XIiMTk6c3ZybnR5Omxvb20tcG9zdDp2\nMTc6ZWQyNTUxOXsiYm9keSI6ImhlbGxvIGZyb20gdGhlIHBvcnRhbCIsImV4\ncGlyZXNfYXQiOiIyMDI2LTEwLTI1VDAzOjA1OjAwLjAwMFoiLCJmbGVldCI6\nImF1dG9ib3RzIiwiaXNzdWVkX2F0IjoiMjAyNi0xMC0yNVQwMzowMDowMC4w\nMDBaIiwibm9uY2UiOiIwMDExMjIzMzQ0NTU2Njc3ODg5OWFhYmJjY2RkZWVm\nZiIsIm9yaWdpbiI6Im5vb3NwaGVyZS5udWF2YWxvbi5jb20iLCJwdXJwb3Nl\nIjoic3ZybnR5LWxvb20tcG9zdC12MSIsInRocmVhZCI6ImxhbmU6cG9ydGFs\nIn3CuwQBFgoAbQWCat1yIgmQYJfgE3WPHGNFFAAAAAAAHAAgc2FsdEBub3Rh\ndGlvbnMub3BlbnBncGpzLm9yZ0+XYZXviJJMm98nle8DKx8OP8GQGDIDH+FY\nOU/0Oh1RFiEEX2ZSBuY9G3oN50vTYJfgE3WPHGMAAOz2AP9ZjfD5SaAZhTJt\n5L5oLlf4l/rNOxPdmx0h9Z505aOs9gEA7+05HDKLRE+3I77APE+Es7cHpJSz\nqnVyTeX0TeQggQA=\n=W0gw\n-----END PGP MESSAGE-----\n",
+    "attached_packet_tags": [
+     4,
+     11
+    ],
+    "literal_equals_rebuilt": true,
+    "stored_sig_b64": "wrsEARYKAG0FgmrdciIJkGCX4BN1jxxjRRQAAAAAABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmdPl2GV74iSTJvfJ5XvAysfDj/BkBgyAx/hWDlP9DodURYhBF9mUgbmPRt6DedL02CX4BN1jxxjAADs9gD/WY3w+UmgGYUybeS+aC5X+Jf6zTsT3ZsdIfWedOWjrPYBAO/tORwyi0RPtyO+wDxPhLO3B6SUs6p1ck3l9E3kIIEA",
+    "sig_type": 1,
+    "hash_algo": "sha512",
+    "issuer_fpr": "5f665206e63d1b7a0de74bd36097e013758f1c63",
+    "verify_detached": true,
+    "negative": {
+     "body_tampered": false,
+     "other_loom_domain": false,
+     "identity_card_domain": false,
+     "other_suite": false
+    }
+   },
+   {
+    "id": "post-hostile-json",
+    "attached_classical": "-----BEGIN PGP MESSAGE-----\n\nxA0DAQoWYJfgE3WPHGMBy8CSdQBq3XIiMTk6c3ZybnR5Omxvb20tcG9zdDp2\nMTc6ZWQyNTUxOXsiYm9keSI6ImxpbmUgMVxubGluZSAyIFwicXVvdGVkXCIg\nYmFja1xcc2xhc2gg5LitIPCfmIAg4p2k77iP4oCN8J+UpSIsImV4cGlyZXNf\nYXQiOiIyMDI2LTEwLTI1VDAzOjA1OjAwLjAwMFoiLCJmbGVldCI6ImF1dG9i\nb3RzIiwiaXNzdWVkX2F0IjoiMjAyNi0xMC0yNVQwMzowMDowMC4wMDBaIiwi\nbm9uY2UiOiIwMDExMjIzMzQ0NTU2Njc3ODg5OWFhYmJjY2RkZWVmZiIsIm9y\naWdpbiI6Im5vb3NwaGVyZS5udWF2YWxvbi5jb20iLCJwdXJwb3NlIjoic3Zy\nbnR5LWxvb20tcG9zdC12MSIsInRocmVhZCI6ImxhbmU6cG9ydGFsIn3CuwQB\nFgoAbQWCat1yIgmQYJfgE3WPHGNFFAAAAAAAHAAgc2FsdEBub3RhdGlvbnMu\nb3BlbnBncGpzLm9yZxT0NT6k8+SDfW0h0BrN7eMcq6eSMQCl/vv/sFzGXdJK\nFiEEX2ZSBuY9G3oN50vTYJfgE3WPHGMAAE4RAQDVeSpzEJLXL8x0Z8jv0vdK\nuvZk91AOHerlW7aTw6DYRwD/YHKmq2p87Z7dIDuAE78bcHRa8aiGOCx4/sNP\nfo/7wwE=\n=gUf1\n-----END PGP MESSAGE-----\n",
+    "attached_packet_tags": [
+     4,
+     11
+    ],
+    "literal_equals_rebuilt": true,
+    "stored_sig_b64": "wrsEARYKAG0FgmrdciIJkGCX4BN1jxxjRRQAAAAAABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmcU9DU+pPPkg31tIdAaze3jHKunkjEApf77/7Bcxl3SShYhBF9mUgbmPRt6DedL02CX4BN1jxxjAABOEQEA1XkqcxCS1y/MdGfI79L3Srr2ZPdQDh3q5Vu2k8Og2EcA/2BypqtqfO2e3SA7gBO/G3B0WvGohjgseP7DT36P+8MB",
+    "sig_type": 1,
+    "hash_algo": "sha512",
+    "issuer_fpr": "5f665206e63d1b7a0de74bd36097e013758f1c63",
+    "verify_detached": true,
+    "negative": {
+     "body_tampered": false,
+     "other_loom_domain": false,
+     "identity_card_domain": false,
+     "other_suite": false
+    }
+   },
+   {
+    "id": "task-route",
+    "attached_classical": "-----BEGIN PGP MESSAGE-----\n\nxA0DAQoWYJfgE3WPHGMBy8COdQBq3XIjMTk6c3ZybnR5Omxvb20tdGFzazp2\nMTc6ZWQyNTUxOXsiYm9keSI6InNlZSAjNjYxIiwiZXhwaXJlc19hdCI6IjIw\nMjYtMTAtMjVUMDM6MDU6MDAuMDAwWiIsImZsZWV0IjoiYXV0b2JvdHMiLCJp\nc3N1ZWRfYXQiOiIyMDI2LTEwLTI1VDAzOjAwOjAwLjAwMFoiLCJub25jZSI6\nIjAwMTEyMjMzNDQ1NTY2Nzc4ODk5YWFiYmNjZGRlZWZmIiwib3JpZ2luIjoi\nbm9vc3BoZXJlLm51YXZhbG9uLmNvbSIsInB1cnBvc2UiOiJzdnJudHktbG9v\nbS10YXNrLXYxIiwidGFyZ2V0Ijoicm91dGUiLCJ0aHJlYWQiOiJsYW5lOm9y\nY2giLCJ0aXRsZSI6IkNoZWNrIHRoZSByZWxheSB2b2x1bWUifcK7BAEWCgBt\nBYJq3XIjCZBgl+ATdY8cY0UUAAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVu\ncGdwanMub3JnKA8ZuRiZy/Jev7lJPU43essgRMs3E7gHGjVgPrKBJwoWIQRf\nZlIG5j0beg3nS9Ngl+ATdY8cYwAAP+IBAMqJlnOD1xvH1QnL9A5QiOSnjAac\nbXViKAdy3gPuX2mEAQDngvuqtrbZzOxS6L9zFAL074EFNpLT+B558l35nKNY\nBg==\n=qPdd\n-----END PGP MESSAGE-----\n",
+    "attached_packet_tags": [
+     4,
+     11
+    ],
+    "literal_equals_rebuilt": true,
+    "stored_sig_b64": "wrsEARYKAG0FgmrdciMJkGCX4BN1jxxjRRQAAAAAABwAIHNhbHRAbm90YXRpb25zLm9wZW5wZ3Bqcy5vcmcoDxm5GJnL8l6/uUk9Tjd6yyBEyzcTuAcaNWA+soEnChYhBF9mUgbmPRt6DedL02CX4BN1jxxjAAA/4gEAyomWc4PXG8fVCcv0DlCI5KeMBpxtdWIoB3LeA+5faYQBAOeC+6q2ttnM7FLov3MUAvTvgQU2ktP4HnnyXfmco1gG",
+    "sig_type": 1,
+    "hash_algo": "sha512",
+    "issuer_fpr": "5f665206e63d1b7a0de74bd36097e013758f1c63",
+    "verify_detached": true,
+    "negative": {
+     "body_tampered": false,
+     "other_loom_domain": false,
+     "identity_card_domain": false,
+     "other_suite": false
+    }
+   }
+  ]
+ }
+}
