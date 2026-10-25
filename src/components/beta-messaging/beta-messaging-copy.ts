@@ -3,7 +3,7 @@
 // beta-messaging-copy.test.ts. Status floor is Sent — never Delivered / Read / Expired.
 
 export const BETA_COPY = {
-  tabLabel: 'Notes',
+  tabLabel: 'Chat',
   unlockHeading: 'Turn on beta messaging',
   unlockBody:
     'Messaging is in beta. Redeem your access key to turn it on for this address book — one key per book.',

@@ -1,6 +1,7 @@
 // Thin call to fleet sendNoteToPeer. Never reimplements seal / sign / deposit.
 
 import { sendNoteToPeer } from '@/lib/messaging/transport';
+import { loadOwnerRatchetIdentity, peerRatchetFromCard } from '@/lib/messaging/ratchet-keys';
 import { NOTES_COPY } from './notes-copy';
 import type { OwnerNoteSender } from './notes-keys';
 
@@ -10,14 +11,31 @@ export type SendNoteResult =
 
 export async function sendNoteFromInbox(args: {
   sender: OwnerNoteSender;
+  ownerIdentity?: unknown;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+<<<<<<< ours
   /** Recipient's ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); absent ⇒ fail-closed skip. */
   peerPqKemPublicKey?: string;
+||||||| base
+=======
+  peerPqKemPublicKey?: string;
+  peerPqSigPublicKey?: string;
+>>>>>>> theirs
   body: string;
   threadId?: string;
 }): Promise<SendNoteResult> {
   try {
+    const [ownerRatchet, peerRatchet] = await Promise.all([
+      args.ownerIdentity
+        ? loadOwnerRatchetIdentity(args.sender.fingerprint, args.ownerIdentity)
+        : Promise.resolve(null),
+      peerRatchetFromCard({
+        publicKeyArmored: args.peerPublicKeyArmored,
+        pqKemPublicKey: args.peerPqKemPublicKey,
+        pqSigPublicKey: args.peerPqSigPublicKey,
+      }),
+    ]);
     const result = await sendNoteToPeer({
       sender: { fingerprint: args.sender.fingerprint, participant_kind: 'human' },
       senderPublicKeyArmored: args.sender.publicKeyArmored,
@@ -30,6 +48,8 @@ export async function sendNoteFromInbox(args: {
       peerPqKemPublicKey: args.peerPqKemPublicKey,
       body: args.body,
       threadId: args.threadId,
+      ownerRatchet: ownerRatchet ?? undefined,
+      peerRatchet: peerRatchet ?? undefined,
     });
     return {
       ok: true,

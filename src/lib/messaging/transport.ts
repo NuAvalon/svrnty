@@ -7,8 +7,10 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId } from './store';
+import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
 import type { NoteRecord } from './types';
+import { isTripleRatchetBody, sealDirectNote } from './direct-session';
+import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
 
 export interface NoteSenderIdentity {
   fingerprint: string;
@@ -37,12 +39,33 @@ export async function sendNoteToPeer(args: {
   threadId?: string;
   relayBase?: string;
   fetchImpl?: typeof fetch;
+  /** When both sides have X25519 + ML-KEM, the inner body is a triple-ratchet packet. */
+  ownerRatchet?: RatchetIdentity;
+  peerRatchet?: RatchetPeer;
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
   const thread_id = args.threadId ?? newThreadId();
   const note_id = newNoteId();
   const sent_at = new Date().toISOString();
+  // Delivery-receipt (Athena — Nov-5): a per-note freshness nonce, carried SEALED+SIGNED inside the wire
+  // (it is part of noteSigningInput → sender-signed under DOMAIN_NOTE) and kept on the local record as the
+  // sender's source-of-truth. The recipient echoes it in a recipient-signed receipt; the sender verifies
+  // the echo against this stored value. Always generated — harmless if the peer never returns a receipt
+  // (the note simply stays the honest 'Sent · unconfirmed.' floor).
+  const receipt_nonce = newReceiptNonce();
+
+  let wireBody = args.body;
+  if (args.ownerRatchet && args.peerRatchet) {
+    const sealed = await sealDirectNote(
+      args.peerFingerprint,
+      args.body,
+      args.ownerRatchet,
+      args.peerRatchet,
+    );
+    if (!sealed) throw new Error('direct ratchet could not seal');
+    wireBody = sealed;
+  }
 
   const unsignedWire: NoteWireV0 = {
     type: NOTE_WIRE_TYPE,
@@ -50,8 +73,9 @@ export async function sendNoteToPeer(args: {
     thread_id,
     from_fingerprint: args.sender.fingerprint,
     sent_at,
-    body: args.body,
+    body: wireBody,
     participant_kind: args.sender.participant_kind,
+    receipt_nonce,
   };
 
   // Sign BEFORE sealing so the recipient can authenticate the sender (not just decrypt). The
@@ -92,6 +116,7 @@ export async function sendNoteToPeer(args: {
     participant_kind: args.sender.participant_kind,
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    receipt_nonce, // source-of-truth for verifying the recipient's delivery receipt (delivered stays unset until then)
   };
   await putNote(local);
 
@@ -144,6 +169,8 @@ export async function acceptInboundNote(args: {
   isAdmitted: (fingerprint: string) => Promise<boolean>;
   peerDisplayName?: string;
   peerKind?: ParticipantKind;
+  /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. */
+  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | null>;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -154,6 +181,13 @@ export async function acceptInboundNote(args: {
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
     return null; // spam / stranger — structural drop
   }
+  let body = args.wire.body;
+  if (isTripleRatchetBody(body)) {
+    if (!args.openRatchet) return null;
+    const opened = await args.openRatchet(args.wire.from_fingerprint, body);
+    if (opened === null) return null;
+    body = opened;
+  }
   const sent_at = args.wire.sent_at || new Date().toISOString();
   const record: NoteRecord = {
     note_id: args.wire.note_id,
@@ -162,7 +196,7 @@ export async function acceptInboundNote(args: {
     from_fingerprint: args.wire.from_fingerprint,
     to_fingerprints: [], // self
     sent_at,
-    body: args.wire.body,
+    body,
     participant_kind: args.wire.participant_kind || args.peerKind || 'human',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,

@@ -7,6 +7,7 @@
  * `edge.trusted` / `edge.mutual`.
  *
  * WHITE / LIT if and only if `trust === 'mutual'`.
+ * One-way trust shares the mutual hex chrome — no core, Known spoke unchanged.
  */
 
 import {
@@ -16,7 +17,6 @@ import {
   type LivingTrustPhase,
 } from '@/lib/trust/living-edge-status';
 import type { TrustEdge } from '@/lib/trust/types';
-import { isMutualTrustWireLive } from '@/lib/claim-gates';
 
 export type TrustBondState =
   | 'known'
@@ -28,26 +28,26 @@ export type TrustBondState =
 export type TrustBondShape =
   | 'outline'
   | 'dashed-hollow'
-  | 'actionable'
   | 'solid-filled'
   | 'struck';
 
+/** Spoke paint. Mutual is the only thick-bright line. Outbound uses the dim Known spoke. */
+export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
+
 export const TRUST_VISUAL_LABELS = {
   known: 'Known',
-  'trust-sent': 'Awaiting mutual',
-  'trust-received': 'Trusts you · trust back?',
-  mutual: 'Mutual',
+  'trust-sent': 'Trust pending',
+  'trust-received': 'Trust pending',
+  mutual: 'Mutual trust',
   blocked: 'Blocked',
   introPending: 'Pending intro',
 } as const;
 
 /**
- * PRE-WIRE label for the one-way (trust-sent) bond while isMutualTrustWireLive() is false — the primary
- * node/chip/badge label (this map is the ONE paint source; a livingEdgeStatus-only gate would be BYPASSED
- * here). The affirmation flow isn't deposited yet, so "Awaiting mutual" over-claims a transient wait for a
- * state that can't arrive (built≠wired). Reuses Hypatia's approved pre-wire word "Trusted" (the terse
- * node/chip form of the gated edge statusLine). Flips to TRUST_VISUAL_LABELS['trust-sent'] WITH the wire.
- * (@Hypatia — confirm/adjust this terse node word; "Trusted" mirrors the edge statusLine pre-wire.)
+ * Label for the one-way (trust-sent) bond — the owner's OWN outbound trust. The primary node/chip/badge
+ * label (this map is the ONE paint source). #593: the affirm-wire was removed, so a one-way edge reads
+ * the honest "Trusted" (its own device trust) — never "Trust pending" / "Awaiting mutual", which would
+ * imply an affirm-in-flight that no longer exists. Mutual is PSI-discovered (#588), not an affirm wait.
  */
 export const TRUST_SENT_PRE_WIRE_LABEL = 'Trusted';
 
@@ -56,19 +56,16 @@ export const TRUST_VISUAL_WHITE_CORE = '#fffef8';
 export const TRUST_VISUAL_WHITE_HALO = '#fff8ee';
 export const TRUST_VISUAL_WHITE_SPOKE = '#fff6e8';
 
-const MUTED_STROKE = '#8f7550';
 const MUTED_FILL = 'rgba(143,117,80,0.10)';
-const INBOUND_STROKE = '#f9a825';
-const INBOUND_FILL = 'rgba(249,168,37,0.14)';
 const MUTUAL_FILL = 'color-mix(in srgb, var(--se-accent2) 22%, var(--se-bg))';
 const MUTUAL_CANVAS_FILL = 'rgba(255,122,26,0.55)';
 const KNOWN_STROKE = 'rgba(249,168,37,0.55)';
+const KNOWN_SPOKE = 'rgba(249,168,37,0.42)';
 const BLOCKED_STROKE = 'rgba(143,117,80,0.45)';
 
-/** Intro-handshake dash — must not equal the trust-sent dash. */
+/** Intro-handshake dash — connection axis only. Not unverified. One-way trust is never dashed. */
 export const INTRO_PENDING_DASH = '3 2';
-/** Trust-sent (outbound, not yet mutual) dash. */
-export const TRUST_SENT_DASH = '8 5';
+export const ONE_WAY_SPOKE_WIDTH = 0.85;
 
 export type TrustPhaseVisual = {
   bondState: TrustBondState;
@@ -93,6 +90,7 @@ export type TrustPhaseVisual = {
   haloStroke: string | null;
   spokeStroke: string;
   spokeDasharray: string | undefined;
+  spokeStyle: TrustSpokeStyle;
   spokeGlow: boolean;
   chipColorCss: string;
 };
@@ -104,16 +102,20 @@ function bondStateOf(
   if (blocked) return 'blocked';
   if (trust === 'mutual') return 'mutual';
   if (trust === 'outbound') return 'trust-sent';
-  if (trust === 'inbound') return 'trust-received';
+  // 'inbound' (they trust me, I have NOT reciprocated) is SUPPRESSED → falls through to 'known'.
+  // Peter #172742 I-F anti-coercion floor: one-way trust is invisible to all, ESPECIALLY the trusted
+  // party — a visible "they trust you" is a coercion lever. Only 'mutual' (reciprocal) ever surfaces;
+  // the truster's OWN 'outbound' stays (their choice). UNCONDITIONAL — not wireLive-gated.
+  // (Flint #173118 operational-confirm; Archie #172910 symmetry-precedes-visibility.)
   return 'known';
 }
 
-function displayLabel(bond: TrustBondState, introPending: boolean, trust: LivingTrustPhase, wireLive: boolean): string {
+function displayLabel(bond: TrustBondState, introPending: boolean, trust: LivingTrustPhase): string {
   if (bond === 'blocked') return TRUST_VISUAL_LABELS.blocked;
   if (introPending && trust === 'none') return TRUST_VISUAL_LABELS.introPending;
-  // Pre-wire: the one-way bond must NOT label "Awaiting mutual" (a transient wait for an unreachable
-  // state). The dashed-hollow affordance is unchanged; ONLY the label is gated (claim-gates.isMutualTrustWireLive).
-  if (bond === 'trust-sent' && !wireLive) return TRUST_SENT_PRE_WIRE_LABEL;
+  // #593: the affirm-wire is removed — a one-way 'trust-sent' (the owner's own outbound trust) reads the
+  // honest "Trusted", never the "Trust pending" affirm-in-flight word (no device affirm-wire exists).
+  if (bond === 'trust-sent') return TRUST_SENT_PRE_WIRE_LABEL;
   return TRUST_VISUAL_LABELS[bond];
 }
 
@@ -128,6 +130,26 @@ const KNOWN_STATUS: LivingEdgeStatus = {
   decayFreshness: 1,
 };
 
+function legendStatus(trust: LivingTrustPhase): LivingEdgeStatus {
+  return {
+    ...KNOWN_STATUS,
+    trust,
+    connection: 'linked',
+    canCommunicate: trust !== 'none',
+  };
+}
+
+/** Galaxy legend rows — same paint tokens as the stars. Labels follow the wire gate. */
+export function trustLifecycleLegendItems(): Array<{
+  visual: TrustPhaseVisual;
+  label: string;
+}> {
+  return (['none', 'outbound', 'mutual'] as const).map((trust) => {
+    const visual = trustPhaseVisual({ status: legendStatus(trust) });
+    return { visual, label: visual.label };
+  });
+}
+
 /**
  * Map a living-edge status onto paint tokens. Fail closed: missing/unknown
  * trust paints Known (outline, not lit).
@@ -141,10 +163,9 @@ export function trustPhaseVisual(input: {
   const introPending = input.status.connection === 'pending';
   const bond = bondStateOf(trust, input.blocked === true);
   const lit = bond === 'mutual';
-  // Single flag, read once here (claim-gates.isMutualTrustWireLive); gates ONLY the trust-sent LABEL.
-  // white/lit stays `bond === 'mutual'` — structurally unreachable pre-wire (reciprocal can't flip without
-  // the deposit-hook), so the white-gate needs no flag; only the one-way COPY would over-claim pre-wire.
-  const label = displayLabel(bond, introPending, trust, isMutualTrustWireLive());
+  // #593: no wire flag — the trust-sent label is unconditionally the honest "Trusted". white/lit stays
+  // `bond === 'mutual'`; livingEdgeStatus no longer produces 'mutual' from a device bit (PSI #588 re-grounds it).
+  const label = displayLabel(bond, introPending, trust);
 
   if (bond === 'blocked') {
     return {
@@ -167,6 +188,7 @@ export function trustPhaseVisual(input: {
       haloStroke: null,
       spokeStroke: BLOCKED_STROKE,
       spokeDasharray: '2 3',
+      spokeStyle: 'single',
       spokeGlow: false,
       chipColorCss: 'var(--se-danger)',
     };
@@ -193,60 +215,36 @@ export function trustPhaseVisual(input: {
       haloStroke: TRUST_VISUAL_WHITE_HALO,
       spokeStroke: TRUST_VISUAL_WHITE_SPOKE,
       spokeDasharray: undefined,
+      spokeStyle: 'thick-bright',
       spokeGlow: true,
       chipColorCss: 'var(--se-accent2)',
     };
   }
 
-  if (bond === 'trust-sent') {
+  if (bond === 'trust-sent' || bond === 'trust-received') {
     return {
       bondState: bond,
       connection: input.status.connection,
       label,
       lit: false,
       white: false,
-      shape: 'dashed-hollow',
+      shape: 'solid-filled',
       introPending,
       verifiedMark: input.verified === true,
-      svgFill: 'transparent',
-      svgStroke: MUTED_STROKE,
-      svgStrokeWidth: 1.45,
-      svgDasharray: TRUST_SENT_DASH,
-      canvasFill: null,
-      canvasStroke: MUTED_STROKE,
-      canvasDash: [8, 5],
-      coreFill: null,
-      haloStroke: MUTED_STROKE,
-      spokeStroke: MUTED_STROKE,
-      spokeDasharray: TRUST_SENT_DASH,
-      spokeGlow: false,
-      chipColorCss: 'var(--se-muted)',
-    };
-  }
-
-  if (bond === 'trust-received') {
-    return {
-      bondState: bond,
-      connection: input.status.connection,
-      label,
-      lit: false,
-      white: false,
-      shape: 'actionable',
-      introPending,
-      verifiedMark: input.verified === true,
-      svgFill: INBOUND_FILL,
-      svgStroke: INBOUND_STROKE,
-      svgStrokeWidth: 1.5,
+      svgFill: MUTUAL_FILL,
+      svgStroke: TRUST_VISUAL_WHITE_HALO,
+      svgStrokeWidth: 1.85,
       svgDasharray: undefined,
-      canvasFill: INBOUND_FILL,
-      canvasStroke: INBOUND_STROKE,
+      canvasFill: MUTUAL_CANVAS_FILL,
+      canvasStroke: TRUST_VISUAL_WHITE_HALO,
       canvasDash: null,
       coreFill: null,
-      haloStroke: INBOUND_STROKE,
-      spokeStroke: INBOUND_STROKE,
+      haloStroke: null,
+      spokeStroke: KNOWN_SPOKE,
       spokeDasharray: undefined,
+      spokeStyle: 'single',
       spokeGlow: false,
-      chipColorCss: 'var(--se-accent)',
+      chipColorCss: bond === 'trust-received' ? 'var(--se-accent)' : 'var(--se-muted)',
     };
   }
 
@@ -272,6 +270,7 @@ export function trustPhaseVisual(input: {
     haloStroke: null,
     spokeStroke: pendingIntroPaint ? '#f9a825' : 'rgba(249,168,37,0.42)',
     spokeDasharray: pendingIntroPaint ? '5 4' : undefined,
+    spokeStyle: 'single',
     spokeGlow: false,
     chipColorCss: pendingIntroPaint ? 'var(--se-accent)' : 'var(--se-dim)',
   };

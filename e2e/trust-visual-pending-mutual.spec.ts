@@ -24,9 +24,9 @@ async function genesis(page: Page, name: string) {
   });
 }
 
-// Labels assert the PRE-WIRE gated copy (claim-gates.isMutualTrustWireLive=false → 'Trusted' /
-// 'mutual confirmation coming'); structural attrs (bond-state/light/shape) are ungated. Flip with the wire.
-test('Galaxy: outbound one-way trust is not white; mutual is the only white light', async ({
+// Labels assert the one-way (own-trust) copy "Trusted" (#593: affirm-wire removed — mutual is PSI-discovered, #588).
+// Structural attrs (bond-state/light/shape/hex fill) are ungated.
+test('Galaxy: one-way trust is not white; Mutual trust is the only white light', async ({
   page,
 }) => {
   test.setTimeout(90_000);
@@ -46,16 +46,39 @@ test('Galaxy: outbound one-way trust is not white; mutual is the only white ligh
   await expect(alan).toHaveAttribute('data-bond-state', 'trust-sent');
   await expect(alan).not.toHaveAttribute('data-light', 'white');
   await expect(alan).toHaveAttribute('data-mutual', 'false');
-  await expect(alan).toHaveAttribute('data-shape', 'hex-dashed');
-  await expect(page.locator('[data-testid="trust-node-awaiting"]').first()).toBeVisible();
+  await expect(alan).toHaveAttribute('data-shape', 'hex');
+  await expect(ada).toHaveAttribute('data-shape', 'hex');
+  await expect(alan).toHaveAttribute('data-spoke-style', 'single');
+  const adaFill = await ada.getAttribute('fill');
+  const alanFill = await alan.getAttribute('fill');
+  expect(alanFill, 'one-way hex fill matches mutual').toBe(adaFill);
+  expect(alanFill).toBeTruthy();
+  expect(alanFill).not.toBe('transparent');
+  await expect(page.locator(`g[data-graph-node="${ALAN}"] [data-testid="trust-node-light"]`)).toHaveCount(0);
+  await expect(page.locator(`g[data-graph-node="${ADA}"] [data-testid="trust-node-light"]`)).toHaveCount(1);
+  await expect(page.locator('[data-testid="trust-node-awaiting"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="trust-node-inbound-half"]')).toHaveCount(0);
 
   // Intro handshake is a separate axis from trust-sent (Frank is not one-way trust).
   await expect(frank).not.toHaveAttribute('data-bond-state', 'trust-sent');
   await expect(frank).not.toHaveAttribute('data-light', 'white');
   await expect(frank).toHaveAttribute('data-bond-state', 'known');
 
-  await expect(page.getByText('Mutual · white light')).toBeVisible();
-  await expect(page.getByText('Trusted · mutual confirmation coming')).toBeVisible();
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Known/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Trusted/i);
+  await expect(page.getByTestId('trust-lifecycle-legend')).toContainText(/Mutual trust/i);
+  await expect(page.getByTestId('trust-legend-glyph-known')).toBeVisible();
+  await expect(page.getByTestId('trust-legend-glyph-trust-sent')).toBeVisible();
+  await expect(page.getByTestId('trust-legend-glyph-mutual')).toBeVisible();
+  await expect(page.getByTestId('trust-legend-glyph-known').locator('polygon')).toHaveCount(1);
+  await expect(page.getByTestId('trust-legend-core-mutual')).toHaveCount(1);
+  await expect(page.getByTestId('trust-legend-glyph-trust-sent').locator('circle')).toHaveCount(0);
+  await expect(page.getByTestId('trust-lifecycle-legend')).not.toContainText(
+    /outer|half|awaiting|unverified|Trust pending/i,
+  );
+  await expect(page.getByTestId('trust-map-consent-legend')).toContainText(
+    /Every visible line consented — none inferred/,
+  );
 
   // Galaxy nodes animate (tm-ignite entrance + infinite tm-pulse), so Playwright's click
   // actionability wait for a "stable" (non-moving) element flakes under CI load — a latent
@@ -74,10 +97,17 @@ test('Galaxy: outbound one-way trust is not white; mutual is the only white ligh
   await alan.dispatchEvent('click');
   await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Trusted');
   await ada.dispatchEvent('click');
-  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual');
+  await expect(page.getByTestId('trust-node-bond-label')).toHaveText('Mutual trust');
+  // #253 ember no-op: inbound distress PAINT is gated off (VivreBurn returns null) while the
+  // emit-path is unwired. KEEP data-distress (raw distress value — benign data hook, proves the
+  // fixture puts ada in a REAL distress state); ASSERT the paint is absent. This pair IS the
+  // survivor-safety guard (distress-present contact ⟹ zero paint in DOM) — a premature re-enable
+  // regression must fail it (test-side partner to chaos #144; Flint-signed invariant).
+  await expect(ada).toHaveAttribute('data-distress', 'true');
+  await expect(page.getByTestId('trust-node-detail').getByTestId('vivre-burn')).toHaveCount(0);
 });
 
-test('Address book chips: Ada Mutual, Alan Trusted (pre-wire gate label)', async ({ page }) => {
+test('Address book chips: Ada Mutual trust, Alan Trusted (pre-wire)', async ({ page }) => {
   test.setTimeout(90_000);
   await genesis(page, 'Book Visual');
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
@@ -86,8 +116,16 @@ test('Address book chips: Ada Mutual, Alan Trusted (pre-wire gate label)', async
 
   const adaRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Ada Lovelace' });
   const alanRow = page.locator('[data-testid="contact-row"]').filter({ hasText: 'Alan Turing' });
-  await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual');
+  await expect(adaRow.getByTestId('master-row-chip')).toHaveText('Mutual trust');
   await expect(adaRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'mutual');
+  // #253 ember no-op: keep data-distress (raw value, benign) — proves ada is a real distress
+  // contact — and assert the distress PAINT is absent (vivre-burn/caution return null). The
+  // distress-present ⟹ zero-paint pair is the survivor-safety guard; don't delete it.
+  await expect(adaRow).toHaveAttribute('data-distress', '1');
+  await expect(adaRow.getByTestId('vivre-burn')).toHaveCount(0);
+  await adaRow.click();
+  await expect(page.getByTestId('contact-action-card').getByTestId('vivre-burn')).toHaveCount(0);
+  await expect(page.getByTestId('vivre-caution')).toHaveCount(0);
   await expect(alanRow.getByTestId('master-row-chip')).toHaveText('Trusted');
   await expect(alanRow.getByTestId('master-row-chip')).toHaveAttribute('data-bond-state', 'trust-sent');
 });

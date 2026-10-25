@@ -3,10 +3,11 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
+import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 
 const DB_NAME = 'svrnty-notes';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const PBKDF2_ITERATIONS = 600_000;
 
 let _db: IDBDatabase | null = null;
@@ -66,6 +67,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('ratchet_sessions')) {
+        db.createObjectStore('ratchet_sessions', { keyPath: 'peer_fingerprint' });
       }
     };
     req.onsuccess = () => {
@@ -248,6 +252,18 @@ export async function putNote(note: NoteRecord): Promise<void> {
   } satisfies NoteRow);
 }
 
+/** Fetch one stored note by id (any thread), or null if absent/corrupt. Used by the delivery-receipt
+ *  consume seam to recover the OUTBOUND note's expected nonce + recipient before verifying a receipt. */
+export async function getNote(noteId: string): Promise<NoteRecord | null> {
+  const row = await txGet<NoteRow>('notes', noteId);
+  if (!row) return null;
+  try {
+    return await decryptJson<NoteRecord>(row.enc);
+  } catch {
+    return null; // wrong key / corrupt — treat as absent (fail-safe: no receipt match ⇒ no false delivered)
+  }
+}
+
 export async function listNotesForThread(threadId: string): Promise<NoteRecord[]> {
   const db = await openDb();
   const rows: NoteRow[] = await new Promise((resolve, reject) => {
@@ -308,4 +324,30 @@ export function newThreadId(): string {
   const b = new Uint8Array(12);
   crypto.getRandomValues(b);
   return `thr_${toBase64(b).replace(/[+/=]/g, '').slice(0, 16)}`;
+}
+
+/** Per-note delivery-receipt freshness nonce (hex). Sealed+signed inside NoteWireV0.receipt_nonce and
+ *  kept on the local outbound NoteRecord as the sender's source-of-truth for receipt verification. */
+export function newReceiptNonce(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+type RatchetRow = { peer_fingerprint: string; enc: EncryptedBlob };
+
+/** Persist a 1:1 triple-ratchet snapshot. Encrypted with the notes-store key. */
+export async function putRatchetSession(peerFingerprint: string, snapshot: RatchetSnapshot): Promise<void> {
+  const enc = await encryptJson(snapshot);
+  await txPut('ratchet_sessions', { peer_fingerprint: peerFingerprint, enc } satisfies RatchetRow);
+}
+
+export async function getRatchetSession(peerFingerprint: string): Promise<RatchetSnapshot | null> {
+  const row = await txGet<RatchetRow>('ratchet_sessions', peerFingerprint);
+  if (!row) return null;
+  try {
+    return await decryptJson<RatchetSnapshot>(row.enc);
+  } catch {
+    return null;
+  }
 }

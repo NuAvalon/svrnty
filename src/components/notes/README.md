@@ -1,9 +1,12 @@
-# Notes inbox (over-wire SEND / INBOX)
+# Chat inbox (over-wire SEND / INBOX)
 
 Render-glass for CURSOR_QUEUE item 1 (Over-wire SEND / INBOX). Compose calls fleet `sendNoteToPeer`. The inbox **reads** `listThreads()` / `listNotesForThread()`. Receive persist is already in the app-shell live-book poll (`acceptInboundNote`) — this tab does not reimplement consume.
 
+The glass is the **Thread Field**: a Signal/WhatsApp-style conversation list (one row per person you wrote to, last-note preview, search, no unread counts) and an ember thread (outbound glow / inbound dim). Galaxy stars hop here via **Chat** on the star sheet (`onOpenNote` → `focusFingerprint`). The app chrome around it is header, menu, and footer only — no essay copy above the window.
+
 ## Files
-- `NotesInbox.tsx` — Solar Ember compose + thread list + honest send status
+- `NotesInbox.tsx` — Thread Field + honest send status
+- `notes-field.ts` — people-rail merge + clocks (no presence)
 - `notes-copy.ts` — queue copy (status floor **Sent · unconfirmed.**)
 - `notes-contacts.ts` — sendable = SVRN card with a public key, not blocked
 - `notes-keys.ts` — load unlocked identity args; thread PQ pubs for canonical senders
@@ -29,4 +32,4 @@ emitNote: (e) => emitNoteArrival(e),
 in `buildConsumeDeps` (import `emitNoteArrival` from this folder). Until then, arrivals persist (PR #212) and appear on the next store re-read / when the inbox is opened.
 
 ## Copy
-Queue LIVE-STATUS said to use the beta-surface strings for this glass. Unlock/redeem stays **off** this PR (gate-ON only, next item). Hypatia: the "end-to-end encrypted" / "never learns who you talk to" paragraph is copied from the queue spec (classical OpenPGP seal + dumb mailbox, not PQ).
+The Chat tab is the window — no essay masthead ("Encrypted messages…", "How notes travel"). Tab label is **Chat**. Outbound status stays **Sent · unconfirmed.** A Delivered confirmation is coming — do not render Delivered. Unlock/redeem stays **off** this surface (gate-ON only).

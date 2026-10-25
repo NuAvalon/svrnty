@@ -7,14 +7,15 @@ import { livingEdgeStatus, type LivingEdgeStatus } from '../../lib/trust/living-
 import type { TrustEdge } from '../../lib/trust/types';
 import {
   INTRO_PENDING_DASH,
-  TRUST_SENT_DASH,
   TRUST_VISUAL_LABELS,
   TRUST_VISUAL_WHITE_CORE,
   TRUST_VISUAL_WHITE_HALO,
   TRUST_VISUAL_WHITE_SPOKE,
   TRUST_SENT_PRE_WIRE_LABEL,
+  trustLifecycleLegendItems,
   trustPhaseVisual,
   trustVisualLane,
+  visualForEdge,
   type TrustPhaseVisual,
 } from './trust-phase-visual';
 
@@ -31,28 +32,19 @@ function status(p: Partial<LivingEdgeStatus> & Pick<LivingEdgeStatus, 'trust'>):
   };
 }
 
-function whitesOf(v: TrustPhaseVisual): string[] {
-  return [v.svgFill, v.svgStroke, v.canvasFill, v.canvasStroke, v.coreFill, v.haloStroke, v.spokeStroke]
-    .filter((c): c is string => typeof c === 'string' && c.length > 0);
-}
-
+/** White light = core / spoke / halo. Shared hex chrome may reuse the cream stroke. */
 function usesWhite(v: TrustPhaseVisual): boolean {
-  const blob = whitesOf(v).join(' ').toLowerCase();
   return (
     v.white ||
     v.lit ||
     v.coreFill === TRUST_VISUAL_WHITE_CORE ||
-    blob.includes(TRUST_VISUAL_WHITE_CORE.toLowerCase()) ||
-    blob.includes(TRUST_VISUAL_WHITE_HALO.toLowerCase()) ||
-    blob.includes(TRUST_VISUAL_WHITE_SPOKE.toLowerCase()) ||
-    blob.includes('#fff') ||
-    blob.includes('255,255,255') ||
-    blob.includes('251,234,210')
+    v.haloStroke === TRUST_VISUAL_WHITE_HALO ||
+    v.spokeStroke === TRUST_VISUAL_WHITE_SPOKE
   );
 }
 
 describe('trust-phase visual map — white IFF mutual', () => {
-  it('mutual is the only white/lit solid bond and labels Mutual', () => {
+  it('mutual is the only white/lit solid bond and labels Mutual trust', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
     assert.equal(v.bondState, 'mutual');
     assert.equal(v.lit, true);
@@ -65,33 +57,47 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.svgDasharray, undefined);
   });
 
-  it('outbound is dashed-hollow, muted, never white; PRE-WIRE label is "Trusted" (gated), NOT "Awaiting mutual"', () => {
+  it('outbound shares the mutual hex — no core, Known spoke; PRE-WIRE label is Trusted', () => {
     const v = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
+    const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
     assert.equal(v.bondState, 'trust-sent');
     assert.equal(v.lit, false);
     assert.equal(v.white, false);
-    assert.equal(v.shape, 'dashed-hollow'); // affordance UNCHANGED by the gate — only the label is gated
-    // isMutualTrustWireLive() is false (default) → the one-way bond must NOT label "Awaiting mutual".
+    assert.equal(v.shape, 'solid-filled');
+    assert.equal(v.shape, mutual.shape);
+    assert.equal(v.svgFill, mutual.svgFill);
+    assert.equal(v.svgStroke, mutual.svgStroke);
+    assert.equal(v.svgStrokeWidth, mutual.svgStrokeWidth);
+    assert.equal(v.canvasFill, mutual.canvasFill);
+    assert.equal(v.spokeStyle, 'single');
+    // #593: affirm-wire removed → a one-way (own-trust) bond labels "Trusted", never "Trust pending"/"Awaiting mutual".
     assert.equal(v.label, TRUST_SENT_PRE_WIRE_LABEL);
     assert.notEqual(v.label, TRUST_VISUAL_LABELS['trust-sent']);
     assert.equal(v.coreFill, null);
+    assert.equal(v.haloStroke, null);
+    assert.notEqual(v.coreFill, mutual.coreFill);
     assert.equal(v.spokeGlow, false);
-    assert.equal(v.svgFill, 'transparent');
-    assert.equal(v.canvasFill, null);
-    assert.equal(v.svgDasharray, TRUST_SENT_DASH);
+    assert.equal(v.svgDasharray, undefined);
+    assert.equal(v.spokeDasharray, undefined);
     assert.equal(usesWhite(v), false);
+    assert.equal(v.spokeStyle, known.spokeStyle);
+    assert.equal(v.spokeStroke, known.spokeStroke);
   });
 
-  it('pending vs mutual differ on shape AND color AND label', () => {
+  it('one-way and mutual share the hex; only mutual has the core and the lit bond', () => {
     const outbound = trustPhaseVisual({ status: status({ trust: 'outbound' }) });
     const mutual = trustPhaseVisual({ status: status({ trust: 'mutual' }) });
-    assert.notEqual(outbound.shape, mutual.shape);
-    assert.notEqual(outbound.svgStroke, mutual.svgStroke);
+    assert.equal(outbound.shape, mutual.shape);
+    assert.equal(outbound.svgFill, mutual.svgFill);
+    assert.equal(outbound.svgStroke, mutual.svgStroke);
     assert.notEqual(outbound.label, mutual.label);
-    assert.equal(outbound.shape, 'dashed-hollow');
-    assert.equal(mutual.shape, 'solid-filled');
-    assert.equal(outbound.label, 'Trusted'); // pre-wire (gated); post-wire flips to "Awaiting mutual"
-    assert.equal(mutual.label, 'Mutual');
+    assert.equal(outbound.coreFill, null);
+    assert.equal(mutual.coreFill, TRUST_VISUAL_WHITE_CORE);
+    assert.equal(outbound.spokeStyle, 'single');
+    assert.equal(mutual.spokeStyle, 'thick-bright');
+    assert.equal(outbound.label, TRUST_SENT_PRE_WIRE_LABEL);
+    assert.equal(mutual.label, TRUST_VISUAL_LABELS.mutual);
   });
 
   it('verified overlay never promotes outbound to mutual/white', () => {
@@ -125,14 +131,22 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(trustVisualLane(sent, false), 'trust-sent');
   });
 
-  it('inbound is actionable, not white, with the trust-back label', () => {
+  it('inbound (one-way they-trust-me) is SUPPRESSED — renders IDENTICAL to Known (I-F anti-coercion, Peter #172742; Flint #173118)', () => {
+    // The trusted party must NOT learn someone trusts them one-way — a visible "they trust you" is a
+    // coercion lever. Only mutual (reciprocal) ever surfaces. Inbound ≡ Known, by construction (bondStateOf).
     const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
-    assert.equal(v.bondState, 'trust-received');
-    assert.equal(v.shape, 'actionable');
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.known);
+    assert.equal(v.shape, known.shape);
+    assert.equal(v.svgFill, known.svgFill);
+    assert.equal(v.spokeStyle, known.spokeStyle);
+    assert.equal(v.spokeStroke, known.spokeStroke);
+    assert.equal(v.coreFill, null);
     assert.equal(v.lit, false);
-    assert.equal(v.label, TRUST_VISUAL_LABELS['trust-received']);
     assert.equal(usesWhite(v), false);
-    assert.equal(trustVisualLane(v, false), 'trust-received');
+    assert.equal(v.chipColorCss, known.chipColorCss);
+    assert.equal(trustVisualLane(v, false), 'known');
   });
 
   it('blocked is struck and not lit', () => {
@@ -156,7 +170,7 @@ describe('trust-phase visual map — white IFF mutual', () => {
     assert.equal(v.coreFill, null);
   });
 
-  it('reads livingEdgeStatus.trust — outbound vs mutual from a real edge', () => {
+  it('reads livingEdgeStatus.trust — a device-bit reciprocal edge reads outbound, NOT mutual (#593 removal)', () => {
     const base = {
       id: 'e',
       peer_fingerprint: 'aa'.repeat(20),
@@ -188,14 +202,58 @@ describe('trust-phase visual map — white IFF mutual', () => {
     const outVis = trustPhaseVisual({ status: livingEdgeStatus(outboundEdge) });
     const mutVis = trustPhaseVisual({ status: livingEdgeStatus(mutualEdge) });
     assert.equal(livingEdgeStatus(outboundEdge).trust, 'outbound');
-    assert.equal(livingEdgeStatus(mutualEdge).trust, 'mutual');
+    // #593 REMOVAL PROOF: a device-held reciprocal:true edge NO LONGER renders mutual via the real
+    // edge→visual path — it reads 'outbound' (the owner's own trust). Mutual is PSI-discovered (#588).
+    assert.equal(livingEdgeStatus(mutualEdge).trust, 'outbound');
     assert.equal(outVis.bondState, 'trust-sent');
-    assert.equal(mutVis.bondState, 'mutual');
+    assert.equal(mutVis.bondState, 'trust-sent');
     assert.equal(outVis.white, false);
-    assert.equal(mutVis.white, true);
-    // Real edge→visual path: pre-wire the one-way bond labels "Trusted" (gated), never "Awaiting mutual".
+    assert.equal(mutVis.white, false);
+    // Real edge→visual path: the one-way bond labels "Trusted", never "Awaiting mutual".
     assert.equal(outVis.label, TRUST_SENT_PRE_WIRE_LABEL);
-    assert.equal(mutVis.label, 'Mutual');
+    assert.equal(mutVis.label, TRUST_SENT_PRE_WIRE_LABEL);
+  });
+
+  it('a break with no remaining trust paints Known — no historical broken state', () => {
+    const v = trustPhaseVisual({ status: status({ trust: 'none' }) });
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.known);
+    assert.equal(v.shape, 'outline');
+  });
+
+  it('if they still hold after you drop trust (one-way inbound), it is SUPPRESSED to Known — no "trusts you" disclosure (Peter #172742)', () => {
+    const v = trustPhaseVisual({ status: status({ trust: 'inbound' }) });
+    const known = trustPhaseVisual({ status: status({ trust: 'none' }) });
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, TRUST_VISUAL_LABELS.known);
+    assert.equal(v.shape, known.shape);
+  });
+
+  it('trust_history does not invent a broken paint — live boolean only', () => {
+    const afterBreak = {
+      id: 'brk',
+      peer_fingerprint: 'cc'.repeat(20),
+      peer_name: 'Pat',
+      peer_email: '',
+      peer_public_key: 'PK',
+      trusted: false,
+      trusted_since: null,
+      last_interaction: new Date().toISOString(),
+      decay_days: 730,
+      trust_history: [
+        { timestamp: '2026-01-01T00:00:00.000Z', action: 'trust', reason: '', initiated_by: 'self' },
+        { timestamp: '2026-02-01T00:00:00.000Z', action: 'break', reason: '', initiated_by: 'self' },
+      ],
+      verification: { method: 'none' as const, verified_at: null },
+      mutual: { they_trust_me: false, last_sync: null, reciprocal: false },
+      tags: [],
+      notes: '',
+      connection_channels: [],
+      added_at: new Date().toISOString(),
+    } as TrustEdge;
+    const v = visualForEdge(afterBreak);
+    assert.equal(v.bondState, 'known');
+    assert.equal(v.label, 'Known');
   });
 });
 
@@ -215,6 +273,30 @@ describe('trust-phase visual map — consumers inherit the one map', () => {
     }
   });
 
+  it('lifecycle legend items reuse the same paints as the stars', () => {
+    const items = trustLifecycleLegendItems();
+    assert.equal(items.length, 3);
+    assert.deepEqual(items.map((i) => i.visual.bondState), ['known', 'trust-sent', 'mutual']);
+    assert.equal(items[0].label, TRUST_VISUAL_LABELS.known);
+    assert.equal(items[0].visual.shape, 'outline');
+    assert.equal(items[0].visual.coreFill, null);
+    assert.equal(items[1].label, TRUST_SENT_PRE_WIRE_LABEL);
+    assert.equal(items[1].visual.shape, 'solid-filled');
+    assert.equal(items[1].visual.coreFill, null);
+    assert.equal(items[1].visual.svgFill, items[2].visual.svgFill);
+    assert.equal(items[2].label, TRUST_VISUAL_LABELS.mutual);
+    assert.equal(items[2].visual.coreFill, TRUST_VISUAL_WHITE_CORE);
+  });
+
+  it('TrustMap paints those hexes in the legend, not text-only labels', () => {
+    const dir = dirname(fileURLToPath(import.meta.url));
+    const map = readFileSync(join(dir, '..', 'TrustMap.tsx'), 'utf8');
+    assert.match(map, /trustLifecycleLegendItems/);
+    assert.match(map, /trust-legend-glyph-/);
+    assert.match(map, /hexagonPoints/);
+    assert.doesNotMatch(map, /⬡/);
+  });
+
   it('TrustMap SVG no longer paints white light from node.state === trusted', () => {
     const dir = dirname(fileURLToPath(import.meta.url));
     const map = readFileSync(join(dir, '..', 'TrustMap.tsx'), 'utf8');
@@ -225,5 +307,8 @@ describe('trust-phase visual map — consumers inherit the one map', () => {
     );
     assert.match(map, /data-bond-state=\{visual\.bondState\}/);
     assert.match(map, /data-light=\{visual\.lit \? 'white'/);
+    assert.doesNotMatch(map, /halfFillVertical|half-filled|hex-half|hex-ring|outer-ring/);
+    const galaxy = readFileSync(join(dir, '..', 'TrustMapGalaxy.tsx'), 'utf8');
+    assert.doesNotMatch(galaxy, /half-filled|outer-ring/);
   });
 });

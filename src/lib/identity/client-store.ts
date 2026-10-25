@@ -17,6 +17,7 @@ import { ownerHasVerified } from '../trust/trust-recipe';
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
 import { edgeTrusted } from '../trust/contact-edge';
+import { scrubAffirmWireMutual } from '../trust/affirm-wire-purge';
 // piece-2 device-mailbox lifecycle: the card-borne receiver keypair (generated once at genesis,
 // vault-persisted, secrets never leave the device). mailbox-keys is a leaf crypto util (like the
 // fingerprint import above). device-mailbox is PURE helpers (no back-import of this file → no cycle);
@@ -151,6 +152,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // piece-1 #111-legacy sweep (Archie do-no-harm #158835): clear open_visibility on every NON-trusted
   // contact so B1's `&& e.trusted` drop has zero transitional-reveal. Must run WITH the mask-drop. Best-effort.
   await migratePerContactPrivacyOnUnlock();
+  // #593 affirm-wire removal: one-time idempotent PURGE of the device-held mutual-trust taint written by
+  // the removed affirm-wire (mutual.{they_trust_me,reciprocal,last_affirm_at}). Best-effort, logged.
+  await purgeAffirmWireMutualTaintOnUnlock();
   // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
   // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
   await eagerMigrateIdentityStoresOnUnlock();
@@ -1253,6 +1257,43 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
       console.warn('[piece-1] #111-legacy privacy sweep skipped a record (retries next unlock)', e);
     }
   }
+}
+
+/**
+ * #593 affirm-wire removal — one-time, idempotent, logged PURGE of the device-held mutual-trust taint.
+ *
+ * The removed affirm-wire (deposit→consume→applyMutual) persisted `mutual.{they_trust_me,reciprocal,
+ * last_affirm_at}` onto contact records — a device-held "they trust me" bit that is FALSE SECURITY
+ * (defeated by inspecting the device). The wire is code-ripped; this scrubs the values it ALREADY WROTE
+ * on existing stores (dev users + any two-seat that consumed an affirmation) so the taint doesn't linger.
+ *
+ * DO-NO-HARM SCOPE (what Flint co-verifies, all-bearers): touches ONLY the three affirm-wire bits — it
+ * NEVER touches the owner's own sovereign trust (trusted / trust_level / trusted_since / trust_history) or
+ * the rest of the book. `mutual.last_sync` (a benign interaction timestamp, not taint) is PRESERVED;
+ * `last_affirm_at` is dropped. Idempotent: a record already at the benign default is skipped (no write),
+ * so re-running every unlock is a no-op. Best-effort: a per-record hiccup leaves it for the next unlock
+ * and never throws into the unlock path. Mutual is re-grounded on the blind PSI intersection (#588).
+ *
+ * Runs over txGetAll('contacts') = EVERY contact across ALL owner books in the store (all bearers).
+ */
+async function purgeAffirmWireMutualTaintOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return;
+  let stored: Array<Record<string, unknown>>;
+  try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
+  let scrubbed = 0;
+  for (const rec of stored) {
+    try {
+      const c = await decryptContactIfNeeded(rec);
+      const res = scrubAffirmWireMutual(c.mutual);
+      if (!res.changed) continue; // idempotent: already at the benign default → no write
+      // Write ONLY the scrubbed `mutual` — nothing else on the record is touched.
+      await updateContact((c as { id: string }).id, { mutual: res.mutual } as Partial<ContactRecord>);
+      scrubbed++;
+    } catch (e) {
+      console.warn('[#593] affirm-wire mutual-taint purge skipped a record (retries next unlock)', e);
+    }
+  }
+  if (scrubbed > 0) console.info(`[#593] purged device-held mutual-trust taint from ${scrubbed} contact record(s)`);
 }
 
 /**
