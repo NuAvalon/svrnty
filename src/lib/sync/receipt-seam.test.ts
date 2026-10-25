@@ -64,7 +64,7 @@ async function world(opts: { card?: 'R' | 'X' | 'none' | 'classical' | 'garbage'
 }
 const delivered = (w: { notes: Map<string, NoteRecord> }) => w.notes.get(NOTE_ID)?.delivered === true;
 
-test('A1: a receipt signed with the recipient\'s card keys → accepted, the note is marked delivered, and that is the ONE write', async () => {
+test("A1: a receipt signed with the recipient's card keys → accepted, the note is marked delivered, and that is the ONE write", async () => {
   const w = await world();
   const r = await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, NONCE));
   assert.deepEqual(r, { note_id: NOTE_ID, thread_id: 'thr_1', from_fingerprint: w.rFp });
@@ -76,14 +76,14 @@ test('A1: a receipt signed with the recipient\'s card keys → accepted, the not
   assert.equal(delivered(w), true);
 });
 
-test('A2: a receipt signed by an ATTACKER\'s keys but claiming to be the recipient → rejected, not delivered', async () => {
+test("A2: a receipt signed by an ATTACKER's keys but claiming to be the recipient → rejected, not delivered", async () => {
   const w = await world();
   assert.equal(await w.seam.accept(receiptFrom(w.M, w.rFp, NOTE_ID, NONCE)), null);
   assert.equal(delivered(w), false);
   assert.equal(w.written.length, 0);
 });
 
-test('A2b: a genuine receipt from R, but the card in OUR book under R\'s fingerprint holds a DIFFERENT contact\'s keys → rejected', async () => {
+test("A2b: a genuine receipt from R, but the card in OUR book under R's fingerprint holds a DIFFERENT contact's keys → rejected", async () => {
   const w = await world({ card: 'X' });
   assert.equal(await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, NONCE)), null);
   assert.equal(delivered(w), false);
@@ -104,14 +104,14 @@ test('A3: wrong nonce, unknown note_id, an INBOUND note_id, or an outbound note 
   assert.equal(delivered(noNonce), false);
 });
 
-test('A4: a validly-signed receipt whose from_fingerprint is NOT the note\'s recipient (wrong deliverer) → rejected', async () => {
+test("A4: a validly-signed receipt whose from_fingerprint is NOT the note's recipient (wrong deliverer) → rejected", async () => {
   const w = await world();
   // R's REAL keys sign it (so the signature itself is valid for R's card), but it claims to be from X, not to_fingerprints[0].
   assert.equal(await w.seam.accept(receiptFrom(w.R, idOf(w.X).fingerprint, NOTE_ID, NONCE)), null);
   assert.equal(delivered(w), false);
 });
 
-test('A4b: a contact X in OUR book signs a receipt with X\'s own REAL keys and claims to be X, for a note we sent to R → rejected', async () => {
+test("A4b: a contact X in OUR book signs a receipt with X's own REAL keys and claims to be X, for a note we sent to R → rejected", async () => {
   // The sharp form of the wrong-deliverer case: this receipt VERIFIES perfectly against X's card. The only thing that stops it is
   // that the expected deliverer and the card lookup come from OUR note (to_fingerprints[0] = R), never from the receipt's own claim.
   const w = await world();
