@@ -24,6 +24,7 @@ import {
   emptyBin,
   listArchived,
   listBin,
+  notesStoreOwner,
   type NoteRecord,
   type NoteThread,
 } from '@/lib/messaging';
@@ -108,6 +109,9 @@ export function NotesInbox({ identity }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [view, setView] = useState<'live' | 'archived' | 'bin'>('live');
   const [confirmAction, setConfirmAction] = useState<null | 'delete' | 'perm' | 'empty'>(null);
+  // I6b (v0.6): owner captured when a destructive action is ARMED — the
+  // store refuses the op if identity switched before execute.
+  const [armedOwner, setArmedOwner] = useState<string | null>(null);
   const [binRows, setBinRows] = useState<{ note_id: string }[]>([]);
   const [archRows, setArchRows] = useState<{ note_id: string }[]>([]);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
@@ -223,6 +227,16 @@ export function NotesInbox({ identity }: Props) {
     setStatus(null);
     setError(null);
     setDraft('');
+  };
+
+  // I6b: every manage op gets the owner captured at ARM. '' reaches the op
+  // only when the store is locked — which refuses first anyway.
+  const runManage = async (op: Promise<unknown>) => {
+    try {
+      await op;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : NOTES_COPY.manageOpFailed);
+    }
   };
 
   const onSend = async () => {
@@ -454,6 +468,7 @@ export function NotesInbox({ identity }: Props) {
                   data-testid={`notes-view-${v}`}
                   onClick={() => {
                     setView(v);
+                    setSelectedIds(new Set()); // a switch's selection must not bleed into the next view
                     if (v === 'archived') void listArchived().then(setArchRows);
                     if (v === 'bin') void listBin().then(setBinRows);
                   }}
@@ -475,25 +490,25 @@ export function NotesInbox({ identity }: Props) {
             <div data-testid="notes-action-bar" style={{ display: 'flex', gap: 8, fontSize: 12, marginLeft: 'auto' }}>
               {selectedIds.size > 0 ? (view === 'live' ? (
                 <>
-                  <button type="button" data-testid="notes-archive-btn" onClick={async () => {
-                    await archiveNotes([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId);
-                  }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Archive</button>
-                  <button type="button" data-testid="notes-delete-btn" onClick={() => setConfirmAction('delete')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Delete</button>
+                  <button type="button" data-testid="notes-archive-btn" onClick={() => runManage(
+                    archiveNotes([...selectedIds], notesStoreOwner() ?? '')
+                  ).then(() => { setSelectedIds(new Set()); void loadNotes(activeThreadId); })} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Archive</button>
+                  <button type="button" data-testid="notes-delete-btn" onClick={() => { setArmedOwner(notesStoreOwner()); setConfirmAction('delete'); }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Delete</button>
                 </>
               ) : view === 'archived' ? (
-                <button type="button" data-testid="notes-unarchive-btn" onClick={async () => {
-                  await unarchiveNotes([...selectedIds]); setSelectedIds(new Set()); void listArchived().then(setArchRows);
-                }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
+                <button type="button" data-testid="notes-unarchive-btn" onClick={() => runManage(
+                  unarchiveNotes([...selectedIds], notesStoreOwner() ?? '')
+                ).then(() => { setSelectedIds(new Set()); void listArchived().then(setArchRows); })} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
               ) : (
                 <>
-                  <button type="button" data-testid="notes-restore-btn" onClick={async () => {
-                    await restoreFromBin([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows);
-                  }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
-                  <button type="button" data-testid="notes-delete-perm-btn" onClick={() => setConfirmAction('perm')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
+                  <button type="button" data-testid="notes-restore-btn" onClick={() => runManage(
+                    restoreFromBin([...selectedIds], notesStoreOwner() ?? '')
+                  ).then(() => { setSelectedIds(new Set()); void listBin().then(setBinRows); })} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px' }}>Restore</button>
+                  <button type="button" data-testid="notes-delete-perm-btn" onClick={() => { setArmedOwner(notesStoreOwner()); setConfirmAction('perm'); }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>Delete permanently</button>
                 </>
               )) : null}
               {view === 'bin' && binRows.length > 0 ? (
-                <button type="button" data-testid="notes-empty-bin-btn" onClick={() => setConfirmAction('empty')} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>
+                <button type="button" data-testid="notes-empty-bin-btn" onClick={() => { setArmedOwner(notesStoreOwner()); setConfirmAction('empty'); }} style={{ ...primaryBtn, fontSize: 11, padding: '5px 10px', background: E.danger }}>
                   Empty bin
                 </button>
               ) : null}
@@ -511,10 +526,11 @@ export function NotesInbox({ identity }: Props) {
               <button type="button" data-testid="notes-confirm-cancel" autoFocus onClick={() => setConfirmAction(null)} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', opacity: 0.9 }}>Cancel</button>
               <button type="button" data-testid="notes-confirm-ok" onClick={async () => {
                 const act = confirmAction;
+                const owner = armedOwner ?? '';   // I6b: armed owner, not the click-time one
                 setConfirmAction(null);
-                if (act === 'delete') { await deleteNotesAtomic([...selectedIds]); setSelectedIds(new Set()); void loadNotes(activeThreadId); }
-                else if (act === 'perm') { await deletePermanently([...selectedIds]); setSelectedIds(new Set()); void listBin().then(setBinRows); }
-                else if (act === 'empty') { await emptyBin(); setSelectedIds(new Set()); setBinRows([]); }
+                if (act === 'delete') await runManage(deleteNotesAtomic([...selectedIds], owner)).then(() => { setSelectedIds(new Set()); void loadNotes(activeThreadId); });
+                else if (act === 'perm') await runManage(deletePermanently([...selectedIds], owner)).then(() => { setSelectedIds(new Set()); void listBin().then(setBinRows); });
+                else if (act === 'empty') await runManage(emptyBin(owner)).then(() => { setSelectedIds(new Set()); setBinRows([]); });
               }} style={{ ...primaryBtn, fontSize: 11, padding: '4px 10px', background: E.danger }}>Confirm</button>
             </div>
           )}

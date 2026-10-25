@@ -182,6 +182,9 @@ test('archive round-trips the same ciphertext blob — no re-wrap (I7/I10)', asy
     db.close();
     return row?.enc ? JSON.stringify(row.enc) : null;
   }, [`svrnty-notes-${aliceFp}`, note_id]);
+  // :185 byte-identical blob IS the browser I10 guard (v0.6, Flint #127) —
+  // the stack-filtered crypto count below is diagnostic only: a re-wrap
+  // inside an IDB callback carries no op frame and would slip the filter.
   expect(encAfter).toBe(encBefore);
 
   const calls = await page.evaluate(() =>
