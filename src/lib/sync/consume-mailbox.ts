@@ -220,7 +220,7 @@ export interface ConsumeSummary {
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
-type Outcome =
+export type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'affirm'; event: TrustLiveEvent } // mutual-trust flip persisted → ack + trust repaint (NOT a book beat)
@@ -498,4 +498,41 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   if (dead()) return { kind: 'retryable' };
   await deps.store.persist(contact.current.id, applied.next);
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
+}
+
+/**
+ * Consume ONE sealed blob handed over a NON-relay transport — the
+ * dh-fleet-comms §route local unix intake (R-4: "the same ingest callable
+ * the relay fold uses"). Runs the identical consumeOne decision pipeline —
+ * hybrid-secret gate → joiner → note → affirm → contact-update — minus the
+ * mailbox ack (nothing to ack: the blob never occupied an envelope_id on
+ * the relay). A 'retryable' verdict means "undecided right now" — the
+ * transport should fall back to the relay so the envelope waits in the
+ * mailbox for a later poll, exactly what the relay path would have done
+ * with it. Terminal outcomes are still CONSUMED (decided), not failures.
+ */
+export async function consumeInboundBlob(deps: ConsumeDeps, blob: string): Promise<Outcome> {
+  const now = deps.now ?? (() => new Date().toISOString());
+  let outcome: Outcome;
+  try {
+    outcome = await consumeOne(blob, deps, now);
+  } catch (err) {
+    // Same wedge-immunity as the relay loop: one bad blob is retryable,
+    // never a throw that wedges the intake connection.
+    console.error('[return-channel] unexpected error consuming an intake blob (retryable):', err);
+    outcome = { kind: 'retryable' };
+  }
+  // Same downgrade as the relay loop: a cycle that died mid-fold makes a
+  // verified-looking blob read undecryptable — undecided, not terminal.
+  if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
+  // Repaint parity with the relay loop: fire the matching live-event seam
+  // when the deps carry one (headless deps don't — best-effort either way).
+  try {
+    if (outcome.kind === 'applied') deps.emit?.(outcome.event);
+    else if (outcome.kind === 'note') deps.emitNote?.(outcome.event);
+    else if (outcome.kind === 'affirm') deps.emitTrust?.(outcome.event);
+  } catch {
+    /* live-beat is best-effort; a repaint failure never changes the verdict */
+  }
+  return outcome;
 }

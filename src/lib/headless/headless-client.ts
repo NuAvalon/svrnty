@@ -234,6 +234,77 @@ export function startHeadlessPolling(
 export { sendTrustAffirmToPeer };
 
 /**
+ * Seal-only sibling of sendNoteFromHeadless (dh-fleet-comms §route R-1): sign → seal → persist the
+ * local outbound copy — WITHOUT the relay deposit. Returns the sealed wire form so a transport
+ * router can carry the SAME blob on whichever route it picks (local unix intake or relay envelope
+ * POST); the route choice never changes the bytes. The sealNoteTo blob is the ONLY form that leaves
+ * the device — never a local plaintext variant.
+ *
+ * Same fail-closed HNDL contract: a recipient with no verified pq_kem yields blob:null (never a
+ * classical downgrade); the local copy is still kept as "not sent".
+ */
+export async function sealNoteFromHeadless(args: {
+  owner: HeadlessOwner;
+  senderKind?: ParticipantKind;
+  peerFingerprint: string;
+  peerPublicKeyArmored: string;
+  /** Recipient's verified ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); ABSENT ⇒
+   *  fail-closed: blob:null (never downgraded to classical), local copy kept as not-sent. */
+  peerPqKemPublicKey?: string;
+  body: string;
+  threadId?: string;
+  store: HeadlessStore;
+  noteId?: string; // inject for determinism in tests
+  sentAt?: string; // inject for determinism in tests
+}): Promise<{ note_id: string; thread_id: string; blob: string | null }> {
+  const now = () => new Date().toISOString();
+  const thread_id = args.threadId ?? `thr_${args.owner.fingerprint.slice(0, 6)}_${args.peerFingerprint.slice(0, 6)}`;
+  const note_id = args.noteId ?? `note_${globalThis.crypto.randomUUID()}`;
+  const sent_at = args.sentAt ?? now();
+
+  const unsigned: NoteWireV0 = {
+    type: NOTE_WIRE_TYPE,
+    note_id,
+    thread_id,
+    from_fingerprint: args.owner.fingerprint,
+    sent_at,
+    body: args.body,
+    participant_kind: args.senderKind ?? 'agent',
+  };
+  const wire = await signNoteWire(
+    unsigned,
+    args.owner.publicKeyArmored,
+    args.owner.privateKeyArmored,
+    args.owner.passphrase,
+    args.owner.kemPublicKey,
+    args.owner.sigPublicKey,
+  );
+  // fail-closed (HNDL): seal PQ-hybrid ONLY when the recipient has a verified ML-KEM-1024 pubkey —
+  // never a silent classical downgrade. The local outbound copy is kept either way.
+  let blob: string | null = null;
+  if (args.peerPqKemPublicKey) {
+    blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+  } else {
+    console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT sealed (never downgrade, HNDL)');
+  }
+
+  // local outbound copy (Node store)
+  args.store.putNote({
+    note_id,
+    thread_id,
+    direction: 'outbound',
+    from_fingerprint: args.owner.fingerprint,
+    to_fingerprints: [args.peerFingerprint],
+    sent_at,
+    body: args.body,
+    participant_kind: args.senderKind ?? 'agent',
+    retention: { expires_at: null },
+    wire_type: NOTE_WIRE_TYPE,
+  });
+  return { note_id, thread_id, blob };
+}
+
+/**
  * Send an over-wire note from a headless client: sign → seal → deposit to the peer's mailbox, and persist
  * the outbound copy to the local HeadlessStore. Mirrors messaging/transport.sendNoteToPeer but writes the
  * local copy to the Node store (sendNoteToPeer persists to the browser IndexedDB notes store).
@@ -262,58 +333,19 @@ export async function sendNoteFromHeadless(args: {
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
-  const now = () => new Date().toISOString();
-  const thread_id = args.threadId ?? `thr_${args.owner.fingerprint.slice(0, 6)}_${args.peerFingerprint.slice(0, 6)}`;
-  const note_id = args.noteId ?? `note_${globalThis.crypto.randomUUID()}`;
-  const sent_at = args.sentAt ?? now();
-
-  const unsigned: NoteWireV0 = {
-    type: NOTE_WIRE_TYPE,
-    note_id,
-    thread_id,
-    from_fingerprint: args.owner.fingerprint,
-    sent_at,
-    body: args.body,
-    participant_kind: args.senderKind ?? 'agent',
-  };
-  const wire = await signNoteWire(
-    unsigned,
-    args.owner.publicKeyArmored,
-    args.owner.privateKeyArmored,
-    args.owner.passphrase,
-    args.owner.kemPublicKey,
-    args.owner.sigPublicKey,
-  );
-  // fail-closed (HNDL): seal PQ-hybrid + deposit ONLY when the recipient has a verified ML-KEM-1024 pubkey.
-  // A recipient without one is NOT deposited to in a classical/downgraded form (never downgrade). The local
-  // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
-  // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
+  // Seal via the sibling (sign → seal → local copy); deposit the SAME blob the
+  // seal-only path would hand a router (R-1). blob:null = the HNDL fail-closed
+  // (no verified peer kem) — NOT deposited, never downgraded to classical.
+  const sealed = await sealNoteFromHeadless(args);
   let deposited = false;
-  if (args.peerPqKemPublicKey) {
-    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+  if (sealed.blob !== null) {
     const mailbox_id = deriveMailboxId(args.peerFingerprint);
     const res = await fetchImpl(`${relayBase}/envelope`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mailbox_id, blob }),
+      body: JSON.stringify({ mailbox_id, blob: sealed.blob }),
     });
     deposited = res.ok;
-  } else {
-    console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
   }
-
-  // local outbound copy (Node store)
-  args.store.putNote({
-    note_id,
-    thread_id,
-    direction: 'outbound',
-    from_fingerprint: args.owner.fingerprint,
-    to_fingerprints: [args.peerFingerprint],
-    sent_at,
-    body: args.body,
-    participant_kind: args.senderKind ?? 'agent',
-    retention: { expires_at: null },
-    wire_type: NOTE_WIRE_TYPE,
-  });
-  return { note_id, thread_id, deposited };
+  return { note_id: sealed.note_id, thread_id: sealed.thread_id, deposited };
 }
