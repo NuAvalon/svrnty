@@ -26,9 +26,11 @@ export { isTripleRatchetBody, chooseWireBody, openDirectNoteStaged, peerRatchetS
 export type { PeerRatchetStatus } from './direct-session';
 export {
   sendNoteToPeer,
+  NoteSendError,
   acceptInboundNote,
   tryParseNoteWire,
 } from './transport';
+export type { NoteSendFailureKind } from './transport';
 export type {
   ParticipantKind,
   ThreadKind,

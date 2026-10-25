@@ -18,7 +18,42 @@ export interface NoteSenderIdentity {
 }
 
 /** Seal + deposit one note to a peer's mailbox (opaque blob). */
-export async function sendNoteToPeer(args: {
+/**
+ * How a send failed, keyed by WHERE it failed (Flint #823 T1; the same three-way split as devin-comm #285). It matters because the
+ * three need three different things from the user:
+ *  - 'not-sent'       threw before the POST was made (gate/ratchet/sign/seal), or the relay REFUSED the deposit. Nothing is held by the relay.
+ *  - 'unconfirmed'    the POST itself threw or timed out with no answer. The relay MAY have it: a network error after the server received the
+ *                     bytes looks exactly like "never arrived", so this must never read as "not sent".
+ *  - 'sent-not-saved' the relay accepted it (2xx), then writing the local copy failed. It IS sent; this device just has no record.
+ */
+export type NoteSendFailureKind = 'not-sent' | 'unconfirmed' | 'sent-not-saved';
+
+export class NoteSendError extends Error {
+  readonly kind: NoteSendFailureKind;
+  readonly note_id: string;
+  readonly thread_id: string;
+  constructor(kind: NoteSendFailureKind, cause: unknown, ids: { note_id: string; thread_id: string }) {
+    super(`note send failed (${kind}): ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'NoteSendError';
+    this.kind = kind;
+    this.note_id = ids.note_id;
+    this.thread_id = ids.thread_id;
+  }
+}
+
+type SendStage = 'before-post' | 'posting' | 'after-deposit';
+type SendProgress = { stage: SendStage; note_id: string; thread_id: string };
+
+/** How long the deposit POST may take before the send is called UNCONFIRMED instead of hanging. */
+export const POST_TIMEOUT_MS = 30_000;
+
+const FAILURE_KIND_BY_STAGE: Record<SendStage, NoteSendFailureKind> = {
+  'before-post': 'not-sent',
+  posting: 'unconfirmed',
+  'after-deposit': 'sent-not-saved',
+};
+
+export type SendNoteToPeerArgs = {
   sender: NoteSenderIdentity;
   /** Sender's own openpgp identity key material — signs the note so the recipient can authenticate
    *  `from_fingerprint` (fingerprintMatchesKey binds senderPublicKeyArmored ↔ sender.fingerprint). */
@@ -43,13 +78,33 @@ export async function sendNoteToPeer(args: {
    *  triple-ratchet packet; otherwise it is the plain body, which still travels inside the hybrid outer seal. */
   ownerRatchet?: RatchetIdentity;
   peerRatchet?: RatchetPeer;
+  /** Test seam: shortens the deposit POST wait (default POST_TIMEOUT_MS). */
+  postTimeoutMs?: number;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
   io?: { ratchet?: RatchetIO; putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
+};
+
+type SendNoteToPeerResult = { note_id: string; thread_id: string; deposited: boolean };
+
+/** Send one note. Resolves {deposited:true} when the relay accepted it and the local copy is saved; {deposited:false} when the relay refused
+ *  it (or there is no verified kem) and the local copy is kept as "not sent". Anything else THROWS a {@link NoteSendError} naming the kind. */
+export async function sendNoteToPeer(args: SendNoteToPeerArgs): Promise<SendNoteToPeerResult> {
+  const prog: SendProgress = { stage: 'before-post', note_id: '', thread_id: '' };
+  try {
+    return await sendNoteToPeerStaged(args, prog);
+  } catch (e) {
+    if (e instanceof NoteSendError) throw e;
+    throw new NoteSendError(FAILURE_KIND_BY_STAGE[prog.stage], e, prog);
+  }
+}
+
+async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress): Promise<SendNoteToPeerResult> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
   const thread_id = args.threadId ?? newThreadId();
   const note_id = newNoteId();
+  prog.note_id = note_id;
+  prog.thread_id = thread_id;
   const sent_at = new Date().toISOString();
   // Delivery-receipt (Athena — Nov-5): a per-note freshness nonce, carried SEALED+SIGNED inside the wire
   // (it is part of noteSigningInput → sender-signed under DOMAIN_NOTE) and kept on the local record as the
@@ -102,12 +157,33 @@ export async function sendNoteToPeer(args: {
   if (canDeposit) {
     const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey!);
     const mailbox_id = deriveMailboxId(args.peerFingerprint);
-    const res = await fetchImpl(`${relayBase}/envelope`, {
+    // From here a throw means the relay MAY hold the note (unconfirmed). A bounded wait turns a hang into that same outcome.
+    prog.stage = 'posting';
+    // A hard race, not just an abort signal: a fetch implementation that ignores the signal must not be able to hang the send.
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        reject(new Error('the relay did not answer in time'));
+      }, args.postTimeoutMs ?? POST_TIMEOUT_MS);
+    });
+    const posted = fetchImpl(`${relayBase}/envelope`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mailbox_id, blob }),
+      signal: abort.signal,
     });
+    posted.catch(() => {}); // if the timeout wins, a later rejection of this promise must not surface as an unhandled one
+    let res: Response;
+    try {
+      res = await Promise.race([posted, timedOut]);
+    } finally {
+      clearTimeout(timer);
+    }
     deposited = res.ok;
+    // 2xx: the relay holds it, so a failure to save locally is "sent, not saved". A refusal (4xx/5xx) means nothing was deposited.
+    prog.stage = deposited ? 'after-deposit' : 'before-post';
   } else {
     console.warn('[notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
   }

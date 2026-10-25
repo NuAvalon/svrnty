@@ -125,6 +125,9 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // T3: text the relay accepted but this device could not save. It is the user's ONLY copy, so it stays visible (read-only, copyable)
+  // until they dismiss it. Never cleared by sending something else or switching contact.
+  const [unsaved, setUnsaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [storeReady, setStoreReady] = useState(false);
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
@@ -378,6 +381,13 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
         threadId: existing?.thread_id,
       });
       if (!result.ok) {
+        if (result.kind === 'sent-not-saved') {
+          // Sent, not saved: do NOT keep it in the compose box (a second Send would deliver a duplicate); show it read-only instead.
+          setUnsaved(body);
+          setDraft('');
+          return;
+        }
+        // 'not-sent' (nothing left this device) and 'unconfirmed' (the relay may have it) both keep the draft in the box.
         setError(result.error);
         return;
       }
@@ -724,6 +734,23 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                 </p>
               ) : null}
             </div>
+            {unsaved !== null ? (
+              <div data-testid="notes-unsaved" role="alert" style={{ margin: '10px 0 0' }}>
+                <p style={{ color: E.danger, fontSize: 13, margin: '0 0 6px' }}>{NOTES_COPY.sentNotSaved}</p>
+                <textarea
+                  readOnly
+                  data-testid="notes-unsaved-text"
+                  aria-label={NOTES_COPY.unsavedTextLabel}
+                  value={unsaved}
+                  onFocus={(e) => e.currentTarget.select()}
+                  rows={3}
+                  style={{ width: '100%', boxSizing: 'border-box', fontSize: 13 }}
+                />
+                <button type="button" data-testid="notes-unsaved-dismiss" onClick={() => setUnsaved(null)} style={{ marginTop: 6 }}>
+                  {NOTES_COPY.dismiss}
+                </button>
+              </div>
+            ) : null}
             {error ? (
               <p data-testid="notes-error" role="alert" style={{ color: E.danger, fontSize: 13, margin: '10px 0 0' }}>
                 {error}

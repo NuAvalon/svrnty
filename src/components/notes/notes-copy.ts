@@ -34,7 +34,13 @@ export const NOTES_COPY = {
   identityKeysMissing: 'This identity is missing the keys a message needs.',
   needCanonical:
     'Chat over the wire needs a current svrnty identity. This book cannot send yet.',
-  sendFailed: 'The message could not be sent.',
+  // Send outcomes (Hypatia #837, Flint #823 T1), keyed by WHERE the send failed. None may say delivered/received. There is deliberately NO
+  // "Retrying won't send a second copy" line and NO Retry button: the relay ignores a client envelope id today (route.ts), so a resend CAN duplicate.
+  sendFailed: 'Not sent. Nothing left this device. Your message is still in the box.',
+  sentNotSaved: "Sent to the relay, but this device couldn't save a copy. Don't send it again. Your text is below so you can copy it.",
+  sendUnconfirmed: "Couldn't confirm it was sent. The relay may already have it.",
+  unsavedTextLabel: 'Your message',
+  dismiss: 'Dismiss',
   // S14: the recipient has no verified PQ KEM key; sends are skipped, never downgraded. Claim-safe wording (no 'quantum-safe').
   notSentNeedsUpgrade:
     'Not sent. Saved on this device. {name} needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.',

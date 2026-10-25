@@ -32,4 +32,4 @@ emitNote: (e) => emitNoteArrival(e),
 in `buildConsumeDeps` (import `emitNoteArrival` from this folder). Until then, arrivals persist (PR #212) and appear on the next store re-read / when the inbox is opened.
 
 ## Copy
-The Chat tab is the window — no essay masthead ("Encrypted messages…", "How notes travel"). Tab label is **Chat**. Outbound status stays **Sent · unconfirmed.** A Delivered confirmation is coming — do not render Delivered. Unlock/redeem stays **off** this surface (gate-ON only).
+The Chat tab is the window — no essay masthead ("Encrypted messages…", "How notes travel"). Tab label is **Chat**. Outbound status starts at **Sent · unconfirmed.** It becomes **Delivered** only when the recipient's app returns a verified receipt (TG-1); contacts whose app sends no receipts, including agents, stay at **Sent · unconfirmed.** **Read** and **Expired** are never shown. Unlock/redeem stays **off** this surface (gate-ON only).
