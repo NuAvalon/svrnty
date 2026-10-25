@@ -21,12 +21,15 @@ export interface NoteSenderIdentity {
 /**
  * How a send failed, keyed by WHERE it failed (Flint #823 T1; the same three-way split as devin-comm #285). It matters because the
  * three need three different things from the user:
- *  - 'not-sent'       threw before the POST was made (gate/ratchet/sign/seal), or the relay REFUSED the deposit. Nothing is held by the relay.
+ *  - 'not-sent'       threw before the POST was made (gate/ratchet/sign/seal). Nothing left this device.
+ *  - 'refused'        the relay ANSWERED and turned the deposit down (4xx/5xx) and then a local save failed. The relay holds nothing, but the
+ *                     sealed message DID reach it, so this must not say "nothing left this device". (A refusal with a good local save resolves
+ *                     {deposited:false} instead of throwing.)
  *  - 'unconfirmed'    the POST itself threw or timed out with no answer. The relay MAY have it: a network error after the server received the
  *                     bytes looks exactly like "never arrived", so this must never read as "not sent".
  *  - 'sent-not-saved' the relay accepted it (2xx), then writing the local copy failed. It IS sent; this device just has no record.
  */
-export type NoteSendFailureKind = 'not-sent' | 'unconfirmed' | 'sent-not-saved';
+export type NoteSendFailureKind = 'not-sent' | 'refused' | 'unconfirmed' | 'sent-not-saved';
 
 export class NoteSendError extends Error {
   readonly kind: NoteSendFailureKind;
@@ -41,7 +44,7 @@ export class NoteSendError extends Error {
   }
 }
 
-type SendStage = 'before-post' | 'posting' | 'after-deposit';
+type SendStage = 'before-post' | 'posting' | 'refused' | 'after-deposit';
 type SendProgress = { stage: SendStage; note_id: string; thread_id: string };
 
 /** How long the deposit POST may take before the send is called UNCONFIRMED instead of hanging. */
@@ -49,6 +52,7 @@ export const POST_TIMEOUT_MS = 30_000;
 
 const FAILURE_KIND_BY_STAGE: Record<SendStage, NoteSendFailureKind> = {
   'before-post': 'not-sent',
+  refused: 'refused',
   posting: 'unconfirmed',
   'after-deposit': 'sent-not-saved',
 };
@@ -182,8 +186,15 @@ async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress
       clearTimeout(timer);
     }
     deposited = res.ok;
-    // 2xx: the relay holds it, so a failure to save locally is "sent, not saved". A refusal (4xx/5xx) means nothing was deposited.
-    prog.stage = deposited ? 'after-deposit' : 'before-post';
+    // 2xx: the relay holds it, so a failure to save locally is "sent, not saved". Only a 4xx is a DEFINITE refusal (400/413/429-at-cap: the
+    // relay looked at it and stored nothing), and it is its own stage ('refused'): the sealed message did reach the relay, so it is not
+    // "nothing left this device". Anything else without a 2xx (a 5xx, and especially a 502/504 from the gateway in front of the relay) can
+    // come back AFTER the relay stored the envelope (an upstream timeout, a crash after insert), so it is UNCONFIRMED, never "not sent":
+    // "not sent, still in the box" would invite a resend that duplicates, with no relay-side dedupe yet (Flint #852).
+    if (!res.ok && !(res.status >= 400 && res.status < 500)) {
+      throw new Error(`the relay answered ${res.status}; it may have stored the message`);
+    }
+    prog.stage = deposited ? 'after-deposit' : 'refused';
   } else {
     console.warn('[notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
   }

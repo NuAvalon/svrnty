@@ -7,12 +7,13 @@ import type { OwnerNoteSender } from './notes-keys';
 
 export type SendNoteResult =
   | { ok: true; note_id: string; thread_id: string; deposited: boolean }
-  // `kind` says WHERE it failed: 'not-sent' (nothing left this device, keep the draft), 'unconfirmed' (the relay MAY have it), or
+  // `kind` says WHERE it failed: 'not-sent' (nothing left this device, keep the draft), 'refused' (the relay turned it down, keep the draft), 'unconfirmed' (the relay MAY have it), or
   // 'sent-not-saved' (the relay has it, this device has no copy: the text must stay visible, and must not be sent again).
   | { ok: false; kind: NoteSendFailureKind; error: string };
 
 const FAILURE_COPY: Record<NoteSendFailureKind, string> = {
   'not-sent': NOTES_COPY.sendFailed,
+  refused: NOTES_COPY.sendRefused,
   unconfirmed: NOTES_COPY.sendUnconfirmed,
   'sent-not-saved': NOTES_COPY.sentNotSaved,
 };

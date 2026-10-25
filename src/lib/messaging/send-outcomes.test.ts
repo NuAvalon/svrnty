@@ -97,12 +97,27 @@ test('not-sent: the relay REFUSES the deposit (429) => resolves deposited:false 
   assert.equal(f.stored.length, 1);
 });
 
-test('not-sent: a refused deposit followed by a local-save failure is still NOT SENT (the relay holds nothing)', async () => {
-  const f = await flow({
-    fetchImpl: (async () => new Response('x', { status: 500 })) as typeof fetch,
-    putNote: async () => { throw new Error('IDB write failed'); },
-  });
-  assert.equal((await failure(f.call)).kind, 'not-sent');
+test('refused: a 4xx (definite refusal) followed by a local-save failure is its OWN kind (the relay holds nothing, but it DID receive and answer)', async () => {
+  for (const status of [400, 413, 429]) {
+    const f = await flow({
+      fetchImpl: (async () => new Response('x', { status })) as typeof fetch,
+      putNote: async () => { throw new Error('IDB write failed'); },
+    });
+    const e = await failure(f.call);
+    assert.equal(e.kind, 'refused', `HTTP ${status}`);
+    assert.equal(f.posts.length, 1, 'the sealed message reached the relay, so "nothing left this device" would be false');
+  }
+});
+
+test('unconfirmed: a 5xx (500, 502, 504) may have come back AFTER the relay stored it, so it is NOT "not sent" and nothing is saved as not-sent', async () => {
+  for (const status of [500, 502, 503, 504]) {
+    const f = await flow({ fetchImpl: (async () => new Response('gateway', { status })) as typeof fetch });
+    const e = await failure(f.call);
+    assert.equal(e.kind, 'unconfirmed', `HTTP ${status}`);
+    assert.match(e.message, new RegExp(`answered ${status}`));
+    assert.equal(f.posts.length, 1);
+    assert.equal(f.stored.length, 0, 'no "not sent" local record that would invite a duplicate resend');
+  }
 });
 
 // ── UNCONFIRMED ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -157,6 +172,7 @@ test('sendNoteFromInbox maps each kind to its ruled message and keeps the kind; 
   const ids = { note_id: 'note_1', thread_id: 'thr_1' };
   const want = {
     'not-sent': NOTES_COPY.sendFailed,
+    refused: NOTES_COPY.sendRefused,
     unconfirmed: NOTES_COPY.sendUnconfirmed,
     'sent-not-saved': NOTES_COPY.sentNotSaved,
   } as const;
@@ -175,7 +191,11 @@ test('copy: the three messages are exactly the ruled wording, none claims delive
     NOTES_COPY.sentNotSaved,
     "Sent to the relay, but this device couldn't save a copy. Don't send it again. Your text is below so you can copy it.",
   );
-  for (const m of [NOTES_COPY.sendFailed, NOTES_COPY.sendUnconfirmed, NOTES_COPY.sentNotSaved]) assert.doesNotMatch(m, /deliver|received/i);
+  assert.equal(NOTES_COPY.sendRefused, 'Not sent. The relay turned it down. Your message is still in the box.');
+  // Hypatia #851: the refusal path must never say nothing left this device (the sealed message reached the relay).
+  assert.doesNotMatch(NOTES_COPY.sendRefused, /left this device/i);
+  assert.match(NOTES_COPY.sendFailed, /Nothing left this device/);
+  for (const m of [NOTES_COPY.sendFailed, NOTES_COPY.sendRefused, NOTES_COPY.sendUnconfirmed, NOTES_COPY.sentNotSaved]) assert.doesNotMatch(m, /deliver|received/i);
   assert.doesNotMatch(JSON.stringify(NOTES_COPY), /second copy|Retrying won't/i, 'the relay ignores a client envelope id today, so a resend CAN duplicate');
 });
 
