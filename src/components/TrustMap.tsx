@@ -29,7 +29,7 @@ import {
 import { witnessedPeerChords } from '@/lib/trust/peer-trust-chords';
 import { latticeChords, relaxGraphNodes, tagMembership } from '@/lib/trust/graph-forces';
 import { gateEdgeTransitiveSets, type HeldAffirmatives } from '@/lib/trust/held-affirmatives';
-import { isPiece2MutualBlockLive, isMutualTrustWireLive } from '@/lib/claim-gates';
+import { isPiece2MutualBlockLive } from '@/lib/claim-gates';
 import { GalaxyGateMembrane } from '@/components/GalaxyGateMembrane';
 import { GrowGatePanel } from '@/components/GrowGatePanel';
 import { loadGateArrivals, getHeldAffirmatives } from '@/lib/identity/client-store';
@@ -1408,57 +1408,6 @@ export function TrustMap({
             You
           </span>
         </div>
-
-        {isEmpty && (
-          <div
-            data-testid="trust-map-empty"
-            style={{
-              position: 'absolute',
-              left: 16,
-              right: 16,
-              bottom: 104,
-              textAlign: 'center',
-              pointerEvents: 'none',
-              fontFamily: E.fontSans,
-              zIndex: 7,
-            }}
-          >
-            <p style={{ margin: 0, fontSize: 16, color: T.label, letterSpacing: '0.04em' }}>
-              Grow your galaxy
-            </p>
-            <p style={{ margin: '8px 0 0', fontSize: 10, color: T.caption }}>
-              In person they can become a star you Know. Remote, they wait at the Gate.
-            </p>
-            <p style={{ margin: '4px 0 0', fontSize: 10, color: T.caption }}>
-              {isMutualTrustWireLive()
-                /* claim-sweep:ok gated-by=isMutualTrustWireLive: true-branch of the ternary (own line, so the false arm's hedge can't excuse it) */
-                ? "Trust is mutual, after you make sure it's them."
-                : "Make sure it's them before you trust. Mutual confirmation is coming."}
-            </p>
-            {onGrow ? (
-              <button
-                type="button"
-                data-testid="trust-map-grow"
-                onClick={onGrow}
-                style={{
-                  pointerEvents: 'auto',
-                  marginTop: 14,
-                  fontFamily: E.fontSans,
-                  fontSize: 12,
-                  letterSpacing: '0.08em',
-                  color: T.myEdge,
-                  background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-                  border: `1px solid ${T.dimStroke}`,
-                  borderRadius: 8,
-                  padding: '8px 14px',
-                  cursor: 'pointer',
-                }}
-              >
-                Grow
-              </button>
-            ) : null}
-          </div>
-        )}
 
         <GalaxyGateMembrane count={gateCount} sparkIds={gateSparks} onOpen={() => setGateOpen(true)} />
 

@@ -148,7 +148,9 @@ test.describe('Grow Gate chrome', () => {
     });
     await expect(page.locator('[data-testid="trust-node"][data-shape="hex"]').first()).toBeVisible();
     await expect(page.locator('[data-testid="trust-edge"][data-spoke="known"]').first()).toBeVisible();
-    await expect(page.locator('[data-testid="trust-node-light"]').first()).toBeVisible();
+    // Honest post-#593 state (Hypatia #912): the white core light is for MUTUAL bonds only, and nothing in-app can make one until PSI (#588),
+    // so the sample galaxy has none. The owner's own light still shows.
+    await expect(page.locator('[data-testid="trust-node-light"]')).toHaveCount(0);
     await expect(page.getByTestId('trust-self-light')).toBeVisible();
     await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_known_stars_ignite.png' });
   });

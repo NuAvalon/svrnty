@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { livingEdgeStatus, livingStatusChip } from './living-edge-status';
+import { TRUST_VISUAL_LABELS, visualForEdge } from '../../components/trust/trust-phase-visual';
 import type { TrustEdge } from './types';
 
 const LIVING_FP = 'p1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -21,8 +22,9 @@ function edge(p: Record<string, unknown>): TrustEdge {
   } as unknown as TrustEdge;
 }
 
-test("livingEdgeStatus never returns 'inbound' or 'mutual' for any edge shape (incl. they_trust_me === true)", () => {
-  let n = 0;
+/** Every combination of the fields that could plausibly drive a trust phase, with the inputs named for failure messages. */
+function allShapes(): Array<{ e: TrustEdge; why: string }> {
+  const out: Array<{ e: TrustEdge; why: string }> = [];
   for (const trusted of [false, true])
     for (const theyTrustMe of [null, false, true])
       for (const reciprocal of [false, true])
@@ -32,22 +34,65 @@ test("livingEdgeStatus never returns 'inbound' or 'mutual' for any edge shape (i
               for (const connection of [undefined, 'pending'])
                 for (const key of ['PK', ''])
                   for (const fp of [LIVING_FP, 'short']) {
-                    const e = edge({
-                      trusted,
-                      trusted_since: trusted ? new Date().toISOString() : null,
-                      peer_fingerprint: fp,
-                      peer_public_key: key,
-                      connection_status: connection,
-                      mutual: { they_trust_me: theyTrustMe, reciprocal, last_sync: null, last_affirm_at: lastAffirm },
-                      metadata: { trust_outbound: outbound, trust_probe: probe },
+                    out.push({
+                      e: edge({
+                        trusted,
+                        trusted_since: trusted ? new Date().toISOString() : null,
+                        peer_fingerprint: fp,
+                        peer_public_key: key,
+                        connection_status: connection,
+                        mutual: { they_trust_me: theyTrustMe, reciprocal, last_sync: null, last_affirm_at: lastAffirm },
+                        metadata: { trust_outbound: outbound, trust_probe: probe },
+                      }),
+                      why: JSON.stringify({ trusted, theyTrustMe, reciprocal, probe, connection, key: !!key, fp: fp.length }),
                     });
-                    const s = livingEdgeStatus(e);
-                    n++;
-                    assert.ok(s.trust === 'none' || s.trust === 'outbound', `trust=${s.trust} for ${JSON.stringify({ trusted, theyTrustMe, reciprocal, probe, connection })}`);
-                    assert.notEqual(livingStatusChip(s), 'Mutual');
-                    assert.doesNotMatch(s.statusLine, /mutual|trusts you/i);
                   }
-  assert.ok(n >= 500, `covered ${n} shapes`);
+  return out;
+}
+
+test("livingEdgeStatus never returns 'inbound' or 'mutual' for any edge shape (incl. they_trust_me === true)", () => {
+  const shapes = allShapes();
+  for (const { e, why } of shapes) {
+    const s = livingEdgeStatus(e);
+    assert.ok(s.trust === 'none' || s.trust === 'outbound', `trust=${s.trust} for ${why}`);
+    assert.notEqual(livingStatusChip(s), 'Mutual');
+    assert.doesNotMatch(s.statusLine, /mutual|trusts you/i);
+  }
+  assert.ok(shapes.length >= 500, `covered ${shapes.length} shapes`);
+});
+
+// Flint #913: a UI arm keyed on the state the hard gate forbids revealing is a latent leak even when dead. So not only the STATUS but every
+// RENDERED label for every edge shape must come from the honest vocabulary, and the dead 'trust-received' word must read like a stranger.
+test("every rendered label, for every edge shape, is from the honest set; never 'Trust pending' or 'Mutual'", () => {
+  // TWO surfaces with DIFFERENT vocabularies (Hypatia #921), each pinned exactly:
+  //   livingStatusChip (living-edge-status.ts)           in {Known, Linked, Trusted, Classical, Pending}  (its only other output is 'Mutual')
+  //   trustPhaseVisual().label (trust-phase-visual.ts)   in {Known, Trusted, Pending intro, Blocked}      (note: 'Pending intro', and blocked edges)
+  // 'Mutual' / 'Mutual trust' stay in the maps (forward-compatible for PSI #588); this negative pin covers B.
+  const CHIPS = new Set(['Known', 'Linked', 'Trusted', 'Classical', 'Pending']);
+  const LABELS = new Set(['Known', 'Trusted', 'Pending intro', 'Blocked']);
+  const seenChips = new Set<string>();
+  const seenLabels = new Set<string>();
+  for (const { e, why } of allShapes()) {
+    const chip = livingStatusChip(livingEdgeStatus(e));
+    seenChips.add(chip);
+    assert.ok(CHIPS.has(chip), `chip '${chip}' for ${why}`);
+    assert.doesNotMatch(chip, /Trust pending|Mutual|Awaiting|trusts you/i);
+    for (const blocked of [false, true]) {
+      const label = visualForEdge(e, { blocked }).label;
+      seenLabels.add(label);
+      assert.ok(LABELS.has(label), `label '${label}' (blocked=${blocked}) for ${why}`);
+      assert.doesNotMatch(label, /Trust pending|Mutual|Awaiting|trusts you/i);
+    }
+  }
+  // The loop is not vacuous: it reaches the trusted, known, pending-intro and blocked renderings.
+  assert.ok(['Trusted', 'Known', 'Pending intro', 'Blocked'].every((l) => seenLabels.has(l)), `labels seen: ${[...seenLabels].join(', ')}`);
+  // 'Known' as a CHIP is not reachable from this shape product (a keyed edge can communicate => 'Linked'); it is still in the allowed set.
+  assert.ok(['Trusted', 'Linked', 'Classical', 'Pending'].every((c) => seenChips.has(c)), `chips seen: ${[...seenChips].join(', ')}`);
+});
+
+test("the dead 'trust-received' label cannot light up: it reads exactly what a stranger with no trust reads", () => {
+  assert.equal(TRUST_VISUAL_LABELS['trust-received'], TRUST_VISUAL_LABELS.known);
+  assert.equal(TRUST_VISUAL_LABELS['trust-received'], 'Known');
 });
 
 test('control: the same edge with only the OWNER\'s trust set does reach outbound (the loop is not vacuous)', () => {

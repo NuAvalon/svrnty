@@ -26,6 +26,9 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
 
   await expect(page.getByTestId('trust-map')).toBeVisible();
+  // Exactly ONE empty-state panel: the B merge once kept both parents' panels (two "Grow your galaxy" cards, two Grow buttons).
+  await expect(page.getByTestId('trust-map-empty')).toHaveCount(1);
+  await expect(page.getByTestId('trust-map-grow')).toHaveCount(1);
   await expect(page.getByTestId('trust-map-empty')).toContainText(/Grow your galaxy/i);
   await expect(page.getByTestId('trust-map-load-sample')).toBeVisible();
   await expect(page.getByTestId('trust-map-grow')).toBeVisible();

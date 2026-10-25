@@ -37,7 +37,9 @@ export type TrustSpokeStyle = 'single' | 'dual-thin' | 'thick-bright';
 export const TRUST_VISUAL_LABELS = {
   known: 'Known',
   'trust-sent': 'Trust pending',
-  'trust-received': 'Trust pending',
+  // 'trust-received' is never produced (bondStateOf folds 'inbound' into 'known': one-way trust is invisible to the trusted party, Peter's
+  // hard gate #179866 / Flint #913). If it ever DID render, it must read exactly what a stranger with no trust reads, so a receiver cannot tell.
+  'trust-received': 'Known',
   mutual: 'Mutual trust',
   blocked: 'Blocked',
   introPending: 'Pending intro',
