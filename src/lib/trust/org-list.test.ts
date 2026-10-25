@@ -83,7 +83,7 @@ test('stale list: lower seq = rollback; same seq different members = equivocatio
   assert.deepEqual(applyOrgMemberList(l2, await v(listOf(2, [M1]))), { action: 'keep' });
 });
 
-test('expiry: an expired incoming list is refused; a HELD list that expires shows "no longer listed (as of expiry)", never "member"', async () => {
+test('expiry: an expired incoming list is refused; a HELD list that expires shows "list expired" (cannot confirm, NOT removed), never "member"', async () => {
   const exp = await sign(listOf(1, [M1], { issued_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-25T11:00:00Z' }));
   assert.deepEqual(await verifyOrgMemberList(exp, org, NOW), { ok: false, reason: 'expired' });
   assert.deepEqual(await verifyOrgMemberList(await sign(listOf(1, [M1], { issued_at: '2026-10-25T12:10:00Z' })), org, NOW),
@@ -93,7 +93,7 @@ test('expiry: an expired incoming list is refused; a HELD list that expires show
   const r = await verifyOrgMemberList(await sign(listOf(1, [M1])), org, NOW);
   assert.ok(r.ok);
   if (r.ok) assert.deepEqual(membershipOf(r.list, M1, new Date('2026-11-26T00:00:00Z')),
-    { org_fp: org.fingerprint, status: 'no-longer-listed', as_of: '2026-11-25T10:00:00Z' });
+    { org_fp: org.fingerprint, status: 'list-expired', as_of: '2026-11-25T10:00:00Z' });
 });
 
 test('removal reaches 3 holders: seq 2 drops M2 everywhere; replaying seq 1 never brings it back', async () => {

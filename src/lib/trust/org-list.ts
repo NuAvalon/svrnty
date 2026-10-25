@@ -7,7 +7,8 @@
 // vouch; nothing here (or in copy) may say "<org> trusts/approves". The domain tag is its own, so an org signature never
 // verifies as a vouch, card, agent cert or signal.
 // MONOTONIC (O2). One seq per org: a higher seq replaces, a lower one is a rollback, the same seq with a different list is
-// equivocation. A held list that EXPIRES is kept only to say "No longer listed (as of <expiry>)", never "member".
+// equivocation. A held list that EXPIRES is kept only to say we can't confirm membership any more (as of <expiry>), never
+// "member", and never "removed": the org may still list them, we just hold no current list (Hypatia task:705 #1509).
 // CUSTODY (O1). The org key is the principal's and lives off every agent box: compromising it makes every member
 // forgeable, which is why it signs membership only. This module takes the org's secret ONLY in signOrgMemberList, which
 // runs in the principal's app; holders get public keys.
@@ -153,18 +154,19 @@ export function applyOrgMemberList(
 /**
  * What a holder may show on a card, from the list it holds:
  *  - { status: 'member', as_of: issued_at }            → "Member of <org> (as of <date>)"
- *  - { status: 'no-longer-listed', as_of: expires_at } → "No longer listed (as of <date>)": the held list EXPIRED
+ *  - { status: 'list-expired', as_of: expires_at }     → "Can't confirm membership of <org>: its member list expired on <date>."
+ *                                                        (NOT a removal: the org may still list them)
  *  - null                                              → nothing (never listed, or removed in a later seq)
  */
 export function membershipOf(
   held: OrgMemberList | undefined,
   cardSha: string,
   now: Date,
-): { org_fp: string; status: 'member' | 'no-longer-listed'; as_of: string } | null {
+): { org_fp: string; status: 'member' | 'list-expired'; as_of: string } | null {
   if (!held || !held.members.includes(cardSha)) return null;
   const exp = isoMs(held.expires_at);
   if (exp === null) return null;
   return exp <= now.getTime()
-    ? { org_fp: held.org_fp, status: 'no-longer-listed', as_of: held.expires_at }
+    ? { org_fp: held.org_fp, status: 'list-expired', as_of: held.expires_at }
     : { org_fp: held.org_fp, status: 'member', as_of: held.issued_at };
 }
