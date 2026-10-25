@@ -407,3 +407,49 @@ test('DW14: known-answer vectors for the sub-route label, index and the untouche
   assert.equal(currentSubRouteIndex(1792922700000), 1); //  2026-10-25T10:05:00Z
   assert.throws(() => deriveSubRouteId(rk, 12));
 });
+
+// ── F-7 / DW15: uniqueness per DEVICE per window (across cries); never a zero-request tick ──────────────────────
+/** Drive ticks at the given seal times; `cryAt` = tick indexes where a (new) cry is enqueued just before the tick. */
+async function ticksAt(sealTimesMs: number[], cryAt: number[]) {
+  const b = book(2);
+  let t = 0;
+  const slots = new ResyncSlotSource(toPublicKeys(sat), () => sealTimesMs[t]);
+  const out: Array<{ requests: number; route: string; type: string | null }> = [];
+  for (t = 0; t < sealTimesMs.length; t++) {
+    if (cryAt.includes(t)) queueCry(slots, `cry-${t}`);
+    posts = [];
+    await syncMutualTrust(b.deps, options(slots), 'trust');
+    out.push({ requests: posts.length, route: await satelliteRoute(posts[0].body.slot), type: await guardianOpens(posts[0].body.slot) });
+  }
+  return { out, slots };
+}
+
+test('F-7 / DW15: a REPLACEMENT cry 299 s later in the same bucket does not reuse the first cry\'s route', async () => {
+  const base = Date.UTC(2026, 9, 25, 9, 20, 0);
+  const { out } = await ticksAt([base, base + 299_000], [0, 1]);
+  assert.deepEqual(out.map(o => o.type), ['distress', 'distress']);
+  assert.notEqual(out[0].route, out[1].route, 'replacement cry repeated the route');
+});
+
+test('DW10 start index = the clock\'s index (N3), and a taken bucket-11 index wraps to 0 (N4)', async () => {
+  const w = currentWindowIndex(Date.UTC(2026, 9, 25, 9, 0, 0));
+  const b5 = Date.UTC(2026, 9, 25, 9, 25, 0); // bucket 5
+  const r5 = await ticksAt([b5], [0]);
+  assert.equal(r5.out[0].route, deriveSubRouteId(rkFor(w), 5));
+  const b11 = Date.UTC(2026, 9, 25, 9, 56, 0); // bucket 11, two seals inside it
+  const r11 = await ticksAt([b11, b11 + 60_000], [0]);
+  assert.equal(r11.out[0].route, deriveSubRouteId(rkFor(w), 11));
+  assert.equal(r11.out[1].route, deriveSubRouteId(rkFor(w), 0), 'wraps to 0, never throws');
+});
+
+test('DW15: 13 cry ticks in one window → a request EVERY tick; the 13th is cover and the cry stays pending', async () => {
+  const base = Date.UTC(2026, 9, 25, 9, 0, 0);
+  const times = Array.from({ length: 13 }, (_, i) => base + i * 1_000); // all inside one window
+  const cryAt = [0, 3, 6, 9, 12]; // re-triggered cries keep a cry riding on every tick (12 = one more while exhausted)
+  const { out, slots } = await ticksAt(times, cryAt);
+  assert.ok(out.every(o => o.requests === K), 'a tick sent no request');
+  assert.equal(out.slice(0, 12).filter(o => o.type === 'distress').length, 12);
+  assert.equal(new Set(out.slice(0, 12).map(o => o.route)).size, 12, 'all 12 indices distinct');
+  assert.equal(out[12].type, null, '13th tick = cover (indices exhausted)');
+  assert.ok(slots.hasPendingCry(), 'the cry is still pending, not dropped');
+});

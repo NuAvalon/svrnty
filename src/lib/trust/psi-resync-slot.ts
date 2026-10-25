@@ -61,7 +61,10 @@ export interface CryInput {
  * enqueueCry never sends (R6/D-6). nextSlot is called exactly once per request.
  */
 export class ResyncSlotSource {
-  private cry: { input: CryInput; ticksLeft: number; used: Set<string> } | null = null;
+  private cry: { input: CryInput; ticksLeft: number } | null = null;
+  /** F-7 (DW15): sub-route indices this DEVICE used for any cry, per window. Kept across cries (a replacement cry
+   *  must not restart at the clock's index), pruned below W-1. Local state only. */
+  private readonly usedSubRoutes = new Map<number, Set<number>>();
 
   constructor(
     /** Satellite keys used for the cover onion's outer seal: the same satellite a real cry goes to today (G2). */
@@ -73,27 +76,29 @@ export class ResyncSlotSource {
   /** Record a cry for the next scheduled ticks. A new cry REPLACES an unfinished one and rides its own full 3 ticks
    *  (the guardian dedups by mark epoch). */
   enqueueCry(input: CryInput): void {
-    this.cry = { input, ticksLeft: CRY_TICKS, used: new Set() };
+    this.cry = { input, ticksLeft: CRY_TICKS };
   }
 
   /**
-   * F-6 (DW10): the sub-route index must be UNIQUE PER CRY, not just the clock bucket of the seal time. Seals happen
-   * after the tick's network pass, so two ticks can land < SUB_ROUTE_SECONDS apart in one bucket; reusing the bucket
-   * index would repeat a route (the F-5 tell). Start from the clock's index and take the next one this cry hasn't
-   * used in this window. The guardian polls all indices of the window (+ the previous), so any index is received.
+   * F-6/F-7 (DW10/DW15): the sub-route index must be UNIQUE PER DEVICE PER WINDOW (across cries, so a replacement
+   * cry can't reuse one), not just the clock bucket of the seal time. Seals happen after the tick's network pass,
+   * so two ticks can land < SUB_ROUTE_SECONDS apart in one bucket; reusing the bucket index would repeat a route
+   * (the F-5 tell). Start from the clock's index and take the next one this device hasn't used in this window. The guardian polls all indices of the window (+ the previous), so any index is received.
    */
-  private claimSubRoute(nowMs: number): number {
-    const cry = this.cry!;
+  private claimSubRoute(nowMs: number): number | null {
     const w = currentWindowIndex(nowMs);
+    for (const old of this.usedSubRoutes.keys()) if (old < w - 1) this.usedSubRoutes.delete(old);
+    const used = this.usedSubRoutes.get(w) ?? new Set<number>();
+    this.usedSubRoutes.set(w, used);
     const start = currentSubRouteIndex(nowMs);
     for (let k = 0; k < SUB_ROUTES_PER_WINDOW; k++) {
       const i = (start + k) % SUB_ROUTES_PER_WINDOW;
-      if (!cry.used.has(`${w}:${i}`)) {
-        cry.used.add(`${w}:${i}`);
+      if (!used.has(i)) {
+        used.add(i);
         return i;
       }
     }
-    throw new Error('psi-resync-slot: no unused sub-route left in this window'); // unreachable: CRY_TICKS < 12
+    return null; // every index of this window already carried a cry from this device
   }
 
   /** True while a cry still has ticks to ride. Local state only; never on the wire. */
@@ -108,7 +113,11 @@ export class ResyncSlotSource {
   async nextSlot(nowMs: number = this.now()): Promise<MailboxEnvelopePackage> {
     if (this.cry && this.cry.ticksLeft > 0) {
       const { input } = this.cry;
-      const routeId = deriveSubRouteId(input.routeKeyAt(nowMs), this.claimSubRoute(nowMs)); // before any state change
+      const idx = this.claimSubRoute(nowMs); // before any state change
+      // Exhausted (≥ 12 cry ticks in one window): NEVER throw (a throw = a zero-request tick, itself a tell). Send a
+      // cover slot of the same shape; the cry stays pending and rides from the next window.
+      if (idx === null) return sealCoverSlot(this.coverSatellite);
+      const routeId = deriveSubRouteId(input.routeKeyAt(nowMs), idx);
       this.cry.ticksLeft -= 1;
       // Equal work: the cover path mints a throwaway device keypair (ML-KEM keygen). Do the same here and
       // discard it, so a distress slot does not come out measurably faster than a cover slot.
