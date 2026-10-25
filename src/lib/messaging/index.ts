@@ -9,6 +9,7 @@ export { createRingChannel, rotateRingMembership, ringDepositTargets } from './r
 export {
   initNotesStore,
   isNotesStoreUnlocked,
+  notesStoreOwner,
   lockNotesStore,
   putThread,
   listThreads,
