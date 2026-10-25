@@ -112,7 +112,9 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.goto('/');
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
-    await bob.getByRole('tab', { name: 'Galaxy', exact: true }).click();
+    // The Galaxy tab carries an activity dot once something arrives (its accessible name then reads "Galaxy Galaxy has new activity"), so
+    // match the name by prefix instead of exactly.
+    await bob.getByRole('tab', { name: /^Galaxy\b/ }).click();
     // Galaxy elements animate (tm-ignite entrance + infinite tm-pulse/breathe/spoke-live + the gate's
     // own spark SVG), so Playwright's click actionability wait for a "stable" element flakes under
     // e2e-prod CI load — test-geometry, NOT a render regression (the galaxy renders fast; only the
