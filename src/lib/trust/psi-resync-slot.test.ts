@@ -453,3 +453,16 @@ test('DW15: 13 cry ticks in one window → a request EVERY tick; the 13th is cov
   assert.equal(out[12].type, null, '13th tick = cover (indices exhausted)');
   assert.ok(slots.hasPendingCry(), 'the cry is still pending, not dropped');
 });
+
+test('DW17 (Apollo W8): an exhausted tick does not burn the cry\'s ticks; it rides its FULL 3 ticks next window', async () => {
+  const base = Date.UTC(2026, 9, 25, 9, 0, 0);
+  const inW = Array.from({ length: 13 }, (_, i) => base + i * 1_000); // 12 indices used, the 13th tick exhausted
+  const next = Array.from({ length: 4 }, (_, i) => base + 3_600_000 + i * 1_000); // the next window
+  assert.equal(currentWindowIndex(next[0]), currentWindowIndex(base) + 1, 'precondition: next window');
+  const { out, slots } = await ticksAt([...inW, ...next], [0, 3, 6, 9, 12]); // the cry at tick 12 meets exhaustion
+  assert.equal(out[12].type, null, 'tick 12 = cover (exhausted)');
+  assert.deepEqual(out.slice(13).map(o => o.type), ['distress', 'distress', 'distress', null],
+    'the pending cry must ride all 3 of its ticks after the exhausted one, then stop');
+  assert.ok(out.every(o => o.requests === K), 'a tick sent no request');
+  assert.equal(slots.hasPendingCry(), false);
+});
