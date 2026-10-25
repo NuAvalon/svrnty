@@ -351,8 +351,11 @@ export default function Home() {
   useEffect(() => {
     const attention = contacts
       .map((edge) => {
+        // The ember lights for a PENDING contact (a Gate arrival, inbound CONTACT, visible by design) or a gate-count change. It must NEVER read
+        // the trust phase: a lit ember for "someone trusts you" would reveal exactly the one-sided trust the invariant forbids revealing
+        // (Peter hard gate KB#93521, NV-10). Flint ruling lane:svrnty #888; pinned by living-edge-no-inbound.test.ts.
         const status = livingEdgeStatus(edge);
-        if (status.trust === 'inbound' || status.connection === 'pending') {
+        if (status.connection === 'pending') {
           return edge.peer_fingerprint;
         }
         return '';
