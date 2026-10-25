@@ -111,12 +111,12 @@ describe("I8 — ops refuse when locked (specific error, nothing moves)", () => 
     lockNotesStore();
     assert.equal(isNotesStoreUnlocked(), false);
     const ops: Array<() => Promise<unknown>> = [
-      () => archiveNotes(["n-lock"]),
-      () => unarchiveNotes(["n-lock"]),
-      () => deleteNotesAtomic(["n-lock"]),
-      () => restoreFromBin(["n-lock"]),
-      () => deletePermanently(["n-lock"]),
-      () => emptyBin(),
+      () => archiveNotes(["n-lock"], FP_A),
+      () => unarchiveNotes(["n-lock"], FP_A),
+      () => deleteNotesAtomic(["n-lock"], FP_A),
+      () => restoreFromBin(["n-lock"], FP_A),
+      () => deletePermanently(["n-lock"], FP_A),
+      () => emptyBin(FP_A),
       () => listArchived(),
       () => listBin(),
     ];
@@ -136,7 +136,7 @@ describe("I1 — archived records are ciphertext at rest", () => {
   it("moved rows keep an enc blob, never plaintext fields", async () => {
     await putThread(thread("t-i1"));
     await putNote(note("n-i1", "t-i1", "plaintext-body-marker"));
-    await archiveNotes(["n-i1"]);
+    await archiveNotes(["n-i1"], FP_A);
     const arch = await rawRows(DB_A, "archive");
     const row = arch.find((r) => r.note_id === "n-i1");
     assert.ok(row?.enc?.iv, "row carries an enc.iv");
@@ -154,10 +154,10 @@ describe("I7 — archive→unarchive round-trips, blob verbatim", () => {
     await putNote(note("n-i7", "t-i7"));
     const before = (await rawRows(DB_A, "notes")).find(
       (r) => r.note_id === "n-i7");
-    await archiveNotes(["n-i7"]);
+    await archiveNotes(["n-i7"], FP_A);
     const mid = (await rawRows(DB_A, "archive")).find(
       (r) => r.note_id === "n-i7");
-    await unarchiveNotes(["n-i7"]);
+    await unarchiveNotes(["n-i7"], FP_A);
     const after = (await rawRows(DB_A, "notes")).find(
       (r) => r.note_id === "n-i7");
     // same ciphertext bytes at every hop — never re-encrypted
@@ -183,7 +183,7 @@ describe("I4 — multi-move is atomic on mid-tx fault", () => {
       return orig.call(this, v, k);
     };
     try {
-      await assert.rejects(deleteNotesAtomic(["a-i4", "b-i4", "c-i4"]));
+      await assert.rejects(deleteNotesAtomic(["a-i4", "b-i4", "c-i4"], FP_A));
     } finally {
       IDBObjectStore.prototype.put = orig;
     }
@@ -204,10 +204,10 @@ describe("I5 — move/delete is a local op (no network)", () => {
     });
     await putThread(thread("t-i5"));
     await putNote(note("n-i5", "t-i5"));
-    await archiveNotes(["n-i5"]);
-    await unarchiveNotes(["n-i5"]);
-    await deleteNotesAtomic(["n-i5"]);
-    await restoreFromBin(["n-i5"]);
+    await archiveNotes(["n-i5"], FP_A);
+    await unarchiveNotes(["n-i5"], FP_A);
+    await deleteNotesAtomic(["n-i5"], FP_A);
+    await restoreFromBin(["n-i5"], FP_A);
     assert.equal(spy.mock.callCount(), 0);
     spy.mock.restore();
   });
@@ -225,8 +225,8 @@ describe("I6 — ops are owner-scoped to the unlocked identity DB", () => {
       lockNotesStore(); // drop the cached handle so ops must re-open
       await initNotesStore(PASS, FP_A);
       await putNote(note("n-i6", "t-i5"));
-      await archiveNotes(["n-i6"]);
-      await deleteNotesAtomic(["n-i6"]);
+      await archiveNotes(["n-i6"], FP_A);
+      await deleteNotesAtomic(["n-i6"], FP_A);
     } finally {
       indexedDB.open = orig;
     }
@@ -246,11 +246,11 @@ describe("I10 — moves never invoke crypto (opaque blob only)", () => {
     assert.ok(enc.mock.callCount() > 0, "spy sees store crypto");
     enc.mock.resetCalls(); dec.mock.resetCalls();
     der.mock.resetCalls(); imp.mock.resetCalls();
-    await archiveNotes(["n-i10"]);
-    await unarchiveNotes(["n-i10"]);
-    await deleteNotesAtomic(["n-i10"]);
-    await restoreFromBin(["n-i10"]);
-    await deletePermanently(["n-i10"]);
+    await archiveNotes(["n-i10"], FP_A);
+    await unarchiveNotes(["n-i10"], FP_A);
+    await deleteNotesAtomic(["n-i10"], FP_A);
+    await restoreFromBin(["n-i10"], FP_A);
+    await deletePermanently(["n-i10"], FP_A);
     assert.equal(enc.mock.callCount(), 0);
     assert.equal(dec.mock.callCount(), 0);
     assert.equal(der.mock.callCount(), 0);
@@ -263,7 +263,7 @@ describe("I11 — nothing leaves the bin except an explicit user op", () => {
   it("binned rows persist across reads; no timer/purge path", async () => {
     await putThread(thread("t-i11"));
     await putNote(note("n-i11", "t-i11"));
-    await deleteNotesAtomic(["n-i11"]);
+    await deleteNotesAtomic(["n-i11"], FP_A);
     // reads and unrelated ops must never drain the bin
     await listBin();
     await listArchived();
@@ -273,7 +273,7 @@ describe("I11 — nothing leaves the bin except an explicit user op", () => {
     assert.ok(bin.some((r) => r.note_id === "n-i11"));
   });
   it("delete→restore round-trips back to live", async () => {
-    await restoreFromBin(["n-i11"]);
+    await restoreFromBin(["n-i11"], FP_A);
     const live = await listNotesForThread("t-i11");
     assert.ok(live.some((n) => n.note_id === "n-i11"));
   });
@@ -326,5 +326,86 @@ describe("I2 — v1→v2 migration is additive and lossless", () => {
     assert.equal(legacy?.note_id, "legacy-n1");
     db.close();
     lockNotesStore();
+  });
+});
+
+describe("I6b — owner at ARM must equal owner at EXECUTE (v0.6)", () => {
+  it("arm as A, switch to B, execute → refused; B intact", async () => {
+    await initNotesStore(PASS, FP_A);
+    await putThread(thread("t-i6b"));
+    await putNote(note("n-i6b", "t-i6b"));
+    // switch identity mid-arm: the store now belongs to B, with B's own row
+    await initNotesStore(PASS, FP_B);
+    await putThread(thread("t-i6b-b"));
+    await putNote(note("n-i6b-b", "t-i6b-b"));
+    const DB_B = `svrnty-notes-${FP_B}`;
+    const armed = FP_A; // captured at arm — owner has since switched
+    const OWNER_ERR = /identity changed since this action was armed/;
+    for (const op of [
+      () => archiveNotes(["n-i6b"], armed),
+      () => deletePermanently(["n-i6b"], armed),
+      () => emptyBin(armed),
+    ]) {
+      await assert.rejects(op, (e: Error) => OWNER_ERR.test(e.message));
+    }
+    // B's row untouched; nothing migrated into B's archive or bin
+    assert.ok(
+      (await rawRows(DB_B, "notes")).some((r) => r.note_id === "n-i6b-b"));
+    assert.equal((await rawRows(DB_B, "archive")).length, 0);
+    assert.equal((await rawRows(DB_B, "recently_deleted")).length, 0);
+    // A's row untouched either — the refusal moved nothing anywhere
+    assert.ok(
+      (await rawRows(DB_A, "notes")).some((r) => r.note_id === "n-i6b"));
+    await initNotesStore(PASS, FP_A); // restore owner A for later describes
+  });
+});
+
+describe("I13 — success only after commit (v0.6)", () => {
+  it("commit-time abort → op rejects, nothing moved", async () => {
+    await initNotesStore(PASS, FP_A);
+    await putThread(thread("t-i13"));
+    await putNote(note("n-i13", "t-i13"));
+    await deleteNotesAtomic(["n-i13"], FP_A); // into the bin
+    // Abort the tx from inside the clear's own success dispatch: every
+    // request handler ran (fn's work "succeeded"), yet the commit must
+    // still be allowed to fail — resolve-on-fn would report a false done.
+    const origClear = IDBObjectStore.prototype.clear;
+    IDBObjectStore.prototype.clear = function (this: IDBObjectStore) {
+      const req = origClear.call(this);
+      req.addEventListener("success", () => {
+        try { req.transaction?.abort(); } catch { /* already finished */ }
+      });
+      return req;
+    };
+    try {
+      await assert.rejects(emptyBin(FP_A));
+    } finally {
+      IDBObjectStore.prototype.clear = origClear;
+    }
+    // the bin row survived — the abort landed, nothing committed
+    assert.ok((await rawRows(DB_A, "recently_deleted"))
+      .some((r) => r.note_id === "n-i13"));
+  });
+
+  it("commit-time abort mid-batch → op rejects, selection intact", async () => {
+    await putThread(thread("t-i13b"));
+    await putNote(note("n-i13b", "t-i13b"));
+    await deleteNotesAtomic(["n-i13b"], FP_A);
+    const origDel = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (
+      this: IDBObjectStore, k: IDBValidKey | IDBKeyRange) {
+      const req = origDel.call(this, k);
+      req.addEventListener("success", () => {
+        try { req.transaction?.abort(); } catch { /* already finished */ }
+      });
+      return req;
+    };
+    try {
+      await assert.rejects(deletePermanently(["n-i13b"], FP_A));
+    } finally {
+      IDBObjectStore.prototype.delete = origDel;
+    }
+    assert.ok((await rawRows(DB_A, "recently_deleted"))
+      .some((r) => r.note_id === "n-i13b"));
   });
 });

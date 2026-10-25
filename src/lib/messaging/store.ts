@@ -85,9 +85,15 @@ function openDb(): Promise<IDBDatabase> {
     };
     req.onsuccess = () => {
       _db = req.result;
+      // a second tab upgrading this DB asks us to close — yield instead of
+      // deadlocking its versionchange transaction.
+      const db = _db;
+      db.onversionchange = () => { db.close(); if (_db === db) _db = null; };
       resolve(_db);
     };
     req.onerror = () => reject(req.error);
+    req.onblocked = () =>
+      console.warn('notes db open blocked — another tab holds an older-version handle');
   });
 }
 
@@ -308,19 +314,32 @@ function _tx<T>(stores: string[], mode: IDBTransactionMode,
     (db) =>
       new Promise<T>((resolve, reject) => {
         const tx = db.transaction(stores, mode);
-        // An abort/error that never reaches a request's onerror (exception
-        // inside a handler, quota, external abort) must still settle —
-        // else the caller hangs forever holding a dead tx.
+        let result: T | undefined;
+        let fnErr: unknown;
+        // I13 (v0.6): success lands ONLY on commit. fn settling means the
+        // requests ran — the tx can still abort at commit (quota, external
+        // abort), and the caller must see that failure, never a false done.
         tx.onabort = () =>
-          reject(tx.error ?? new Error(`${stores.join('+')} tx aborted`));
+          reject(fnErr ?? tx.error ?? new Error(`${stores.join('+')} tx aborted`));
         tx.onerror = () =>
           reject(tx.error ?? new Error(`${stores.join('+')} tx error`));
-        Promise.resolve(fn(tx)).then(resolve, (e) => {
-          try { tx.abort(); } catch {}
-          reject(e);
+        tx.oncomplete = () => resolve(result as T);
+        Promise.resolve(fn(tx)).then((r) => { result = r; }, (e) => {
+          fnErr = e;
+          try { tx.abort(); } catch { reject(e); }
         });
       }),
   );
+}
+
+/** I6b (v0.6): the owner captured when the action was ARMED must still own
+ *  the store at EXECUTE — an identity switch or re-unlock in between
+ *  refuses the op before anything is touched. */
+function _assertArmedOwner(expectedOwner: string): void {
+  if (notesStoreOwner() !== expectedOwner) {
+    throw new Error(
+      'notes identity changed since this action was armed — refused, nothing touched');
+  }
 }
 
 /** Move rows opaquely from `from` into `to`, one tx — the selection is
@@ -351,14 +370,16 @@ async function _moveOpaque(ids: string[], from: string, to: string) {
   });
 }
 
-export async function archiveNotes(ids: string[]) {
+export async function archiveNotes(ids: string[], expectedOwner: string) {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  _assertArmedOwner(expectedOwner);
   // the store reads the rows itself — the move is one tx.
   return _moveOpaque(ids, 'notes', 'archive');
 }
 
-export async function unarchiveNotes(ids: string[]): Promise<NoteRow_[]> {
+export async function unarchiveNotes(ids: string[], expectedOwner: string): Promise<NoteRow_[]> {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  _assertArmedOwner(expectedOwner);
   const back: NoteRow_[] = [];
   await _tx(['archive', 'notes'], 'readwrite', (tx) => {
     const src = tx.objectStore('archive');
@@ -387,18 +408,21 @@ export async function unarchiveNotes(ids: string[]): Promise<NoteRow_[]> {
   return back;
 }
 
-export async function deleteNotesAtomic(ids: string[]) {
+export async function deleteNotesAtomic(ids: string[], expectedOwner: string) {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  _assertArmedOwner(expectedOwner);
   return _moveOpaque(ids, 'notes', 'recently_deleted');
 }
 
-export async function restoreFromBin(ids: string[]) {
+export async function restoreFromBin(ids: string[], expectedOwner: string) {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  _assertArmedOwner(expectedOwner);
   return _moveOpaque(ids, 'recently_deleted', 'notes');
 }
 
-export async function deletePermanently(ids: string[]) {
+export async function deletePermanently(ids: string[], expectedOwner: string) {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  _assertArmedOwner(expectedOwner);
   return _tx(['recently_deleted'], 'readwrite', (tx) => {
     const s = tx.objectStore('recently_deleted');
     return Promise.all(
@@ -414,8 +438,9 @@ export async function deletePermanently(ids: string[]) {
   });
 }
 
-export async function emptyBin() {
+export async function emptyBin(expectedOwner: string) {
   if (!isNotesStoreUnlocked()) throw new Error('Notes store locked — call initNotesStore() first');
+  _assertArmedOwner(expectedOwner);
   return _tx(['recently_deleted'], 'readwrite', (tx) =>
     new Promise<void>((res, rej) => {
       const c = tx.objectStore('recently_deleted').clear();
