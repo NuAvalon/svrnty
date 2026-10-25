@@ -20,7 +20,10 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'RELAY_DB_PATH=/tmp/svrnty-e2e-relay/mailbox.sqlite npm run dev',
+    // RELAY_RATE_LIMIT_MAX: every e2e deposit comes from ONE client IP, so the notes specs and
+    // return-channel's setup share one 10-per-60 s bucket and overflow it when timing lines up (#630
+    // condition 3). Raised here only, by env; production keeps 10, pinned by mailbox-rate-limit.test.ts.
+    command: 'RELAY_DB_PATH=/tmp/svrnty-e2e-relay/mailbox.sqlite RELAY_RATE_LIMIT_MAX=1000 npm run dev',
     url: 'http://localhost:3000',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
