@@ -7,14 +7,14 @@
 //   npx tsx scripts/devin-comm.ts poll-json          — decrypt inbound → durable journal (flint §B cron)
 //   npx tsx scripts/devin-comm.ts loop [intervalMs]
 //   npx tsx scripts/devin-comm.ts grow [uses]          — mint a Grow shortlink (remote, multi-use)
-//   npx tsx scripts/devin-comm.ts join <url>           — resolve a Grow link, admit giver, send joiner-response
+//   npx tsx scripts/devin-comm.ts join <url> --expect-fp <fp64> --name <petname>  — resolve a Grow link, send joiner-response, THEN admit the giver (refuses on any mismatch)
 //   npx tsx scripts/devin-comm.ts gate                 — list Gate arrivals (verified joiners awaiting admit)
 //   npx tsx scripts/devin-comm.ts admit-gate <fp>      — admit a Gate arrival as Known → notes flow
 //   npx tsx scripts/devin-comm.ts admit <card.json>    — admit a new peer
 // Secrets live in ~/.svrnty-agent/ — outside the repo, never committed.
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
-import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
@@ -38,6 +38,8 @@ import { createRelay, resolveRelay } from '../src/lib/sync/relay';
 import { sendJoinerResponse } from '../src/lib/sync/send-joiner-response';
 import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPacket, type RatchetSnapshot } from '../src/lib/crypto/message-ratchet';
 import { strip0x40 } from '../src/lib/identity/raw-sign';
+import { fingerprintMatchesKey } from '../src/lib/identity/fingerprint';
+import { runJoin, parseJoinFlags } from '../src/lib/headless/join-grow-link';
 import { base64ToUint8, uint8ToBase64 } from '../src/lib/crypto/pq';
 import * as openpgp from 'openpgp';
 
@@ -301,40 +303,41 @@ async function main() {
   }
 
   if (cmd === 'join') {
-    // Resolve a Grow link → admit the giver → deposit our signed joiner-response to their mailbox.
-    const u = new URL(rest[0]);
-    const code = u.pathname.split('/c/')[1];
-    const keyFragment = u.hash.slice(1);
-    if (!code || !keyFragment) throw new Error('expected a /c/<code>#<key> Grow link');
-    const card = JSON.parse(await resolveRelay(code, keyFragment));
-    const id = card.identity ?? card;
-    const giverFp = id.fingerprint ?? card.durable_id;
-    if (!giverFp || !id.public_key) throw new Error('resolved card missing fingerprint/public_key');
-    store.upsertContact({
-      id: giverFp,
-      fingerprint: giverFp,
-      name: id.display_name || 'grow-giver',
-      public_key: id.public_key,
-      pq_sig_public_key: id.pq_sig_public_key,
-      pq_kem_public_key: id.pq_kem_public_key,
-      trust_level: 'known',
-    });
+    // Resolve a Grow link, deposit our signed joiner-response, and ONLY THEN admit the giver (src/lib/headless/join-grow-link.ts: Flint spec J1-J6).
+    //   devin-comm join <url> --expect-fp <fp64> --name <petname>
+    // --expect-fp is the fingerprint the person read out of band; the link alone proves nothing about who minted it. The petname is ours, never the card's.
     const myId = artifact.public.card.identity;
-    const r = await sendJoinerResponse(
-      {
-        fingerprint: owner.fingerprint,
-        epoch: 0, // headless agents are pre-rotation; matches the contact.update wire epoch
-        publicKeyArmored: myId.public_key,
-        displayName: myId.display_name || 'devin-local',
-        privateKeyArmored: owner.privateKeyArmored,
-        passphrase: owner.passphrase,
-        kemPublicKeyB64: myId.pq_kem_public_key,
-        sigPublicKeyB64: myId.pq_sig_public_key,
+    const out = await runJoin(parseJoinFlags(rest), {
+      backup: () => {
+        const bak = `${STORE}.bak-${new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')}`;
+        copyFileSync(STORE, bak);
+        chmodSync(bak, 0o600);
       },
-      { fingerprint: giverFp, publicKeyArmored: id.public_key, inviteNonce: code },
-      { relayBase: RELAY },
-    );
-    console.log(JSON.stringify({ admitted: giverFp, joinerResponse: r }));
+      resolve: (code, fragment) => resolveRelay(code, fragment),
+      derives: (fp, publicKey, pq) => fingerprintMatchesKey(fp, publicKey, pq),
+      deposit: (target) =>
+        sendJoinerResponse(
+          {
+            fingerprint: owner.fingerprint,
+            epoch: 0, // headless agents are pre-rotation; matches the contact.update wire epoch
+            publicKeyArmored: myId.public_key,
+            displayName: myId.display_name || 'devin-local',
+            privateKeyArmored: owner.privateKeyArmored,
+            passphrase: owner.passphrase,
+            kemPublicKeyB64: myId.pq_kem_public_key,
+            sigPublicKeyB64: myId.pq_sig_public_key,
+          },
+          target,
+          { relayBase: RELAY },
+        ),
+      admit: (contact) => store.upsertContact(contact),
+    });
+    if (!out.ok) {
+      console.error(`join refused: ${out.refusal}${out.detail ? ` (${out.detail})` : ''}. Nothing was admitted.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify({ admitted: out.admitted, fp8: out.fp8, name: out.name, joinerResponse: out.joinerResponse }));
     return;
   }
 
