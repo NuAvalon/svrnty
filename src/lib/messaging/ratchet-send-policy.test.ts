@@ -182,3 +182,27 @@ test('flow D1: a peer observed to send ratchet frames is ratcheted to: deposited
   assert.equal(f.fetched.length, 1);
   assert.equal(s.puts(), putsBefore + 1);
 });
+
+// ── Flint #769: the policy cannot be bypassed by a future caller ─────────────────────────────────────────────────────
+
+test("the messaging barrel exports the policy, not the raw ratchet-session primitives that skip it", async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const barrel = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'index.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  for (const raw of ['sealDirectNote', 'openDirectNote\\b', 'putRatchetSession', 'getRatchetSession', 'readRatchetSession', 'realRatchetIO']) {
+    assert.doesNotMatch(barrel, new RegExp(raw), `${raw} must not be re-exported: it skips the gate / owner binding / commit-after-store`);
+  }
+  assert.match(barrel, /chooseWireBody/);
+  assert.match(barrel, /openDirectNoteStaged/);
+});
+
+test("sendNoteToPeer computes canDeposit ONCE and uses it for both the ratchet policy and the deposit gate", async () => {
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'transport.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  assert.equal((src.match(/!!args\.peerPqKemPublicKey/g) ?? []).length, 1, 'a single copy of the predicate');
+  assert.match(src, /canDeposit,\s*\n\s*ownerRatchet/);
+  assert.match(src, /if \(canDeposit\) \{\s*\n\s*const blob = await sealNoteTo\(/);
+});

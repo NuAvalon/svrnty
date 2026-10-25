@@ -58,6 +58,9 @@ export async function sendNoteToPeer(args: {
   // (the note simply stays the honest 'Sent · unconfirmed.' floor).
   const receipt_nonce = newReceiptNonce();
 
+  // ONE predicate decides "can this note be deposited" for BOTH the ratchet policy and the deposit gate below. Two copies of it would
+  // let R1 regress silently if one changed (Flint #769).
+  const canDeposit = !!args.peerPqKemPublicKey;
   // R1 + D1: the wire-body policy is one function, in the only safe order (gate -> ratchet -> sign -> seal -> POST). A note that
   // cannot be deposited (no verified ML-KEM key) touches NO ratchet state, and a peer not yet observed to send ratchet frames
   // gets the plain body. See chooseWireBody (direct-session.ts).
@@ -65,7 +68,7 @@ export async function sendNoteToPeer(args: {
     {
       body: args.body,
       peerFingerprint: args.peerFingerprint,
-      canDeposit: !!args.peerPqKemPublicKey,
+      canDeposit,
       ownerRatchet: args.ownerRatchet,
       peerRatchet: args.peerRatchet,
     },
@@ -96,8 +99,8 @@ export async function sendNoteToPeer(args: {
   // fail-closed: no pq_kem → skip, never downgrade (HNDL). A recipient without a verified ML-KEM-1024
   // pubkey is NOT deposited to in a classical/downgraded form; the local copy is kept as "not sent".
   let deposited = false;
-  if (args.peerPqKemPublicKey) {
-    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+  if (canDeposit) {
+    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey!);
     const mailbox_id = deriveMailboxId(args.peerFingerprint);
     const res = await fetchImpl(`${relayBase}/envelope`, {
       method: 'POST',
