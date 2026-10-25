@@ -6,7 +6,7 @@
  * Receive persist is already in the app-shell live-book poll; this glass re-reads the store.
  */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { getAllContacts } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import {
@@ -19,6 +19,8 @@ import {
 } from '@/lib/messaging';
 import { solarEmber as E, solarGlass } from '@/components/recovery/solar-ember';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
+import { createReloadGate } from '@/lib/notes/reload-gate';
+import { createThreadLoadGuard } from '@/lib/notes/thread-load-guard';
 import { toNoteableContacts, type NoteableContact } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY, notSentMessage } from './notes-copy';
 import { loadOwnerNoteSender, type OwnerNoteSender } from './notes-keys';
@@ -65,6 +67,8 @@ const primaryBtn: CSSProperties = {
 };
 
 const STORE_REREAD_MS = 1_500;
+// At most ONE full-store reload START per window, however many arrivals land (D-N8 / #700). See src/lib/notes/reload-gate.ts.
+const ARRIVAL_RELOAD_WINDOW_MS = 250;
 
 function threadPeerFp(thread: NoteThread, ownerFp: string): string {
   const peer = thread.participants.find((p) => p.fingerprint !== ownerFp);
@@ -86,6 +90,9 @@ export function NotesInbox({ identity }: Props) {
   const [notes, setNotes] = useState<NoteRecord[]>([]);
   const [selectedFp, setSelectedFp] = useState('');
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  // Remembers the last thread the selection effect loaded: `threads` gets a NEW array identity on every reload, so without it that effect fires a second,
+  // ungated full-thread decrypt per reload (see thread-load-guard.ts).
+  const threadLoadGuard = useRef(createThreadLoadGuard());
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -162,26 +169,23 @@ export function NotesInbox({ identity }: Props) {
 
   useEffect(() => {
     if (!storeReady) return;
-    return subscribeNoteArrivals(() => {
-      void loadThreads();
-      void loadNotes(activeThreadId);
-    });
-  }, [storeReady, activeThreadId, loadThreads, loadNotes]);
-
-  useEffect(() => {
-    if (!storeReady) return;
-    const tick = () => {
-      void loadThreads();
-      void loadNotes(activeThreadId);
-    };
-    const id = window.setInterval(tick, STORE_REREAD_MS);
+    // ONE gated reload shared by every trigger (an arrival, the periodic re-read, the tab becoming visible). A backlog of arrivals used to fire a full
+    // decrypt-everything reload each, O(arrivals x store); the gate keeps run starts >= ARRIVAL_RELOAD_WINDOW_MS apart, never overlaps them, and always
+    // serves the last request. Every trigger below goes THROUGH gate.request(); none may call loadThreads / loadNotes directly.
+    const gate = createReloadGate(async () => {
+      await Promise.all([loadThreads(), loadNotes(activeThreadId)]);
+    }, ARRIVAL_RELOAD_WINDOW_MS);
+    const unsubscribe = subscribeNoteArrivals(() => gate.request());
+    const id = window.setInterval(() => gate.request(), STORE_REREAD_MS);
     const onVis = () => {
-      if (document.visibilityState === 'visible') tick();
+      if (document.visibilityState === 'visible') gate.request();
     };
     document.addEventListener('visibilitychange', onVis);
     return () => {
+      unsubscribe();
       window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVis);
+      gate.dispose();
     };
   }, [storeReady, activeThreadId, loadThreads, loadNotes]);
 
@@ -197,6 +201,8 @@ export function NotesInbox({ identity }: Props) {
     );
     const nextId = existing?.thread_id ?? null;
     setActiveThreadId(nextId);
+    // Load only when the target thread actually CHANGED (selection, or the first arrival creating the thread). Steady-state refreshes go through the gate.
+    if (!threadLoadGuard.current.shouldLoad(nextId)) return;
     void loadNotes(nextId);
   }, [selectedFp, threads, loadNotes]);
 
