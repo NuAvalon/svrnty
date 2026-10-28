@@ -260,13 +260,27 @@ async function main() {
 
   if (cmd === 'admit') {
     const card = JSON.parse(readFileSync(rest[0], 'utf8'));
+    // admit-stub-card-001: never stub-store a fingerprint-less card —
+    // the nested identity-exchange shape (mint.public.card) resolves
+    // through card.identity like join does; anything without a
+    // resolvable fingerprint + public_key refuses loudly instead of
+    // writing {name:'devin-cloud', fp:undefined}.
+    const idc = card.identity ?? card;
+    const fp = idc.fingerprint ?? card.durable_id ?? idc.durable_id;
+    if (!fp || !idc.public_key) {
+      const shape = card.identity ? 'nested identity-exchange' : 'flat';
+      throw new Error(
+        `refusing ${shape} card — missing ` +
+        `${!fp ? 'fingerprint' : 'public_key'} ` +
+        `(keys: ${Object.keys(idc).slice(0, 10).join(',') || 'none'})`);
+    }
     const contact: HeadlessContact = {
-      id: card.durable_id ?? card.fingerprint,
-      fingerprint: card.fingerprint ?? card.durable_id,
-      name: card.name ?? 'devin-cloud',
-      public_key: card.public_key,
-      pq_sig_public_key: card.pq_sig_public_key,
-      pq_kem_public_key: card.pq_kem_public_key,
+      id: card.durable_id ?? fp,
+      fingerprint: fp,
+      name: idc.display_name ?? card.name ?? 'devin-cloud',
+      public_key: idc.public_key,
+      pq_sig_public_key: idc.pq_sig_public_key,
+      pq_kem_public_key: idc.pq_kem_public_key,
     };
     store.upsertContact(contact);
     console.log(`admitted ${contact.fingerprint}`);
