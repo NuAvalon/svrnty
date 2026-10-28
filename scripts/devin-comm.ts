@@ -25,7 +25,8 @@ import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headles
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, sealNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
-import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
+import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine, errorLine } from '../src/lib/headless/peer-kem';
+import { attemptsPath, parseAttempts, auditAttempts, type SendAttempt } from '../src/lib/headless/send-attempts';
 import { consumeInboundContactUpdates, consumeInboundBlob, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { deriveMailboxId } from '../src/lib/relay/mailbox-auth';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -60,6 +61,17 @@ const CODES = `${DIR}/issued-codes.json`;
 const GATE = `${DIR}/gate.json`;
 const RATCHETS = `${DIR}/ratchet-sessions.json`;
 const RELAY = process.env.SVRNTY_RELAY ?? 'https://dev.svrnty.is/api/relay';
+
+// sealed-send-death-001: the send-side record the 01:26Z probe never left.
+// INTENT before the attempt, OUTCOME after — an intent with no outcome is a
+// corpse (send died mid-flight, which is exactly what a silent-death wound
+// needs named). A logging failure NEVER aborts the send it describes.
+const logAttempt = (rec: SendAttempt): void => {
+  try {
+    appendFileSync(attemptsPath(DIR), JSON.stringify(rec) + '\n', { mode: 0o600 });
+  } catch { /* audit must never kill a send */ }
+};
+const attemptNow = (): string => new Date().toISOString();
 
 // ~7d acceptance window — must mirror R1_ACCEPTANCE_WINDOW_MS in src/lib/identity/client-store.ts
 // (that constant is module-private; the browser persists the map to IndexedDB, we persist JSON).
@@ -394,10 +406,12 @@ async function main() {
     // The outer hybrid seal needs the peer's ML-KEM key, taken from the ADMITTED record and re-checked
     // against its fingerprint (#456). Resolve it BEFORE the ratchet chain is advanced + persisted: a refusal
     // must leave ratchet-sessions.json untouched, not burn an index for a message that was never sent.
+    const noteId = `note_${globalThis.crypto.randomUUID()}`;
+    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed-tr', body });
     const kem = await resolvePeerKemForSend(peer);
-    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed-tr', stage: 'resolve', deposited: false, error: kem.reason }); process.exitCode = 1; return; }
     const rp = await ratchetPeerOf(peer);
-    if (!rp) throw new Error(`peer ${fp} lacks ratchet keys (x25519/mlkem)`);
+    if (!rp) { logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed-tr', stage: 'resolve', deposited: false, error: 'peer lacks ratchet keys' }); throw new Error(`peer ${fp} lacks ratchet keys (x25519/mlkem)`); }
     const self = ratchetSelf(artifact);
     // Advance + persist the chain under the lock BEFORE the relay POST: a failed POST then burns an index,
     // it never re-uses one (key reuse is the failure mode, Flint 2026-10-24).
@@ -414,10 +428,12 @@ async function main() {
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl, noteId });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT; the chain already advanced
+      logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed-tr', stage: tf.stage(), deposited: false, error: errorLine(e) });
       console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
     }
+    logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed-tr', stage: 'deposited', deposited: r.deposited });
     console.log(JSON.stringify(r));
     if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent; this ratchet index is spent)')); process.exitCode = 1; }
     return;
@@ -427,15 +443,19 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    const noteId = `note_${globalThis.crypto.randomUUID()}`;
+    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', body });
     const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
-    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: 'resolve', deposited: false, error: kem.reason }); process.exitCode = 1; return; }
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl, noteId });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
+      logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: tf.stage(), deposited: false, error: errorLine(e) });
       console.error(sendThrowLine(fp, e, tf.stage())); process.exitCode = 1; return;
     }
+    logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', stage: 'deposited', deposited: r.deposited });
     console.log(JSON.stringify(r));
     // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
     // ping the webhook below for a reply that never left.
@@ -466,10 +486,13 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    const noteId = `note_${globalThis.crypto.randomUUID()}`;
+    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', body });
     const kem = await resolvePeerKemForSend(peer);
-    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
-    const r = await sealNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store });
-    if (r.blob === null) { console.error(formatNotSent(fp, 'recipient has no verified ML-KEM key (seal refused, never downgrade)')); process.exitCode = 1; return; }
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: 'resolve', deposited: false, error: kem.reason }); process.exitCode = 1; return; }
+    const r = await sealNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, noteId });
+    if (r.blob === null) { console.error(formatNotSent(fp, 'recipient has no verified ML-KEM key (seal refused, never downgrade)')); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: 'seal', deposited: false, error: 'seal refused (no verified ML-KEM)' }); process.exitCode = 1; return; }
+    logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: 'seal' });
     console.log(JSON.stringify(r));
     return;
   }
@@ -492,11 +515,35 @@ async function main() {
         body: JSON.stringify({ mailbox_id, blob }),
       });
     } catch (e) {
+      logAttempt({ kind: 'outcome', note_id: '', peer_fp: fp, mailbox_id, ts: attemptNow(), wire: 'deposit', stage: tf.stage(), deposited: false, error: errorLine(e) });
       console.error(`deposit to ${fp.slice(0, 12)}… threw at stage ${tf.stage()}: ${(e as Error).message}`);
       process.exitCode = 1; return;
     }
+    logAttempt({ kind: 'outcome', note_id: '', peer_fp: fp, mailbox_id, ts: attemptNow(), wire: 'deposit', stage: 'deposited', deposited: res.ok, error: res.ok ? undefined : `HTTP ${res.status}` });
     console.log(JSON.stringify({ deposited: res.ok }));
     if (!res.ok) { console.error(formatNotSent(fp, `the relay did not accept the deposit (HTTP ${res.status})`)); process.exitCode = 1; }
+    return;
+  }
+
+  if (cmd === 'send-audit') {
+    // sealed-send-death-001: read the send-attempts journal and pair intent
+    // with outcome. 'corpse' = intent with no outcome — the send died
+    // mid-flight (the 01:26Z wound class); 'not-sent' = a named refusal or
+    // throw; 'sealed' = blob produced, carriage is the caller's job;
+    // 'deposited' = transport accepted it (receiver-land is the OTHER leg —
+    // ack-vs-land cross-check is sealed-death-acklie-001's scope).
+    let text = '';
+    try { text = readFileSync(attemptsPath(DIR), 'utf8'); } catch { /* no attempts yet */ }
+    const rows = auditAttempts(parseAttempts(text));
+    if (rest[0] === '--json') { console.log(JSON.stringify(rows)); return; }
+    const corpse = rows.filter((r) => r.state === 'corpse');
+    const notSent = rows.filter((r) => r.state === 'not-sent');
+    if (!rows.length) { console.log('send-audit: no attempts recorded'); return; }
+    for (const r of rows) {
+      console.log(`${r.state.padEnd(9)} ${r.first_ts ?? r.last_ts ?? ''} ${r.peer_fp.slice(0, 12)}… ${r.note_id || '-'} ${r.wire ?? ''}${r.error ? ` | ${r.error}` : ''}`);
+    }
+    console.log(`send-audit: ${rows.length} attempt(s) — corpse:${corpse.length} not-sent:${notSent.length}`);
+    if (corpse.length || notSent.length) process.exitCode = 1;
     return;
   }
 
