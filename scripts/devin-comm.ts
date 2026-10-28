@@ -266,7 +266,7 @@ async function main() {
     // resolvable fingerprint + public_key refuses loudly instead of
     // writing {name:'devin-cloud', fp:undefined}.
     const idc = card.identity ?? card;
-    const fp = idc.fingerprint ?? card.durable_id ?? idc.durable_id;
+    const fp = idc.fingerprint ?? idc.durable_id ?? card.durable_id;
     if (!fp || !idc.public_key) {
       const shape = card.identity ? 'nested identity-exchange' : 'flat';
       throw new Error(
