@@ -463,8 +463,11 @@ async function main() {
     try {
       // dual-seal-interim-001: while canon main lacks the dual-read consume leg, second-deposit a
       // classical copy to the same mbx so classical receivers still land the note (option B,
-      // hybrid-note-receive-gap-001). Interim knob — remove post-merge.
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, dualSeal: true, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+      // hybrid-note-receive-gap-001). Interim knob — remove post-merge. Default ON for the window
+      // (silent-off would re-ghost classical peers); SVRNTY_DUAL_SEAL=0 makes the classical-readable
+      // trade the sender's explicit call, never silent.
+      const dualSeal = process.env.SVRNTY_DUAL_SEAL !== '0';
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, dualSeal, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
       console.error(sendThrowLine(fp, e, tf.stage())); process.exitCode = 1; return;
     }
