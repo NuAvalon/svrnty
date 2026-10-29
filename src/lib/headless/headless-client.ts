@@ -234,34 +234,35 @@ export function startHeadlessPolling(
 export { sendTrustAffirmToPeer };
 
 /**
- * Send an over-wire note from a headless client: sign → seal → deposit to the peer's mailbox, and persist
- * the outbound copy to the local HeadlessStore. Mirrors messaging/transport.sendNoteToPeer but writes the
- * local copy to the Node store (sendNoteToPeer persists to the browser IndexedDB notes store).
+ * Seal-only sibling of sendNoteFromHeadless (dh-fleet-comms §route R-1): sign → seal → persist the
+ * local outbound copy — WITHOUT the relay deposit. Returns the sealed wire form so a transport
+ * router can carry the SAME blob on whichever route it picks (local unix intake or relay envelope
+ * POST); the route choice never changes the bytes. The sealNoteTo blob is the ONLY form that leaves
+ * the device — never a local plaintext variant.
  *
- * HNDL (L7): the seal is PQ-hybrid (living-book-sleeve, X25519+ML-KEM-1024) when the recipient's ML-KEM
- * pubkey is supplied — the same fail-closed contract as transport.sendNoteToPeer: a recipient with no
- * verified pq_kem is NOT deposited to (never a silent classical downgrade); the local copy is kept as
- * "not sent" (deposited:false). So an agent's outbound mail is all-hybrid, and legacy/keyless peers are
- * skipped loud-locally, never downgraded.
+ * Same fail-closed HNDL contract: a recipient with no verified pq_kem yields blob:null (never a
+ * classical downgrade); the local copy is still kept as "not sent".
  */
-export async function sendNoteFromHeadless(args: {
+export async function sealNoteFromHeadless(args: {
   owner: HeadlessOwner;
   senderKind?: ParticipantKind;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
   /** Recipient's verified ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); ABSENT ⇒
-   *  fail-closed: NOT deposited (never downgraded to classical), local copy kept as not-sent. */
+   *  fail-closed: blob:null (never downgraded to classical), local copy kept as not-sent. */
   peerPqKemPublicKey?: string;
+  /** dual-seal-interim-001 (option B, hybrid-note-receive-gap-001): when true AND the hybrid seal runs,
+   *  ALSO produce a CLASSICAL seal of the same signed wire (classicalBlob) so a classical-only receiver
+   *  still lands the note while canon main lacks the dual-read consume leg. Explicit opt-in — the
+   *  confidentiality trade (classical-readable-or-lost) is the sender's call, never silent. Receivers
+   *  dedupe on (note_id, direction, from_fingerprint) → a dual-read receiver lands ONE row. Remove post-merge. */
+  dualSeal?: boolean;
   body: string;
   threadId?: string;
   store: HeadlessStore;
-  relayBase?: string;
-  fetchImpl?: typeof fetch;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
-  const fetchImpl = args.fetchImpl ?? fetch;
-  const relayBase = args.relayBase ?? '/api/relay';
+}): Promise<{ note_id: string; thread_id: string; blob: string | null; classicalBlob?: string | null }> {
   const now = () => new Date().toISOString();
   const thread_id = args.threadId ?? `thr_${args.owner.fingerprint.slice(0, 6)}_${args.peerFingerprint.slice(0, 6)}`;
   const note_id = args.noteId ?? `note_${globalThis.crypto.randomUUID()}`;
@@ -284,22 +285,17 @@ export async function sendNoteFromHeadless(args: {
     args.owner.kemPublicKey,
     args.owner.sigPublicKey,
   );
-  // fail-closed (HNDL): seal PQ-hybrid + deposit ONLY when the recipient has a verified ML-KEM-1024 pubkey.
-  // A recipient without one is NOT deposited to in a classical/downgraded form (never downgrade). The local
-  // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
-  // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
-  let deposited = false;
+  // fail-closed (HNDL): seal PQ-hybrid ONLY when the recipient has a verified ML-KEM-1024 pubkey —
+  // never a silent classical downgrade. The local outbound copy is kept either way.
+  let blob: string | null = null;
+  let classicalBlob: string | null = null;
   if (args.peerPqKemPublicKey) {
-    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
-    const mailbox_id = deriveMailboxId(args.peerFingerprint);
-    const res = await fetchImpl(`${relayBase}/envelope`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mailbox_id, blob }),
-    });
-    deposited = res.ok;
+    blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+    if (args.dualSeal) {
+      classicalBlob = await sealNoteTo(wire, args.peerPublicKeyArmored);
+    }
   } else {
-    console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
+    console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT sealed (never downgrade, HNDL)');
   }
 
   // local outbound copy (Node store)
@@ -315,5 +311,65 @@ export async function sendNoteFromHeadless(args: {
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
   });
-  return { note_id, thread_id, deposited };
+  return { note_id, thread_id, blob, classicalBlob };
+}
+
+/**
+ * Send an over-wire note from a headless client: sign → seal → deposit to the peer's mailbox, and persist
+ * the outbound copy to the local HeadlessStore. Mirrors messaging/transport.sendNoteToPeer but writes the
+ * local copy to the Node store (sendNoteToPeer persists to the browser IndexedDB notes store).
+ *
+ * HNDL (L7): the seal is PQ-hybrid (living-book-sleeve, X25519+ML-KEM-1024) when the recipient's ML-KEM
+ * pubkey is supplied — the same fail-closed contract as transport.sendNoteToPeer: a recipient with no
+ * verified pq_kem is NOT deposited to (never a silent classical downgrade); the local copy is kept as
+ * "not sent" (deposited:false). So an agent's outbound mail is all-hybrid, and legacy/keyless peers are
+ * skipped loud-locally, never downgraded.
+ */
+export async function sendNoteFromHeadless(args: {
+  owner: HeadlessOwner;
+  senderKind?: ParticipantKind;
+  peerFingerprint: string;
+  peerPublicKeyArmored: string;
+  /** Recipient's verified ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); ABSENT ⇒
+   *  fail-closed: NOT deposited (never downgraded to classical), local copy kept as not-sent. */
+  peerPqKemPublicKey?: string;
+  /** dual-seal-interim-001: when true AND the hybrid seal runs, ALSO deposit the classical seal of the
+   *  same signed wire to the same mailbox_id — a classical-only receiver lands the note while canon main
+   *  lacks the dual-read consume leg (option B, hybrid-note-receive-gap-001). deposited_classical reports
+   *  the second leg's own result; remove post-merge. */
+  dualSeal?: boolean;
+  body: string;
+  threadId?: string;
+  store: HeadlessStore;
+  relayBase?: string;
+  fetchImpl?: typeof fetch;
+  noteId?: string; // inject for determinism in tests
+  sentAt?: string; // inject for determinism in tests
+}): Promise<{ note_id: string; thread_id: string; deposited: boolean; deposited_classical?: boolean }> {
+  const fetchImpl = args.fetchImpl ?? fetch;
+  const relayBase = args.relayBase ?? '/api/relay';
+  // Seal via the sibling (sign → seal → local copy); deposit the SAME blob the
+  // seal-only path would hand a router (R-1). blob:null = the HNDL fail-closed
+  // (no verified peer kem) — NOT deposited, never downgraded to classical.
+  const sealed = await sealNoteFromHeadless(args);
+  let deposited = false;
+  let deposited_classical: boolean | undefined;
+  if (sealed.blob !== null) {
+    const mailbox_id = deriveMailboxId(args.peerFingerprint);
+    const res = await fetchImpl(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob: sealed.blob }),
+    });
+    deposited = res.ok;
+    if (sealed.classicalBlob) {
+      const res2 = await fetchImpl(`${relayBase}/envelope`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mailbox_id, blob: sealed.classicalBlob }),
+      });
+      deposited_classical = res2.ok;
+    }
+  }
+  return { note_id: sealed.note_id, thread_id: sealed.thread_id, deposited, deposited_classical };
 }
