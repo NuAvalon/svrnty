@@ -154,7 +154,19 @@ export interface StagedOpen {
   release: () => void;
 }
 
-/** Open a ratchet body from one peer WITHOUT persisting the advanced session; the caller commits once the note is stored (R4) and MUST end the StagedOpen (commit or release) so the lock is freed (R5). */
+/**
+ * Why a ratchet open did not produce a message, TYPED (#720 v5.3, Flint #2052). 'verdict' = the frame itself is bad (malformed, would not
+ * decrypt, rejected as a first frame): the sender's side, nothing on this device will ever change it. 'local' = something on THIS device
+ * stopped it (a session row that cannot be read, a corrupt snapshot): a resend would fail the same way, so the frame is HELD, not acked.
+ * `cause` is a fixed token, never any frame text.
+ */
+export interface OpenFailure {
+  failed: true;
+  kind: 'local' | 'verdict';
+  cause: string;
+}
+
+/** Open a ratchet body from one peer WITHOUT persisting the advanced session; the caller commits once the note is stored (R4) and MUST end the StagedOpen (commit or release) so the lock is freed (R5). Null on any failure (use the Typed variant to learn WHY). */
 export async function openDirectNoteStaged(
   peerFingerprint: string,
   body: string,
@@ -162,25 +174,37 @@ export async function openDirectNoteStaged(
   peer: RatchetPeer,
   io: RatchetIO = realRatchetIO,
 ): Promise<StagedOpen | null> {
+  const r = await openDirectNoteStagedTyped(peerFingerprint, body, self, peer, io);
+  return 'failed' in r ? null : r;
+}
+
+/** The same open, but a failure says whether it is the FRAME's fault (verdict) or THIS DEVICE's (local). */
+export async function openDirectNoteStagedTyped(
+  peerFingerprint: string,
+  body: string,
+  self: RatchetIdentity,
+  peer: RatchetPeer,
+  io: RatchetIO = realRatchetIO,
+): Promise<StagedOpen | OpenFailure> {
   const packet = decodeBody(body);
-  if (!packet) return null;
+  if (!packet) return { failed: true, kind: 'verdict', cause: 'malformed-frame' };
   const unlock = await lockSession(io, peerFingerprint);
   let handedOver = false;
   try {
     const cur = await io.read(peerFingerprint);
-    if (cur.state === 'unreadable') return null; // R3: never acceptFirst over an unreadable row (it would overwrite the real session)
+    if (cur.state === 'unreadable') return { failed: true, kind: 'local', cause: 'session-row-unreadable' }; // R3: never acceptFirst over an unreadable row (it would overwrite the real session)
     let plaintext: string;
     let next: RatchetSnapshot;
     if (cur.state === 'ok') {
       const session = TripleRatchet.importState(cur.snapshot);
-      if (!session) return null;
+      if (!session) return { failed: true, kind: 'local', cause: 'session-snapshot-corrupt' };
       const pt = await session.receive(packet);
-      if (pt === null) return null;
+      if (pt === null) return { failed: true, kind: 'verdict', cause: 'ratchet-receive-failed' }; // interim verdict: T1-T5 must revisit (a desync can be OURS)
       plaintext = pt;
       next = session.exportState();
     } else {
       const first = await TripleRatchet.acceptFirst(self, peer, packet);
-      if (!first) return null;
+      if (!first) return { failed: true, kind: 'verdict', cause: 'first-frame-rejected' };
       plaintext = first.plaintext;
       next = first.session.exportState();
     }

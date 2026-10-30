@@ -15,6 +15,8 @@ import {
   planPrune,
   ROW_MAX_AGE_MS,
   ROW_MAX_COUNT,
+  ROW_MAX_NOT_IN_BOOK,
+  ROW_MAX_PER_CONTACT,
   planBound,
   safeEnvelopeId,
   type DeadLetterReason,
@@ -24,7 +26,7 @@ const HYBRID = JSON.stringify({ v: 1, alg: 'X25519+ML-KEM-1024/HKDF-SHA256/AES-2
 const FP40 = 'ab'.repeat(20);
 const FP64 = 'cd'.repeat(32);
 const T0 = '2026-10-30T12:00:00.000Z';
-const ALL_REASONS: DeadLetterReason[] = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'not-in-book', 'ratchet-unopenable', 'expired'];
+const ALL_REASONS: DeadLetterReason[] = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'expired'];
 
 test('D1 envelope ids: a UUID passes; anything outside the plain charset, empty, too long, or not a string is refused', () => {
   assert.equal(safeEnvelopeId('3f2b8c1e-5a4d-4e8b-9c1a-0d2e3f4a5b6c'), '3f2b8c1e-5a4d-4e8b-9c1a-0d2e3f4a5b6c');
@@ -72,7 +74,7 @@ test('D4 F3: a fingerprint is stored only for AUTHENTICATED reasons, and only wh
     const row = makeDeadLetterRow({ envelopeId: 'e', firstSeen: T0, reason, blob: 'x', fp: FP64 });
     assert.equal('fp' in row!, AUTHENTICATED_REASONS.has(reason), reason);
   }
-  assert.deepEqual([...AUTHENTICATED_REASONS].sort(), ['not-in-book', 'ratchet-unopenable']);
+  assert.deepEqual([...AUTHENTICATED_REASONS].sort(), ['not-in-book', 'ratchet-local', 'ratchet-unopenable']);
   const ok40 = makeDeadLetterRow({ envelopeId: 'e', firstSeen: T0, reason: 'not-in-book', blob: 'x', fp: FP40.toUpperCase() });
   assert.equal(ok40!.fp, FP40, 'lower-cased');
   for (const badFp of ['', 'zz'.repeat(20), 'ab'.repeat(19), 'ab'.repeat(33), 'ab'.repeat(20) + '\n', 7 as unknown as string]) {
@@ -179,4 +181,104 @@ test('D14 planPrune: exactly 30 days is kept, 1 ms past is dropped; beyond 200 t
   assert.deepEqual(planPrune([{ envelope_id: 'z', first_seen: 'garbage' }, { envelope_id: 'a', first_seen: ago(1000) }], NOW), ['z']);
   assert.deepEqual(planPrune([...mk(205, (i) => 1000 + i * 1000)].reverse(), NOW).sort(), planPrune(mk(205, (i) => 1000 + i * 1000), NOW).sort(), 'input order does not matter');
   assert.deepEqual(planPrune([], NOW), []);
+});
+
+// ── B1 (Flint, lane:svrnty #2026): unauthenticated junk must NOT be able to evict the record of a REAL contact's failed message ─────────────
+const DAYMS = 24 * 60 * 60 * 1000;
+const rowAt = (id: string, ageMs: number, reason: string) => ({ envelope_id: id, first_seen: new Date(NOW - ageMs).toISOString(), reason });
+
+test('D15 B1 NEG: 250 junk rows cannot push out an OLDER authenticated (ratchet-unopenable) row', () => {
+  const rows = [
+    rowAt('real-contact-msg', 20 * DAYMS, 'ratchet-unopenable'), // the oldest row of all
+    ...Array.from({ length: 250 }, (_, i) => rowAt(`junk${String(i).padStart(3, '0')}`, 1000 + i * 1000, 'decrypt-failed')),
+  ];
+  const drop = planPrune(rows, NOW);
+  assert.equal(drop.includes('real-contact-msg'), false, 'the authenticated row survives');
+  assert.equal(drop.length, 50, 'the 50 oldest JUNK rows are dropped to hold the junk budget at 200');
+  assert.ok(drop.every((id) => id.startsWith('junk')));
+});
+
+test('D16 B1: same for not-in-book (also authenticated); junk of every UNauthenticated reason shares ONE budget', () => {
+  const rows = [
+    rowAt('nib', 25 * DAYMS, 'not-in-book'),
+    ...['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'expired'].flatMap((reason, r) =>
+      Array.from({ length: 50 }, (_, i) => rowAt(`j-${reason}-${i}`, 1000 + (r * 50 + i) * 1000, reason))),
+  ]; // 250 junk across 5 reasons
+  const drop = planPrune(rows, NOW);
+  assert.equal(drop.includes('nib'), false);
+  assert.equal(drop.length, 50);
+});
+
+const rowFp = (id: string, ageMs: number, reason: string, fp: string) => ({ ...rowAt(id, ageMs, reason), fp });
+const FPA = 'aa'.repeat(32);
+const FPB = 'bb'.repeat(32);
+
+test('D17 B1 NEG (Flint #2029): 250 junk + 250 not-in-book + 1 ratchet-unopenable => the ratchet row survives; not-in-book never shares the contact budget', () => {
+  const rows = [
+    rowFp('real-contact-msg', 29 * DAYMS, 'ratchet-unopenable', FPA), // the oldest row of all
+    ...Array.from({ length: 250 }, (_, i) => rowAt(`junk${String(i).padStart(3, '0')}`, 1000 + i * 1000, 'decrypt-failed')),
+    ...Array.from({ length: 250 }, (_, i) => rowFp(`nib${String(i).padStart(3, '0')}`, 1000 + i * 1000, 'not-in-book', 'cc'.repeat(32))),
+  ];
+  const drop = planPrune(rows, NOW);
+  assert.equal(drop.includes('real-contact-msg'), false);
+  assert.equal(drop.length, 100, '50 oldest junk + 50 oldest not-in-book');
+  assert.equal(drop.filter((id) => id.startsWith('junk')).length, 50);
+  assert.equal(drop.filter((id) => id.startsWith('nib')).length, 50);
+});
+
+test('D18 B1: ONE contact flooding 60 rows loses only ITS OWN oldest 10 and cannot evict another contact\'s row', () => {
+  const rows = [
+    rowFp('bob-old', 29 * DAYMS, 'ratchet-unopenable', FPB),
+    ...Array.from({ length: 60 }, (_, i) => rowFp(`a${String(i).padStart(2, '0')}`, 1000 + i * 1000, 'ratchet-unopenable', FPA)), // a59 oldest
+  ];
+  const drop = planPrune(rows, NOW).sort();
+  assert.deepEqual(drop, ['a50', 'a51', 'a52', 'a53', 'a54', 'a55', 'a56', 'a57', 'a58', 'a59']);
+  assert.equal(drop.includes('bob-old'), false);
+});
+
+test('D19 B1: per-contact fp is case-insensitive; a ratchet row with NO readable fp has its own bucket apart from every contact and from junk', () => {
+  const rows = [
+    ...Array.from({ length: 30 }, (_, i) => rowFp(`u${i}`, 1000 + i * 1000, 'ratchet-unopenable', FPA.toUpperCase())),
+    ...Array.from({ length: 30 }, (_, i) => rowFp(`l${i}`, 31000 + i * 1000, 'ratchet-unopenable', FPA)),
+  ];
+  assert.equal(planPrune(rows, NOW).length, 10, 'same contact in two spellings is ONE budget of 50');
+  const nofp = [...Array.from({ length: 55 }, (_, i) => rowAt(`n${i}`, 1000 + i * 1000, 'ratchet-unopenable')), rowFp('c1', 1000, 'ratchet-unopenable', FPB), ...Array.from({ length: 205 }, (_, i) => rowAt(`j${i}`, 1000 + i * 1000, 'decrypt-failed'))];
+  const drop = planPrune(nofp, NOW);
+  assert.equal(drop.includes('c1'), false);
+  assert.equal(drop.filter((id) => id.startsWith('n')).length, 5, 'the fp-less bucket holds 50');
+  assert.equal(drop.filter((id) => id.startsWith('j')).length, 5, 'junk holds 200');
+});
+
+test('D20 B1: age applies to every budget (exactly 30 days kept); caps pinned by value; reason-less and unverified-frame rows are JUNK', () => {
+  assert.equal(ROW_MAX_NOT_IN_BOOK, 200);
+  assert.equal(ROW_MAX_PER_CONTACT, 50);
+  const aged = planPrune([rowAt('old-nib', 30 * DAYMS + 1, 'not-in-book'), rowFp('old-rat', 30 * DAYMS + 1, 'ratchet-unopenable', FPA), rowAt('old-junk', 30 * DAYMS + 1, 'decrypt-failed'), rowAt('ok-nib', 30 * DAYMS, 'not-in-book')], NOW).sort();
+  assert.deepEqual(aged, ['old-junk', 'old-nib', 'old-rat']);
+  const rows = [
+    { envelope_id: 'noreason', first_seen: new Date(NOW - 20 * DAYMS).toISOString() },
+    rowAt('stranger-frame', 19 * DAYMS, 'unverified-frame'),
+    ...Array.from({ length: 199 }, (_, i) => rowAt(`j${i}`, 1000 + i * 1000, 'decrypt-failed')),
+  ];
+  assert.deepEqual(planPrune(rows, NOW).sort(), ['noreason'], '201 junk-class rows: only the single oldest (the reason-less one) goes');
+  assert.equal(planPrune([...rows, rowAt('extra', 500, 'unverified-frame')], NOW).length, 2, 'unverified-frame competes in the junk budget');
+});
+
+test('D21 unverified-frame: a NON-MESSAGE reason that never carries an fp, even if one is offered', () => {
+  const row = makeDeadLetterRow({ envelopeId: 'e1', firstSeen: T0, reason: 'unverified-frame', blob: HYBRID, fp: FP64 });
+  assert.ok(row);
+  assert.equal(row!.fp, undefined);
+  assert.equal(parseDeadLetterRow({ ...row!, fp: FP64 }), null, 'a stored unverified-frame row with an fp is refused');
+});
+
+test('D22 v5.3: ratchet-local rows are in the PER-CONTACT protected budget with ratchet-unopenable (50 per fp together), never in the junk or not-in-book budget', () => {
+  const rows = [
+    ...Array.from({ length: 30 }, (_, i) => rowFp(`v${i}`, 1000 + i * 1000, 'ratchet-unopenable', FPA)),
+    ...Array.from({ length: 30 }, (_, i) => rowFp(`l${i}`, 31000 + i * 1000, 'ratchet-local', FPA)),
+    ...Array.from({ length: 250 }, (_, i) => rowAt(`j${i}`, 1000 + i * 1000, 'decrypt-failed')),
+  ];
+  const drop = planPrune(rows, NOW);
+  assert.equal(drop.filter((id) => id.startsWith('v') || id.startsWith('l')).length, 10, 'one contact\'s two ratchet classes share 50');
+  assert.equal(drop.filter((id) => id.startsWith('j')).length, 50, 'junk holds its own 200');
+  const row = makeDeadLetterRow({ envelopeId: 'e1', firstSeen: T0, reason: 'ratchet-local', blob: 'x', fp: FP64 });
+  assert.equal(row!.fp, FP64, 'a LOCAL row is named (the sender was authenticated)');
 });
