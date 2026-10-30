@@ -7,7 +7,8 @@
  *
  *  - Lock = mkdir <dir>/.writer.lock (atomic) holding owner.json {pid, start, started, cmd}.
  *  - Stale = owner process gone: kill(pid, 0) → ESRCH, dead-but-unreaped (a zombie still answers
- *    kill(pid, 0) and keeps its /proc row — /proc/<pid>/stat state field reports it), or the pid was
+ *    kill(pid, 0) and keeps its /proc row — /proc/<pid>/stat state field reports it; only with one thread
+ *    left: a leader whose main thread exited also shows Z while its other threads run on), or the pid was
  *    reused (its /proc start time no longer matches the recorded one). A lock dir with no owner.json
  *    past OWNERLESS_STALE_MS is a crash between
  *    mkdir and the owner write. Valid because poll-json runs via docker exec INSIDE the container's pid ns
@@ -55,6 +56,16 @@ function procStart(pid: number): string {
   }
 }
 
+/** Thread count (/proc/<pid>/status Threads:); 0 where /proc is unavailable. */
+function procThreads(pid: number): number {
+  try {
+    const m = /^Threads:\s*(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, 'utf8'));
+    return m ? Number(m[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /** Process state letter (/proc/<pid>/stat field 3: R/S/Z/…); '' where /proc is unavailable. */
 function procState(pid: number): string {
   try {
@@ -71,7 +82,9 @@ function ownerAlive(o: Owner): boolean {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EPERM') return false;   // ESRCH: gone
   }
-  if (procState(o.pid) === 'Z') return false;                          // zombie: answers kill, dead-but-unreaped
+  // zombie: answers kill, dead-but-unreaped. Z with >1 thread = the leader exited but other threads still run (and
+  // may still write), so it stays alive; an unreadable count also stays alive (never risk two writers).
+  if (procState(o.pid) === 'Z' && procThreads(o.pid) === 1) return false;
   const now = procStart(o.pid);
   return !(o.start && now && now !== o.start);                            // same pid, different process = reused
 }

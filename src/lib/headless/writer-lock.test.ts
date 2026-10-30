@@ -109,6 +109,38 @@ test('stale detection: a zombie owner (dead-but-unreaped) is taken over', async 
   }
 });
 
+test('stale detection: a zombie LEADER whose other threads still run is NOT taken over (it may still write)', async (t) => {
+  if (!existsSync('/proc/self/stat')) { t.skip('needs /proc'); return; }
+  if (spawnSync('python3', ['-c', '0']).status !== 0) { t.skip('needs python3 for the fixture'); return; }
+  // The main thread pthread_exit()s while a worker sleeps on: /proc shows the leader as Z and kill(pid,0) succeeds,
+  // exactly like a true zombie — but the process is alive and could still write. Only Threads: tells them apart.
+  const lwrap = spawn('python3', ['-I', '-c', [
+    'import ctypes, os, threading, time',
+    'threading.Thread(target=time.sleep, args=(30,)).start()',
+    'print(os.getpid(), flush=True)',
+    'ctypes.CDLL(None).pthread_exit(None)',
+  ].join('\n')]);
+  const lpid = await new Promise<number>((res, rej) => {
+    lwrap.stdout!.once('data', (b) => res(Number(String(b).trim())));
+    lwrap.once('exit', () => rej(new Error('leader-exit wrapper exited early')));
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 400));                      // let the main thread exit
+    const stat = readFileSync(`/proc/${lpid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    assert.equal(fields[0], 'Z', 'fixture sanity: the leader shows Z');
+    assert.match(readFileSync(`/proc/${lpid}/status`, 'utf8'), /^Threads:\s*[2-9]/m, 'fixture sanity: a thread still runs');
+    const d = dir();
+    mkdirSync(join(d, LOCK_NAME));
+    writeFileSync(join(d, LOCK_NAME, 'owner.json'), JSON.stringify({ pid: lpid, start: fields[19], started: 'x', cmd: 'leader-exit' }));
+    let ran = false;
+    assert.throws(() => withWriterLock(d, () => { ran = true; }, { waitMs: 300 }), /gave up waiting/);
+    assert.equal(ran, false);
+  } finally {
+    lwrap.kill('SIGKILL');
+  }
+});
+
 test('8 processes x 50 locked increments, starting from a planted stale lock: exactly one taker at a time', async () => {
   const d = dir();
   const counter = join(d, 'counter');
