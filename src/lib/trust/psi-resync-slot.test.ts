@@ -490,3 +490,27 @@ test('blind-until-mutual (#697 consent gate x slots): a trusted peer NOT in trus
   assert.deepEqual([...new Set(real)], [fpN(1)], 'the opted-in peer still syncs');
   assert.equal(lengths.size, 1, 'gated-out ticks are cover of the same sealed length');
 });
+
+test('R1 alone: consent revoked between scheduling and sending → cover, never a real initiate', async () => {
+  // The due list and the send each read the opt-in set. If trust_visibility is withdrawn in between, the send-time
+  // gate (R1) must refuse on its own; the due-list filter (R2) can't help, it already ran.
+  // The later set is NON-empty (peer 2 is still opted in), so the send can't fall into the "no contacts" branch.
+  const b = book(2);
+  let reads = 0;
+  b.deps.getTrustVisiblePeers = async () =>
+    reads++ === 0 ? [{ fingerprint: fpN(1), lastSync: null }] : [{ fingerprint: fpN(2), lastSync: null }];
+  posts = [];
+  await tick(b, newSource(), 'trust');
+  assert.equal(posts.length, K);
+  assert.ok(posts.every(p => p.body.cover === true), 'a peer whose consent was just revoked got a real initiate');
+});
+
+test('R2 alone: non-opted-in peers ahead in book order do not starve the opted-in one', async () => {
+  // Only the LAST peer opted in. If the due list isn't cut to the opt-in set, every tick picks peer 1, the send gate
+  // turns it into cover, and peer 3 is never synced.
+  const b = book(3, (_fp, i) => i === 2);
+  posts = [];
+  await tick(b, newSource(), 'trust');
+  const real = posts.filter(p => p.body.cover === false).map(p => p.body.responder_fingerprint);
+  assert.deepEqual(real, [fpN(3)], 'the opted-in peer must get its real initiate on the first tick');
+});
