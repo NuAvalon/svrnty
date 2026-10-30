@@ -205,6 +205,11 @@ export interface ConsumeDeps {
   // while the secret is transiently missing (locked session / Athena-① pending). Undefined ⇒ status quo.
   // May be a lazy check (FE: the secret is only derived once a hybrid blob arrives); consumeOne awaits it per hybrid blob.
   hybridSecretMissing?: boolean | (() => Promise<boolean>);
+  // #720: called once per CLEAN poll with the number of blobs kept because this device cannot open them yet (0 clears the notice).
+  // Counts only that case; a terminal drop is not "held". Never called for a refused poll or an ended unlock cycle.
+  // `expiresAt` (ISO) is the EARLIEST relay deadline among the held envelopes, present only when EVERY held envelope carried a valid one:
+  // one "kept until" date has to be true for every message the count includes, and a missing or malformed date proves nothing.
+  emitHeld?: (count: number, info?: { expiresAt?: string }) => void;
 }
 
 export interface ConsumeSummary {
@@ -214,6 +219,7 @@ export interface ConsumeSummary {
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
   delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
+  held: number; // #720: hybrid packages KEPT on the relay because no kem secret is derivable yet (also counted in `dropped`, as before)
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
@@ -223,7 +229,8 @@ type Outcome =
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
   | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
-  | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
+  | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
+  | { kind: 'held' }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
 /**
  * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
@@ -236,7 +243,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -255,7 +262,9 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     summary.rejected = res.status;
     return summary;
   }
-  const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string }>;
+  // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
+  // ever compared and handed on, never used to decide whether a blob is consumed.
+  const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
   if (!Array.isArray(envelopes)) return summary;
   summary.polled = envelopes.length;
 
@@ -264,6 +273,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
   const ACK_CHUNK = 20;
   const toAck: string[] = [];
+  const heldExpiries: unknown[] = [];
   const flushAckChunk = async (chunk: string[]) => {
     if (chunk.length === 0 || deps.owner.cycle?.ended) return;
     const ackHeaders = await signMailboxAckRequest({
@@ -332,12 +342,27 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
       toAck.push(env.envelope_id); // clean up permanently-invalid mail (silently)
+    } else if (outcome.kind === 'held') {
+      summary.held++;
+      heldExpiries.push(env.expires_at);
+      summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
     }
     if (toAck.length >= ACK_CHUNK) {
       const batch = toAck.splice(0, ACK_CHUNK);
       await flushAckChunk(batch);
+    }
+  }
+
+  // #720: report how many blobs are being KEPT because this device cannot open them yet. Reported on every CLEAN poll, including 0, so a
+  // notice clears once they open or expire. NOT reported when the poll was refused (returned above) or the unlock cycle ended mid-tick:
+  // in both the state of the mailbox is unknown, and an unknown state must neither raise nor clear the notice.
+  if (!deps.owner.cycle?.ended) {
+    try {
+      deps.emitHeld?.(summary.held, { expiresAt: earliestExpiry(heldExpiries) });
+    } catch {
+      /* the notice is best-effort; a repaint failure must not block consume/ack */
     }
   }
 
@@ -348,6 +373,18 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   }
 
   return summary;
+}
+
+/** The earliest valid expiry among `raw`, as ISO; undefined if there are none, or if ANY entry is missing or not a valid date. */
+function earliestExpiry(raw: readonly unknown[]): string | undefined {
+  if (raw.length === 0) return undefined;
+  let min = Number.POSITIVE_INFINITY;
+  for (const r of raw) {
+    const t = typeof r === 'string' ? Date.parse(r) : Number.NaN;
+    if (!Number.isFinite(t)) return undefined;
+    if (t < min) min = t;
+  }
+  return new Date(min).toISOString();
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
@@ -370,7 +407,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       `with no derivable ML-KEM secret — leaving for RETRY, not acking (acking would be silent-loss). ` +
       `Needs the owner's kem secret (OwnerIdentity.kemSecretKey / vault PQ bundle) or a session unlock.`,
     );
-    return { kind: 'retryable' };
+    return { kind: 'held' };
   }
 
   // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
