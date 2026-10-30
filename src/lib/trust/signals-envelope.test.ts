@@ -157,5 +157,7 @@ test('#717: a malformed pq_signature ("" / null) refuses on BOTH paths (envelope
   const signature = await pgpSignText(JSON.stringify({ payload, from: fingerprint, to: TO, timestamp }));
   const legacy = { payload, from: fingerprint, to: TO, timestamp, signature };
   assert.equal(await verifySignal(legacy, publicKey), true); // control
-  assert.equal(await verifySignal({ ...legacy, pq_signature: '' } as typeof legacy, publicKey), false, 'legacy path, pq=""');
+  for (const bad of ['', null, 0, false] as unknown[]) {
+    assert.equal(await verifySignal({ ...legacy, pq_signature: bad } as typeof legacy, publicKey), false, `legacy path, pq=${JSON.stringify(bad)}`);
+  }
 });
