@@ -28,6 +28,8 @@ export interface VaultExportDialogProps {
   fingerprint: string;
   /** Bounce to lock screen if auth gate locks the session. */
   onSessionLocked?: () => void;
+  /** After the file starts downloading — parent can flash the trigger. */
+  onDownloaded?: () => void;
 }
 
 type Step = 'auth' | 'passphrase' | 'done';
@@ -37,6 +39,7 @@ export function VaultExportDialog({
   onClose,
   fingerprint,
   onSessionLocked,
+  onDownloaded,
 }: VaultExportDialogProps) {
   const [step, setStep] = useState<Step>('auth');
   const [password, setPassword] = useState('');
@@ -110,6 +113,7 @@ export function VaultExportDialog({
       const packed = await packVault(contents, password);
       downloadVault(packed);
       setStep('done');
+      onDownloaded?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Vault export failed');
     } finally {
@@ -264,6 +268,8 @@ export function VaultExportDialog({
           {step === 'passphrase' && (
             <Button
               id="fullBackupBtn"
+              className="ember-act"
+              data-flash={loading ? 'busy' : undefined}
               data-testid="vault-export-download"
               onClick={() => void handleExport()}
               disabled={loading || !strongEnough || !match}
