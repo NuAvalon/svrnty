@@ -14,7 +14,7 @@
 // decryptor, then swap the injection. Not a one-line flag-flip; that's the artifact for the separate
 // "PQ on the wire" claim graduation.
 
-import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
+import { readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import type { SignedContactUpdate } from '@/lib/trust/contact-update';
 import type { EnvelopeDecryptor } from './consume-mailbox';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
@@ -36,22 +36,20 @@ export function parseContactUpdateWire(innerUtf8: string): SignedContactUpdate |
 }
 
 /**
- * Sender side: encrypt a signed contact.update to the recipient → opaque armored blob. HYBRID (HNDL) when
- * the recipient's ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED SignedContactUpdate with the
- * reject-classical mailbox envelope); classical OpenPGP otherwise (back-compat/tests — the SEND composer
- * buildContactUpdateDeposits fail-closed-SKIPS a recipient with no pq_kem, so production never downgrades).
+ * Sender side: encrypt a signed contact.update to the recipient → opaque blob. HYBRID ONLY (HNDL): the ALREADY-SIGNED SignedContactUpdate is
+ * wrapped with the reject-classical mailbox envelope using the recipient's ML-KEM-1024 pubkey. Without that key this THROWS (like sealNoteTo):
+ * the send composer buildContactUpdateDeposits already skips such a recipient, so this is the loud backstop for a caller bug, never a silent
+ * classical send. Tests that need a classical blob use seal-classical-fixture.ts, which no app code may import.
  */
 export async function encryptContactUpdateTo(
   signed: SignedContactUpdate,
   recipientPublicKeyArmored: string,
   recipientPqKemB64?: string,
 ): Promise<string> {
-  if (recipientPqKemB64) {
-    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), recipientPublicKeyArmored, recipientPqKemB64);
+  if (!recipientPqKemB64) {
+    throw new Error('encryptContactUpdateTo: refusing to seal without a recipient ML-KEM key (no classical downgrade)');
   }
-  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(signed) });
-  return (await encrypt({ message, encryptionKeys })) as string;
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), recipientPublicKeyArmored, recipientPqKemB64);
 }
 
 /**
