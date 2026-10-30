@@ -117,7 +117,7 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
  * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
  * recordAcceptedJoiner persists the accept across polls.
  */
-export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource): JoinerResponseSeam {
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource, legs?: OpenLegCounter): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
 
   // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
@@ -135,7 +135,7 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybr
         blob,
         // DUAL-READ: hybrid secrets (when present) let verify open a PQ-hybrid joiner-response FIRST, else
         // it falls through to the classical OpenPGP decrypt — same giver identity either way.
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle },
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle, onOpenLeg: legs ? (leg) => legs.bump(leg) : undefined },
         acceptNonce,
         { requirePq: false }, // classical-era joiners still accepted — the signature suite is separate from the envelope
       ),
@@ -534,7 +534,7 @@ export async function buildConsumeDeps(
         )
       : counted(classicalCU, 'classical', legs),
     store: buildContactStore(fingerprint),
-    joiner: buildJoinerSeam(owner, codes, hybrid),
+    joiner: buildJoinerSeam(owner, codes, hybrid, legs),
     note: buildNoteSeam(owner, undefined, hybrid, undefined, legs),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but

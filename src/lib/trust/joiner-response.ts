@@ -312,7 +312,16 @@ async function decryptJoinerBlob(
   passphrase: string,
   hybrid?: HybridSecretsSource,
   cycle?: UnlockCycle,
+  onOpenLeg?: (leg: 'hybrid' | 'classical') => void,
 ): Promise<SignedJoinerResponse | null> {
+  // #720: which leg OPENED the blob, so the removal of the classical fallback can wait for evidence. Counts only; it can never change what opens.
+  const saw = (leg: 'hybrid' | 'classical') => {
+    try {
+      onOpenLeg?.(leg);
+    } catch {
+      /* a counter fault must never change what opens */
+    }
+  };
   // DUAL-READ: PQ-hybrid FIRST when my mailbox secrets are supplied. A non-hybrid/armored blob → null from
   // openLivingBookHybrid → fall through to OpenPGP; parseJoinerResponseWire is the type gate either way (a
   // non-joiner hybrid pkg fails it → null → the consume joiner-verify falls through, preserving no-cross-swallow).
@@ -323,7 +332,9 @@ async function decryptJoinerBlob(
       const pt = h && !cycle?.ended ? await openLivingBookHybrid(blob, h.secrets, h.myFp) : null;
       if (pt) {
         const parsed = JSON.parse(new TextDecoder().decode(pt)) as unknown;
-        return isWellFormed(parsed) ? parsed : null;
+        if (!isWellFormed(parsed)) return null;
+        saw('hybrid');
+        return parsed;
       }
     } catch {
       return null;
@@ -334,7 +345,9 @@ async function decryptJoinerBlob(
     const message = await readMessage({ armoredMessage: blob });
     const { data } = await decrypt({ message, decryptionKeys });
     const text = typeof data === 'string' ? data : await streamToText(data);
-    return parseJoinerResponseWire(text);
+    const out = parseJoinerResponseWire(text);
+    if (out) saw('classical');
+    return out;
   } catch {
     return null;
   }
@@ -367,11 +380,11 @@ async function decryptJoinerBlob(
  */
 export async function verifyJoinerResponse(
   blob: string,
-  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; hybrid?: HybridSecretsSource; cycle?: UnlockCycle },
+  giver: { fingerprint: string; privateKeyArmored: string; passphrase: string; hybrid?: HybridSecretsSource; cycle?: UnlockCycle; onOpenLeg?: (leg: 'hybrid' | 'classical') => void },
   acceptNonce: (nonce: string, joinerFp: string) => boolean,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingJoiner | null> {
-  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase, giver.hybrid, giver.cycle);
+  const signed = await decryptJoinerBlob(blob, giver.privateKeyArmored, giver.passphrase, giver.hybrid, giver.cycle, giver.onOpenLeg);
   if (!signed) return null;
   const { envelope, signature } = signed;
 
