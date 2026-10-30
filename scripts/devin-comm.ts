@@ -24,6 +24,7 @@ import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } fr
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
 import { acceptJoinerAtGate, buildAdmitRecord } from '../src/lib/trust/grow-gate';
+import { derivedCardFp, cardFpBound } from '../src/lib/headless/admit-bind';
 import {
   isCodeOutstanding,
   codeUnderCap,
@@ -257,6 +258,25 @@ async function main() {
     return;
   }
 
+  // admit-card-key-hash-bind-001: a card's claimed fp must equal what its
+  // own key material derives to — same canonical quad the consume gate's
+  // fp-check verifies against. upsertContact merges on the CLAIM alone,
+  // so an unbound card would overwrite a real member's row (the Weft-swap
+  // class). Refuse loudly before any upsert; never silently admit.
+  async function refuseUnboundCard(
+    claimedFp: string, armored: string | undefined,
+    kem: string | undefined, sig: string | undefined): Promise<void> {
+    const derived = await derivedCardFp(armored ?? '', kem, sig);
+    if (!derived || !cardFpBound(claimedFp, derived)) {
+      console.error(
+        `refused: card key material does not hash to claimed fp ` +
+        `${(claimedFp || '?').slice(0, 12)} ` +
+        `(derived ${derived ? derived.slice(0, 12) : 'underivable'}) — ` +
+        `not admitted`);
+      process.exit(1);
+    }
+  }
+
   if (cmd === 'admit') {
     const card = JSON.parse(readFileSync(rest[0], 'utf8'));
     const contact: HeadlessContact = {
@@ -267,6 +287,9 @@ async function main() {
       pq_sig_public_key: card.pq_sig_public_key,
       pq_kem_public_key: card.pq_kem_public_key,
     };
+    await refuseUnboundCard(contact.fingerprint, contact.public_key,
+                            contact.pq_kem_public_key,
+                            contact.pq_sig_public_key);
     store.upsertContact(contact);
     console.log(`admitted ${contact.fingerprint}`);
     return;
@@ -309,6 +332,8 @@ async function main() {
     const id = card.identity ?? card;
     const giverFp = id.fingerprint ?? card.durable_id;
     if (!giverFp || !id.public_key) throw new Error('resolved card missing fingerprint/public_key');
+    await refuseUnboundCard(giverFp, id.public_key, id.pq_kem_public_key,
+                            id.pq_sig_public_key);
     store.upsertContact({
       id: giverFp,
       fingerprint: giverFp,
@@ -352,6 +377,18 @@ async function main() {
 
   if (cmd === 'admit-gate') {
     const fp = rest[0];
+    // admit-card-key-hash-bind-001: bind the arrival's claimed fp to its
+    // key material BEFORE the writer-lock upsert — a forged gate card
+    // must never reach the row.
+    {
+      const g0 = loadGate();
+      const a0 = g0[owner.fingerprint]?.[fp];
+      if (!a0) throw new Error(`no gate arrival ${fp}`);
+      const rec0 = buildAdmitRecord(a0, {});
+      await refuseUnboundCard(a0.fingerprint, rec0.public_key,
+                              rec0.pq_kem_public_key,
+                              rec0.pq_sig_public_key);
+    }
     const arrival = withWriterLock(DIR, () => {
       const g = loadGate();
       const arrival = g[owner.fingerprint]?.[fp];

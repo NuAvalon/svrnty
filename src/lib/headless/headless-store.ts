@@ -9,6 +9,7 @@
 // NOTE: this is a HEADLESS-ONLY module (imports node:fs) — never import it into the browser bundle.
 
 import { readJsonStrict, writeFileAtomic } from './atomic-file';
+import { mergeKeyFieldsGroup } from './key-field-merge';
 import { withWriterLock } from './writer-lock';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
@@ -98,7 +99,11 @@ export class HeadlessStore {
     this.mutate(() => {
       const i = this.data.contacts.findIndex((x) => x.id === c.id || x.fingerprint === c.fingerprint);
       if (i === -1) this.data.contacts.push(c);
-      else this.data.contacts[i] = { ...this.data.contacts[i], ...c };
+      // admit-card-key-hash-bind-001: key material moves as ONE epoch —
+      // a shallow overlay used to let a partial card Frankenstein the
+      // row's quad (old public_key + new pq legs derived to a fp that
+      // matched nothing, the ember 19:27 stale-card wound).
+      else this.data.contacts[i] = mergeKeyFieldsGroup(this.data.contacts[i], c);
     });
   }
 
