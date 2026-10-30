@@ -84,7 +84,8 @@ async function removePqKeys(page: Page, fp: string): Promise<boolean> {
   );
 }
 
-const { defaultBrowserType: _ignoredBrowserType, ...pixel7Mobile } = devices['Pixel 7'];
+const { defaultBrowserType, ...pixel7Mobile } = devices['Pixel 7'];
+void defaultBrowserType; // not a per-context option (it picks the browser, which the project already fixed)
 const MATRIX: Array<{ label: string; use: Record<string, unknown> }> = [
   { label: 'desktop-chromium', use: { viewport: { width: 1280, height: 800 } } },
   { label: 'mobile-chromium (Pixel 7)', use: pixel7Mobile },
