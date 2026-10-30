@@ -187,3 +187,20 @@ test('#718 P5 (Apollo #1906): the 7-day freshness window is pinned both ways; th
   assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 7 * DAY + 1 }), false, '7 days + 1 ms is refused');
   assert.equal(await verifySignal({ ...s, timestamp: 'not a time' }, publicKey), false, 'an unreadable timestamp is refused');
 });
+
+test('#718 P5b (Apollo #2097): a VALIDLY SIGNED garbage timestamp is refused by the freshness guard itself, not by the signature', async () => {
+  const { signWithEnvelope } = await import('../crypto/sign-envelope');
+  const { canonicalize } = await import('../format/canonical');
+  const { DOMAIN_TRUST_SIGNAL } = await import('../format/envelope');
+  const payload = vouchSignal('bob');
+  // the exact canonical input signals.ts signs (trustSignalCanonicalInput is module-private)
+  const signAt = async (timestamp: string) => {
+    const sig = await signWithEnvelope(DOMAIN_TRUST_SIGNAL, canonicalize({ payload, from: fingerprint, to: TO, timestamp }), privateKey, passphrase);
+    return { payload, from: fingerprint, to: TO, timestamp, signature: sig.classical };
+  };
+  const now = new Date().toISOString();
+  assert.equal(await verifySignal(await signAt(now), publicKey), true, 'control: this hand-built signing path matches what verifySignal checks');
+  for (const ts of ['not a time', '', '2026-13-45T99:99:99Z']) {
+    assert.equal(await verifySignal(await signAt(ts), publicKey), false, `signed timestamp ${JSON.stringify(ts)} is refused`);
+  }
+});
