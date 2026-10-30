@@ -51,6 +51,7 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 // L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
 // compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
+import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -116,7 +117,7 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
  * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
  * recordAcceptedJoiner persists the accept across polls.
  */
-export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource): JoinerResponseSeam {
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource, legs?: OpenLegCounter): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
 
   // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
@@ -134,7 +135,7 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybr
         blob,
         // DUAL-READ: hybrid secrets (when present) let verify open a PQ-hybrid joiner-response FIRST, else
         // it falls through to the classical OpenPGP decrypt — same giver identity either way.
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle },
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle, onOpenLeg: legs ? (leg) => legs.bump(leg) : undefined },
         acceptNonce,
         { requirePq: false }, // classical-era joiners still accepted — the signature suite is separate from the envelope
       ),
@@ -170,16 +171,17 @@ export function buildNoteSeam(
   // on top of the already-persisted note; a failed emit must not fail note acceptance). Omitted by unit
   // tests / legacy callers → exact prior behaviour (no receipt sent).
   sendReceipt?: (wire: NoteWireV0) => Promise<void>,
+  legs?: OpenLegCounter, // #720: which leg opened (counts only)
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
   const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   const verifyNote = hybrid
     ? dualReadOpener(
-        makeHybridOpener(openHybridForCycle(owner, hybrid), parseNoteWire),
-        classicalNote,
+        counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseNoteWire), 'hybrid', legs),
+        counted(classicalNote, 'classical', legs),
       )
-    : classicalNote;
+    : counted(classicalNote, 'classical', legs); // no ML-KEM secret: every open here is a classical open
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
     // parseNoteWire is the discriminator (both legs), so this never eats a non-note.
@@ -271,16 +273,17 @@ export function buildReceiptSeam(
   owner: OwnerIdentity,
   hybrid?: HybridSecretsSource,
   deps: ReceiptSeamDeps = { getNote, putNote, getContactByFingerprint },
+  legs?: OpenLegCounter, // #720: which leg opened (counts only)
 ): ReceiptResponseSeam {
   // Single dual-read chokepoint, same discipline as the note seam: hybrid-FIRST + classical FALLBACK (off the N10 unlock
   // cycle). parseReceiptWire is the type-gate on BOTH legs → no-cross-swallow is byte-identical.
   const classicalReceipt = receiptOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   const verifyReceipt = hybrid
     ? dualReadOpener(
-        makeHybridOpener(openHybridForCycle(owner, hybrid), parseReceiptWire),
-        classicalReceipt,
+        counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseReceiptWire), 'hybrid', legs),
+        counted(classicalReceipt, 'classical', legs),
       )
-    : classicalReceipt;
+    : counted(classicalReceipt, 'classical', legs);
   return {
     // null for a non-receipt (contact.update / joiner / note) → consumeOne falls through; parseReceiptWire
     // is the discriminator (both legs), so this never eats a non-receipt.
@@ -520,18 +523,20 @@ export async function buildConsumeDeps(
 
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
+  const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
   return {
     owner,
+    openLegs: legs,
     decrypt: hybrid
       ? dualReadOpener(
-          makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire),
-          classicalCU,
+          counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire), 'hybrid', legs),
+          counted(classicalCU, 'classical', legs),
         )
-      : classicalCU,
+      : counted(classicalCU, 'classical', legs),
     store: buildContactStore(fingerprint),
-    joiner: buildJoinerSeam(owner, codes, hybrid),
-    note: buildNoteSeam(owner, undefined, hybrid),
-    receipt: buildReceiptSeam(owner, hybrid),
+    joiner: buildJoinerSeam(owner, codes, hybrid, legs),
+    note: buildNoteSeam(owner, undefined, hybrid, undefined, legs),
+    receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
     // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
