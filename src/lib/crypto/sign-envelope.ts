@@ -126,6 +126,7 @@ export function isAbsentOrWellFormedPq(pq: unknown): boolean {
  * Build the EnvelopeSignature from a wire object's two fields WITHOUT normalizing: a present pq_signature is
  * passed through as-is, so verifyWithEnvelope's guard sees '' / null and refuses. Truthiness here
  * (`pq ? {…} : {classical}`) would turn a malformed value into "absent" before the guard (#717).
+ * Pinned per caller by a NEG test (pq_signature '' and null refused) with a classical control beside it.
  */
 export function envelopeSignatureOf(classical: string, pq_signature: unknown): EnvelopeSignature {
   return pq_signature === undefined
