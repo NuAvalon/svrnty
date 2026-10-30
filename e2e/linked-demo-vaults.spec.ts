@@ -1,4 +1,19 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
+
+/**
+ * Open a star's detail card and wait until it is THAT contact's card. A star click can land while the galaxy is still settling (a cold
+ * dev compile makes that likely), and the card of the previously focused star also satisfies "a card with the verbs is visible", so
+ * waiting for any card let the test act on the wrong contact (it opened Chat on Sage Quinn instead of River Vale, ~1 in 10 cold runs).
+ * The click is retried until the card shows the expected name.
+ */
+async function openStarCard(page: Page, star: Locator, name: string): Promise<Locator> {
+  const card = page.getByTestId('trust-node-detail');
+  await expect(async () => {
+    await star.click({ force: true });
+    await expect(card).toContainText(name, { timeout: 2_000 });
+  }).toPass({ timeout: 20_000 });
+  return card;
+}
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -70,8 +85,7 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
   const riverStar = page.locator('[data-testid="trust-node"][data-name="River Vale"]');
   await expect(riverStar).toBeVisible({ timeout: 15_000 });
-  await riverStar.click({ force: true });
-  const galaxyCard = page.getByTestId('trust-node-detail');
+  const galaxyCard = await openStarCard(page, riverStar, 'River Vale');
   await expect(galaxyCard.getByTestId('galaxy-open-note')).toBeVisible();
   await expect(galaxyCard.getByTestId('contact-send-update')).toBeVisible();
   await galaxyCard.getByTestId('card-actions-toggle').click();
@@ -87,15 +101,14 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   await expect(page.getByTestId('notes-field-peer').first()).toContainText('River Vale');
 
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-  await riverStar.click({ force: true });
-  const riverCard = page.getByTestId('trust-node-detail');
+  const riverCard = await openStarCard(page, riverStar, 'River Vale');
   await riverCard.getByTestId('contact-send-update').click();
   await expect(page.getByRole('heading', { name: /revise /i })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('heading', { name: /revise /i })).toHaveCount(0);
 
-  await riverStar.click({ force: true });
-  await page.getByTestId('trust-node-detail').getByTestId('card-actions-toggle').click();
+  const riverActions = await openStarCard(page, riverStar, 'River Vale');
+  await riverActions.getByTestId('card-actions-toggle').click();
   await page.getByRole('menuitem', { name: 'Give a piece' }).click();
   await expect(page.getByRole('heading', { name: /tear off a piece/i })).toBeVisible();
   await page.keyboard.press('Escape');
@@ -104,8 +117,7 @@ test('Load sample mints linked vaults; Chat and Actions match', async ({ page })
   // Keyless sample (Hypatia) is a disclosed Known contact — no living-key verbs, nothing inferred.
   const hypatiaStar = page.locator('[data-testid="trust-node"][data-name="Hypatia"]');
   await expect(hypatiaStar).toBeVisible();
-  await hypatiaStar.click({ force: true });
-  const hypatiaCard = page.getByTestId('trust-node-detail');
+  const hypatiaCard = await openStarCard(page, hypatiaStar, 'Hypatia');
   await expect(hypatiaCard.getByTestId('galaxy-open-note')).toHaveCount(0);
   await expect(hypatiaCard.getByTestId('contact-send-update')).toHaveCount(0);
   await hypatiaCard.getByTestId('card-actions-toggle').click();

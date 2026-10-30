@@ -22,3 +22,21 @@ export async function sealReceiptClassicalFixture(receipt: ReceiptWireV0, recipi
   const message = await createMessage({ text: JSON.stringify(receipt) });
   return (await encrypt({ message, encryptionKeys })) as string;
 }
+
+// #720 close-out: the same fixture treatment for the other two seal primitives. encryptContactUpdateTo / encryptJoinerResponseTo used to
+// fall back to classical OpenPGP when no ML-KEM key was passed; they now THROW (like sealNoteTo), and tests that need a classical blob
+// build it here. Same rule: no application code may import this file (seal-no-downgrade.test.ts walks the tree).
+import type { SignedContactUpdate } from '@/lib/trust/contact-update';
+import type { SignedJoinerResponse } from '@/lib/trust/joiner-response';
+
+export async function encryptContactUpdateClassicalFixture(signed: SignedContactUpdate, recipientPublicKeyArmored: string): Promise<string> {
+  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
+  const message = await createMessage({ text: JSON.stringify(signed) });
+  return (await encrypt({ message, encryptionKeys })) as string;
+}
+
+export async function encryptJoinerResponseClassicalFixture(signed: SignedJoinerResponse, giverPublicKeyArmored: string): Promise<string> {
+  const encryptionKeys = await readKey({ armoredKey: giverPublicKeyArmored });
+  const message = await createMessage({ text: JSON.stringify(signed) });
+  return (await encrypt({ message, encryptionKeys })) as string;
+}

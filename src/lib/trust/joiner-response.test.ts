@@ -9,11 +9,11 @@ import {
   buildJoinerResponseEnvelope,
   buildJoinerResponse,
   signJoinerResponse,
-  encryptJoinerResponseTo,
   verifyJoinerResponse,
   JoinerResponseSignError,
   type BuildJoinerResponseArgs,
 } from './joiner-response';
+import { encryptJoinerResponseClassicalFixture } from '../messaging/seal-classical-fixture';
 import {
   DOMAIN_JOINER_RESPONSE,
   DOMAIN_CONTACT_UPDATE,
@@ -117,7 +117,7 @@ test('CANONICAL-ONLY GATE (res1): a classical 40-hex joiner does NOT verify — 
   // is canonical-only: a 40-hex joiner_fingerprint with no PQ legs → false → the handshake drops (→ null).
   // Inverts the pre-res1 "classical binds" assertion; the authenticating handshake is now canonical (below).
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
 });
 
@@ -130,7 +130,7 @@ test('round-trip (hybrid): a CANONICAL joiner PQ-signs → verifies under requir
   const cid = await makeCanonicalIdentity('canon-hybrid');
   const signed = await buildJoinerResponse(canonJoinerArgs(cid), cid.privateKey, cid.passphrase, cid.sigSecretKey);
   assert.ok(signed.signature.pq_signature, 'hybrid signature must carry a pq half');
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   const joiner = await verifyJoinerResponse(blob, aliceGiver(), yes, { requirePq: true });
   assert.ok(joiner, 'hybrid canonical response must verify');
   assert.deepEqual(joiner!.pqSigningPublicKey, cid.sigPublicKey, 'returned pq key must round-trip exactly');
@@ -150,13 +150,13 @@ test('anti-downgrade: stripping the pq half of a hybrid response fails verificat
     bobArgs({ joinerPqSigPublicKey: uint8ToBase64(bobPq.publicKey) }), bobPriv, pass, bobPq.secretKey,
   );
   delete signed.signature.pq_signature; // suite flips to classical → signedBytes differ → classical half fails
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), yes), null);
 });
 
 test('suite floor: requirePq rejects a classical-only response (→ null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass); // classical only
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), yes, { requirePq: true }), null);
 });
 
@@ -164,21 +164,21 @@ test('suite floor: requirePq rejects a classical-only response (→ null)', asyn
 test('tamper: mutating the display name after signing fails (→ null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
   signed.envelope.joiner_display_name = 'Mallory';
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), yes), null);
 });
 
 test('nonce is BOUND: swapping invite_nonce to another (also-accepted) code fails the signature (→ null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
   signed.envelope.invite_nonce = 'B8L0RY'; // a different code the oracle would also accept…
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), () => true), null); // …still rejected: nonce was signed
 });
 
 test('tamper: swapping the joiner public key (keep fp) fails (fp-binding or signature) (→ null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
   signed.envelope.joiner_public_key = carolPub; // now fp≠H(key) AND the signature was over bobPub
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), yes), null);
 });
 
@@ -187,7 +187,7 @@ test('cross-giver replay: giver_fingerprint binds the recipient — Carol (able 
   // Bob addresses Alice (giver_fingerprint = aliceFp) but the blob is encrypted to Carol so she CAN
   // decrypt — isolating the giver-binding check from the encryption layer. Carol must still reject.
   const signed = await buildJoinerResponse(bobArgs({ giverFp: aliceFp }), bobPriv, pass);
-  const blobToCarol = await encryptJoinerResponseTo(signed, carolPub);
+  const blobToCarol = await encryptJoinerResponseClassicalFixture(signed, carolPub);
   const carolGiver = { fingerprint: carolFp, privateKeyArmored: carolPriv, passphrase: pass };
   assert.equal(await verifyJoinerResponse(blobToCarol, carolGiver, yes), null);
 });
@@ -195,13 +195,13 @@ test('cross-giver replay: giver_fingerprint binds the recipient — Carol (able 
 // ── Solicited-gate: an unsolicited deposit (nonce not issued) is dropped ──────────
 test('solicited-gate: a valid signature with an unissued nonce is dropped (acceptNonce=false → null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), () => false), null);
 });
 
 test('solicited-gate: acceptNonce receives the exact invite_nonce AND the claimed joiner fingerprint', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   let seenNonce: string | undefined, seenFp: string | undefined;
   await verifyJoinerResponse(blob, aliceGiver(), (n, fp) => { seenNonce = n; seenFp = fp; return true; });
   assert.equal(seenNonce, CODE);
@@ -210,7 +210,7 @@ test('solicited-gate: acceptNonce receives the exact invite_nonce AND the claime
 
 test('solicited-gate: a throwing acceptNonce oracle fails closed (→ null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), () => { throw new Error('store down'); }), null);
 });
 
@@ -225,14 +225,14 @@ test('multi-use + per-(code,joinerFp) dedup: two distinct joiners on ONE code bo
   const j2 = await makeCanonicalIdentity('joiner2');
 
   // Joiner #1 on CODE.
-  const j1Blob = await encryptJoinerResponseTo(await buildJoinerResponse(canonJoinerArgs(j1), j1.privateKey, j1.passphrase), alicePub);
+  const j1Blob = await encryptJoinerResponseClassicalFixture(await buildJoinerResponse(canonJoinerArgs(j1), j1.privateKey, j1.passphrase), alicePub);
   const first = await verifyJoinerResponse(j1Blob, aliceGiver(), oracle);
   assert.ok(first, 'joiner #1 accepted');
   assert.equal(first!.fingerprint, j1.fingerprint);
   accepted.add(key(first!.inviteNonce, first!.fingerprint));
 
   // Joiner #2 on the SAME code (multi-use Grow link) — must ALSO connect.
-  const j2Blob = await encryptJoinerResponseTo(await buildJoinerResponse(canonJoinerArgs(j2), j2.privateKey, j2.passphrase), alicePub);
+  const j2Blob = await encryptJoinerResponseClassicalFixture(await buildJoinerResponse(canonJoinerArgs(j2), j2.privateKey, j2.passphrase), alicePub);
   const second = await verifyJoinerResponse(j2Blob, aliceGiver(), oracle);
   assert.ok(second, 'joiner #2 on the same code also accepted (multi-use preserved)');
   assert.equal(second!.fingerprint, j2.fingerprint);
@@ -247,14 +247,14 @@ test('Invariant-1: joiner_fingerprint that does not hash to joiner_public_key is
   // Bob claims CAROL's fingerprint while presenting HIS OWN key and signing with his own key. The
   // signature is internally valid, but fp≠H(key) — the exact spoof fingerprintMatchesKey exists to stop.
   const signed = await buildJoinerResponse(bobArgs({ joinerFp: carolFp }), bobPriv, pass);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), yes), null);
 });
 
 // ── Confidentiality (E2E): only the addressed giver can open the blob ─────────────
 test('confidentiality: a blob encrypted to Alice cannot be opened by Carol (→ null)', async () => {
   const signed = await buildJoinerResponse(bobArgs(), bobPriv, pass);
-  const blobToAlice = await encryptJoinerResponseTo(signed, alicePub);
+  const blobToAlice = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   const carolGiver = { fingerprint: carolFp, privateKeyArmored: carolPriv, passphrase: pass };
   assert.equal(await verifyJoinerResponse(blobToAlice, carolGiver, yes), null);
 });
@@ -312,7 +312,7 @@ test('CANONICAL round-trip: a 64-hex canonical joiner verifies WHEN the PQ pubke
   const cid = await makeCanonicalIdentity('canon');
   assert.match(cid.fingerprint, /^[0-9a-f]{64}$/); // 64-hex canonical, NOT a 40-hex OpenPGP fp
   const signed = await buildJoinerResponse(canonJoinerArgs(cid), cid.privateKey, cid.passphrase);
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   const joiner = await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE);
   assert.ok(joiner, 'a canonical joiner with threaded PQ pubkeys must verify');
   assert.equal(joiner!.fingerprint, cid.fingerprint);
@@ -327,7 +327,7 @@ test('CANONICAL joiner WITHOUT threaded PQ pubkeys → fail-closed (the pre-fix 
     canonJoinerArgs(cid, { joinerPqKemPublicKey: undefined, joinerPqSigPublicKey: undefined }),
     cid.privateKey, cid.passphrase,
   );
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
 });
 
@@ -339,6 +339,6 @@ test('CANONICAL joiner with a WRONG-LENGTH kem → rejected at the structural bo
     canonJoinerArgs(cid, { joinerPqKemPublicKey: cid.kemPublicKeyB64.slice(0, 40) }),
     cid.privateKey, cid.passphrase,
   );
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   assert.equal(await verifyJoinerResponse(blob, aliceGiver(), (n) => n === CODE), null);
 });
