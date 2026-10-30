@@ -102,7 +102,14 @@ for (const variant of MATRIX) {
       const notice = page.getByTestId('notes-held-notice');
       await expect(notice).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId('notes-held-text')).toContainText("1 message couldn't be opened on this device: it was sealed to a key this device doesn't have.");
-      await expect(page.getByTestId('notes-held-text')).toContainText(/It's (still on the relay|kept on the relay until .+), and this app will try again\./);
+      // The relay (dev, after #306) reports expires_at, so the line names the moment it will delete the message: local date AND time,
+      // with the year (copy v0.4/v0.5). Never the no-date fallback here, and never a date computed on the device.
+      await expect(page.getByTestId('notes-held-text')).toContainText(/It's kept on the relay until [A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2}\s?[AP]M, and this app will try again\./);
+      // That date is the relay's: about 7 days out for a message deposited just now (the default TTL), not earlier and not absurd.
+      const line = (await page.getByTestId('notes-held-text').innerText()).match(/until (.+?), and this app/)?.[1] ?? '';
+      const days = (Date.parse(line.replace(/(\d{4}), /, '$1 ')) - Date.now()) / 86_400_000;
+      expect(days, `deadline "${line}" should be about 7 days out`).toBeGreaterThan(6.5);
+      expect(days).toBeLessThan(7.1);
       await expect(page.getByTestId('notes-held-hint')).toHaveText('Restoring your keys on this device may open it.');
       // Never the words the copy forbids, and no sender or blob text.
       await expect(notice).not.toContainText(/\b(lost|corrupt|spam|forged|fake)\b/i);
