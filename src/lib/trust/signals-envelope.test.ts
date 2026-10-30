@@ -11,6 +11,7 @@ import {
   sign as pgpSign,
 } from 'openpgp';
 import { createSignal, verifySignal, vouchSignal } from './signals';
+import { formatSignalMessage, parseSignalMessage } from './transport';
 import { signSlugClaim, verifySignedSlugClaim } from './slug-claim';
 import { generatePQKeypairBundle, uint8ToBase64, type PQSigningKeypair } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
@@ -95,13 +96,18 @@ test('NFC robustness: composed vs decomposed unicode verify identically', async 
   assert.equal(await verifySignal({ ...s, payload: vouchSignal(decomposed) }, publicKey), true);
 });
 
-test('legacy back-compat: a pre-0.1 with-from JSON.stringify signature still verifies', async () => {
+test('#718: legacy pre-0.1 signatures are REFUSED (L1 with-from and L2 from-unsigned); only the 0.1 envelope verifies', async () => {
+  // The legacy verify loop sunset on ~2026-08-23 (7-day freshness window after 0.1). No code on any branch
+  // emits these bytes; it was the only path into hybridVerify's classical-only branch besides verifyWithEnvelope.
   const payload = vouchSignal('bob');
   const timestamp = new Date().toISOString();
-  const legacyBytes = JSON.stringify({ payload, from: fingerprint, to: TO, timestamp });
-  const signature = await pgpSignText(legacyBytes);
-  const legacySignal = { payload, from: fingerprint, to: TO, timestamp, signature };
-  assert.equal(await verifySignal(legacySignal, publicKey), true);
+  const l1 = await pgpSignText(JSON.stringify({ payload, from: fingerprint, to: TO, timestamp }));
+  assert.equal(await verifySignal({ payload, from: fingerprint, to: TO, timestamp, signature: l1 }, publicKey), false, 'L1');
+  const l2 = await pgpSignText(JSON.stringify({ payload, to: TO, timestamp }));
+  assert.equal(await verifySignal({ payload, from: fingerprint, to: TO, timestamp, signature: l2 }, publicKey), false, 'L2');
+  // control: the same content through the 0.1 envelope verifies
+  const s = await createSignal(payload, fingerprint, TO, privateKey, passphrase);
+  assert.equal(await verifySignal(s, publicKey), true);
 });
 
 test('downgrade resistance: stripping the PQ half of a hybrid signal fails', async () => {
@@ -145,19 +151,26 @@ test('F6: an attacker cannot claim a slug for a key they do not hold', async () 
   assert.equal(await verifySignedSlugClaim(forged), false);
 });
 
-test('#717: a malformed pq_signature ("" / null) refuses on BOTH paths (envelope + legacy), never reads as classical', async () => {
+test('#717: a malformed pq_signature ("" / null / 0 / false) refuses, never reads as classical', async () => {
   const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
   assert.equal(await verifySignal(s, publicKey), true); // control
-  for (const bad of ['', null] as unknown[]) {
-    assert.equal(await verifySignal({ ...s, pq_signature: bad } as typeof s, publicKey), false, `envelope path, pq=${JSON.stringify(bad)}`);
-  }
-  // legacy loop (calls hybridVerify directly): the same refusal
-  const payload = vouchSignal('bob');
-  const timestamp = new Date().toISOString();
-  const signature = await pgpSignText(JSON.stringify({ payload, from: fingerprint, to: TO, timestamp }));
-  const legacy = { payload, from: fingerprint, to: TO, timestamp, signature };
-  assert.equal(await verifySignal(legacy, publicKey), true); // control
   for (const bad of ['', null, 0, false] as unknown[]) {
-    assert.equal(await verifySignal({ ...legacy, pq_signature: bad } as typeof legacy, publicKey), false, `legacy path, pq=${JSON.stringify(bad)}`);
+    assert.equal(await verifySignal({ ...s, pq_signature: bad } as typeof s, publicKey), false, `pq=${JSON.stringify(bad)}`);
   }
+});
+
+test('#718: the paste transport keeps pq_signature raw ("" stays "", absent stays absent), so verify can refuse it', async () => {
+  const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
+  const back = parseSignalMessage(formatSignalMessage(s));
+  assert.ok(back);
+  assert.equal(back.pq_signature, undefined, 'absent stays absent');
+  assert.equal(await verifySignal(back, publicKey), true); // control
+  const forged = parseSignalMessage(formatSignalMessage({ ...s, pq_signature: '' }));
+  assert.ok(forged);
+  assert.equal(forged.pq_signature, '', '"" must survive the transport, not become absent');
+  assert.equal(await verifySignal(forged, publicKey), false);
+  const h = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase, pq.secretKey);
+  const hb = parseSignalMessage(formatSignalMessage(h));
+  assert.equal(hb?.pq_signature, h.pq_signature, 'hybrid round-trips');
+  assert.equal(await verifySignal(hb!, publicKey, pq.publicKey), true);
 });

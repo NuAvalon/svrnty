@@ -5,7 +5,7 @@
 // vocabulary (src/lib/format/envelope.ts).
 //
 // WHAT THIS FIXES. The pre-0.1 signer used raw JSON.stringify({...}) as the signed bytes
-// (src/lib/trust/signals.ts canonicalSignPayload). That is key-order dependent, NFC-blind, and has
+// (the old signals.ts canonicalSignPayload, verify path deleted in #718). That is key-order dependent, NFC-blind, and has
 // no float/null discipline — a cross-implementation verifier, or a unicode display_name in a
 // different normal form, silently breaks verification. It also bound neither the message DOMAIN nor
 // the crypto SUITE, so:
