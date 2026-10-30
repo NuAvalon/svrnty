@@ -15,7 +15,7 @@ describe('Relay settings glass — Flint copy + fail-closed switch', () => {
     assert.equal(RELAY_COPY.currentPrefix, "You're on:");
     assert.equal(RELAY_COPY.placeholder, 'https://your-relay.example:8100');
     assert.equal(
-      RELAY_COPY.helper.includes('never your notes (those stay sealed end-to-end)'),
+      RELAY_COPY.helper.includes('never your messages (they stay sealed end-to-end)'),
       true,
     );
     assert.equal(
