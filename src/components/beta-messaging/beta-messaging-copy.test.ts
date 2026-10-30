@@ -36,10 +36,10 @@ describe('beta-messaging copy — claim-honesty', () => {
     assert.match(BETA_COPY.whatItIs, /can'?t read your messages/i);
     assert.doesNotMatch(BETA_COPY.whatItIs, /who you talk to|communication relationships|never learns who/i);
     assert.match(BETA_COPY.sending, /you'll see Sent/);
-    // Hypatia #828: receipts are proven on B (TG-1), so the old "is coming" promise is stale, and it was a promise for peers whose app
-    // never sends receipts (agents, older apps). Delivered is conditional on the peer's app confirming.
-    assert.match(BETA_COPY.sending, /You'll see Delivered if their app confirms it arrived/);
-    assert.doesNotMatch(BETA_COPY.sending, /is coming/);
+    // Archie #1823 option (a): no app emits a delivery receipt in this build (the S06 v1 emitter is unwired until S62's MAC receipt), so
+    // nothing can confirm delivery yet. Promising "Delivered if their app confirms" would be a false capability (Hypatia #1834).
+    assert.match(BETA_COPY.sending, /A Delivered confirmation is coming/);
+    assert.doesNotMatch(BETA_COPY.sending, /if their app confirms/);
     // Hypatia #786/#791 + Flint #788: a hard 7-day relay hold, loss is silent, no delivery assertion.
     // Verified for DEV's durable relay only; a PROD line needs "A relay restart can also lose it."
     assert.match(BETA_COPY.sendingWait, /the relay holds your message for up to 7 days/);

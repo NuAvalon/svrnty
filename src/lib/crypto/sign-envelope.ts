@@ -115,6 +115,26 @@ export async function signWithEnvelope(
 }
 
 /**
+ * A pq_signature field is either ABSENT (undefined: classical) or a non-empty string (hybrid). Anything else
+ * ('' / null / 0 / false / non-string) is malformed and must refuse, never read as "no PQ half" (#717, N12 F-2).
+ */
+export function isAbsentOrWellFormedPq(pq: unknown): boolean {
+  return pq === undefined || (typeof pq === 'string' && pq.length > 0);
+}
+
+/**
+ * Build the EnvelopeSignature from a wire object's two fields WITHOUT normalizing: a present pq_signature is
+ * passed through as-is, so verifyWithEnvelope's guard sees '' / null and refuses. Truthiness here
+ * (`pq ? {…} : {classical}`) would turn a malformed value into "absent" before the guard (#717).
+ * Pinned per caller by a NEG test (pq_signature '' and null refused) with a classical control beside it.
+ */
+export function envelopeSignatureOf(classical: string, pq_signature: unknown): EnvelopeSignature {
+  return pq_signature === undefined
+    ? { classical }
+    : ({ classical, pq_signature } as unknown as EnvelopeSignature);
+}
+
+/**
  * Verify a signature produced by {@link signWithEnvelope}. Binding is total: hybridVerify binds BOTH
  * halves to the exact bytes we pass (the classical branch checks the signed literal equals
  * `signedBytes`; the PQ branch signs/verifies over them) — so tampering any field, or stripping the
@@ -130,6 +150,12 @@ export async function verifyWithEnvelope(
   classicalPublicKeyArmored: string,
   pqSigningPublicKey?: Uint8Array,
 ): Promise<boolean> {
+  // A pq_signature that is PRESENT must be a non-empty string. Truthiness alone read '' (or null/0/false) as
+  // "no PQ half" and verified classical-only, so a caller gating PQ by `typeof === 'string'` let a holder of
+  // only the classical key through (Apollo N12 F-2). Absent / undefined stays the classical path.
+  if (signature.pq_signature !== undefined && (typeof signature.pq_signature !== 'string' || signature.pq_signature === '')) {
+    return false;
+  }
   const suiteId = signature.pq_signature ? SUITE_HYBRID : SUITE_CLASSICAL;
   const signedBytes = buildSignedBytes(domainTag, suiteId, canonicalInput);
 

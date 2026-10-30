@@ -56,14 +56,12 @@ import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-res
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
 import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
-import { noteOpenpgpDecryptor, parseNoteWire, sealReceiptTo, receiptOpenpgpDecryptor, parseReceiptWire } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor, parseNoteWire, receiptOpenpgpDecryptor, parseReceiptWire } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
-import { buildReceiptWire, verifyReceiptWire } from '@/lib/crypto/delivery-receipt';
+import { verifyReceiptWire } from '@/lib/crypto/delivery-receipt';
 import { canonicalPubsFromArmoredPublicKey } from '@/lib/identity/fingerprint';
-import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
-import { loadOwnerMessageKeys } from '@/components/encrypt-decrypt/load-owner-message-keys';
 
 /** Steady cadence once the book is caught up. Fast enough for Gate without hammering. */
 export const DEFAULT_POLL_INTERVAL_MS = 1_500;
@@ -470,28 +468,10 @@ export async function buildConsumeDeps(
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
   }
-  // Recipient-emit for delivery receipts (Athena — Nov-5): after an inbound note is accepted, sign a
-  // receipt with OUR identity keys and deposit it (sealed) to the sender's OWN mailbox so their note
-  // graduates "Sent · unconfirmed." → "Delivered". The note wire was AUTHENTICATED on accept, so
-  // wire.public_key (seal target) + wire.from_fingerprint (mailbox) are trustworthy. Best-effort: any
-  // throw is swallowed by buildNoteSeam (the note is already persisted). Skips a note with no
-  // receipt_nonce (sender didn't opt in) or a classical owner with no PQ sig material (loadOwner → null).
-  const doFetch = opts.fetchImpl ?? fetch;
-  const sendReceipt = async (wire: NoteWireV0): Promise<void> => {
-    const nonce = wire.receipt_nonce;
-    if (!nonce || !wire.public_key || !wire.from_fingerprint) return; // nothing to confirm / can't address
-    const owned = await loadOwnerMessageKeys(fingerprint, identity);
-    if (!owned) return; // locked / no PQ sig material → no receipt (sender's floor holds — fail-safe)
-    if (owner.cycle?.ended) return; // a lock/switch landed while the keys loaded (N10): emit nothing
-    const receipt = buildReceiptWire(wire.note_id, nonce, owner.fingerprint, owned.sender.signSeed, owned.sender.sigSecret);
-    const blob = await sealReceiptTo(receipt, wire.public_key);
-    const mailbox_id = deriveMailboxId(wire.from_fingerprint);
-    await doFetch('/api/relay/envelope', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mailbox_id, blob }),
-    });
-  };
+  // NO recipient-emit of delivery receipts (Archie #1823 option (a), A5-d / S62 v4 C8): the S06 v1 receipt
+  // is identity-signed, i.e. a transferable proof that we received a note, so it never ships. The sender-side
+  // verify (buildReceiptSeam) stays; "Delivered" lights up once S62's designated-verifier MAC receipt lands.
+  // Pinned by receipt-emit-unwired.test.ts.
 
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
@@ -505,7 +485,7 @@ export async function buildConsumeDeps(
       : classicalCU,
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes, hybrid),
-    note: buildNoteSeam(owner, undefined, hybrid, sendReceipt),
+    note: buildNoteSeam(owner, undefined, hybrid),
     receipt: buildReceiptSeam(owner, hybrid),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR

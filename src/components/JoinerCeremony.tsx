@@ -214,7 +214,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setPhase('card');
       } catch (err: any) {
         if (cancelled) return;
-        setError(err?.message || 'This link has expired or already been used.');
+        setError(err?.message || "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
       }
     })();
 
