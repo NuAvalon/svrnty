@@ -37,6 +37,7 @@ import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import type { OpenLegCounter } from './open-leg-counter';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
@@ -219,6 +220,7 @@ export interface ConsumeDeps {
   receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
@@ -254,6 +256,13 @@ export interface ConsumeSummary {
    * pollers (no IndexedDB, no records) still see their losses. Counts only, never an id. Held envelopes count as 'missing-key' only when released.
    */
   lost: Partial<Record<DeadLetterReason, number>>;
+  /**
+   * #720 (Archie #2032, Flint #2031): how many opens this poll succeeded on each LEG of the dual-read opener. The classical leg is a
+   * compatibility fallback that may only be removed once every active sender shows 0 here over 7 days. Counts only, snake_case on purpose
+   * (the ward allowlist in devin_quarantine names exactly these keys). Always present; 0 when no counter was wired.
+   */
+  opened_hybrid: number;
+  opened_classical: number;
   released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
@@ -284,7 +293,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, acked: 0 };
+  deps.openLegs?.take(); // discard anything counted outside a poll: a poll reports only its own opens
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -499,6 +509,11 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     await flushAckChunk(batch);
   }
 
+  if (deps.openLegs) {
+    const legs = deps.openLegs.take();
+    summary.opened_hybrid = legs.hybrid;
+    summary.opened_classical = legs.classical;
+  }
   return summary;
 }
 
