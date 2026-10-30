@@ -15,7 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -228,7 +228,7 @@ function printNewArrivals(ownerFp: string, seen: Set<string>): void {
   for (const a of Object.values(g)) {
     if (seen.has(a.fingerprint)) continue;
     seen.add(a.fingerprint);
-    console.log(`[gate] ${a.displayName || a.fingerprint.slice(0, 12)} (${a.fingerprint}) waiting — admit-gate ${a.fingerprint} to let them in`);
+    console.log(gateArrivalLine(a));
   }
 }
 
@@ -364,7 +364,7 @@ async function main() {
       return;
     }
     for (const a of arrivals) {
-      console.log(`${a.fingerprint}  "${a.displayName}"  via ${a.inviteNonce} (${a.mintChannel})  arrived ${a.arrivedAt}`);
+      console.log(gateListLine(a));
     }
     return;
   }
