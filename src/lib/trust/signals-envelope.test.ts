@@ -10,7 +10,7 @@ import {
   createMessage,
   sign as pgpSign,
 } from 'openpgp';
-import { createSignal, verifySignal, vouchSignal } from './signals';
+import { createSignal, verifySignal, vouchSignal, SIGNAL_MAX_AGE_MS } from './signals';
 import { formatSignalMessage, parseSignalMessage } from './transport';
 import { signSlugClaim, verifySignedSlugClaim } from './slug-claim';
 import { generatePQKeypairBundle, uint8ToBase64, type PQSigningKeypair } from '../crypto/pq';
@@ -173,4 +173,17 @@ test('#718: the paste transport keeps pq_signature raw ("" stays "", absent stay
   const hb = parseSignalMessage(formatSignalMessage(h));
   assert.equal(hb?.pq_signature, h.pq_signature, 'hybrid round-trips');
   assert.equal(await verifySignal(hb!, publicKey, pq.publicKey), true);
+});
+
+test('#718 P5 (Apollo #1906): the 7-day freshness window is pinned both ways; the legacy deletion argument rests on it', async () => {
+  const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
+  const ts = Date.parse(s.timestamp);
+  const DAY = 24 * 60 * 60 * 1000;
+  assert.equal(SIGNAL_MAX_AGE_MS, 7 * DAY);
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 6 * DAY }), true, '6 days old verifies');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 8 * DAY }), false, '8 days old is refused');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts - 8 * DAY }), false, '8 days in the future is refused');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 7 * DAY }), true, 'exactly 7 days still verifies');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 7 * DAY + 1 }), false, '7 days + 1 ms is refused');
+  assert.equal(await verifySignal({ ...s, timestamp: 'not a time' }, publicKey), false, 'an unreadable timestamp is refused');
 });
