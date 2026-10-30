@@ -122,3 +122,63 @@ test('H9 control for H8: the same flow with a live cycle DOES report (so H8 is n
   cycle.drop();
   assert.equal(s.held, 1); assert.deepEqual(held, [1]);
 });
+
+function relayWithExpiry(envs: Array<{ envelope_id: string; blob: string; expires_at?: unknown }>) {
+  return relay(envs as Array<{ envelope_id: string; blob: string }>);
+}
+function heldInfo(): { calls: Array<{ n: number; expiresAt?: string }>; emit: NonNullable<ConsumeDeps['emitHeld']> } {
+  const calls: Array<{ n: number; expiresAt?: string }> = [];
+  return { calls, emit: (n, info) => calls.push({ n, expiresAt: info?.expiresAt }) };
+}
+
+test('H10 the held report carries the EARLIEST relay deadline among the held envelopes (one date that is true for every counted message)', async () => {
+  const { fetchImpl } = relayWithExpiry([
+    { envelope_id: 'h1', blob: HYBRID_BLOB, expires_at: '2026-11-05T10:00:00.000Z' },
+    { envelope_id: 'h2', blob: HYBRID_BLOB, expires_at: '2026-11-03T02:10:30.000Z' },
+    { envelope_id: 'h3', blob: HYBRID_BLOB, expires_at: '2026-11-04T00:00:00.000Z' },
+  ]);
+  const h = heldInfo();
+  await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, emitHeld: h.emit, fetchImpl }));
+  assert.deepEqual(h.calls, [{ n: 3, expiresAt: '2026-11-03T02:10:30.000Z' }]);
+});
+
+test('H11 if ANY held envelope has no usable deadline, no date is reported (a date must hold for all of them)', async () => {
+  for (const bad of [undefined, null, '', 'tomorrow', 12345, {}]) {
+    const { fetchImpl } = relayWithExpiry([
+      { envelope_id: 'h1', blob: HYBRID_BLOB, expires_at: '2026-11-03T02:10:30.000Z' },
+      { envelope_id: 'h2', blob: HYBRID_BLOB, expires_at: bad },
+    ]);
+    const h = heldInfo();
+    await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, emitHeld: h.emit, fetchImpl }));
+    assert.deepEqual(h.calls, [{ n: 2, expiresAt: undefined }], JSON.stringify(bad));
+  }
+});
+
+test('H12 only HELD envelopes contribute: an openable note with an earlier deadline does not set the held date', async () => {
+  const note: NoteResponseSeam = {
+    verify: async (blob) => (blob === 'NOTE' ? { type: NOTE_WIRE_TYPE, note_id: 'n1', thread_id: 't1', from_fingerprint: 'BOB', sent_at: '2026-10-30T14:00:00.000Z', body: 'hi', participant_kind: 'human' } as never : null),
+    accept: async (w) => ({ note_id: w.note_id, thread_id: w.thread_id, from_fingerprint: w.from_fingerprint }),
+  };
+  const { fetchImpl } = relayWithExpiry([
+    { envelope_id: 'n1', blob: 'NOTE', expires_at: '2026-11-01T00:00:00.000Z' },
+    { envelope_id: 'h1', blob: HYBRID_BLOB, expires_at: '2026-11-06T00:00:00.000Z' },
+  ]);
+  const h = heldInfo();
+  await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, note, emitHeld: h.emit, fetchImpl }));
+  assert.deepEqual(h.calls, [{ n: 1, expiresAt: '2026-11-06T00:00:00.000Z' }]);
+});
+
+test('H13 nothing held -> a zero report with no date (so the notice clears, and no stale date lingers)', async () => {
+  const { fetchImpl } = relayWithExpiry([{ envelope_id: 'x1', blob: JSON.stringify({ v: 2 }), expires_at: '2026-11-03T00:00:00.000Z' }]);
+  const h = heldInfo();
+  await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, emitHeld: h.emit, fetchImpl }));
+  assert.deepEqual(h.calls, [{ n: 0, expiresAt: undefined }]);
+});
+
+test('H14 an old relay (no expires_at anywhere) still reports the count, with no date', async () => {
+  const { fetchImpl } = relay([{ envelope_id: 'h1', blob: HYBRID_BLOB }]);
+  const h = heldInfo();
+  const s = await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, emitHeld: h.emit, fetchImpl }));
+  assert.equal(s.held, 1);
+  assert.deepEqual(h.calls, [{ n: 1, expiresAt: undefined }]);
+});

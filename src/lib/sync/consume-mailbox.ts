@@ -207,7 +207,9 @@ export interface ConsumeDeps {
   hybridSecretMissing?: boolean | (() => Promise<boolean>);
   // #720: called once per CLEAN poll with the number of blobs kept because this device cannot open them yet (0 clears the notice).
   // Counts only that case; a terminal drop is not "held". Never called for a refused poll or an ended unlock cycle.
-  emitHeld?: (count: number) => void;
+  // `expiresAt` (ISO) is the EARLIEST relay deadline among the held envelopes, present only when EVERY held envelope carried a valid one:
+  // one "kept until" date has to be true for every message the count includes, and a missing or malformed date proves nothing.
+  emitHeld?: (count: number, info?: { expiresAt?: string }) => void;
 }
 
 export interface ConsumeSummary {
@@ -260,12 +262,15 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     summary.rejected = res.status;
     return summary;
   }
-  const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string }>;
+  // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
+  // ever compared and handed on, never used to decide whether a blob is consumed.
+  const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
   if (!Array.isArray(envelopes)) return summary;
   summary.polled = envelopes.length;
 
   // 2) Consume each envelope independently; collect the terminal ones to ack.
   const toAck: string[] = [];
+  const heldExpiries: unknown[] = [];
   for (const env of envelopes) {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
@@ -315,6 +320,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       toAck.push(env.envelope_id); // clean up permanently-invalid mail (silently)
     } else if (outcome.kind === 'held') {
       summary.held++;
+      heldExpiries.push(env.expires_at);
       summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
@@ -326,7 +332,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // in both the state of the mailbox is unknown, and an unknown state must neither raise nor clear the notice.
   if (!deps.owner.cycle?.ended) {
     try {
-      deps.emitHeld?.(summary.held);
+      deps.emitHeld?.(summary.held, { expiresAt: earliestExpiry(heldExpiries) });
     } catch {
       /* the notice is best-effort; a repaint failure must not block consume/ack */
     }
@@ -358,6 +364,18 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   }
 
   return summary;
+}
+
+/** The earliest valid expiry among `raw`, as ISO; undefined if there are none, or if ANY entry is missing or not a valid date. */
+function earliestExpiry(raw: readonly unknown[]): string | undefined {
+  if (raw.length === 0) return undefined;
+  let min = Number.POSITIVE_INFINITY;
+  for (const r of raw) {
+    const t = typeof r === 'string' ? Date.parse(r) : Number.NaN;
+    if (!Number.isFinite(t)) return undefined;
+    if (t < min) min = t;
+  }
+  return new Date(min).toISOString();
 }
 
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
