@@ -7,9 +7,9 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
+import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
 import type { NoteRecord } from './types';
-import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type RatchetIO, type StagedOpen } from './direct-session';
+import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type OpenFailure, type RatchetIO, type StagedOpen } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
 
 export interface NoteSenderIdentity {
@@ -266,25 +266,52 @@ export async function acceptInboundNote(args: {
   peerKind?: ParticipantKind;
   /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. May return the plaintext (already committed, legacy)
    *  or a {@link StagedOpen}, whose session advance is committed HERE only after the note and thread are stored (R4). */
-  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | null>;
+  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | OpenFailure | null>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
+  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
+  /**
+   * #720: told WHY a note was not stored, at the moment it is dropped (additive; the return value is unchanged). 'unverified' = the
+   * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
+   */
+  onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local') => void;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
   // HERE, before isAdmitted — admission is not authentication.
   if (!(await verifyNoteSender(args.wire))) {
+    args.onDrop?.('unverified');
     return null; // unsigned / forged sender — structural drop
   }
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
+    args.onDrop?.('not-in-book');
     return null; // spam / stranger — structural drop
   }
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
   if (isTripleRatchetBody(body)) {
-    if (!args.openRatchet) return null;
+    // v5.3 (Flint #2052): UNKNOWN IS LOCAL. Only a failure the ratchet path positively typed as the frame's fault ('verdict') is
+    // 'ratchet-unopenable'. No ratchet opener at all, a plain null (a cause nobody identified) and a typed 'local' failure are all
+    // 'ratchet-local': this device may be able to open the frame later, so it must be HELD, not acked as the sender's fault.
+    if (!args.openRatchet) {
+      args.onDrop?.('ratchet-local');
+      return null;
+    }
     const opened = await args.openRatchet(args.wire.from_fingerprint, body);
-    if (opened === null) return null;
+    // #720 r2 (Flint): at-least-once redelivery. The session advances only AFTER the note and thread are stored (R4), so a frame that no
+    // longer opens while this sender's note is already stored is a completed delivery whose ack never landed: its message key is spent.
+    // Return the stored note (no drop, no loss record). Checked only on failure, so every R4 retry (session not yet advanced) still opens.
+    if (opened === null || (typeof opened === 'object' && 'failed' in opened)) {
+      const prior = await (args.io?.getNote ?? getNote)(args.wire.note_id);
+      if (prior && prior.from_fingerprint === args.wire.from_fingerprint) return prior;
+    }
+    if (opened === null) {
+      args.onDrop?.('ratchet-local');
+      return null;
+    }
+    if (typeof opened === 'object' && 'failed' in opened) {
+      args.onDrop?.(opened.kind === 'verdict' ? 'ratchet-unopenable' : 'ratchet-local');
+      return null;
+    }
     if (typeof opened === 'string') {
       body = opened;
     } else {
