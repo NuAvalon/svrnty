@@ -15,7 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -472,7 +472,7 @@ async function main() {
       const c = store.getContactByFingerprint(n.from_fingerprint);
       const pt = c && trPacket(n.body) ? await trOpen(artifact, c, n.body) : null;
       const shown = pt ?? n.body;
-      console.log(`[note ${shortNoteId(n.note_id)} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${shown}`);
+      console.log(`[note ${shortNoteId(n.note_id)} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${displayLine(shown)}`);
     }
     return;
   }
@@ -659,7 +659,7 @@ async function main() {
             seen.add(n.note_id);
             const c = store.getContactByFingerprint(n.from_fingerprint);
             const pt = c && trPacket(n.body) ? await trOpen(artifact, c, n.body) : null;
-            console.log(`[note ${shortNoteId(n.note_id)} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${pt ?? n.body}`);
+            console.log(`[note ${shortNoteId(n.note_id)} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${displayLine(pt ?? n.body)}`);
           }
         }
       } catch (err) {

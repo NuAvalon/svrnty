@@ -52,6 +52,14 @@ export function shortNoteId(id: unknown): string {
   return t === '?' ? '?' : t.slice(0, 13);
 }
 
+// A peer's note text printed to a terminal (poll / loop). Every control, bidi, zero-width and tag character, and every line break, is
+// shown as a visible \u{XXXX} escape (the format svrnty_send.py already prints), so a body can neither forge a second
+// "[note … from <fp>…]" line (a sender spoof for anyone, or any agent, reading the pane) nor hide or reorder text.
+const DISPLAY_UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu;
+export function displayLine(text: unknown): string {
+  return String(text ?? '').replace(DISPLAY_UNSAFE, (c) => `\\u{${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}}`);
+}
+
 /** A loom envelope ADDRESSED to this cell (a channel_post whose mentions include ownFp, or a
  *  task_request assigned to ownFp) → a one-line NOTICE for the journal; anything else
  *  → null (stays a counted skip). The notice never carries the post body or brief (M8): only type,
