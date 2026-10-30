@@ -48,6 +48,7 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 // L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
 // compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
+import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -468,10 +469,9 @@ export async function buildConsumeDeps(
       /* notes store unavailable → notes are held (retryable), delivered when it unlocks. No loss. */
     }
   }
-  // NO recipient-emit of delivery receipts (Archie #1823 option (a), A5-d / S62 v4 C8): the S06 v1 receipt
-  // is identity-signed, i.e. a transferable proof that we received a note, so it never ships. The sender-side
-  // verify (buildReceiptSeam) stays; "Delivered" lights up once S62's designated-verifier MAC receipt lands.
-  // Pinned by receipt-emit-unwired.test.ts.
+  // Recipient-emit of delivery receipts (S62 slice 3, contract v6): ONLY the designated-verifier MAC receipt (receipt-emit.ts), sealed
+  // hybrid. The S06 identity-signed receipt is a transferable proof that we received a note, so it never ships (pinned by
+  // receipt-emit-unwired.test.ts: nothing may name buildReceiptWire or sealReceiptTo). The sender-side verify of the MAC receipt is slice 4.
 
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
@@ -485,7 +485,11 @@ export async function buildConsumeDeps(
       : classicalCU,
     store: buildContactStore(fingerprint),
     joiner: buildJoinerSeam(owner, codes, hybrid),
-    note: buildNoteSeam(owner, undefined, hybrid),
+    // S62: after a note is durably stored (acceptInboundNote returned), answer its sender with the hybrid MAC receipt. Best-effort:
+    // emitDeliveredReceipt never throws and the seam also isolates a throwing hook, so a failed receipt cannot fail the note.
+    note: buildNoteSeam(owner, undefined, hybrid, async (wire) => {
+      await emitDeliveredReceipt(wire, { fetchImpl: opts.fetchImpl });
+    }),
     receipt: buildReceiptSeam(owner, hybrid),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR

@@ -7,12 +7,13 @@
 // comes from seal-classical-fixture.ts only.
 // NOT a Double Ratchet. No signature is added here — authenticity is signNoteWire, re-checked on consume.
 
-import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
+import { readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0 } from './types';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
-import { RECEIPT_WIRE_TYPE, tryParseReceiptWire, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import { tryParseReceiptWire, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import { RECEIPT_V1_WIRE_TYPE, type ReceiptWireV1 } from './receipt-wire-v1';
 
 export async function sealNoteTo(
   note: NoteWireV0,
@@ -85,17 +86,23 @@ export function noteOpenpgpDecryptor(
 // returns null for a note / contact-update / affirm (and vice-versa) — the 5-way no-cross-swallow in
 // consumeOne depends on each decryptor refusing every other type.
 
-/** Seal a receipt-wire to the original sender's OpenPGP pubkey → opaque blob (like sealNoteTo). */
-export async function sealReceiptTo(
-  receipt: ReceiptWireV0,
-  recipientPublicKeyArmored: string,
-): Promise<string> {
-  if (receipt.type !== RECEIPT_WIRE_TYPE) {
-    throw new Error('sealReceiptTo: refusing non-receipt wire type');
-  }
-  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(receipt) });
-  return (await encrypt({ message, encryptionKeys })) as string;
+/**
+ * The S06 v0 receipt sealed CLASSICALLY. It no longer does: S62 (contract v6, Archie #2014) ships only the hybrid MAC receipt, so this
+ * THROWS and nothing may emit a classical or identity-signed receipt. Tests that need a v0 blob use sealReceiptClassicalFixture in
+ * seal-classical-fixture.ts, which no app code may import.
+ */
+export async function sealReceiptTo(): Promise<never> {
+  throw new Error('sealReceiptTo: removed. Receipts are sealed hybrid-only with sealReceiptV1To (S62), never classical');
+}
+
+/**
+ * Seal the MAC receipt (ReceiptWireV1) to the note SENDER, post-quantum hybrid exactly like a note, so on the relay it is an ordinary
+ * sealed envelope. THROWS without the recipient's ML-KEM key: no classical fallback, never a downgrade (the emitter skips instead).
+ */
+export async function sealReceiptV1To(receipt: ReceiptWireV1, recipientPublicKeyArmored: string, recipientPqKemB64?: string): Promise<string> {
+  if (receipt.type !== RECEIPT_V1_WIRE_TYPE) throw new Error('sealReceiptV1To: refusing non-receipt wire type');
+  if (!recipientPqKemB64) throw new Error('sealReceiptV1To: refusing to seal without a recipient ML-KEM key (no classical downgrade)');
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(receipt)), recipientPublicKeyArmored, recipientPqKemB64);
 }
 
 /**

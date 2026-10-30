@@ -25,7 +25,8 @@ import {
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { RECEIPT_WIRE_TYPE, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
-import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { sealReceiptClassicalFixture as sealReceiptTo } from '@/lib/messaging/seal-classical-fixture';
 import { sealNoteClassicalFixture } from '@/lib/messaging/seal-classical-fixture';
 
 // The owner (Alice, the ORIGINAL SENDER polling for receipts) needs REAL keys — consumeInboundContactUpdates
