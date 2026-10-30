@@ -231,7 +231,7 @@ async function dropOf(run: (onDrop: (r: DropReason) => void) => Promise<unknown>
   const result = await run((r) => reasons.push(r));
   return { result, reasons };
 }
-const memIo = () => ({ putNote: async () => {}, putThread: async () => {}, listThreads: async () => [] });
+const memIo = () => ({ putNote: async () => {}, putThread: async () => {}, listThreads: async () => [], getNote: async () => null });
 
 test('#720 onDrop: a forged and an unsigned note are reported as "unverified" (once each), never as not-in-book', async () => {
   const forged = await signNoteWire(unsignedWire({ from_fingerprint: aliceFp }), malloryPub, malloryPriv, malloryPass);

@@ -456,7 +456,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // applies (<= 50 and <= 7 days; the OLDEST are released). A released envelope's record is already committed, so it is acked now.
   const stillHeld: typeof heldNow = [];
   if (sink && !deps.owner.cycle?.ended) {
-    const seen: Array<{ envelope_id: string; first_seen: string }> = [];
+    const seen: Array<{ envelope_id: string; first_seen: string; group: string }> = [];
     const byId = new Map(heldNow.map((h) => [h.id, h]));
     const idByKey = new Map<string, string>(); // record key -> the id the relay knows (they differ only for an unsafe id, E1)
     for (const h of heldNow) {
@@ -466,13 +466,18 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       try {
         const saved = await sink.record(row);
         idByKey.set(key, h.id);
-        seen.push({ envelope_id: saved.envelope_id, first_seen: saved.first_seen });
+        // #720 r2 (Flint, B1 for holds): an admitted contact's LOCAL frame is bounded only against that contact's own; 'missing-key' holds
+        // (outsider-depositable while this device has no kem secret) share their own group. A group may only push out its own.
+        const group = h.reason === 'ratchet-local' ? `local:${(h.fp ?? '').toLowerCase()}` : 'missing-key';
+        seen.push({ envelope_id: saved.envelope_id, first_seen: saved.first_seen, group });
       } catch {
         /* cannot record this poll: it stays on the relay, unbounded for now; retried next poll */
       }
     }
-    const bound = planBound(seen, Date.parse(now()));
-    const released = new Set(bound.release.flatMap((r) => idByKey.get(r.envelope_id) ?? []));
+    const groups = new Map<string, typeof seen>();
+    for (const r of seen) groups.set(r.group, [...(groups.get(r.group) ?? []), r]);
+    const release = [...groups.values()].flatMap((g) => planBound(g, Date.parse(now())).release);
+    const released = new Set(release.flatMap((r) => idByKey.get(r.envelope_id) ?? []));
     for (const id of released) {
       toAck.push(id);
       summary.released++;

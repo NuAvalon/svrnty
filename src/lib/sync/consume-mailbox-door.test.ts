@@ -533,3 +533,14 @@ test('C23 a lock that lands AFTER a note was accepted but BEFORE the door runs: 
   await consumeInboundContactUpdates(deps({ owner: { ...OWNER, cycle }, deadLetter: w.sink, note, fetchImpl: w.fetchImpl }));
   assert.deepEqual(w.events, [], 'nothing cleared, nothing acked once the identity locked');
 });
+
+test('C24 r2-1: ONE contact whose fingerprint arrives in two letter cases is still ONE hold group: 55 frames (30 upper-case fp, 25 lower-case fp) release the 5 OLDEST, not none', async () => {
+  const known = new Map<string, string>();
+  const envs = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `m${String(i).padStart(2, '0')}`, blob: `M${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  envs.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (55 - i)).toISOString())); // m00 oldest
+  const byBlob = Object.fromEntries(envs.map((_, i) => [`M${i}`, () => ({ dropped: 'ratchet-local', fp: i < 30 ? FPC.toUpperCase() : FPC })]));
+  const w = world(envs, { known });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf(byBlob), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events).sort(), ['m00', 'm01', 'm02', 'm03', 'm04']);
+  assert.equal(s.released, 5); assert.equal(s.held, 50);
+});

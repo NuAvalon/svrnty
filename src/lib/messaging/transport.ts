@@ -7,7 +7,7 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
+import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
 import type { NoteRecord } from './types';
 import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type OpenFailure, type RatchetIO, type StagedOpen } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
@@ -268,7 +268,7 @@ export async function acceptInboundNote(args: {
    *  or a {@link StagedOpen}, whose session advance is committed HERE only after the note and thread are stored (R4). */
   openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | OpenFailure | null>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
+  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
   /**
    * #720: told WHY a note was not stored, at the moment it is dropped (additive; the return value is unchanged). 'unverified' = the
    * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
@@ -297,6 +297,13 @@ export async function acceptInboundNote(args: {
       return null;
     }
     const opened = await args.openRatchet(args.wire.from_fingerprint, body);
+    // #720 r2 (Flint): at-least-once redelivery. The session advances only AFTER the note and thread are stored (R4), so a frame that no
+    // longer opens while this sender's note is already stored is a completed delivery whose ack never landed: its message key is spent.
+    // Return the stored note (no drop, no loss record). Checked only on failure, so every R4 retry (session not yet advanced) still opens.
+    if (opened === null || (typeof opened === 'object' && 'failed' in opened)) {
+      const prior = await (args.io?.getNote ?? getNote)(args.wire.note_id);
+      if (prior && prior.from_fingerprint === args.wire.from_fingerprint) return prior;
+    }
     if (opened === null) {
       args.onDrop?.('ratchet-local');
       return null;
