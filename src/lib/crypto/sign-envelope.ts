@@ -130,6 +130,12 @@ export async function verifyWithEnvelope(
   classicalPublicKeyArmored: string,
   pqSigningPublicKey?: Uint8Array,
 ): Promise<boolean> {
+  // A pq_signature that is PRESENT must be a non-empty string. Truthiness alone read '' (or null/0/false) as
+  // "no PQ half" and verified classical-only, so a caller gating PQ by `typeof === 'string'` let a holder of
+  // only the classical key through (Apollo N12 F-2). Absent / undefined stays the classical path.
+  if (signature.pq_signature !== undefined && (typeof signature.pq_signature !== 'string' || signature.pq_signature === '')) {
+    return false;
+  }
   const suiteId = signature.pq_signature ? SUITE_HYBRID : SUITE_CLASSICAL;
   const signedBytes = buildSignedBytes(domainTag, suiteId, canonicalInput);
 
