@@ -31,9 +31,11 @@ import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from './contact-upda
 import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
+import { clearHeldReport, reportHeld } from '@/lib/notes/held-events';
 import {
   loadKey,
   loadPQKeys,
+  onSessionLock,
   getContactByFingerprint,
   updateContact,
   loadIssuedCodeMap,
@@ -408,6 +410,10 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
   };
 }
 
+// #720: the "kept because this device can't open it yet" report belongs to ONE identity. Drop it on session lock AND on identity switch
+// (client-store fires these hooks from both), so identity A's count can never show under identity B.
+onSessionLock(clearHeldReport);
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -500,6 +506,8 @@ export async function buildConsumeDeps(
     // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
     // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
     emitReceipt: (e) => emitNoteArrival(e),
+    // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
+    emitHeld: (n, info) => reportHeld(n, info),
     fetchImpl: opts.fetchImpl,
   };
 }
