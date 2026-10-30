@@ -37,6 +37,7 @@ import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import { classifyBlob, makeDeadLetterRow, planBound, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -129,7 +130,17 @@ export interface JoinerResponseSeam {
  */
 export interface NoteResponseSeam {
   verify: (blob: string) => Promise<NoteWireV0 | null>;
-  accept: (wire: NoteWireV0) => Promise<AcceptedNote | null>;
+  /** null = dropped for an unspecified reason (legacy; recorded as verify-failed). A DroppedNote says WHY, so the record is honest. */
+  accept: (wire: NoteWireV0) => Promise<AcceptedNote | DroppedNote | null>;
+}
+
+/**
+ * Why an opened note was not stored (#720 R1/R9). 'unverified' = the sender could not be authenticated (so no fingerprint is carried: F3);
+ * 'not-in-book' and 'ratchet-unopenable' happen only AFTER authentication, so `fp` is trustworthy there.
+ */
+export interface DroppedNote {
+  dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable';
+  fp?: string;
 }
 
 /** The persisted note's handles, returned by the note seam's accept for the inbox live-repaint. */
@@ -185,6 +196,19 @@ export interface ReceiptLiveEvent {
   from_fingerprint: string;
 }
 
+/**
+ * THE ONE ACK DOOR (#720 R1). consume never asks the relay to delete an envelope that did not become a stored message unless a
+ * metadata-only record of it was committed FIRST. `record` THROWS if it cannot commit (store locked, write failed): the envelope then
+ * stays on the relay. `clear` removes the record of an envelope that has since opened (R5), and also throws on failure.
+ * Omit the sink and consume behaves as before (no records): the headless agent path, which has no IndexedDB.
+ */
+export interface DeadLetterSink {
+  record(row: DeadLetterRow): Promise<DeadLetterRow>;
+  clear(envelopeId: string): Promise<void>;
+  /** Once per poll, after records were written (retention pruning). Best effort: a failure here never affects what is acked. */
+  settle?(): Promise<void>;
+}
+
 export interface ConsumeDeps {
   owner: OwnerIdentity;
   decrypt: EnvelopeDecryptor;
@@ -210,6 +234,7 @@ export interface ConsumeDeps {
   // `expiresAt` (ISO) is the EARLIEST relay deadline among the held envelopes, present only when EVERY held envelope carried a valid one:
   // one "kept until" date has to be true for every message the count includes, and a missing or malformed date proves nothing.
   emitHeld?: (count: number, info?: { expiresAt?: string }) => void;
+  deadLetter?: DeadLetterSink; // #720: record-before-ack for everything that did not become a stored message
 }
 
 export interface ConsumeSummary {
@@ -220,15 +245,24 @@ export interface ConsumeSummary {
   delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   held: number; // #720: hybrid packages KEPT on the relay because no kem secret is derivable yet (also counted in `dropped`, as before)
+  deadLettered: number; // #720: terminal envelopes whose metadata record was committed, then acked
+  unrecorded: number; // #720: terminal/opened envelopes NOT acked because their record could not be committed (or cleared): left on the relay
+  released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
+
+/**
+ * What a terminal outcome IS. `benign` = the content is already stored or it was never a message (named, test-pinned list in
+ * dead-letter.ts): acked with no record. Anything else is a LOSS and gets a record committed before the ack.
+ */
+export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string };
 
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
-  | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
+  | { kind: 'terminal'; cls: TerminalClass } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack, after its record if it is a loss
   | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
   | { kind: 'held' }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
@@ -243,7 +277,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -268,9 +302,12 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   if (!Array.isArray(envelopes)) return summary;
   summary.polled = envelopes.length;
 
-  // 2) Consume each envelope independently; collect the terminal ones to ack.
-  const toAck: string[] = [];
-  const heldExpiries: unknown[] = [];
+  // 2) Consume each envelope independently. Nothing is added to `toAck` here: each envelope that may be acked goes into `plan` with WHAT
+  //    must happen first, and the door below decides (#720 R1: no ack of an envelope that did not become a stored message without a
+  //    committed record of it).
+  type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string };
+  const plan: Array<{ id: string; blob: string; need: Need }> = [];
+  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown }> = [];
   for (const env of envelopes) {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
@@ -293,7 +330,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
-      toAck.push(env.envelope_id);
+      plan.push({ id: env.envelope_id, blob: env.blob, need: 'clear' });
       try {
         deps.emit?.(outcome.event);
       } catch {
@@ -301,7 +338,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       }
     } else if (outcome.kind === 'note') {
       summary.notes++;
-      toAck.push(env.envelope_id); // persisted to the inbox → consumed, ack-delete
+      plan.push({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // persisted to the inbox → consumed; a record from an earlier poll is cleared
       try {
         deps.emitNote?.(outcome.event);
       } catch {
@@ -309,7 +346,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       }
     } else if (outcome.kind === 'receipt') {
       summary.delivered++;
-      toAck.push(env.envelope_id); // note marked delivered → consumed, ack-delete
+      plan.push({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // note marked delivered → consumed
       try {
         deps.emitReceipt?.(outcome.event);
       } catch {
@@ -317,13 +354,82 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
-      toAck.push(env.envelope_id); // clean up permanently-invalid mail (silently)
+      // A benign terminal is consumed with no record; anything else is a LOSS and needs its record first.
+      plan.push({ id: env.envelope_id, blob: env.blob, need: 'benign' in outcome.cls ? 'none' : outcome.cls });
     } else if (outcome.kind === 'held') {
-      summary.held++;
-      heldExpiries.push(env.expires_at);
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at });
       summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
+    }
+  }
+
+  // THE ACK DOOR. Without a sink (headless) behaviour is as before: every planned envelope is acked. With one, an envelope is acked only
+  // after its record is committed (a loss) or its stale record is cleared (it opened). A failure keeps the envelope on the relay.
+  const sink = deps.deadLetter;
+  const toAck: string[] = [];
+  for (const item of plan) {
+    if (deps.owner.cycle?.ended) break; // the key may already be dropped: decide nothing, leave everything on the relay
+    if (!sink || item.need === 'none') {
+      toAck.push(item.id);
+    } else if (item.need === 'clear') {
+      try {
+        await sink.clear(item.id); // R5: the message replaces its flag; an envelope that is stored but whose old record cannot be cleared retries
+        toAck.push(item.id);
+      } catch (err) {
+        summary.unrecorded++;
+        console.error('[return-channel] could not clear a dead-letter record (envelope left for retry):', err instanceof Error ? err.message : 'error');
+      }
+    } else {
+      // A row that cannot be built SAFELY (an unsafe envelope id, an unreadable time) is never acked: it stays on the relay until its TTL.
+      const row = makeDeadLetterRow({ envelopeId: item.id, firstSeen: now(), reason: item.need.reason, blob: item.blob, fp: item.need.fp });
+      if (!row) {
+        summary.unrecorded++;
+        continue;
+      }
+      try {
+        await sink.record(row);
+        summary.deadLettered++;
+        toAck.push(item.id);
+      } catch (err) {
+        summary.unrecorded++;
+        console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
+      }
+    }
+  }
+
+  // Held envelopes (kept on the relay for retry): each gets a record so its FIRST-SEEN time survives across polls, then the keep bound
+  // applies (<= 50 and <= 7 days; the OLDEST are released). A released envelope's record is already committed, so it is acked now.
+  const stillHeld: typeof heldNow = [];
+  if (sink && !deps.owner.cycle?.ended) {
+    const seen: Array<{ envelope_id: string; first_seen: string }> = [];
+    const byId = new Map(heldNow.map((h) => [h.id, h]));
+    for (const h of heldNow) {
+      const row = makeDeadLetterRow({ envelopeId: h.id, firstSeen: now(), reason: 'missing-key', blob: h.blob });
+      if (!row) continue; // unsafe id: cannot be recorded or bounded; it stays on the relay (never acked) until its TTL
+      try {
+        const saved = await sink.record(row);
+        seen.push({ envelope_id: saved.envelope_id, first_seen: saved.first_seen });
+      } catch {
+        /* cannot record this poll: it stays on the relay, unbounded for now; retried next poll */
+      }
+    }
+    const bound = planBound(seen, Date.parse(now()));
+    const released = new Set(bound.release.map((r) => r.envelope_id));
+    for (const id of released) {
+      toAck.push(id);
+      summary.released++;
+    }
+    for (const h of byId.values()) if (!released.has(h.id)) stillHeld.push(h);
+  } else {
+    stillHeld.push(...heldNow);
+  }
+  summary.held = stillHeld.length;
+  if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
+    try {
+      await sink.settle();
+    } catch {
+      /* retention is housekeeping; it must not affect consume or ack */
     }
   }
 
@@ -332,7 +438,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // in both the state of the mailbox is unknown, and an unknown state must neither raise nor clear the notice.
   if (!deps.owner.cycle?.ended) {
     try {
-      deps.emitHeld?.(summary.held, { expiresAt: earliestExpiry(heldExpiries) });
+      deps.emitHeld?.(summary.held, { expiresAt: earliestExpiry(stillHeld.map((h) => h.expiresAt)) });
     } catch {
       /* the notice is best-effort; a repaint failure must not block consume/ack */
     }
@@ -423,7 +529,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         // the book → terminal (still ack + record, no repaint). Either way the envelope is consumed.
         return res
           ? { kind: 'applied', event: { id: pj.fingerprint, fingerprint: pj.fingerprint, ignited: res.ignited } }
-          : { kind: 'terminal' };
+          : { kind: 'terminal', cls: { benign: 'joiner-already-known' } };
       } catch (err) {
         // A store failure while accepting a VERIFIED joiner → leave for retry (at-least-once). The accept
         // is idempotent (fingerprint-dedup), so a redelivered blob re-adds harmlessly on a later poll.
@@ -452,9 +558,15 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         const accepted = await deps.note.accept(wire);
         // persisted (signed + admitted) → note (ack + inbox repaint); dropped (unsigned / forged /
         // stranger) → terminal (silent ack — I-1/I-2, the same custody as a stranger contact-update).
+        if (accepted && 'dropped' in accepted) {
+          // 'unverified' = the sender was never authenticated: no fingerprint travels with it (F3). The other two come after authentication.
+          if (accepted.dropped === 'unverified') return { kind: 'terminal', cls: { reason: 'verify-failed' } };
+          return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp } };
+        }
+        // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).
         return accepted
           ? { kind: 'note', event: { note_id: accepted.note_id, thread_id: accepted.thread_id, from_fingerprint: accepted.from_fingerprint } }
-          : { kind: 'terminal' };
+          : { kind: 'terminal', cls: { reason: 'verify-failed' } };
       } catch (err) {
         // A store I/O failure while persisting a VERIFIED note → leave for retry (at-least-once).
         // acceptInboundNote's putNote is idempotent on note_id, so a redelivered note re-persists harmlessly.
@@ -487,7 +599,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
         // floor 'Sent · unconfirmed.' holds, NO false Delivered).
         return confirmed
           ? { kind: 'receipt', event: { note_id: confirmed.note_id, thread_id: confirmed.thread_id, from_fingerprint: confirmed.from_fingerprint } }
-          : { kind: 'terminal' };
+          : { kind: 'terminal', cls: { benign: 'receipt-no-match' } };
       } catch (err) {
         // A store I/O failure while marking a VERIFIED note delivered → leave for retry (at-least-once).
         // putNote is idempotent on note_id, so a redelivered receipt re-sets delivered harmlessly.
@@ -503,13 +615,16 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   try {
     signed = await deps.decrypt(blob);
   } catch {
-    return { kind: 'terminal' };
+    return { kind: 'terminal', cls: { reason: classifyBlob(blob) === 'other' ? 'unknown-format' : 'decrypt-failed' } };
   }
-  if (!signed || typeof signed.envelope?.fingerprint !== 'string') return { kind: 'terminal' };
+  if (!signed || typeof signed.envelope?.fingerprint !== 'string') {
+    return { kind: 'terminal', cls: { reason: classifyBlob(blob) === 'other' ? 'unknown-format' : 'decrypt-failed' } };
+  }
 
   // whitelist-on-fetch (I-2): an update from a fingerprint not in the book is dropped unread.
+  // The sender is NOT authenticated here (verify has not run), so the record carries no fingerprint (F3).
   const contact = await deps.store.lookup(signed.envelope.fingerprint);
-  if (!contact) return { kind: 'terminal' };
+  if (!contact) return { kind: 'terminal', cls: { reason: 'verify-failed' } };
 
   // verify — the one gate. epoch-ahead needs lineage catch-up first → retryable; all else terminal.
   let verified;
@@ -517,7 +632,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     verified = await verifyIncomingContactUpdate(signed, contact.known);
   } catch (e) {
     const retryable = e instanceof ContactUpdateRejected && e.reason === 'epoch-ahead-needs-lineage';
-    return { kind: retryable ? 'retryable' : 'terminal' };
+    return retryable ? { kind: 'retryable' } : { kind: 'terminal', cls: { reason: 'verify-failed' } };
   }
 
   // apply — pure living-wins over the current record. stale-version = already applied → terminal.
@@ -525,7 +640,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   try {
     applied = applyVerifiedContactUpdate(contact.current, verified, now());
   } catch (e) {
-    if (e instanceof ContactUpdateApplyRejected) return { kind: 'terminal' };
+    if (e instanceof ContactUpdateApplyRejected) return { kind: 'terminal', cls: { benign: 'contact-update-stale' } };
     throw e; // an unexpected (non-ApplyRejected) error → propagates to the guarded consume loop (wedge-immune)
   }
 

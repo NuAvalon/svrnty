@@ -220,3 +220,49 @@ test('SATELLITE-SAFE: PQ pubkeys are EXCLUDED from noteSigningInput — a canoni
     base, 'noteSigningInput must not depend on the pq pubkey values',
   );
 });
+
+// ── #720: acceptInboundNote reports WHY it dropped a note (onDrop), additively ──────────────────────
+
+import { TRIPLE_RATCHET_BODY } from './direct-session';
+type DropReason = 'unverified' | 'not-in-book' | 'ratchet-unopenable';
+const ratchetBody = () => JSON.stringify({ type: TRIPLE_RATCHET_BODY, packet: { n: 1 } });
+async function dropOf(run: (onDrop: (r: DropReason) => void) => Promise<unknown>): Promise<{ result: unknown; reasons: DropReason[] }> {
+  const reasons: DropReason[] = [];
+  const result = await run((r) => reasons.push(r));
+  return { result, reasons };
+}
+const memIo = () => ({ putNote: async () => {}, putThread: async () => {}, listThreads: async () => [] });
+
+test('#720 onDrop: a forged and an unsigned note are reported as "unverified" (once each), never as not-in-book', async () => {
+  const forged = await signNoteWire(unsignedWire({ from_fingerprint: aliceFp }), malloryPub, malloryPriv, malloryPass);
+  const a = await dropOf((onDrop) => acceptInboundNote({ wire: forged, isAdmitted: async () => true, onDrop }));
+  assert.equal(a.result, null); assert.deepEqual(a.reasons, ['unverified']);
+  const b = await dropOf((onDrop) => acceptInboundNote({ wire: unsignedWire(), isAdmitted: async () => true, onDrop }));
+  assert.equal(b.result, null); assert.deepEqual(b.reasons, ['unverified']);
+});
+
+test('#720 onDrop: an AUTHENTICATED note from someone not admitted is reported as "not-in-book"', async () => {
+  const cid = await makeCanonicalIdentity('notinbook');
+  const signed = await signNoteWire(unsignedWire({ from_fingerprint: cid.fingerprint }), cid.publicKey, cid.privateKey, cid.passphrase, cid.kemPublicKeyB64, cid.sigPublicKeyB64);
+  assert.equal(await verifyNoteSender(signed), true, 'precondition: this sender IS authenticated');
+  const r = await dropOf((onDrop) => acceptInboundNote({ wire: signed, isAdmitted: async () => false, onDrop, io: memIo() }));
+  assert.equal(r.result, null); assert.deepEqual(r.reasons, ['not-in-book']);
+});
+
+test('#720 onDrop: an authenticated, admitted ratchet body that cannot be opened is "ratchet-unopenable" (no opener, or the opener returns null)', async () => {
+  const cid = await makeCanonicalIdentity('ratchet');
+  const signed = await signNoteWire(unsignedWire({ from_fingerprint: cid.fingerprint, body: ratchetBody() }), cid.publicKey, cid.privateKey, cid.passphrase, cid.kemPublicKeyB64, cid.sigPublicKeyB64);
+  assert.equal(await verifyNoteSender(signed), true, 'precondition: this sender IS authenticated');
+  const noOpener = await dropOf((onDrop) => acceptInboundNote({ wire: signed, isAdmitted: async () => true, onDrop, io: memIo() }));
+  assert.equal(noOpener.result, null); assert.deepEqual(noOpener.reasons, ['ratchet-unopenable']);
+  const nullOpener = await dropOf((onDrop) => acceptInboundNote({ wire: signed, isAdmitted: async () => true, openRatchet: async () => null, onDrop, io: memIo() }));
+  assert.equal(nullOpener.result, null); assert.deepEqual(nullOpener.reasons, ['ratchet-unopenable']);
+});
+
+test('#720 onDrop: control - an accepted note never reports a drop, and omitting onDrop changes nothing', async () => {
+  const cid = await makeCanonicalIdentity('control');
+  const signed = await signNoteWire(unsignedWire({ from_fingerprint: cid.fingerprint }), cid.publicKey, cid.privateKey, cid.passphrase, cid.kemPublicKeyB64, cid.sigPublicKeyB64);
+  const ok = await dropOf((onDrop) => acceptInboundNote({ wire: signed, isAdmitted: async () => true, onDrop, io: memIo() }));
+  assert.ok(ok.result); assert.deepEqual(ok.reasons, []);
+  assert.equal(await acceptInboundNote({ wire: unsignedWire(), isAdmitted: async () => true }), null, 'no onDrop given: still just null');
+});

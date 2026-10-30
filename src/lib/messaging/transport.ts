@@ -269,22 +269,35 @@ export async function acceptInboundNote(args: {
   openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | null>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
   io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
+  /**
+   * #720: told WHY a note was not stored, at the moment it is dropped (additive; the return value is unchanged). 'unverified' = the
+   * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
+   */
+  onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable') => void;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
   // HERE, before isAdmitted — admission is not authentication.
   if (!(await verifyNoteSender(args.wire))) {
+    args.onDrop?.('unverified');
     return null; // unsigned / forged sender — structural drop
   }
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
+    args.onDrop?.('not-in-book');
     return null; // spam / stranger — structural drop
   }
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
   if (isTripleRatchetBody(body)) {
-    if (!args.openRatchet) return null;
+    if (!args.openRatchet) {
+      args.onDrop?.('ratchet-unopenable');
+      return null;
+    }
     const opened = await args.openRatchet(args.wire.from_fingerprint, body);
-    if (opened === null) return null;
+    if (opened === null) {
+      args.onDrop?.('ratchet-unopenable');
+      return null;
+    }
     if (typeof opened === 'string') {
       body = opened;
     } else {
