@@ -3,12 +3,27 @@
 // Sovereign Identity card — Solar Ember home surface.
 // UI-only: renders existing identity fields. "Revise" is an L1 stub (no broadcast crypto).
 
-import { useMemo, useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { IdentitySeal } from './IdentitySeal';
 import { solarEmber as E, solarGlass } from '../recovery/solar-ember';
 import { downloadOwnVCard } from '@/lib/contacts/own-vcard';
+import { CardActionMenu, CardMenuItem } from '@/components/ui/CardActionMenu';
+import { OwnerLensPicker } from '@/components/identity/OwnerLensPicker';
 
 export type MethodKind = 'email' | 'signal' | 'site';
+
+export type IdentityCardMethod = {
+  id?: string;
+  kind: string;
+  label: string;
+  value?: string;
+};
+
+export type IdentityCardLens = {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+};
 
 export interface SovereignIdentityCardProps {
   name: string;
@@ -18,13 +33,24 @@ export interface SovereignIdentityCardProps {
   email?: string;
   signal?: string;
   site?: string;
+  /** Short line under the name for this face. */
+  note?: string;
+  /** Active lens name — painted on the card chrome. */
+  lensName?: string;
+  /** When set, these rows replace the classic email/Signal/site trio. */
+  methods?: IdentityCardMethod[];
+  lenses?: IdentityCardLens[];
+  selectedLensId?: string;
+  onSelectLens?: (id: string) => void;
+  onEditLenses?: () => void;
   hasPqKeys?: boolean;
   onRevise?: (kind: MethodKind) => void;
-  onOpenCircle?: () => void;
   /** Open Share Identity (moved from Contacts). */
   onShareIdentity?: () => void;
-  /** Optional override — default downloads name + methods as native .vcf */
-  onExportVcf?: () => void;
+  /** Download this lens as a .vcf. */
+  onExportVcf?: (lensId: string) => void;
+  /** Extra overflow-menu rows (vault, backup). Closed via the callback. */
+  extraActions?: (close: () => void) => ReactNode;
 }
 
 function formatKeyGroups(fp: string): string {
@@ -42,7 +68,7 @@ function maskSignal(value: string): string {
   return value;
 }
 
-function MethodIcon({ kind }: { kind: MethodKind }) {
+function MethodIcon({ kind }: { kind: string }) {
   const stroke = E.accent;
   const common = { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke, strokeWidth: 1.5, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
   if (kind === 'email') {
@@ -53,7 +79,7 @@ function MethodIcon({ kind }: { kind: MethodKind }) {
       </svg>
     );
   }
-  if (kind === 'signal') {
+  if (kind === 'signal' || kind === 'phone' || kind === 'whatsapp' || kind === 'telegram') {
     return (
       <svg {...common}>
         <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.68 2.34a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.74-1.74a2 2 0 0 1 2.11-.45c.74.32 1.53.55 2.34.68A2 2 0 0 1 22 16.92z" />
@@ -68,42 +94,6 @@ function MethodIcon({ kind }: { kind: MethodKind }) {
   );
 }
 
-function CircleGlyph({ fingerprint }: { fingerprint: string }) {
-  // Deterministic mini egocentric lattice from fingerprint (I-6) — not decorative noise.
-  const pts = useMemo(() => {
-    const hex = fingerprint.replace(/[^0-9a-fA-F]/g, '').toLowerCase().padEnd(16, '0');
-    const nodes: { x: number; y: number; r: number }[] = [{ x: 28, y: 28, r: 3.2 }];
-    for (let i = 0; i < 6; i++) {
-      const a = ((parseInt(hex.slice(i * 2, i * 2 + 2), 16) / 255) * Math.PI * 2 + i * 1.05) % (Math.PI * 2);
-      const dist = 12 + (parseInt(hex[(i + 4) % 16], 16) % 8);
-      nodes.push({
-        x: 28 + Math.cos(a) * dist,
-        y: 28 + Math.sin(a) * dist,
-        r: 1.6 + (parseInt(hex[(i + 8) % 16], 16) % 10) / 10,
-      });
-    }
-    return nodes;
-  }, [fingerprint]);
-
-  return (
-    <svg width={56} height={56} viewBox="0 0 56 56" aria-hidden>
-      {pts.slice(1).map((p, i) => (
-        <line key={`e${i}`} x1={pts[0].x} y1={pts[0].y} x2={p.x} y2={p.y} stroke={E.accent} strokeOpacity={0.35} strokeWidth={0.8} />
-      ))}
-      {pts.map((p, i) => (
-        <circle
-          key={`n${i}`}
-          cx={p.x}
-          cy={p.y}
-          r={p.r}
-          fill={i === 0 ? E.text : E.accent}
-          fillOpacity={i === 0 ? 0.95 : 0.55}
-        />
-      ))}
-    </svg>
-  );
-}
-
 function MethodRow({
   kind,
   label,
@@ -111,29 +101,29 @@ function MethodRow({
   emptyHint,
   onRevise,
 }: {
-  kind: MethodKind;
+  kind: string;
   label: string;
   value?: string;
   emptyHint: string;
-  onRevise?: (kind: MethodKind) => void;
+  onRevise?: () => void;
 }) {
   return (
     <div
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 12,
-        padding: '12px 14px',
-        borderRadius: 12,
+        gap: 8,
+        padding: '5px 8px',
+        borderRadius: 10,
         background: E.inputBg,
         border: `1px solid ${E.border}`,
       }}
     >
       <div
         style={{
-          width: 36,
-          height: 36,
-          borderRadius: 10,
+          width: 22,
+          height: 22,
+          borderRadius: 8,
           border: `1px solid ${E.borderLit}`,
           display: 'flex',
           alignItems: 'center',
@@ -144,22 +134,23 @@ function MethodRow({
       >
         <MethodIcon kind={kind} />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span
           style={{
             fontSize: 10,
-            letterSpacing: '0.16em',
+            letterSpacing: '0.14em',
             textTransform: 'uppercase',
             color: E.dim,
             fontFamily: E.fontSans,
-            marginBottom: 2,
+            flexShrink: 0,
+            width: 72,
           }}
         >
           {label}
-        </div>
-        <div
+        </span>
+        <span
           style={{
-            fontSize: 14,
+            fontSize: 13,
             color: value ? E.text : E.dim,
             fontFamily: value ? E.fontSans : E.fontMono,
             whiteSpace: 'nowrap',
@@ -168,33 +159,39 @@ function MethodRow({
           }}
         >
           {value || emptyHint}
-        </div>
+        </span>
       </div>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onRevise?.(kind);
-        }}
-        aria-label={`Revise ${label}`}
-        style={{
-          background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-          border: `1px solid ${E.borderLit}`,
-          color: E.accent,
-          fontSize: 11,
-          fontFamily: E.fontSans,
-          cursor: 'pointer',
-          padding: '6px 10px',
-          borderRadius: 8,
-          flexShrink: 0,
-          letterSpacing: '0.04em',
-        }}
-      >
-        Revise
-      </button>
+      {onRevise ? (
+        <button
+          type="button"
+          className="ember-act"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRevise();
+          }}
+          aria-label={`Revise ${label}`}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: E.accent,
+            fontSize: 11,
+            fontFamily: E.fontSans,
+            cursor: 'pointer',
+            padding: '2px 4px',
+            flexShrink: 0,
+            letterSpacing: '0.04em',
+          }}
+        >
+          Revise
+        </button>
+      ) : null}
     </div>
   );
+}
+
+function isClassicKind(kind: string): kind is MethodKind {
+  return kind === 'email' || kind === 'signal' || kind === 'site';
 }
 
 export function SovereignIdentityCard({
@@ -204,13 +201,23 @@ export function SovereignIdentityCard({
   email,
   signal,
   site,
+  note,
+  lensName,
+  methods,
+  lenses,
+  selectedLensId,
+  onSelectLens,
+  onEditLenses,
   hasPqKeys = false,
   onRevise,
-  onOpenCircle,
   onShareIdentity,
   onExportVcf,
+  extraActions,
 }: SovereignIdentityCardProps) {
   const [reviseNote, setReviseNote] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [saveCardOpen, setSaveCardOpen] = useState(false);
+  const [saveCardLensId, setSaveCardLensId] = useState<string | undefined>(selectedLensId);
   const displayHandle = handle
     ? (handle.startsWith('@') ? handle : `@${handle}`)
     : null;
@@ -230,13 +237,27 @@ export function SovereignIdentityCard({
     );
   };
 
-  const handleExportVcf = () => {
+  const handleExportVcf = (lensId: string) => {
     if (onExportVcf) {
-      onExportVcf();
+      onExportVcf(lensId);
       return;
     }
     downloadOwnVCard({ name, fingerprint, email, signal, site });
   };
+
+  const openSaveCard = () => {
+    setSaveCardLensId(selectedLensId || lenses?.[0]?.id);
+    setSaveCardOpen(true);
+    setActionsOpen(false);
+  };
+
+  const rows: IdentityCardMethod[] = methods
+    ? methods
+    : [
+        { kind: 'email', label: 'Email', value: email },
+        { kind: 'signal', label: 'Signal', value: signalDisplay },
+        { kind: 'site', label: 'Site', value: site },
+      ];
 
   return (
     <div
@@ -247,234 +268,251 @@ export function SovereignIdentityCard({
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        gap: 20,
+        gap: 8,
       }}
     >
-      <p
-        style={{
-          margin: 0,
-          fontSize: 11,
-          letterSpacing: '0.22em',
-          textTransform: 'uppercase',
-          color: E.accent,
-          fontFamily: E.fontSans,
-          fontWeight: 500,
-        }}
-      >
-        Sovereign Identity · Your Card
-      </p>
-
       <div
+        data-testid="sovereign-identity-card"
         style={{
           ...solarGlass,
           width: '100%',
-          padding: '28px 22px 22px',
-          borderRadius: 20,
+          padding: '12px 12px 10px',
+          borderRadius: 16,
           border: `1px solid ${E.borderLit}`,
           boxShadow: 'var(--se-glass-shadow)',
           background: E.surfaceSolid,
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
-          <IdentitySeal fingerprint={fingerprint} size={96} />
+        {lenses && lenses.length > 0 && onSelectLens ? (
+          <div style={{ marginBottom: 10 }}>
+            <OwnerLensPicker
+              lenses={lenses}
+              selectedId={selectedLensId}
+              defaultId={lenses.find((l) => l.isDefault)?.id}
+              onSelect={onSelectLens}
+              onEditLenses={onEditLenses}
+              testId="identity-lens-picker"
+            />
+          </div>
+        ) : null}
+
+        <div
+          data-testid="identity-card-face"
+          data-lens-id={selectedLensId || ''}
+          data-lens-name={lensName || ''}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}
+        >
+          <IdentitySeal fingerprint={fingerprint} size={56} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 10,
+                letterSpacing: '0.18em',
+                textTransform: 'uppercase',
+                color: E.accent,
+                fontFamily: E.fontSans,
+              }}
+            >
+              Your card{lensName ? ` · ${lensName}` : ''}
+            </p>
+            <h2
+              data-testid="identity-card-name"
+              style={{
+                margin: '2px 0 0',
+                fontSize: 20,
+                fontWeight: 600,
+                color: E.text,
+                fontFamily: E.fontSans,
+              }}
+            >
+              {name || 'Unnamed'}
+            </h2>
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: E.accent, fontFamily: E.fontMono }}>
+              {displayHandle}
+            </p>
+            {note ? (
+              <p
+                data-testid="identity-card-note"
+                style={{
+                  margin: '4px 0 0',
+                  fontSize: 12,
+                  color: E.muted,
+                  fontFamily: E.fontSans,
+                  lineHeight: 1.35,
+                }}
+              >
+                {note}
+              </p>
+            ) : null}
+            <p
+              style={{
+                margin: '4px 0 0',
+                fontSize: 10,
+                color: E.dim,
+                fontFamily: E.fontMono,
+                letterSpacing: '0.03em',
+              }}
+            >
+              {formatKeyGroups(fingerprint)}
+            </p>
+          </div>
         </div>
 
-        <h2
-          style={{
-            margin: '0 0 6px',
-            textAlign: 'center',
-            fontSize: 26,
-            fontWeight: 600,
-            color: E.text,
-            fontFamily: E.fontSans,
-            letterSpacing: '0.01em',
-          }}
+        <div
+          data-testid="identity-card-methods"
+          style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 10 }}
         >
-          {name || 'Unnamed'}
-        </h2>
-        {displayHandle ? (
-          <p
-            style={{
-              margin: '0 0 10px',
-              textAlign: 'center',
-              fontSize: 14,
-              color: E.accent,
-              fontFamily: E.fontMono,
-            }}
-          >
-            {displayHandle}
-          </p>
-        ) : null}
-        <p
-          style={{
-            margin: '0 0 22px',
-            textAlign: 'center',
-            fontSize: 11,
-            color: E.dim,
-            fontFamily: E.fontMono,
-            letterSpacing: '0.04em',
-            wordBreak: 'break-all',
-          }}
-        >
-          key · {formatKeyGroups(fingerprint)}
-        </p>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 22 }}>
-          <MethodRow kind="email" label="Email" value={email} emptyHint="not set" onRevise={handleRevise} />
-          <MethodRow kind="signal" label="Signal" value={signalDisplay} emptyHint="not set" onRevise={handleRevise} />
-          <MethodRow kind="site" label="Site" value={site} emptyHint="not set" onRevise={handleRevise} />
+          {rows.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 12, color: E.dim, fontFamily: E.fontSans }}>
+              No channels on this lens yet.
+            </p>
+          ) : (
+            rows.map((row) => {
+              const value =
+                row.kind === 'signal' && row.value ? maskSignal(row.value) : row.value;
+              const classic = isClassicKind(row.kind) ? row.kind : null;
+              const revise = classic ? () => handleRevise(classic) : onEditLenses;
+              return (
+                <MethodRow
+                  key={`${row.id || row.kind}-${row.label}`}
+                  kind={row.kind}
+                  label={row.label}
+                  value={value}
+                  emptyHint="not set"
+                  onRevise={revise}
+                />
+              );
+            })
+          )}
         </div>
 
         {reviseNote && (
-          <p
-            style={{
-              margin: '0 0 16px',
-              fontSize: 11,
-              color: E.muted,
-              fontFamily: E.fontSans,
-              lineHeight: 1.5,
-              textAlign: 'center',
-            }}
-          >
+          <p style={{ margin: '0 0 10px', fontSize: 11, color: E.muted, textAlign: 'center' }}>
             {reviseNote}
           </p>
         )}
 
-        <button
-          type="button"
-          onClick={onOpenCircle}
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 14,
-            padding: '12px 8px',
-            marginBottom: 18,
-            background: 'none',
-            border: 'none',
-            cursor: onOpenCircle ? 'pointer' : 'default',
-            textAlign: 'left',
-          }}
-        >
-          <CircleGlyph fingerprint={fingerprint} />
-          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: E.muted, fontFamily: E.fontSans }}>
-            <span style={{ color: E.text, fontWeight: 600 }}>Your Galaxy.</span>{' '}
-            The people you Know, and the bonds you were meant to see —{' '}
-            <span style={{ color: E.text, fontWeight: 600 }}>your view</span>, never a global map.
-          </p>
-        </button>
-
-
-        {onShareIdentity ? (
-          <button
-            type="button"
-            onClick={onShareIdentity}
-            data-testid="share-identity-from-card"
-            style={{
-              width: '100%',
-              marginBottom: 10,
-              padding: '12px 16px',
-              borderRadius: 12,
-              border: `1px solid ${E.borderLit}`,
-              background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
-              color: E.accent,
-              fontFamily: E.fontSans,
-              fontSize: 13,
-              fontWeight: 600,
-              letterSpacing: '0.04em',
-              cursor: 'pointer',
-            }}
-          >
-            Share identity
-          </button>
-        ) : null}
-
-        <button
-          type="button"
-          data-testid="export-own-vcf"
-          onClick={handleExportVcf}
-          style={{
-            width: '100%',
-            marginBottom: 8,
-            padding: '12px 16px',
-            borderRadius: 12,
-            border: `1px solid ${E.border}`,
-            background: E.inputBg,
-            color: E.text,
-            fontFamily: E.fontSans,
-            fontSize: 13,
-            fontWeight: 600,
-            letterSpacing: '0.04em',
-            cursor: 'pointer',
-          }}
-        >
-          Save contact card (.vcf)
-        </button>
-        <p
-          style={{
-            margin: '0 0 14px',
-            textAlign: 'center',
-            fontSize: 11,
-            lineHeight: 1.45,
-            color: E.dim,
-            fontFamily: E.fontSans,
-          }}
-        >
-          Your name and contact methods for your phone — stays on this device until you share the file.
-        </p>
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '7px 12px',
-              borderRadius: 999,
-              border: `1px solid ${E.border}`,
-              background: E.inputBg,
-              fontSize: 11,
-              color: E.muted,
-              fontFamily: E.fontMono,
-            }}
-          >
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: E.ok, boxShadow: `0 0 8px ${E.ok}` }} />
-            local-first · we can&apos;t read it
-          </span>
-          <span
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '7px 12px',
-              borderRadius: 999,
-              border: `1px solid ${E.border}`,
-              background: E.inputBg,
-              fontSize: 11,
-              color: E.muted,
-              fontFamily: E.fontMono,
-            }}
-          >
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: E.accent, boxShadow: `0 0 8px ${E.accent}88` }} />
-            {hasPqKeys ? 'Ed25519 + ML-DSA' : 'Ed25519'}
-          </span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {onShareIdentity ? (
+            <button
+              type="button"
+              onClick={onShareIdentity}
+              data-testid="share-identity-from-card"
+              style={{
+                flex: 1,
+                padding: '10px 12px',
+                borderRadius: 10,
+                border: `1px solid ${E.borderLit}`,
+                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                color: E.accent,
+                fontFamily: E.fontSans,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Share
+            </button>
+          ) : null}
+          <CardActionMenu open={actionsOpen} onOpenChange={setActionsOpen}>
+            <CardMenuItem
+              testId="export-own-vcf"
+              label="Save contact card (.vcf)"
+              onClick={openSaveCard}
+            />
+            {extraActions?.(() => setActionsOpen(false))}
+          </CardActionMenu>
         </div>
+        <p style={{ margin: '8px 0 0', fontSize: 10, color: E.dim, textAlign: 'center' }}>
+          Local-first · {hasPqKeys ? 'Ed25519 + ML-DSA' : 'Ed25519'}
+        </p>
       </div>
-
-      <p
-        style={{
-          margin: 0,
-          textAlign: 'center',
-          fontSize: 13,
-          lineHeight: 1.6,
-          fontFamily: E.fontSans,
-          maxWidth: 340,
-        }}
-      >
-        <span style={{ color: E.muted }}>The card is yours.</span>{' '}
-        <span style={{ color: E.accent }}>No account.</span>{' '}
-        <span style={{ color: E.muted }}>No server that can read you.</span>
-      </p>
+      {saveCardOpen ? (
+        <div
+          data-testid="save-card-lens-dialog"
+          role="dialog"
+          aria-label="Save contact card"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            zIndex: 50,
+          }}
+          onClick={() => setSaveCardOpen(false)}
+        >
+          <div
+            style={{
+              background: E.surfaceSolid,
+              border: `1px solid ${E.border}`,
+              borderRadius: 16,
+              padding: 24,
+              maxWidth: 360,
+              width: '100%',
+              margin: 20,
+              boxShadow: 'var(--se-glass-shadow)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3
+              style={{
+                margin: '0 0 8px',
+                fontFamily: E.fontSans,
+                fontSize: 16,
+                fontWeight: 500,
+                color: E.text,
+                textAlign: 'center',
+              }}
+            >
+              Which lens?
+            </h3>
+            <p
+              style={{
+                margin: '0 0 14px',
+                fontSize: 12,
+                color: E.muted,
+                textAlign: 'center',
+              }}
+            >
+              The card you save matches that lens — name, handle, and methods.
+            </p>
+            <OwnerLensPicker
+              lenses={lenses?.length ? lenses : [{ id: selectedLensId || 'everyone', name: lensName || 'Everyone' }]}
+              selectedId={saveCardLensId}
+              onSelect={setSaveCardLensId}
+              testId="save-card-lens-picker"
+            />
+            <button
+              type="button"
+              data-testid="save-card-confirm"
+              disabled={!saveCardLensId}
+              onClick={() => {
+                if (!saveCardLensId) return;
+                handleExportVcf(saveCardLensId);
+                setSaveCardOpen(false);
+              }}
+              style={{
+                width: '100%',
+                marginTop: 16,
+                padding: 12,
+                borderRadius: 8,
+                border: `1px solid ${E.borderLit}`,
+                background: 'color-mix(in srgb, var(--se-accent) 12%, transparent)',
+                color: E.accent,
+                fontFamily: E.fontSans,
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: saveCardLensId ? 'pointer' : 'default',
+              }}
+            >
+              Save .vcf
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

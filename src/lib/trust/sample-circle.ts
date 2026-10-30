@@ -59,11 +59,11 @@ const SAMPLE: SampleContact[] = [
     phones: ['+44 20 7946 0001'],
     handles: { signal: '@ada.lovelace' },
     urls: ['https://analytical.engine/~ada'],
-    reciprocal: true,
+    reciprocal: false,
     open_visibility: true,
     they_trust: [GRACE, MARGARET],
     disclosed_circle: [GRACE, MARGARET],
-    notes: 'Mutual trust · analytical engines & poetry.',
+    notes: 'Analytical engines and poetry.',
     distress: true,
   },
   {
@@ -74,11 +74,11 @@ const SAMPLE: SampleContact[] = [
     tags: ['core', 'builders'],
     phones: ['+1 202 555 0142'],
     handles: { signal: '@amazing.grace' },
-    reciprocal: true,
+    reciprocal: false,
     open_visibility: true,
     they_trust: [ADA, MARGARET],
     disclosed_circle: [ADA, MARGARET],
-    notes: 'Mutual trust · introduced Frank (pending).',
+    notes: 'Compilers. Introduced you to Frank at the compiler salon.',
   },
   {
     name: 'Alan Turing',
@@ -91,7 +91,7 @@ const SAMPLE: SampleContact[] = [
     reciprocal: false,
     open_visibility: true,
     disclosed_circle: [CLAUDE],
-    notes: 'Trusted — mutual sync not yet confirmed.',
+    notes: 'Codebreaking and thinking machines.',
   },
   {
     name: 'Claude Shannon',
@@ -102,7 +102,7 @@ const SAMPLE: SampleContact[] = [
     handles: { email_alt: 'shannon@theory.info' },
     open_visibility: true,
     disclosed_circle: [HEDY, KATHERINE, ALAN],
-    notes: 'Known · information theory circle.',
+    notes: 'Information theory.',
   },
   {
     name: 'Hedy Lamarr',
@@ -114,7 +114,7 @@ const SAMPLE: SampleContact[] = [
     urls: ['https://fhss.radio'],
     open_visibility: true,
     disclosed_circle: [CLAUDE, KATHERINE],
-    notes: 'Known · frequency hopping.',
+    notes: 'Frequency hopping.',
   },
   {
     name: 'Katherine Johnson',
@@ -124,7 +124,7 @@ const SAMPLE: SampleContact[] = [
     tags: ['radio', 'orbital'],
     open_visibility: true,
     disclosed_circle: [CLAUDE, HEDY],
-    notes: 'Known · orbital mechanics.',
+    notes: 'Orbital mechanics.',
   },
   {
     name: 'Margaret Hamilton',
@@ -133,11 +133,11 @@ const SAMPLE: SampleContact[] = [
     trust_level: 'verified',
     tags: ['builders', 'orbital'],
     phones: ['+1 617 555 0130'],
-    reciprocal: true,
+    reciprocal: false,
     open_visibility: true,
     they_trust: [ADA, GRACE],
     disclosed_circle: [ADA, GRACE],
-    notes: 'Mutual · software that flew.',
+    notes: 'Software that flew.',
   },
   {
     name: 'Frank Garcia',
@@ -151,7 +151,7 @@ const SAMPLE: SampleContact[] = [
       introduced_by_fp: GRACE,
       context: 'Grace introduced you at the compiler salon',
     },
-    notes: 'Pending connection — accept to know; trust is separate.',
+    notes: 'Met through Grace at the compiler salon.',
   },
   {
     name: 'Nikola Tesla',
@@ -159,7 +159,7 @@ const SAMPLE: SampleContact[] = [
     fingerprint: NIKOLA,
     trust_level: 'unverified',
     tags: ['orbital'],
-    notes: 'Known · keyless / gray.',
+    notes: 'Classical card, no key.',
   },
   {
     name: 'Hypatia',
@@ -167,7 +167,7 @@ const SAMPLE: SampleContact[] = [
     fingerprint: HYPATIA,
     trust_level: 'unverified',
     tags: [],
-    notes: 'Known · no channels shared yet.',
+    notes: 'Mathematics, and the library.',
   },
 ];
 

@@ -51,7 +51,7 @@ test('Settings → Relay validates and never auto-switches', async ({ page }) =>
   await panel.scrollIntoViewIfNeeded();
   await expect(panel.getByTestId('relay-current')).toContainText("You're on:");
   await expect(panel.getByTestId('relay-helper')).toContainText(
-    'never your notes (those stay sealed end-to-end)',
+    'never your messages (they stay sealed end-to-end)',
   );
   await expect(panel.getByTestId('relay-switch')).toBeDisabled();
 

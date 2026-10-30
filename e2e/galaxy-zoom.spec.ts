@@ -26,8 +26,11 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
 
   await expect(page.getByTestId('trust-map')).toBeVisible();
+  // Exactly ONE empty-state panel: the B merge once kept both parents' panels (two "Grow your galaxy" cards, two Grow buttons).
+  await expect(page.getByTestId('trust-map-empty')).toHaveCount(1);
+  await expect(page.getByTestId('trust-map-grow')).toHaveCount(1);
   await expect(page.getByTestId('trust-map-empty')).toContainText(/Grow your galaxy/i);
-  await expect(page.getByTestId('trust-map-load-sample')).toHaveCount(0);
+  await expect(page.getByTestId('trust-map-load-sample')).toBeVisible();
   await expect(page.getByTestId('trust-map-grow')).toBeVisible();
   await page.getByTestId('trust-map-grow').click();
   await expect(page.getByTestId('grow-surface')).toBeVisible();
@@ -35,8 +38,23 @@ test('Galaxy zoom, fullscreen, and refresh controls', async ({ page }) => {
   await expect(page.getByTestId('grow-surface')).toHaveCount(0);
   await seedSampleGalaxy(page);
   await expect(page.getByTestId('trust-node').first()).toBeVisible({ timeout: 20_000 });
-  await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]').first()).toBeVisible();
+  // A TRUST-layer chord joins two people who MUTUALLY trust me. Since #593 nothing in-app can produce a mutual bond (PSI #588 re-grounds it) and the
+  // sample circle is one-way (Hypatia #959), so none may render; the KNOW-layer chords (open visibility, no mutual claim) still do.
+  await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="trust"]')).toHaveCount(0);
   await expect(page.locator('[data-testid="trust-peer-chord"][data-layer="know"]').first()).toBeVisible();
+  const search = page.getByTestId('trust-map-search');
+  await expect(search).toBeVisible();
+  await search.fill('ada');
+  await expect(page.locator('[data-testid="trust-node"][data-name="Ada Lovelace"]')).toHaveAttribute(
+    'data-search-hit',
+    '1',
+  );
+  await expect(page.locator('[data-testid="trust-node"][data-name="Alan Turing"]')).toHaveAttribute(
+    'data-search-hit',
+    '0',
+  );
+  await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_search_ada_glow.png', fullPage: true });
+  await search.fill('');
   await page.screenshot({ path: '/opt/cursor/artifacts/galaxy_lattice_sample.png', fullPage: true });
 
   const svg = page.getByTestId('trust-map-svg');

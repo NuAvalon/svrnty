@@ -49,6 +49,15 @@ export interface NoteRecord {
   retention: RetentionPolicy;
   /** Wire protocol version that produced this note */
   wire_type: typeof NOTE_WIRE_TYPE;
+  // ── Delivery receipt (Athena — Nov-5 delivered-receipt; delivery-receipt.ts) ──────────────────────
+  /** OUTBOUND only: the per-note freshness nonce the sender embedded in NoteWireV0.receipt_nonce. The
+   *  sender keeps it here as the source-of-truth to verify an inbound receipt (verifyReceiptWire matches
+   *  the receipt's nonce against THIS). Absent on notes sent before the receipt flow / on inbound notes. */
+  receipt_nonce?: string;
+  /** OUTBOUND only: TRUE iff a cryptographically VERIFIED delivery receipt has been processed for this
+   *  note (set on EXACTLY ONE line — the receipt consume seam, after verifyReceiptWire→true; NEVER from a
+   *  bare ack, a relay flag, or any unverified signal). Drives the 'delivered' status (notes-status.ts). */
+  delivered?: boolean;
 }
 
 /**
@@ -65,6 +74,14 @@ export interface NoteWireV0 {
   participant_kind: ParticipantKind;
   /** Optional; omitted on direct threads */
   ring_channel_id?: string;
+  // Delivery-receipt (Athena — Nov-5 delivered-receipt): per-note freshness nonce. This is a SIGNED
+  // payload field — it is INSIDE noteSigningInput (canonical.ts excludes only signature/public_key/pq
+  // pubkeys), so the sender signs it under DOMAIN_NOTE and the recipient's verifyNoteSender authenticates
+  // it. Backward-compatible: absent on pre-receipt senders → canonicalize drops the absent key → the
+  // DOMAIN_NOTE preimage is byte-identical to today's. The recipient echoes it in a recipient-signed
+  // receipt (delivery-receipt.ts); the sender verifies the echo against the nonce it stored. Optional on
+  // the TYPE (older records / a sender that didn't opt in may lack it).
+  receipt_nonce?: string;
   // ── Sender authentication (Apollo — Flint #55 forgeable-sender merge-gate) ──────────────────
   // Without these a note is only ENCRYPTED, not SIGNED: from_fingerprint would be attacker-set and
   // any admitted contact's fingerprint could be forged. `public_key` is the sender's openpgp key;
