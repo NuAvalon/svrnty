@@ -98,12 +98,22 @@ export class HeadlessStore {
   upsertContact(c: HeadlessContact): void {
     this.mutate(() => {
       const i = this.data.contacts.findIndex((x) => x.id === c.id || x.fingerprint === c.fingerprint);
-      if (i === -1) this.data.contacts.push(c);
-      // admit-card-key-hash-bind-001: key material moves as ONE epoch —
-      // a shallow overlay used to let a partial card Frankenstein the
-      // row's quad (old public_key + new pq legs derived to a fp that
-      // matched nothing, the ember 19:27 stale-card wound).
-      else this.data.contacts[i] = mergeKeyFieldsGroup(this.data.contacts[i], c);
+      if (i === -1) { this.data.contacts.push(c); return; }
+      const old = this.data.contacts[i];
+      // admit-card-key-hash-bind-001 (convergent w/ flint #2068): an id
+      // match carrying a DIFFERENT fingerprint is a row-takeover shape —
+      // refuse, never merge (fp is the member's identity; durable_id
+      // collisions must not hand the row + its trust to another fp).
+      if (old.id === c.id && old.fingerprint !== c.fingerprint) {
+        throw new Error(
+          `upsertContact refused: id ${c.id} held by fp ` +
+          `${old.fingerprint?.slice(0, 12)} — incoming fp ` +
+          `${c.fingerprint?.slice(0, 12)} differs (row-takeover)`);
+      }
+      // key material moves as ONE epoch — a shallow overlay used to let a
+      // partial card Frankenstein the row's quad (the ember 19:27
+      // stale-card wound).
+      this.data.contacts[i] = mergeKeyFieldsGroup(old, c);
     });
   }
 

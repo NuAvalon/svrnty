@@ -52,6 +52,28 @@ test('metadata-only card leaves the row\'s key material untouched', () => {
   assert.equal(c.name, 'ember-2');
 });
 
+test('id collision with a different fp REFUSES — row takeover is never a merge', () => {
+  const s = new HeadlessStore(join(dir(), 'store.json'));
+  s.upsertContact(ROW);
+  assert.throws(
+    () => s.upsertContact({ id: 'fpA', fingerprint: 'fpB',
+                            public_key: 'FORGED' }),
+    /refused: id fpA held by fp/);
+  const c = s.getContactByFingerprint('fpA');
+  assert.equal(c.public_key, 'OLD-ASC', 'row untouched after refuse');
+});
+
+test('same fp arriving under a different id refuses the merge leg', () => {
+  const s = new HeadlessStore(join(dir(), 'store.json'));
+  s.upsertContact(ROW);
+  // fp match resolves the row by fingerprint — a colliding id field
+  // still hits the takeover guard when the stored fp differs.
+  s.upsertContact({ id: 'other-id', fingerprint: 'fpA',
+                    name: 'ember-renamed' });
+  assert.equal(s.getContactByFingerprint('fpA').name, 'ember-renamed');
+  assert.equal(s.listContacts().length, 1);
+});
+
 test('keyless new contact inserts as-is', () => {
   const s = new HeadlessStore(join(dir(), 'store.json'));
   s.upsertContact({ id: 'x', fingerprint: 'x', name: 'n1' });
