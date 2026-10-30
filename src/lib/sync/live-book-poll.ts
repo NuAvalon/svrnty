@@ -51,6 +51,7 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 // compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
+import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -157,6 +158,8 @@ export interface NoteSeamDeps {
   /** Owner the tab's unlocked notes store is open for (null = locked). Injectable so the guard wiring is testable. */
   openOwner: () => string | null;
   accept: typeof acceptInboundNote;
+  /** The receipt outbox (default: the module one). Injectable so the rate window and the dedupe are testable on a fake clock. */
+  receipts?: ReceiptOutbox;
 }
 
 export function buildNoteSeam(
@@ -215,13 +218,9 @@ export function buildNoteSeam(
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
       // are trustworthy to seal+address a receipt to. Fail-closed on error: never let a receipt-emit
       // failure undo the note we already persisted.
-      if (sendReceipt) {
-        try {
-          await sendReceipt(wire);
-        } catch (err) {
-          console.error('[live-book-poll] delivery-receipt emit failed (note still delivered locally):', err);
-        }
-      }
+      // S62 R3 (Flint #2094): the receipt is QUEUED, never awaited. It is started now or on a later tick, once per (owner, note_id) however often
+      // the note is redelivered, and at most ~4 per minute, so it can neither hold the ack of the note it answers nor spend the user's send budget.
+      if (sendReceipt) (deps.receipts ?? receiptOutbox).enqueue(owner.fingerprint, wire.note_id, () => sendReceipt(wire));
       return { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
     },
   };
@@ -414,12 +413,14 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // #720: the "kept because this device can't open it yet" report belongs to ONE identity. Drop it on session lock AND on identity switch
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
+onSessionLock(() => receiptOutbox.clear()); // queued receipts and the dedupe set belong to the session that was locked
 
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
   opts: { fetchImpl?: typeof fetch } = {},
 ): Promise<ConsumeDeps | null> {
+  receiptOutbox.pump(); // S62 R3-3: every poll tick lets queued receipts start as the rate window allows (cheap; never awaits a send)
   const id = identity as {
     identity?: { fingerprint?: string; public_key?: string };
     post_quantum?: { kem_public_key?: string; sig_public_key?: string };

@@ -1,11 +1,15 @@
 // src/lib/sync/note-seam-receipt-order.test.ts
 // S62 contract v6 done_when 2 + 4 at the SEAM that decides when a receipt may leave: only AFTER the durable store, never for a dropped note.
 // Run: npx tsx --test src/lib/sync/note-seam-receipt-order.test.ts
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildNoteSeam, type NoteSeamDeps } from './live-book-poll';
+import { lockSession } from '@/lib/identity/client-store';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import type { NoteWireV0, NoteRecord } from '@/lib/messaging/types';
+
+// The receipt outbox is module state (one receipt per owner+note, S62 R3-2): every case starts from a clean one.
+beforeEach(() => lockSession()); // the REAL clear-on-lock path (Flint #2100)
 
 const OWNER = { fingerprint: 'ab'.repeat(32), publicKeyArmored: 'x', privateKeyArmored: 'y', passphrase: 'z' };
 const WIRE: NoteWireV0 = { type: NOTE_WIRE_TYPE, note_id: 'n1', thread_id: 't1', from_fingerprint: 'cd'.repeat(32), sent_at: '2026-10-30T12:00:00.000Z', body: 'hi', participant_kind: 'human', receipt_key: 'ab'.repeat(32) };
@@ -80,8 +84,11 @@ test('N5 v7 NEG: a forged note NAMING an admitted book contact (valid shape, fai
   const seamB = buildNoteSeam({ ...OWNER, fingerprint: B.fp } as never, { ...deps, openOwner: () => B.fp }, undefined, async (w) => { await emitDeliveredReceipt(w, { fetchImpl }); });
   const r = await seamB.accept(forged);
   assert.ok(r === null || 'dropped' in r, 'the forged note is dropped');
+  await new Promise((res) => setTimeout(res, 150)); // the receipt is no longer awaited by accept, so give any (wrongly) started deposit time to land
   assert.deepEqual(posts, [], 'ZERO outbound deposits for a forged claim, even though its named sender IS in the book');
   const ok = await seamB.accept(genuine);
   assert.ok(ok && 'note_id' in ok, 'the genuine note is accepted');
+  for (let i = 0; i < 100 && posts.length < 1; i++) await new Promise((res) => setTimeout(res, 30)); // the deposit now happens AFTER accept returned (R3-1)
+  await new Promise((res) => setTimeout(res, 150));
   assert.equal(posts.length, 1, 'and answered exactly once');
 });
