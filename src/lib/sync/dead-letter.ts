@@ -8,6 +8,7 @@
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** Why a blob did not become a message (F6: "can't open" and "failed to verify" are different classes). */
+export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'not-in-book', 'ratchet-unopenable', 'expired'] as const;
 export type DeadLetterReason =
   | 'unknown-format' // not a shape this build can open
   | 'decrypt-failed' // right shape, would not open
@@ -31,7 +32,8 @@ export const BENIGN_TERMINALS = ['contact-update-stale', 'joiner-already-known',
 export type BenignTerminal = (typeof BENIGN_TERMINALS)[number];
 
 /** What KIND of blob it was, from its shape alone. Never any content (F2). */
-export type BlobKind = 'hybrid-package' | 'openpgp-armor' | 'json' | 'other';
+export const BLOB_KINDS = ['hybrid-package', 'openpgp-armor', 'json', 'other'] as const;
+export type BlobKind = (typeof BLOB_KINDS)[number];
 
 export function classifyBlob(blob: string): BlobKind {
   if (asMailboxEnvelopePackage(blob) != null) return 'hybrid-package';
@@ -115,4 +117,48 @@ export function planBound(
   const over = alive.length - maxCount;
   if (over > 0) for (const id of alive.splice(0, over)) release.push({ envelope_id: id, cause: 'count' });
   return { keep: alive, release };
+}
+
+/**
+ * Validate a row read back from storage (or about to be written). Exact key set, closed value sets, safe id, readable time, and a
+ * fingerprint only for authenticated reasons: anything else is refused (null), so a corrupt or tampered row can never reach the UI.
+ */
+export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp'].includes(k)) return null;
+  const envelope_id = safeEnvelopeId(o.envelope_id);
+  if (!envelope_id) return null;
+  if (typeof o.first_seen !== 'string' || !Number.isFinite(Date.parse(o.first_seen))) return null;
+  if (!(DEAD_LETTER_REASONS as readonly unknown[]).includes(o.reason)) return null;
+  if (!(BLOB_KINDS as readonly unknown[]).includes(o.blob_kind)) return null;
+  const row: DeadLetterRow = { envelope_id, first_seen: o.first_seen, reason: o.reason as DeadLetterReason, blob_kind: o.blob_kind as BlobKind };
+  if (o.fp !== undefined) {
+    if (!AUTHENTICATED_REASONS.has(row.reason) || typeof o.fp !== 'string' || !FP_HEX.test(o.fp)) return null;
+    row.fp = o.fp.toLowerCase();
+  }
+  return row;
+}
+
+// Row retention. The contract does not specify one; without it, junk that is acked-with-a-row would grow storage without limit.
+export const ROW_MAX_COUNT = 200;
+export const ROW_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Which stored rows to delete: older than ROW_MAX_AGE_MS (an unreadable time counts as old), then the oldest beyond ROW_MAX_COUNT. */
+export function planPrune(
+  rows: ReadonlyArray<{ envelope_id: string; first_seen: string }>,
+  nowMs: number,
+  opts: { maxRows?: number; maxAgeMs?: number } = {},
+): string[] {
+  const maxRows = opts.maxRows ?? ROW_MAX_COUNT;
+  const maxAgeMs = opts.maxAgeMs ?? ROW_MAX_AGE_MS;
+  const ordered = rows
+    .map((r) => ({ id: r.envelope_id, t: Date.parse(r.first_seen) }))
+    .sort((a, b) => (Number.isNaN(a.t) ? -Infinity : a.t) - (Number.isNaN(b.t) ? -Infinity : b.t) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const drop: string[] = [];
+  const keep: string[] = [];
+  for (const r of ordered) (Number.isNaN(r.t) || nowMs - r.t > maxAgeMs ? drop : keep).push(r.id);
+  const over = keep.length - maxRows;
+  if (over > 0) drop.push(...keep.splice(0, over));
+  return drop;
 }

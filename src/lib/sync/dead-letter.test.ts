@@ -11,6 +11,10 @@ import {
   KEEP_MAX_COUNT,
   classifyBlob,
   makeDeadLetterRow,
+  parseDeadLetterRow,
+  planPrune,
+  ROW_MAX_AGE_MS,
+  ROW_MAX_COUNT,
   planBound,
   safeEnvelopeId,
   type DeadLetterReason,
@@ -137,4 +141,42 @@ test('D11 an unreadable first_seen counts as expired (never kept forever), and t
   const rows2 = held(55, (i) => 1000 + i * 1000);
   assert.deepEqual(planBound([...rows2].reverse(), NOW), planBound(rows2, NOW));
   assert.deepEqual(planBound([], NOW), { keep: [], release: [] });
+});
+
+test('D12 a stored row is accepted only with the exact key set, closed values, safe id, readable time, and a well-formed fp for an authenticated reason', () => {
+  const good = { envelope_id: 'e1', first_seen: T0, reason: 'not-in-book', blob_kind: 'json', fp: FP64 };
+  assert.deepEqual(parseDeadLetterRow(good), good);
+  assert.deepEqual(parseDeadLetterRow({ ...good, fp: FP40.toUpperCase() })?.fp, FP40, 'fp lower-cased');
+  const bads: unknown[] = [
+    null, undefined, 'x', 7, [], {},
+    { ...good, extra: 'x' },                               // unknown key
+    { ...good, body: 'text' },                             // content can never ride along
+    { ...good, envelope_id: '../x' }, { ...good, envelope_id: 5 },
+    { ...good, first_seen: 'nope' }, { ...good, first_seen: 5 },
+    { ...good, reason: 'whatever' }, { ...good, reason: undefined },
+    { ...good, blob_kind: 'blob' }, { ...good, blob_kind: undefined },
+    { ...good, fp: 'zz'.repeat(20) }, { ...good, fp: 5 },
+    { ...good, reason: 'verify-failed' },                  // an unauthenticated reason must not carry an fp
+  ];
+  for (const bad of bads) assert.equal(parseDeadLetterRow(bad), null, JSON.stringify(bad));
+  assert.deepEqual(parseDeadLetterRow({ envelope_id: 'e1', first_seen: T0, reason: 'verify-failed', blob_kind: 'other' }), { envelope_id: 'e1', first_seen: T0, reason: 'verify-failed', blob_kind: 'other' });
+});
+
+test('D13 retention pinned by VALUE: 200 rows and 30 days (the contract is silent; this is a flagged decision)', () => {
+  assert.equal(ROW_MAX_COUNT, 200);
+  assert.equal(ROW_MAX_AGE_MS, 30 * 24 * 60 * 60 * 1000);
+});
+
+test('D14 planPrune: exactly 30 days is kept, 1 ms past is dropped; beyond 200 the OLDEST go; unreadable time counts as old', () => {
+  const day = 24 * 60 * 60 * 1000;
+  const mk = (n: number, ageOf: (i: number) => number) => Array.from({ length: n }, (_, i) => ({ envelope_id: `r${String(i).padStart(3, '0')}`, first_seen: ago(ageOf(i)) }));
+  assert.deepEqual(planPrune([{ envelope_id: 'a', first_seen: ago(30 * day) }, { envelope_id: 'b', first_seen: ago(30 * day + 1) }], NOW), ['b']);
+  assert.deepEqual(planPrune(mk(200, (i) => 1000 + i * 1000), NOW), []);
+  assert.deepEqual(planPrune(mk(201, (i) => 1000 + i * 1000), NOW), ['r200'], 'the single oldest');
+  const many = planPrune(mk(230, (i) => 1000 + i * 1000), NOW);
+  assert.equal(many.length, 30);
+  assert.ok(many.every((id) => Number(id.slice(1)) >= 200), 'only the 30 oldest');
+  assert.deepEqual(planPrune([{ envelope_id: 'z', first_seen: 'garbage' }, { envelope_id: 'a', first_seen: ago(1000) }], NOW), ['z']);
+  assert.deepEqual(planPrune([...mk(205, (i) => 1000 + i * 1000)].reverse(), NOW).sort(), planPrune(mk(205, (i) => 1000 + i * 1000), NOW).sort(), 'input order does not matter');
+  assert.deepEqual(planPrune([], NOW), []);
 });
