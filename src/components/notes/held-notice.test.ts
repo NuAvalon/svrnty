@@ -1,17 +1,17 @@
 // src/components/notes/held-notice.test.ts
-// #720: every string is Hypatia's copy v0.3 (sha256 92e7c6ce) by VALUE; the kept-line date comes only from the relay's expires_at.
+// #720: every string is Hypatia's copy v0.4 (sha256 728dba20) by VALUE; the kept-line date comes only from the relay's expires_at.
 // Run: npx tsx --test src/components/notes/held-notice.test.ts
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_BELIEVABLE_EXPIRY_MS, heldNotices, relayExpiry, type HeldNoticeInput } from './held-notice';
+import { MAX_BELIEVABLE_EXPIRY_MS, formatRelayDeadline, heldNotices, relayExpiry, type HeldNoticeInput } from './held-notice';
 
 const NOW = Date.parse('2026-10-30T12:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
 const fmt = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const one = (i: HeldNoticeInput) => heldNotices([i], NOW, fmt)[0];
 
-test('N1 each reason has the exact v0.3 text and what-to-do line', () => {
+test('N1 each reason has the exact v0.4 text and what-to-do line', () => {
   assert.deepEqual(one({ reason: 'missing_key', count: 3, kept: 'none' }), {
     reason: 'missing_key',
     text: "3 messages couldn't be opened on this device: they were sealed to a key this device doesn't have.",
@@ -37,11 +37,14 @@ test('N3 kept-line: with a believable relay expires_at it names that date; witho
   assert.equal(one({ reason: 'missing_key', count: 2, kept: 'relay', expiresAt: exp }).kept, "They're kept on the relay until 2026-11-03, and this app will try again.");
   assert.equal(one({ reason: 'missing_key', count: 2, kept: 'relay' }).kept, "They're still on the relay, and this app will try again.");
   assert.equal(one({ reason: 'missing_key', count: 2, kept: 'local' }).kept, "They're saved on this device, not deleted.");
+  assert.equal(one({ reason: 'missing_key', count: 1, kept: 'local' }).kept, "It's saved on this device, not deleted.");
+  assert.equal(one({ reason: 'missing_key', count: 1, kept: 'relay' }).kept, "It's still on the relay, and this app will try again.");
+  assert.equal(one({ reason: 'missing_key', count: 1, kept: 'relay', expiresAt: exp }).kept, "It's kept on the relay until 2026-11-03, and this app will try again.");
   assert.equal('kept' in one({ reason: 'missing_key', count: 2, kept: 'none' }), false);
 });
 
 test('N4 a relay date is believed only when well-formed, in the future, and not absurd; otherwise the no-date line (never a computed date)', () => {
-  const noDate = "They're still on the relay, and this app will try again.";
+  const noDate = "It's still on the relay, and this app will try again.";
   const futureAsObject = { toString: () => new Date(NOW + 2 * DAY).toISOString() };
   for (const bad of [undefined, null, 42, {}, new Date(NOW + 2 * DAY), futureAsObject, '', 'tomorrow', 'not a date', new Date(NOW + DAY).toISOString().replace('T', ' ').replace('Z', ' garbage'),
     new Date(NOW).toISOString(), new Date(NOW - DAY).toISOString(), new Date(NOW + MAX_BELIEVABLE_EXPIRY_MS + 1).toISOString()]) {
@@ -64,7 +67,8 @@ test('N6 several reasons: one notice each, in the given order, each with its own
     { reason: 'expired', count: 0, kept: 'none' },
   ], NOW, fmt);
   assert.deepEqual(r.map((n) => n.reason), ['missing_key', 'unknown_sender']);
-  assert.equal(r[1].kept, "They're saved on this device, not deleted.");
+  assert.equal(r[1].kept, "It's saved on this device, not deleted.", 'count 1 -> singular kept-line');
+  assert.equal(r[0].kept, "They're still on the relay, and this app will try again.", 'count 2 -> plural kept-line');
 });
 
 test('N7 NEVER-words: no notice text, hint or kept-line contains a forbidden word (copy doc: deleted/lost/corrupt/spam/forged/fake, except the exact local kept-line)', () => {
@@ -73,9 +77,36 @@ test('N7 NEVER-words: no notice text, hint or kept-line contains a forbidden wor
       (['relay', 'local', 'none'] as const).map((kept) => ({ reason, count: 2, kept, canAdmit: true, expiresAt: new Date(NOW + DAY).toISOString() }))),
     NOW, fmt);
   for (const n of all) {
-    const s = [n.text, n.hint ?? '', n.kept === "They're saved on this device, not deleted." ? '' : n.kept ?? ''].join(' ');
+    const s = [n.text, n.hint ?? '', /saved on this device, not deleted\.$/.test(n.kept ?? '') ? '' : n.kept ?? ''].join(' ');
     assert.doesNotMatch(s, /\b(deleted|lost|corrupt|spam|forged|fake)\b/i, s);
     assert.doesNotMatch(s, /different encryption used/i);
     assert.doesNotMatch(s, /nothing was deleted/i);
   }
+});
+
+test('N8 v0.4 singular forms, exact: every reason at N = 1', () => {
+  const want: Record<string, [string, string | undefined]> = {
+    missing_key: ["1 message couldn't be opened on this device: it was sealed to a key this device doesn't have.", 'Restoring your keys on this device may open it.'],
+    different_encryption: ["1 message arrived in a format this app can't open yet.", 'Updating the app may open it.'],
+    not_verified: ["1 message couldn't be verified, so it isn't shown.", 'If you expected a message, ask the sender to send it again.'],
+    unknown_sender: ['1 message from someone not in your Gate.', 'Admit the sender to read it.'],
+    expired: ["1 message arrived after its time limit and wasn't accepted.", undefined],
+  };
+  for (const [reason, [text, hint]] of Object.entries(want)) {
+    const n = one({ reason: reason as never, count: 1, kept: 'none', canAdmit: true });
+    assert.equal(n.text, text, reason);
+    assert.equal(n.hint, hint, reason);
+  }
+  // N = 2 never uses a singular word, and N = 1 never says "messages".
+  assert.doesNotMatch(one({ reason: 'missing_key', count: 1, kept: 'none' }).text, /messages|they|them/i);
+  assert.doesNotMatch(one({ reason: 'missing_key', count: 2, kept: 'none' }).text, /\b1 message\b|\bit was\b/);
+});
+
+test('N9 the deadline shows local date AND time, truncated to the minute and never rounded up (copy v0.4)', () => {
+  const o = { locale: 'en-US', timeZone: 'UTC' };
+  assert.equal(formatRelayDeadline(Date.parse('2026-11-03T02:10:00.000Z'), o), 'Nov 3, 2026, 2:10 AM');
+  assert.equal(formatRelayDeadline(Date.parse('2026-11-03T02:10:59.999Z'), o), 'Nov 3, 2026, 2:10 AM', '59.999 s is truncated, not rounded to 2:11');
+  assert.equal(formatRelayDeadline(Date.parse('2026-11-03T02:11:00.000Z'), o), 'Nov 3, 2026, 2:11 AM');
+  assert.match(formatRelayDeadline(Date.parse('2026-11-03T14:05:30.000Z'), o), /2:05\sPM$/);
+  assert.notEqual(formatRelayDeadline(Date.parse('2026-11-03T23:59:59.999Z'), o), formatRelayDeadline(Date.parse('2026-11-04T00:00:00.000Z'), o), 'truncation does not cross into the next minute/day');
 });
