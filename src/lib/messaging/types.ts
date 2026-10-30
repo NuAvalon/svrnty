@@ -54,6 +54,11 @@ export interface NoteRecord {
    *  sender keeps it here as the source-of-truth to verify an inbound receipt (verifyReceiptWire matches
    *  the receipt's nonce against THIS). Absent on notes sent before the receipt flow / on inbound notes. */
   receipt_nonce?: string;
+  /** OUTBOUND only (S62 A5-d): the per-note 32-byte receipt key (64 hex) the sender sealed inside NoteWireV0.receipt_key. It is the ONLY
+   *  secret that can verify the recipient's MAC receipt (crypto/receipt-mac.ts). It lives here, in the encrypted notes store, and nowhere
+   *  else: never logged, rendered, exported or sent outside the seal (pinned by receipt-key-wire.test.ts W5). The row is rewritten
+   *  without it once the note is Delivered or past the relay window. */
+  receipt_key?: string;
   /** OUTBOUND only: TRUE iff a cryptographically VERIFIED delivery receipt has been processed for this
    *  note (set on EXACTLY ONE line — the receipt consume seam, after verifyReceiptWire→true; NEVER from a
    *  bare ack, a relay flag, or any unverified signal). Drives the 'delivered' status (notes-status.ts). */
@@ -82,6 +87,10 @@ export interface NoteWireV0 {
   // receipt (delivery-receipt.ts); the sender verifies the echo against the nonce it stored. Optional on
   // the TYPE (older records / a sender that didn't opt in may lack it).
   receipt_nonce?: string;
+  // S62 A5-d: the per-note receipt key (32 random bytes, 64 hex), INSIDE the sealed note and, like receipt_nonce, inside noteSigningInput
+  // (canonical.ts excludes only signature/public_key/pq pubkeys), so the sender signs it and a tamperer cannot swap it. The recipient
+  // derives the MAC key from it (crypto/receipt-mac.ts) and returns a tag only the sender can check. Absent on pre-S62 senders.
+  receipt_key?: string;
   // ── Sender authentication (Apollo — Flint #55 forgeable-sender merge-gate) ──────────────────
   // Without these a note is only ENCRYPTED, not SIGNED: from_fingerprint would be attacker-set and
   // any admitted contact's fingerprint could be forged. `public_key` is the sender's openpgp key;
