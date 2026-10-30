@@ -59,6 +59,7 @@ async function scenario(opts: { failPutNote?: number; failPutThread?: number; fa
     putNote: async (n: NoteRecord) => { if (failPutNote > 0) { failPutNote--; throw new Error('notes store write failed'); } notes.set(n.note_id, n); },
     putThread: async (t: NoteThread) => { if (failPutThread > 0) { failPutThread--; throw new Error('thread store write failed'); } threads.set(t.thread_id, t); },
     listThreads: async () => [...threads.values()],
+    getNote: async (id: string) => notes.get(id) ?? null,
   };
   const accept = () => acceptInboundNote({
     wire,
@@ -111,9 +112,12 @@ test('R4: once a frame has been committed, a REPLAY of it is dropped (not stored
   const s = await scenario();
   assert.ok(await s.accept());
   assert.equal(s.session.puts(), 1);
-  assert.equal(await s.accept(), null, 'the replayed frame does not open');
-  assert.equal(s.session.puts(), 1);
-  assert.equal(s.notes.size, 1);
+  // #720 r2: the replay is a completed delivery whose ack never landed: it comes back as the STORED note, never a drop (a null here
+  // would be recorded as 'ratchet-unopenable', a false "couldn't open" for a note already in the inbox).
+  const replay = await s.accept();
+  assert.equal(replay?.note_id, s.wire.note_id, 'the replayed frame returns the stored note');
+  assert.equal(s.session.puts(), 1, 'not re-advanced');
+  assert.equal(s.notes.size, 1, 'not stored twice');
 });
 
 test('R4 compat: an openRatchet that returns a plain string (already committed, the old contract) still works', async () => {
@@ -157,7 +161,7 @@ test('R2 wiring: production send and receive go through ownerBoundRatchetIO; the
   const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const code = (rel: string) => readFileSync(join(root, rel), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   assert.match(code('lib/messaging/transport.ts'), /ownerBoundRatchetIO\(args\.sender\.fingerprint\)/);
-  assert.match(code('lib/sync/live-book-poll.ts'), /openDirectNoteStaged\([^)]*ownerBoundRatchetIO\(owner\.fingerprint\)/);
+  assert.match(code('lib/sync/live-book-poll.ts'), /openDirectNoteStaged(?:Typed)?\([^)]*ownerBoundRatchetIO\(owner\.fingerprint\)/);
   const users: string[] = [];
   for (const rel of readdirSync(root, { recursive: true }) as string[]) {
     if (!/\.(ts|tsx)$/.test(rel) || /\.test\./.test(rel) || rel.endsWith('lib/messaging/direct-session.ts')) continue;

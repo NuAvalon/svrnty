@@ -26,6 +26,7 @@ import { admitContact } from '@/lib/trust/admit-contact';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
 import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
+import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
 import type { LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
@@ -42,7 +43,7 @@ export interface HeadlessOpts {
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
-function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets): NoteResponseSeam {
+function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter): NoteResponseSeam {
   // Single dual-read chokepoint (Option-B, mirrors FE buildNoteSeam): hybrid-FIRST (makeHybridOpener →
   // openMailboxEnvelope bound to MY secrets + parseNoteWire, the SAME type-gate the classical path uses →
   // no-cross-swallow unchanged), classical FALLBACK. Classical-only when the owner has no derivable hybrid
@@ -50,10 +51,10 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
   const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
   const verifyNote = hybrid
     ? dualReadOpener<NoteWireV0>(
-        makeHybridOpener<NoteWireV0>((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseNoteWire),
-        classicalNote,
+        counted(makeHybridOpener<NoteWireV0>((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseNoteWire), 'hybrid', legs),
+        counted(classicalNote, 'classical', legs),
       )
-    : classicalNote;
+    : counted(classicalNote, 'classical', legs);
   return {
     verify: (blob) => verifyNote(blob),
     accept: async (wire: NoteWireV0) => {
@@ -119,17 +120,19 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
   // whole run, so this is derived per poll and its bytes are not zeroed. No tick-scope claim here (that is the FE poll).
   const hybrid = await deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey);
   const classicalCU = openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
   return {
     owner,
+    openLegs: legs,
     // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
     decrypt: hybrid
       ? dualReadOpener(
-          makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseContactUpdateWire),
-          classicalCU,
+          counted(makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseContactUpdateWire), 'hybrid', legs),
+          counted(classicalCU, 'classical', legs),
         )
-      : classicalCU,
+      : counted(classicalCU, 'classical', legs),
     store: store.asContactStore(),
-    note: buildNoteSeam(owner, store, now, hybrid),
+    note: buildNoteSeam(owner, store, now, hybrid, legs),
     // ③ loud-not-silent, keyed on ACTUAL derivability (Flint's hard gate #168382): advertise-kem-pub but the
     // ML-KEM secret did NOT derive ⇒ a hybrid blob is LEFT FOR RETRY, never silently acked+dropped. The instant
     // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of

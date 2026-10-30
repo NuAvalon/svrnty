@@ -6,27 +6,12 @@
 // Replay: reject timestamps older than SIGNAL_MAX_AGE_MS (default 7 days).
 
 import type { TrustSignal, SignedSignal } from './types';
-import { hybridVerify } from '../crypto/hybrid';
 import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, isAbsentOrWellFormedPq } from '../crypto/sign-envelope';
 import { canonicalize } from '../format/canonical';
 import { DOMAIN_TRUST_SIGNAL } from '../format/envelope';
 
 /** Default freshness window for received signals (7 days). */
 export const SIGNAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * LEGACY signed bytes (pre-0.1): raw JSON.stringify — order-dependent, NFC-blind. Retained ONLY to
- * verify signatures made before the 0.1 envelope landed, inside the freshness window. Never sign
- * with this. See the sunset note in verifySignal.
- */
-function canonicalSignPayload(
-  payload: TrustSignal,
-  from: string,
-  to: string,
-  timestamp: string
-): string {
-  return JSON.stringify({ payload, from, to, timestamp });
-}
 
 /** Canonical signing input for a 0.1 trust-signal envelope (NFC-safe, key-order-independent). */
 function trustSignalCanonicalInput(
@@ -86,64 +71,19 @@ export async function verifySignal(
     return false;
   }
 
-  // A malformed pq_signature refuses here, before EITHER path: the legacy loop below calls hybridVerify directly
-  // with acceptClassicalOnly = !pq_signature, so the envelope guard alone would not cover it (#717).
+  // A malformed pq_signature ('' / null / non-string) refuses: it is never "no PQ half" (#717).
   if (!isAbsentOrWellFormedPq(signal.pq_signature)) return false;
-  const envSig = envelopeSignatureOf(signal.signature, signal.pq_signature);
 
-  // PRIMARY (0.1): domain-separated, suite-bound envelope over canonical bytes.
-  const canonicalInput = trustSignalCanonicalInput(
-    signal.payload,
-    signal.from,
-    signal.to,
-    signal.timestamp
+  // The 0.1 envelope is the ONLY accepted form: domain-separated, suite-bound, over canonical bytes. The pre-0.1
+  // raw-JSON legacy verify loop was deleted (#718): it sunset ~2026-08-23 (7-day freshness window), nothing emits
+  // it, and it was the only path into hybridVerify's classical-only branch outside verifyWithEnvelope.
+  return verifyWithEnvelope(
+    DOMAIN_TRUST_SIGNAL,
+    trustSignalCanonicalInput(signal.payload, signal.from, signal.to, signal.timestamp),
+    envelopeSignatureOf(signal.signature, signal.pq_signature),
+    senderPublicKey,
+    senderPqSigPublicKey
   );
-  if (
-    await verifyWithEnvelope(
-      DOMAIN_TRUST_SIGNAL,
-      canonicalInput,
-      envSig,
-      senderPublicKey,
-      senderPqSigPublicKey
-    )
-  ) {
-    return true;
-  }
-
-  // LEGACY verify paths (raw JSON.stringify, pre-0.1). SELF-SUNSETTING: the freshness window above
-  // (SIGNAL_MAX_AGE_MS = 7 days) means ~7 days after this deploys, every still-fresh signal was
-  // signed with the 0.1 envelope — DELETE this whole block then (≈2026-08-23 if deployed
-  // 2026-08-16). Do NOT re-canonicalize these: legacy signers signed the exact bytes below. KB#85978.
-  const hybridSig = signal.pq_signature
-    ? {
-        classical: signal.signature,
-        post_quantum: signal.pq_signature,
-        algorithm: 'ED25519+ML-DSA-87' as const,
-      }
-    : { classical: signal.signature };
-  const acceptClassicalOnly = !signal.pq_signature;
-  const legacyCandidates = [
-    // L1: punchlist binding (from included) — the immediate 0.1 predecessor.
-    canonicalSignPayload(signal.payload, signal.from, signal.to, signal.timestamp),
-    // L2: pre-punchlist (from UNSIGNED) — classical-only, never accepted for hybrid signals.
-    JSON.stringify({ payload: signal.payload, to: signal.to, timestamp: signal.timestamp }),
-  ];
-  for (let i = 0; i < legacyCandidates.length; i++) {
-    // L2 (from unsigned) is never accepted for hybrid (v2) signals — those must bind from.
-    if (i === 1 && signal.pq_signature) continue;
-    // hybridVerify now binds the signed literal to the candidate (both branches), so a substitution
-    // that reuses a validly-signed inner message under different fields no longer passes here.
-    const ok = await hybridVerify(
-      legacyCandidates[i],
-      hybridSig,
-      senderPublicKey,
-      senderPqSigPublicKey,
-      acceptClassicalOnly
-    );
-    if (ok) return true;
-  }
-
-  return false;
 }
 
 // --- Signal factories ---

@@ -24,6 +24,7 @@ import {
   consumeInboundContactUpdates,
   type ConsumeDeps,
   type ContactStore,
+  type DeadLetterSink,
   type KnownContact,
   type OwnerIdentity,
 } from './consume-mailbox';
@@ -50,6 +51,7 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 // L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
 // compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
+import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -60,6 +62,7 @@ import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from '
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, parseNoteWire, receiptOpenpgpDecryptor, parseReceiptWire } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
+import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { verifyReceiptWire } from '@/lib/crypto/delivery-receipt';
@@ -114,7 +117,7 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
  * markAcceptedInMap mutates it in place so a same-poll duplicate joiner is dropped, and
  * recordAcceptedJoiner persists the accept across polls.
  */
-export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource): JoinerResponseSeam {
+export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybrid?: HybridSecretsSource, legs?: OpenLegCounter): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
 
   // The solicited-gate oracle (acceptNonce): accept iff `nonce` is one of OUR outstanding,
@@ -132,7 +135,7 @@ export function buildJoinerSeam(owner: OwnerIdentity, codes: IssuedCodeMap, hybr
         blob,
         // DUAL-READ: hybrid secrets (when present) let verify open a PQ-hybrid joiner-response FIRST, else
         // it falls through to the classical OpenPGP decrypt — same giver identity either way.
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle },
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid, cycle: owner.cycle, onOpenLeg: legs ? (leg) => legs.bump(leg) : undefined },
         acceptNonce,
         { requirePq: false }, // classical-era joiners still accepted — the signature suite is separate from the envelope
       ),
@@ -168,16 +171,17 @@ export function buildNoteSeam(
   // on top of the already-persisted note; a failed emit must not fail note acceptance). Omitted by unit
   // tests / legacy callers → exact prior behaviour (no receipt sent).
   sendReceipt?: (wire: NoteWireV0) => Promise<void>,
+  legs?: OpenLegCounter, // #720: which leg opened (counts only)
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
   const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   const verifyNote = hybrid
     ? dualReadOpener(
-        makeHybridOpener(openHybridForCycle(owner, hybrid), parseNoteWire),
-        classicalNote,
+        counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseNoteWire), 'hybrid', legs),
+        counted(classicalNote, 'classical', legs),
       )
-    : classicalNote;
+    : counted(classicalNote, 'classical', legs); // no ML-KEM secret: every open here is a classical open
   return {
     // null for a non-note (contact.update / joiner) → consumeOne falls through to the contact path;
     // parseNoteWire is the discriminator (both legs), so this never eats a non-note.
@@ -193,23 +197,37 @@ export function buildNoteSeam(
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
+      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | undefined;
       const rec = await deps.accept({
+        onDrop: (r) => {
+          dropReason = r;
+        },
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
         openRatchet: async (fromFp, body) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
-          const { openDirectNoteStaged, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
-          const self = await loadOwnerRatchetIdentity(owner.fingerprint, {
-            identity: { fingerprint: owner.fingerprint, public_key: owner.publicKeyArmored },
-            post_quantum: { kem_public_key: owner.kemPublicKey, sig_public_key: owner.sigPublicKey },
+          const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
+          const { openRatchetClassified } = await import('@/lib/messaging/ratchet-open');
+          // v5.3: every failure comes back TYPED (local = this device, verdict = the frame/card), never a bare null. R4 + R2: open WITHOUT
+          // persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
+          return openRatchetClassified({
+            loadSelf: () =>
+              loadOwnerRatchetIdentity(owner.fingerprint, {
+                identity: { fingerprint: owner.fingerprint, public_key: owner.publicKeyArmored },
+                post_quantum: { kem_public_key: owner.kemPublicKey, sig_public_key: owner.sigPublicKey },
+              }),
+            contactExists: async () => !!(await getContactByFingerprint(owner.fingerprint, fromFp)),
+            loadPeer: () => loadPeerRatchet(owner.fingerprint, fromFp),
+            open: (self, peer) => openDirectNoteStagedTyped(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint)),
           });
-          const peer = await loadPeerRatchet(owner.fingerprint, fromFp);
-          if (!self || !peer) return null;
-          // R4 + R2: open WITHOUT persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
-          return openDirectNoteStaged(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint));
         },
       });
-      if (!rec) return null; // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept
+      if (!rec) {
+        // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint
+        // travels only for the reasons that come AFTER authentication (wire.from_fingerprint is attacker-controlled until then: F3).
+        if (!dropReason) return null;
+        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint };
+      }
       // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
       // are trustworthy to seal+address a receipt to. Fail-closed on error: never let a receipt-emit
@@ -255,16 +273,17 @@ export function buildReceiptSeam(
   owner: OwnerIdentity,
   hybrid?: HybridSecretsSource,
   deps: ReceiptSeamDeps = { getNote, putNote, getContactByFingerprint },
+  legs?: OpenLegCounter, // #720: which leg opened (counts only)
 ): ReceiptResponseSeam {
   // Single dual-read chokepoint, same discipline as the note seam: hybrid-FIRST + classical FALLBACK (off the N10 unlock
   // cycle). parseReceiptWire is the type-gate on BOTH legs → no-cross-swallow is byte-identical.
   const classicalReceipt = receiptOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
   const verifyReceipt = hybrid
     ? dualReadOpener(
-        makeHybridOpener(openHybridForCycle(owner, hybrid), parseReceiptWire),
-        classicalReceipt,
+        counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseReceiptWire), 'hybrid', legs),
+        counted(classicalReceipt, 'classical', legs),
       )
-    : classicalReceipt;
+    : counted(classicalReceipt, 'classical', legs);
   return {
     // null for a non-receipt (contact.update / joiner / note) → consumeOne falls through; parseReceiptWire
     // is the discriminator (both legs), so this never eats a non-receipt.
@@ -414,6 +433,29 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
 
+/**
+ * #720: the dead-letter sink bound to THIS owner. Every call first checks that the notes store is open FOR THIS OWNER (the same guard the
+ * note seam uses): a store left open for another identity must never receive this identity's records, so a mismatch THROWS and the
+ * envelope stays on the relay.
+ */
+export function buildDeadLetterSink(owner: OwnerIdentity, openOwner: () => string | null = notesStoreOwner): DeadLetterSink {
+  return {
+    record: async (row) => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      await putDeadLetter(row);
+      return (await getDeadLetter(row.envelope_id)) ?? row; // the stored row carries the EARLIEST first_seen
+    },
+    clear: async (id) => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      await removeDeadLetter(id);
+    },
+    settle: async () => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      await pruneDeadLetters(Date.now());
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -481,18 +523,20 @@ export async function buildConsumeDeps(
 
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
+  const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
   return {
     owner,
+    openLegs: legs,
     decrypt: hybrid
       ? dualReadOpener(
-          makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire),
-          classicalCU,
+          counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire), 'hybrid', legs),
+          counted(classicalCU, 'classical', legs),
         )
-      : classicalCU,
+      : counted(classicalCU, 'classical', legs),
     store: buildContactStore(fingerprint),
-    joiner: buildJoinerSeam(owner, codes, hybrid),
-    note: buildNoteSeam(owner, undefined, hybrid),
-    receipt: buildReceiptSeam(owner, hybrid),
+    joiner: buildJoinerSeam(owner, codes, hybrid, legs),
+    note: buildNoteSeam(owner, undefined, hybrid, undefined, legs),
+    receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
     // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
@@ -508,6 +552,7 @@ export async function buildConsumeDeps(
     emitReceipt: (e) => emitNoteArrival(e),
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
+    deadLetter: buildDeadLetterSink(owner),
     fetchImpl: opts.fetchImpl,
   };
 }
