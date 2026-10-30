@@ -33,6 +33,8 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
 import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
+import { getHeldReport, subscribeHeld, type HeldReport } from '@/lib/notes/held-events';
+import { formatRelayDeadline, heldNotices } from './held-notice';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY, notSentMessage, ratchetOffMessage } from './notes-copy';
 import {
@@ -130,6 +132,16 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
   const [unsaved, setUnsaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [storeReady, setStoreReady] = useState(false);
+  // #720: blobs this device cannot open YET, kept on the relay (reported by the shared mailbox poll; in memory, never stored at rest).
+  const [heldReport, setHeldReport] = useState<HeldReport>(getHeldReport);
+  useEffect(() => {
+    setHeldReport(getHeldReport());
+    return subscribeHeld(setHeldReport);
+  }, []);
+  const heldNotice = useMemo(
+    () => heldNotices([{ reason: 'missing_key', count: heldReport.count, kept: 'relay', expiresAt: heldReport.expiresAt }], Date.now(), (ms) => formatRelayDeadline(ms))[0] ?? null,
+    [heldReport],
+  );
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
   const [mobilePane, setMobilePane] = useState<'people' | 'thread'>('people');
@@ -455,6 +467,24 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
           >
             {NOTES_COPY.fieldPeople}
           </p>
+
+          {heldNotice ? (
+            <div
+              role="status"
+              data-testid="notes-held-notice"
+              style={{ border: `1px solid ${E.muted}`, borderRadius: 10, padding: '10px 12px', fontSize: 13, lineHeight: 1.45, color: E.text }}
+            >
+              <p data-testid="notes-held-text" style={{ margin: 0 }}>
+                {heldNotice.text}
+                {heldNotice.kept ? ` ${heldNotice.kept}` : ''}
+              </p>
+              {heldNotice.hint ? (
+                <p data-testid="notes-held-hint" style={{ margin: '6px 0 0', color: E.muted }}>
+                  {heldNotice.hint}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           <label
             style={{

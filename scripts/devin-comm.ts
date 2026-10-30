@@ -19,6 +19,7 @@ import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNo
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
+import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
@@ -76,16 +77,11 @@ function loadMint(): SerializedMintArtifact {
   return JSON.parse(readFileSync(MINT, 'utf8'));
 }
 
+// The ONE owner builder: the custody helper maps every OwnerIdentity field, incl. custody ① kemSecretKey. Without it
+// the consumer has no hybrid open-material and can read only classical notes (10-30 incident: Mneme's hybrid-sealed
+// notes were refused at every seam). Pinned by src/lib/headless/devin-comm-owner-wiring.test.ts.
 function ownerFrom(a: SerializedMintArtifact): HeadlessOwner {
-  const id = a.public.card.identity;
-  return {
-    fingerprint: a.public.durable_id,
-    publicKeyArmored: id.public_key,
-    privateKeyArmored: a.private.classical_private_key,
-    passphrase: a.private.classical_kpass,
-    kemPublicKey: id.pq_kem_public_key,
-    sigPublicKey: id.pq_sig_public_key,
-  };
+  return custodyToHeadlessOwner(a);
 }
 
 // ── agent-local JSON state (issued Grow codes + Gate arrivals) ─────────────────────────────────

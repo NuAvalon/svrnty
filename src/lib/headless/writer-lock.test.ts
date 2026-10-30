@@ -84,6 +84,63 @@ test('stale detection: dead pid, reused pid (start time mismatch), ownerless loc
   assert.throws(() => withWriterLock(d, () => {}, { waitMs: 300 }), /gave up waiting/);
 });
 
+test('stale detection: a zombie owner (dead-but-unreaped) is taken over', async (t) => {
+  if (!existsSync('/proc/self/stat')) { t.skip('needs /proc'); return; }
+  // bash execs a sleeper over itself: its backgrounded child dies unreaped and stays a zombie — kill(pid,0)
+  // still succeeds and /proc/<pid>/stat still resolves with the real start time, the exact wedge shape from
+  // writer-lock-zombie-stale-001 (a reparented-to-init zombie held .writer.lock for 3.5h on 2026-10-30).
+  const zwrap = spawn('bash', ['-c', 'sleep 0.2 & echo $!; exec sleep 30']);
+  const zpid = await new Promise<number>((res, rej) => {
+    zwrap.stdout!.once('data', (b) => res(Number(String(b).trim())));
+    zwrap.once('exit', () => rej(new Error('zombie wrapper exited early')));
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 600));                      // let the child die unreaped
+    const stat = readFileSync(`/proc/${zpid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    assert.equal(fields[0], 'Z', 'fixture sanity: the planted owner IS a zombie');
+    const d = dir();
+    mkdirSync(join(d, LOCK_NAME));
+    // fields[19] = real start time: the start-time probe alone would call this dead process alive.
+    writeFileSync(join(d, LOCK_NAME, 'owner.json'), JSON.stringify({ pid: zpid, start: fields[19], started: 'x', cmd: 'zombie' }));
+    withWriterLock(d, () => {}, { waitMs: 2_000 });
+  } finally {
+    zwrap.kill('SIGKILL');
+  }
+});
+
+test('stale detection: a zombie LEADER whose other threads still run is NOT taken over (it may still write)', async (t) => {
+  if (!existsSync('/proc/self/stat')) { t.skip('needs /proc'); return; }
+  if (spawnSync('python3', ['-c', '0']).status !== 0) { t.skip('needs python3 for the fixture'); return; }
+  // The main thread pthread_exit()s while a worker sleeps on: /proc shows the leader as Z and kill(pid,0) succeeds,
+  // exactly like a true zombie — but the process is alive and could still write. Only Threads: tells them apart.
+  const lwrap = spawn('python3', ['-I', '-c', [
+    'import ctypes, os, threading, time',
+    'threading.Thread(target=time.sleep, args=(30,)).start()',
+    'print(os.getpid(), flush=True)',
+    'ctypes.CDLL(None).pthread_exit(None)',
+  ].join('\n')]);
+  const lpid = await new Promise<number>((res, rej) => {
+    lwrap.stdout!.once('data', (b) => res(Number(String(b).trim())));
+    lwrap.once('exit', () => rej(new Error('leader-exit wrapper exited early')));
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 400));                      // let the main thread exit
+    const stat = readFileSync(`/proc/${lpid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    assert.equal(fields[0], 'Z', 'fixture sanity: the leader shows Z');
+    assert.match(readFileSync(`/proc/${lpid}/status`, 'utf8'), /^Threads:\s*[2-9]/m, 'fixture sanity: a thread still runs');
+    const d = dir();
+    mkdirSync(join(d, LOCK_NAME));
+    writeFileSync(join(d, LOCK_NAME, 'owner.json'), JSON.stringify({ pid: lpid, start: fields[19], started: 'x', cmd: 'leader-exit' }));
+    let ran = false;
+    assert.throws(() => withWriterLock(d, () => { ran = true; }, { waitMs: 300 }), /gave up waiting/);
+    assert.equal(ran, false);
+  } finally {
+    lwrap.kill('SIGKILL');
+  }
+});
+
 test('8 processes x 50 locked increments, starting from a planted stale lock: exactly one taker at a time', async () => {
   const d = dir();
   const counter = join(d, 'counter');
