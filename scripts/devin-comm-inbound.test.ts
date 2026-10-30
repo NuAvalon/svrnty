@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, TR_BODY } from './devin-comm-inbound';
+import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, TR_BODY } from './devin-comm-inbound';
 
 test('triple-ratchet packet → tr (journal decrypted plaintext only)', () => {
   assert.equal(classifyInbound(JSON.stringify({ type: TR_BODY, packet: { h: 'x' } })), 'tr');
@@ -132,4 +132,20 @@ test('every NOTICE row devin-comm writes (loom-notice, dead-notice) wraps sent_a
   const notices = rows.filter((r) => /transport: '(loom-notice|dead-notice)'/.test(r));
   assert.equal(notices.length, 3, 'expected the 3 notice rows (loom-notice x2, dead-notice)');
   for (const r of notices) assert.match(r, /sent_at: safeToken\(/, r);
+});
+
+// #2110 stop-gap: the poll / loop terminal lines must never print a FULL peer note_id (sender-chosen; storage keys on it until slice 4).
+test('shortNoteId: a 13-char prefix of a plain id; anything else is ?', () => {
+  assert.equal(shortNoteId('note_b23690ad-c8d5-4542-bfae-b52b89b01536'), 'note_b23690ad');
+  assert.equal(shortNoteId('n1'), 'n1');
+  for (const bad of [undefined, null, 7, '', 'a b', 'x\u001b[2J', 'x'.repeat(65)]) assert.equal(shortNoteId(bad), '?', String(bad));
+});
+test('poll and loop print shortNoteId, never the raw n.note_id', () => {
+  const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
+  const prints = src.split('\n').filter((l) => l.includes('console.log(`[note '));
+  assert.equal(prints.length, 2, 'the poll line and the loop line');
+  for (const l of prints) {
+    assert.ok(l.includes('${shortNoteId(n.note_id)}'), l.trim());
+    assert.ok(!l.includes('${n.note_id}'), l.trim());
+  }
 });

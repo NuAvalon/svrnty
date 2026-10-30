@@ -42,6 +42,16 @@ const tok = (v: unknown): string => (typeof v === 'string' && SAFE_TOKEN.test(v)
 /** The same sanitizer for journal-row fields a renderer might show (Flint #310: notice rows carry no raw peer value). */
 export const safeToken = tok;
 
+/**
+ * #2110 stop-gap until slice 4 keys note storage on (sender fp, note_id): a peer's note_id is sender-chosen, so a FULL id printed to a
+ * terminal (and pasted into a shared thread) is enough to collide with. Terminal output shows only a 13-char prefix (note_xxxxxxxx):
+ * enough to tell notes apart, too short to reuse. The full id stays in the 0600 journal. Not a plain token: '?'.
+ */
+export function shortNoteId(id: unknown): string {
+  const t = tok(id);
+  return t === '?' ? '?' : t.slice(0, 13);
+}
+
 /** A loom envelope ADDRESSED to this cell (a channel_post whose mentions include ownFp, or a
  *  task_request assigned to ownFp) → a one-line NOTICE for the journal; anything else
  *  → null (stays a counted skip). The notice never carries the post body or brief (M8): only type,
