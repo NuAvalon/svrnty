@@ -220,6 +220,11 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
 
     return () => {
       cancelled = true;
+      // Re-arm the once-guard when this run is cancelled. React StrictMode (next dev, which CI runs) does setup -> cleanup -> setup: with the guard
+      // left set, the second setup returned early while the first, already cancelled, never asked the relay, so a join sat on "Opening the secure
+      // channel..." forever (#716). The cancelled run returns before it fetches (the `cancelled` check after getActiveFingerprint), so only the
+      // second setup resolves the relay: still exactly one resolve per join. A changed link (code/key) now re-resolves too, as it should.
+      startedRef.current = false;
     };
   }, [code, keyFragment]);
 
