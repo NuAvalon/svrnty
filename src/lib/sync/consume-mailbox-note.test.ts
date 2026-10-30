@@ -18,7 +18,8 @@ import { consumeInboundContactUpdates, type ConsumeDeps, type NoteResponseSeam, 
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
-import { sealNoteTo, noteOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor } from '@/lib/messaging/seal';
+import { sealNoteClassicalFixture } from '@/lib/messaging/seal-classical-fixture';
 
 // The owner (Alice) needs REAL keys — consumeInboundContactUpdates signs the poll/ack requests with them.
 let OWNER: { fingerprint: string; publicKeyArmored: string; privateKeyArmored: string; passphrase: string };
@@ -243,7 +244,7 @@ test('3-way no-cross-swallow: joiner→joiner, note→note, contact-update→con
 // contact-update fall-through). Proves the discriminator is sound without needing IndexedDB.
 test('real crypto: noteOpenpgpDecryptor accepts a real sealed note and rejects a non-note openpgp blob', async () => {
   const note: NoteWireV0 = fakeNoteWire(OWNER.fingerprint);
-  const noteBlob = await sealNoteTo(note, OWNER.publicKeyArmored); // same openpgp envelope as a contact-update
+  const noteBlob = await sealNoteClassicalFixture(note, OWNER.publicKeyArmored); // same openpgp envelope as a contact-update
   const dec = noteOpenpgpDecryptor(OWNER.privateKeyArmored, OWNER.passphrase);
 
   const asNote = await dec(noteBlob);

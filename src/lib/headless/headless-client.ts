@@ -1,9 +1,9 @@
 // src/lib/headless/headless-client.ts
 // The RUNTIME half of L2b: a headless (CLI/docker) svrnty client that RECEIVES (polls the smart mailbox,
-// decrypts → verifies → applies the inbound types) and SENDS (notes + trust-affirmations) — no browser,
+// decrypts → verifies → applies the inbound types) and SENDS notes — no browser,
 // no IndexedDB. It reuses the storage-agnostic consume core (consume-mailbox.ts) + the pure-crypto seams
-// (openpgpEnvelopeDecryptor / noteOpenpgpDecryptor / trustAffirmOpenpgpDecryptor / verifyNoteSender /
-// acceptTrustAffirm); the browser-only persistence is replaced by HeadlessStore.
+// (openpgpEnvelopeDecryptor / noteOpenpgpDecryptor / verifyNoteSender); the browser-only persistence is
+// replaced by HeadlessStore. (The trust-affirmation wire was removed in #593.)
 //
 // Owner key material is an INPUT (OwnerIdentity) — this module is decoupled from WHERE the keys come from.
 // The custody-store → OwnerIdentity adapter (Athena's custody lane) is the integration seam; a headless
@@ -17,16 +17,11 @@ import {
   type ConsumeSummary,
   type OwnerIdentity,
   type NoteResponseSeam,
-  type TrustAffirmResponseSeam,
 } from '@/lib/sync/consume-mailbox';
 import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/contact-update-envelope';
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
-import { trustAffirmOpenpgpDecryptor, parseTrustAffirmWire } from '@/lib/trust/trust-affirm-seal';
-import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
-import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
-import { edgeTrusted } from '@/lib/trust/contact-edge';
 import { admitContact } from '@/lib/trust/admit-contact';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
@@ -99,47 +94,10 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
   };
 }
 
-// ── the mutual-trust AFFIRMATION seam, Node-backed (acceptTrustAffirm is already injection-based) ──
-function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets): TrustAffirmResponseSeam {
-  // Single dual-read chokepoint (Option-B, mirrors FE buildTrustAffirmSeam): hybrid-FIRST + classical
-  // FALLBACK, reusing parseTrustAffirmWire (the SAME asAffirm type-gate → no-cross-swallow unchanged).
-  const classicalAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
-  const verifyAffirm = hybrid
-    ? dualReadOpener(
-        makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseTrustAffirmWire),
-        classicalAffirm,
-      )
-    : classicalAffirm;
-  return {
-    verify: (blob) => verifyAffirm(blob),
-    accept: (wire) =>
-      acceptTrustAffirm({
-        wire,
-        ownerFingerprint: owner.fingerprint,
-        isAdmitted: async (fp) => admitContact(store.getContactByFingerprint(fp)), // FALSE-MUTUAL gate: in-book AND not-blocked (P1#2)
-        applyMutual: async (fromFp, trusts, sentAt) => {
-          const rec = store.getContactByFingerprint(fromFp);
-          if (!rec) throw new Error('headless applyMutual: contact vanished between admit and apply');
-          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539 + NaN/future hardening #169647): apply
-          // only if the sender's SIGNED sent_at is plausible AND not strictly older than the last applied
-          // for this sender — a stale/replayed/back-dated "I trust you" must not overwrite a newer "I broke
-          // trust", and a garbage/future ts must not defeat or poison the ordering. last_affirm_at rides
-          // INSIDE `mutual`, persisted in the same updateContact as they_trust_me (crash-safe). `null` ⇒ drop.
-          const prevAffirmAt = (rec.mutual as { last_affirm_at?: string } | undefined)?.last_affirm_at;
-          if (!affirmShouldApply(sentAt, prevAffirmAt, Date.now())) return null;
-          const iTrustThem = edgeTrusted(rec); // reciprocal reads MY existing trusted state — no wire promotion
-          const mutual = { they_trust_me: trusts, last_sync: now(), reciprocal: iTrustThem && trusts, last_affirm_at: sentAt };
-          store.updateContact(rec.id, { mutual });
-          return { id: rec.id, reciprocal: mutual.reciprocal };
-        },
-      }),
-  };
-}
-
 /**
  * Assemble the consume deps for a headless owner over a HeadlessStore (ASYNC — it derives the owner's
  * hybrid open-material). The joiner (Grow-gate) seam is omitted — headless agents don't run the browser
- * Grow flow; contact-update + note + affirm cover receive.
+ * Grow flow; contact-update + note cover receive (no affirm seam since #593).
  *
  * L7 HYBRID RECEIVE (single dual-read chokepoint, mirrors FE buildConsumeDeps): each of the 3 seams opens
  * hybrid-FIRST (dualReadOpener over makeHybridOpener, off the owner's ML-KEM secret) then falls back to
@@ -172,7 +130,6 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
       : classicalCU,
     store: store.asContactStore(),
     note: buildNoteSeam(owner, store, now, hybrid),
-    affirm: buildTrustAffirmSeam(owner, store, now, hybrid),
     // ③ loud-not-silent, keyed on ACTUAL derivability (Flint's hard gate #168382): advertise-kem-pub but the
     // ML-KEM secret did NOT derive ⇒ a hybrid blob is LEFT FOR RETRY, never silently acked+dropped. The instant
     // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
@@ -230,8 +187,6 @@ export function startHeadlessPolling(
 }
 
 // ── SEND ──────────────────────────────────────────────────────────────────────────────────────────
-// Trust-affirmations: reuse sendTrustAffirmToPeer (already Node-ready — pure sign→seal→POST, no store).
-export { sendTrustAffirmToPeer };
 
 /**
  * Send an over-wire note from a headless client: sign → seal → deposit to the peer's mailbox, and persist

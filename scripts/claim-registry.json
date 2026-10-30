@@ -625,11 +625,76 @@
    "detector": "deliveredOverclaim",
    "requires": [
     {
-     "file": "e2e (S06/S07)",
-     "test": "recipient-signed receipt shown only after receipt verifies",
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A1: a receipt signed with the recipient's card keys → accepted, the note is marked delivered, and that is the ONE write",
      "invariant": "S06/S07",
-     "resolved": false,
-     "note": "test name not yet fixed; S06/S07 owners name it"
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A2: a receipt signed by an ATTACKER's keys but claiming to be the recipient → rejected, not delivered",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A2b: a genuine receipt from R, but the card in OUR book under R's fingerprint holds a DIFFERENT contact's keys → rejected",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A3: wrong nonce, unknown note_id, an INBOUND note_id, or an outbound note with no nonce → rejected",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A4: a validly-signed receipt whose from_fingerprint is NOT the note's recipient (wrong deliverer) → rejected",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A4b: a contact X in OUR book signs a receipt with X's own REAL keys and claims to be X, for a note we sent to R → rejected",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A5: the recipient has been removed from our book → no card to verify against → rejected (floor holds)",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A6: a classical (no-PQ) contact, or a card with malformed PQ keys → rejected (no signing key to verify against)",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptWire returned true",
+     "invariant": "S06/S07",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "the inbox derives the status from note.delivered === true (STRICT), in exactly one place",
+     "invariant": "display",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "no unverified status string can carry a live-delivery word",
+     "invariant": "display",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "showAwaitingHint: the promise is made only for a deposited, nonce-stamped note to a peer who has proven it sends receipts",
+     "invariant": "awaiting-hint (Hypatia #745)",
+     "resolved": true
     }
    ],
    "source": [
@@ -661,7 +726,9 @@
    "annotation_ok": [
     "src/components/notes/notes-status.ts:18 FORBIDDEN_LIVE_STATUS guard regex: code that BLOCKS the claim; one reasoned // claim-sweep:ok (Hypatia, Athena #78)"
    ],
-   "ruling": "console.* / logger lines are not user copy and are excluded from the sweep (Archie #56); JoinerCeremony.tsx:120 console.warn FP resolved by that rule, not an annotation."
+   "ruling": "console.* / logger lines are not user copy and are excluded from the sweep (Archie #56); JoinerCeremony.tsx:120 console.warn FP resolved by that rule, not an annotation.",
+   "resolved": true,
+   "resolution": "Hypatia (TG-1 owner) per lane:svrnty #704/#706/#745; Flint ACK #751 (commit 3 @9755cb8: receipt accept == 620cd7b body with 3 calls via deps; production wires the real functions); 3b @f8d06d0 adds the awaiting-hint gate. Verify each named test exists AND passes on the merge ref before trusting resolved:true."
   },
   {
    "id": "TG-2",

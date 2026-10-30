@@ -1,21 +1,4 @@
 {
   "$schema": "Quarantine entry = one red test FILE the unified gate skips while the fleet fixes it. Rules: every entry needs an owner + expiry; an expired or all-green entry FAILS the gate (ratchet: exceptions enumerated and shrinking, never permanent). File-level because the runner gates per file \u2014 the file's other tests still run in the informational tier.",
-  "quarantined": [
-    {
-      "file": "src/lib/trust/sample-svrnty-keys.test.ts",
-      "reason": "demo peers Invariant-1 fails \u2014 80-peer sample fixture is classical-era; fixture either needs canonical re-mint or retirement (no production refs, though sample-circle-lanes.test.ts now consumes it).",
-      "owner": "flint",
-      "added": "2026-09-30",
-      "expires": "2026-10-30",
-      "ref": "review main@0046c7e \u00a73/\u00a75"
-    },
-    {
-      "file": "src/lib/trust/sample-circle-lanes.test.ts",
-      "reason": "expects 10 living names but the fixture now has 80, and classical demo names leak into the living key set \u2014 same stale SAMPLE_SVRNTY_PEERS fixture as sample-svrnty-keys.",
-      "owner": "flint",
-      "added": "2026-09-30",
-      "expires": "2026-10-30",
-      "ref": "unified gate run 2026-09-30 (757/759 green otherwise)"
-    }
-  ]
+  "quarantined": []
 }

@@ -33,6 +33,9 @@ export const DOMAIN_MUTUAL_VOUCH = 'svrnty:mutual-vouch:v1';
 // DISTINCT from DOMAIN_ROTATION so a DID-Doc-update signature can never verify as a rotation-successor and
 // vice-versa (domain separation). PENDING Flint's concur ☀7490 (this-vs-reuse-DOMAIN_ROTATION).
 export const DOMAIN_DID_DOC = 'svrnty:did-doc:v1';
+// #705 INT-4 human-signed agent cert set (trust/agent-cert.ts): "these agents are mine, for this scope". A human
+// key signs it; DISTINCT from every other tag so it can never verify as a card, vouch, signal or rotation (V4).
+export const DOMAIN_AGENT_CERT_SET = 'svrnty:agent-cert-set:v1';
 // #705 ORG-1 org member list (trust/org-list.ts): an org key signs WHO IS LISTED, nothing else (O1). DISTINCT from every
 // other tag, so an org signature can never verify as a vouch, card, cert or signal; v0 orgs cannot act, attest or vouch.
 export const DOMAIN_ORG_MEMBER_LIST = 'svrnty:org-member-list:v1';
