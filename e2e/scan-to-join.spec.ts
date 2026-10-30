@@ -153,4 +153,29 @@ test.describe('Scan-to-join — camera QR receive side', () => {
     await page.waitForTimeout(1_000);
     expect(relayGets, 'one GET to /api/relay/<code> per join').toEqual(['GET']);
   });
+  test('client-side navigation between two invite links shows nothing from the first while the second resolves (#716)', async ({ page }) => {
+    test.setTimeout(90_000);
+    await genesis(page, 'Nav Between Links');
+    // Link B's answer is held so its pending state can be observed; link A answers with its honest 404 at once.
+    let releaseB!: () => void;
+    const heldB = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    await page.context().route(/\/api\/relay\/e2enavb(\?|$)/, async (route) => {
+      await heldB;
+      await route.continue();
+    });
+    await page.goto('/c/e2enava#e2ekeyfraga');
+    await expect(page.getByText(/this link isn.t available/i)).toBeVisible({ timeout: 20_000 });
+    // Same-page client navigation (the app router), not a reload. The two links' error texts are identical, so "A's error is gone" is only
+    // observable through B's PENDING state: while B is held the ceremony must be in its loading state, not still showing A's outcome.
+    await page.evaluate(() =>
+      (window as unknown as { next: { router: { push: (u: string) => void } } }).next.router.push('/c/e2enavb#e2ekeyfragb'),
+    );
+    await expect(page.getByText(/opening the secure channel/i)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/this link isn.t available/i)).toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('e2ekeyfrag');
+    releaseB();
+    await expect(page.getByText(/this link isn.t available/i)).toBeVisible({ timeout: 15_000 });
+  });
 });
