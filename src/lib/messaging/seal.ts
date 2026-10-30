@@ -12,7 +12,6 @@ import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0 } from './types';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
-import { tryParseReceiptWire, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
 import { RECEIPT_V1_WIRE_TYPE, type ReceiptWireV1 } from './receipt-wire-v1';
 
 export async function sealNoteTo(
@@ -78,22 +77,10 @@ export function noteOpenpgpDecryptor(
   };
 }
 
-// ── Delivery-receipt seal pair (Athena — Nov-5 delivered-receipt) ──────────────────────────────────
-// A receipt is sealed EXACTLY like a note (OpenPGP to the recipient's pubkey → opaque blob) so at the
-// relay it is byte-indistinguishable from a note deposit ({mailbox_id, blob}). The ONLY difference is
-// the inner `type` discriminator (RECEIPT_WIRE_TYPE), checked CLIENT-SIDE post-decrypt. We keep a
-// SEPARATE pair (not a loosened sealNoteTo) so the note type-guard stays intact and a receipt decryptor
-// returns null for a note / contact-update / affirm (and vice-versa) — the 5-way no-cross-swallow in
-// consumeOne depends on each decryptor refusing every other type.
-
-/**
- * The S06 v0 receipt sealed CLASSICALLY. It no longer does: S62 (contract v6, Archie #2014) ships only the hybrid MAC receipt, so this
- * THROWS and nothing may emit a classical or identity-signed receipt. Tests that need a v0 blob use sealReceiptClassicalFixture in
- * seal-classical-fixture.ts, which no app code may import.
- */
-export async function sealReceiptTo(): Promise<never> {
-  throw new Error('sealReceiptTo: removed. Receipts are sealed hybrid-only with sealReceiptV1To (S62), never classical');
-}
+// ── Delivery receipt seal (S62) ──────────────────────────────────────────────────────────────────
+// The MAC receipt is sealed hybrid like a note, so at the relay it is the same KIND of object ({mailbox_id, blob}). It is NOT
+// indistinguishable from a note: it is about 2.6 KB against 12.5 KB and up (measured, S62 slice 3), and Archie ruled (v8) that this
+// residual is stated rather than padded away. The inner `type` discriminator is checked CLIENT-SIDE after opening.
 
 /**
  * Seal the MAC receipt (ReceiptWireV1) to the note SENDER, post-quantum hybrid exactly like a note, so on the relay it is an ordinary
@@ -103,44 +90,6 @@ export async function sealReceiptV1To(receipt: ReceiptWireV1, recipientPublicKey
   if (receipt.type !== RECEIPT_V1_WIRE_TYPE) throw new Error('sealReceiptV1To: refusing non-receipt wire type');
   if (!recipientPqKemB64) throw new Error('sealReceiptV1To: refusing to seal without a recipient ML-KEM key (no classical downgrade)');
   return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(receipt)), recipientPublicKeyArmored, recipientPqKemB64);
-}
-
-/**
- * The receipt inner-wire type-gate, string in → ReceiptWireV0 | null. Exported as a `WireParser` for the single
- * dual-read chokepoint (hybrid-dual-read.ts: makeHybridOpener(openEnv, parseReceiptWire)) so the hybrid leg and
- * the classical leg run the EXACT same discriminator → no-cross-swallow is byte-identical on both (same shape as
- * {@link parseNoteWire}). Null on non-JSON or any non-receipt shape.
- */
-export function parseReceiptWire(innerUtf8: string): ReceiptWireV0 | null {
-  try {
-    return tryParseReceiptWire(JSON.parse(innerUtf8));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Decrypt opaque blob → ReceiptWireV0, or null on any failure / non-receipt (I-1 silent drop). Classical
- * fallback leg of the dual-read; like {@link noteOpenpgpDecryptor} it runs OFF the poll's N10 unlock cycle when one
- * is given (a lock / identity switch mid-tick must stop THIS decryptor too: a receipt must not be opened, and so
- * not accepted, after the cycle ended).
- */
-export function receiptOpenpgpDecryptor(
-  recipientPrivateKeyArmored: string,
-  passphrase: string,
-  cycle?: UnlockCycle,
-): (blob: string) => Promise<ReceiptWireV0 | null> {
-  return async (blob: string): Promise<ReceiptWireV0 | null> => {
-    try {
-      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
-      const message = await readMessage({ armoredMessage: blob });
-      const { data } = await decrypt({ message, decryptionKeys });
-      const text = typeof data === 'string' ? data : await streamToText(data);
-      return parseReceiptWire(text); // null for any non-receipt shape → caller falls through
-    } catch {
-      return null;
-    }
-  };
 }
 
 async function streamToText(data: unknown): Promise<string> {

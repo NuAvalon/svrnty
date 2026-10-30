@@ -7,7 +7,7 @@ import { sealNoteTo, noteOpenpgpDecryptor } from './seal';
 import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
-import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce } from './store';
+import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type RatchetIO, type StagedOpen } from './direct-session';
@@ -274,7 +274,7 @@ export async function acceptInboundNote(args: {
    *  or a {@link StagedOpen}, whose session advance is committed HERE only after the note and thread are stored (R4). */
   openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | null>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
-  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads };
+  io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -285,6 +285,12 @@ export async function acceptInboundNote(args: {
   if (!(await args.isAdmitted(args.wire.from_fingerprint))) {
     return null; // spam / stranger — structural drop
   }
+  // note_id is chosen by the SENDER, and the notes store is keyed on note_id ALONE (store.ts: keyPath 'note_id', putNote is a put), so a note that
+  // reuses an id would silently REPLACE the stored row: our own outbound copy of a note we sent this contact (they hold that id: we sent it to
+  // them), or another contact's inbound note. Launch gate (Archie #2110): refuse BEFORE any ratchet work. The same sender's redelivery (same
+  // direction and from_fingerprint) is the idempotent case and proceeds. A store error here throws (retryable), exactly like putNote below.
+  const prior = await (args.io?.getNote ?? getNote)(args.wire.note_id);
+  if (prior && (prior.direction !== 'inbound' || prior.from_fingerprint !== args.wire.from_fingerprint)) return null;
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
   if (isTripleRatchetBody(body)) {

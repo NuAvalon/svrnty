@@ -83,3 +83,16 @@ test('N10 R3-2 keying: the dedupe is per OWNER and note. Two identities on the s
   await seamFor(ownerA).accept(WIRE); // and each is still deduped against itself
   assert.equal(sent, 2);
 });
+
+test('N11 (Flint #2105 hardening) the dedupe is keyed on the SENDER too: another contact who reuses a note_id cannot pre-empt that note\'s receipt', async () => {
+  let sent = 0;
+  const hook = async () => { sent++; };
+  const accept = (async () => REC) as never;
+  const seam = () => buildNoteSeam(OWNER, { openOwner: () => OWNER.fingerprint, accept } as NoteSeamDeps, undefined, hook);
+  await seam().accept(WIRE); // contact C1's note n1
+  await seam().accept({ ...WIRE, from_fingerprint: 'ee'.repeat(32) }); // contact C2 sends a note that happens to carry the same note_id
+  assert.equal(sent, 2, 'both senders get their receipt');
+  await seam().accept(WIRE);
+  assert.equal(sent, 2, 'and each is still deduped against its own redelivery');
+});
+

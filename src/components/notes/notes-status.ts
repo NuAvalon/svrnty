@@ -1,5 +1,5 @@
-// Honest send-status. The blind mailbox has no delivery query — EXCEPT a cryptographically VERIFIED
-// delivery receipt (delivery-receipt.ts), which alone graduates "Sent · unconfirmed." → "Delivered".
+// Honest send-status. The blind mailbox has no delivery query — EXCEPT a VERIFIED delivery receipt (the S62 designated-verifier MAC
+// receipt, checked in live-book-poll.buildReceiptSeam), which alone graduates "Sent · unconfirmed." → "Delivered".
 // Every UNVERIFIED path stays the floor: Delivered/Read/Expired are forbidden unless receipt-backed.
 
 import { NOTES_COPY } from './notes-copy';
@@ -8,8 +8,9 @@ export type NoteBubbleStatus = 'sent-unconfirmed' | 'inbound' | 'not-sent' | 'de
 
 /**
  * Outbound status. `delivered` is TRUE only when a cryptographically VERIFIED delivery receipt has
- * been processed for this note (set upstream by verifyReceiptWire in the consume seam — NEVER from an
- * unverified signal, a relay flag, or a bare deposit ack). Without it, the floor holds.
+ * been processed for this note (set upstream by verifyReceiptTag in the consume seam — NEVER from an
+ * unverified signal, a relay flag, or a bare deposit ack). There is deliberately NO failure state in this enum: a missing receipt proves
+ * nothing (S62 v7: no "couldn't verify" / failed state is ever inferred from silence). Without it, the floor holds.
  */
 export function outboundStatus(deposited: boolean, delivered = false): NoteBubbleStatus {
   if (delivered) return 'delivered';
@@ -25,7 +26,7 @@ export function statusLabel(status: NoteBubbleStatus): string {
 
 /**
  * Has this peer already PROVEN it sends delivery receipts? True iff at least one OUTBOUND note in the conversation carries a
- * VERIFIED receipt (`delivered === true`, set only by the receipt consume seam after verifyReceiptWire). Derived from stored
+ * VERIFIED receipt (`delivered === true`, set only by the receipt consume seam after verifyReceiptTag). Derived from stored
  * notes, so there is nothing new to persist. Strict `=== true`: a truthy non-boolean does not count.
  */
 export function peerSendsReceipts(notes: ReadonlyArray<{ direction: string; delivered?: unknown }>): boolean {

@@ -2,7 +2,7 @@
 // The Chat tab is the window — no essay masthead. Status floor is
 // "Sent · unconfirmed." — never Delivered / Read / Expired.
 // Essay claims ("encrypted messages…", "How notes travel") stay off this glass.
-// "Delivered" renders ONLY on a cryptographically VERIFIED delivery receipt (delivery-receipt.ts);
+// "Delivered" renders ONLY on a cryptographically VERIFIED delivery receipt (the S62 MAC receipt, live-book-poll.buildReceiptSeam);
 // the floor stays "Sent · unconfirmed." for every unverified path (notes-status.ts statusIsHonest).
 
 export const NOTES_COPY = {
@@ -15,7 +15,7 @@ export const NOTES_COPY = {
   // via statusIsHonest; no qualifier).
   delivered: 'Delivered',
   // Light secondary line under "Sent · unconfirmed." (NOT bare) — reads as in-progress, not failed:
-  // the delivery-receipt flow is live and will resolve to "Delivered". Hypatia #172212 floor hint.
+  // the delivery-receipt flow (S62) is live and will resolve to "Delivered". Hypatia #172212 floor hint.
   awaitingDelivery: 'Awaiting delivery confirmation',
   sendAction: 'Send',
   sendingAction: 'Sending…',

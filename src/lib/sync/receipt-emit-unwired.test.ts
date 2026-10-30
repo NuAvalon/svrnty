@@ -4,7 +4,7 @@
  *
  * The S06 v1 receipt is identity-signed (ed25519 + ML-DSA-87), which makes it a transferable proof that the
  * recipient got a note. So no recipient path may build or seal one: a poll that persists a note deposits ZERO
- * receipts. The sender-side verify (buildReceiptSeam / verifyReceiptWire) stays, and "Delivered" lights up once
+ * receipts. The sender-side verify (buildReceiptSeam / verifyReceiptTag, S62 slice 4) stays, and "Delivered" lights up once
  * S62's designated-verifier MAC receipt lands.
  *
  * Wiring check by source, because the poll's deps (buildConsumeDeps) need an unlocked browser identity that no
@@ -74,7 +74,7 @@ describe('delivery receipts: no identity-signed emitter; only the MAC emitter sh
 
   it('the sender-side verify is still wired (Delivered can light up once a sound receipt exists)', () => {
     const src = readFileSync(join(ROOT, 'src/lib/sync/live-book-poll.ts'), 'utf8');
-    assert.match(src, /verifyReceiptWire/);
+    assert.match(src, /verifyReceiptTag/);
     assert.match(src, /receipt: buildReceiptSeam\(/);
   });
 });

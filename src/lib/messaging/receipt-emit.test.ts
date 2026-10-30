@@ -13,7 +13,7 @@ import { signNoteWire } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import { emitDeliveredReceipt } from './receipt-emit';
 import { buildReceiptWireV1, parseReceiptWireV1, RECEIPT_V1_WIRE_TYPE } from './receipt-wire-v1';
-import { sealReceiptTo, sealReceiptV1To } from './seal';
+import { sealReceiptV1To } from './seal';
 import type { NoteWireV0 } from './types';
 
 type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
@@ -61,7 +61,7 @@ test('W1 the v1 wire is EXACTLY {type, note_id, code, tag}; the tag verifies und
   assert.equal(buildReceiptWireV1('ab'.repeat(31), 'n', 'delivered'), null, 'a short key builds nothing');
 });
 
-test('S1 sealReceiptV1To is hybrid-only: it needs the sender KEM key, opens only for the sender, and sealReceiptTo (the classical body) THROWS', async () => {
+test('S1 sealReceiptV1To is hybrid-only: it needs the sender KEM key, opens only for the sender, and there is NO classical sealer left', async () => {
   const [A, B] = [await mint(), await mint()];
   const w = buildReceiptWireV1(receiptKeyToHex(newReceiptKey()), 'n1', 'delivered')!;
   await assert.rejects(() => sealReceiptV1To(w, A.pub, undefined), /no classical downgrade/);
@@ -72,7 +72,6 @@ test('S1 sealReceiptV1To is hybrid-only: it needs the sender KEM key, opens only
   const { asMailboxEnvelopePackage } = await import('@/lib/sync/hybrid-dual-read');
   const opened = await openMailboxEnvelope(asMailboxEnvelopePackage(blob)!, hybridB!.secrets, hybridB!.myFp).catch(() => null);
   assert.equal(opened, null, 'a third party cannot open it');
-  await assert.rejects(() => (sealReceiptTo as unknown as (...a: unknown[]) => Promise<unknown>)({}, A.pub), /removed/);
 });
 
 test('E1 done_when: after a stored note the recipient deposits ONE hybrid receipt in the SENDER\'s mailbox; only the sender can open it; the tag verifies under the sender\'s rk; nothing identifying or secret rides it', async () => {

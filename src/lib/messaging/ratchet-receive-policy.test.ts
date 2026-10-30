@@ -59,6 +59,7 @@ async function scenario(opts: { failPutNote?: number; failPutThread?: number; fa
     putNote: async (n: NoteRecord) => { if (failPutNote > 0) { failPutNote--; throw new Error('notes store write failed'); } notes.set(n.note_id, n); },
     putThread: async (t: NoteThread) => { if (failPutThread > 0) { failPutThread--; throw new Error('thread store write failed'); } threads.set(t.thread_id, t); },
     listThreads: async () => [...threads.values()],
+    getNote: async (id: string) => notes.get(id) ?? null, // the note_id collision guard reads the store (an IndexedDB-like lookup by note_id)
   };
   const accept = () => acceptInboundNote({
     wire,
@@ -121,7 +122,7 @@ test('R4 compat: an openRatchet that returns a plain string (already committed, 
   const rec = await acceptInboundNote({
     wire: s.wire, isAdmitted: async () => true,
     openRatchet: async () => 'plain string result',
-    io: { putNote: async (n) => { s.notes.set(n.note_id, n); }, putThread: async (t) => { s.threads.set(t.thread_id, t); }, listThreads: async () => [] },
+    io: { putNote: async (n) => { s.notes.set(n.note_id, n); }, putThread: async (t) => { s.threads.set(t.thread_id, t); }, listThreads: async () => [], getNote: async (id) => s.notes.get(id) ?? null },
   });
   assert.equal(rec?.body, 'plain string result');
 });

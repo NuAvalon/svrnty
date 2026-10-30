@@ -6,20 +6,11 @@
 import { createMessage, encrypt, readKey } from 'openpgp';
 import type { NoteWireV0 } from './types';
 import { NOTE_WIRE_TYPE } from './domains';
-import { RECEIPT_WIRE_TYPE, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
 
 export async function sealNoteClassicalFixture(note: NoteWireV0, recipientPublicKeyArmored: string): Promise<string> {
   if (note.type !== NOTE_WIRE_TYPE) throw new Error('sealNoteClassicalFixture: refusing non-note wire type');
   const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
   const message = await createMessage({ text: JSON.stringify(note) });
-  return (await encrypt({ message, encryptionKeys })) as string;
-}
-
-/** The S06 v0 receipt sealed the OLD way (OpenPGP only). sealReceiptTo throws now; this exists only so tests can still build a v0 blob. */
-export async function sealReceiptClassicalFixture(receipt: ReceiptWireV0, recipientPublicKeyArmored: string): Promise<string> {
-  if (receipt.type !== RECEIPT_WIRE_TYPE) throw new Error('sealReceiptClassicalFixture: refusing non-receipt wire type');
-  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(receipt) });
   return (await encrypt({ message, encryptionKeys })) as string;
 }
 

@@ -36,7 +36,7 @@ import {
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
-import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import type { ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -147,28 +147,22 @@ export interface NoteLiveEvent {
 }
 
 /**
- * DELIVERY-RECEIPT routing seam (svrnty-receipt-v0) — the mailbox's FOURTH inbound type. A receipt is
- * sealed to the owner with the SAME openpgp envelope as the other four (seal.ts sealReceiptTo), so —
- * exactly like them — it DECRYPTS NON-NULL via the contact-update decryptor and would then be dropped on
- * its missing `envelope.fingerprint` → silently ack-DELETED (the silent-loss). This seam routes a receipt
- * FIRST, by its own type-checked decryptor, so the sender's "Delivered" graduation actually lands. It is
- * the WIRE that makes "Sent · unconfirmed." a TRANSIENT state for a delivered note (it resolves when the
- * recipient's receipt arrives) — the sender half of delivery-receipt.ts.
- *   • verify — decrypt + type-check the blob as a receipt (receiptOpenpgpDecryptor returns null for a
- *     non-receipt → fall through). Does NOT authenticate — that's accept's job (the receipt's claimed
- *     nonce/note are meaningless until verifyReceiptWire runs against the stored outbound note).
- *   • accept — recover the OUTBOUND note (getNote), look up the recipient's pubkeys, and
- *     verifyReceiptWire. ★ delivered=true is written ON EXACTLY ONE LINE (inside accept, only on
- *     verify-true) — NEVER from a bare ack, a relay flag, or any unverified signal. Returns the note's
- *     ids for the inbox repaint, or null if DROPPED (no matching note / forged / unverifiable recipient —
- *     silent I-1, floor 'Sent · unconfirmed.' holds, NO false Delivered). THROWS only on store I/O →
- *     retryable (putNote is idempotent, so a redelivered receipt re-sets delivered harmlessly).
- * Optional: a caller that omits it keeps the exact prior behaviour (a receipt, if any, falls to the
- * contact-update path = the silent-loss; so the runtime binding MUST wire this once over-wire ships).
+ * DELIVERY-RECEIPT routing seam (svrnty-receipt-v1, the designated-verifier MAC receipt) — the mailbox's FOURTH inbound type, the SENDER
+ * half of S62 (receipt-emit.ts is the recipient half). A receipt is a hybrid-sealed envelope like the others, so it would otherwise decrypt
+ * NON-NULL via the contact-update decryptor and be dropped on its missing `envelope.fingerprint` → silently ack-DELETED. This seam routes a
+ * receipt FIRST, by its own type-checked opener, so "Sent · unconfirmed." can actually resolve to "Delivered".
+ *   • verify — open + type-check the blob as a v1 receipt (null for a non-receipt → fall through). Does NOT authenticate: the receipt names
+ *     no sender and carries no signature, so nothing in it means anything until accept checks the MAC against the stored outbound note.
+ *   • accept — recover the OUTBOUND note (getNote), take the per-note receipt key we stored, and verifyReceiptTag(rk, note_id, code, tag).
+ *     ★ delivered=true is written ON EXACTLY ONE LINE (inside accept, only after the tag verified) — NEVER from a bare ack, a relay flag, or
+ *     a signature. The key is deleted from the row in the same write. Returns the note's ids for the inbox repaint, or null if DROPPED
+ *     (unknown note, inbound note, no stored key, wrong code, bad tag: silent, floor 'Sent' holds, NO false Delivered). THROWS only on store
+ *     I/O → retryable (putNote is idempotent, so a redelivered receipt re-sets delivered harmlessly).
+ * Optional: a caller that omits it keeps the exact prior behaviour (a receipt, if any, falls to the contact-update path).
  */
 export interface ReceiptResponseSeam {
-  verify: (blob: string) => Promise<ReceiptWireV0 | null>;
-  accept: (wire: ReceiptWireV0) => Promise<AcceptedReceipt | null>;
+  verify: (blob: string) => Promise<ReceiptWireV1 | null>;
+  accept: (wire: ReceiptWireV1) => Promise<AcceptedReceipt | null>;
 }
 
 /** The confirmed note's handles, returned by the receipt seam's accept for the inbox delivered-repaint. */
@@ -474,14 +468,14 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     // wire null → not a note → fall through to the contact-update consume path.
   }
 
-  // DELIVERY-RECEIPT ROUTING (svrnty-receipt-v0) — same discipline as the joiner + note seams
+  // DELIVERY-RECEIPT ROUTING (svrnty-receipt-v1) — same discipline as the joiner + note seams
   // above, same reason: a receipt decrypts NON-NULL via the contact-update decryptor, then drops on its
   // missing `envelope.fingerprint` → silently ack-DELETED. Route it by its own type-checked decryptor.
   // receipt.verify returns null for a non-receipt (note / joiner / contact-update → fall through
   // unharmed), so this can never eat another type (4-way no-cross-swallow — receipt-type ≠ the others).
   // accept recovers the outbound note + verifies the recipient's signature → marks it delivered.
   if (deps.receipt) {
-    let wire: ReceiptWireV0 | null;
+    let wire: ReceiptWireV1 | null;
     try {
       wire = await deps.receipt.verify(blob);
     } catch {

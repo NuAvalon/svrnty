@@ -119,7 +119,7 @@ test('W5 C2 (structural): the key name appears only in the files that must handl
     .filter((f) => /receipt_key/.test(readFileSync(f, 'utf8')))
     .map((f) => relative(ROOT, f))
     .sort();
-  assert.deepEqual(hits, ['src/lib/crypto/receipt-mac.ts', 'src/lib/messaging/receipt-emit.ts', 'src/lib/messaging/transport.ts', 'src/lib/messaging/types.ts'], 'a new place that touches the key is a deliberate edit of this list (slice 3 added receipt-emit.ts: the recipient reads the key off an ACCEPTED note, only to compute the tag) (and of the C2 review)');
+  assert.deepEqual(hits, ['src/lib/crypto/receipt-mac.ts', 'src/lib/messaging/receipt-emit.ts', 'src/lib/messaging/transport.ts', 'src/lib/messaging/types.ts', 'src/lib/sync/live-book-poll.ts'], 'a new place that touches the key is a deliberate edit of this list (slice 3 added receipt-emit.ts: the recipient reads the key off an ACCEPTED note, only to compute the tag; slice 4 added live-book-poll.ts: the SENDER seam reads its own stored key to verify the tag and then drops it) (and of the C2 review)');
 });
 
 test('W6 C2 (line level): in the files that handle the key, no console/log/journal/JSON-dump line mentions it', () => {

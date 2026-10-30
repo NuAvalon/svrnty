@@ -75,7 +75,7 @@ test('N5 v7 NEG: a forged note NAMING an admitted book contact (valid shape, fai
   const forged: NoteWireV0 = { ...genuine, body: 'attacker-chosen body' }; // content changed after A signed: the signature no longer verifies
   const posts: string[] = [];
   const fetchImpl = (async (url: string) => { posts.push(String(url)); return new Response('{"ok":true}', { status: 200 }); }) as unknown as typeof fetch;
-  const io = { putNote: async () => {}, putThread: async () => {}, listThreads: async () => [] };
+  const io = { putNote: async () => {}, putThread: async () => {}, listThreads: async () => [], getNote: async () => null };
   const deps: NoteSeamDeps = {
     openOwner: () => OWNER.fingerprint,
     // the REAL acceptInboundNote (real signature check); only storage is stubbed, and A is ADMITTED, exactly the forger's target
