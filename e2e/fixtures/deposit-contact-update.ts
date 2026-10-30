@@ -25,7 +25,7 @@ import {
   type ContactUpdateEnvelope,
 } from '../../src/lib/format/envelope';
 import type { SignedContactUpdate } from '../../src/lib/trust/contact-update';
-import { encryptContactUpdateTo } from '../../src/lib/sync/contact-update-envelope';
+import { encryptContactUpdateClassicalFixture } from '../../src/lib/messaging/seal-classical-fixture';
 import { deriveMailboxId } from '../../src/lib/relay/mailbox-auth';
 
 export interface E2EIdentity {
@@ -107,7 +107,7 @@ export async function buildEncryptedUpdate(
     sender.passphrase,
   );
   const signed: SignedContactUpdate = { envelope: env, signature };
-  return encryptContactUpdateTo(signed, recipientPublicKeyArmored);
+  return encryptContactUpdateClassicalFixture(signed, recipientPublicKeyArmored);
 }
 
 /**

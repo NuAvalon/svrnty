@@ -5,6 +5,7 @@
 import type { NoteRecord, NoteThread, RingChannel } from './types';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
+import { isAllowedSettingsPrefix, isAllowedSettingsRowKey } from './settings-row-keys';
 
 const DB_NAME = 'svrnty-notes';
 const DB_VERSION = 2;
@@ -294,6 +295,67 @@ export async function deleteThread(threadId: string): Promise<void> {
   const notes = await listNotesForThread(threadId);
   for (const n of notes) await txDelete('notes', n.note_id);
   await txDelete('threads', threadId);
+}
+
+// ── Encrypted rows in the existing 'settings' store (#720 dead-letter records) ───────────────────────────────────────────────────
+// NO schema bump: DB_VERSION stays 2, so a rollback to a v2 build cannot hit an IndexedDB VersionError and lock the user out of their
+// own notes. A row is {key, enc}: encrypted with the SAME notes key as every other row, in the same per-identity DB, so it is
+// unreadable after lock / identity switch exactly like a note. Only keys allowed by isAllowedSettingsRowKey may be written or read
+// through here, so none of this can touch 'notes_encryption_salt'. Reads and lists THROW while locked, so a caller can tell "locked"
+// from "nothing there".
+type SettingsRow = { key: string; enc: EncryptedBlob };
+
+function requireRowKey(key: string): void {
+  if (!isAllowedSettingsRowKey(key)) throw new Error('settings row key not allowed');
+}
+
+function requireUnlocked(): void {
+  if (!_notesKey) throw new Error('Notes store locked — call initNotesStore() first');
+}
+
+export async function putEncryptedSetting(key: string, value: unknown): Promise<void> {
+  requireRowKey(key);
+  const enc = await encryptJson(value);
+  await txPut('settings', { key, enc } satisfies SettingsRow);
+}
+
+export async function getEncryptedSetting<T>(key: string): Promise<T | null> {
+  requireRowKey(key);
+  requireUnlocked();
+  const row = await txGet<SettingsRow>('settings', key);
+  if (!row?.enc) return null;
+  try {
+    return await decryptJson<T>(row.enc);
+  } catch {
+    return null; // wrong key / corrupt — treat as absent
+  }
+}
+
+export async function listEncryptedSettings<T>(prefix: string): Promise<Array<{ key: string; value: T }>> {
+  if (!isAllowedSettingsPrefix(prefix)) throw new Error('settings row prefix not allowed');
+  requireUnlocked();
+  const db = await openDb();
+  const rows: SettingsRow[] = await new Promise((resolve, reject) => {
+    const tx = db.transaction('settings', 'readonly');
+    const req = tx.objectStore('settings').getAll(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
+    req.onsuccess = () => resolve((req.result as SettingsRow[]) || []);
+    req.onerror = () => reject(req.error);
+  });
+  const out: Array<{ key: string; value: T }> = [];
+  for (const row of rows) {
+    if (!row?.enc || typeof row.key !== 'string') continue;
+    try {
+      out.push({ key: row.key, value: await decryptJson<T>(row.enc) });
+    } catch {
+      /* skip a row that will not decrypt */
+    }
+  }
+  return out;
+}
+
+export async function deleteEncryptedSetting(key: string): Promise<void> {
+  requireRowKey(key);
+  await txDelete('settings', key);
 }
 
 export async function putRingChannel(channel: RingChannel): Promise<void> {

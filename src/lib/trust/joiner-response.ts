@@ -70,9 +70,6 @@ import {
 } from '../crypto/living-book-sleeve';
 import { asMailboxEnvelopePackage } from '@/lib/sync/hybrid-dual-read';
 import {
-  createMessage,
-  encrypt,
-  readKey,
   readPrivateKey,
   decryptKey,
   readMessage,
@@ -231,24 +228,22 @@ export async function buildJoinerResponse(
 }
 
 /**
- * Send side: encrypt a signed joiner-response to the GIVER's public key → opaque armored blob. The
- * relay stores it opaquely (custody §4 / I-1); only the giver's private key decrypts. Mirrors
- * encryptContactUpdateTo — same classical openpgp E2E, no new key material.
+ * Send side: encrypt a signed joiner-response to the GIVER → opaque blob. The relay stores it opaquely
+ * (custody §4 / I-1); only the giver's keys open it. Mirrors encryptContactUpdateTo: HYBRID ONLY, no new
+ * key material, and a THROW (never a classical fallback) when the giver's ML-KEM key is missing.
  */
 export async function encryptJoinerResponseTo(
   signed: SignedJoinerResponse,
   giverPublicKeyArmored: string,
   giverPqKemB64?: string,
 ): Promise<string> {
-  // HYBRID (HNDL) when the giver's ML-KEM-1024 pubkey is supplied (wraps the ALREADY-SIGNED response);
-  // classical OpenPGP otherwise (back-compat/tests — buildJoinerResponseDeposit fail-closed-SKIPS a giver
-  // with no pq_kem, never downgrades).
-  if (giverPqKemB64) {
-    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), giverPublicKeyArmored, giverPqKemB64);
+  // HYBRID ONLY (HNDL): wraps the ALREADY-SIGNED response with the giver's ML-KEM-1024 pubkey. Without that key this THROWS (like sealNoteTo):
+  // buildJoinerResponseDeposit already skips a giver with no pq_kem, so this is the loud backstop for a caller bug, never a silent
+  // classical send. Tests that need a classical blob use seal-classical-fixture.ts (no app code may import it).
+  if (!giverPqKemB64) {
+    throw new Error('encryptJoinerResponseTo: refusing to seal without the giver ML-KEM key (no classical downgrade)');
   }
-  const encryptionKeys = await readKey({ armoredKey: giverPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(signed) });
-  return (await encrypt({ message, encryptionKeys })) as string;
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), giverPublicKeyArmored, giverPqKemB64);
 }
 
 /** Narrow structural check on a decrypted candidate — must have the shape of a joiner-response
