@@ -144,3 +144,20 @@ test('F6: an attacker cannot claim a slug for a key they do not hold', async () 
   // key, so it fails to verify against Alice's public_key. Refused.
   assert.equal(await verifySignedSlugClaim(forged), false);
 });
+
+test('#717: a malformed pq_signature ("" / null) refuses on BOTH paths (envelope + legacy), never reads as classical', async () => {
+  const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
+  assert.equal(await verifySignal(s, publicKey), true); // control
+  for (const bad of ['', null] as unknown[]) {
+    assert.equal(await verifySignal({ ...s, pq_signature: bad } as typeof s, publicKey), false, `envelope path, pq=${JSON.stringify(bad)}`);
+  }
+  // legacy loop (calls hybridVerify directly): the same refusal
+  const payload = vouchSignal('bob');
+  const timestamp = new Date().toISOString();
+  const signature = await pgpSignText(JSON.stringify({ payload, from: fingerprint, to: TO, timestamp }));
+  const legacy = { payload, from: fingerprint, to: TO, timestamp, signature };
+  assert.equal(await verifySignal(legacy, publicKey), true); // control
+  for (const bad of ['', null, 0, false] as unknown[]) {
+    assert.equal(await verifySignal({ ...legacy, pq_signature: bad } as typeof legacy, publicKey), false, `legacy path, pq=${JSON.stringify(bad)}`);
+  }
+});

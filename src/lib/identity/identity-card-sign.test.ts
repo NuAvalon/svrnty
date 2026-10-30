@@ -299,3 +299,12 @@ test('entity_type: bound in the signed card (immutable), tamper-detected, byte-p
     /entity_type must be one of/,
   );
 });
+
+test('#717: a signed card with pq_signature "" (or null) is refused, not verified as classical', async () => {
+  const id = await makeCanonicalId('card717');
+  const signed = await signIdentityCard(canonCard(id), id.privateKey, id.passphrase);
+  assert.equal(await verifySignedIdentityCard(signed), true); // control
+  for (const bad of ['', null] as unknown[]) {
+    assert.equal(await verifySignedIdentityCard({ ...signed, pq_signature: bad } as typeof signed), false, `pq=${JSON.stringify(bad)}`);
+  }
+});

@@ -23,7 +23,7 @@
 
 import type { SlugClaim } from '../format/envelope';
 import { DOMAIN_SLUG_CLAIM, slugClaimSigningInput } from '../format/envelope';
-import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
+import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf } from '../crypto/sign-envelope';
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '../identity/fingerprint';
 
 /** A signed slug claim: the claim fields plus the envelope signature over them. */
@@ -102,9 +102,7 @@ export async function verifySignedSlugClaim(
   // before recomputing the signing input; the §5 PQ pubkeys are additionally EXCLUDED by
   // slugClaimSigningInput → the signed bytes (and the satellite's byte-exact input) are UNCHANGED.
   const { signature, pq_signature, ...claimFields } = claim;
-  const envSig: EnvelopeSignature = pq_signature
-    ? { classical: signature, pq_signature }
-    : { classical: signature };
+  const envSig = envelopeSignatureOf(signature, pq_signature); // raw: '' / null refuse (#717)
   return verifyWithEnvelope(
     DOMAIN_SLUG_CLAIM,
     slugClaimSigningInput(claimFields),

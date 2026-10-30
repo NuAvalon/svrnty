@@ -20,7 +20,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { canonicalize } from '@/lib/format/canonical';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
-import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
+import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
 
@@ -299,9 +299,7 @@ async function verifyOwner(
       sig_public_key: bundle.sig_public_key,
     }))) return false;
     // (4) private-key possession over EXACTLY this request, under the op-specific domain.
-    const envSig: EnvelopeSignature = bundle.pq_signature
-      ? { classical: bundle.signature, pq_signature: bundle.pq_signature }
-      : { classical: bundle.signature };
+    const envSig = envelopeSignatureOf(bundle.signature, bundle.pq_signature); // raw: '' / null refuse (#717)
     return await verifyWithEnvelope(domain, signingInput, envSig, bundle.public_key);
   } catch {
     return false;

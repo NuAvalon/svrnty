@@ -7,7 +7,7 @@
 
 import type { TrustSignal, SignedSignal } from './types';
 import { hybridVerify } from '../crypto/hybrid';
-import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
+import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, isAbsentOrWellFormedPq } from '../crypto/sign-envelope';
 import { canonicalize } from '../format/canonical';
 import { DOMAIN_TRUST_SIGNAL } from '../format/envelope';
 
@@ -86,9 +86,10 @@ export async function verifySignal(
     return false;
   }
 
-  const envSig: EnvelopeSignature = signal.pq_signature
-    ? { classical: signal.signature, pq_signature: signal.pq_signature }
-    : { classical: signal.signature };
+  // A malformed pq_signature refuses here, before EITHER path: the legacy loop below calls hybridVerify directly
+  // with acceptClassicalOnly = !pq_signature, so the envelope guard alone would not cover it (#717).
+  if (!isAbsentOrWellFormedPq(signal.pq_signature)) return false;
+  const envSig = envelopeSignatureOf(signal.signature, signal.pq_signature);
 
   // PRIMARY (0.1): domain-separated, suite-bound envelope over canonical bytes.
   const canonicalInput = trustSignalCanonicalInput(
