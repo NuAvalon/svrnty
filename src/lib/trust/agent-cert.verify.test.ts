@@ -4,15 +4,15 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
-import { generatePQKeypairBundle, uint8ToBase64, base64ToUint8 } from '../crypto/pq';
+import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
 import { signIdentityCard, type SignedIdentityCard } from '../identity/identity-card-sign';
-import { signWithEnvelope, verifyWithEnvelope } from '../crypto/sign-envelope';
+import { signWithEnvelope } from '../crypto/sign-envelope';
 import { DOMAIN_AGENT_CERT_SET, DOMAIN_MUTUAL_VOUCH, DOMAIN_IDENTITY_CARD } from '../format/envelope';
 import {
   agentCardSha256, agentCertSetSigningInput, agentOf, applyAgentCertSet, checkAgentCertSetShape,
   entryCoversCard, signAgentCertSet, verifyAgentCertSet,
-  AGENT_CERT_MAX_LIFETIME_MS, type AgentCertSet, type HumanPublicKeys, type SignedAgentCertSet,
+  AGENT_CERT_MAX_LIFETIME_MS, type AgentCertSet, type HumanPublicKeys,
 } from './agent-cert';
 
 interface Id extends HumanPublicKeys { privateKey: string; passphrase: string; sigSecretKey: Uint8Array }

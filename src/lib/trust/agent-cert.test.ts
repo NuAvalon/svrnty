@@ -143,6 +143,7 @@ test('V3 revocation reaches 3 holders: seq 2 drops agent B everywhere, and repla
 
 test('signature binding: PQ leg stripped / swapped, tampered field, wrong human, broken key binding → refused', async () => {
   const signed = await sign(setOf(1, [[agA, cardA, 'collaborate']]));
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping the field is the point
   const { pq_signature: _drop, ...noPq } = signed;
   assert.deepEqual(await verifyAgentCertSet(noPq, human, NOW), { ok: false, reason: 'pq-missing' });
   const otherSig = await sign({ ...setOf(1, [[agA, cardA, 'collaborate']]), human_fp: other.fingerprint }, other);
