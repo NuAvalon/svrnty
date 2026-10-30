@@ -12,6 +12,8 @@
 // long-lived = hybrid). The verifier REQUIRES the PQ leg and passes the human's PQ key itself (Flint F-PQ1: never
 // inherit a verifier that drops it). Every identity is canonical (fingerprintMatchesKey is canonical-only).
 // CUSTODY (V6). This module handles PUBLIC cards + certs only. It never takes, stores or derives an agent's secret.
+// STATUS. Library only: nothing in the app calls it yet (no UI, no wire). A display or transport caller is a later
+// change with its own review.
 
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
