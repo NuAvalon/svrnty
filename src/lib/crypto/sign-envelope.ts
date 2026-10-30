@@ -115,6 +115,25 @@ export async function signWithEnvelope(
 }
 
 /**
+ * A pq_signature field is either ABSENT (undefined: classical) or a non-empty string (hybrid). Anything else
+ * ('' / null / 0 / false / non-string) is malformed and must refuse, never read as "no PQ half" (#717, N12 F-2).
+ */
+export function isAbsentOrWellFormedPq(pq: unknown): boolean {
+  return pq === undefined || (typeof pq === 'string' && pq.length > 0);
+}
+
+/**
+ * Build the EnvelopeSignature from a wire object's two fields WITHOUT normalizing: a present pq_signature is
+ * passed through as-is, so verifyWithEnvelope's guard sees '' / null and refuses. Truthiness here
+ * (`pq ? {…} : {classical}`) would turn a malformed value into "absent" before the guard (#717).
+ */
+export function envelopeSignatureOf(classical: string, pq_signature: unknown): EnvelopeSignature {
+  return pq_signature === undefined
+    ? { classical }
+    : ({ classical, pq_signature } as unknown as EnvelopeSignature);
+}
+
+/**
  * Verify a signature produced by {@link signWithEnvelope}. Binding is total: hybridVerify binds BOTH
  * halves to the exact bytes we pass (the classical branch checks the signed literal equals
  * `signedBytes`; the PQ branch signs/verifies over them) — so tampering any field, or stripping the
