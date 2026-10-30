@@ -24,6 +24,7 @@ import {
   consumeInboundContactUpdates,
   type ConsumeDeps,
   type ContactStore,
+  type DeadLetterSink,
   type KnownContact,
   type OwnerIdentity,
 } from './consume-mailbox';
@@ -60,6 +61,7 @@ import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from '
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, parseNoteWire, receiptOpenpgpDecryptor, parseReceiptWire } from '@/lib/messaging/seal';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
+import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { verifyReceiptWire } from '@/lib/crypto/delivery-receipt';
@@ -193,23 +195,37 @@ export function buildNoteSeam(
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
+      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | undefined;
       const rec = await deps.accept({
+        onDrop: (r) => {
+          dropReason = r;
+        },
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
         openRatchet: async (fromFp, body) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
-          const { openDirectNoteStaged, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
-          const self = await loadOwnerRatchetIdentity(owner.fingerprint, {
-            identity: { fingerprint: owner.fingerprint, public_key: owner.publicKeyArmored },
-            post_quantum: { kem_public_key: owner.kemPublicKey, sig_public_key: owner.sigPublicKey },
+          const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
+          const { openRatchetClassified } = await import('@/lib/messaging/ratchet-open');
+          // v5.3: every failure comes back TYPED (local = this device, verdict = the frame/card), never a bare null. R4 + R2: open WITHOUT
+          // persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
+          return openRatchetClassified({
+            loadSelf: () =>
+              loadOwnerRatchetIdentity(owner.fingerprint, {
+                identity: { fingerprint: owner.fingerprint, public_key: owner.publicKeyArmored },
+                post_quantum: { kem_public_key: owner.kemPublicKey, sig_public_key: owner.sigPublicKey },
+              }),
+            contactExists: async () => !!(await getContactByFingerprint(owner.fingerprint, fromFp)),
+            loadPeer: () => loadPeerRatchet(owner.fingerprint, fromFp),
+            open: (self, peer) => openDirectNoteStagedTyped(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint)),
           });
-          const peer = await loadPeerRatchet(owner.fingerprint, fromFp);
-          if (!self || !peer) return null;
-          // R4 + R2: open WITHOUT persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
-          return openDirectNoteStaged(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint));
         },
       });
-      if (!rec) return null; // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept
+      if (!rec) {
+        // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint
+        // travels only for the reasons that come AFTER authentication (wire.from_fingerprint is attacker-controlled until then: F3).
+        if (!dropReason) return null;
+        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint };
+      }
       // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
       // are trustworthy to seal+address a receipt to. Fail-closed on error: never let a receipt-emit
@@ -414,6 +430,29 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
 
+/**
+ * #720: the dead-letter sink bound to THIS owner. Every call first checks that the notes store is open FOR THIS OWNER (the same guard the
+ * note seam uses): a store left open for another identity must never receive this identity's records, so a mismatch THROWS and the
+ * envelope stays on the relay.
+ */
+export function buildDeadLetterSink(owner: OwnerIdentity, openOwner: () => string | null = notesStoreOwner): DeadLetterSink {
+  return {
+    record: async (row) => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      await putDeadLetter(row);
+      return (await getDeadLetter(row.envelope_id)) ?? row; // the stored row carries the EARLIEST first_seen
+    },
+    clear: async (id) => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      await removeDeadLetter(id);
+    },
+    settle: async () => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      await pruneDeadLetters(Date.now());
+    },
+  };
+}
+
 /** Assemble the consume deps from an unlocked identity, or null if it's locked / has no armored key. */
 export async function buildConsumeDeps(
   identity: unknown,
@@ -508,6 +547,7 @@ export async function buildConsumeDeps(
     emitReceipt: (e) => emitNoteArrival(e),
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
+    deadLetter: buildDeadLetterSink(owner),
     fetchImpl: opts.fetchImpl,
   };
 }

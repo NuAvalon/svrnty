@@ -5,24 +5,28 @@
 // (ack), a small METADATA-ONLY row is committed by the caller (the store lives elsewhere). This module decides what that row may contain and
 // which held envelopes have outlived the keep bounds. It never sees, stores or returns any text from the blob (F2/F4).
 
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** Why a blob did not become a message (F6: "can't open" and "failed to verify" are different classes). */
-export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'not-in-book', 'ratchet-unopenable', 'expired'] as const;
+export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'expired'] as const;
 export type DeadLetterReason =
   | 'unknown-format' // not a shape this build can open
   | 'decrypt-failed' // right shape, would not open
   | 'missing-key' // a hybrid package sealed to a key this device does not have (held, then bounded)
   | 'verify-failed' // opened, but the sender could not be authenticated
+  | 'unverified-frame' // a NON-MESSAGE frame (contact-update, joiner, receipt) from a sender we could not authenticate; never counted as a message (Flint ruling a)
   | 'not-in-book' // opened and authenticated, sender is not in the Gate (R9)
-  | 'ratchet-unopenable' // opened and authenticated, a known contact's ratchet body would not open
+  | 'ratchet-unopenable' // opened and authenticated, a known contact's ratchet body would not open: the FRAME's fault (a verdict)
+  | 'ratchet-local' // same frame, but something on THIS DEVICE stopped it (own key missing, session row unreadable, unknown cause): HELD, then recorded past the bound
   | 'expired'; // arrived after its time limit
 
 /**
  * Only these reasons come AFTER the sender was authenticated, so only they may carry a fingerprint (F3: the sender fields of an
  * unopened or unverified envelope are attacker-controlled and must never be stored or shown).
  */
-export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable']);
+export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local']);
 
 /**
  * Terminal outcomes that CONSUME a blob without losing a message: the content is already stored, or it was never a message.
@@ -30,6 +34,15 @@ export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<Dead
  */
 export const BENIGN_TERMINALS = ['contact-update-stale', 'joiner-already-known', 'receipt-no-match'] as const;
 export type BenignTerminal = (typeof BENIGN_TERMINALS)[number];
+
+/**
+ * Reasons whose rows are NOT about a message (Flint ruling a, Hypatia #2001): a stranger's contact-update, joiner or receipt frame.
+ * A row of one of these may exist, but it must never feed any "N messages ..." count in the UI.
+ */
+export const NON_MESSAGE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['unverified-frame']);
+export function isMessageReason(reason: DeadLetterReason): boolean {
+  return !NON_MESSAGE_REASONS.has(reason);
+}
 
 /** What KIND of blob it was, from its shape alone. Never any content (F2). */
 export const BLOB_KINDS = ['hybrid-package', 'openpgp-armor', 'json', 'other'] as const;
@@ -63,6 +76,17 @@ const FP_HEX = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
 
 export function safeEnvelopeId(id: unknown): string | null {
   return typeof id === 'string' && SAFE_ID.test(id) ? id : null;
+}
+
+/**
+ * The key a record is stored under (E1, Flint #2029). A safe relay id is its own key. An id outside the plain charset (the depositor chose
+ * it, so it is attacker text) is NEVER stored or shown: it is keyed by 'x:' + the first 32 hex of sha256(its UTF-8 bytes), a safe string of
+ * 34 characters. The caller still acks the ORIGINAL id, so a hostile id can neither get a free ride (it is recorded) nor sit on the relay
+ * until its TTL filling the mailbox. Not a string at all: null (nothing can be recorded or acked for it).
+ */
+export function recordKeyFor(id: unknown): string | null {
+  if (typeof id !== 'string') return null;
+  return safeEnvelopeId(id) ?? `x:${bytesToHex(sha256(utf8ToBytes(id))).slice(0, 32)}`;
 }
 
 /**
@@ -140,18 +164,20 @@ export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   return row;
 }
 
-// Row retention. The contract does not specify one; without it, junk that is acked-with-a-row would grow storage without limit.
+// Row retention. The contract does not specify one; without it, junk that is acked-with-a-row would grow storage without limit. Archie accepted
+// 200 rows / 30 days (#1993). Flint's B1 (#2026, #2029): deposits are unauthenticated, so ONE shared budget let an outsider evict the record of a
+// REAL contact's failed message (~200 junk blobs inside the relay's per-IP limit). And "authenticated by signature" is not "admitted": a fresh
+// identity signs a not-in-book note for free, so that class can also be filled by an outsider. THREE budgets, never sharing:
+//   junk              every unauthenticated reason, and any row with no reason ............ ROW_MAX_COUNT (200) together
+//   not-in-book       authenticated by signature, sender NOT in the Gate (free to mint) ... ROW_MAX_NOT_IN_BOOK (200) together
+//   ratchet-unopenable / ratchet-local an ADMITTED contact's body that would not open (either class) ..... ROW_MAX_PER_CONTACT (50) PER fp (Archie #2030)
+// and every group also drops rows older than ROW_MAX_AGE_MS. Eviction is oldest-first inside a group only.
 export const ROW_MAX_COUNT = 200;
+export const ROW_MAX_NOT_IN_BOOK = 200;
+export const ROW_MAX_PER_CONTACT = 50;
 export const ROW_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Which stored rows to delete: older than ROW_MAX_AGE_MS (an unreadable time counts as old), then the oldest beyond ROW_MAX_COUNT. */
-export function planPrune(
-  rows: ReadonlyArray<{ envelope_id: string; first_seen: string }>,
-  nowMs: number,
-  opts: { maxRows?: number; maxAgeMs?: number } = {},
-): string[] {
-  const maxRows = opts.maxRows ?? ROW_MAX_COUNT;
-  const maxAgeMs = opts.maxAgeMs ?? ROW_MAX_AGE_MS;
+function pruneGroup(rows: ReadonlyArray<{ envelope_id: string; first_seen: string }>, nowMs: number, maxRows: number, maxAgeMs: number): string[] {
   const ordered = rows
     .map((r) => ({ id: r.envelope_id, t: Date.parse(r.first_seen) }))
     .sort((a, b) => (Number.isNaN(a.t) ? -Infinity : a.t) - (Number.isNaN(b.t) ? -Infinity : b.t) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -160,5 +186,33 @@ export function planPrune(
   for (const r of ordered) (Number.isNaN(r.t) || nowMs - r.t > maxAgeMs ? drop : keep).push(r.id);
   const over = keep.length - maxRows;
   if (over > 0) drop.push(...keep.splice(0, over));
+  return drop;
+}
+
+/**
+ * Which stored rows to delete. Each budget above is pruned on its own: older than ROW_MAX_AGE_MS goes (an unreadable time counts as old), then
+ * the oldest beyond that budget's cap. A row with NO reason (or an unknown one) is junk: it can never claim a protected budget. A
+ * ratchet-unopenable row with no readable fp lands in its own '' bucket, still apart from junk and from every real contact.
+ */
+export function planPrune(
+  rows: ReadonlyArray<{ envelope_id: string; first_seen: string; reason?: string; fp?: string }>,
+  nowMs: number,
+  opts: { maxRows?: number; maxNotInBook?: number; maxPerContact?: number; maxAgeMs?: number } = {},
+): string[] {
+  const maxAgeMs = opts.maxAgeMs ?? ROW_MAX_AGE_MS;
+  const junk: typeof rows[number][] = [];
+  const notInBook: typeof rows[number][] = [];
+  const byContact = new Map<string, typeof rows[number][]>();
+  for (const r of rows) {
+    if (r.reason === 'not-in-book') notInBook.push(r);
+    else if (r.reason === 'ratchet-unopenable' || r.reason === 'ratchet-local') {
+      const k = typeof r.fp === 'string' && FP_HEX.test(r.fp) ? r.fp.toLowerCase() : '';
+      const g = byContact.get(k);
+      if (g) g.push(r);
+      else byContact.set(k, [r]);
+    } else junk.push(r);
+  }
+  const drop = [...pruneGroup(junk, nowMs, opts.maxRows ?? ROW_MAX_COUNT, maxAgeMs), ...pruneGroup(notInBook, nowMs, opts.maxNotInBook ?? ROW_MAX_NOT_IN_BOOK, maxAgeMs)];
+  for (const g of byContact.values()) drop.push(...pruneGroup(g, nowMs, opts.maxPerContact ?? ROW_MAX_PER_CONTACT, maxAgeMs));
   return drop;
 }

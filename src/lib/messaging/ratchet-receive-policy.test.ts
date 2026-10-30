@@ -157,7 +157,7 @@ test('R2 wiring: production send and receive go through ownerBoundRatchetIO; the
   const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const code = (rel: string) => readFileSync(join(root, rel), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
   assert.match(code('lib/messaging/transport.ts'), /ownerBoundRatchetIO\(args\.sender\.fingerprint\)/);
-  assert.match(code('lib/sync/live-book-poll.ts'), /openDirectNoteStaged\([^)]*ownerBoundRatchetIO\(owner\.fingerprint\)/);
+  assert.match(code('lib/sync/live-book-poll.ts'), /openDirectNoteStaged(?:Typed)?\([^)]*ownerBoundRatchetIO\(owner\.fingerprint\)/);
   const users: string[] = [];
   for (const rel of readdirSync(root, { recursive: true }) as string[]) {
     if (!/\.(ts|tsx)$/.test(rel) || /\.test\./.test(rel) || rel.endsWith('lib/messaging/direct-session.ts')) continue;
