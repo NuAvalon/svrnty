@@ -14,10 +14,20 @@ describe('Relay settings glass — Flint copy + fail-closed switch', () => {
     assert.match(src, /RELAY_COPY\.placeholder/);
     assert.equal(RELAY_COPY.currentPrefix, "You're on:");
     assert.equal(RELAY_COPY.placeholder, 'https://your-relay.example:8100');
-    assert.equal(
-      RELAY_COPY.helper.includes('never your messages (they stay sealed end-to-end)'),
-      true,
-    );
+    // NV-7: a relay is content-blind, NOT metadata-blind. The helper names what it does see so it can't read as a
+    // complete "only when you connect" list: IP (rate limits), which mailbox is yours (polling sends your fp), where
+    // sealed messages go, how much. Deposits carry no sender, so no "come from" (Hypatia #1843, Flint #185647).
+    for (const fact of [
+      'your IP address',
+      'which mailbox is yours',
+      'which mailboxes your sealed messages go to',
+      'how much you send',
+      'never what your messages say',
+    ]) {
+      assert.equal(RELAY_COPY.helper.includes(fact), true, fact);
+    }
+    assert.doesNotMatch(RELAY_COPY.helper, /sees that and when you connect/);
+    assert.doesNotMatch(RELAY_COPY.helper, /go to and come from/);
     assert.equal(
       RELAY_COPY.helper.includes('Switching relays moves your dead-drop, not your identity.'),
       true,
