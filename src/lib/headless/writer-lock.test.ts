@@ -84,6 +84,31 @@ test('stale detection: dead pid, reused pid (start time mismatch), ownerless loc
   assert.throws(() => withWriterLock(d, () => {}, { waitMs: 300 }), /gave up waiting/);
 });
 
+test('stale detection: a zombie owner (dead-but-unreaped) is taken over', async (t) => {
+  if (!existsSync('/proc/self/stat')) { t.skip('needs /proc'); return; }
+  // bash execs a sleeper over itself: its backgrounded child dies unreaped and stays a zombie — kill(pid,0)
+  // still succeeds and /proc/<pid>/stat still resolves with the real start time, the exact wedge shape from
+  // writer-lock-zombie-stale-001 (a reparented-to-init zombie held .writer.lock for 3.5h on 2026-10-30).
+  const zwrap = spawn('bash', ['-c', 'sleep 0.2 & echo $!; exec sleep 30']);
+  const zpid = await new Promise<number>((res, rej) => {
+    zwrap.stdout!.once('data', (b) => res(Number(String(b).trim())));
+    zwrap.once('exit', () => rej(new Error('zombie wrapper exited early')));
+  });
+  try {
+    await new Promise((r) => setTimeout(r, 600));                      // let the child die unreaped
+    const stat = readFileSync(`/proc/${zpid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    assert.equal(fields[0], 'Z', 'fixture sanity: the planted owner IS a zombie');
+    const d = dir();
+    mkdirSync(join(d, LOCK_NAME));
+    // fields[19] = real start time: the start-time probe alone would call this dead process alive.
+    writeFileSync(join(d, LOCK_NAME, 'owner.json'), JSON.stringify({ pid: zpid, start: fields[19], started: 'x', cmd: 'zombie' }));
+    withWriterLock(d, () => {}, { waitMs: 2_000 });
+  } finally {
+    zwrap.kill('SIGKILL');
+  }
+});
+
 test('8 processes x 50 locked increments, starting from a planted stale lock: exactly one taker at a time', async () => {
   const d = dir();
   const counter = join(d, 'counter');

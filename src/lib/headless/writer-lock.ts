@@ -6,8 +6,10 @@
  * scoped to one read-modify-write unit: acquire → RE-READ from disk → mutate → writeFileAtomic → release.
  *
  *  - Lock = mkdir <dir>/.writer.lock (atomic) holding owner.json {pid, start, started, cmd}.
- *  - Stale = owner process gone: kill(pid, 0) → ESRCH, or the pid was reused (its /proc start time no longer
- *    matches the recorded one). A lock dir with no owner.json past OWNERLESS_STALE_MS is a crash between
+ *  - Stale = owner process gone: kill(pid, 0) → ESRCH, dead-but-unreaped (a zombie still answers
+ *    kill(pid, 0) and keeps its /proc row — /proc/<pid>/stat state field reports it), or the pid was
+ *    reused (its /proc start time no longer matches the recorded one). A lock dir with no owner.json
+ *    past OWNERLESS_STALE_MS is a crash between
  *    mkdir and the owner write. Valid because poll-json runs via docker exec INSIDE the container's pid ns
  *    and bare-metal runs in the host ns: holder and waiter always share a pid namespace.
  *  - Takeover is serialized by a second, short-lived mkdir lock (.writer.lock.takeover) so two takers can't
@@ -53,12 +55,23 @@ function procStart(pid: number): string {
   }
 }
 
+/** Process state letter (/proc/<pid>/stat field 3: R/S/Z/…); '' where /proc is unavailable. */
+function procState(pid: number): string {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] ?? '';
+  } catch {
+    return '';
+  }
+}
+
 function ownerAlive(o: Owner): boolean {
   try {
     process.kill(o.pid, 0);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EPERM') return false;   // ESRCH: gone
   }
+  if (procState(o.pid) === 'Z') return false;                          // zombie: answers kill, dead-but-unreaped
   const now = procStart(o.pid);
   return !(o.start && now && now !== o.start);                            // same pid, different process = reused
 }
