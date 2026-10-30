@@ -35,9 +35,9 @@ test.describe('Owner lenses + living vs classical sample circle', () => {
 
     // Scope to master-book rows (not any other contact-row surface).
     // Today's sample-circle seed writes public_key:'' for every demo row, so after
-    // #83 (fingerprint only with a bound key) Ada is classical too. Living keys
-    // exist in SAMPLE_SVRNTY_PEERS but are not wired into seedSampleCircle
-    // (CODEOWNERS /src/lib/trust/ — fleet). Assert the classical Hypatia card.
+    // #83 (fingerprint only with a bound key) Ada is classical too. The old 80-peer
+    // SAMPLE_SVRNTY_PEERS fixture (classical-era keys) is retired, so the sample circle
+    // has no living demo keys. Assert the classical Hypatia card.
     const hypatia = page
       .locator('[data-testid="contact-row"][data-master-book-row="1"][data-svrn="0"]')
       .filter({ hasText: 'Hypatia' })
