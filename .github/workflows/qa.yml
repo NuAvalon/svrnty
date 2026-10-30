@@ -59,6 +59,7 @@ jobs:
           STALE=""
           : > /tmp/q.log
           for f in "${FILES[@]}"; do
+            [ -n "$f" ] || continue  # an empty quarantine lists one blank line; tsx --test "" would run the whole suite
             if npx --no-install tsx --test "$f" >> /tmp/q.log 2>&1; then
               STALE="$STALE $f"
             fi

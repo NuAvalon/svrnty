@@ -109,12 +109,14 @@ export async function createRelay(exchangePackage: string): Promise<RelayResult>
  * Resolve a relay: fetch the encrypted blob and decrypt with the key from the URL fragment.
  */
 export async function resolveRelay(code: string, keyFragment: string): Promise<string> {
-  // Fetch the encrypted blob (single-use — server deletes it)
+  // Fetch the encrypted blob. NOT single-use: the relay serves it for the code's whole TTL ("do NOT consume-on-view", app/api/relay/[code]/route.ts);
+  // the giver's cap is enforced at the accept-oracle on ACCEPTED joiner responses, not here. (This comment used to say "single-use — server deletes it",
+  // which misled several people into thinking each resolve spends a use.)
   const res = await fetch(`/api/relay/${encodeURIComponent(code)}`);
 
   if (!res.ok) {
     if (res.status === 404) {
-      throw new Error('This link has expired or already been used.');
+      throw new Error("This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
     }
     const err = await res.json().catch(() => ({ error: 'Relay request failed' }));
     throw new Error(err.error || `Relay GET failed: ${res.status}`);

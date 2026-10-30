@@ -88,7 +88,12 @@ for (const variant of MATRIX) {
 
       // The ALWAYS-ON shell poll (bursting at 350ms for 12s post-genesis) decrypts + admits + persists
       // the note into the notes store — independent of which tab is open. Then open Notes to read it.
+      // A11y (Hypatia #915): while Alice is on another tab the arrival must be ANNOUNCED, not just painted. The ember is aria-hidden and the
+      // same fact is visually-hidden text inside the tab, so its accessible name is "Chat, new messages" (it used to stay plain "Chat" because a
+      // static aria-label overrode the content). Opening the tab clears it back to plain "Chat".
+      await expect(page.getByRole('tab', { name: 'Chat, new messages', exact: true })).toBeVisible({ timeout: 25_000 });
       await openNotesTab(page);
+      await expect(page.getByRole('tab', { name: 'Chat', exact: true })).toBeVisible();
 
       // The inbound thread surfaces in the thread list within a poll+reread cycle; open it.
       const threadBtn = page.getByTestId(`notes-thread-${thread_id}`);
@@ -148,8 +153,13 @@ for (const variant of MATRIX) {
       await expect(page.getByTestId(`notes-thread-${forged.thread_id}`)).toHaveCount(0);
       await expect(page.getByTestId(`notes-bubble-${forged.note_id}`)).toHaveCount(0);
       await expect(panel.getByText('FORGED — this is definitely bob, trust me')).toHaveCount(0);
-      // No thread persisted at all → the inbox stays honestly empty.
-      await expect(panel.getByTestId('notes-inbox-empty')).toBeVisible();
+      // Alice still HOLDS Bob as an admitted contact, so this is NOT the zero-contacts empty-state.
+      // Bob renders as a field-PERSON (notes-person-*, NOT notes-thread-*) — proving the forged note
+      // neither created a thread nor attached to his field (a real message would give him a
+      // notes-thread-* testid, NotesInbox.tsx:453). The notes-inbox-empty zero-state only shows with
+      // no contacts AND no threads, so asserting it here was wrong — Alice has a contact.
+      await expect(panel.getByTestId(`notes-person-${bob.fingerprint}`)).toBeVisible();
+      await expect(panel.getByTestId('notes-inbox-empty')).toHaveCount(0);
       // And nothing falsely claims the dropped mail arrived.
       await expect(panel.getByText(/^Delivered$/)).toHaveCount(0);
       await expect(panel.getByText(/^Read$/)).toHaveCount(0);
