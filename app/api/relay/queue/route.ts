@@ -1,5 +1,5 @@
 // app/api/relay/queue/route.ts
-// Return-channel POLL. GET ?mailbox_id=… → owner-only, NON-destructive list [{envelope_id, blob}].
+// Return-channel POLL. GET ?mailbox_id=… → owner-only, NON-destructive list [{envelope_id, blob, expires_at}] (expires_at = ISO time the relay deletes it).
 //
 // I-4 ANTI-EXISTENCE-ORACLE (the load-bearing gate): owner-auth is verified FIRST, before any store
 // access, so a non-owner never reaches the store and the response cannot depend on the mailbox's
@@ -39,7 +39,9 @@ export async function GET(request: Request) {
     }
 
     // Authenticated owner only: an absent mailbox reads as empty ([]), which the owner already knows.
-    const list = pollMailbox(mailboxId, Date.now());
+    // expires_at goes out as ISO. It is the stored sweep column, so it can't drift from when the envelope is really deleted. Additive:
+    // an older client ignores the field.
+    const list = pollMailbox(mailboxId, Date.now()).map((e) => ({ ...e, expires_at: new Date(e.expires_at).toISOString() }));
     return NextResponse.json(list);
   } catch {
     // Even on error, return the uniform non-owner shape — never leak state via an error path.
