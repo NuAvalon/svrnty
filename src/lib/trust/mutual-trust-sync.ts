@@ -630,6 +630,7 @@ async function sendResyncRequest(
     } else if (!CONSENT_EXEMPT.has(layer) && !fps.includes(peerFp)) {
       // Same consent gate as initiateTrustSync, for EVERY layer (#697): a real initiate to a peer outside the
       // layer's opt-in set would reveal a one-way trust to the trustee (blind-until-mutual). Cover instead.
+      // Pinned on its own by psi-resync-slot.test.ts "R1 alone" (consent revoked between scheduling and sending).
       gateError = `${layer}-layer: peer not in the consented opt-in set — fail-closed (cover sent)`;
     } else if (fps.length > PSI_BLINDED_BUCKET_N) {
       // Not chunked: applyMutualResult REPLACES the disclosed set, so a partial chunk would shrink it.
