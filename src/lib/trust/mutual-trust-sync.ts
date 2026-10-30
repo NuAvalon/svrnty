@@ -6,8 +6,8 @@
 // event, and this file keeps no relationship ledger.
 //
 // Implements the DH-PSI protocol against satellite endpoints.
-// The satellite never sees contact sets (they are blinded); it does see which two fingerprints run a session,
-// and when.
+// The satellite never sees contact MEMBERS (they are blinded); it does see which two fingerprints run a session,
+// and when. With the resync slot on (#704 A, psi-resync-slot.ts) the set SIZE is hidden too (padded to N).
 // Client computes intersection locally, persists via deps.applyMutualResult() (storage-agnostic).
 //
 // Protocol (5-step DH-PSI):
@@ -35,6 +35,13 @@ import {
   type PsiSessionKey,
 } from '../crypto/psi-wire-seal.js';
 import type { MailboxPublicKeys, MailboxEnvelopePackage } from '../crypto/mailbox-envelope.js';
+import {
+  ResyncSlotSource,
+  PSI_BLINDED_BUCKET_N,
+  PSI_REQUESTS_PER_TICK_K,
+  padBlindedSet,
+  padInitiateBody,
+} from './psi-resync-slot.js';
 
 // ── PQ wire-wrap (psi-wire-seal.ts) — populated by the caller while isPSIDiscoveryLive() is true (claim-gates.ts) ──
 // When PSISyncOptions.pqWrap is set, 4 of the 5 wire exchanges below seal their bodies/responses in the
@@ -93,6 +100,9 @@ export interface PSISyncOptions {
    * deployment-specific). Only ever populated by the caller when claim-gates.isPSIDiscoveryLive() is true (true in
    * this codebase since 2026-10-04, on dev and main). */
   pqWrap?: PsiPqWrapConfig;
+  /** #704 (A): when set, the initiate phase sends exactly K padded, slot-carrying requests per tick (see
+   * psi-resync-slot.ts). Requires pqWrap: a slot never rides a plaintext wire. Absent ⇒ legacy behavior. */
+  slots?: ResyncSlotSource;
 }
 
 /**
@@ -117,7 +127,7 @@ export interface OrchestratorDeps {
    * into discovery (the leak `trust_visibility` exists to prevent, Flint #172393). The trust-layer PSI
    * input + consent gate = getTrustVisiblePeers (the opt-in subset), NOT this.
    */
-  getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null }>>;
+  getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null; pending?: boolean }>>;
   /**
    * KNOW layer (Flint co-review D2, 2026-09-03): the peers this owner has CONSENTED to mutual
    * visibility with — the `open_visibility` SUBSET of the book, NOT the whole book. This IS the
@@ -307,8 +317,10 @@ async function psiInitiate(
   blindedSet: string[],
   signFn: (data: Uint8Array) => Uint8Array,
   layer: 'know' | 'trust',
-  pqWrap?: PsiPqWrapConfig
+  pqWrap?: PsiPqWrapConfig,
+  resync?: { slot: MailboxEnvelopePackage; cover: boolean }
 ): Promise<{ sessionId: string; pqSession?: PsiSessionKey } | { error: string }> {
+  if (resync && !pqWrap) return { error: 'PSI resync slot requires the PQ wire-wrap: refusing a plaintext slot' };
   const pqSession = pqWrap ? newPsiSessionKey() : undefined;
   const classicalBody = {
     initiator_fingerprint: myFingerprint,
@@ -319,7 +331,19 @@ async function psiInitiate(
   };
 
   let fetchBody: unknown = classicalBody;
-  if (pqWrap && pqSession) {
+  if (pqWrap && pqSession && resync) {
+    // #704 (A) R1: the WHOLE body is padded to one fixed length inside the satellite seal. `cover` is only
+    // visible to the satellite after it opens the seal (it creates no session for a cover); the slot is opaque.
+    fetchBody = await sealPsiToSatellite(
+      padInitiateBody({
+        ...classicalBody,
+        response_pub: pqSession.responsePub,
+        cover: resync.cover,
+        slot: resync.slot,
+      }),
+      pqWrap.satelliteKeys
+    );
+  } else if (pqWrap && pqSession) {
     fetchBody = await sealPsiToSatellite(
       { ...classicalBody, response_pub: pqSession.responsePub },
       pqWrap.satelliteKeys
@@ -576,6 +600,75 @@ export async function initiateTrustSync(
   return { sessionId: result.sessionId, keypair, fpOrder, pqSession: result.pqSession };
 }
 
+type InitiatedSession = {
+  peerFingerprint: string;
+  sessionId: string;
+  keypair: PSIKeypair;
+  fpOrder: string[];
+  pqSession?: PsiSessionKey;
+};
+
+/**
+ * #704 (A): send EXACTLY ONE initiate-shaped request carrying `slot`. A real initiate when `peerFp` is set and
+ * passes every gate; otherwise (no due peer, no contacts, KNOW peer not consented, set larger than N) a COVER
+ * initiate of the same padded length. The request goes out whatever happens to the real half: dropping it
+ * would lose the slot (a queued cry) and make the tick's request count a tell.
+ */
+async function sendResyncRequest(
+  deps: OrchestratorDeps,
+  peerFp: string | null,
+  options: PSISyncOptions,
+  layer: 'know' | 'trust',
+  slot: MailboxEnvelopePackage
+): Promise<{ initiated?: InitiatedSession; error?: string }> {
+  let real: { keypair: PSIKeypair; blinded: string[]; fpOrder: string[] } | null = null;
+  let gateError: string | undefined;
+  if (peerFp) {
+    const fps = await getLayerFingerprints(deps, layer);
+    if (fps.length === 0) {
+      gateError = `No ${layer === 'know' ? 'consented (open-visible)' : 'trusted'} contacts to sync`;
+    } else if (!CONSENT_EXEMPT.has(layer) && !fps.includes(peerFp)) {
+      // Same consent gate as initiateTrustSync, for EVERY layer (#697): a real initiate to a peer outside the
+      // layer's opt-in set would reveal a one-way trust to the trustee (blind-until-mutual). Cover instead.
+      // Pinned on its own by psi-resync-slot.test.ts "R1 alone" (consent revoked between scheduling and sending).
+      gateError = `${layer}-layer: peer not in the consented opt-in set — fail-closed (cover sent)`;
+    } else if (fps.length > PSI_BLINDED_BUCKET_N) {
+      // Not chunked: applyMutualResult REPLACES the disclosed set, so a partial chunk would shrink it.
+      gateError = `${layer} set has ${fps.length} contacts, over the bucket N=${PSI_BLINDED_BUCKET_N}: not synced (cover sent)`;
+    } else {
+      const keypair = generatePSIKeypair();
+      const b = blindFingerprintsWithOrder(fps, keypair.privateKey);
+      real = { keypair, ...padBlindedSet(b.blinded, b.fpOrder, shuffle, keypair.privateKey) };
+    }
+  }
+
+  if (real && peerFp) {
+    const res = await psiInitiate(
+      options.satelliteUrl, options.myFingerprint, peerFp, real.blinded, options.signFn, layer,
+      options.pqWrap, { slot, cover: false }
+    );
+    if ('error' in res) return { error: res.error };
+    return {
+      initiated: {
+        peerFingerprint: peerFp,
+        sessionId: res.sessionId,
+        keypair: real.keypair,
+        fpOrder: real.fpOrder,
+        pqSession: res.pqSession,
+      },
+    };
+  }
+
+  const coverPeer = bytesToHex(randomBytes(Math.max(1, Math.ceil(options.myFingerprint.length / 2))));
+  const res = await psiInitiate(
+    options.satelliteUrl, options.myFingerprint, coverPeer,
+    padBlindedSet([], [], shuffle, generatePSIKeypair().privateKey).blinded,
+    options.signFn, layer, options.pqWrap, { slot, cover: true }
+  );
+  const errs = [gateError, 'error' in res ? res.error : undefined].filter(Boolean);
+  return errs.length > 0 ? { error: errs.join('; ') } : {};
+}
+
 /**
  * Complete an initiated PSI session (initiator side).
  * Call after responder has submitted their response.
@@ -782,6 +875,36 @@ export async function syncMutualTrust(
     errors.push(`Respond phase: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // Step 2 (#704 A, slots on): exactly K padded, slot-carrying requests. DUE = stale AND no live session,
+  // in book order; the peer just sent drops out (its session is saved), so the queue rotates and the
+  // overflow goes out in later ticks in order (D-7). No due peer → cover.
+  if (options.slots) {
+    if (!options.pqWrap) {
+      // Checked BEFORE drawing a slot, so a queued cry is not consumed by a request that can never go out.
+      errors.push('Initiate phase: PSI resync slot requires the PQ wire-wrap: refusing a plaintext slot');
+      return { responded, initiated, errors };
+    }
+    try {
+      // getTrustedPeers is the staleness scheduler only; WHO may be contacted is the layer's opt-in set.
+      let due = (await deps.getTrustedPeers())
+        .filter(p => !p.pending && isStale(p.lastSync))
+        .map(p => p.fingerprint);
+      if (!CONSENT_EXEMPT.has(layer)) {
+        const consented = new Set(await getLayerFingerprints(deps, layer));
+        due = due.filter(fp => consented.has(fp));
+      }
+      for (let k = 0; k < PSI_REQUESTS_PER_TICK_K; k++) {
+        const slot = await options.slots.nextSlot();
+        const r = await sendResyncRequest(deps, due[k] ?? null, options, layer, slot);
+        if (r.error) errors.push(`Resync request ${k}: ${r.error}`);
+        if (r.initiated) initiated.push(r.initiated);
+      }
+    } catch (e) {
+      errors.push(`Initiate phase: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return { responded, initiated, errors };
+  }
+
   // Step 2: Initiate sessions with peers that haven't synced recently. For KNOW, restrict to the
   // open-visible (consented) subset up front (D1/D2) — initiateTrustSync also fails-closed on it.
   try {
@@ -862,15 +985,13 @@ async function getStaleMutualPeers(
   maxAgeMs: number = 24 * 60 * 60 * 1000
 ): Promise<string[]> {
   const peers = await deps.getTrustedPeers();
-  const now = Date.now();
+  return peers.filter(p => isStale(p.lastSync, maxAgeMs)).map(p => p.fingerprint);
+}
 
-  return peers
-    .filter(p => {
-      if (!p.lastSync) return true; // Never synced
-      const syncAge = now - new Date(p.lastSync).getTime();
-      return syncAge > maxAgeMs;
-    })
-    .map(p => p.fingerprint);
+/** Stale = never synced, or last sync older than maxAgeMs (default 24h). */
+function isStale(lastSync: string | null | undefined, maxAgeMs: number = 24 * 60 * 60 * 1000): boolean {
+  if (!lastSync) return true; // Never synced
+  return Date.now() - new Date(lastSync).getTime() > maxAgeMs;
 }
 
 // --- Utilities ---
