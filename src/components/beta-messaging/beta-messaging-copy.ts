@@ -3,7 +3,7 @@
 // beta-messaging-copy.test.ts. Status floor is Sent — never Delivered / Read / Expired.
 
 export const BETA_COPY = {
-  tabLabel: 'Notes',
+  tabLabel: 'Chat',
   unlockHeading: 'Turn on beta messaging',
   unlockBody:
     'Messaging is in beta. Redeem your access key to turn it on for this address book — one key per book.',
@@ -17,9 +17,9 @@ export const BETA_COPY = {
   whatItIs:
     "Send and receive end-to-end encrypted messages with your contacts. Every message is sealed on your device — the relay only ever moves sealed blobs, so it can't read your messages.",
   sending:
-    "When you send, you'll see Sent — your message left your device sealed and reached the relay. (A Delivered confirmation is coming.)",
+    "When you send, you'll see Sent — your message left your device sealed and reached the relay. You'll see Delivered if their app confirms it arrived.",
   sendingWait:
-    "If they haven't joined beta, your message waits for them. The moment they join and unlock their book, it delivers. A message to someone who never joins will eventually expire.",
+    "If they haven't joined yet, the relay holds your message for up to 7 days. If they don't collect it in time, it's lost, and you won't be told.",
   receiving:
     "You receive messages from your contacts. A message arrives sealed and is saved to this device — if it doesn't appear in your inbox live yet, it's there when you open your messages. (Live inbox updates are coming.)",
   sentStatus: 'Sent',

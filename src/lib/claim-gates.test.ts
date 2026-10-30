@@ -39,15 +39,17 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isPiece2MutualBlockLive(), false);
   });
 
-  it('TrustMap empty-state trust copy is GATED on isMutualTrustWireLive (G-6 lockstep, Flint lane:svrnty #136)', () => {
-    // Flipping isMutualTrustWireLive must flip this string too: the "mutual" sentence may only render
-    // in the true-arm; today (gate false) users see the honest "coming" arm. Static check on the source.
+  it('TrustMap empty-state trust copy is the honest "coming" sentence ONLY: no mutual sentence, no gate import (G-6 lockstep, Flint lane:svrnty #136 / Hypatia #924)', () => {
+    // #593 removed the affirm wire and the B merge kept exactly one empty-state panel, so the dormant gated ternary (whose true arm, "Trust is mutual,
+    // after you make sure it's them.", was a G-6 overclaim one flag-flip from rendering) is GONE. Static check on the source: the honest sentence
+    // appears exactly once, the mutual sentence zero times, and TrustMap does not import the gate. When PSI (#588) adds a gated arm, it gets a NEW
+    // lockstep test here; do not loosen this one.
     const src = readFileSync(join(__dirname, '../components/TrustMap.tsx'), 'utf8');
-    // Each arm sits on its own line (so the false arm's hedge can't excuse the true arm in the claim sweep);
-    // the regex allows the annotation comment between the condition and the true arm.
-    assert.match(src, /\{isMutualTrustWireLive\(\)\s*(?:\/\*[^*]*\*\/\s*)?\?\s*"Trust is mutual, after you make sure it's them\."\s*:\s*"Make sure it's them before you trust\. Mutual confirmation is coming\."\}/,
-      'TrustMap.tsx empty-state copy must be the isMutualTrustWireLive() ternary (true arm = the mutual sentence)');
-    assert.equal(src.split("Trust is mutual, after you make sure it").length - 1, 1, 'the mutual sentence appears exactly once (in the true-arm)');
+    // JSX source form: the apostrophe is the &apos; entity in the file (it renders as ').
+    assert.equal(src.split('Make sure it&apos;s them before you trust. Mutual confirmation is coming.').length - 1, 1,
+      'the honest "coming" sentence appears exactly once');
+    assert.equal(src.split('Trust is mutual').length - 1, 0, "no 'Trust is mutual' string anywhere in TrustMap.tsx");
+    assert.doesNotMatch(src, /isMutualTrustWireLive/, 'TrustMap.tsx must not reference the mutual-wire gate until #588 adds a gated arm with its own lockstep test');
   });
 
   it('isMutualTrustWireLive is FALSE until the FE deposit-hook + the two-seat e2e land (crypto built both sides, consume wired, but no FE deposit path yet — flip WITH the e2e-green proof)', () => {

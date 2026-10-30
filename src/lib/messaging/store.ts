@@ -3,10 +3,11 @@
 // Bodies encrypted at rest with a notes-session AES-GCM key (passphrase-derived).
 
 import type { NoteRecord, NoteThread, RingChannel } from './types';
+import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 
 const DB_NAME = 'svrnty-notes';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const PBKDF2_ITERATIONS = 600_000;
 
 let _db: IDBDatabase | null = null;
@@ -66,6 +67,9 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains('ratchet_sessions')) {
+        db.createObjectStore('ratchet_sessions', { keyPath: 'peer_fingerprint' });
       }
     };
     req.onsuccess = () => {
@@ -248,6 +252,18 @@ export async function putNote(note: NoteRecord): Promise<void> {
   } satisfies NoteRow);
 }
 
+/** Fetch one stored note by id (any thread), or null if absent/corrupt. Used by the delivery-receipt
+ *  consume seam to recover the OUTBOUND note's expected nonce + recipient before verifying a receipt. */
+export async function getNote(noteId: string): Promise<NoteRecord | null> {
+  const row = await txGet<NoteRow>('notes', noteId);
+  if (!row) return null;
+  try {
+    return await decryptJson<NoteRecord>(row.enc);
+  } catch {
+    return null; // wrong key / corrupt — treat as absent (fail-safe: no receipt match ⇒ no false delivered)
+  }
+}
+
 export async function listNotesForThread(threadId: string): Promise<NoteRecord[]> {
   const db = await openDb();
   const rows: NoteRow[] = await new Promise((resolve, reject) => {
@@ -308,4 +324,82 @@ export function newThreadId(): string {
   const b = new Uint8Array(12);
   crypto.getRandomValues(b);
   return `thr_${toBase64(b).replace(/[+/=]/g, '').slice(0, 16)}`;
+}
+
+/** Per-note delivery-receipt freshness nonce (hex). Sealed+signed inside NoteWireV0.receipt_nonce and
+ *  kept on the local outbound NoteRecord as the sender's source-of-truth for receipt verification. */
+export function newReceiptNonce(): string {
+  const b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** `version` counts writes to this row (R5). A row written before it existed has none and counts as 1; no row counts as 0. */
+type RatchetRow = { peer_fingerprint: string; enc: EncryptedBlob; version?: number };
+
+/** The version a CAS write must expect for what is currently stored: 0 = no row, a legacy row without a counter = 1. Pure, so it is unit-tested without IndexedDB. */
+export function ratchetRowVersion(row: { version?: number } | undefined): number {
+  return row ? (row.version ?? 1) : 0;
+}
+
+/** The session row changed between our read and our write (another tab or task advanced it). Nothing was written. */
+export class RatchetSessionConflictError extends Error {
+  constructor() {
+    super('ratchet session changed under us: nothing was written; retry from the current state');
+    this.name = 'RatchetSessionConflictError';
+  }
+}
+
+/**
+ * Persist a 1:1 triple-ratchet snapshot, encrypted with the notes-store key, ONLY IF the stored row is still at `expectedVersion`
+ * (the version we read). The compare and the put share one readwrite transaction, so no other tab can slip a write between them.
+ * A mismatch aborts the transaction and throws RatchetSessionConflictError. This is the net under the per-peer lock (R5).
+ */
+export async function putRatchetSession(peerFingerprint: string, snapshot: RatchetSnapshot, expectedVersion: number): Promise<void> {
+  const enc = await encryptJson(snapshot);
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('ratchet_sessions', 'readwrite');
+    const os = tx.objectStore('ratchet_sessions');
+    const cur = os.get(peerFingerprint);
+    cur.onsuccess = () => {
+      const have = ratchetRowVersion(cur.result as RatchetRow | undefined);
+      if (have !== expectedVersion) {
+        reject(new RatchetSessionConflictError());
+        tx.abort();
+        return;
+      }
+      os.put({ peer_fingerprint: peerFingerprint, enc, version: have + 1 } satisfies RatchetRow);
+    };
+    cur.onerror = () => reject(cur.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new RatchetSessionConflictError());
+  });
+}
+
+/**
+ * What is stored for this peer. THREE states, on purpose (R3): a row that EXISTS but cannot be read (wrong key, torn write,
+ * corruption) is NOT "no session". Collapsing the two made the caller start a fresh initiator session and overwrite the
+ * unreadable row, silently replacing the real session with a parallel one the peer's chain no longer matches.
+ */
+export type RatchetSessionRead =
+  | { state: 'absent' }
+  | { state: 'unreadable' }
+  | { state: 'ok'; snapshot: RatchetSnapshot; version: number };
+
+export async function readRatchetSession(peerFingerprint: string): Promise<RatchetSessionRead> {
+  const row = await txGet<RatchetRow>('ratchet_sessions', peerFingerprint);
+  if (!row) return { state: 'absent' };
+  try {
+    return { state: 'ok', snapshot: await decryptJson<RatchetSnapshot>(row.enc), version: ratchetRowVersion(row) };
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
+/** Back-compat for existing callers/exports: the snapshot, or null for BOTH absent and unreadable. New code uses readRatchetSession. */
+export async function getRatchetSession(peerFingerprint: string): Promise<RatchetSnapshot | null> {
+  const r = await readRatchetSession(peerFingerprint);
+  return r.state === 'ok' ? r.snapshot : null;
 }

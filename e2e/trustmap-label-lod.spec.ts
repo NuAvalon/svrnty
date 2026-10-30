@@ -35,12 +35,19 @@ test('Trust Map label LOD + dense sample', async ({ page }) => {
 
   // Search / nameplate / lamp / Browse are PR #84 surfaces. Main Galaxy has
   // zoom + sample only — skip the rest until that UI lands.
-  const search = page.getByTestId('trust-map-search');
-  if ((await search.count()) === 0) return;
+  // PR #84's INTERACTIVE surfaces (the search-GO button, nameplate, lamp-links, Browse) have NOT
+  // landed — only the search INPUT did. Search is Enter-triggered now (the input's onKeyDown in
+  // TrustMap, no GO button), and trust-map-search-go / trust-map-nameplate / trust-map-lamp-links
+  // do not exist in the component. The old guard checked the INPUT (which landed) → let the block
+  // run → timed out 120s clicking the NON-EXISTENT trust-map-search-go (this was the #225-integration
+  // CI RED — an absent element, NOT the galaxy animation-flake class, so freeze/dispatchEvent can't
+  // fix it). Gate on the GO button: it only exists once the full search UI lands.
+  const searchGo = page.getByTestId('trust-map-search-go');
+  if ((await searchGo.count()) === 0) return;
 
   // Search fly-to
   await page.getByTestId('trust-map-search').fill('Ada Lovelace');
-  await page.getByTestId('trust-map-search-go').click();
+  await page.getByTestId('trust-map-search-go').dispatchEvent('click');
   await page.waitForTimeout(600);
   await expect(page.getByTestId('trust-map-nameplate')).toBeVisible();
   await expect(page.getByTestId('trust-map-nameplate')).toContainText('Ada');
@@ -52,7 +59,7 @@ test('Trust Map label LOD + dense sample', async ({ page }) => {
 
   // Lamp someone with group-only neighbors if needed — click Grace for clique filaments
   await page.getByTestId('trust-map-search').fill('Grace Hopper');
-  await page.getByTestId('trust-map-search-go').click();
+  await page.getByTestId('trust-map-search-go').dispatchEvent('click');
   await page.waitForTimeout(700);
   await expect(page.getByTestId('trust-map-lamp-links')).toBeVisible();
   await page.screenshot({ path: path.join(ART, 'trustmap-lamp-mutuals.png'), fullPage: true });

@@ -6,7 +6,7 @@ export const RELAY_COPY = {
   fieldLabel: 'Relay URL',
   placeholder: 'https://your-relay.example:8100',
   helper:
-    'A relay sees that and when you connect — never your notes (those stay sealed end-to-end). Switching relays moves your dead-drop, not your identity.',
+    'A relay sees that and when you connect — never your messages (they stay sealed end-to-end). Switching relays moves your dead-drop, not your identity.',
   switch: 'Switch to this relay',
   confirmTitle: 'Switch relay?',
   confirmBody:

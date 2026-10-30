@@ -55,13 +55,16 @@ beforeEach(() => {
 });
 afterEach(() => { globalThis.fetch = realFetch; });
 
-/** A book of `n` trusted peers; `pending` tracks peers with a saved session (what savePsiInitiated does). */
-function book(n: number) {
+/** A book of `n` trusted peers; `pending` tracks peers with a saved session (what savePsiInitiated does).
+ * `trustVisible` = the trust-PSI opt-in subset (#697 getTrustVisiblePeers); default: every peer. */
+function book(n: number, trustVisible?: (fp: string, i: number) => boolean) {
   const peers = Array.from({ length: n }, (_, i) => fpN(i + 1));
   const pending = new Set<string>();
+  const visible = peers.filter((fp, i) => (trustVisible ? trustVisible(fp, i) : true));
   const deps: OrchestratorDeps = {
     getTrustedPeers: async () => peers.map(fingerprint => ({ fingerprint, lastSync: null, pending: pending.has(fingerprint) })),
     getKnownPeers: async () => peers.map(fingerprint => ({ fingerprint, lastSync: null })),
+    getTrustVisiblePeers: async () => visible.map(fingerprint => ({ fingerprint, lastSync: null })),
     applyMutualResult: async () => {},
   };
   return { peers, pending, deps };
@@ -465,4 +468,25 @@ test('DW17 (Apollo W8): an exhausted tick does not burn the cry\'s ticks; it rid
     'the pending cry must ride all 3 of its ticks after the exhausted one, then stop');
   assert.ok(out.every(o => o.requests === K), 'a tick sent no request');
   assert.equal(slots.hasPendingCry(), false);
+});
+
+test('blind-until-mutual (#697 consent gate x slots): a trusted peer NOT in trust_visibility never gets a real trust-PSI initiate', async () => {
+  // Only peer 1 opted into trust visibility; peers 2 and 3 are trusted one-way. A real initiate naming 2 or 3
+  // would tell them (and the satellite) "this fingerprint runs trust-PSI with you": a one-way trust revealed.
+  const b = book(3, (_fp, i) => i === 0);
+  const slots = newSource();
+  const real: string[] = [];
+  const lengths = new Set<number>();
+  for (let t = 0; t < 6; t++) {
+    posts = [];
+    await tick(b, slots, 'trust');
+    assert.equal(posts.length, K, 'exactly K requests per tick, whatever the gate decides');
+    for (const p of posts) {
+      lengths.add(p.raw.length);
+      if (p.body.cover === false) real.push(p.body.responder_fingerprint as string);
+    }
+  }
+  assert.ok(!real.includes(fpN(2)) && !real.includes(fpN(3)), `real initiates went to non-visible peers: ${real.join(',')}`);
+  assert.deepEqual([...new Set(real)], [fpN(1)], 'the opted-in peer still syncs');
+  assert.equal(lengths.size, 1, 'gated-out ticks are cover of the same sealed length');
 });

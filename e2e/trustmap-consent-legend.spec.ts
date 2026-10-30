@@ -35,6 +35,15 @@ test('Galaxy consent legend states disclosures, not observations — never infer
   await page.getByRole('tab', { name: 'Galaxy', exact: true }).click();
   const legend = page.getByTestId('trust-map-consent-legend');
   await expect(legend).toBeVisible();
+  await expect(legend).toContainText(/Every visible line consented — none inferred/);
+  const body = page.getByTestId('hint-body-galaxy-consent');
+  if (!(await body.isVisible())) {
+    await page.getByTestId('hint-toggle-galaxy-consent').click();
+  }
+  await expect(body).toBeVisible();
   await expect(legend).toContainText(/disclosures, not observations/i);
   await expect(legend).toContainText(/never infers who knows whom/i);
+  await page.getByTestId('hint-toggle-galaxy-consent').click();
+  await expect(body).toHaveCount(0);
+  await expect(legend).toContainText(/Every visible line consented — none inferred/);
 });
