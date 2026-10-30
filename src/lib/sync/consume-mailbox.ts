@@ -268,9 +268,33 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   if (!Array.isArray(envelopes)) return summary;
   summary.polled = envelopes.length;
 
-  // 2) Consume each envelope independently; collect the terminal ones to ack.
+  // 2) Consume each envelope independently; flush acks in 20-id chunks so
+  //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
+  //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
+  const ACK_CHUNK = 20;
   const toAck: string[] = [];
   const heldExpiries: unknown[] = [];
+  const flushAckChunk = async (chunk: string[]) => {
+    if (chunk.length === 0 || deps.owner.cycle?.ended) return;
+    const ackHeaders = await signMailboxAckRequest({
+      mailboxId,
+      envelopeIds: chunk,
+      fingerprint: deps.owner.fingerprint,
+      publicKeyArmored: deps.owner.publicKeyArmored,
+      privateKeyArmored: deps.owner.privateKeyArmored,
+      passphrase: deps.owner.passphrase,
+      cycle: deps.owner.cycle,
+      kemPublicKey: deps.owner.kemPublicKey,
+      sigPublicKey: deps.owner.sigPublicKey,
+      now: Date.now(),
+    });
+    const ackRes = await doFetch(`${relayBase}/ack`, {
+      method: 'POST',
+      headers: { ...ackHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: chunk }),
+    });
+    if (ackRes.ok) summary.acked += chunk.length;
+  };
   for (const env of envelopes) {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
@@ -325,6 +349,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
     }
+    if (toAck.length >= ACK_CHUNK) {
+      const batch = toAck.splice(0, ACK_CHUNK);
+      await flushAckChunk(batch);
+    }
   }
 
   // #720: report how many blobs are being KEPT because this device cannot open them yet. Reported on every CLEAN poll, including 0, so a
@@ -338,29 +366,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     }
   }
 
-  // 3) Ack-delete the terminal envelopes (owner-signed). apply is idempotent, so a crash before ack
-  //    just redelivers and re-applies harmlessly (at-least-once).
-  // Cycle ended mid-tick → skip the ack entirely (it can't be signed anyway): already-applied envelopes redeliver
-  //    and re-apply idempotently; the rest were never decided.
-  if (toAck.length > 0 && !deps.owner.cycle?.ended) {
-    const ackHeaders = await signMailboxAckRequest({
-      mailboxId,
-      envelopeIds: toAck,
-      fingerprint: deps.owner.fingerprint,
-      publicKeyArmored: deps.owner.publicKeyArmored,
-      privateKeyArmored: deps.owner.privateKeyArmored,
-      passphrase: deps.owner.passphrase,
-      cycle: deps.owner.cycle,
-      kemPublicKey: deps.owner.kemPublicKey,
-      sigPublicKey: deps.owner.sigPublicKey,
-      now: Date.now(),
-    });
-    const ackRes = await doFetch(`${relayBase}/ack`, {
-      method: 'POST',
-      headers: { ...ackHeaders, 'content-type': 'application/json' },
-      body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: toAck }),
-    });
-    if (ackRes.ok) summary.acked = toAck.length;
+  // 3) Ack-delete any remaining terminal envelopes (owner-signed).
+  while (toAck.length > 0 && !deps.owner.cycle?.ended) {
+    const batch = toAck.splice(0, ACK_CHUNK);
+    await flushAckChunk(batch);
   }
 
   return summary;
