@@ -514,3 +514,43 @@ test('R2 alone: non-opted-in peers ahead in book order do not starve the opted-i
   const real = posts.filter(p => p.body.cover === false).map(p => p.body.responder_fingerprint);
   assert.deepEqual(real, [fpN(3)], 'the opted-in peer must get its real initiate on the first tick');
 });
+
+// #719: a consent/scheduler source that THROWS (e.g. a locked store) must not change what the satellite sees.
+// Before: the tick sent ZERO requests ("this tick failed" is visible) and a queued cry waited (or, if the throw came
+// after the slot was drawn, was lost). Now the tick still sends exactly K covers of the one sealed length, 0 real,
+// and a queued cry rides those covers. The cover path performs no consent read.
+for (const [name, breakDeps] of [
+  ['getTrustedPeers throws', (d: OrchestratorDeps) => { d.getTrustedPeers = async () => { throw new Error('store locked'); }; }],
+  ['getTrustVisiblePeers throws', (d: OrchestratorDeps) => { d.getTrustVisiblePeers = async () => { throw new Error('store locked'); }; }],
+  ['opt-in source throws only at send time', (d: OrchestratorDeps) => {
+    let reads = 0;
+    const visible = d.getTrustVisiblePeers;
+    d.getTrustVisiblePeers = async () => { if (reads++ === 0) return visible(); throw new Error('store locked'); };
+  }],
+] as const) {
+  test(`#719 ${name}: still K covers of one sealed length, 0 real, error surfaced`, async () => {
+    const ok = book(2);
+    posts = [];
+    await tick(ok, newSource(), 'trust');
+    const goodLen = posts[0].raw.length;
+    const b = book(2);
+    breakDeps(b.deps);
+    posts = [];
+    const r = await tick(b, newSource(), 'trust');
+    assert.equal(posts.length, K, 'a failing consent source must not change the request count');
+    assert.ok(posts.every(p => p.body.cover === true), 'no real initiate when consent cannot be read');
+    assert.ok(posts.every(p => p.raw.length === goodLen), 'same sealed length as a good tick');
+    assert.ok(r.errors.some(e => /store locked/.test(e)), 'the failure is surfaced, not swallowed');
+  });
+}
+
+test('#719 a queued cry is not lost when the consent source throws: it rides the cover slot', async () => {
+  const b = book(2);
+  b.deps.getTrustVisiblePeers = async () => { throw new Error('store locked'); };
+  const slots = newSource();
+  queueCry(slots);
+  posts = [];
+  await tick(b, slots, 'trust');
+  assert.equal(posts.length, K);
+  assert.equal(await guardianOpens(posts[0].body.slot), 'distress', 'the cry went out on this tick');
+});

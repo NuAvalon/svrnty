@@ -624,8 +624,17 @@ async function sendResyncRequest(
   let real: { keypair: PSIKeypair; blinded: string[]; fpOrder: string[] } | null = null;
   let gateError: string | undefined;
   if (peerFp) {
-    const fps = await getLayerFingerprints(deps, layer);
-    if (fps.length === 0) {
+    let fps: string[] = [];
+    try {
+      fps = await getLayerFingerprints(deps, layer);
+    } catch (e) {
+      // #719: an unreadable opt-in set (e.g. a locked store) is "no consent": cover, never a real initiate, and
+      // never a missing request (a short tick tells the satellite this tick failed, and would strand the slot).
+      gateError = `${layer} opt-in set unreadable: ${e instanceof Error ? e.message : String(e)} (cover sent)`;
+    }
+    if (gateError) {
+      // fall through to the cover below
+    } else if (fps.length === 0) {
       gateError = `No ${layer === 'know' ? 'consented (open-visible)' : 'trusted'} contacts to sync`;
     } else if (!CONSENT_EXEMPT.has(layer) && !fps.includes(peerFp)) {
       // Same consent gate as initiateTrustSync, for EVERY layer (#697): a real initiate to a peer outside the
@@ -883,15 +892,23 @@ export async function syncMutualTrust(
       errors.push('Initiate phase: PSI resync slot requires the PQ wire-wrap: refusing a plaintext slot');
       return { responded, initiated, errors };
     }
+    // getTrustedPeers is the staleness scheduler only; WHO may be contacted is the layer's opt-in set.
+    // #719: if either read throws, the tick is all cover. It still sends exactly K requests (the count is
+    // not a tell) and a queued cry still rides them; the cover path performs no consent read.
+    let due: string[] = [];
     try {
-      // getTrustedPeers is the staleness scheduler only; WHO may be contacted is the layer's opt-in set.
-      let due = (await deps.getTrustedPeers())
+      due = (await deps.getTrustedPeers())
         .filter(p => !p.pending && isStale(p.lastSync))
         .map(p => p.fingerprint);
       if (!CONSENT_EXEMPT.has(layer)) {
         const consented = new Set(await getLayerFingerprints(deps, layer));
         due = due.filter(fp => consented.has(fp));
       }
+    } catch (e) {
+      due = [];
+      errors.push(`Initiate phase: due list unreadable, tick sent as cover: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    try {
       for (let k = 0; k < PSI_REQUESTS_PER_TICK_K; k++) {
         const slot = await options.slots.nextSlot();
         const r = await sendResyncRequest(deps, due[k] ?? null, options, layer, slot);
