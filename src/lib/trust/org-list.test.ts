@@ -69,6 +69,7 @@ test('ORG-2 reserve: a non-empty constitution_ref is refused by the signer AND t
   const l = listOf(1, [M1], { constitution_ref: 'sha256:' + 'a'.repeat(64) });
   await assert.rejects(sign(l), /refused before signing: constitution/);
   assert.deepEqual(await verifyOrgMemberList(await rawSign(l as unknown as Record<string, unknown>), org, NOW), { ok: false, reason: 'constitution' });
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping the field is the point
   const { constitution_ref: _c, ...missing } = listOf(1, [M1]);
   assert.equal(checkOrgMemberListShape(missing), 'shape', 'the field is required, so v0 and ORG-2 lists never look alike');
 });
@@ -138,6 +139,7 @@ test('an org-signed object that is not the member list is refused, and a list si
 
 test('signature binding: PQ stripped, member added after signing, wrong org, wrong PQ key, another org\'s key → refused', async () => {
   const signed = await sign(listOf(1, [M1]));
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- dropping the field is the point
   const { pq_signature: _d, ...noPq } = signed;
   assert.deepEqual(await verifyOrgMemberList(noPq, org, NOW), { ok: false, reason: 'pq-missing' });
   assert.deepEqual(await verifyOrgMemberList({ ...signed, members: [M1, M2] }, org, NOW), { ok: false, reason: 'signature' });

@@ -4,9 +4,9 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
-import { generatePQKeypairBundle, uint8ToBase64, base64ToUint8 } from '../crypto/pq';
+import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
-import { signWithEnvelope, verifyWithEnvelope } from '../crypto/sign-envelope';
+import { signWithEnvelope } from '../crypto/sign-envelope';
 import { DOMAIN_ORG_MEMBER_LIST, DOMAIN_MUTUAL_VOUCH, DOMAIN_IDENTITY_CARD, DOMAIN_JOINER_RESPONSE } from '../format/envelope';
 // INT-4's tag, as a literal: this branch is cut from dev without INT-4, and an undefined import would silently fall back.
 const DOMAIN_AGENT_CERT_SET = 'svrnty:agent-cert-set:v1';
