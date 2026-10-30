@@ -1,13 +1,13 @@
 // src/components/notes/held-notice.ts
 // #720 reliable receive: the AGGREGATE notice for messages this device could not turn into a stored message (contract v2 R3/R4).
-// Pure: no React, no I/O. Every user-facing string is Hypatia's copy v0.4 (svrnty_720_receive_copy_v0.md, sha256 728dba20) BY VALUE and
+// Pure: no React, no I/O. Every user-facing string is Hypatia's copy v0.5 (svrnty_720_receive_copy_v0.md, sha256 4f8475d1) BY VALUE and
 // a test pins each one. Rule for every line: say what THIS device observed; never a sender the device did not verify (F3/F4).
 //
 
 export type AggregateReason = 'missing_key' | 'different_encryption' | 'not_verified' | 'unknown_sender' | 'expired';
 
 /** What the code actually did with THESE messages; the kept-line must match it (copy doc: "append exactly one"). */
-export type Kept = 'relay' | 'local' | 'none';
+export type Kept = 'relay' | 'dead-lettered' | 'none';
 
 export interface HeldNoticeInput {
   reason: AggregateReason;
@@ -47,7 +47,9 @@ const HINT: Record<AggregateReason, ((n: number) => string) | null> = {
 };
 
 export const keptRelayNoDate = (n: number) => (n === 1 ? "It's still on the relay, and this app will try again." : "They're still on the relay, and this app will try again.");
-export const keptLocal = (n: number) => (n === 1 ? "It's saved on this device, not deleted." : "They're saved on this device, not deleted.");
+// Past the bound only a METADATA row survives (R2 / F2); the message itself is gone, so the line must not say it was kept (copy v0.5).
+export const keptDeadLettered = (n: number) =>
+  n === 1 ? "1 message couldn't be kept on this device, only a note that it arrived." : `${n} messages couldn't be kept on this device, only a note that they arrived.`;
 export const keptRelayUntil = (n: number, when: string) =>
   n === 1 ? `It's kept on the relay until ${when}, and this app will try again.` : `They're kept on the relay until ${when}, and this app will try again.`;
 
@@ -86,8 +88,8 @@ export function heldNotices(
     if (i.kept === 'relay') {
       const t = relayExpiry(i.expiresAt, nowMs);
       n.kept = t === null ? keptRelayNoDate(i.count) : keptRelayUntil(i.count, formatDate(t));
-    } else if (i.kept === 'local') {
-      n.kept = keptLocal(i.count);
+    } else if (i.kept === 'dead-lettered') {
+      n.kept = keptDeadLettered(i.count);
     }
     const hint = HINT[i.reason];
     if (hint && (i.reason !== 'unknown_sender' || i.canAdmit === true)) n.hint = hint(i.count);
