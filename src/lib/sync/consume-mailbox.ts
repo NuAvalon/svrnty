@@ -205,6 +205,9 @@ export interface ConsumeDeps {
   // while the secret is transiently missing (locked session / Athena-① pending). Undefined ⇒ status quo.
   // May be a lazy check (FE: the secret is only derived once a hybrid blob arrives); consumeOne awaits it per hybrid blob.
   hybridSecretMissing?: boolean | (() => Promise<boolean>);
+  // #720: called once per CLEAN poll with the number of blobs kept because this device cannot open them yet (0 clears the notice).
+  // Counts only that case; a terminal drop is not "held". Never called for a refused poll or an ended unlock cycle.
+  emitHeld?: (count: number) => void;
 }
 
 export interface ConsumeSummary {
@@ -214,6 +217,7 @@ export interface ConsumeSummary {
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
   delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
+  held: number; // #720: hybrid packages KEPT on the relay because no kem secret is derivable yet (also counted in `dropped`, as before)
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
@@ -223,7 +227,8 @@ type Outcome =
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
   | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
-  | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
+  | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
+  | { kind: 'held' }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
 /**
  * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
@@ -236,7 +241,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, acked: 0 };
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -308,8 +313,22 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
       toAck.push(env.envelope_id); // clean up permanently-invalid mail (silently)
+    } else if (outcome.kind === 'held') {
+      summary.held++;
+      summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
+    }
+  }
+
+  // #720: report how many blobs are being KEPT because this device cannot open them yet. Reported on every CLEAN poll, including 0, so a
+  // notice clears once they open or expire. NOT reported when the poll was refused (returned above) or the unlock cycle ended mid-tick:
+  // in both the state of the mailbox is unknown, and an unknown state must neither raise nor clear the notice.
+  if (!deps.owner.cycle?.ended) {
+    try {
+      deps.emitHeld?.(summary.held);
+    } catch {
+      /* the notice is best-effort; a repaint failure must not block consume/ack */
     }
   }
 
@@ -361,7 +380,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       `with no derivable ML-KEM secret — leaving for RETRY, not acking (acking would be silent-loss). ` +
       `Needs the owner's kem secret (OwnerIdentity.kemSecretKey / vault PQ bundle) or a session unlock.`,
     );
-    return { kind: 'retryable' };
+    return { kind: 'held' };
   }
 
   // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
