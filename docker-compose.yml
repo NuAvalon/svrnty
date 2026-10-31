@@ -28,6 +28,8 @@ services:
         # Biometric device-unlock seam — default OFF (honest "coming soon"). Set true only in a
         # build verified per src/components/biometric/biometric-seam.ts. Unset → false.
         NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE: ${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE:-}
+        # PSI mutual discovery — default OFF; 'true' only where a satellite + key pin exist for this deployment. Unset → off.
+        NEXT_PUBLIC_PSI_DISCOVERY_LIVE: ${NEXT_PUBLIC_PSI_DISCOVERY_LIVE:-}
     image: svrnty:selfhost
     environment:
       # Server-side only (read at runtime — safe as env, never shipped to the browser):

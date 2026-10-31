@@ -21,6 +21,9 @@ ENV NEXT_PUBLIC_SVRNTY_BASE_URL=${NEXT_PUBLIC_SVRNTY_BASE_URL}
 # anything but 'true' → isBiometricSeamLive() is false, so prod stays honest even post-merge.
 ARG NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE=
 ENV NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE=${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE}
+# PSI mutual discovery: OFF unless exactly 'true'. Only a build with its own satellite + key pin (dev today) sets it; prod must not.
+ARG NEXT_PUBLIC_PSI_DISCOVERY_LIVE=
+ENV NEXT_PUBLIC_PSI_DISCOVERY_LIVE=${NEXT_PUBLIC_PSI_DISCOVERY_LIVE}
 # Build provenance (git commit / branch / build time). Unlike the NEXT_PUBLIC_* vars
 # above, these are NOT inlined into the bundle — /api/version reads them from
 # process.env at runtime (that route is force-dynamic). NuAvalon/svrnty is a PUBLIC

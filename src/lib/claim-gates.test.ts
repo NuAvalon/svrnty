@@ -10,6 +10,18 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isPQEncapLive, isPQSignLive, isPQWireLive, isBiometricSeamLive, isPSIDiscoveryLive, isPiece2MutualBlockLive, isMutualTrustWireLive, isRelayMigrateLive } from './claim-gates';
 
+function withPsiEnv(value: string | undefined, fn: () => void): void {
+  const prev = process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE;
+  if (value === undefined) delete process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE;
+  else process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE = value;
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE;
+    else process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE = prev;
+  }
+}
+
 describe('claim-gates — honest until wired (flip WITH the wire, never ahead)', () => {
   it('isPQEncapLive is false until hybridEncapsulate has a real caller (classical seal today)', () => {
     assert.equal(isPQEncapLive(), false);
@@ -19,20 +31,27 @@ describe('claim-gates — honest until wired (flip WITH the wire, never ahead)',
     assert.equal(isPQSignLive(), false);
   });
 
-  it('isPQWireLive (PSI-discovery transport PQ) tracks isPSIDiscoveryLive — LIVE as of the dev flip; decoupled from the messaging encap/sign gates', () => {
-    // The discovery /initiate wire is PQ by construction (apex-proven); the CLAIM lights WITH discovery.
-    // isPSIDiscoveryLive() is true as of the dev flip → this is true. Both move together (one flag);
-    // the messaging encap/sign gates stay false (decoupled).
-    assert.equal(isPQWireLive(), true);
-    assert.equal(isPQWireLive(), isPSIDiscoveryLive());
+  it('isPQWireLive (PSI-discovery transport PQ) tracks isPSIDiscoveryLive; decoupled from the messaging encap/sign gates', () => {
+    // The discovery /initiate wire is PQ by construction (apex-proven); the CLAIM lights WITH discovery, per BUILD (NEXT_PUBLIC_PSI_DISCOVERY_LIVE).
+    // A build without the flag (prod) is dark: neither gate is true. Both move together (one flag); encap/sign stay false (decoupled).
+    withPsiEnv(undefined, () => {
+      assert.equal(isPQWireLive(), false);
+      assert.equal(isPQWireLive(), isPSIDiscoveryLive());
+    });
+    withPsiEnv('true', () => {
+      assert.equal(isPQWireLive(), true);
+      assert.equal(isPQWireLive(), isPSIDiscoveryLive());
+    });
   });
 
   it('isBiometricSeamLive is re-exported and false until the WebAuthn/PRF seam is wired', () => {
     assert.equal(isBiometricSeamLive(), false);
   });
 
-  it('isPSIDiscoveryLive is TRUE as of the dev flip (e2e verify + Flint at-rest co-verify + Peter informed reconfirm) — direct-block-only scope', () => {
-    assert.equal(isPSIDiscoveryLive(), true);
+  it('isPSIDiscoveryLive is per BUILD: dark unless NEXT_PUBLIC_PSI_DISCOVERY_LIVE is exactly "true" (dev sets it; prod has no satellite pin) — direct-block-only scope', () => {
+    withPsiEnv(undefined, () => assert.equal(isPSIDiscoveryLive(), false));
+    withPsiEnv('true', () => assert.equal(isPSIDiscoveryLive(), true));
+    withPsiEnv('1', () => assert.equal(isPSIDiscoveryLive(), false));
   });
 
   it('isPiece2MutualBlockLive is FALSE until emit/receive transport + §F3 churn-matrix land (spine mechanism built but inert — transitive block not yet live)', () => {

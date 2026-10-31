@@ -65,16 +65,22 @@ export function isPQWireLive(): boolean {
 /**
  * PSI mutual-contact DISCOVERY (the KNOW-layer "trust map") is wired end-to-end and LIVE (dev).
  *
- * TRUE as of the dev flip (2026-10-04): startKnowLayerSync runs; the client wire-in (per-peer blinder
+ * TRUE ONLY in a build with NEXT_PUBLIC_PSI_DISCOVERY_LIVE=true (dev sets it; prod does not: its satellite pin does not exist yet).
+ * Was an unconditional true from the dev flip (2026-10-04): startKnowLayerSync runs; the client wire-in (per-peer blinder
  * persisted on the contact record → initiator completes on a later tick → mutual set applied;
  * forward-revocation on retract) is active. Graduated on: piece-1 two-layer reveal + edgeTrusted
  * single-helper (flip-gate #1 closed), the e2e verify (determinism / unlinkability / set-change→
  * new-session / stateless-reload), Flint's at-rest-blinder co-verify, and Peter's informed reconfirm.
  * SCOPE (honest): block≡offline is DIRECT-block only; mutual-mediated/transitive block (#156420) is
  * piece-2, NOT yet live — copy says "blocked directly," not "fully blocked." PROD stays separately gated.
+ *
+ * BUILD-TIME, OPT-IN (Archie #2588 / Flint #2583): the satellite key pin (psi-wire-seal.ts) is the DEV satellite's, so a prod build can never
+ * complete a PSI sync, yet it would still POST the user's fingerprint + sign pubkey to /bind on every tick and claim PQ discovery. Anything but
+ * the exact string 'true' is OFF, so a build that forgets the arg fails SAFE (dark). Each environment with its own satellite and pin sets it.
+ * NEXT_PUBLIC_* is inlined into the client bundle at build time (Dockerfile ARG), like the biometric seam. The registry row is "env".
  */
 export function isPSIDiscoveryLive(): boolean {
-  return true;
+  return process.env.NEXT_PUBLIC_PSI_DISCOVERY_LIVE === 'true';
 }
 
 /**
