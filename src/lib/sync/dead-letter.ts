@@ -21,7 +21,7 @@ export type DeadLetterReason =
   | 'ratchet-unopenable' // opened and authenticated, a known contact's ratchet body would not open: the FRAME's fault (a verdict)
   | 'ratchet-local' // same frame, but something on THIS DEVICE stopped it (own key missing, session row unreadable, unknown cause): HELD, then recorded past the bound
   | 'ratchet-desync' // same frame, the sessions no longer agree (a receive failure on an authenticated contact's frame): HELD with backoff, then recorded (T2)
-  | 'session-reset' // a held ratchet frame released because the USER reset the session with that contact: our own deliberate act (T3, Flint reset semantics R2)
+  | 'session-reset' // a held ratchet frame released because the session with that contact was replaced: by the USER's own reset (T3, Flint reset semantics R2) or by adopting THEIR new session (R5, live-book-poll.ts), where the user did nothing
   | 'expired'; // arrived after its time limit
 
 /**
