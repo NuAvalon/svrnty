@@ -60,7 +60,7 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { ConsumeSummary, JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
@@ -545,18 +545,30 @@ export interface LiveBookPollHandle {
  * a full interval.
  */
 /**
+ * What one poll can honestly say. 'ok' = the relay answered the poll; 'rejected' = the poll request itself was refused (e.g. 401
+ * owner-auth), which is NOT an empty mailbox; 'locked' = no poll ran at all (locked / no identity). Only 'ok' may be shown as "Caught up."
+ */
+export type PollOnceStatus = 'ok' | 'rejected' | 'locked';
+
+export function pollStatusOf(summary: Pick<ConsumeSummary, 'rejected'>): PollOnceStatus {
+  return summary.rejected === undefined ? 'ok' : 'rejected';
+}
+
+/**
  * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
  * identity is a no-op (the book is still re-read by the caller). Does not invent
- * a living wire; it only consumes what the mailbox already has.
+ * a living wire; it only consumes what the mailbox already has. Returns what the
+ * poll can honestly report, so the caller never says "Caught up." for a poll that
+ * was refused or never ran. A thrown error (network) still propagates.
  */
 export async function pollLiveBookOnce(
   identity: unknown,
-  opts: { fetchImpl?: typeof fetch } = {},
-): Promise<void> {
-  const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-  if (!deps) return;
+  opts: { fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
+): Promise<PollOnceStatus> {
+  const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+  if (!deps) return 'locked';
   try {
-    await consumeInboundContactUpdates(deps);
+    return pollStatusOf(await consumeInboundContactUpdates(deps));
   } finally {
     deps.owner.cycle?.drop();
   }
