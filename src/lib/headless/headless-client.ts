@@ -40,6 +40,8 @@ export type HeadlessOwner = OwnerIdentity;
 export interface HeadlessOpts {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  budgetMs?: number; // #712: stop consuming after this long (between envelopes), so a deep backlog never meets the watchdog mid-write
+  nowMs?: () => number; // clock for the budget (inject for tests); default Date.now
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
@@ -60,7 +62,6 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
       if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
-      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return null; // in-book AND not-blocked — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety)
       const sent_at = wire.sent_at || now();
       const rec: NoteRecord = {
         note_id: wire.note_id,
@@ -74,22 +75,23 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
         retention: { expires_at: null },
         wire_type: NOTE_WIRE_TYPE,
       };
-      store.putNote(rec); // throws → consumeOne treats as retryable (ack-follows-persist)
-      const existing = store.listThreads().find((t) => t.thread_id === rec.thread_id);
-      const thread: NoteThread = existing
-        ? { ...existing, last_activity_at: sent_at }
-        : {
-            thread_id: rec.thread_id,
-            kind: wire.ring_channel_id ? 'ring' : 'direct',
-            participants: [
-              { fingerprint: wire.from_fingerprint, kind: rec.participant_kind, display_name: wire.from_fingerprint.slice(0, 8) },
-            ],
-            ring_channel_id: wire.ring_channel_id,
-            created_at: sent_at,
-            last_activity_at: sent_at,
-            retention: { expires_at: null },
-          };
-      store.putThread(thread);
+      // in-book AND not-blocked (admitContact), checked on the copy the note is written to: a block that lands before the chunk
+      // commit wins (#712 C2) — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety). Throws → retryable (ack-follows-persist).
+      const threadFor = (existing: NoteThread | undefined): NoteThread =>
+        existing
+          ? { ...existing, last_activity_at: sent_at }
+          : {
+              thread_id: rec.thread_id,
+              kind: wire.ring_channel_id ? 'ring' : 'direct',
+              participants: [
+                { fingerprint: wire.from_fingerprint, kind: rec.participant_kind, display_name: wire.from_fingerprint.slice(0, 8) },
+              ],
+              ring_channel_id: wire.ring_channel_id,
+              created_at: sent_at,
+              last_activity_at: sent_at,
+              retention: { expires_at: null },
+            };
+      if (!store.acceptInboundNote(rec, threadFor, admitContact)) return null;
       return { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
     },
   };
@@ -141,7 +143,17 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
     relayBase: opts.relayBase,
     fetchImpl: opts.fetchImpl,
     now,
+    // #712: one store write per ack chunk, before its ack; a redelivered envelope the store already holds is acked unopened (C1)
+    chunk: store.asChunkTxn(now),
+    outOfTime: deadline(opts),
   };
+}
+
+function deadline(opts: HeadlessOpts): (() => boolean) | undefined {
+  if (opts.budgetMs === undefined) return undefined;
+  const clock = opts.nowMs ?? Date.now;
+  const end = clock() + opts.budgetMs;
+  return () => clock() >= end;
 }
 
 /** Poll the owner's smart mailbox ONCE: decrypt → verify → apply → persist → ack every pending envelope. */
