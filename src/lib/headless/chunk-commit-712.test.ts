@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
-import { consumeInboundContactUpdates, envelopeDedupeKey } from '@/lib/sync/consume-mailbox';
+import { consumeInboundContactUpdates, envelopeDedupeKey, envelopeDedupeScope } from '@/lib/sync/consume-mailbox';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
 import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
@@ -47,6 +47,7 @@ function mockRelay(onAck?: (ids: string[]) => void) {
   const acks: string[][] = [];
   let seq = 0;
   let failAcks = 0;
+  let queueReply: 'ok' | 'refused' | 'unreadable' = 'ok';
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/envelope')) {
@@ -56,6 +57,8 @@ function mockRelay(onAck?: (ids: string[]) => void) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (u.includes('/queue')) {
+      if (queueReply === 'refused') return new Response('{}', { status: 401 });
+      if (queueReply === 'unreadable') return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
       const mid = new URL(u).searchParams.get('mailbox_id') ?? '';
       return new Response(JSON.stringify(boxes.get(mid) ?? []), { status: 200, headers: { 'content-type': 'application/json' } });
     }
@@ -74,7 +77,7 @@ function mockRelay(onAck?: (ids: string[]) => void) {
   }) as unknown as typeof fetch;
   const queued = () => [...boxes.values()].reduce((n, q) => n + q.length, 0);
   const listIds = () => [...boxes.values()].flat().map((e) => e.envelope_id);
-  return { fetchImpl, acks, queued, listIds, failAck: (n: number) => { failAcks = n; } };
+  return { fetchImpl, acks, queued, listIds, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
 }
 
 function tmpBook(): { dir: string; path: string; open: () => HeadlessStore; hash: () => string; done: () => void } {
@@ -210,6 +213,86 @@ test('#712 C1 bound: an entry leaves the dedupe set once a later poll\'s FULL li
   } finally {
     book.done();
   }
+});
+
+/** Put dedupe entries straight into the (plaintext) book file, as an earlier poll would have. */
+function plant(path: string, entries: Array<{ key: string; at?: string }>): void {
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  raw.applied_envelopes = entries.map((e) => ({ key: e.key, at: e.at ?? new Date().toISOString() }));
+  writeFileSync(path, JSON.stringify(raw));
+}
+const keysOnDisk = (path: string): string[] => (JSON.parse(readFileSync(path, 'utf8')).applied_envelopes ?? []).map((e: { key: string }) => e.key);
+
+test('#712 C1 bound (Flint #2417): an entry whose envelope IS in the listing is kept by a commit (only an absent one is pruned)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    await sendN(A, B, 1, relay.fetchImpl, 'already-stored');
+    const listedKey = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0])!;
+    const goneKey = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_long_gone')!;
+    plant(book.path, [{ key: listedKey }, { key: goneKey }]);
+    await sendN(A, B, 1, relay.fetchImpl, 'new');
+    relay.failAck(1); // keep the state as the commit wrote it: the ack after it dies
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed/);
+    const keys = keysOnDisk(book.path);
+    assert.ok(keys.includes(listedKey), 'still listed by the relay: kept');
+    assert.ok(!keys.includes(goneKey), 'absent from the whole listing: pruned');
+    assert.equal(keys.length, 2, 'the listed entry + the note stored now');
+  } finally {
+    book.done();
+  }
+});
+
+test('#712 C1 bound (Flint #2417): a REFUSED (401) or UNREADABLE (200, not a list) poll prunes nothing: the book is byte-identical', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    plant(book.path, [{ key: envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_absent')! }]);
+    for (const r of ['refused', 'unreadable'] as const) {
+      relay.reply(r);
+      const pre = book.hash();
+      await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+      assert.equal(book.hash(), pre, `${r}: no write, no prune`);
+    }
+  } finally {
+    book.done();
+  }
+});
+
+test('#712 C1 bound (Flint #2417): a listing prunes only ITS relay + mailbox; another mailbox\'s and another relay\'s entries survive', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    const own = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_absent')!;
+    const otherMailbox = envelopeDedupeKey(RELAY, deriveMailboxId(A.fp), 'env_absent')!;
+    const otherRelay = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_absent')!;
+    assert.ok(own.startsWith(envelopeDedupeScope(RELAY, deriveMailboxId(B.fp)) + '.'));
+    plant(book.path, [{ key: own }, { key: otherMailbox }, { key: otherRelay }]);
+    await sendN(A, B, 1, relay.fetchImpl);
+    await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    const keys = keysOnDisk(book.path);
+    assert.ok(!keys.includes(own), 'own scope, absent: pruned');
+    assert.ok(keys.includes(otherMailbox), 'another mailbox: untouched');
+    assert.ok(keys.includes(otherRelay), 'another relay: untouched');
+  } finally {
+    book.done();
+  }
+});
+
+test('#712 C1 PIN: the relay lists a mailbox WHOLE (no LIMIT/OFFSET, no slice in /queue). If this goes red, C1 must switch to a per-poll write (Flint #2417 binding)', () => {
+  const store = readFileSync(join(process.cwd(), 'src/lib/relay/mailbox-store.ts'), 'utf8');
+  const fn = store.slice(store.indexOf('export function pollMailbox('), store.indexOf('export function ackDelete('));
+  assert.ok(fn.includes('SELECT envelope_id, blob, expires_at FROM envelopes WHERE mailbox_id = ?'), 'found the listing query');
+  assert.doesNotMatch(fn, /\bLIMIT\b|\bOFFSET\b/i, 'pollMailbox must not page or cap: #712 C1 prunes on absence from this listing');
+  const route = readFileSync(join(process.cwd(), 'app/api/relay/queue/route.ts'), 'utf8');
+  assert.match(route, /const list = pollMailbox\(mailboxId, Date\.now\(\)\)\.map\(/, 'the route returns the whole listing');
+  assert.doesNotMatch(route, /\.slice\(|\.splice\(|\.filter\(|limit|cursor|page/i, 'the route must not page, cap or filter the listing: #712 C1');
 });
 
 test('#712 C1 TTL: an entry older than 7 days never suppresses an open (the envelope is opened and stored normally)', async () => {

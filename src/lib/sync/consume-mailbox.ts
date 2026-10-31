@@ -218,8 +218,22 @@ export interface ChunkTxn {
   isStored(key: string): boolean;
   stored(key: string): void;
   acked(keys: string[]): void;
-  commit(live?: ReadonlySet<string>): { refused: string[] };
+  commit(live?: ListingScope): { refused: string[] };
   abort(): void;
+}
+
+/**
+ * A clean poll's WHOLE listing (#712 C1 bound, Flint #2417): the keys of every envelope it returned, and the relay + mailbox they belong
+ * to. Only built from a 2xx array reply, so a refused or unreadable poll can never prune.
+ */
+export interface ListingScope {
+  scope: string;
+  keys: ReadonlySet<string>;
+}
+
+/** Which relay + mailbox a dedupe key belongs to: a dedupe key is `<scope>.<id hash>`, so a listing prunes only its own scope. */
+export function envelopeDedupeScope(relayBase: string, mailboxId: string): string {
+  return bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope-scope:v1|${relayBase}|${mailboxId}`)));
 }
 
 /**
@@ -229,7 +243,8 @@ export interface ChunkTxn {
  */
 export function envelopeDedupeKey(relayBase: string, mailboxId: string, envelopeId: unknown): string | null {
   if (typeof envelopeId !== 'string') return null;
-  return bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope:v1|${relayBase}|${mailboxId}|${envelopeId}`)));
+  const id = bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope:v1|${relayBase}|${mailboxId}|${envelopeId}`)));
+  return `${envelopeDedupeScope(relayBase, mailboxId)}.${id}`;
 }
 
 export interface ConsumeDeps {
@@ -355,7 +370,8 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   if (txn) summary.deduped = 0;
   if (deps.outOfTime) summary.deferred = 0;
   const keyOf = (id: unknown) => (txn ? envelopeDedupeKey(relayBase, mailboxId, id) : null);
-  const live = new Set(envelopes.flatMap((e) => keyOf(e.envelope_id) ?? []));
+  // reached only with a 2xx array (a refused or unreadable poll returned above): the one listing a commit may prune from
+  const live: ListingScope = { scope: envelopeDedupeScope(relayBase, mailboxId), keys: new Set(envelopes.flatMap((e) => keyOf(e.envelope_id) ?? [])) };
 
   // 2) Consume each envelope independently; flush acks in 20-id chunks so
   //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and

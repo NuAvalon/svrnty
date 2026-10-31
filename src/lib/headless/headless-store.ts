@@ -13,7 +13,7 @@ import { withWriterLock } from './writer-lock';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
-import type { KnownContact, ContactStore, ChunkTxn } from '@/lib/sync/consume-mailbox';
+import type { KnownContact, ContactStore, ChunkTxn, ListingScope } from '@/lib/sync/consume-mailbox';
 import type { NoteRecord, NoteThread } from '@/lib/messaging/types';
 
 /** A stored contact in the headless book — the fields the consume seams + admit + mutual-apply touch. */
@@ -218,10 +218,11 @@ export class HeadlessStore {
    * Returns the keys whose note a re-apply refused (the sender is no longer admitted). Throws if the write fails: the caller acks NONE
    * of the chunk, and this copy is rolled back to the disk.
    * The dedupe set keeps an entry only while it is younger than the relay TTL, was not acked by this process, and (when `live` is
-   * given) is still in the poll's listing: the relay lists a mailbox WHOLE (mailbox-store.ts listQueue has no LIMIT), so an id
-   * missing from it was acked or expired and can never be redelivered.
+   * given) is still in the poll's listing IF it belongs to that listing's relay + mailbox: the relay lists a mailbox WHOLE
+   * (mailbox-store.ts pollMailbox has no LIMIT, pinned by a test), so an id missing from it was acked or expired and can never be
+   * redelivered. Another relay's or mailbox's entries are never pruned by it (Flint #2417).
    */
-  commitChunk(now: string, live?: ReadonlySet<string>): { refused: string[] } {
+  commitChunk(now: string, live?: ListingScope): { refused: string[] } {
     const c = this.chunk;
     this.chunk = null;
     // nothing consumed into this chunk: no write (the dedupe set is pruned at the next real commit)
@@ -232,7 +233,8 @@ export class HeadlessStore {
       // A refusal only counts for an envelope consume marked stored: one refused on its first apply never was.
       const refused = new Set<string>();
       if (reapply) for (const { key, op } of c.ops) if (op() === false && key && c.stored.has(key)) refused.add(key);
-      const keep = (this.data.applied_envelopes ?? []).filter((e) => freshEntry(e, nowMs) && !c.acked.has(e.key) && (!live || live.has(e.key)));
+      const listed = (e: AppliedEnvelope) => !live || !e.key.startsWith(`${live.scope}.`) || live.keys.has(e.key);
+      const keep = (this.data.applied_envelopes ?? []).filter((e) => freshEntry(e, nowMs) && !c.acked.has(e.key) && listed(e));
       for (const k of c.stored) if (!refused.has(k) && !keep.some((e) => e.key === k)) keep.push({ key: k, at: now });
       this.data.applied_envelopes = keep;
       this.flush();
