@@ -128,13 +128,13 @@ test('D5 sink unit: re-record keeps the EARLIEST first_seen; clear() removes the
     const sink = headlessDeadLetterSink(path, () => nowMs);
     const row = (id: string, t: string) => ({ envelope_id: id, first_seen: t, reason: 'not-in-book' as const, blob_kind: 'hybrid-package' as const });
     await sink.record(row('a', '2026-10-30T10:00:00.000Z'));
-    const again = await sink.record(row('a', '2026-10-31T19:00:00.000Z'));
-    assert.equal(again.first_seen, '2026-10-30T10:00:00.000Z');
+    await sink.record(row('a', '2026-10-31T19:00:00.000Z'));
     await sink.record(row('b', '2026-10-31T19:00:00.000Z'));
     await sink.clear('b');
     assert.equal(existsSync(path), false, 'staged: nothing is written before flush()');
     await sink.flush!();
     assert.deepEqual(Object.keys(rowsAt(path)), ['a']);
+    assert.equal(rowsAt(path).a.first_seen, '2026-10-30T10:00:00.000Z', 'the EARLIEST first_seen is kept');
     nowMs = Date.parse('2026-12-15T00:00:00.000Z');
     await sink.settle!();
     assert.deepEqual(Object.keys(rowsAt(path)), [], 'older than 30 days is pruned');
@@ -178,5 +178,25 @@ test('D8 NEG a flush that FAILS (the dir cannot be created) → that chunk is NO
     assert.equal(r.box.length, 1, 'still on the relay');
     assert.equal(s.deadLettered, 0);
     assert.equal(s.unrecorded, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('D9 NEG (Flint #189091) two sinks on ONE path (two processes on one agent dir): A stages, B stages + flushes, THEN A flushes → BOTH rows on disk', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hdl-'));
+  try {
+    const path = join(dir, DEAD_LETTER_FILE);
+    const row = (id: string) => ({ envelope_id: id, first_seen: '2026-10-31T20:00:00.000Z', reason: 'not-in-book' as const, blob_kind: 'hybrid-package' as const });
+    const A = headlessDeadLetterSink(path);
+    const B = headlessDeadLetterSink(path);
+    await A.record(row('from-A'));
+    await B.record(row('from-B'));
+    await B.flush!();
+    await A.flush!(); // a sink that wrote back a map loaded before B's write would erase from-B here
+    assert.deepEqual(Object.keys(rowsAt(path)).sort(), ['from-A', 'from-B']);
+    // And a clear from one sink never resurrects or drops the other's row.
+    await B.clear('from-A');
+    await B.flush!();
+    assert.deepEqual(Object.keys(rowsAt(path)), ['from-B']);
+    assert.equal(existsSync(join(dir, '.writer.lock')), false, 'the agent-dir writer lock is released after each commit');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
