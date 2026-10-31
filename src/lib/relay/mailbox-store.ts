@@ -32,7 +32,7 @@ export interface Envelope {
 
 /** Resolve the SQLite path. Prod: a DIRECTORY-mounted persistent volume (RELAY_DB_PATH). Tests:
  *  in-memory (fresh per process; reset between tests via resetMailboxStore). */
-function dbPath(): string {
+export function dbPath(): string {
   const p = process.env.RELAY_DB_PATH;
   if (p && p.length > 0) return p;
   // Prod default: an ABSOLUTE path under the mounted persistent-volume directory (/data/relay).
