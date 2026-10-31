@@ -122,11 +122,13 @@ test('W3 static: deleteRatchetSession touches ONLY the ratchet_sessions store, d
   assert.equal((fn.match(/os\.delete\(/g) ?? []).length, 1);
 });
 
-test('W4 static: resetMessageSession deletes the SESSION first and marks the held frames second (marking first could release frames for a reset that failed); the store reads/writes the right rows', () => {
+test('W4 static: resetMessageSession deletes the SESSION first, marks the held frames second (marking first could release frames for a reset that failed) and sets the flag LAST; the store reads/writes the right rows', () => {
   const sr = src('./session-reset.ts');
   const body = sr.slice(sr.indexOf('export async function resetMessageSession'));
-  assert.ok(body.indexOf('resetRatchetSession(') > -1 && body.indexOf('resetRatchetSession(') < body.indexOf('markSessionReset('), 'session delete BEFORE marking');
-  assert.match(body, /markSessionReset\(peerFingerprint\.toLowerCase\(\)\)/);
+  const at = (m: string) => body.indexOf(m);
+  assert.ok(at('deps.resetSession(') > -1 && at('deps.resetSession(') < at('deps.markReleased(') && at('deps.markReleased(') < at('deps.setFlag('), 'session delete, then marking, then the flag');
+  assert.match(body, /deps\.markReleased\(peerFingerprint\.toLowerCase\(\)\)/);
+  assert.match(sr, /resetSession: resetRatchetSession, markReleased: markSessionReset, setFlag: setResetFlag/, 'the default deps are the real functions');
   const ds = src('./dead-letter-store.ts');
   assert.match(ds, /resetMarksFor\(await listDeadLetters\(\), peerFp\)[\s\S]*putDeadLetter\(m\)/);
   assert.match(ds, /r\.reason === 'session-reset' && r\.fp\) out\.set\(r\.envelope_id, r\.fp\)/);

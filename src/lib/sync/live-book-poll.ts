@@ -250,6 +250,11 @@ export function buildNoteSeam(
           const { markSessionReset } = await import('@/lib/messaging/dead-letter-store');
           await markSessionReset(fp);
         },
+        // R4: a frame from this contact opened, so "this device reset them and has received no frame since" is over.
+        onFrameOpened: async (fp) => {
+          const { clearResetFlagIfSet } = await import('@/lib/messaging/reset-flag-store');
+          await clearResetFlagIfSet(fp);
+        },
       });
       if (!rec) {
         // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint

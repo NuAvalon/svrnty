@@ -73,6 +73,9 @@ interface Opts {
   spy?: { ctx?: { sentAt: string | undefined }; opened: number };
   storedSentAts?: () => Promise<string[]>;
   noOpener?: boolean;
+  opened?: string[];
+  openedPuts?: number[];
+  onOpenedThrows?: boolean;
 }
 
 /** `rcv` receives `wire` from `snd` through the real acceptInboundNote, with the adopt policy built exactly the way live-book-poll builds it. */
@@ -101,6 +104,11 @@ async function receive(rcv: Party, snd: Party, wire: NoteWireV0, o: Opts = {}) {
     onSessionReplaced: async (peer) => {
       rcv.hooks.push({ peer, stored: rcv.notes.has(wire.note_id), puts: rcv.sess.puts() });
       if (o.hook) await o.hook(peer);
+    },
+    onFrameOpened: async (peer) => {
+      o.opened?.push(peer);
+      o.openedPuts?.push(rcv.sess.puts());
+      if (o.onOpenedThrows) throw new Error('flag store locked');
     },
   });
   return { r, reasons, causes };
@@ -301,6 +309,36 @@ test('W12c (Flint #2352/#2360, Archie #2354) a first frame dated beyond now + 5 
   const f3 = (await sealFrom(alice, bob, 'a real reset', aliceNew))!;
   const got = await receive(bob, alice, await wireFrom(alice, 'n3', f3, at(-1000)));
   assert.ok(got.r, 'control: the same sender with an honest clock still resets'); assert.equal(bob.hooks.length, 1);
+});
+
+test('W14 (R4 reset flag) onFrameOpened fires once, for the sender, AFTER the note is stored and the session committed; not for a frame that did not open, a redelivery, or a plain note; a throw changes nothing', async () => {
+  const { alice, bob, aliceNew } = await aliceResets();
+  const f2 = (await sealFrom(alice, bob, 'a real reset', aliceNew))!;
+  const opened: string[] = [];
+  const putsBefore = bob.sess.puts(), openedPuts: number[] = [];
+  const got = await receive(bob, alice, await wireFrom(alice, 'o1', f2, at(-1000)), { opened, openedPuts });
+  assert.ok(got.r); assert.deepEqual(opened, [alice.fp]); assert.ok(bob.notes.has('o1'), 'the note was stored before the hook');
+  assert.deepEqual(openedPuts, [putsBefore + 1], 'the session advance was already committed when the hook ran');
+  // a plain (non-ratchet) note from the same sender is stored but is not a ratchet frame opening: no hook
+  const plain: string[] = [];
+  const plainGot = await receive(bob, alice, await wireFrom(alice, 'o1p', 'just words', at(-500)), { opened: plain });
+  assert.ok(plainGot.r); assert.deepEqual(plain, [], 'a plain note does not end a reset flag');
+  // a frame that does NOT open (replayed old first frame) never fires it
+  const replay = (await sealFrom(alice, bob, 'replayed', memIO()))!;
+  const none: string[] = [];
+  const refused = await receive(bob, alice, await wireFrom(alice, 'o2', replay, at(-7_200_000)), { opened: none });
+  assert.equal(refused.r, null); assert.deepEqual(none, [], 'a held desync did not open: the flag stays');
+  // a hook that throws is swallowed: the note still comes back, stored
+  const { alice: a2, bob: b2, aliceNew: n2 } = await aliceResets();
+  const f3 = (await sealFrom(a2, b2, 'again', n2))!;
+  const thrown = await receive(b2, a2, await wireFrom(a2, 'o3', f3, at(-1000)), { opened: [], onOpenedThrows: true });
+  assert.ok(thrown.r, 'a throwing hook does not lose the note'); assert.ok(b2.notes.has('o3'));
+  // a refused sender (not admitted) never fires it
+  const { alice: a3, bob: b3, aliceNew: n3 } = await aliceResets();
+  const f4 = (await sealFrom(a3, b3, 'x', n3))!;
+  const stranger: string[] = [];
+  const dropped = await receive(b3, a3, await wireFrom(a3, 'o4', f4, at(-1000)), { opened: stranger, admitted: false });
+  assert.equal(dropped.r, null); assert.deepEqual(stranger, []);
 });
 
 test('W13 (cause-on-row) the drop carries WHY, as a fixed token: desync -> ratchet-receive-failed, a frame we cannot accept as a first frame -> first-frame-rejected, no opener -> no-ratchet-opener', async () => {
