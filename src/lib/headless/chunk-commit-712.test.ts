@@ -383,7 +383,9 @@ test('#712 C2: X blocked by a concurrent writer mid-chunk -> X\'s note is NOT st
     assert.equal(after.getContactByFingerprint(X.fp)?.blocked, true, 'the block survives the commit');
     assert.ok(after.getContactByFingerprint(Z.fp), 'control: the unrelated concurrent contact add survives');
     assert.equal(s.notes, 1);
-    assert.equal(s.lost['verify-failed'], 1, 'same accounting as a sender blocked before the poll');
+    // #332: a sender blocked before the poll is an honest 'not-in-book' loss, never 'verify-failed' (Peter→Athena 10-31); same here
+    assert.equal(s.lost['not-in-book'], 1, 'same accounting as a sender blocked before the poll');
+    assert.equal(s.lost['verify-failed'], undefined, 'never mislabelled as forged crypto');
     assert.equal(s.acked, 2, 'X\'s envelope is consumed exactly like a blocked sender\'s today');
   } finally {
     book.done();

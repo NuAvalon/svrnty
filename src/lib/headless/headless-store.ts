@@ -322,15 +322,22 @@ export class HeadlessStore {
   }
 
   // --- notes (mirror the messaging store surface the note-accept uses) ---
-  putNote(n: NoteRecord): void {
+  /**
+   * Returns false only when an INBOUND note was REFUSED because it reused a stored note_id with different content (FIRST WRITE WINS, Archie #2653):
+   * the stored row is kept as it was. Everything else stores (true). A byte-identical redelivery re-persists harmlessly.
+   */
+  putNote(n: NoteRecord): boolean {
+    let stored = true;
     this.mutate(() => {
       // note_id is sender-chosen: keyed on it alone, a peer who knew one of our ids (our outbound copies)
       // could replace that row. Same sender + direction + id = redelivery, re-persisted harmlessly (Chaos #170).
       const i = this.data.notes.findIndex((x) =>
         x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
       if (i === -1) this.data.notes.push(n);
+      else if (n.direction === 'inbound' && (this.data.notes[i].body !== n.body || this.data.notes[i].thread_id !== n.thread_id || this.data.notes[i].sent_at !== n.sent_at)) stored = false;
       else this.data.notes[i] = n;
     });
+    return stored;
   }
   listNotes(): NoteRecord[] {
     return [...this.data.notes];
@@ -346,22 +353,27 @@ export class HeadlessStore {
   /**
    * Store an inbound note and its thread as ONE change, admitted against the copy it is applied to (#712 C2): re-applied at a chunk
    * commit, a sender blocked by a concurrent writer since the note was opened is refused there, exactly as before the poll. `threadFor`
-   * builds the thread from the CURRENT one on that copy. Returns false (nothing stored) when the sender is not admitted.
+   * builds the thread from the CURRENT one on that copy. Returns 'not-admitted' (nothing stored) when the sender is not admitted, and
+   * 'kept' (nothing changed) when the note reuses a stored inbound id with different content: FIRST WRITE WINS, the same rule as putNote.
+   * The op returns false ONLY for not-admitted: that is the refusal commitChunk reports (a 'kept' note is stored, the stored row stands).
    */
-  acceptInboundNote(n: NoteRecord, threadFor: (existing: NoteThread | undefined) => NoteThread, admit: (c: HeadlessContact | null) => boolean): boolean {
-    return this.mutate(() => {
+  acceptInboundNote(n: NoteRecord, threadFor: (existing: NoteThread | undefined) => NoteThread, admit: (c: HeadlessContact | null) => boolean): 'stored' | 'kept' | 'not-admitted' {
+    const r = this.mutate((): 'stored' | 'kept' | false => {
       if (!admit(this.getContactByFingerprint(n.from_fingerprint))) return false;
       // same key as putNote: sender + direction + id (Chaos #170)
       const i = this.data.notes.findIndex((x) =>
         x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
+      const prev = i === -1 ? undefined : this.data.notes[i];
+      if (prev && n.direction === 'inbound' && (prev.body !== n.body || prev.thread_id !== n.thread_id || prev.sent_at !== n.sent_at)) return 'kept';
       if (i === -1) this.data.notes.push(n);
       else this.data.notes[i] = n;
       const t = threadFor(this.data.threads.find((x) => x.thread_id === n.thread_id));
       const j = this.data.threads.findIndex((x) => x.thread_id === t.thread_id);
       if (j === -1) this.data.threads.push(t);
       else this.data.threads[j] = t;
-      return true;
+      return 'stored';
     });
+    return r === false ? 'not-admitted' : r;
   }
   listThreads(): NoteThread[] {
     return [...this.data.threads];

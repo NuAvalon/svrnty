@@ -22,9 +22,12 @@ import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headles
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
+import { deriveOwnerHybridSecrets } from '../src/lib/crypto/living-book-receive';
+import type { LivingBookHybridSecrets } from '../src/lib/crypto/living-book-sleeve';
 import { acceptJoinerAtGate, buildAdmitRecord } from '../src/lib/trust/grow-gate';
 import {
   isCodeOutstanding,
@@ -116,6 +119,13 @@ function saveGate(map: GateMap): void {
 function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
   const codes = loadCodes(); // snapshot per poll — same as browser loadIssuedCodeMap
+  // #711 (b): the joiner-response is sealed PQ-hybrid to our KEM key (a CLI join and the web app both pass giverPqKemPublicKey). Without
+  // the hybrid open-material, verifyJoinerResponse could only try the classical leg, so the response never opened and the Gate stayed empty
+  // (Peter's web join to Athena's grow link, 2026-10-31). Same dual-read as the browser seam (live-book-poll.ts): hybrid first, classical
+  // fallback. Lazy + memoized: derived at most once per poll, and only when a joiner blob actually arrives. undefined for a classical owner.
+  let hybridMemo: Promise<LivingBookHybridSecrets | undefined> | null = null;
+  const hybrid = () =>
+    (hybridMemo ??= deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey));
   const acceptNonce = (nonce: string, joinerFp: string): boolean =>
     isCodeOutstanding(codes, ownFp, nonce, Date.now()) &&
     codeUnderCap(codes, ownFp, nonce) &&
@@ -124,7 +134,7 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
     verify: (blob) =>
       verifyJoinerResponse(
         blob,
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid },
         acceptNonce,
         { requirePq: false },
       ),
@@ -165,7 +175,12 @@ const CONSUME_BUDGET_MS = (() => {
 })();
 
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
-  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY, budgetMs: CONSUME_BUDGET_MS });
+  // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
+  const deps = await buildHeadlessConsumeDeps(owner, store, {
+    relayBase: RELAY,
+    budgetMs: CONSUME_BUDGET_MS,
+    deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
+  });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }

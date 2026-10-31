@@ -205,6 +205,9 @@ export interface DeadLetterSink {
   clear(envelopeId: string): Promise<void>;
   /** Once per poll, after records were written (retention pruning). Best effort: a failure here never affects what is acked. */
   settle?(): Promise<void>;
+  /** Optional STAGING: when present, record()/clear() may only buffer, and flush() commits them. consume-mailbox calls it before every
+   *  ack chunk and acks the chunk only if it resolved. */
+  flush?(): Promise<void>;
 }
 
 /**
@@ -305,7 +308,7 @@ export interface ConsumeSummary {
   acked: number;
   deduped?: number; // #712 C1: redelivered envelopes a previous commit already holds, acked WITHOUT opening (present when chunk is wired)
   deferred?: number; // #712: envelopes left on the relay because the pass ran out of time (present when outOfTime is wired)
-  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth), or a 2xx whose body was not a list; absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
 /**
@@ -364,7 +367,10 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
   // ever compared and handed on, never used to decide whether a blob is consumed.
   const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
-  if (!Array.isArray(envelopes)) return summary;
+  if (!Array.isArray(envelopes)) {
+    summary.rejected = res.status; // an answer that isn't a list is not an empty mailbox (Archie #2401)
+    return summary;
+  }
   summary.polled = envelopes.length;
   const txn = deps.chunk;
   if (txn) summary.deduped = 0;
@@ -377,8 +383,29 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
   //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
   const ACK_CHUNK = 20;
+  // A STAGING sink (one with flush(), e.g. the headless file sink) buffers record()/clear() and commits them in ONE write before each ack
+  // chunk, so a backlog of N losses costs at most ceil(N/20) writes, not N (Archie #189076, Flint C1). Record-before-ack still holds: a
+  // chunk is acked only after flush() succeeded. If flush() throws, NOTHING in that chunk is acked (it stays on the relay for a later poll)
+  // and every staged record in it is re-counted from deadLettered to unrecorded. A sink without flush() (the FE) writes in record() as before.
+  const stagedRecords = new Set<string>();
   const flushAckChunk = async (chunk: string[]) => {
     if (chunk.length === 0 || deps.owner.cycle?.ended) return;
+    const staging = deps.deadLetter?.flush;
+    if (staging) {
+      try {
+        await staging.call(deps.deadLetter);
+      } catch (err) {
+        for (const id of chunk) {
+          if (stagedRecords.delete(id)) {
+            summary.deadLettered--;
+            summary.unrecorded++;
+          }
+        }
+        console.error('[return-channel] could not commit dead-letter records (chunk left on the relay):', err instanceof Error ? err.message : 'error');
+        return;
+      }
+      for (const id of chunk) stagedRecords.delete(id);
+    }
     const ackHeaders = await signMailboxAckRequest({
       mailboxId,
       envelopeIds: chunk,
@@ -413,28 +440,63 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   };
   // #712 S1: a chunk is written BEFORE it is acked. false = the write failed: ack none of these `pending` (left on the relay, `unrecorded`).
   // The consumed-counters of a chunk that was never written go back to the last commit (Apollo #2429): it counts as `unrecorded` only.
+  // PINNED ORDER per ack chunk (Flint #189113/#189122): store save (txn.commit) → dead-letter flush (flushAckChunk) → ack. No ack if either
+  // write fails. A failed store save leaves the chunk's dead-letter ops STAGED (the sink keeps them for its next flush) and the chunk UNACKED.
   type Committed = Pick<ConsumeSummary, 'applied' | 'ignited' | 'notes' | 'delivered' | 'dropped' | 'deduped' | 'lost'>;
   const snapshot = (): Committed => ({ applied: summary.applied, ignited: summary.ignited, notes: summary.notes, delivered: summary.delivered, dropped: summary.dropped, deduped: summary.deduped, lost: { ...summary.lost } });
   let committed = snapshot();
-  const commitChunk = (pending: number): boolean => {
+  // The envelopes whose note a re-apply may refuse at commit (C2), by dedupe key: what a loss row for it needs (the fp is authenticated).
+  const notesByKey = new Map<string, { id: string; blob: string; fp: string }>();
+  // `ids` = the envelopes this commit covers that are about to be acked. An id dropped from it here is NOT acked (stays on the relay).
+  const commitChunk = async (ids: string[]): Promise<boolean> => {
     if (!txn) return true;
+    let refused: string[];
     try {
-      // C2: the sender was blocked by a concurrent writer after the note opened: consumed exactly like a blocked sender's note
-      const { refused } = txn.commit(live);
-      summary.notes -= refused.length;
-      summary.dropped += refused.length;
-      for (let i = 0; i < refused.length; i++) bump('verify-failed');
-      committed = snapshot();
-      return true;
+      refused = txn.commit(live).refused;
     } catch (err) {
       Object.assign(summary, committed, { lost: { ...committed.lost } });
-      summary.unrecorded += pending;
+      summary.unrecorded += ids.length;
+      // their dead-letter rows stay staged in the sink (written at its next flush, harmless for an envelope still on the relay), but none
+      // of these is acked now, so none counts as dead-lettered (= recorded, then acked)
+      for (const id of ids) if (stagedRecords.delete(id)) summary.deadLettered--;
       console.error('[return-channel] could not write a chunk of consumed envelopes (left on the relay):', err instanceof Error ? err.message : 'error');
       return false;
     }
+    // C2: the sender was blocked (or removed) by a concurrent writer after the note opened. Consumed exactly like a blocked sender's note
+    // on its first apply: an honest 'not-in-book' loss (#332), and with a sink its ROW is staged before the ack (#713), never acked unrecorded.
+    for (const k of refused) {
+      const n = notesByKey.get(k);
+      summary.notes--;
+      summary.dropped++;
+      if (!n) {
+        bump('not-in-book');
+        continue;
+      }
+      const i = ids.indexOf(n.id);
+      if (!sink) {
+        bump('not-in-book');
+        continue;
+      }
+      const key = recordKeyFor(n.id);
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: 'not-in-book', blob: n.blob, fp: n.fp }) : null;
+      try {
+        if (!row) throw new Error('unrecordable envelope id');
+        await sink.record(row);
+        summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(n.id);
+        bump('not-in-book');
+      } catch (err) {
+        if (i !== -1) ids.splice(i, 1);
+        summary.unrecorded++;
+        console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
+      }
+    }
+    for (const k of refused) notesByKey.delete(k);
+    committed = snapshot();
+    return true;
   };
   const commitThenAck = async (chunk: string[]) => {
-    if (commitChunk(chunk.length)) await flushAckChunk(chunk);
+    if (await commitChunk(chunk)) await flushAckChunk(chunk);
   };
 
   // THE ACK DOOR. Run inline, one envelope at a time, so #307's incremental chunked drain keeps working. Without a sink (headless) behaviour
@@ -465,6 +527,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
       try {
         await sink.record(row);
         summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
         bump(item.need.reason);
         toAck.push(item.id);
       } catch (err) {
@@ -511,6 +574,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     // That is a lock/switch artefact, not a verdict on the blob: downgrade so it is never ack-deleted.
     if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
     if (txn && key && (outcome.kind === 'applied' || outcome.kind === 'note' || outcome.kind === 'receipt')) txn.stored(key);
+    if (txn && key && outcome.kind === 'note') notesByKey.set(key, { id: env.envelope_id, blob: env.blob, fp: outcome.event.from_fingerprint });
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
@@ -589,13 +653,6 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     stillHeld.push(...heldNow);
   }
   summary.held = stillHeld.length;
-  if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
-    try {
-      await sink.settle();
-    } catch {
-      /* retention is housekeeping; it must not affect consume or ack */
-    }
-  }
 
   // #720: report how many blobs are being KEPT because this device cannot open them yet. Reported on every CLEAN poll, including 0, so a
   // notice clears once they open or expire. NOT reported when the poll was refused (returned above) or the unlock cycle ended mid-tick:
@@ -611,7 +668,16 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   // 3) Ack-delete any remaining terminal envelopes (owner-signed), in chunks. apply is idempotent, so a crash before ack
   //    just redelivers and re-applies harmlessly (at-least-once). Cycle ended mid-tick: flushAckChunk skips (it can't be signed).
   //    #712: the last partial chunk is written first (the cycle-ended case too: its ops passed the per-write dead() checks).
-  if (!commitChunk(toAck.length)) toAck.length = 0;
+  // PINNED ORDER for the last chunk too: store save FIRST, then any dead-letter write (settle commits staged rows + prunes), then the acks.
+  // A failed store save skips settle, so its dead-letter ops stay STAGED (not written ahead of the store) and nothing is acked.
+  if (!(await commitChunk(toAck))) toAck.length = 0;
+  else if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
+    try {
+      await sink.settle();
+    } catch {
+      /* retention is housekeeping; it must not affect consume or ack (a staged row it could not write is flushed before its ack below) */
+    }
+  }
   while (toAck.length > 0 && !deps.owner.cycle?.ended) {
     const batch = toAck.splice(0, ACK_CHUNK);
     await flushAckChunk(batch);
