@@ -266,3 +266,13 @@ test('NEG: freshness is two-sided: a bundle dated 10 min in the FUTURE is refuse
   assert.equal((await poll(id, pollHeaders(A, Date.now() + 10 * 60_000))).status, 401, 'future-dated, outside the window');
   assert.equal((await poll(id, pollHeaders(A, Date.now()))).status, 200, 'control: a current bundle is accepted');
 });
+
+test('header budget: the v2 owner-auth header stays <= 14 KB (Node\'s default header cap is 16 KB; Flint #2205 measured 13,182 B)', () => {
+  const sizes = [
+    signOwnerRequestV2({ keypair: A, op: 'poll', now: Date.now() }),
+    signOwnerRequestV2({ keypair: A, op: 'claim', now: Date.now() }),
+    signOwnerRequestV2({ keypair: A, op: 'ack', now: Date.now(), envelopeIds: Array.from({ length: 50 }, (_, i) => `e${i}`) }),
+  ].map((r) => OWNER_AUTH_V2_HEADER.length + 2 + r.headers[OWNER_AUTH_V2_HEADER].length);
+  for (const s of sizes) assert.ok(s <= 14 * 1024, `${s} bytes`);
+  assert.equal(new Set(sizes).size, 1, 'constant size: envelope ids ride the ack BODY, not the header');
+});
