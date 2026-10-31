@@ -273,6 +273,8 @@ test('W12b the future slack edge is exact (now + 5 min counts, one ms beyond is 
   assert.equal(await ask([at(FUTURE_SLACK_MS + 1)], at(-1000)), true, 'one ms beyond the slack: ignored');
   assert.equal(await ask([at(FUTURE_SLACK_MS + 1), at(2 * FUTURE_SLACK_MS)], at(-1000)), true);
   assert.deepEqual(counter.take(), { future_ignored: 3 }, '1 + 2 ignored notes');
+  assert.equal(await ask([at(-5000), at(FUTURE_SLACK_MS + 1)], at(-1000)), true, 'a real note and a future one: only the future one is ignored');
+  assert.deepEqual(counter.take(), { future_ignored: 1 }, 'counts the IGNORED notes, not every stored note');
   assert.deepEqual(counter.take(), { future_ignored: 0 }, 'take() resets');
   // a counter that throws must not change the answer
   const boom = buildAdoptFirstFrame({ ownFingerprint: 'bb', peerFingerprint: 'aa', sentAt: at(-1000), storedSentAts: async () => [at(FUTURE_SLACK_MS + 5)], now: () => NOW, onIgnoredFuture: () => { throw new Error('x'); } });
