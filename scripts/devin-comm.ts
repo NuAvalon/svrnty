@@ -22,6 +22,7 @@ import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headles
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -166,7 +167,8 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
 }
 
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
-  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
+  // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
+  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY, deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}` });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }
