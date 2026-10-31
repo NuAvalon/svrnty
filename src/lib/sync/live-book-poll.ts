@@ -20,6 +20,7 @@
 // React — the book just stays static until a later successful tick. All custody/verify/whitelist
 // logic lives inside the caller; nothing here is smart about the social graph.
 
+import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import {
   consumeInboundContactUpdates,
   type ConsumeDeps,
@@ -206,6 +207,7 @@ export function buildNoteSeam(
         onDrop: (r) => {
           dropReason = r;
         },
+        onRewriteRefused: noteRewriteRefused,
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
         openRatchet: async (fromFp, body) => {
