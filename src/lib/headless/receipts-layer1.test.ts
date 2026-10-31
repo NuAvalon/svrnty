@@ -440,3 +440,25 @@ test('N9 (C3) the emit path re-checks admitContact itself: a candidate from a st
     b.done();
   }
 });
+
+test('N10 a FWW refusal (\'kept\') never becomes a receipt CANDIDATE: asserted on the candidate set itself, not only on "nothing sent"', async () => {
+  // N8 sees "receipts_sent 0" for a rewrite, but that also holds if 'kept' became a candidate and the durable re-check dropped it
+  // (the rewritten body != the stored one). This pins the earlier gate: a refused rewrite is never collected (skipped stays 0).
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    await send(A, B, new HeadlessStore(), relay.fetchImpl, 'first', { noteId: 'n-fww', sentAt: '2026-10-31T20:00:00.000Z' });
+    assert.equal((await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl })).receipts_sent, 1);
+    await send(A, B, new HeadlessStore(), relay.fetchImpl, 'rewritten', { noteId: 'n-fww', sentAt: '2026-10-31T20:00:00.000Z' });
+    const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    const summary = await consumeInboundContactUpdates(deps);
+    assert.equal(summary.notes, 1, 'the rewrite was consumed (acked) as the stored note');
+    assert.deepEqual(await deps.sendReceipts(), { sent: 0, skipped: 0, failed: 0 }, 'the refused rewrite was never a candidate');
+    assert.equal(b.open().listNotes().find((n) => n.note_id === 'n-fww')!.body, 'first');
+  } finally {
+    b.done();
+  }
+});
