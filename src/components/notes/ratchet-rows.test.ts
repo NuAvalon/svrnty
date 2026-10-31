@@ -1,4 +1,4 @@
-// #720 UI half: the named ratchet rows + the reset action. Every string is Hypatia's copy v0.7 (6f9d842e) by value; the NEGs are the
+// #720 UI half: the named ratchet rows + the reset action. Every string is Hypatia's copy v0.8 (301f2981) by value; the NEGs are the
 // copy doc's own (LOCAL never says "ask them to resend", VERDICT never says "keep trying") plus the reset surfaces' NEVER list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ test('LOCAL held: exact line + hint (copy v0.6/v0.7)', () => {
   });
 });
 
-test('LOCAL past the bound: metadata only, no promise the lost one comes back', () => {
+test('LOCAL past the bound (v0.8 first line): metadata only, no promise the lost one comes back', () => {
   assert.deepEqual(namedRow('Ana', { kind: 'local', phase: 'recorded' }), {
     line: "A message from Ana arrived but couldn't be opened on this device.",
     hint: "This app couldn't keep the message itself, only a note that it arrived. Restoring your keys on this device may help with new messages.",
