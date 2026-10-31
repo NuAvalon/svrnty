@@ -120,3 +120,46 @@ test('INTEGRATION (snarkjs 0.7.6, real proof): honest verifies; each public inpu
     assert.equal(await snarkjs.groth16.verify(vkey, v, proof), false, `public[${i}]+p`);
   }
 });
+
+test('R1-e (canonical round-trip): for EVERY spelling the parser accepts, encode(parse(s)) === s; so the wire string and the parsed value are the same key', () => {
+  // deterministic xorshift, so a failure reproduces
+  let st = 0x9e3779b9;
+  const rnd = () => { st ^= st << 13; st >>>= 0; st ^= st >>> 17; st ^= st << 5; st >>>= 0; return st; };
+  const hex = (n: number) => Array.from({ length: n }, () => '0123456789abcdef'[rnd() & 15]).join('');
+  const canon = [hex(64), '0'.repeat(64), 'f'.repeat(64), encodeCanonical(BN254_P - BigInt(1)), encodeCanonical(BigInt(0)), encodeCanonical(BN254_P - BigInt(2))];
+  const candidates: string[] = [...canon];
+  for (let i = 0; i < 400; i++) {
+    const base = i % 3 === 0 ? hex(64) : canon[i % canon.length];
+    const mutants = [
+      base.toUpperCase(), '0x' + base, base.replace(/^0+/, ''), ' ' + base, base + ' ', base + '\n', base.slice(0, 63), base + '0',
+      base.slice(0, 10) + base[10].toUpperCase() + base.slice(11), base.replace(/^./, '+'), '-' + base.slice(1), BigInt('0x' + base).toString(10),
+      (BigInt('0x' + base) + BN254_P).toString(16).padStart(64, '0'), hex(64),
+    ];
+    candidates.push(...mutants);
+  }
+  let accepted = 0;
+  for (const s of candidates) {
+    const v = parseCanonical(s);
+    if (v === null) continue;
+    accepted++;
+    assert.equal(encodeCanonical(v), s, `parser accepted a second spelling: ${JSON.stringify(s)}`);
+    assert.ok(v >= BigInt(0) && v < BN254_P);
+  }
+  assert.ok(accepted >= 100, 'the property must actually be exercised (got ' + accepted + ' accepted spellings)');
+  // and the other direction: every canonical value parses back to itself
+  for (const v of [BigInt(0), BigInt(1), BN254_P - BigInt(1), BigInt(2960), HONEST_A.N, HONEST_A.H_e]) assert.equal(parseCanonical(encodeCanonical(v)), v);
+});
+
+test('R1-e (matcher): the dedupe key is the parsed value; a second spelling of N never reaches the slot as a distinct entry', async () => {
+  const { verify } = reducingVerifier([HONEST_A]);
+  const m = new SlotBindMatcher(verify);
+  const w = wire(HONEST_A);
+  assert.equal((await m.deposit({ proof: 'p', publicInputs: w })).status, 'deposited');
+  const aliases = [w.N.toUpperCase(), '0x' + w.N, w.N.replace(/^0+/, ''), ' ' + w.N, (BigInt('0x' + w.N) + BN254_P).toString(16)].filter((x) => x !== w.N);
+  assert.ok(aliases.length >= 3, 'need real aliases (an alias equal to the canonical spelling tests nothing)');
+  for (const alias of aliases) {
+    const r = await m.deposit({ proof: 'p', publicInputs: { ...w, N: alias } });
+    assert.deepEqual(r, { status: 'rejected', reason: 'malformed-public-inputs' });
+  }
+  assert.equal((await m.deposit({ proof: 'p', publicInputs: w })).status, 'already-deposited');
+});
