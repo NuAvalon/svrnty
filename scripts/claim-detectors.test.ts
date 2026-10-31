@@ -6,6 +6,8 @@
 // families). Run: npx --no-install tsx --test scripts/claim-detectors.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pqAbsoluteOverclaim, invulnerabilityOverclaim, pqBadgeOverclaim, pqResistantIdentityOverclaim, nodeZeroOverclaim, relayMetadataPrivacyOverclaim, smartRelayOverclaim, mailboxDeliveryOverclaim, deliveredOverclaim, connectedOverclaim } from './claim-detectors';
 
 type Case = [string, boolean, string];
@@ -270,3 +272,44 @@ for (const [label, cases, flag] of FAMILIES) {
     }
   });
 }
+
+// --- G-1 punctuation gap (launch copy-fix spec v3 dbb38d8e item 6; fixtures = Hypatia's g1_punctuation_test_v2.py 51f14479, verbatim) ---
+// Both G-1 patterns that use a word separator must catch "post-quantum" claims whose words are split by punctuation, not only spaces.
+describe('G-1 registry patterns 3 + 7: punctuation between the words', () => {
+  const g1 = JSON.parse(readFileSync(join(__dirname, 'claim-registry.json'), 'utf8')).claims.find((c: { id: string }) => c.id === 'G-1');
+  const pick = (needle: string) => new RegExp(g1.patterns.find((p: string) => p.startsWith('post-quantum(?:') && p.includes(needle)), 'i');
+  const NEW3 = pick('protected|encrypted');
+  const NEW7 = pick('encrypts|encrypting');
+  const OLD3 = /post-quantum(?:[-\s]+\w+){0,4}[-\s]+(protected|encrypted|encryption(?![-\s]+keys?\b))/i;
+  const OLD7 = /post-quantum(?:[-\s]+\w+){0,4}[-\s]+(encrypts|encrypting)/i;
+  const HIT3 = [
+    '✓ Post-quantum (hybrid) encryption — a signed card carrying a verified encryption key.',
+    'Post-quantum, end-to-end encrypted messages.',
+    'post-quantum/hybrid encrypted',
+    'Post-quantum (ML-KEM-1024) protected notes',
+    'post-quantum: encrypted by default',
+  ];
+  const HIT7 = ['Post-quantum (hybrid) encrypts every note.', 'post-quantum, end-to-end, encrypting your chats', 'Post-quantum: encrypts by default'];
+  const BOTH = ['Post-quantum encrypted messages', 'post-quantum encrypts notes'];
+  const MISS = [
+    'This card carries a verified post-quantum encryption key.',
+    'Each identity advertises a post-quantum encryption key, and the hybrid X25519 + ML-KEM-1024 primitives are built and tested',
+    'a post-quantum (ML-KEM) encryption key',
+  ];
+  const any = (s: string) => NEW3.test(s) || NEW7.test(s);
+  it('NEG first: the old p3 misses 5/5 of its punctuation forms and the old p7 misses 3/3', () => {
+    assert.equal(HIT3.filter((s) => !OLD3.test(s)).length, 5);
+    assert.equal(HIT7.filter((s) => !OLD7.test(s)).length, 3);
+  });
+  it('the registry patterns catch every punctuation form', () => {
+    for (const s of HIT3) assert.equal(NEW3.test(s), true, s);
+    for (const s of HIT7) assert.equal(NEW7.test(s), true, s);
+    for (const s of BOTH) assert.equal(any(s), true, s);
+  });
+  it('and still pass an encryption KEY (a key is not protection)', () => {
+    for (const s of MISS) assert.equal(any(s), false, s);
+  });
+  it('a post-quantum-ready hedge is caught by the pattern (the hedge rule, not the pattern, excuses it)', () => {
+    assert.equal(any('Post-quantum-ready encryption. No server can read your messages.'), true);
+  });
+});

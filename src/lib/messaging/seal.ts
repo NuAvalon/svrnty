@@ -2,15 +2,17 @@
 // Seal for notes v0 (Phase 3 rung 1). Patterned on sync/contact-update-envelope.ts.
 // CONFIDENTIALITY SWAP (HNDL): when the recipient's ML-KEM-1024 pubkey is supplied, the note's ALREADY-
 // SIGNED wire is sealed with the EXISTING hybrid mailbox envelope (living-book-sleeve) — post-quantum on
-// the wire. Without it, the classical OpenPGP path is kept for back-compat/tests; SEND SITES fail-closed-
-// SKIP a recipient with no pq_kem (see transport.sendNoteToPeer) so production NEVER downgrades silently.
+// the wire. Without it sealNoteTo THROWS (no classical fallback); SEND SITES fail-closed-SKIP a recipient
+// with no pq_kem (see transport.sendNoteToPeer) so production NEVER downgrades. A classical blob for tests
+// comes from seal-classical-fixture.ts only.
 // NOT a Double Ratchet. No signature is added here — authenticity is signNoteWire, re-checked on consume.
 
-import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
+import { readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0 } from './types';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
+import { RECEIPT_V1_WIRE_TYPE, type ReceiptWireV1 } from './receipt-wire-v1';
 
 export async function sealNoteTo(
   note: NoteWireV0,
@@ -20,15 +22,16 @@ export async function sealNoteTo(
   if (note.type !== NOTE_WIRE_TYPE) {
     throw new Error('sealNoteTo: refusing non-note wire type');
   }
-  // HYBRID (HNDL) when the recipient's ML-KEM pubkey is present — wrap the signed wire bytes, the exact
-  // spot the classical encrypt() was. Reject-classical by construction (living-book-sleeve → mailbox-env).
-  if (recipientPqKemB64) {
-    return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(note)), recipientPublicKeyArmored, recipientPqKemB64);
+  // HYBRID (HNDL) only: wrap the signed wire bytes with the recipient's ML-KEM pubkey. Reject-classical by construction
+  // (living-book-sleeve → mailbox-env). There is NO classical fallback here: a note without a recipient KEM key is refused, never
+  // downgraded. The send sites already skip when there is no verified pq_kem, so reaching this throw is a bug in a caller, and it
+  // must be loud. Tests that need a CLASSICAL blob (the open path's back-compat) use seal-classical-fixture.ts, which no app code
+  // may import (pinned by seal-no-downgrade.test.ts). The runner does not set NODE_ENV, so "outside tests" is enforced by
+  // structure, not by sniffing the environment.
+  if (!recipientPqKemB64) {
+    throw new Error('sealNoteTo: refusing to seal without a recipient ML-KEM key (no classical downgrade)');
   }
-  // Classical fallback (back-compat/tests). Send sites fail-closed-skip when no pq_kem — never reach here.
-  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(note) });
-  return (await encrypt({ message, encryptionKeys })) as string;
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(note)), recipientPublicKeyArmored, recipientPqKemB64);
 }
 
 /**
@@ -72,6 +75,21 @@ export function noteOpenpgpDecryptor(
       return null;
     }
   };
+}
+
+// ── Delivery receipt seal (S62) ──────────────────────────────────────────────────────────────────
+// The MAC receipt is sealed hybrid like a note, so at the relay it is the same KIND of object ({mailbox_id, blob}). It is NOT
+// indistinguishable from a note: it is about 2.6 KB against 12.5 KB and up (measured, S62 slice 3), and Archie ruled (v8) that this
+// residual is stated rather than padded away. The inner `type` discriminator is checked CLIENT-SIDE after opening.
+
+/**
+ * Seal the MAC receipt (ReceiptWireV1) to the note SENDER, post-quantum hybrid exactly like a note, so on the relay it is an ordinary
+ * sealed envelope. THROWS without the recipient's ML-KEM key: no classical fallback, never a downgrade (the emitter skips instead).
+ */
+export async function sealReceiptV1To(receipt: ReceiptWireV1, recipientPublicKeyArmored: string, recipientPqKemB64?: string): Promise<string> {
+  if (receipt.type !== RECEIPT_V1_WIRE_TYPE) throw new Error('sealReceiptV1To: refusing non-receipt wire type');
+  if (!recipientPqKemB64) throw new Error('sealReceiptV1To: refusing to seal without a recipient ML-KEM key (no classical downgrade)');
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(receipt)), recipientPublicKeyArmored, recipientPqKemB64);
 }
 
 async function streamToText(data: unknown): Promise<string> {

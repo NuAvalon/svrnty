@@ -214,7 +214,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setPhase('card');
       } catch (err: any) {
         if (cancelled) return;
-        setError(err?.message || 'This link has expired or already been used.');
+        setError(err?.message || "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
       }
     })();
 
@@ -431,8 +431,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
               </p>
             ) : (
               <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
-                Post-quantum ready — this card carries a verified post-quantum encryption key;
-                protection activates when the encryption seam is live.
+                This card's post-quantum encryption key is verified.
               </p>
             )
           )}

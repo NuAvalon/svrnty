@@ -16,12 +16,13 @@ import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
 import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { TrustEdge } from '@/lib/trust/types';
+import type { TrustEdge, TrustEvent } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
@@ -44,6 +45,7 @@ import {
   storeIdentity,
   loadGateArrivals,
 } from '@/lib/identity/client-store';
+import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
@@ -54,6 +56,10 @@ import {
   getBiometricEnrollment,
   probeBiometricCapability,
 } from '@/components/biometric/biometric-seam';
+import { subscribeNoteArrivals } from '@/lib/notes/note-events';
+import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
+import { TabActivityEmber } from '@/components/activity/TabActivityEmber';
+import { galaxyActivitySignature, shouldMarkGalaxyActivity } from '@/components/activity/tab-activity';
 
 type AppState = 'checking' | 'locked' | 'gate' | 'unlocked';
 
@@ -81,8 +87,11 @@ export default function Home() {
   const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  const [notesPeerFp, setNotesPeerFp] = useState('');
+  const [notesPeerName, setNotesPeerName] = useState('');
+  const [galaxyPeerFp, setGalaxyPeerFp] = useState('');
   const betaMessagingOn = isBetaIssuerProvisioned();
-  // CUR-1 — revise/send from Trust Map "Send update" (peer preselected)
+  // CUR-1 — revise/send from Galaxy / book "Send update" (peer preselected)
   const [mapRevise, setMapRevise] = useState<{
     kind: MethodKind;
     preselected: string[];
@@ -90,6 +99,9 @@ export default function Home() {
   const [growOpen, setGrowOpen] = useState(false);
   const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [gateCount, setGateCount] = useState(0);
+  const [notesActivity, setNotesActivity] = useState(false);
+  const [galaxyActivity, setGalaxyActivity] = useState(false);
+  const galaxySigRef = useRef<string | null>(null);
   // CUR-7: only offer lock when vault keys are encrypted at rest.
   const [canLock, setCanLock] = useState(false);
 
@@ -325,6 +337,37 @@ export default function Home() {
     if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
   }, [mainTab]);
 
+  useEffect(() => {
+    return subscribeNoteArrivals(() => {
+      if (mainTab !== 'notes') setNotesActivity(true);
+    });
+  }, [mainTab]);
+
+  useEffect(() => {
+    if (mainTab === 'notes') setNotesActivity(false);
+    if (mainTab === 'trust-map') setGalaxyActivity(false);
+  }, [mainTab]);
+
+  useEffect(() => {
+    const attention = contacts
+      .map((edge) => {
+        // The ember lights for a PENDING contact (a Gate arrival, inbound CONTACT, visible by design) or a gate-count change. It must NEVER read
+        // the trust phase: a lit ember for "someone trusts you" would reveal exactly the one-sided trust the invariant forbids revealing
+        // (Peter hard gate KB#93521, NV-10). Flint ruling lane:svrnty #888; pinned by living-edge-no-inbound.test.ts.
+        const status = livingEdgeStatus(edge);
+        if (status.connection === 'pending') {
+          return edge.peer_fingerprint;
+        }
+        return '';
+      })
+      .filter(Boolean);
+    const next = galaxyActivitySignature(gateCount, attention);
+    if (shouldMarkGalaxyActivity(galaxySigRef.current, next) && mainTab !== 'trust-map') {
+      setGalaxyActivity(true);
+    }
+    galaxySigRef.current = next;
+  }, [contacts, gateCount, mainTab]);
+
   const [methodHistoryTick, setMethodHistoryTick] = useState(0);
   const methodHistory = useMemo(() => {
     if (!identity?.identity?.fingerprint) return [];
@@ -346,6 +389,19 @@ export default function Home() {
       const n = await seedSampleCircle(fp);
       seedDemoMethodHistory(fp);
       setMethodHistoryTick((t) => t + 1);
+      try {
+        const key = await loadKey(fp);
+        if (key?.passphrase) {
+          const { seedDemoNotes } = await import('@/components/notes/seed-demo-notes');
+          await seedDemoNotes({
+            ownerFingerprint: fp,
+            ownerName: identity?.identity?.name || 'You',
+            passphrase: key.passphrase,
+          });
+        }
+      } catch {
+        /* notes optional */
+      }
       await refreshContacts();
       return n;
     };
@@ -396,21 +452,19 @@ export default function Home() {
           textAlign: 'center' as const,
           backdropFilter: 'blur(20px)',
         }}>
-          <div style={{
-            width: '64px',
-            height: '64px',
-            borderRadius: '50%',
-            background: 'rgba(249, 168, 37, 0.06)',
-            border: `1px solid ${E.borderLit}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '0 auto 20px',
-          }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke={E.accent} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-            </svg>
+          <div
+            data-testid="unlock-identity-seal"
+            data-fingerprint={lockedIdentity.fingerprint}
+            style={{
+              width: 72,
+              height: 72,
+              margin: '0 auto 16px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <IdentitySeal fingerprint={lockedIdentity.fingerprint} size={72} />
           </div>
 
           <h1 style={{
@@ -528,22 +582,35 @@ export default function Home() {
                   <button
                     key={o.fingerprint}
                     data-testid="switch-identity-option"
+                    data-fingerprint={o.fingerprint}
                     onClick={() => handleSwitchIdentity(o.fingerprint, o.name)}
                     style={{
                       width: '100%',
                       background: 'rgba(255,190,120,0.03)',
                       border: `1px solid ${E.border}`,
                       borderRadius: '8px',
-                      padding: '10px 14px',
+                      padding: '8px 12px',
                       color: E.text,
                       fontSize: '13px',
                       fontFamily: E.fontSans,
                       textAlign: 'left' as const,
                       cursor: 'pointer',
                       marginBottom: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
                     }}
                   >
-                    {o.name}
+                    <span
+                      data-testid="switch-identity-seal"
+                      data-fingerprint={o.fingerprint}
+                      style={{ display: 'inline-flex', flexShrink: 0 }}
+                    >
+                      <IdentitySeal fingerprint={o.fingerprint} size={32} />
+                    </span>
+                    <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {o.name}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -574,7 +641,7 @@ export default function Home() {
 
   // Gate (no identity) or main app
   return (
-    <div className="min-h-screen px-5 py-6 sm:px-8 sm:py-8" style={shellBg}>
+    <div className="min-h-screen px-4 py-3 sm:px-8 sm:py-8" style={shellBg}>
       <TopNav
         hasIdentity={Boolean(identity)}
         canLock={canLock}
@@ -590,7 +657,7 @@ export default function Home() {
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
-              className="w-full max-w-3xl mx-auto mb-8"
+              className="w-full max-w-3xl mx-auto mb-3"
               style={{
                 background: 'rgba(30,20,10,.55)',
                 border: `1px solid ${E.border}`,
@@ -608,10 +675,17 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="trust-map"
+                aria-label={galaxyActivity ? 'Galaxy, new activity' : undefined}
+                data-testid="tab-galaxy"
                 className="flex-1 data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 Galaxy
+                <TabActivityEmber
+                  on={galaxyActivity}
+                  label="new activity"
+                  testId="tab-galaxy-activity"
+                />
               </TabsTrigger>
               <TabsTrigger
                 value="contacts"
@@ -631,12 +705,17 @@ export default function Home() {
               </TabsTrigger>
               <TabsTrigger
                 value="notes"
-                aria-label="Notes"
+                aria-label={notesActivity ? `${BETA_COPY.tabLabel}, new messages` : undefined}
                 data-testid="tab-notes"
                 className="flex-1 whitespace-normal data-[state=active]:bg-[rgba(249,168,37,0.14)] data-[state=active]:text-[#fbead2]"
                 style={{ color: E.muted, fontFamily: E.fontSans }}
               >
                 {BETA_COPY.tabLabel}
+                <TabActivityEmber
+                  on={notesActivity}
+                  label="new messages"
+                  testId="tab-notes-activity"
+                />
               </TabsTrigger>
             </TabsList>
 
@@ -644,7 +723,6 @@ export default function Home() {
               <SoverentityFrontend
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
-                onOpenCircle={() => setMainTab('trust-map')}
                 appLockPrefs={canLock ? appLockPrefs : undefined}
                 onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
                 onLockNow={canLock ? handleLockNow : undefined}
@@ -657,6 +735,40 @@ export default function Home() {
                 ownerName={identity.identity.name}
                 contacts={contacts}
                 onGrow={() => setGrowOpen(true)}
+                onLoadSample={async () => {
+                  const fp = identity.identity.fingerprint;
+                  const { seedSampleCircle } = await import('@/lib/trust/sample-circle');
+                  await seedSampleCircle(fp);
+                  seedDemoMethodHistory(fp);
+                  setMethodHistoryTick((t) => t + 1);
+                  try {
+                    const { seedLinkedDemo } = await import('@/components/demo/seed-linked-demo');
+                    await seedLinkedDemo({
+                      name: identity.identity.name,
+                      email: identity.identity.email || '',
+                      fingerprint: fp,
+                      public_key: identity.identity.public_key || '',
+                      pq_kem_public_key: identity.post_quantum?.kem_public_key,
+                      pq_sig_public_key: identity.post_quantum?.sig_public_key,
+                    });
+                  } catch {
+                    /* living vaults optional — keyless sample still loads */
+                  }
+                  try {
+                    const key = await loadKey(fp);
+                    if (key?.passphrase) {
+                      const { seedDemoNotes } = await import('@/components/notes/seed-demo-notes');
+                      await seedDemoNotes({
+                        ownerFingerprint: fp,
+                        ownerName: identity.identity.name,
+                        passphrase: key.passphrase,
+                      });
+                    }
+                  } catch {
+                    /* notes optional — graph still loads */
+                  }
+                  await refreshContacts();
+                }}
                 onRefresh={async () => {
                   const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
                   await pollLiveBookOnce(identity);
@@ -703,41 +815,36 @@ export default function Home() {
                   const records = await getAllContacts(identity.identity.fingerprint);
                   const rec = records.find((r) => r.id === edge.id);
                   const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
-                  await updateContact(edge.id, {
-                    trust_level: nextTrusted ? 'trusted' : 'unverified',
-                    trusted: nextTrusted,
-                    trusted_since: nextTrusted ? new Date().toISOString() : null,
-                    verified_at: nextTrusted ? new Date().toISOString() : undefined,
-                    // #111 (survivor-safety): untrusting clears open_visibility (TrustMap path)
-                    // — reveal consent is trust-gated, so dropping trust drops the reveal flag.
-                    ...(!nextTrusted && {
-                      metadata: {
-                        ...recMeta,
-                        share_settings: {
-                          ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
-                          open_visibility: false,
-                        },
-                      },
-                    }),
-                  } as any);
-                  // #572 part 2 (flip-blocker b, TrustMap path): mirror POST-change trust to the
-                  // satellite allowed_senders row. Untrust → DELETE; retrust → ADD iff still open-vis ∩
-                  // !blocked. Fire-and-forget + fail-soft (gated dark pre-flip).
-                  void reconcileAllowedOnConsentChange({
-                    ownerFp: identity.identity.fingerprint,
-                    senderFp: edge.peer_fingerprint,
-                    consent: {
-                      trusted: nextTrusted,
+                  const priorHistory = ((rec as { trust_history?: TrustEvent[] })?.trust_history
+                    || edge.trust_history
+                    || []) as TrustEvent[];
+                  // Route through the single trust-transition chokepoint (the SAME fn as the contact-
+                  // LIST toggle) so the trust-MAP surface also blind-satellite-commits AND deposits the
+                  // signed affirmation — no fork-drift (Flint floor-verify #173014). EMIT-ONLY: nothing
+                  // here flips reciprocal; the peer's crypto-verified receive does.
+                  await applyTrustTransition(
+                    {
+                      fingerprint: identity.identity.fingerprint,
+                      publicKeyArmored: identity.identity.public_key,
+                      pqKemPublicKey: identity.post_quantum?.kem_public_key,
+                      pqSigPublicKey: identity.post_quantum?.sig_public_key,
+                    },
+                    {
+                      contactId: edge.id,
+                      fingerprint: edge.peer_fingerprint,
+                      publicKeyArmored: edge.peer_public_key,
+                      blocked: edge.blocked === true,
                       openVisibility:
-                        nextTrusted &&
                         (recMeta.share_settings as { open_visibility?: boolean } | undefined)
                           ?.open_visibility === true,
-                      blocked: edge.blocked === true,
                       perContactPrivate:
                         (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
                           ?.per_contact_private === true,
+                      metadata: recMeta,
+                      priorTrustHistory: priorHistory,
                     },
-                  });
+                    nextTrusted,
+                  );
                   await refreshContacts();
                 }}
                 onRemoveContact={async (edge) => {
@@ -852,11 +959,37 @@ export default function Home() {
                     preselected: [edge.peer_fingerprint],
                   });
                 }}
+                onOpenNote={(edge) => {
+                  const peer = String(edge.peer_fingerprint || '').trim();
+                  if (!peer) return;
+                  setNotesPeerFp(peer);
+                  setNotesPeerName(String(edge.peer_name || '').trim());
+                  setMainTab('notes');
+                }}
+                focusFingerprint={galaxyPeerFp}
               />
             </TabsContent>
 
             <TabsContent value="contacts">
-              <ContactManagement identity={identity} onContactsChange={refreshContacts} />
+              <ContactManagement
+                identity={identity}
+                onContactsChange={refreshContacts}
+                onOpenChat={(peer) => {
+                  const fp = String(peer.fingerprint || '').trim();
+                  if (!fp) return;
+                  setNotesPeerFp(fp);
+                  setNotesPeerName(String(peer.name || '').trim());
+                  setMainTab('notes');
+                }}
+                onSendMethodUpdate={(peer) => {
+                  const fp = String(peer.fingerprint || '').trim();
+                  if (!fp) return;
+                  setMapRevise({
+                    kind: 'email',
+                    preselected: [fp],
+                  });
+                }}
+              />
             </TabsContent>
 
             <TabsContent value="encrypt-decrypt">
@@ -867,7 +1000,17 @@ export default function Home() {
               {betaMessagingOn ? (
                 <BetaMessagingTab identity={identity} />
               ) : (
-                <NotesInbox identity={identity} />
+                <NotesInbox
+                  identity={identity}
+                  focusFingerprint={notesPeerFp}
+                  focusName={notesPeerName}
+                  onOpenGalaxy={(peer) => {
+                    const fp = String(peer.fingerprint || '').trim();
+                    if (!fp) return;
+                    setGalaxyPeerFp(fp);
+                    setMainTab('trust-map');
+                  }}
+                />
               )}
             </TabsContent>
           </Tabs>
@@ -931,8 +1074,8 @@ export default function Home() {
       )}
 
       <footer
-        className="mt-16 text-center"
-        style={{ fontFamily: E.fontSans, paddingBottom: 40 }}
+        className="mt-6 text-center sm:mt-10"
+        style={{ fontFamily: E.fontSans, paddingBottom: 20 }}
       >
         <p
           style={{
@@ -946,34 +1089,24 @@ export default function Home() {
         </p>
         <p
           style={{
-            margin: '10px auto 0',
+            margin: '8px auto 0',
             maxWidth: 420,
-            fontSize: 14,
-            lineHeight: 1.5,
-            color: E.text,
+            fontSize: 13,
+            lineHeight: 1.45,
+            color: E.muted,
           }}
         >
           {TRUST_RECIPE_COPY.manifestoKeep}
         </p>
         <p
           style={{
-            margin: '12px 0 0',
+            margin: '8px 0 0',
             fontSize: 10,
-            letterSpacing: '0.12em',
-            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
             color: E.dim,
           }}
         >
           {TRUST_RECIPE_COPY.manifestoAxes}
-        </p>
-        <p
-          style={{
-            margin: '8px 0 0',
-            fontSize: 12,
-            color: E.muted,
-          }}
-        >
-          {TRUST_RECIPE_COPY.manifestoCloser}
         </p>
       </footer>
     </div>

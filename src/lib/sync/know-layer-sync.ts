@@ -104,9 +104,20 @@ export function buildKnowOverlayDeps(
   return {
     getTrustedPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
+      // #704 (A) due queue: a peer with a live initiator session is `pending` (skipped until it completes or
+      // expires), so K-per-tick rotates through the book instead of re-initiating the first peer forever.
+      const withSession = new Set(
+        (await store.getAllContacts(ownerFingerprint))
+          .filter((c) => typeof c.psi_session_id === 'string' && c.psi_session_id.length > 0)
+          .map((c) => c.fingerprint),
+      );
       return edges
         .filter((e) => e.trusted && !isDecayed(e))
-        .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
+        .map((e) => ({
+          fingerprint: e.peer_fingerprint,
+          lastSync: lastSyncOf(e),
+          pending: withSession.has(e.peer_fingerprint),
+        }));
     },
 
     getKnownPeers: async () => {
@@ -119,6 +130,36 @@ export function buildKnowOverlayDeps(
       // truthy pcp EXCLUDES; undefined = not-private = included). Empty ⇒ fail-closed (reveals nothing).
       return edges
         .filter((e) => e.open_visibility === true && !e.per_contact_private)
+        .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
+    },
+
+    getTrustVisiblePeers: async () => {
+      const edges = await ownerEdges(store, ownerFingerprint);
+      // TRUST reveal set (piece-2) = the opt-in subset over MUTUAL bonds only. BLIND-UNTIL-MUTUAL is a
+      // HARD anti-coercion floor (Peter #172746 / Archie confirmed-model-delta #172822): a one-way /
+      // PENDING trust is NEVER revealed to anyone — especially not the person trusted (else they can
+      // coerce). So the reveal gates on `reciprocal` (the MUTUAL bond), NEVER one-way `trusted`. A peer
+      // is included ONLY if:
+      //   • e.mutual?.reciprocal === true   — the bond is MUTUAL. reciprocal has NO writer in this build
+      //       (#593 removed the affirm wire), so nothing passes this test and the mutual reveal stays dark,
+      //   • !isDecayed(e)                   — the bond is non-decayed,
+      //   • e.trust_visibility === true     — owner opted this bond into trust-viz (party-controlled),
+      //   • e.peer_discoverable_as_trusted === true — the peer's OWN viz-consent (party-controlled), AND
+      //   • !e.per_contact_private          — go-private excludes from every PSI reveal.
+      // (The OTHER party applies the same filter → a bond lands in BOTH input sets only when mutual AND
+      // both parties opted it visible → the intersection reveals ONLY mutual, party-consented bonds.)
+      // Every condition is TRUTHY-exclusion = fail-closed: absent/false EXCLUDES. Empty ⇒ reveals nothing.
+      // COUPLING: `reciprocal` has no writer since #593 → this stays empty = correctly DARK. A future writer
+      // must be a reviewed affirmation wire (Flint's floor (b)), never a local shortcut. `blocked` already dropped at ownerEdges.
+      return edges
+        .filter(
+          (e) =>
+            e.mutual?.reciprocal === true &&
+            !isDecayed(e) &&
+            e.trust_visibility === true &&
+            e.peer_discoverable_as_trusted === true &&
+            !e.per_contact_private,
+        )
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 

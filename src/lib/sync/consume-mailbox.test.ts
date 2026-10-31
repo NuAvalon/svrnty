@@ -231,7 +231,7 @@ test('empty mailbox → no-op summary', async () => {
   const summary = await consumeInboundContactUpdates(baseDeps({
     fetchImpl: recordingFetch([], ackLog),
   }));
-  assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, dropped: 0, acked: 0 });
+  assert.deepEqual(summary, { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, deadLettered: 0, unrecorded: 0, released: 0, acked: 0 });
   assert.deepEqual(ackLog, []);
 });
 
@@ -324,7 +324,7 @@ test('N10: control — same flow with NO lock persists and acks (the guard only 
 
 // N10 (Flint #178422 blocking 1): the cycle re-check sits before EVERY write in consumeOne, not only the contact persist.
 // Each seam: verify() succeeds but the lock lands during it → accept() must never run; nothing acked (retryable).
-for (const seam of ['joiner', 'note', 'affirm'] as const) {
+for (const seam of ['joiner', 'note', 'receipt'] as const) {   // 'affirm' left with the affirm wire (#593); 'receipt' is the 4th write path
   test(`N10: lock lands after ${seam}.verify, before ${seam}.accept → accept never runs, nothing acked`, async () => {
     const ackLog: string[][] = [];
     const cycle = makeUnlockCycle(alice.privateKey, alice.passphrase);
@@ -343,3 +343,26 @@ for (const seam of ['joiner', 'note', 'affirm'] as const) {
     assert.equal(summary.acked, 0);
   });
 }
+
+test('#720 benign terminal: a contact-update that is stale (already applied) is acked with NO dead-letter record', async () => {
+  const env: ContactUpdateEnvelope = {
+    fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',
+    changed_fields: ['display_name'], delta: { display_name: 'Bob (NEW name)' },
+  };
+  const signed = await signUpdate(env, bob);
+  const known = bobKnownToAlice(0);
+  known.current = { ...known.current, version: 5 }; // the book already holds a newer version: the apply is rejected as stale
+  const { store, persisted } = aliceStore(new Map([[bob.fingerprint, known]]));
+  const ackLog: string[][] = [];
+  const recorded: unknown[] = [];
+  const summary = await consumeInboundContactUpdates(baseDeps({
+    decrypt: async () => signed,
+    store,
+    deadLetter: { record: async (row) => { recorded.push(row); return row; }, clear: async () => {} },
+    fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(persisted.length, 0, 'nothing applied');
+  assert.deepEqual(ackLog, [['e1']], 'acked');
+  assert.deepEqual(recorded, [], 'a stale update is consumed content, not a loss: no record');
+  assert.equal(summary.deadLettered, 0);
+});

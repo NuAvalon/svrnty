@@ -32,10 +32,16 @@ test('create an identity → land in the unlocked app', async ({ page }) => {
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole('tab', { name: 'Identity' }).click();
+  await page.getByTestId('card-actions-toggle').click();
   await expect(page.getByTestId('export-own-vcf')).toBeVisible();
+  await expect(page.getByText('Claim URL')).toHaveCount(0);
+  await expect(page.getByText('Your Galaxy')).toHaveCount(0);
 
-  const downloadPromise = page.waitForEvent('download');
   await page.getByTestId('export-own-vcf').click();
+  await expect(page.getByTestId('save-card-lens-dialog')).toBeVisible();
+  await expect(page.getByTestId('save-card-lens-picker')).toBeVisible();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByTestId('save-card-confirm').click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/\.vcf$/i);
   const dest = test.info().outputPath('own-card.vcf');

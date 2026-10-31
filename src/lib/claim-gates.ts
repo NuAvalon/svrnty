@@ -20,10 +20,11 @@ export { isBiometricSeamLive } from '../components/biometric/biometric-seam';
 /**
  * ML-KEM-1024 post-quantum ENCRYPTION (encapsulation) is wired into the send/seal path.
  *
- * FALSE today: `hybridEncapsulate()` has ZERO real callers (only the crypto/index barrel re-export) —
- * the seal is classical OpenPGP. Cards CARRY a pq_kem public key (mint = ED25519+ML-DSA-87+ML-KEM-1024)
- * but nothing encrypts with it yet. Carrying a key ≠ protection.
- * Flip to true WITH the first real `hybridEncapsulate` caller (and update claim-gates.test.ts).
+ * FALSE today, for the OPEN side. The SEND side is hybrid: notes, contact updates and joiner responses seal
+ * with X25519 + ML-KEM-1024 and refuse without a recipient ML-KEM key (seal-no-downgrade.test.ts,
+ * seal-primitives-no-downgrade.test.ts S1/S2/S5). It stays false because the open side still accepts
+ * classical envelopes and receipts are a separate path. Flip only when both close (and update
+ * claim-gates.test.ts).
  */
 export function isPQEncapLive(): boolean {
   return false;
@@ -97,34 +98,15 @@ export function isPiece2MutualBlockLive(): boolean {
 }
 
 /**
- * MUTUAL-TRUST AFFIRMATION WIRE (deposit → consume → reciprocal-flip) is live end-to-end.
+ * MUTUAL-TRUST AFFIRMATION WIRE is live end-to-end.
  *
- * FALSE today: the crypto/transport is BUILT + unit-proven on BOTH sides (trust-affirm.ts core +
- * trust-affirm-seal + trust-affirm-consume + trust-affirm-transport; consume-mailbox 4th seam;
- * buildTrustAffirmSeam → updateContact({mutual})), but the capability is NOT live until (a) the FE
- * deposit-hook calls sendTrustAffirmToPeer on trust/break AND (b) a two-seat Playwright e2e proves
- * deposit→consume→the edge visibly flips "awaiting mutual"→"Mutual" in a real browser (desktop/dev
- * class — relay-content, NOT the Vanadium hardened-mobile class). Until then no affirmation is ever
- * deposited → reciprocal/they_trust_me stay false BY CONSTRUCTION (the only client writer is the consume
- * applyMutual, which needs the deposit-hook) → the UI must NOT imply a transient "awaiting mutual" wait
- * for a structurally-unreachable state (that implication is the source of Peter's "seems broken").
- *
- * COPY this gates (Hypatia svrnty_mutual_trust_state_copy_v1): FALSE → a one-way edge reads "Trusted" +
- * "Mutual confirmation coming" (roadmap); TRUE → "Trusted · awaiting mutual" (a real in-flight wait) and
- * a reciprocal edge → "Mutual". Only the 'outbound' phase is reachable pre-wire (inbound/mutual both
- * require they_trust_me/reciprocal, unreachable without the deposit-hook), so this gates exactly that.
- *
- * FALSIFIER-INDEPENDENCE (Hypatia KB#90782) — TWO distinct guard layers (her #167596 correction, being
- * honest about what a source-scanner can and can't reach):
- *   • LAYER 1 (build-code presence — the sweep CAN gate this): the mutual strings are a gated claim whose
- *     wireSignal is the deposit-hook's build-presence (sendTrustAffirmToPeer / buildTrustAffirmSeam). Wire
- *     code absent from the build → strings BLOCKED (must use the hedged "Mutual confirmation coming").
- *     Hypatia adds this to the sweep + substrate-map WHEN this wire merges. Catches "strings without code."
- *   • LAYER 2 (runtime flip — the sweep CANNOT see this): once the wire code is in the build, the source
- *     sweep passes — but this boolean could still be flipped TRUE before the e2e is green (a runtime state
- *     no scanner sees). So the runtime guard is DISCIPLINE, not the sweep: flip to true ONLY on the
- *     two-seat e2e GREEN + deposit-hook-wired, @Flint-reviewed (same as isPQEncapLive), and the flipper
- *     MUST update claim-gates.test.ts (that lockstep turns a premature flip RED).
+ * FALSE, and there is no wire behind it: #593 removed the affirmation transport (trust-affirm-seal /
+ * -transport and their callers). The gate stays only as the COPY SWITCH for G-6 (claim-registry.json):
+ * every "trust is mutual" style string must sit in its true arm, so today users see the honest
+ * "Mutual confirmation is coming" arm (TrustMap empty state; Flint lane:svrnty #136 lockstep, #436 ruling).
+ * Flip to true ONLY when a reviewed affirmation wire exists AND a two-seat e2e proves the edge flips to
+ * "Mutual" in a real browser, @Flint-reviewed, together with claim-gates.test.ts (that lockstep turns a
+ * premature flip RED).
  */
 export function isMutualTrustWireLive(): boolean {
   return false;

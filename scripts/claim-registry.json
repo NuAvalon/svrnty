@@ -48,7 +48,7 @@
      "unbreakable encryption"
     ],
     "ok": [
-     "post-quantum (hybrid) encryption",
+     "a post-quantum (ML-KEM) encryption key",
      "quantum-resistant signing"
     ]
    },
@@ -345,11 +345,11 @@
    "patterns": [
     "\\bpost.?quantum\\b.{0,25}\\b(?:messages?|notes?|chats?|messaging)\\b",
     "\\bpq\\b.{0,10}\\b(?:messages?|notes?)\\b",
-    "post-quantum(?:[-\\s]+\\w+){0,4}[-\\s]+(protected|encrypted|encryption(?![-\\s]+keys?\\b))",
+    "post-quantum(?:[-\\s,()/:]+\\w+){0,4}[-\\s,()/:]+(protected|encrypted|encryption(?![-\\s,()/:]+keys?\\b))",
     "\\bpq[-\\s]?protected\\b",
     "ml-kem[^.\\n]{0,20}(encrypts|encrypting)",
     "(are|is|gets?) encrypted[^.\\n]{0,20}(with |using |via )?(ml-kem|post-quantum)",
-    "post-quantum(?:[-\\s]+\\w+){0,4}[-\\s]+(encrypts|encrypting)"
+    "post-quantum(?:[-\\s,()/:]+\\w+){0,4}[-\\s,()/:]+(encrypts|encrypting)"
    ],
    "flips_with": "S15 (+ S14), Flint live co-verify; Nov-5 gate (Peter #179080)",
    "source": [
@@ -625,11 +625,106 @@
    "detector": "deliveredOverclaim",
    "requires": [
     {
-     "file": "e2e (S06/S07)",
-     "test": "recipient-signed receipt shown only after receipt verifies",
-     "invariant": "S06/S07",
-     "resolved": false,
-     "note": "test name not yet fixed; S06/S07 owners name it"
+     "file": "src/lib/sync/note-seam-receipt-order.test.ts",
+     "test": "N1 a stored note: the receipt is sent exactly once, and only AFTER accept (the durable store) has returned",
+     "invariant": "S62 dw2: receipt only AFTER the durable store",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/note-seam-receipt-order.test.ts",
+     "test": "N2 done_when 2: a store that FAILS (accept throws) sends no receipt and leaves the note retryable (the throw propagates)",
+     "invariant": "S62 dw2: failed store, no receipt",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/note-seam-receipt-order.test.ts",
+     "test": "N3 done_when 4: a dropped note (unsigned / forged / stranger / not-in-book) sends NO receipt, for every drop reason",
+     "invariant": "S62 dw4: dropped note, no receipt",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/note-seam-receipt-order.test.ts",
+     "test": "N5 v7 NEG: a forged note NAMING an admitted book contact (valid shape, failing signature) produces ZERO outbound deposits; the same note, genuine, produces exactly one",
+     "invariant": "v7: forged note naming a contact, zero deposits",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A1: a genuine MAC receipt is accepted, the note is marked delivered in ONE write, and the receipt key is gone from the row",
+     "invariant": "Delivered from a verified MAC receipt, ONE write",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A2 done_when 3: a relay-forged receipt (right note_id, random tag) is refused; a tag made with the WRONG key is refused; nothing is written",
+     "invariant": "S62 dw3: relay-forged / wrong-key tag refused",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A2b: a tag TRANSPLANTED from another note, and a tag whose code was changed, are refused",
+     "invariant": "transplanted tag / changed code refused",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "A3: unknown note_id, an INBOUND note that shares the id, an outbound note with no key, and a malformed stored key are all refused",
+     "invariant": "unknown / inbound / keyless note_id refused",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "NEG done_when (C8a): a validly IDENTITY-SIGNED v0 receipt sealed to the sender does NOT light Delivered: it does not even open as a receipt",
+     "invariant": "C8a: identity-signed v0 receipt never lights Delivered",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "structure C8a: no non-test source names the v0 receipt API (verifyReceiptWire, ReceiptWireV0, RECEIPT_WIRE_TYPE, DOMAIN_RECEIPT, buildReceiptWire, delivery-receipt, receiptOpenpgpDecryptor, sealReceiptTo)",
+     "invariant": "C8a: no v0 receipt API in source",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptTag",
+     "invariant": "delivered:true on ONE line, only after verifyReceiptTag",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/sync/receipt-seam.test.ts",
+     "test": "structure v7: the sender status enum has NO failure / couldn",
+     "invariant": "v7: no failure / couldn't-verify state",
+     "resolved": true
+    },
+    {
+     "file": "src/lib/crypto/receipt-mac.test.ts",
+     "test": "R3 the CODE is inside the MAC: a delivered tag is refused as read / couldnt_verify, and unknown codes are refused",
+     "invariant": "code bound in the MAC (no delivered to read upgrade)",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "the label is \"Delivered\" for the delivered status and for NOTHING else (every status, both deposit outcomes)",
+     "invariant": "'Delivered' label only for the delivered status",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "the inbox derives the status from note.delivered === true (STRICT), in exactly one place",
+     "invariant": "status from note.delivered === true, one place",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "no unverified status string can carry a live-delivery word",
+     "invariant": "no unverified string carries a delivery word",
+     "resolved": true
+    },
+    {
+     "file": "src/components/notes/notes-delivered-display.test.ts",
+     "test": "showAwaitingHint: the promise is made only for a deposited, nonce-stamped note to a peer who has proven it sends receipts",
+     "invariant": "awaiting hint only for a peer proven to send receipts",
+     "resolved": true
     }
    ],
    "source": [
@@ -661,7 +756,9 @@
    "annotation_ok": [
     "src/components/notes/notes-status.ts:18 FORBIDDEN_LIVE_STATUS guard regex: code that BLOCKS the claim; one reasoned // claim-sweep:ok (Hypatia, Athena #78)"
    ],
-   "ruling": "console.* / logger lines are not user copy and are excluded from the sweep (Archie #56); JoinerCeremony.tsx:120 console.warn FP resolved by that rule, not an annotation."
+   "ruling": "console.* / logger lines are not user copy and are excluded from the sweep (Archie #56); JoinerCeremony.tsx:120 console.warn FP resolved by that rule, not an annotation.",
+   "resolved": true,
+   "resolution": "Hypatia (TG-1 owner) per lane:svrnty #704/#706/#745; Flint ACK #751 (commit 3 @9755cb8: receipt accept == 620cd7b body with 3 calls via deps; production wires the real functions); 3b @f8d06d0 adds the awaiting-hint gate. Verify each named test exists AND passes on the merge ref before trusting resolved:true."
   },
   {
    "id": "TG-2",

@@ -58,7 +58,7 @@ export function formatSignalMessage(signal: SignedSignal): string {
     t: signal.to,
     ts: signal.timestamp,
     s: signal.signature,
-    pq: signal.pq_signature || null,
+    pq: signal.pq_signature ?? null, // raw: '' stays '' so verify refuses it (#718); null = absent
   });
   const payloadB64 = typeof btoa === 'function'
     ? btoa(payloadJson)
@@ -101,7 +101,7 @@ export function parseSignalMessage(text: string): SignedSignal | null {
       to: compact.t,
       timestamp: compact.ts,
       signature: compact.s,
-      pq_signature: compact.pq || undefined,
+      pq_signature: compact.pq === null || compact.pq === undefined ? undefined : compact.pq, // raw (#718)
     };
   } catch {
     return null;
