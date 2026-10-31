@@ -573,3 +573,17 @@ test('C27 T2: a malformed ratchet frame (typed VERDICT) is still recorded and ac
   assert.deepEqual(acked(w.events), ['v1']);
   assert.deepEqual(s.lost, { 'ratchet-unopenable': 1 }); assert.equal(s.held, 0);
 });
+
+test('C28 T2 B1-for-holds (Flint #2185, M3): outsiders can fill the missing-key group; 60 junk missing-key holds do NOT push an admitted contact\'s OLDER held ratchet-desync frame out (desync is its own per-contact group)', async () => {
+  const known = new Map<string, string>();
+  const exp = new Date(Date.parse(NOW) + 6 * DAY).toISOString();
+  const desync = { envelope_id: 'dsx', blob: 'DSX', expires_at: exp };
+  const junk = Array.from({ length: 60 }, (_, i) => ({ envelope_id: `mk${String(i).padStart(2, '0')}`, blob: HYBRID, expires_at: exp }));
+  known.set(desync.envelope_id, new Date(Date.parse(NOW) - 1000 * 1000).toISOString()); // the desync frame is the OLDEST hold of all
+  junk.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world([desync, ...junk], { known });
+  const s = await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, deadLetter: w.sink, note: seamOf({ DSX: () => ({ dropped: 'ratchet-desync', fp: FPC }) }), fetchImpl: w.fetchImpl }));
+  assert.equal(acked(w.events).includes('dsx'), false, 'the held desync frame is NOT released by an outsider-fillable group');
+  assert.deepEqual(acked(w.events).sort(), Array.from({ length: 10 }, (_, i) => `mk${String(i).padStart(2, '0')}`), 'only the 10 oldest missing-key holds are released (bounded against their own group)');
+  assert.equal(s.released, 10); assert.equal(s.held, 51); assert.deepEqual(s.lost, { 'missing-key': 10 });
+});
