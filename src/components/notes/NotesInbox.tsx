@@ -35,6 +35,7 @@ import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { getHeldReport, subscribeHeld, type HeldReport } from '@/lib/notes/held-events';
 import { formatRelayDeadline, heldNotices } from './held-notice';
+import { RatchetRows } from './RatchetRows';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY, notSentMessage, ratchetOffMessage } from './notes-copy';
 import {
@@ -655,6 +656,10 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
             <p data-testid="notes-ratchet-off" style={{ margin: '6px 0 0', fontSize: 12, color: E.dim }}>
               {ratchetOffMessage(peerName)}
             </p>
+          ) : null}
+
+          {selectedFp && fp ? (
+            <RatchetRows ownerFingerprint={fp} peerFingerprint={selectedFp} peerName={peerName} storeReady={storeReady} />
           ) : null}
 
           <div
