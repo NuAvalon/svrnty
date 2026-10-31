@@ -36,11 +36,11 @@ async function established(committed = 2) {
 const snap = (io: ReturnType<typeof memIO>, fp = THEM) => JSON.stringify(io.rows.get(fp));
 const puts = (io: ReturnType<typeof memIO>) => io.log.filter((l) => l.startsWith('put'));
 
-test('T1a: replaying a SPENT frame fails as a verdict and leaves the persisted session byte-identical, with no write; the next real frame still opens', async () => {
+test('T1a: replaying a SPENT frame fails as a DESYNC (held, never a verdict) and leaves the persisted session byte-identical, with no write; the next real frame still opens', async () => {
   const s = await established(2);
   const before = snap(s.myIO), putsBefore = puts(s.myIO).length;
   const r = await openDirectNoteStagedTyped(THEM, s.frames[0], s.me, peerOf(s.them), s.myIO.io);
-  assert.ok(isFail(r) && r.kind === 'verdict', JSON.stringify(r));
+  assert.ok(isFail(r) && r.kind === 'desync' && r.cause === 'ratchet-receive-failed', JSON.stringify(r));
   assert.equal(snap(s.myIO), before, 'the stored session row is byte-identical');
   assert.equal(puts(s.myIO).length, putsBefore, 'nothing was written');
   const ok = await openDirectNoteStagedTyped(THEM, s.next, s.me, peerOf(s.them), s.myIO.io);

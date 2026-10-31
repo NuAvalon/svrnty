@@ -273,7 +273,7 @@ export async function acceptInboundNote(args: {
    * #720: told WHY a note was not stored, at the moment it is dropped (additive; the return value is unchanged). 'unverified' = the
    * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
    */
-  onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local') => void;
+  onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync') => void;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -309,7 +309,7 @@ export async function acceptInboundNote(args: {
       return null;
     }
     if (typeof opened === 'object' && 'failed' in opened) {
-      args.onDrop?.(opened.kind === 'verdict' ? 'ratchet-unopenable' : 'ratchet-local');
+      args.onDrop?.(opened.kind === 'verdict' ? 'ratchet-unopenable' : opened.kind === 'desync' ? 'ratchet-desync' : 'ratchet-local');
       return null;
     }
     if (typeof opened === 'string') {

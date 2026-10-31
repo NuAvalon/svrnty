@@ -10,7 +10,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** Why a blob did not become a message (F6: "can't open" and "failed to verify" are different classes). */
-export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'expired'] as const;
+export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset', 'expired'] as const;
 export type DeadLetterReason =
   | 'unknown-format' // not a shape this build can open
   | 'decrypt-failed' // right shape, would not open
@@ -20,13 +20,15 @@ export type DeadLetterReason =
   | 'not-in-book' // opened and authenticated, sender is not in the Gate (R9)
   | 'ratchet-unopenable' // opened and authenticated, a known contact's ratchet body would not open: the FRAME's fault (a verdict)
   | 'ratchet-local' // same frame, but something on THIS DEVICE stopped it (own key missing, session row unreadable, unknown cause): HELD, then recorded past the bound
+  | 'ratchet-desync' // same frame, the sessions no longer agree (a receive failure on an authenticated contact's frame): HELD with backoff, then recorded (T2)
+  | 'session-reset' // a held ratchet frame released because the USER reset the session with that contact: our own deliberate act (T3, Flint reset semantics R2)
   | 'expired'; // arrived after its time limit
 
 /**
  * Only these reasons come AFTER the sender was authenticated, so only they may carry a fingerprint (F3: the sender fields of an
  * unopened or unverified envelope are attacker-controlled and must never be stored or shown).
  */
-export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local']);
+export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset']);
 
 /**
  * Terminal outcomes that CONSUME a blob without losing a message: the content is already stored, or it was never a message.
@@ -205,7 +207,7 @@ export function planPrune(
   const byContact = new Map<string, typeof rows[number][]>();
   for (const r of rows) {
     if (r.reason === 'not-in-book') notInBook.push(r);
-    else if (r.reason === 'ratchet-unopenable' || r.reason === 'ratchet-local') {
+    else if (r.reason === 'ratchet-unopenable' || r.reason === 'ratchet-local' || r.reason === 'ratchet-desync' || r.reason === 'session-reset') {
       const k = typeof r.fp === 'string' && FP_HEX.test(r.fp) ? r.fp.toLowerCase() : '';
       const g = byContact.get(k);
       if (g) g.push(r);

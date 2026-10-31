@@ -141,7 +141,7 @@ export interface NoteResponseSeam {
  * authentication, so `fp` is trustworthy there.
  */
 export interface DroppedNote {
-  dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local';
+  dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync';
   fp?: string;
 }
 
@@ -280,7 +280,7 @@ type Outcome =
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
   | { kind: 'terminal'; cls: TerminalClass } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack, after its record if it is a loss
   | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
-  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local'; fp?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
+  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
 /**
  * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
@@ -347,7 +347,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // Nothing is added to `toAck` in the consume loop itself: each envelope that may be acked goes through THE ACK DOOR below, which decides
   // WHAT must happen first (#720 R1: no ack of an envelope that did not become a stored message without a committed record of it).
   type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string };
-  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local'; fp?: string }> = [];
+  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string }> = [];
   const sink = deps.deadLetter;
   const toAck: string[] = [];
   const bump = (r: DeadLetterReason) => {
@@ -468,7 +468,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
         idByKey.set(key, h.id);
         // #720 r2 (Flint, B1 for holds): an admitted contact's LOCAL frame is bounded only against that contact's own; 'missing-key' holds
         // (outsider-depositable while this device has no kem secret) share their own group. A group may only push out its own.
-        const group = h.reason === 'ratchet-local' ? `local:${(h.fp ?? '').toLowerCase()}` : 'missing-key';
+        const group = h.reason === 'missing-key' ? 'missing-key' : `${h.reason}:${(h.fp ?? '').toLowerCase()}`; // each ratchet class is bounded per contact, apart from the others
         seen.push({ envelope_id: saved.envelope_id, first_seen: saved.first_seen, group });
       } catch {
         /* cannot record this poll: it stays on the relay, unbounded for now; retried next poll */
@@ -612,7 +612,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
           // 'unverified' = the sender was never authenticated: no fingerprint travels with it (F3). The other two come after authentication.
           if (accepted.dropped === 'unverified') return { kind: 'terminal', cls: { reason: 'verify-failed' } };
           // v5.3 (Flint #2052): a ratchet frame this DEVICE could not open is HELD (kept on the relay, recorded at first sight, bounded), never acked as the sender's fault.
-          if (accepted.dropped === 'ratchet-local') return { kind: 'held', reason: 'ratchet-local', fp: accepted.fp };
+          if (accepted.dropped === 'ratchet-local' || accepted.dropped === 'ratchet-desync') return { kind: 'held', reason: accepted.dropped, fp: accepted.fp };
           return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp } };
         }
         // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).

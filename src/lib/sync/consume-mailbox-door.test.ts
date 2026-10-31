@@ -544,3 +544,32 @@ test('C24 r2-1: ONE contact whose fingerprint arrives in two letter cases is sti
   assert.deepEqual(acked(w.events).sort(), ['m00', 'm01', 'm02', 'm03', 'm04']);
   assert.equal(s.released, 5); assert.equal(s.held, 50);
 });
+
+// ── T2 (Flint #186298): a RATCHET DESYNC on an authenticated contact's frame is HELD (kept, recorded at first sight, bounded), never acked as a verdict ──
+test('C25 T2: a ratchet-DESYNC frame is HELD: not acked, a NAMED record (ratchet-desync + fp) exists from the first sighting, nothing counted as lost yet', async () => {
+  const w = world([{ envelope_id: 'des1', blob: 'D1', expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ D1: () => ({ dropped: 'ratchet-desync', fp: FPC }) }), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events), []);
+  const row = recorded(w.events)[0];
+  assert.equal(row.reason, 'ratchet-desync'); assert.equal(row.fp, FPC);
+  assert.equal(s.held, 1); assert.deepEqual(s.lost, {});
+});
+
+test('C26 T2: desync and local holds from ONE contact are bounded SEPARATELY (50 each); 55 desync release the 5 oldest as lost[ratchet-desync]; the contact\'s 5 local frames are untouched', async () => {
+  const known = new Map<string, string>();
+  const desync = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `d${String(i).padStart(2, '0')}`, blob: `DS${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  const local = Array.from({ length: 5 }, (_, i) => ({ envelope_id: `l${i}`, blob: `LC${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  desync.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const byBlob = { ...Object.fromEntries(desync.map((_, i) => [`DS${i}`, () => ({ dropped: 'ratchet-desync', fp: FPC })])), ...Object.fromEntries(local.map((_, i) => [`LC${i}`, () => ({ dropped: 'ratchet-local', fp: FPC })])) };
+  const w = world([...desync, ...local], { known });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf(byBlob), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events).sort(), ['d00', 'd01', 'd02', 'd03', 'd04']);
+  assert.deepEqual(s.lost, { 'ratchet-desync': 5 }); assert.equal(s.released, 5); assert.equal(s.held, 55);
+});
+
+test('C27 T2: a malformed ratchet frame (typed VERDICT) is still recorded and acked at once, apart from the held desync class', async () => {
+  const w = world([{ envelope_id: 'v1', blob: 'V1' }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ V1: () => ({ dropped: 'ratchet-unopenable', fp: FPC }) }), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events), ['v1']);
+  assert.deepEqual(s.lost, { 'ratchet-unopenable': 1 }); assert.equal(s.held, 0);
+});

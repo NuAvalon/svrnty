@@ -158,11 +158,13 @@ export interface StagedOpen {
  * Why a ratchet open did not produce a message, TYPED (#720 v5.3, Flint #2052). 'verdict' = the frame itself is bad (malformed, would not
  * decrypt, rejected as a first frame): the sender's side, nothing on this device will ever change it. 'local' = something on THIS device
  * stopped it (a session row that cannot be read, a corrupt snapshot): a resend would fail the same way, so the frame is HELD, not acked.
+ * 'desync' = the frame is well-formed and came from an authenticated contact, but the two sessions no longer agree (a receive that fails): HELD
+ * with backoff and recorded past the bound (T2); a later frame or a user-initiated reset can heal it, which is why it is never acked as a verdict.
  * `cause` is a fixed token, never any frame text.
  */
 export interface OpenFailure {
   failed: true;
-  kind: 'local' | 'verdict';
+  kind: 'local' | 'verdict' | 'desync';
   cause: string;
 }
 
@@ -199,7 +201,10 @@ export async function openDirectNoteStagedTyped(
       const session = TripleRatchet.importState(cur.snapshot);
       if (!session) return { failed: true, kind: 'local', cause: 'session-snapshot-corrupt' };
       const pt = await session.receive(packet);
-      if (pt === null) return { failed: true, kind: 'verdict', cause: 'ratchet-receive-failed' }; // interim verdict: T1-T5 must revisit (a desync can be OURS)
+      // T2 (Flint #186298): the frame came inside a note signed by an AUTHENTICATED, ADMITTED contact, so a receive failure is not an attack; it is a
+      // session that no longer agrees (theirs, ours, or a lost frame). 'desync' is HELD and retried, never acked as a verdict: a later frame, or a
+      // user-initiated reset, can heal it.
+      if (pt === null) return { failed: true, kind: 'desync', cause: 'ratchet-receive-failed' };
       plaintext = pt;
       next = session.exportState();
     } else {

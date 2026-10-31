@@ -197,7 +197,7 @@ export function buildNoteSeam(
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
-      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | undefined;
+      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
       const rec = await deps.accept({
         onDrop: (r) => {
           dropReason = r;
