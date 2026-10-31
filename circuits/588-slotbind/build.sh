@@ -20,11 +20,15 @@ wgot=$(sha256sum build/slotbind_js/slotbind.wasm | cut -d' ' -f1)
 wwant=$(node -p "require('./$PINS').wasm_sha256['$ver']")
 [ "$wgot" = "$wwant" ] || { echo "REFUSED: wasm sha256 $wgot != pinned $wwant (circom $ver)"; exit 1; }
 echo "wasm sha256 OK ($wgot, circom $ver)"
-# witness_calculator.js is the JS that loads and drives the wasm on devices; enforced like the wasm (generate_witness.js is node-only, recorded).
+# witness_calculator.js drives the wasm on devices; generate_witness.js is the node entry the KAT loop below executes. Both enforced like the wasm, BEFORE anything runs (Athena #2932).
 jgot=$(sha256sum build/slotbind_js/witness_calculator.js | cut -d' ' -f1)
 jwant=$(node -p "require('./$PINS').witness_calculator_js_sha256['$ver']")
 [ "$jgot" = "$jwant" ] || { echo "REFUSED: witness_calculator.js sha256 $jgot != pinned $jwant (circom $ver)"; exit 1; }
 echo "witness_calculator.js sha256 OK ($jgot)"
+ggot=$(sha256sum build/slotbind_js/generate_witness.js | cut -d' ' -f1)
+gwant=$(node -p "require('./$PINS').generate_witness_js_sha256['$ver']")
+[ "$ggot" = "$gwant" ] || { echo "REFUSED: generate_witness.js sha256 $ggot != pinned $gwant (circom $ver)"; exit 1; }
+echo "generate_witness.js sha256 OK ($ggot)"
 echo "recorded, not enforced: sym $(sha256sum build/slotbind.sym | cut -d' ' -f1)"
 node r2c.cjs build/slotbind.r1cs
 node kat.cjs

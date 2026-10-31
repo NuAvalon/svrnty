@@ -13,19 +13,15 @@
     "2.1.6": "2bf018b05cb6dc399e72f57721d0f7b236b1a4a2d438d8b1c6763e9cd38ac8a8",
     "2.2.3": "cc2d37b2cff2a589dd86f8636f1a1dc9fe4a854550b021aa0cea2e235d14e942"
   },
+  "generate_witness_js_sha256": {
+    "2.1.6": "e9f90211859797466368231b5f02afeb84afa497c3ccd04129e0a57a5c5a3eff",
+    "2.2.3": "4995a2e6b01432f76182abec6a831fdaf7f840384035072002ccaa43101b14d4"
+  },
   "recorded_not_enforced": {
-    "sym_sha256": "2c7a90bc786a2c2a400c5f6630c29407bcab16a5c0687d9bf1e0df081bd2c610",
-    "witness_js_sha256": {
-      "2.1.6": {
-        "generate_witness.js": "e9f90211859797466368231b5f02afeb84afa497c3ccd04129e0a57a5c5a3eff"
-      },
-      "2.2.3": {
-        "generate_witness.js": "4995a2e6b01432f76182abec6a831fdaf7f840384035072002ccaa43101b14d4"
-      }
-    }
+    "sym_sha256": "2c7a90bc786a2c2a400c5f6630c29407bcab16a5c0687d9bf1e0df081bd2c610"
   },
   "constraints": 6574,
   "public_wires": 4,
   "snarkjs": "0.7.6",
-  "status": "WORKING DRAFT. Not reviewed (R5 pending). circom version pick (2.1.6 vs 2.2.3) is open; both give the same r1cs under --O2, so either hash is accepted until the pick. The r1cs and .sym are identical across the two compilers but the witness-generator WASM is NOT: it is deterministic per compiler version (2 builds each, different output dirs, same bytes) and DIFFERS between 2.1.6 and 2.2.3, so wasm_sha256 is pinned per version and the version pick matters for what ships."
+  "status": "WORKING DRAFT. Circuit not reviewed (R5 pending). Toolchain RULED (Archie #2931, confirming Flint #2803): circom 2.2.3 --O2 for the ceremony AND the release; the shipped artefacts are the 2.2.3 wasm + witness_calculator.js. The 2.1.6 entries are r1cs-reproduction evidence only (r1cs and .sym are identical across the two compilers; wasm and the witness js files differ per version, so they are pinned per version). Enforced fail-closed before anything runs: binary sha256, r1cs, wasm, witness_calculator.js, generate_witness.js. Recorded only: .sym."
 }
