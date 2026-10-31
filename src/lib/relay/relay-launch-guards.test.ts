@@ -5,7 +5,7 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLIENT_IP_HEADER, UNKNOWN_CLIENT, getClientIP } from './client-ip';
@@ -114,4 +114,31 @@ test('polls and acks are never refused by the watermark (draining frees the disk
     const src = readFileSync(join(__dirname, '..', '..', '..', 'app', 'api', 'relay', f, 'route.ts'), 'utf8');
     assert.doesNotMatch(src, /disk-watermark|relayDiskFull/, f);
   }
+});
+
+// ---- Flint #2226 merge conditions
+
+function walkSrc(dir: string, out: string[] = []): string[] {
+  for (const n of readdirSync(dir)) {
+    if (n === 'node_modules' || n.startsWith('.')) continue;
+    const p = join(dir, n);
+    if (statSync(p).isDirectory()) walkSrc(p, out);
+    else if (/\.(ts|tsx)$/.test(n) && !/\.test\.tsx?$/.test(n)) out.push(p);
+  }
+  return out;
+}
+
+test('C3 NEG (repo-wide): nothing under app/ or src/ except client-ip.ts reads x-forwarded-for, cf-connecting-ip or x-real-ip', () => {
+  const root = join(__dirname, '..', '..', '..');
+  const offenders = ['app', 'src']
+    .flatMap((d) => walkSrc(join(root, d)))
+    .filter((p) => !p.endsWith(join('relay', 'client-ip.ts')))
+    .filter((p) => /x-forwarded-for|cf-connecting-ip|x-real-ip/i.test(readFileSync(p, 'utf8')))
+    .map((p) => p.slice(root.length + 1));
+  assert.deepEqual(offenders, []);
+});
+
+test('self-host: the shipped Caddyfile sets X-Svrnty-Client-IP from the real peer on the app upstream', () => {
+  const caddy = readFileSync(join(__dirname, '..', '..', '..', 'Caddyfile'), 'utf8');
+  assert.match(caddy, /reverse_proxy app:3000 \{\s*header_up X-Svrnty-Client-IP \{remote_host\}\s*\}/);
 });
