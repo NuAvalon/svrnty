@@ -53,7 +53,9 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
+import { holdBackoff } from '@/lib/sync/hold-backoff';
 import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
+import { createAdoptCounter, type AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -66,7 +68,7 @@ import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { receiptKeyFromHex, verifyReceiptTag } from '@/lib/crypto/receipt-mac';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
-import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
+import { getDeadLetter, pruneDeadLetters, putDeadLetter, releasedByReset, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 
@@ -176,6 +178,7 @@ export function buildNoteSeam(
   // tests / legacy callers → exact prior behaviour (no receipt sent).
   sendReceipt?: (wire: NoteWireV0) => Promise<void>,
   legs?: OpenLegCounter, // #720: which leg opened (counts only)
+  adoptCounts?: AdoptCounter, // #720 R5: stored notes the adopt replay guard ignored for being future-dated (counts only)
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
@@ -201,16 +204,20 @@ export function buildNoteSeam(
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
-      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | undefined;
+      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
+      let dropCause: string | undefined;
       const rec = await deps.accept({
-        onDrop: (r) => {
+        onDrop: (r, c) => {
           dropReason = r;
+          dropCause = c;
         },
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
-        openRatchet: async (fromFp, body) => {
+        openRatchet: async (fromFp, body, ctx) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
           const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
+          const { buildAdoptFirstFrame } = await import('@/lib/messaging/session-adopt-policy');
+          const { listInboundSentAtFrom } = await import('@/lib/messaging/store');
           const { openRatchetClassified } = await import('@/lib/messaging/ratchet-open');
           // v5.3: every failure comes back TYPED (local = this device, verdict = the frame/card), never a bare null. R4 + R2: open WITHOUT
           // persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
@@ -222,15 +229,38 @@ export function buildNoteSeam(
               }),
             contactExists: async () => !!(await getContactByFingerprint(owner.fingerprint, fromFp)),
             loadPeer: () => loadPeerRatchet(owner.fingerprint, fromFp),
-            open: (self, peer) => openDirectNoteStagedTyped(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint)),
+            // R5/R6: a peer's NEW first frame may replace our session, but only if the policy agrees (signed sent_at newer than every stored note from them,
+            // lower-fp tie-break while ours is unconfirmed). The stored notes are read only on a desync.
+            open: (self, peer) =>
+              openDirectNoteStagedTyped(
+                fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint),
+                buildAdoptFirstFrame({
+                  ownFingerprint: owner.fingerprint,
+                  peerFingerprint: fromFp,
+                  sentAt: ctx?.sentAt,
+                  storedSentAts: () => listInboundSentAtFrom(fromFp),
+                  now: Date.now,
+                  onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),
+                }),
+              ),
           });
+        },
+        // R5: after the replacing note is stored and the session committed, that contact's held frames are released as session-reset records.
+        onSessionReplaced: async (fp) => {
+          const { markSessionReset } = await import('@/lib/messaging/dead-letter-store');
+          await markSessionReset(fp);
+        },
+        // R4: a frame from this contact opened, so "this device reset them and has received no frame since" is over.
+        onFrameOpened: async (fp) => {
+          const { clearResetFlagIfSet } = await import('@/lib/messaging/reset-flag-store');
+          await clearResetFlagIfSet(fp);
         },
       });
       if (!rec) {
         // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint
         // travels only for the reasons that come AFTER authentication (wire.from_fingerprint is attacker-controlled until then: F3).
         if (!dropReason) return null;
-        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint };
+        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint, ...(dropCause ? { cause: dropCause } : {}) };
       }
       // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
@@ -399,6 +429,7 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
 onSessionLock(() => receiptOutbox.clear()); // queued receipts and the dedupe set belong to the session that was locked
+onSessionLock(() => holdBackoff.clear()); // the retry schedule of held frames belongs to the identity that was unlocked
 
 /**
  * #720: the dead-letter sink bound to THIS owner. Every call first checks that the notes store is open FOR THIS OWNER (the same guard the
@@ -419,6 +450,10 @@ export function buildDeadLetterSink(owner: OwnerIdentity, openOwner: () => strin
     settle: async () => {
       assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
       await pruneDeadLetters(Date.now());
+    },
+    releasedByReset: async () => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      return releasedByReset();
     },
   };
 }
@@ -491,9 +526,11 @@ export async function buildConsumeDeps(
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
   const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
+  const adoptCounts = createAdoptCounter(); // #720 R5: future-dated stored notes the adopt replay guard ignored (counts only)
   return {
     owner,
     openLegs: legs,
+    adoptCounts,
     decrypt: hybrid
       ? dualReadOpener(
           counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire), 'hybrid', legs),
@@ -506,7 +543,7 @@ export async function buildConsumeDeps(
     // the send is QUEUED (receipt-outbox.ts), never awaited, so a failed or slow receipt cannot fail or delay the note.
     note: buildNoteSeam(owner, undefined, hybrid, async (wire) => {
       await emitDeliveredReceipt(wire, { fetchImpl: opts.fetchImpl });
-    }, legs),
+    }, legs, adoptCounts),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
@@ -524,6 +561,7 @@ export async function buildConsumeDeps(
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
     deadLetter: buildDeadLetterSink(owner),
+    holdBackoff, // T2b: held ratchet-desync frames are retried every poll for an hour, then hourly
     fetchImpl: opts.fetchImpl,
   };
 }

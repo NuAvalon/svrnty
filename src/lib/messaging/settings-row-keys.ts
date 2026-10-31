@@ -3,7 +3,7 @@
 // IndexedDB. The store also holds ONE plaintext row, 'notes_encryption_salt' (the PBKDF2 salt, not a secret); nothing written through
 // the encrypted-row API may be able to overwrite or delete it, so only these exact prefixes are allowed.
 
-export const SETTINGS_ROW_PREFIXES = ['dead_letter:'] as const;
+export const SETTINGS_ROW_PREFIXES = ['dead_letter:', 'reset_flag:'] as const;
 
 const MAX_KEY_LENGTH = 200;
 // A plain charset: a key is built from validated parts, never from raw wire text.

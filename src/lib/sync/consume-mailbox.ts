@@ -38,6 +38,8 @@ import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 import type { ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import type { OpenLegCounter } from './open-leg-counter';
+import type { AdoptCounter } from '@/lib/messaging/session-adopt-policy';
+import type { HoldBackoff } from './hold-backoff';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
@@ -141,8 +143,10 @@ export interface NoteResponseSeam {
  * authentication, so `fp` is trustworthy there.
  */
 export interface DroppedNote {
-  dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local';
+  dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync';
   fp?: string;
+  /** Why a ratchet frame did not open (a fixed token from DEAD_LETTER_CAUSES; the record keeps it only if it is on that list). */
+  cause?: string;
 }
 
 /** The persisted note's handles, returned by the note seam's accept for the inbox live-repaint. */
@@ -203,6 +207,8 @@ export interface DeadLetterSink {
   clear(envelopeId: string): Promise<void>;
   /** Once per poll, after records were written (retention pruning). Best effort: a failure here never affects what is acked. */
   settle?(): Promise<void>;
+  /** R2: envelopes a user's session reset released (record key -> contact fp). Read once per poll; each is recorded as session-reset and acked WITHOUT being opened. Best effort: if it throws, the frames just stay held. */
+  releasedByReset?(): Promise<ReadonlyMap<string, string>>;
 }
 
 export interface ConsumeDeps {
@@ -215,6 +221,7 @@ export interface ConsumeDeps {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
+  adoptCounts?: AdoptCounter; // #720 R5: stored notes the session-adopt replay guard ignored for being future-dated (omit = adopt_future_ignored is absent)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
@@ -232,6 +239,8 @@ export interface ConsumeDeps {
   // one "kept until" date has to be true for every message the count includes, and a missing or malformed date proves nothing.
   emitHeld?: (count: number, info?: { expiresAt?: string }) => void;
   deadLetter?: DeadLetterSink; // #720: record-before-ack for everything that did not become a stored message
+  // #720 T2b: when a held ratchet-DESYNC envelope is retried (every poll for its first hour, then hourly). Omit = retried every poll.
+  holdBackoff?: HoldBackoff;
 }
 
 export interface ConsumeSummary {
@@ -257,6 +266,8 @@ export interface ConsumeSummary {
    */
   opened_hybrid: number;
   opened_classical: number;
+  /** #720 R5: stored notes the session-adopt replay guard ignored this poll because they were dated beyond now + 5 min. Counts only; absent when no counter was wired. */
+  adopt_future_ignored?: number;
   released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
@@ -266,7 +277,7 @@ export interface ConsumeSummary {
  * What a terminal outcome IS. `benign` = the content is already stored or it was never a message (named, test-pinned list in
  * dead-letter.ts): acked with no record. Anything else is a LOSS and gets a record committed before the ack.
  */
-export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string };
+export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string; cause?: string };
 
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
@@ -274,7 +285,7 @@ type Outcome =
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
   | { kind: 'terminal'; cls: TerminalClass } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack, after its record if it is a loss
   | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
-  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local'; fp?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
+  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
 /**
  * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
@@ -289,6 +300,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
   const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, acked: 0 };
   deps.openLegs?.take(); // discard anything counted outside a poll: a poll reports only its own opens
+  deps.adoptCounts?.take();
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -340,8 +352,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   };
   // Nothing is added to `toAck` in the consume loop itself: each envelope that may be acked goes through THE ACK DOOR below, which decides
   // WHAT must happen first (#720 R1: no ack of an envelope that did not become a stored message without a committed record of it).
-  type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string };
-  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local'; fp?: string }> = [];
+  type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string; cause?: string };
+  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }> = [];
   const sink = deps.deadLetter;
   const toAck: string[] = [];
   const bump = (r: DeadLetterReason) => {
@@ -368,7 +380,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       // E1: an unsafe (attacker-chosen) id is recorded under a DERIVED safe key and the ORIGINAL id is acked, so it can neither be lost
       // unrecorded nor sit on the relay filling the mailbox. A row that cannot be built at all (not a string, an unreadable time) stays on the relay.
       const key = recordKeyFor(item.id);
-      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: item.need.reason, blob: item.blob, fp: item.need.fp }) : null;
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: item.need.reason, blob: item.blob, fp: item.need.fp, cause: item.need.cause }) : null;
       if (!row) {
         summary.unrecorded++;
         return;
@@ -385,10 +397,41 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     }
   };
 
-  for (const env of envelopes) {
+  // T4 (Flint #186298): a held frame never blocks a NEWER frame from the same peer that DOES open (each envelope is decided on its own), and a
+  // later frame can heal a gap: once a NOTE from contact X is stored this poll, X's held frames are tried again in the same poll (below).
+  const healed = new Set<string>(); // lower-cased fingerprints of the contacts a note from whom was stored this poll
+  let resetReleased: ReadonlyMap<string, string> = new Map();
+  if (sink?.releasedByReset) {
+    try {
+      resetReleased = await sink.releasedByReset();
+    } catch {
+      /* best effort: the frames stay held and are released on a later poll */
+    }
+  }
+  const handle = async (env: (typeof envelopes)[number], forced: boolean): Promise<'ended' | 'skipped' | Outcome['kind']> => {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
-    if (deps.owner.cycle?.ended) break;
+    if (deps.owner.cycle?.ended) return 'ended';
+    // R2: a frame the user's session reset released is recorded as session-reset and acked WITHOUT being opened (opening it again would only
+    // fail and flip its record back to a hold).
+    const relFp = resetReleased.get(recordKeyFor(env.envelope_id) ?? '');
+    if (relFp !== undefined) {
+      deps.holdBackoff?.forget(env.envelope_id);
+      summary.dropped++;
+      await door({ id: env.envelope_id, blob: env.blob, need: { reason: 'session-reset', fp: relFp } });
+      if (toAck.length >= ACK_CHUNK) await flushAckChunk(toAck.splice(0, ACK_CHUNK));
+      return 'terminal';
+    }
+    // T2b: a held desync envelope that is not due yet is NOT tried (no ratchet open, no side effect). It still counts as held with its
+    // recorded reason + fingerprint, so the record and the keep bound behave as if it had been tried and failed again.
+    // A T4 retry (forced) is the one reason to try it before it is due: its peer just proved the session works.
+    const backoff = deps.holdBackoff;
+    const nowMs = Date.parse(now());
+    if (!forced && backoff && Number.isFinite(nowMs) && !backoff.due(env.envelope_id, nowMs)) {
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: 'ratchet-desync', fp: backoff.fpOf(env.envelope_id), cause: 'ratchet-receive-failed' });
+      summary.dropped++;
+      return 'skipped';
+    }
     let outcome: Outcome;
     try {
       outcome = await consumeOne(env.blob, deps, now);
@@ -404,6 +447,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     // A cycle that died DURING this blob makes it look undecryptable (decryptors throw → terminal → ack-delete).
     // That is a lock/switch artefact, not a verdict on the blob: downgrade so it is never ack-deleted.
     if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
+    if (backoff && Number.isFinite(nowMs)) {
+      if (outcome.kind === 'held' && outcome.reason === 'ratchet-desync') backoff.attempted(env.envelope_id, outcome.fp, nowMs);
+      else backoff.forget(env.envelope_id); // opened, consumed, or no longer a desync hold: no schedule to keep
+    }
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
@@ -415,6 +462,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       }
     } else if (outcome.kind === 'note') {
       summary.notes++;
+      healed.add(String(outcome.event.from_fingerprint).toLowerCase());
       await door({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // persisted to the inbox → consumed; a record from an earlier poll is cleared
       try {
         deps.emitNote?.(outcome.event);
@@ -434,7 +482,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       // A benign terminal is consumed with no record; anything else is a LOSS and needs its record first.
       await door({ id: env.envelope_id, blob: env.blob, need: 'benign' in outcome.cls ? 'none' : outcome.cls });
     } else if (outcome.kind === 'held') {
-      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: outcome.reason ?? 'missing-key', fp: outcome.fp });
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: outcome.reason ?? 'missing-key', fp: outcome.fp, cause: outcome.cause });
       summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
@@ -443,8 +491,31 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       const batch = toAck.splice(0, ACK_CHUNK);
       await flushAckChunk(batch);
     }
+    return outcome.kind;
+  };
+
+  for (const env of envelopes) if ((await handle(env, false)) === 'ended') break;
+
+  // T4: retry the held frames (desync and local) of every contact whose note was stored this poll. A retried frame that opens is consumed as
+  // usual and may itself heal the next one, so go round until a round frees nothing. Bounded: each round only retries what is still held.
+  for (let round = 0; healed.size > 0 && round <= envelopes.length && !deps.owner.cycle?.ended; round++) { // `round` cap: termination never rests on `freed` alone
+    const retry = heldNow.filter((h) => h.reason !== 'missing-key' /* carries no fp today; the check keeps it out if one ever does */ && h.fp !== undefined && healed.has(h.fp.toLowerCase()));
+    if (retry.length === 0) break;
+    let freed = 0;
+    for (const h of retry) {
+      const env = envelopes.find((e) => e.envelope_id === h.id);
+      if (!env) continue; // cannot happen (heldNow only holds envelopes of this poll); nothing is touched, and the round ends by `freed`
+      heldNow.splice(heldNow.indexOf(h), 1);
+      summary.dropped--; // it was counted as not-consumed when first held; handle() counts it again if it is still held
+      const kind = await handle(env, true);
+      if (kind === 'ended') break;
+      if (kind === 'applied' || kind === 'note' || kind === 'receipt' || kind === 'terminal') freed++; // consumed: it may have healed the next one
+    }
+    if (freed === 0) break;
   }
 
+  // T2b: forget the schedule of every envelope the relay no longer holds (acked, expired, released), so the map stays as small as the mailbox.
+  if (deps.holdBackoff && !deps.owner.cycle?.ended) deps.holdBackoff.keepOnly(new Set(envelopes.map((e) => e.envelope_id)));
 
   // Held envelopes (kept on the relay for retry): each gets a record so its FIRST-SEEN time survives across polls, then the keep bound
   // applies (<= 50 and <= 7 days; the OLDEST are released). A released envelope's record is already committed, so it is acked now.
@@ -455,14 +526,14 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     const idByKey = new Map<string, string>(); // record key -> the id the relay knows (they differ only for an unsafe id, E1)
     for (const h of heldNow) {
       const key = recordKeyFor(h.id);
-      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp }) : null;
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, cause: h.cause, phase: 'held' }) : null;
       if (!row || !key) continue; // not a string: cannot be recorded or bounded; it stays on the relay
       try {
         const saved = await sink.record(row);
         idByKey.set(key, h.id);
         // #720 r2 (Flint, B1 for holds): an admitted contact's LOCAL frame is bounded only against that contact's own; 'missing-key' holds
         // (outsider-depositable while this device has no kem secret) share their own group. A group may only push out its own.
-        const group = h.reason === 'ratchet-local' ? `local:${(h.fp ?? '').toLowerCase()}` : 'missing-key';
+        const group = h.reason === 'missing-key' ? 'missing-key' : `${h.reason}:${(h.fp ?? '').toLowerCase()}`; // each ratchet class is bounded per contact, apart from the others
         seen.push({ envelope_id: saved.envelope_id, first_seen: saved.first_seen, group });
       } catch {
         /* cannot record this poll: it stays on the relay, unbounded for now; retried next poll */
@@ -473,9 +544,23 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     const release = [...groups.values()].flatMap((g) => planBound(g, Date.parse(now())).release);
     const released = new Set(release.flatMap((r) => idByKey.get(r.envelope_id) ?? []));
     for (const id of released) {
+      const h = byId.get(id);
+      // Released: the row now says RECORDED (this app no longer keeps the message), committed BEFORE the ack like every other record. If that
+      // write fails the envelope stays held (not acked) and is released on a later poll.
+      const key = h ? recordKeyFor(h.id) : null;
+      const row = h && key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, cause: h.cause, phase: 'recorded' }) : null;
+      if (h && row) {
+        try {
+          await sink.record(row);
+        } catch {
+          summary.unrecorded++;
+          stillHeld.push(h);
+          continue;
+        }
+      }
       toAck.push(id);
       summary.released++;
-      bump(byId.get(id)?.reason ?? 'missing-key'); // a released LOCAL ratchet frame counts as 'ratchet-local', apart from the sender-side 'ratchet-unopenable'
+      bump(h?.reason ?? 'missing-key'); // a released LOCAL ratchet frame counts as 'ratchet-local', apart from the sender-side 'ratchet-unopenable'
     }
     for (const h of byId.values()) if (!released.has(h.id)) stillHeld.push(h);
   } else {
@@ -513,6 +598,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     summary.opened_hybrid = legs.hybrid;
     summary.opened_classical = legs.classical;
   }
+  if (deps.adoptCounts) summary.adopt_future_ignored = deps.adoptCounts.take().future_ignored;
   return summary;
 }
 
@@ -606,8 +692,8 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
           // 'unverified' = the sender was never authenticated: no fingerprint travels with it (F3). The other two come after authentication.
           if (accepted.dropped === 'unverified') return { kind: 'terminal', cls: { reason: 'verify-failed' } };
           // v5.3 (Flint #2052): a ratchet frame this DEVICE could not open is HELD (kept on the relay, recorded at first sight, bounded), never acked as the sender's fault.
-          if (accepted.dropped === 'ratchet-local') return { kind: 'held', reason: 'ratchet-local', fp: accepted.fp };
-          return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp } };
+          if (accepted.dropped === 'ratchet-local' || accepted.dropped === 'ratchet-desync') return { kind: 'held', reason: accepted.dropped, fp: accepted.fp, cause: accepted.cause };
+          return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp, cause: accepted.cause } };
         }
         // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).
         return accepted

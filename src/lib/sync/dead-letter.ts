@@ -10,7 +10,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 
 /** Why a blob did not become a message (F6: "can't open" and "failed to verify" are different classes). */
-export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'expired'] as const;
+export const DEAD_LETTER_REASONS = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset', 'expired'] as const;
 export type DeadLetterReason =
   | 'unknown-format' // not a shape this build can open
   | 'decrypt-failed' // right shape, would not open
@@ -20,13 +20,15 @@ export type DeadLetterReason =
   | 'not-in-book' // opened and authenticated, sender is not in the Gate (R9)
   | 'ratchet-unopenable' // opened and authenticated, a known contact's ratchet body would not open: the FRAME's fault (a verdict)
   | 'ratchet-local' // same frame, but something on THIS DEVICE stopped it (own key missing, session row unreadable, unknown cause): HELD, then recorded past the bound
+  | 'ratchet-desync' // same frame, the sessions no longer agree (a receive failure on an authenticated contact's frame): HELD with backoff, then recorded (T2)
+  | 'session-reset' // a held ratchet frame released because the USER reset the session with that contact: our own deliberate act (T3, Flint reset semantics R2)
   | 'expired'; // arrived after its time limit
 
 /**
  * Only these reasons come AFTER the sender was authenticated, so only they may carry a fingerprint (F3: the sender fields of an
  * unopened or unverified envelope are attacker-controlled and must never be stored or shown).
  */
-export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local']);
+export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset']);
 
 /**
  * Terminal outcomes that CONSUME a blob without losing a message: the content is already stored, or it was never a message.
@@ -60,6 +62,28 @@ export function classifyBlob(blob: string): BlobKind {
   return 'other';
 }
 
+/**
+ * A HELD row says the envelope is still on the relay and this app will keep trying; RECORDED says it is not any more (released past the
+ * bound, or by a reset): all that is kept is this note that it arrived. Only the reasons that are HELD can carry a phase; every other row is
+ * a verdict and is recorded by definition. A row with no phase (written before this field) reads as recorded: the quieter promise.
+ */
+export const DEAD_LETTER_PHASES = ['held', 'recorded'] as const;
+export type DeadLetterPhase = (typeof DEAD_LETTER_PHASES)[number];
+/**
+ * WHY a ratchet frame did not open, as a closed set of fixed tokens (never any frame text). Athena's named rows read one of them: a verdict row says
+ * "out of step" only for 'first-frame-rejected'. Only the three ratchet reasons can carry one; anything outside this list is dropped at write and refused at read.
+ */
+export const DEAD_LETTER_CAUSES = [
+  'malformed-frame', 'first-frame-rejected', 'peer-card-has-no-pq-keys', // the frame's / the sender's card (verdict)
+  'session-row-unreadable', 'session-snapshot-corrupt', 'own-ratchet-identity-unavailable', 'contact-missing-after-admit', 'open-threw', 'no-ratchet-opener', // this device (local)
+  'ratchet-receive-failed', // the sessions disagree (desync)
+] as const;
+export type DeadLetterCause = (typeof DEAD_LETTER_CAUSES)[number];
+export const CAUSE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['ratchet-unopenable', 'ratchet-local', 'ratchet-desync']);
+export const isDeadLetterCause = (v: unknown): v is DeadLetterCause => (DEAD_LETTER_CAUSES as readonly unknown[]).includes(v);
+
+export const HOLDABLE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['missing-key', 'ratchet-local', 'ratchet-desync']);
+
 export interface DeadLetterRow {
   envelope_id: string;
   first_seen: string; // ISO time of the FIRST poll that saw this envelope (local clock)
@@ -67,6 +91,10 @@ export interface DeadLetterRow {
   blob_kind: BlobKind;
   /** Present only for AUTHENTICATED_REASONS and only when well-formed. */
   fp?: string;
+  /** Only for HOLDABLE_REASONS: 'held' while the envelope is kept on the relay, 'recorded' once it is released. */
+  phase?: DeadLetterPhase;
+  /** Only for the ratchet reasons: a fixed token saying why the open failed. */
+  cause?: DeadLetterCause;
 }
 
 // The relay lets a depositor choose the envelope id (retry-dedup), so it is attacker-controlled until proven otherwise (F4):
@@ -99,13 +127,36 @@ export function makeDeadLetterRow(a: {
   reason: DeadLetterReason;
   blob: string;
   fp?: string;
+  phase?: DeadLetterPhase;
+  cause?: unknown;
 }): DeadLetterRow | null {
   const envelope_id = safeEnvelopeId(a.envelopeId);
   if (!envelope_id) return null;
   if (!Number.isFinite(Date.parse(a.firstSeen))) return null;
   const row: DeadLetterRow = { envelope_id, first_seen: a.firstSeen, reason: a.reason, blob_kind: classifyBlob(a.blob) };
   if (AUTHENTICATED_REASONS.has(a.reason) && typeof a.fp === 'string' && FP_HEX.test(a.fp)) row.fp = a.fp.toLowerCase();
+  if (a.phase !== undefined && HOLDABLE_REASONS.has(a.reason) && (DEAD_LETTER_PHASES as readonly unknown[]).includes(a.phase)) row.phase = a.phase;
+  if (CAUSE_REASONS.has(a.reason) && isDeadLetterCause(a.cause)) row.cause = a.cause;
   return row;
+}
+
+/**
+ * How many frames from ONE contact this app is still holding because their session cannot open them (the number the reset dialog shows
+ * BEFORE the user confirms, Flint reset-semantics R2). Held ratchet frames only: not recorded rows, not other contacts', not missing-key.
+ */
+export function heldCountFor(rows: ReadonlyArray<DeadLetterRow>, fp: string): number {
+  return heldRatchetRowsFor(rows, fp).length;
+}
+function heldRatchetRowsFor(rows: ReadonlyArray<DeadLetterRow>, fp: string): DeadLetterRow[] {
+  const want = fp.toLowerCase();
+  return rows.filter((r) => (r.reason === 'ratchet-local' || r.reason === 'ratchet-desync') && r.phase === 'held' && r.fp === want);
+}
+/**
+ * R2: at a reset, each held ratchet row of that contact becomes a NAMED session-reset record (a verdict: no phase). The envelopes are acked by
+ * the next poll, which finds these rows and releases them without trying to open them again (releasedByReset below).
+ */
+export function resetMarksFor(rows: ReadonlyArray<DeadLetterRow>, fp: string): DeadLetterRow[] {
+  return heldRatchetRowsFor(rows, fp).map((r) => ({ envelope_id: r.envelope_id, first_seen: r.first_seen, reason: 'session-reset' as const, blob_kind: r.blob_kind, fp: r.fp }));
 }
 
 export const KEEP_MAX_COUNT = 50; // F1: held envelopes kept per mailbox
@@ -150,7 +201,7 @@ export function planBound(
 export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp'].includes(k)) return null;
+  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp', 'phase', 'cause'].includes(k)) return null;
   const envelope_id = safeEnvelopeId(o.envelope_id);
   if (!envelope_id) return null;
   if (typeof o.first_seen !== 'string' || !Number.isFinite(Date.parse(o.first_seen))) return null;
@@ -160,6 +211,14 @@ export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   if (o.fp !== undefined) {
     if (!AUTHENTICATED_REASONS.has(row.reason) || typeof o.fp !== 'string' || !FP_HEX.test(o.fp)) return null;
     row.fp = o.fp.toLowerCase();
+  }
+  if (o.phase !== undefined) {
+    if (!HOLDABLE_REASONS.has(row.reason) || !(DEAD_LETTER_PHASES as readonly unknown[]).includes(o.phase)) return null;
+    row.phase = o.phase as DeadLetterPhase;
+  }
+  if (o.cause !== undefined) {
+    if (!CAUSE_REASONS.has(row.reason) || !isDeadLetterCause(o.cause)) return null;
+    row.cause = o.cause;
   }
   return row;
 }
@@ -205,7 +264,7 @@ export function planPrune(
   const byContact = new Map<string, typeof rows[number][]>();
   for (const r of rows) {
     if (r.reason === 'not-in-book') notInBook.push(r);
-    else if (r.reason === 'ratchet-unopenable' || r.reason === 'ratchet-local') {
+    else if (r.reason === 'ratchet-unopenable' || r.reason === 'ratchet-local' || r.reason === 'ratchet-desync' || r.reason === 'session-reset') {
       const k = typeof r.fp === 'string' && FP_HEX.test(r.fp) ? r.fp.toLowerCase() : '';
       const g = byContact.get(k);
       if (g) g.push(r);

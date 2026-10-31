@@ -272,14 +272,18 @@ export async function acceptInboundNote(args: {
   peerKind?: ParticipantKind;
   /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. May return the plaintext (already committed, legacy)
    *  or a {@link StagedOpen}, whose session advance is committed HERE only after the note and thread are stored (R4). */
-  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | OpenFailure | null>;
+  openRatchet?: (fromFingerprint: string, body: string, ctx: { sentAt: string | undefined }) => Promise<string | StagedOpen | OpenFailure | null>;
+  /** #720 R5: told AFTER the note is stored and the session is committed that this open REPLACED our session with the sender (their reset), so their held frames can be released. Best effort: a throw is swallowed and the frames simply stay held. */
+  onSessionReplaced?: (fromFingerprint: string) => Promise<void>;
+  /** #720 R4: told AFTER a ratchet frame from this sender opened, its note was stored and the session committed: any "reset, no frame since" flag for them is over. Best effort: a throw is swallowed (the next opened frame clears it). Not called for a frame that did not open, nor for a note that is not a ratchet frame. */
+  onFrameOpened?: (fromFingerprint: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
   io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
   /**
    * #720: told WHY a note was not stored, at the moment it is dropped (additive; the return value is unchanged). 'unverified' = the
    * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
    */
-  onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local') => void;
+  onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync', cause?: string) => void;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -300,15 +304,17 @@ export async function acceptInboundNote(args: {
   if (prior && (prior.direction !== 'inbound' || prior.from_fingerprint !== args.wire.from_fingerprint)) return null;
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
+  let viaRatchet = false;
   if (isTripleRatchetBody(body)) {
     // v5.3 (Flint #2052): UNKNOWN IS LOCAL. Only a failure the ratchet path positively typed as the frame's fault ('verdict') is
     // 'ratchet-unopenable'. No ratchet opener at all, a plain null (a cause nobody identified) and a typed 'local' failure are all
     // 'ratchet-local': this device may be able to open the frame later, so it must be HELD, not acked as the sender's fault.
     if (!args.openRatchet) {
-      args.onDrop?.('ratchet-local');
+      args.onDrop?.('ratchet-local', 'no-ratchet-opener');
       return null;
     }
-    const opened = await args.openRatchet(args.wire.from_fingerprint, body);
+    // ctx.sentAt is the note's SIGNED sent_at exactly as received (never defaulted to now): the replay guard in the opener's adopt policy reads it.
+    const opened = await args.openRatchet(args.wire.from_fingerprint, body, { sentAt: args.wire.sent_at });
     // #720 r2 (Flint): at-least-once redelivery. The session advances only AFTER the note and thread are stored (R4), so a frame that no
     // longer opens while this sender's note is already stored is a completed delivery whose ack never landed: its message key is spent.
     // Return the stored note (no drop, no loss record). Checked only on failure, so every R4 retry (session not yet advanced) still opens.
@@ -321,9 +327,10 @@ export async function acceptInboundNote(args: {
       return null;
     }
     if (typeof opened === 'object' && 'failed' in opened) {
-      args.onDrop?.(opened.kind === 'verdict' ? 'ratchet-unopenable' : 'ratchet-local');
+      args.onDrop?.(opened.kind === 'verdict' ? 'ratchet-unopenable' : opened.kind === 'desync' ? 'ratchet-desync' : 'ratchet-local', opened.cause);
       return null;
     }
+    viaRatchet = true; // the opener produced a body: this frame opened
     if (typeof opened === 'string') {
       body = opened;
     } else {
@@ -375,6 +382,12 @@ export async function acceptInboundNote(args: {
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
   if (staged) await staged.commit();
+  if (staged?.replaced) {
+    try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
+  }
+  if (viaRatchet) {
+    try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
+  }
   return record;
   } finally {
     staged?.release();
