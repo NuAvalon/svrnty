@@ -2,7 +2,8 @@
 // Bundled by esbuild and injected into the page by e2e/ratchet-rows-reset.spec.ts. It runs the app's REAL store modules (IndexedDB, the
 // encrypted settings rows) against the SAME per-identity notes DB the UI reads, to seed dead-letter records and to observe the reset flag.
 // (init mirrors the app's own unlock path.) It never drives the thing under test: the reset itself is the user's click in the UI.
-import { initNotesStore } from '@/lib/messaging/store';
+import { initNotesStore, putThread } from '@/lib/messaging/store';
+import type { NoteThread } from '@/lib/messaging/types';
 import { initSessionKey, loadKey } from '@/lib/identity/client-store';
 import { listDeadLetters, putDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { clearResetFlagIfSet, hasResetFlag, listResetFlags } from '@/lib/messaging/reset-flag-store';
@@ -13,6 +14,7 @@ declare global {
     __rr: {
       init(passphrase: string, ownerFp: string): Promise<void>;
       put(rows: DeadLetterRow[]): Promise<void>;
+      putThread(thread: NoteThread): Promise<void>;
       list(): Promise<DeadLetterRow[]>;
       hasFlag(peerFp: string): Promise<boolean>;
       flags(): Promise<string[]>;
@@ -31,6 +33,7 @@ window.__rr = {
     await initNotesStore(key.passphrase, ownerFp);
   },
   put: async (rows) => { for (const r of rows) await putDeadLetter(r); },
+  putThread: (thread) => putThread(thread),
   list: () => listDeadLetters(),
   hasFlag: (peerFp) => hasResetFlag(peerFp),
   flags: () => listResetFlags(),

@@ -2,6 +2,7 @@ import { test, expect, devices, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { seedAliceWithBob } from './fixtures/deposit-note';
 import { resetCountLine, resetExplainer, resetButtonLabel, namedRow } from '../src/components/notes/ratchet-rows';
+import { RESET_UNAVAILABLE_HINT_HELD, RESET_UNAVAILABLE_HINT_RECORDED } from '../src/components/notes/ratchet-reset-copy';
 
 /**
  * #720 the thread half of reliable receive, in a REAL browser: the named rows for a contact whose frames did not open, the
@@ -148,6 +149,34 @@ for (const variant of MATRIX) {
       expect(await page.evaluate((f) => window.__rr.clearFlag(f), bobFp)).toBe(true);
       expect(await page.evaluate((f) => window.__rr.clearFlag(f), bobFp)).toBe(false);
       expect(await page.evaluate((f) => window.__rr.hasFlag(f), bobFp)).toBe(false);
+    });
+    test('AGENT contact: the same failures show their rows, but NO Reset button, and the two desync hints say it is not available (copy v0.12)', async ({ page }) => {
+      test.setTimeout(150_000);
+      await genesisReceiver(page, 'Alice Agent');
+      const { aliceFp, bob } = await seedAliceWithBob(page);
+      const bobFp = bob.fingerprint.toLowerCase();
+      await page.addScriptTag({ content: harnessSource() });
+      await page.evaluate(([p, f]) => window.__rr.init(p, f), [PASS, aliceFp] as const);
+      const now = new Date().toISOString();
+      await page.evaluate((t) => window.__rr.putThread(t as never), {
+        thread_id: 'thr-agent', kind: 'direct', participants: [{ fingerprint: bob.fingerprint, kind: 'agent', display_name: NAME }],
+        created_at: now, last_activity_at: now, retention: { expires_at: null },
+      });
+      await page.evaluate((rows) => window.__rr.put(rows as never), [
+        row(bobFp, { reason: 'ratchet-desync', phase: 'held', cause: 'ratchet-receive-failed' }, 1),
+        row(bobFp, { reason: 'ratchet-desync', phase: 'recorded', cause: 'ratchet-receive-failed' }, 2),
+      ]);
+      await page.getByTestId('tab-notes').click();
+      await expect(page.getByTestId('notes-inbox')).toBeVisible();
+      await page.getByTestId('notes-thread-thr-agent').click();
+
+      const held = namedRow(NAME, { kind: 'desync', phase: 'held' }), recorded = namedRow(NAME, { kind: 'desync', phase: 'recorded' });
+      await expect(page.getByTestId('ratchet-row')).toHaveCount(2, { timeout: 15_000 });
+      const rows = page.getByTestId('ratchet-row');
+      await expect(rows.filter({ hasText: held.line })).toContainText(RESET_UNAVAILABLE_HINT_HELD);
+      await expect(rows.filter({ hasText: recorded.line })).toContainText(RESET_UNAVAILABLE_HINT_RECORDED);
+      await expect(page.getByTestId('ratchet-reset-open')).toHaveCount(0);
+      await expect(page.getByTestId('ratchet-rows')).not.toContainText(/reset your message session|you can reset/i);
     });
   });
 }
