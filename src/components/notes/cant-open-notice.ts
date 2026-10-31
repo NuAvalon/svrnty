@@ -10,6 +10,7 @@
 //   L  a former contact  R rows whose sender is no longer in the book                count only, no name/fp/ask (Hypatia #188146 (a))
 // unverified-frame is not a message (dead-letter.ts NON_MESSAGE_REASONS) and never counts.
 
+import { normalizeFingerprintHex } from '@/lib/identity/fingerprint';
 import { isMessageReason, type DeadLetterReason, type DeadLetterRow } from '@/lib/sync/dead-letter';
 
 export type CantOpenGroup = 'R' | 'L' | 'U' | 'X' | 'S';
@@ -73,14 +74,16 @@ export function cantOpenNotices(
   for (const row of rows) {
     const g = groupFor(row.reason);
     if (g === 'R') {
-      const name = row.fp ? nameFor(row.fp) : null;
-      if (!row.fp || !name) {
+      // One line per contact however the fingerprint was cased in the row (Flint nit, Archie #2588).
+      const key = row.fp ? normalizeFingerprintHex(row.fp) : '';
+      const name = key ? nameFor(key) : null;
+      if (!key || !name) {
         left++;
         continue;
       }
-      const hit = byContact.get(row.fp) ?? { name, n: 0 };
+      const hit = byContact.get(key) ?? { name, n: 0 };
       hit.n++;
-      byContact.set(row.fp, hit);
+      byContact.set(key, hit);
     } else if (g === 'U') u++;
     else if (g === 'X') x++;
     else if (g === 'S') {

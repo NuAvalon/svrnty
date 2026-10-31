@@ -53,6 +53,11 @@ test('C4 R: one line per contact, named, with the resend ask; actionable lines c
   ]);
 });
 
+test('C4b the same contact in upper and lower case is ONE line, keyed by the normalized fingerprint', () => {
+  const out = cantOpenNotices([row('ratchet-unopenable', { fp: ALICE }), row('ratchet-local', { fp: ALICE.toUpperCase() })], nameFor, null);
+  assert.deepEqual(out, [{ group: 'R', text: "2 messages from Alice couldn't be opened on this device. Ask Alice to send them again.", fingerprint: ALICE }]);
+});
+
 test('C5 NEG: a U or X row never shows a name or fingerprint, even if a row somehow carries one', () => {
   const out = cantOpenNotices([row('verify-failed', { fp: ALICE }), row('expired', { fp: BOB })], nameFor, null);
   for (const n of out) {
