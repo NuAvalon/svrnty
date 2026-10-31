@@ -176,12 +176,32 @@ export class HeadlessStore {
     return this.data.contacts.find((c) => c.fingerprint === fingerprint) ?? null;
   }
 
-  /** Add or merge a contact (by id, else by fingerprint). */
+  /**
+   * Add or merge a contact, keyed by FINGERPRINT only (#724). A row's identity never changes here:
+   *  - an id already held by a DIFFERENT fingerprint is refused (that collision used to overwrite the other contact's
+   *    fingerprint and keys while keeping its trust: a substitution);
+   *  - on a fingerprint match the row keeps its own id, and the key set (public_key + both PQ keys) is replaced as ONE
+   *    unit when the incoming record carries any key field, so an old key can't survive under a new one (a mixed set
+   *    hashes to nothing). A record with no key fields (a metadata/trust update) leaves the keys untouched.
+   * The fingerprint↔key binding itself is checked by the callers that take a card from outside (admit, join, gate).
+   */
   upsertContact(c: HeadlessContact): void {
     this.mutate(() => {
-      const i = this.data.contacts.findIndex((x) => x.id === c.id || x.fingerprint === c.fingerprint);
-      if (i === -1) this.data.contacts.push(c);
-      else this.data.contacts[i] = { ...this.data.contacts[i], ...c };
+      const i = this.data.contacts.findIndex((x) => x.fingerprint === c.fingerprint);
+      const clash = this.data.contacts.findIndex((x) => x.id === c.id && x.fingerprint !== c.fingerprint);
+      if (clash !== -1) {
+        throw new Error('headless upsertContact: that id belongs to a different fingerprint; refusing (a new fingerprint is a new contact)');
+      }
+      if (i === -1) {
+        this.data.contacts.push(c);
+        return;
+      }
+      const old = this.data.contacts[i];
+      const keyed = 'public_key' in c || 'pq_sig_public_key' in c || 'pq_kem_public_key' in c;
+      const keys = keyed
+        ? { public_key: c.public_key, pq_sig_public_key: c.pq_sig_public_key, pq_kem_public_key: c.pq_kem_public_key }
+        : {};
+      this.data.contacts[i] = { ...old, ...c, ...keys, id: old.id, fingerprint: old.fingerprint };
     });
   }
 

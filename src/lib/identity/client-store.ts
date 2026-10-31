@@ -13,6 +13,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { ownerHasVerified } from '../trust/trust-recipe';
+import { assertFingerprintUnchanged } from './contact-identity';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -1014,6 +1015,8 @@ export async function updateContact(id: string, updates: Partial<ContactRecord>)
   const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
   if (!existing) throw new Error('Contact not found');
   const next = { ...existing, ...updates, id: existing.id };
+  // #724: a row's fingerprint is its identity; trust + visibility hang off the row, so an update may never replace it.
+  assertFingerprintUnchanged(existing.fingerprint, next.fingerprint);
   const pk = (next.public_key || '').trim();
   // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
   if (!pk) {
