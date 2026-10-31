@@ -33,6 +33,7 @@ import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import { clearHeldReport, reportHeld } from '@/lib/notes/held-events';
+import { clearPollStatus, reportPollStatus } from '@/lib/notes/poll-status-events';
 import {
   loadKey,
   loadPQKeys,
@@ -60,7 +61,7 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { ConsumeSummary, JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
@@ -398,6 +399,7 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // #720: the "kept because this device can't open it yet" report belongs to ONE identity. Drop it on session lock AND on identity switch
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
+onSessionLock(clearPollStatus); // copy v1 §B: identity A's refused-poll state never shows under identity B
 onSessionLock(() => receiptOutbox.clear()); // queued receipts and the dedupe set belong to the session that was locked
 
 /**
@@ -545,18 +547,47 @@ export interface LiveBookPollHandle {
  * a full interval.
  */
 /**
+ * What one poll can honestly say (copy v4, Hypatia c109fb20; Archie #2401/#2404/#2414):
+ * - 'ok': the relay answered with a list and nothing was left on it (every polled envelope acked; none held, none unrecorded). The ONLY
+ *   status that may be shown as "Caught up."
+ * - 'checked-waiting': the relay answered with a list, but envelopes are still on it (held, unrecorded, retryable, or an ack that failed).
+ * - 'rejected': the poll was refused (non-OK status). NOT an empty mailbox.
+ * - 'unreadable': the relay answered 2xx but the body was not a list. Also NOT an empty mailbox, and not a refusal.
+ * - 'locked': no poll ran (locked / no identity), or the unlock cycle ended mid-poll, so the mailbox state is unknown.
+ */
+export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'unreadable' | 'locked';
+
+export function pollStatusOf(
+  summary: Pick<ConsumeSummary, 'rejected' | 'polled' | 'acked' | 'held' | 'unrecorded'>,
+  cycleEnded = false,
+): PollOnceStatus {
+  if (cycleEnded) return 'locked';
+  if (summary.rejected !== undefined) return summary.rejected >= 200 && summary.rejected < 300 ? 'unreadable' : 'rejected';
+  if (summary.held > 0 || summary.unrecorded > 0 || summary.acked < summary.polled) return 'checked-waiting';
+  return 'ok';
+}
+
+/**
  * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
  * identity is a no-op (the book is still re-read by the caller). Does not invent
- * a living wire; it only consumes what the mailbox already has.
+ * a living wire; it only consumes what the mailbox already has. Returns what the
+ * poll can honestly report, so the caller never says "Caught up." for a poll that
+ * was refused or never ran. A thrown error (network) still propagates.
  */
 export async function pollLiveBookOnce(
   identity: unknown,
-  opts: { fetchImpl?: typeof fetch } = {},
-): Promise<void> {
-  const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-  if (!deps) return;
+  opts: { fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
+): Promise<PollOnceStatus> {
+  const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+  if (!deps) {
+    reportPollStatus('locked');
+    return 'locked';
+  }
   try {
-    await consumeInboundContactUpdates(deps);
+    const summary = await consumeInboundContactUpdates(deps);
+    const status = pollStatusOf(summary, deps.owner.cycle?.ended);
+    reportPollStatus(status);
+    return status;
   } finally {
     deps.owner.cycle?.drop();
   }
@@ -564,7 +595,7 @@ export async function pollLiveBookOnce(
 
 export function startLiveBookPolling(
   identity: unknown,
-  opts: { intervalMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { intervalMs?: number; fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
 ): LiveBookPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
@@ -576,10 +607,14 @@ export function startLiveBookPolling(
     if (stopped || inFlight) return; // never overlap polls
     inFlight = true;
     try {
-      const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-      if (!deps) return; // locked / no identity — stay static, retry next tick
+      const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+      if (!deps) {
+        reportPollStatus('locked');
+        return; // locked / no identity — stay static, retry next tick
+      }
       try {
-        await consumeInboundContactUpdates(deps);
+        const summary = await consumeInboundContactUpdates(deps);
+        reportPollStatus(pollStatusOf(summary, deps.owner.cycle?.ended)); // copy v1 §B: 3 refused in a row → Chat notice
       } finally {
         deps.owner.cycle?.drop();
       }

@@ -259,7 +259,7 @@ export interface ConsumeSummary {
   opened_classical: number;
   released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
-  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth), or a 2xx whose body was not a list; absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
 /**
@@ -310,7 +310,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
   // ever compared and handed on, never used to decide whether a blob is consumed.
   const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
-  if (!Array.isArray(envelopes)) return summary;
+  if (!Array.isArray(envelopes)) {
+    summary.rejected = res.status; // an answer that isn't a list is not an empty mailbox (Archie #2401)
+    return summary;
+  }
   summary.polled = envelopes.length;
 
   // 2) Consume each envelope independently; flush acks in 20-id chunks so

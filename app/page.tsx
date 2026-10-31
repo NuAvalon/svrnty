@@ -771,8 +771,9 @@ export default function Home() {
                 }}
                 onRefresh={async () => {
                   const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
-                  await pollLiveBookOnce(identity);
+                  const status = await pollLiveBookOnce(identity);
                   await refreshContacts();
+                  return status;
                 }}
                 methodHistory={methodHistory}
                 onMethodHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
