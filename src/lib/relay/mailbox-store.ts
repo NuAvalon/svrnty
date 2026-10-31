@@ -18,6 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { mailboxConfig } from './mailbox-config';
+import { safeEnvelopeId } from '@/lib/sync/dead-letter';
 
 export interface Envelope {
   /** Relay-assigned (or client-supplied, Apollo retry-dedup contract) unique id — the handle for
@@ -139,10 +140,10 @@ export function depositEnvelope(
   const d = db();
   sweepExpired(now); // lazy GC on write
 
-  const envId =
-    typeof clientEnvelopeId === 'string' && clientEnvelopeId.length > 0
-      ? clientEnvelopeId
-      : crypto.randomUUID();
+  // A client-chosen id must pass the SAME rule the consumer applies (#720 v5.2 E1: hardening; the consume side's check is the
+  // real guard, since any relay can hand back any id). No route passes one today; whoever wires it inherits this. Absent → ours.
+  if (clientEnvelopeId !== undefined && safeEnvelopeId(clientEnvelopeId) === null) return { ok: false, status: 400 };
+  const envId = clientEnvelopeId ?? crypto.randomUUID();
 
   // Retry-dedup (Apollo): a re-deposit of the same (mailbox, envelope_id) is idempotent — already
   // stored + already counted, so return OK without a duplicate row (uniform with a fresh OK).

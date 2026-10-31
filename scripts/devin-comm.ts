@@ -639,7 +639,11 @@ async function main() {
     // AGGREGATE for THIS poll with no sender in it, and it has two kinds: a terminal drop (undecryptable,
     // bad signature, not-in-book) is counted once and acked away, but a RETRYABLE envelope stays in the mailbox
     // and is counted again on every poll until it resolves. So a steady dropped>0 can be one stuck envelope.
-    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped }));
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped,
+      // #720 counters (counts only; the ward allowlist in devin_quarantine names exactly these keys). `lost` = per-reason consumed losses
+      // (headless has no dead-letter sink, so deadLettered/unrecorded/released stay 0 here); opened_* = which leg of the dual-read opened.
+      held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
+      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical }));
     return;
   }
 
