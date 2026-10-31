@@ -499,7 +499,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     const idByKey = new Map<string, string>(); // record key -> the id the relay knows (they differ only for an unsafe id, E1)
     for (const h of heldNow) {
       const key = recordKeyFor(h.id);
-      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp }) : null;
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, phase: 'held' }) : null;
       if (!row || !key) continue; // not a string: cannot be recorded or bounded; it stays on the relay
       try {
         const saved = await sink.record(row);
@@ -517,9 +517,23 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     const release = [...groups.values()].flatMap((g) => planBound(g, Date.parse(now())).release);
     const released = new Set(release.flatMap((r) => idByKey.get(r.envelope_id) ?? []));
     for (const id of released) {
+      const h = byId.get(id);
+      // Released: the row now says RECORDED (this app no longer keeps the message), committed BEFORE the ack like every other record. If that
+      // write fails the envelope stays held (not acked) and is released on a later poll.
+      const key = h ? recordKeyFor(h.id) : null;
+      const row = h && key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, phase: 'recorded' }) : null;
+      if (h && row) {
+        try {
+          await sink.record(row);
+        } catch {
+          summary.unrecorded++;
+          stillHeld.push(h);
+          continue;
+        }
+      }
       toAck.push(id);
       summary.released++;
-      bump(byId.get(id)?.reason ?? 'missing-key'); // a released LOCAL ratchet frame counts as 'ratchet-local', apart from the sender-side 'ratchet-unopenable'
+      bump(h?.reason ?? 'missing-key'); // a released LOCAL ratchet frame counts as 'ratchet-local', apart from the sender-side 'ratchet-unopenable'
     }
     for (const h of byId.values()) if (!released.has(h.id)) stillHeld.push(h);
   } else {

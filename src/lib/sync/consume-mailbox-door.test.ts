@@ -767,3 +767,42 @@ test('C44 T5: a cell-shaped blob (constant size, random pad) on the receive path
   assert.equal(recorded(w.events).some((r) => r.reason === 'ratchet-desync' || r.reason === 'ratchet-local' || r.reason === 'session-reset'), false, 'no ratchet reason: it is not an authenticated contact\'s frame');
   assert.equal(Object.keys(s.lost).some((k) => k.startsWith('ratchet') || k === 'session-reset'), false);
 });
+
+// ── reset step 2(i): the PHASE of a held row ──
+test('C45 phase: a held frame\'s row says HELD from the first sighting (desync, local and missing-key alike)', async () => {
+  const w = world([{ envelope_id: 'p1', blob: 'P1', expires_at: exp6() }, { envelope_id: 'p2', blob: 'P2', expires_at: exp6() }, { envelope_id: 'p3', blob: HYBRID, expires_at: exp6() }]);
+  await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ P1: () => desync(), P2: () => ({ dropped: 'ratchet-local', fp: FPC }) }) }));
+  const rows = recorded(w.events);
+  assert.deepEqual(rows.map((r) => `${r.reason}:${r.phase}`).sort(), ['missing-key:held', 'ratchet-desync:held', 'ratchet-local:held']);
+});
+
+test('C46 phase: a frame released past the bound is RE-RECORDED as recorded BEFORE its ack; the 50 that stay are still held', async () => {
+  const known = new Map<string, string>();
+  const envs = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `r${String(i).padStart(2, '0')}`, blob: `R${i}`, expires_at: exp6() }));
+  envs.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world(envs, { known });
+  const byBlob = Object.fromEntries(envs.map((_, i) => [`R${i}`, () => desync()]));
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf(byBlob) }));
+  assert.equal(s.released, 5);
+  const lastPhase = new Map<string, string | undefined>();
+  for (const r of recorded(w.events)) lastPhase.set(r.envelope_id, r.phase);
+  for (const id of ['r00', 'r01', 'r02', 'r03', 'r04']) {
+    assert.equal(lastPhase.get(id), 'recorded', `${id} is recorded now`);
+    const rec = w.events.map((e, i) => (e.t === 'record' && e.id === id && e.row.phase === 'recorded' ? i : -1)).filter((i) => i >= 0)[0];
+    const ack = w.events.findIndex((e) => e.t === 'ack' && e.ids.includes(id));
+    assert.ok(rec >= 0 && rec < ack, `${id}: the recorded row is committed before the ack`);
+  }
+  for (let i = 5; i < 55; i++) assert.equal(lastPhase.get(`r${String(i).padStart(2, '0')}`), 'held');
+});
+
+test('C47 phase: if the RECORDED re-write fails, the frame is NOT acked and stays held (released on a later poll); nothing is lost', async () => {
+  const known = new Map<string, string>();
+  const envs = Array.from({ length: 51 }, (_, i) => ({ envelope_id: `q${String(i).padStart(2, '0')}`, blob: `Q${i}`, expires_at: exp6() }));
+  envs.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world(envs, { known });
+  const sink = { ...w.sink, record: async (row: DeadLetterRow) => { if (row.phase === 'recorded') throw new Error('store locked'); return w.sink.record(row); } };
+  const byBlob = Object.fromEntries(envs.map((_, i) => [`Q${i}`, () => desync()]));
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: sink, fetchImpl: w.fetchImpl, note: seamOf(byBlob) }));
+  assert.deepEqual(acked(w.events), [], 'the oldest was due for release, but its recorded row could not be written: no ack');
+  assert.equal(s.released, 0); assert.equal(s.unrecorded, 1); assert.equal(s.held, 51, 'it is still counted as held');
+});

@@ -62,6 +62,15 @@ export function classifyBlob(blob: string): BlobKind {
   return 'other';
 }
 
+/**
+ * A HELD row says the envelope is still on the relay and this app will keep trying; RECORDED says it is not any more (released past the
+ * bound, or by a reset): all that is kept is this note that it arrived. Only the reasons that are HELD can carry a phase; every other row is
+ * a verdict and is recorded by definition. A row with no phase (written before this field) reads as recorded: the quieter promise.
+ */
+export const DEAD_LETTER_PHASES = ['held', 'recorded'] as const;
+export type DeadLetterPhase = (typeof DEAD_LETTER_PHASES)[number];
+export const HOLDABLE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['missing-key', 'ratchet-local', 'ratchet-desync']);
+
 export interface DeadLetterRow {
   envelope_id: string;
   first_seen: string; // ISO time of the FIRST poll that saw this envelope (local clock)
@@ -69,6 +78,8 @@ export interface DeadLetterRow {
   blob_kind: BlobKind;
   /** Present only for AUTHENTICATED_REASONS and only when well-formed. */
   fp?: string;
+  /** Only for HOLDABLE_REASONS: 'held' while the envelope is kept on the relay, 'recorded' once it is released. */
+  phase?: DeadLetterPhase;
 }
 
 // The relay lets a depositor choose the envelope id (retry-dedup), so it is attacker-controlled until proven otherwise (F4):
@@ -101,12 +112,14 @@ export function makeDeadLetterRow(a: {
   reason: DeadLetterReason;
   blob: string;
   fp?: string;
+  phase?: DeadLetterPhase;
 }): DeadLetterRow | null {
   const envelope_id = safeEnvelopeId(a.envelopeId);
   if (!envelope_id) return null;
   if (!Number.isFinite(Date.parse(a.firstSeen))) return null;
   const row: DeadLetterRow = { envelope_id, first_seen: a.firstSeen, reason: a.reason, blob_kind: classifyBlob(a.blob) };
   if (AUTHENTICATED_REASONS.has(a.reason) && typeof a.fp === 'string' && FP_HEX.test(a.fp)) row.fp = a.fp.toLowerCase();
+  if (a.phase !== undefined && HOLDABLE_REASONS.has(a.reason) && (DEAD_LETTER_PHASES as readonly unknown[]).includes(a.phase)) row.phase = a.phase;
   return row;
 }
 
@@ -152,7 +165,7 @@ export function planBound(
 export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp'].includes(k)) return null;
+  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp', 'phase'].includes(k)) return null;
   const envelope_id = safeEnvelopeId(o.envelope_id);
   if (!envelope_id) return null;
   if (typeof o.first_seen !== 'string' || !Number.isFinite(Date.parse(o.first_seen))) return null;
@@ -162,6 +175,10 @@ export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   if (o.fp !== undefined) {
     if (!AUTHENTICATED_REASONS.has(row.reason) || typeof o.fp !== 'string' || !FP_HEX.test(o.fp)) return null;
     row.fp = o.fp.toLowerCase();
+  }
+  if (o.phase !== undefined) {
+    if (!HOLDABLE_REASONS.has(row.reason) || !(DEAD_LETTER_PHASES as readonly unknown[]).includes(o.phase)) return null;
+    row.phase = o.phase as DeadLetterPhase;
   }
   return row;
 }
