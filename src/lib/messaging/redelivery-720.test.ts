@@ -78,13 +78,15 @@ test('R1 a redelivered ratchet note that is already stored is returned as stored
   assert.equal(again?.body, 'hello', 'the stored note comes back unchanged');
 });
 
-test('R2 control: a stored note with the same id from a DIFFERENT sender does not short-circuit (the open runs; a verdict stays a verdict)', async () => {
-  const { wire, io, notes, openRatchet } = await setup();
-  notes.set('note-r1', { note_id: 'note-r1', thread_id: 'x', from_fingerprint: 'cc'.repeat(32), body: 'someone else' } as NoteRecord);
+test('R2 control (restated for the note_id launch gate): a stored note with the same id from a DIFFERENT sender is refused BEFORE the open runs: nothing returned, the open never starts, the stored note is untouched', async () => {
+  const { wire, io, notes } = await setup();
+  const other = { note_id: 'note-r1', thread_id: 'x', direction: 'inbound', from_fingerprint: 'cc'.repeat(32), body: 'someone else' } as NoteRecord;
+  notes.set('note-r1', { ...other });
   const reasons: string[] = [];
-  const garbled = { ...wire };
-  const r = await acceptInboundNote({ wire: garbled, isAdmitted: async () => true, openRatchet: async () => ({ failed: true, kind: 'verdict', cause: 'malformed-frame' }), io: io as never, onDrop: (x) => reasons.push(x) });
-  assert.equal(r, null);
-  assert.deepEqual(reasons, ['ratchet-unopenable']);
-  void openRatchet;
+  let opened = 0;
+  const r = await acceptInboundNote({ wire, isAdmitted: async () => true, openRatchet: async () => { opened++; return { failed: true, kind: 'verdict', cause: 'malformed-frame' }; }, io: io as never, onDrop: (x) => reasons.push(x) });
+  assert.equal(r, null, 'refused: a colliding id never replaces, and never "returns" another sender\'s note as this one');
+  assert.equal(opened, 0, 'the collision guard runs before any ratchet work');
+  assert.deepEqual(notes.get('note-r1'), other, 'the other sender\'s note is unchanged');
+  // The sender match inside the R2-2 short-circuit is now defence in depth: the guard above has already refused every cross-sender id.
 });

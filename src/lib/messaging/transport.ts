@@ -8,6 +8,7 @@ import { signNoteWire, verifyNoteSender } from './note-auth';
 import { NOTE_WIRE_TYPE } from './domains';
 import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
+import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
 import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type OpenFailure, type RatchetIO, type StagedOpen } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
@@ -116,6 +117,9 @@ async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress
   // the echo against this stored value. Always generated — harmless if the peer never returns a receipt
   // (the note simply stays the honest 'Sent · unconfirmed.' floor).
   const receipt_nonce = newReceiptNonce();
+  // S62 A5-d: the per-note receipt KEY (CSPRNG, 32 bytes, fresh per note, never reused). It rides ONLY inside the signed, sealed wire and on the
+  // sender's own encrypted outbound record below; the recipient returns a MAC under it after the durable store, which only we can check.
+  const receipt_key = receiptKeyToHex(newReceiptKey());
 
   // ONE predicate decides "can this note be deposited" for BOTH the ratchet policy and the deposit gate below. Two copies of it would
   // let R1 regress silently if one changed (Flint #769).
@@ -143,6 +147,7 @@ async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress
     body: wireBody,
     participant_kind: args.sender.participant_kind,
     receipt_nonce,
+    receipt_key,
   };
 
   // Sign BEFORE sealing so the recipient can authenticate the sender (not just decrypt). The
@@ -212,6 +217,7 @@ async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
     receipt_nonce, // source-of-truth for verifying the recipient's delivery receipt (delivered stays unset until then)
+    receipt_key, // S62: the only secret that verifies the recipient's MAC receipt; encrypted at rest with the note, never shown or exported
   };
   await (args.io?.putNote ?? putNote)(local);
 
@@ -286,6 +292,12 @@ export async function acceptInboundNote(args: {
     args.onDrop?.('not-in-book');
     return null; // spam / stranger — structural drop
   }
+  // note_id is chosen by the SENDER, and the notes store is keyed on note_id ALONE (store.ts: keyPath 'note_id', putNote is a put), so a note that
+  // reuses an id would silently REPLACE the stored row: our own outbound copy of a note we sent this contact (they hold that id: we sent it to
+  // them), or another contact's inbound note. Launch gate (Archie #2110): refuse BEFORE any ratchet work. The same sender's redelivery (same
+  // direction and from_fingerprint) is the idempotent case and proceeds. A store error here throws (retryable), exactly like putNote below.
+  const prior = await (args.io?.getNote ?? getNote)(args.wire.note_id);
+  if (prior && (prior.direction !== 'inbound' || prior.from_fingerprint !== args.wire.from_fingerprint)) return null;
   let body = args.wire.body;
   let staged: StagedOpen | undefined;
   if (isTripleRatchetBody(body)) {
