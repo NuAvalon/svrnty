@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { BN254_P, encodeCanonical, parseCanonical, parsePublicInputs, type PublicInputs, type WirePublicInputs } from './beacon-public-inputs';
 import { SlotBindMatcher, type VerifyProof } from './beacon-slotbind-matcher';
 
@@ -104,21 +105,29 @@ test('a verifier that THROWS is a rejection, and the verifier only ever sees can
   assert.deepEqual(shown, HONEST_A);
 });
 
-// ── Integration (measured, local only): the REAL snarkjs against the REAL throwaway-ceremony proof of the prototype. Skipped when the artifacts are absent (CI). ──
-const ZK = '/home/appuser/e2e-scratch/zk/';
-const HAVE_ZK = existsSync(ZK + 'vkey.json') && existsSync(ZK + 'proof.json') && existsSync(ZK + 'public.json') && existsSync(ZK + 'node_modules/snarkjs');
-test('INTEGRATION (snarkjs 0.7.6, real proof): honest verifies; each public input + p is REJECTED by the library; so the matcher precheck is defence in depth for THIS library, and the only line for one that reduces', { skip: !HAVE_ZK }, async () => {
+// ── Integration (measured, local only): the REAL snarkjs against a REAL proof of the KAT-A witness, made from circuits/588-slotbind/ by build.sh + throwaway-prove.sh
+// (a THROWAWAY single-party setup, never the ceremony). Skipped when those artefacts are absent (CI). ──
+const ZK = resolve(__dirname, '../../../circuits/588-slotbind') + '/';
+const HAVE_ZK = ['build/vkey.json', 'build/proof_A.json', 'build/public_A.json', 'node_modules/snarkjs'].every((p) => existsSync(ZK + p));
+test('INTEGRATION (snarkjs 0.7.6, real proof): honest verifies; each public input + p is REJECTED by the library; the matcher with the REAL verifier accepts the honest deposit once and refuses the N+p alias', { skip: !HAVE_ZK }, async () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const snarkjs = require(ZK + 'node_modules/snarkjs');
-  const vkey = JSON.parse(readFileSync(ZK + 'vkey.json', 'utf8'));
-  const proof = JSON.parse(readFileSync(ZK + 'proof.json', 'utf8'));
-  const pub = JSON.parse(readFileSync(ZK + 'public.json', 'utf8')) as string[];
+  const vkey = JSON.parse(readFileSync(ZK + 'build/vkey.json', 'utf8'));
+  const proof = JSON.parse(readFileSync(ZK + 'build/proof_A.json', 'utf8'));
+  const pub = JSON.parse(readFileSync(ZK + 'build/public_A.json', 'utf8')) as string[];
   assert.equal(await snarkjs.groth16.verify(vkey, pub, proof), true);
   for (let i = 0; i < pub.length; i++) {
     const v = pub.slice();
     v[i] = (BigInt(pub[i]) + BN254_P).toString();
     assert.equal(await snarkjs.groth16.verify(vkey, v, proof), false, `public[${i}]+p`);
   }
+  // The matcher wired to the real library. Public-input order in the circuit is [e, H_e, N, K].
+  const honest: PublicInputs = { e: BigInt(pub[0]), H_e: BigInt(pub[1]), N: BigInt(pub[2]), K: BigInt(pub[3]) };
+  const m = new SlotBindMatcher((p, i) => snarkjs.groth16.verify(vkey, [i.e, i.H_e, i.N, i.K].map(String), p as object));
+  assert.equal((await m.deposit({ proof, publicInputs: wire(honest) })).status, 'deposited');
+  assert.equal((await m.deposit({ proof, publicInputs: wire(honest) })).status, 'already-deposited');
+  const alias = { ...wire(honest), N: (honest.N + BN254_P).toString(16).padStart(64, '0') };
+  assert.deepEqual(await m.deposit({ proof, publicInputs: alias }), { status: 'rejected', reason: 'malformed-public-inputs' });
 });
 
 test('R1-e (canonical round-trip): for EVERY spelling the parser accepts, encode(parse(s)) === s; so the wire string and the parsed value are the same key', () => {
