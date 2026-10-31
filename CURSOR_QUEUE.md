@@ -43,35 +43,7 @@ A new **"Encrypt / Decrypt"** tab in svrnty.is: pick a svrnty contact → encryp
 ### Acceptance
 Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as the recipient, with the sender's card in contacts) → recover the **exact** plaintext with `senderVerified === true`. Round-trips PQ-hybrid; nothing touches the wire.
 
-## 3. Connect-UX — one-step grow-link (kill the 5-step joiner ceremony)  [render-glass]
-
-**Priority — queued above Verify-in-Galaxy** (Peter #155748: the 5-step ceremony is the priority; connect precedes verify in the user journey). Archie-spec'd; Hypatia finalizes microcopy; Archie claim-gates the trust-touching framing; **Apollo wires the add-logic + grow-link crypto POST-FLIP.** cursor builds the **UI shell + flow + `/c/{code}` resolve NOW, wired against the add-logic INTERFACE (typed stub) — never implement the crypto / trust / gate plumbing.**
-
-**GOAL:** replace the 5-step joiner ceremony with ONE step: paste a grow-link → the newcomer lands in your GATE (pending) → one tap promotes to Known. No-account users get create-identity-then-add as one continuous flow (PWA stays open).
-
-**FLOW:**
-1. Grow tab gets a paste field ("Paste a connect link"). User pastes `svrnty.is/c/{code}` (or the bare code).
-2. Resolve `/c/{code}` → the newcomer's shareable card (name/handle + identity pubkey + mailbox/relay pointer). The link carries the newcomer's consent-to-be-added (invariant 4). [resolve lives behind the add-logic interface — typed stub for now]
-3. Land the newcomer in GATE (pending), **NOT** Known. Show the card + a single "Add to Known" consent action.
-4. One tap → promote GATE→Known (your local disclosure choice). Done. No multi-step.
-5. No-account branch: no identity yet → inline create-identity (existing mint flow) → THEN land the pasted newcomer in GATE. One continuous flow.
-
-**★ TRUST-MODEL INVARIANTS (MUST preserve — do not flatten; Archie claim-gates):**
-1. Gate-not-Known on arrival (never auto-promote; promotion = explicit one-tap consent).
-2. Adding to your book is LOCAL + one-sided (your disclosure choice; not a mutual assertion).
-3. Mutual-known/trust requires BOTH sides (the link does NOT fabricate a mutual edge; mutual-known is computed, not asserted).
-4. The link carries the newcomer's consent-to-share (invitation, not capture).
-5. Trust-LEVEL on promote stays the user's explicit choice (never default a stranger to Known/Trusted).
-
-**COPY:** Hypatia's one-step / ceremony-killed strings (pull exact from her claim-ledger — ping Hypatia for final microcopy). Entity-type on card: agent / human / organization, label **"attested" not "verified"**, UNKNOWN = not-yet-attested (NOT guessed) [Hypatia KB#90007/90008].
-
-**BUILD-SCOPE:** UI shell + flow + `/c/{code}` resolve wired against the add-logic INTERFACE (typed stub). Do NOT implement the grow-link gen/resolve crypto or the add-to-gate/known logic — Apollo wires those post-flip. Thin render-glass over the interface; never modify crypto/gate/trust hooks.
-
-**NON-GOALS:** not bulk-import / auto-add-without-consent; not a mutual-edge fabricator; the grow-link is an invitation (card + add-me-if-you-want), NOT a bearer-capability granting more. No multi-step ceremony.
-
-**Acceptance:** paste a grow-link → newcomer appears in GATE (not Known) with their card → one tap → promoted to Known, trust-level = user's explicit choice. No-account → create → land-in-GATE works as one flow. All 5 invariants hold. Copy matches Hypatia's ledger. One PR into the canonical branch.
-
-## 4. Verify in the Galaxy (social graph) + guided fingerprint-compare  [render-glass]
+## ✅ 4. Verify in the Galaxy (social graph) + guided fingerprint-compare  [DONE — shipped 93f9a7a (VerifySheet on Galaxy + address book); pinned by verify-copy.test.ts + e2e/verify-sheet.spec.ts. Spec kept for provenance.]
 
 **Problem** (Peter, 2026-09-30, from live first-contact): a KNOWN contact shows as a **dashed line** in the Galaxy / social graph, but **Verify is only reachable from the Living Address Book** (`ContactManagement.tsx:1761` wires `onOwnerVerify`; `TrustMapGalaxy.tsx` wires NOTHING) — no way to verify from the graph. And today's verify is a bare provenance tap (`in_person`/`other_channel`); it should be a **guided fingerprint match** so "Verify" means "I actually compared the key," not "I clicked a label."
 
@@ -112,7 +84,7 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 ### Acceptance
 From the Galaxy, focus a KNOWN (dashed) contact → **Verify** → guided compare (QR in-person OR code another-channel) → on match, `onOwnerVerify` records `owner_verify{method}` → edge renders **solid** locally + privately (no public badge, nothing on the wire). The SAME sheet is reachable from the address book. A **mismatched QR fails loud** and cannot verify. `ownerHasVerified` returns true after; `canGrantTrust` no longer blocks on need-verify.
 
-## 5. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [render-glass]
+## ✅ 5. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [DONE — shipped 1544208 / #170; pinned by trust-map-consent-legend.test.ts. Spec kept for provenance.]
 
 **STATUS:** the append is already on main in `peerMeshLegend` (PR #170). `src/lib/trust/` is CODEOWNERS-fenced, so this follow-up only adds the missing test assertion on the render-glass side (TrustMap source lock + Galaxy e2e). Please re-green the legend copy and close #106.
 
@@ -135,7 +107,7 @@ For the DV/survivor population this copy protects, the surveillance fear ("could
 
 _Source: Archie's brief cursor_brief_v0.md (sha1 d5b36a49), Peter's go #189233 (items 1-3). Copy of record for item 3: Hypatia svrnty_message_status_copy_v1.md (sha256 f30ee46c)._
 
-## Repo + branch (exact)
+### Repo + branch (exact)
 - Repo: NuAvalon/svrnty. Base: the CURRENT tip of branch `dev` (6e66dd1 at 17:30Z on 10-31, moving as the merge queue lands; rebase onto the latest `dev` before opening the PR). Do NOT use `main`.
 - Create branch `cursor/contact-list-date-and-bubble-wrap` off `dev`. Open the PR against `dev`. Never push to `dev` or `main` directly.
 - Touch ONLY: src/components/**/NotesInbox.tsx (row time, ~:544), the date-format helper next to formatNoteClock, app/globals.css (.notes-bubble ~:517), and new tests. Don't touch anything under src/lib/crypto, src/lib/sync, src/lib/messaging, scripts/, app/api.
@@ -166,3 +138,31 @@ Tests (NEG): a note from 8 days ago never renders as only a clock; a future-date
 - Optional icons: 1 tick = on the relay, 2 ticks = delivered.
 - Receipts are automatic, no toggle (Peter #188999); the recipient disclosure line ships with it (Hypatia).
 - Scope: UI + notes-copy strings only. Do not change how receipts are sent or verified (src/lib/sync, src/lib/messaging logic stay as they are; read the existing deposit result + receipt state).
+
+## 3. Connect-UX — one-step grow-link (kill the 5-step joiner ceremony)  [HOLD — NOT a Cursor task now: partly shipped (paste field, 8448572); the one-step gate landing overlaps the gate-message spec (Archie v0 + Hypatia copy v0.2 1e4b5882). Do not build until Archie re-issues it.]
+
+**Priority — queued above Verify-in-Galaxy** (Peter #155748: the 5-step ceremony is the priority; connect precedes verify in the user journey). Archie-spec'd; Hypatia finalizes microcopy; Archie claim-gates the trust-touching framing; **Apollo wires the add-logic + grow-link crypto POST-FLIP.** cursor builds the **UI shell + flow + `/c/{code}` resolve NOW, wired against the add-logic INTERFACE (typed stub) — never implement the crypto / trust / gate plumbing.**
+
+**GOAL:** replace the 5-step joiner ceremony with ONE step: paste a grow-link → the newcomer lands in your GATE (pending) → one tap promotes to Known. No-account users get create-identity-then-add as one continuous flow (PWA stays open).
+
+**FLOW:**
+1. Grow tab gets a paste field ("Paste a connect link"). User pastes `svrnty.is/c/{code}` (or the bare code).
+2. Resolve `/c/{code}` → the newcomer's shareable card (name/handle + identity pubkey + mailbox/relay pointer). The link carries the newcomer's consent-to-be-added (invariant 4). [resolve lives behind the add-logic interface — typed stub for now]
+3. Land the newcomer in GATE (pending), **NOT** Known. Show the card + a single "Add to Known" consent action.
+4. One tap → promote GATE→Known (your local disclosure choice). Done. No multi-step.
+5. No-account branch: no identity yet → inline create-identity (existing mint flow) → THEN land the pasted newcomer in GATE. One continuous flow.
+
+**★ TRUST-MODEL INVARIANTS (MUST preserve — do not flatten; Archie claim-gates):**
+1. Gate-not-Known on arrival (never auto-promote; promotion = explicit one-tap consent).
+2. Adding to your book is LOCAL + one-sided (your disclosure choice; not a mutual assertion).
+3. Mutual-known/trust requires BOTH sides (the link does NOT fabricate a mutual edge; mutual-known is computed, not asserted).
+4. The link carries the newcomer's consent-to-share (invitation, not capture).
+5. Trust-LEVEL on promote stays the user's explicit choice (never default a stranger to Known/Trusted).
+
+**COPY:** Hypatia's one-step / ceremony-killed strings (pull exact from her claim-ledger — ping Hypatia for final microcopy). Entity-type on card: agent / human / organization, label **"attested" not "verified"**, UNKNOWN = not-yet-attested (NOT guessed) [Hypatia KB#90007/90008].
+
+**BUILD-SCOPE:** UI shell + flow + `/c/{code}` resolve wired against the add-logic INTERFACE (typed stub). Do NOT implement the grow-link gen/resolve crypto or the add-to-gate/known logic — Apollo wires those post-flip. Thin render-glass over the interface; never modify crypto/gate/trust hooks.
+
+**NON-GOALS:** not bulk-import / auto-add-without-consent; not a mutual-edge fabricator; the grow-link is an invitation (card + add-me-if-you-want), NOT a bearer-capability granting more. No multi-step ceremony.
+
+**Acceptance:** paste a grow-link → newcomer appears in GATE (not Known) with their card → one tap → promoted to Known, trust-level = user's explicit choice. No-account → create → land-in-GATE works as one flow. All 5 invariants hold. Copy matches Hypatia's ledger. One PR into the canonical branch.
