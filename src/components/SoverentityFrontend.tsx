@@ -32,6 +32,7 @@ import {
 import { solarEmber as SE } from '@/components/recovery/solar-ember';
 import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricSettingsPanel } from '@/components/biometric/BiometricSettingsPanel';
+import { MailNotificationsSettingsPanel } from '@/components/notes/MailNotificationsSettingsPanel';
 import { AppLockSettingsPanel } from '@/components/app-lock/AppLockSettingsPanel';
 import { RelaySettings } from '@/components/settings/RelaySettings';
 import type { AppLockPrefs } from '@/components/app-lock/app-lock-prefs';
@@ -2015,6 +2016,7 @@ export function SoverentityFrontend({
               compact
             />
           )}
+          <MailNotificationsSettingsPanel />
         </CardMorePanel>
 
         {identity ? <RelaySettings /> : null}

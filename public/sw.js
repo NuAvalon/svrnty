@@ -13,7 +13,7 @@
 // fallback). Truly-static assets (icons, manifest) stay cache-first. Bumping
 // CACHE_NAME forces every existing browser to install this worker, and the
 // activate handler then deletes the poisoned v1 cache.
-const CACHE_NAME = 'svrnty-v3';
+const CACHE_NAME = 'svrnty-v4'; // v4: notificationclick (phase 1 mail notifications); bump so browsers install this worker
 
 // Only genuinely-static, rarely-changing assets are pre-cached. The HTML
 // document is deliberately NOT pre-cached — it must always come from the network
@@ -103,4 +103,19 @@ self.addEventListener('fetch', (event) => {
 
   // Everything else (icons, manifest, misc static): cache-first.
   event.respondWith(cacheFirst(request));
+});
+
+// Phase 1 mail notifications (opt-in): a tap on "New note" focuses an open svrnty tab, or opens one (the app shows the Notes tab dot).
+// Same-origin only: the target URL is fixed here, never taken from the notification's data.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL('/', self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+      for (const w of wins) {
+        if (new URL(w.url).origin === self.location.origin && 'focus' in w) return w.focus();
+      }
+      return self.clients.openWindow ? self.clients.openWindow(target) : undefined;
+    })
+  );
 });
