@@ -49,13 +49,18 @@ export interface NoteRecord {
   retention: RetentionPolicy;
   /** Wire protocol version that produced this note */
   wire_type: typeof NOTE_WIRE_TYPE;
-  // ── Delivery receipt (Athena — Nov-5 delivered-receipt; delivery-receipt.ts) ──────────────────────
-  /** OUTBOUND only: the per-note freshness nonce the sender embedded in NoteWireV0.receipt_nonce. The
-   *  sender keeps it here as the source-of-truth to verify an inbound receipt (verifyReceiptWire matches
-   *  the receipt's nonce against THIS). Absent on notes sent before the receipt flow / on inbound notes. */
+  // ── Delivery receipt (S62: the designated-verifier MAC receipt, receipt-mac.ts / receipt-wire-v1.ts) ──────────────────────
+  /** OUTBOUND only: the S06 per-note freshness nonce the sender embedded in NoteWireV0.receipt_nonce. LEGACY: the identity-signed v0 receipt
+   *  that echoed it is gone (S62 slice 4), so nothing verifies against it any more; it is kept only so stored rows and the wire stay
+   *  readable. Absent on notes sent before the receipt flow / on inbound notes. */
   receipt_nonce?: string;
-  /** OUTBOUND only: TRUE iff a cryptographically VERIFIED delivery receipt has been processed for this
-   *  note (set on EXACTLY ONE line — the receipt consume seam, after verifyReceiptWire→true; NEVER from a
+  /** OUTBOUND only (S62 A5-d): the per-note 32-byte receipt key (64 hex) the sender sealed inside NoteWireV0.receipt_key. It is the ONLY
+   *  secret that can verify the recipient's MAC receipt (crypto/receipt-mac.ts). It lives here, in the encrypted notes store, and nowhere
+   *  else: never logged, rendered, exported or sent outside the seal (pinned by receipt-key-wire.test.ts W5). The row is rewritten
+   *  without it once the note is Delivered or past the relay window. */
+  receipt_key?: string;
+  /** OUTBOUND only: TRUE iff a VERIFIED MAC delivery receipt has been processed for this
+   *  note (set on EXACTLY ONE line — the receipt consume seam, after verifyReceiptTag→true; NEVER from a
    *  bare ack, a relay flag, or any unverified signal). Drives the 'delivered' status (notes-status.ts). */
   delivered?: boolean;
 }
@@ -78,10 +83,13 @@ export interface NoteWireV0 {
   // payload field — it is INSIDE noteSigningInput (canonical.ts excludes only signature/public_key/pq
   // pubkeys), so the sender signs it under DOMAIN_NOTE and the recipient's verifyNoteSender authenticates
   // it. Backward-compatible: absent on pre-receipt senders → canonicalize drops the absent key → the
-  // DOMAIN_NOTE preimage is byte-identical to today's. The recipient echoes it in a recipient-signed
-  // receipt (delivery-receipt.ts); the sender verifies the echo against the nonce it stored. Optional on
-  // the TYPE (older records / a sender that didn't opt in may lack it).
+  // DOMAIN_NOTE preimage is byte-identical to today's. LEGACY (S06): the identity-signed receipt that echoed it was removed in S62
+  // slice 4; the MAC receipt authenticates with receipt_key instead. Optional on the TYPE (older records / a sender that didn't opt in may lack it).
   receipt_nonce?: string;
+  // S62 A5-d: the per-note receipt key (32 random bytes, 64 hex), INSIDE the sealed note and, like receipt_nonce, inside noteSigningInput
+  // (canonical.ts excludes only signature/public_key/pq pubkeys), so the sender signs it and a tamperer cannot swap it. The recipient
+  // derives the MAC key from it (crypto/receipt-mac.ts) and returns a tag only the sender can check. Absent on pre-S62 senders.
+  receipt_key?: string;
   // ── Sender authentication (Apollo — Flint #55 forgeable-sender merge-gate) ──────────────────
   // Without these a note is only ENCRYPTED, not SIGNED: from_fingerprint would be attacker-set and
   // any admitted contact's fingerprint could be forged. `public_key` is the sender's openpgp key;

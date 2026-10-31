@@ -1,146 +1,180 @@
 // src/lib/sync/receipt-seam.test.ts
 //
-// TG-1 anchor, part A (Hypatia #704/#706, Flint #705): "Delivered is shown only after a recipient-signed receipt verifies".
-// This runs the REAL buildReceiptSeam accept (live-book-poll.ts) with REAL keys and REAL signatures: real minted
-// identities, a real hybrid ed25519 + ML-DSA-87 receipt (buildReceiptWire), the real canonical-key derivation from the
-// recipient's card, the real verifyReceiptWire. Only the three I/O calls the accept performs (our stored note, the
-// recipient's card in our book, the one write) are in-memory maps, injected through ReceiptSeamDeps; nothing about
-// verification, keys or nonces is mocked.
+// TG-1 anchor, part A (Hypatia #704/#706, Flint #705; S62 contract v7, Hypatia TG-1 v1_3): "Delivered is shown only after a VERIFIED receipt".
+// Runs the REAL buildReceiptSeam (live-book-poll.ts) with the REAL MAC primitive and, for the round trip, REAL hybrid sealing and the REAL
+// emitter. Only the two store calls the accept performs (our stored outbound note, the one write) are in-memory maps injected through
+// ReceiptSeamDeps; nothing about verification, keys or tags is mocked. Run: npx tsx --test src/lib/sync/receipt-seam.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { mintHeadlessAgent } from '../identity/headless-mint';
-import { buildReceiptWire } from '../crypto/delivery-receipt';
+import { sealLivingBookHybrid } from '../crypto/living-book-sleeve';
+import { newReceiptKey, receiptKeyToHex, receiptTag } from '../crypto/receipt-mac';
+import { bytesToHex } from '@noble/hashes/utils.js';
+import { buildReceiptWireV1, RECEIPT_V1_WIRE_TYPE } from '../messaging/receipt-wire-v1';
+import { emitDeliveredReceipt } from '../messaging/receipt-emit';
+import { signNoteWire } from '../messaging/note-auth';
 import { buildReceiptSeam, type ReceiptSeamDeps } from './live-book-poll';
+import { mintHybridRecipient } from './hybrid-test-fixture';
+import { deriveMailboxId } from '../relay/mailbox-auth';
 import type { OwnerIdentity } from './consume-mailbox';
-import type { NoteRecord } from '../messaging/types';
+import type { NoteRecord, NoteWireV0 } from '../messaging/types';
 import { NOTE_WIRE_TYPE } from '../messaging/domains';
 
-type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
-const idOf = (a: Minted) => a.introduction.card.identity as unknown as {
-  fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
-const cardOf = (a: Minted) => { const i = idOf(a); return { public_key: i.public_key, pq_kem_public_key: i.pq_kem_public_key, pq_sig_public_key: i.pq_sig_public_key }; };
-/** A receipt signed with `signer`'s REAL keys, claiming to come from `claimFp`. */
-const receiptFrom = (signer: Minted, claimFp: string, noteId: string, nonce: string) =>
-  buildReceiptWire(noteId, nonce, claimFp, signer.secret_material.ed25519Seed, signer.secret_material.mldsa87Secret);
-
 const NOTE_ID = 'note_under_test';
-const NONCE = 'nonce-for-note_under_test';
+const RK = receiptKeyToHex(newReceiptKey());
+const RECIPIENT_FP = 'ab'.repeat(32);
 
-function outbound(toFp: string, over: Partial<NoteRecord> = {}): NoteRecord {
+function outbound(over: Partial<NoteRecord> = {}): NoteRecord {
   return {
-    note_id: NOTE_ID, thread_id: 'thr_1', direction: 'outbound', from_fingerprint: 'sender', to_fingerprints: [toFp],
+    note_id: NOTE_ID, thread_id: 'thr_1', direction: 'outbound', from_fingerprint: 'sender', to_fingerprints: [RECIPIENT_FP],
     sent_at: '2026-10-25T00:00:00.000Z', body: 'hello', participant_kind: 'human',
-    retention: { expires_at: null }, wire_type: NOTE_WIRE_TYPE, receipt_nonce: NONCE, ...over,
+    retention: { expires_at: null }, wire_type: NOTE_WIRE_TYPE, receipt_nonce: 'legacy-nonce', receipt_key: RK, ...over,
   } as NoteRecord;
 }
 
-/** Fresh world: S (us, the sender) sent a note to R. S's book holds R's card (and optionally others). */
-async function world(opts: { card?: 'R' | 'X' | 'none' | 'classical' | 'garbage'; note?: NoteRecord | 'none' | ((r: string) => NoteRecord) } = {}) {
-  const [S, R, X, M] = [await mintHeadlessAgent({ throwaway: true }), await mintHeadlessAgent({ throwaway: true }),
-    await mintHeadlessAgent({ throwaway: true }), await mintHeadlessAgent({ throwaway: true })];   // X = another contact, M = an attacker
+function world(note?: NoteRecord | null) {
   const notes = new Map<string, NoteRecord>();
   const written: NoteRecord[] = [];
-  const rFp = idOf(R).fingerprint;
-  const n = opts.note === 'none' ? null : typeof opts.note === 'function' ? opts.note(rFp) : (opts.note ?? outbound(rFp));
+  const n = note === undefined ? outbound() : note;
   if (n) notes.set(n.note_id, n);
-  const book = new Map<string, Record<string, string>>();
-  const which = opts.card ?? 'R';
-  if (which === 'R') book.set(rFp, cardOf(R));
-  else if (which === 'X') book.set(rFp, cardOf(X));                                                  // R's slot holds a DIFFERENT contact's keys
-  else if (which === 'classical') book.set(rFp, { public_key: idOf(R).public_key });                // no PQ legs
-  else if (which === 'garbage') book.set(rFp, { ...cardOf(R), pq_kem_public_key: 'AAAA', pq_sig_public_key: '!!notbase64!!' });
-  book.set(idOf(X).fingerprint, cardOf(X));
   const deps: ReceiptSeamDeps = {
     getNote: (async (id: string) => notes.get(id) ?? null) as ReceiptSeamDeps['getNote'],
-    putNote: (async (note: NoteRecord) => { written.push(note); notes.set(note.note_id, note); }) as ReceiptSeamDeps['putNote'],
-    getContactByFingerprint: (async (_owner: string, fp: string) => book.get(fp) ?? null) as ReceiptSeamDeps['getContactByFingerprint'],
+    putNote: (async (r: NoteRecord) => { written.push(r); notes.set(r.note_id, r); }) as ReceiptSeamDeps['putNote'],
   };
-  const owner = { fingerprint: idOf(S).fingerprint, publicKeyArmored: idOf(S).public_key, privateKeyArmored: '', passphrase: '' } as OwnerIdentity;
-  const seam = buildReceiptSeam(owner, undefined, deps);
-  return { S, R, X, M, rFp, notes, written, seam };
+  const owner = { fingerprint: 'cd'.repeat(32), publicKeyArmored: '', privateKeyArmored: '', passphrase: '' } as OwnerIdentity;
+  return { notes, written, seam: buildReceiptSeam(owner, undefined, deps) };
 }
+const wire = (rk = RK, noteId = NOTE_ID, code: 'delivered' | 'read' | 'couldnt_verify' = 'delivered') => buildReceiptWireV1(rk, noteId, code)!;
 const delivered = (w: { notes: Map<string, NoteRecord> }) => w.notes.get(NOTE_ID)?.delivered === true;
 
-test("A1: a receipt signed with the recipient's card keys → accepted, the note is marked delivered, and that is the ONE write", async () => {
-  const w = await world();
-  const r = await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, NONCE));
-  assert.deepEqual(r, { note_id: NOTE_ID, thread_id: 'thr_1', from_fingerprint: w.rFp });
+test('A1: a genuine MAC receipt is accepted, the note is marked delivered in ONE write, and the receipt key is gone from the row', async () => {
+  const w = world();
+  const r = await w.seam.accept(wire());
+  assert.deepEqual(r, { note_id: NOTE_ID, thread_id: 'thr_1', from_fingerprint: RECIPIENT_FP }, 'the recipient comes from OUR outbound record, not from the receipt');
+  assert.equal(w.written.length, 1, 'the ONE write');
   assert.equal(delivered(w), true);
-  assert.equal(w.written.length, 1, 'exactly one write');
-  assert.equal(w.written[0].delivered, true);
-  // a redelivered receipt is harmless (idempotent on note_id)
-  assert.ok(await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, NONCE)));
+  assert.equal('receipt_key' in w.written[0], false, 'the key dies at Delivered (it has served its purpose)');
+  assert.equal(w.written[0].body, 'hello', 'nothing else about the note changed');
+});
+
+test('A1b: a REDELIVERED receipt finds no key: dropped silently, no second write, the note stays delivered', async () => {
+  const w = world();
+  await w.seam.accept(wire());
+  assert.equal(await w.seam.accept(wire()), null);
+  assert.equal(w.written.length, 1);
   assert.equal(delivered(w), true);
 });
 
-test("A2: a receipt signed by an ATTACKER's keys but claiming to be the recipient → rejected, not delivered", async () => {
-  const w = await world();
-  assert.equal(await w.seam.accept(receiptFrom(w.M, w.rFp, NOTE_ID, NONCE)), null);
-  assert.equal(delivered(w), false);
-  assert.equal(w.written.length, 0);
+test('A2 done_when 3: a relay-forged receipt (right note_id, random tag) is refused; a tag made with the WRONG key is refused; nothing is written', async () => {
+  const w = world();
+  const forged = { ...wire(), tag: bytesToHex(crypto.getRandomValues(new Uint8Array(32))) };
+  assert.equal(await w.seam.accept(forged), null);
+  assert.equal(await w.seam.accept(wire(receiptKeyToHex(newReceiptKey()))), null, 'an attacker with its own key and the right note_id');
+  assert.equal(w.written.length, 0); assert.equal(delivered(w), false);
 });
 
-test("A2b: a genuine receipt from R, but the card in OUR book under R's fingerprint holds a DIFFERENT contact's keys → rejected", async () => {
-  const w = await world({ card: 'X' });
-  assert.equal(await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, NONCE)), null);
-  assert.equal(delivered(w), false);
+test('A2b: a tag TRANSPLANTED from another note, and a tag whose code was changed, are refused', async () => {
+  const w = world();
+  const otherNote = wire(RK, 'a_different_note');
+  assert.equal(await w.seam.accept({ ...wire(), tag: otherNote.tag }), null, 'tag minted for another note_id');
+  const readTag = wire(RK, NOTE_ID, 'read').tag;
+  assert.equal(await w.seam.accept({ ...wire(), tag: readTag }), null, 'a "read" tag presented as "delivered"');
+  assert.equal(await w.seam.accept(wire(RK, NOTE_ID, 'read')), null, 'a VALID read receipt is not acted on in this build (opt-in, reciprocal: a later slice)');
+  assert.equal(await w.seam.accept(wire(RK, NOTE_ID, 'couldnt_verify')), null, 'and there is no couldn\'t-verify behaviour at all (v7)');
+  assert.equal(w.written.length, 0); assert.equal(delivered(w), false);
 });
 
-test('A3: wrong nonce, unknown note_id, an INBOUND note_id, or an outbound note with no nonce → rejected', async () => {
-  const w = await world();
-  assert.equal(await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, 'a-different-nonce')), null, 'wrong nonce');
-  assert.equal(await w.seam.accept(receiptFrom(w.R, w.rFp, 'note_does_not_exist', NONCE)), null, 'unknown note_id');
-  assert.equal(delivered(w), false);
-
-  const inbound = await world({ note: (r) => outbound(r, { direction: 'inbound' }) });
-  assert.equal(await inbound.seam.accept(receiptFrom(inbound.R, inbound.rFp, NOTE_ID, NONCE)), null, 'inbound note');
-  assert.equal(delivered(inbound), false);
-
-  const noNonce = await world({ note: (r) => { const n = outbound(r); delete n.receipt_nonce; return n; } });
-  assert.equal(await noNonce.seam.accept(receiptFrom(noNonce.R, noNonce.rFp, NOTE_ID, NONCE)), null, 'sender never opted in (no nonce stored)');
-  assert.equal(delivered(noNonce), false);
+test('A3: unknown note_id, an INBOUND note that shares the id, an outbound note with no key, and a malformed stored key are all refused', async () => {
+  assert.equal(await world(null).seam.accept(wire()), null, 'unknown note_id');
+  assert.equal(await world(outbound({ direction: 'inbound' })).seam.accept(wire()), null, 'an inbound note with that id (even one carrying a key)');
+  assert.equal(await world(outbound({ receipt_key: undefined })).seam.accept(wire()), null, 'no stored key (older note)');
+  assert.equal(await world(outbound({ receipt_key: 'zz'.repeat(32) })).seam.accept(wire()), null, 'a malformed stored key');
+  assert.equal(await world(outbound({ to_fingerprints: [] })).seam.accept(wire()), null, 'no recipient on the record');
 });
 
-test("A4: a validly-signed receipt whose from_fingerprint is NOT the note's recipient (wrong deliverer) → rejected", async () => {
-  const w = await world();
-  // R's REAL keys sign it (so the signature itself is valid for R's card), but it claims to be from X, not to_fingerprints[0].
-  assert.equal(await w.seam.accept(receiptFrom(w.R, idOf(w.X).fingerprint, NOTE_ID, NONCE)), null);
-  assert.equal(delivered(w), false);
+test('A4 third-party non-transferability: the verifier needs the sender\'s key and NOTHING else, so a public card + a receipt prove nothing', () => {
+  const t = receiptTag(Uint8Array.from(Buffer.from(RK, 'hex')), NOTE_ID, 'delivered');
+  assert.equal(bytesToHex(t), wire().tag);
+  assert.equal(buildReceiptSeam.length <= 3, true);
 });
 
-test("A4b: a contact X in OUR book signs a receipt with X's own REAL keys and claims to be X, for a note we sent to R → rejected", async () => {
-  // The sharp form of the wrong-deliverer case: this receipt VERIFIES perfectly against X's card. The only thing that stops it is
-  // that the expected deliverer and the card lookup come from OUR note (to_fingerprints[0] = R), never from the receipt's own claim.
-  const w = await world();
-  assert.equal(await w.seam.accept(receiptFrom(w.X, idOf(w.X).fingerprint, NOTE_ID, NONCE)), null);
-  assert.equal(delivered(w), false);
-  assert.equal(w.written.length, 0);
+// ── END TO END with real hybrid sealing: S sends a note, R's client answers with the REAL emitter, S's seam turns it into Delivered ──
+test('E2E: sender stores the key, the recipient\'s real emitter seals a receipt to the sender\'s mailbox, the sender\'s real seam verifies it => Delivered', async () => {
+  const S = await mintHybridRecipient();                        // the SENDER (owner of the seam), holds the ML-KEM secret
+  const a = await mintHeadlessAgent({ throwaway: true });        // not used for keys; ensures the minting path is warm
+  void a;
+  const rk = receiptKeyToHex(newReceiptKey());
+  const signed: NoteWireV0 = await signNoteWire(
+    { type: NOTE_WIRE_TYPE, note_id: 'e2e_note', thread_id: 'thr_e2e', from_fingerprint: S.fingerprint, sent_at: new Date().toISOString(), body: 'e2e', participant_kind: 'human', receipt_key: rk },
+    S.publicKeyArmored, S.privateKeyArmored, S.passphrase, S.pqKemPublicKey, S.pqSigPublicKey,
+  );
+  const posts: Array<{ mailbox_id: string; blob: string }> = [];
+  const fetchImpl = (async (_u: string, init?: RequestInit) => { posts.push(JSON.parse(String(init?.body))); return new Response('{"ok":true}', { status: 200 }); }) as unknown as typeof fetch;
+  assert.equal(await emitDeliveredReceipt(signed, { fetchImpl }), 'sent');
+  assert.equal(posts[0].mailbox_id, deriveMailboxId(S.fingerprint));
+  const notes = new Map<string, NoteRecord>([['e2e_note', outbound({ note_id: 'e2e_note', thread_id: 'thr_e2e', receipt_key: rk })]]);
+  const deps: ReceiptSeamDeps = {
+    getNote: (async (id: string) => notes.get(id) ?? null) as ReceiptSeamDeps['getNote'],
+    putNote: (async (r: NoteRecord) => { notes.set(r.note_id, r); }) as ReceiptSeamDeps['putNote'],
+  };
+  const owner = { fingerprint: S.fingerprint, publicKeyArmored: S.publicKeyArmored, privateKeyArmored: S.privateKeyArmored, passphrase: S.passphrase } as OwnerIdentity;
+  const seam = buildReceiptSeam(owner, S.hybrid, deps);
+  const opened = await seam.verify(posts[0].blob);
+  assert.ok(opened && opened.type === RECEIPT_V1_WIRE_TYPE && opened.note_id === 'e2e_note');
+  const confirmed = await seam.accept(opened!);
+  assert.equal(confirmed?.note_id, 'e2e_note');
+  assert.equal(notes.get('e2e_note')?.delivered, true);
+  assert.equal('receipt_key' in notes.get('e2e_note')!, false);
 });
 
-test('A5: the recipient has been removed from our book → no card to verify against → rejected (floor holds)', async () => {
-  const w = await world({ card: 'none' });
-  assert.equal(await w.seam.accept(receiptFrom(w.R, w.rFp, NOTE_ID, NONCE)), null);
-  assert.equal(delivered(w), false);
+test('NEG done_when (C8a): a validly IDENTITY-SIGNED v0 receipt sealed to the sender does NOT light Delivered: it does not even open as a receipt', async () => {
+  const S = await mintHybridRecipient();
+  const v0 = { type: 'svrnty-receipt-v0', note_id: NOTE_ID, nonce: 'legacy-nonce', from_fingerprint: RECIPIENT_FP, sig: 'aa'.repeat(80) };
+  const blob = await sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(v0)), S.publicKeyArmored, S.pqKemPublicKey);
+  const w = world();
+  const seam = buildReceiptSeam({ fingerprint: S.fingerprint, publicKeyArmored: S.publicKeyArmored, privateKeyArmored: S.privateKeyArmored, passphrase: S.passphrase } as OwnerIdentity, S.hybrid, { getNote: async (id: string) => w.notes.get(id) ?? null, putNote: async (r: NoteRecord) => { w.written.push(r); w.notes.set(r.note_id, r); } } as ReceiptSeamDeps);
+  assert.equal(await seam.verify(blob), null, 'the v0 shape is not a receipt any more');
+  assert.equal(w.written.length, 0); assert.equal(delivered(w), false);
+  assert.equal(await world().seam.verify('anything'), null, 'and with no ML-KEM secret nothing opens at all');
 });
 
-test('A6: a classical (no-PQ) contact, or a card with malformed PQ keys → rejected (no signing key to verify against)', async () => {
-  const classical = await world({ card: 'classical' });
-  assert.equal(await classical.seam.accept(receiptFrom(classical.R, classical.rFp, NOTE_ID, NONCE)), null, 'classical contact');
-  assert.equal(delivered(classical), false);
-  const garbage = await world({ card: 'garbage' });
-  assert.equal(await garbage.seam.accept(receiptFrom(garbage.R, garbage.rFp, NOTE_ID, NONCE)), null, 'malformed card keys');
-  assert.equal(delivered(garbage), false);
+// ── structure (contract v7 / C8a): the v0 verify path is GONE, `delivered: true` has exactly one writer, no failure state exists ──
+function nonTestSource(): Array<{ rel: string; text: string }> {
+  const out: Array<{ rel: string; text: string }> = [];
+  const walk = (dir: string) => {
+    for (const n of readdirSync(dir)) {
+      if (n === 'node_modules' || n === '.next' || n.startsWith('.')) continue;
+      const p = join(dir, n);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx|mts|js|mjs)$/.test(n) && !/\.test\.(ts|tsx)$/.test(n)) out.push({ rel: relative(process.cwd(), p), text: readFileSync(p, 'utf8') });
+    }
+  };
+  for (const d of ['src', 'app', 'scripts']) walk(join(process.cwd(), d));
+  return out;
+}
+
+test('structure C8a: no non-test source names the v0 receipt API (verifyReceiptWire, ReceiptWireV0, RECEIPT_WIRE_TYPE, DOMAIN_RECEIPT, buildReceiptWire, delivery-receipt, receiptOpenpgpDecryptor, sealReceiptTo)', () => {
+  const re = /\b(verifyReceiptWire|ReceiptWireV0|RECEIPT_WIRE_TYPE|DOMAIN_RECEIPT|buildReceiptWire|tryParseReceiptWire|receiptOpenpgpDecryptor|sealReceiptTo|sealReceiptClassicalFixture|signDeliveryReceipt|verifyDeliveryReceipt)\b|delivery-receipt['"/.]/;
+  const hits = nonTestSource().filter((f) => re.test(f.text)).map((f) => f.rel);
+  assert.deepEqual(hits, [], `v0 receipt API still referenced in: ${hits.join(', ')}`);
 });
 
-test('structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptWire returned true', () => {
-  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'live-book-poll.ts'), 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');                   // code only
-  assert.equal((src.match(/delivered: *true/g) ?? []).length, 1);
-  const iVerify = src.indexOf('verifyReceiptWire(');
-  const iGuard = src.indexOf('if (!ok) return null', iVerify);
-  const iWrite = src.indexOf('delivered: true');
-  assert.ok(iVerify > 0 && iGuard > iVerify && iWrite > iGuard, 'verify → reject-if-not-ok → the single write, in that order');
+test('structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptTag', () => {
+  const lines = nonTestSource().flatMap((f) => f.text.split('\n').map((l, i) => ({ f: f.rel, i, l }))).filter((x) => /delivered:\s*true/.test(x.l) && !/^\s*(\/\/|\*|\/\*)/.test(x.l));
+  assert.equal(lines.length, 1, JSON.stringify(lines));
+  assert.equal(lines[0].f, 'src/lib/sync/live-book-poll.ts');
+  const all = readFileSync(join(process.cwd(), lines[0].f), 'utf8').split('\n');
+  const verifyLine = all.findIndex((l, i) => /verifyReceiptTag\(rk/.test(l) && !/^\s*(\/\/|\*)/.test(l) && i > 0);
+  assert.ok(verifyLine >= 0 && verifyLine < lines[0].i, 'the tag check is on an earlier line than the one write');
+});
+
+test('structure v7: the sender status enum has NO failure / couldn\'t-verify state, and no copy infers failure from a missing receipt', () => {
+  const status = readFileSync(join(process.cwd(), 'src/components/notes/notes-status.ts'), 'utf8');
+  const union = status.match(/export type NoteBubbleStatus = ([^;]+);/)![1];
+  assert.deepEqual([...union.matchAll(/'([^']+)'/g)].map((m) => m[1]).sort(), ['delivered', 'inbound', 'not-sent', 'sent-unconfirmed']);
+  assert.doesNotMatch(union, /verif|fail|invalid|could|error|unverified/i);
+  const copy = readFileSync(join(process.cwd(), 'src/components/notes/notes-copy.ts'), 'utf8');
+  assert.doesNotMatch(copy, /couldn['’]?t verify|could not verify|failed to verify/i);
 });

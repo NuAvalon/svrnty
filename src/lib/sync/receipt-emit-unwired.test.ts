@@ -1,9 +1,10 @@
 /**
- * No delivery-receipt EMITTER ships (Archie #1823 option (a), A5-d / S62 v4 C8).
+ * No IDENTITY-SIGNED delivery-receipt emitter ships (Archie #1823 option (a), A5-d / S62 v4 C8). S62 slice 3 adds exactly one emitter, the
+ * designated-verifier MAC receipt in receipt-emit.ts, and this file pins that it is the only one (below).
  *
  * The S06 v1 receipt is identity-signed (ed25519 + ML-DSA-87), which makes it a transferable proof that the
  * recipient got a note. So no recipient path may build or seal one: a poll that persists a note deposits ZERO
- * receipts. The sender-side verify (buildReceiptSeam / verifyReceiptWire) stays, and "Delivered" lights up once
+ * receipts. The sender-side verify (buildReceiptSeam / verifyReceiptTag, S62 slice 4) stays, and "Delivered" lights up once
  * S62's designated-verifier MAC receipt lands.
  *
  * Wiring check by source, because the poll's deps (buildConsumeDeps) need an unlocked browser identity that no
@@ -37,7 +38,7 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
-describe('delivery receipts: no v1 emitter ships', () => {
+describe('delivery receipts: no identity-signed emitter; only the MAC emitter ships', () => {
   it('no non-test module uses buildReceiptWire or sealReceiptTo outside their definers', () => {
     const offenders: string[] = [];
     for (const dir of SCAN) {
@@ -50,16 +51,30 @@ describe('delivery receipts: no v1 emitter ships', () => {
     assert.deepEqual(offenders, [], `receipt emitter wiring found in: ${offenders.join(', ')}`);
   });
 
-  it('the live-book poll hands the note seam no receipt sender', () => {
+  it('the live-book poll hands the note seam EXACTLY the MAC emitter (emitDeliveredReceipt), the one place a receipt is sent from', () => {
     const src = code(readFileSync(join(ROOT, 'src/lib/sync/live-book-poll.ts'), 'utf8'));
-    const calls = src.match(/(?<!function )\bbuildNoteSeam\([^)]*\)/g) ?? []; // call sites, not the definition
-    assert.ok(calls.length >= 1, 'expected a buildNoteSeam call in live-book-poll.ts');
-    for (const call of calls) assert.doesNotMatch(call, /sendReceipt/, `note seam built with a receipt sender: ${call}`);
+    const at = src.indexOf('note: buildNoteSeam(owner, undefined, hybrid');
+    assert.ok(at > 0, 'expected the buildConsumeDeps note seam');
+    const region = src.slice(at, at + 260);
+    assert.match(region, /emitDeliveredReceipt\(wire/, 'the note seam must be given the MAC receipt emitter');
+    assert.doesNotMatch(region, /buildReceiptWire|sealReceiptTo/, 'and never an identity-signed or classical sender');
+  });
+
+  it('only receipt-emit.ts sends a receipt: no other non-test module names sealReceiptV1To or buildReceiptWireV1 (one door, one audit point)', () => {
+    const allowed = new Set(['src/lib/messaging/seal.ts', 'src/lib/messaging/receipt-wire-v1.ts', 'src/lib/messaging/receipt-emit.ts']);
+    const offenders: string[] = [];
+    for (const dir of SCAN) {
+      for (const file of sourceFiles(join(ROOT, dir))) {
+        if (allowed.has(file)) continue;
+        if (/\b(sealReceiptV1To|buildReceiptWireV1)\b/.test(code(readFileSync(join(ROOT, file), 'utf8')))) offenders.push(file);
+      }
+    }
+    assert.deepEqual(offenders, [], `receipt sending found outside receipt-emit.ts: ${offenders.join(', ')}`);
   });
 
   it('the sender-side verify is still wired (Delivered can light up once a sound receipt exists)', () => {
     const src = readFileSync(join(ROOT, 'src/lib/sync/live-book-poll.ts'), 'utf8');
-    assert.match(src, /verifyReceiptWire/);
+    assert.match(src, /verifyReceiptTag/);
     assert.match(src, /receipt: buildReceiptSeam\(/);
   });
 });

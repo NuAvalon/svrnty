@@ -125,7 +125,7 @@ test('R4 compat: an openRatchet that returns a plain string (already committed, 
   const rec = await acceptInboundNote({
     wire: s.wire, isAdmitted: async () => true,
     openRatchet: async () => 'plain string result',
-    io: { putNote: async (n) => { s.notes.set(n.note_id, n); }, putThread: async (t) => { s.threads.set(t.thread_id, t); }, listThreads: async () => [] },
+    io: { putNote: async (n) => { s.notes.set(n.note_id, n); }, putThread: async (t) => { s.threads.set(t.thread_id, t); }, listThreads: async () => [], getNote: async (id) => s.notes.get(id) ?? null },
   });
   assert.equal(rec?.body, 'plain string result');
 });

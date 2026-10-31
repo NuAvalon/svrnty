@@ -24,9 +24,12 @@ import {
 } from './consume-mailbox';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
-import { RECEIPT_WIRE_TYPE, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
-import { noteOpenpgpDecryptor, sealReceiptTo, receiptOpenpgpDecryptor } from '@/lib/messaging/seal';
-import { sealNoteClassicalFixture } from '@/lib/messaging/seal-classical-fixture';
+import { RECEIPT_V1_WIRE_TYPE, parseReceiptWireV1, buildReceiptWireV1, type ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
+import { parseNoteWire, sealNoteTo, sealReceiptV1To } from '@/lib/messaging/seal';
+import { makeHybridOpener } from './hybrid-dual-read';
+import { mintHybridRecipient } from './hybrid-test-fixture';
+import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
+import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 
 // The owner (Alice, the ORIGINAL SENDER polling for receipts) needs REAL keys — consumeInboundContactUpdates
 // signs the poll/ack requests with them.
@@ -58,8 +61,9 @@ function recordingFetch(envelopes: Array<{ envelope_id: string; blob: string }>,
   }) as unknown as typeof fetch;
 }
 
-function fakeReceiptWire(from = 'BOBFP'): ReceiptWireV0 {
-  return { type: RECEIPT_WIRE_TYPE, note_id: 'n1', nonce: 'deadbeef', from_fingerprint: from, sig: 'aa'.repeat(80) };
+// A v1 receipt names NO sender and carries no signature: {type, note_id, code, tag}. The confirmed note's recipient comes from OUR outbound record.
+function fakeReceiptWire(): ReceiptWireV1 {
+  return { type: RECEIPT_V1_WIRE_TYPE, note_id: 'n1', code: 'delivered', tag: 'aa'.repeat(32) };
 }
 
 function fakeNoteWire(from = 'BOBFP'): NoteWireV0 {
@@ -94,7 +98,7 @@ test('routes a delivery receipt via the receipt seam (verify-first) — delivere
 
   const receipt: ReceiptResponseSeam = {
     verify: async (blob) => (blob === 'RECEIPT_BLOB' ? fakeReceiptWire() : null),
-    accept: async (w) => { confirmedNotes.push(w.note_id); return { note_id: w.note_id, thread_id: 't1', from_fingerprint: w.from_fingerprint }; },
+    accept: async (w) => { confirmedNotes.push(w.note_id); return { note_id: w.note_id, thread_id: 't1', from_fingerprint: 'BOBFP' }; },
   };
 
   const summary = await consumeInboundContactUpdates(baseDeps({
@@ -119,8 +123,8 @@ test('a dropped receipt (accept → null) is acked terminally — floor holds, N
   const emitted: ReceiptLiveEvent[] = [];
   const ackLog: string[][] = [];
   const receipt: ReceiptResponseSeam = {
-    verify: async () => fakeReceiptWire('FORGERFP'),
-    accept: async () => null, // no matching note / verifyReceiptWire false — silent I-1 (floor 'Sent · unconfirmed.' holds)
+    verify: async () => fakeReceiptWire(),
+    accept: async () => null, // no matching note / verifyReceiptTag false — silent I-1 (floor 'Sent · unconfirmed.' holds)
   };
 
   const summary = await consumeInboundContactUpdates(baseDeps({
@@ -205,8 +209,8 @@ test('no-cross-swallow: note→note, receipt→receipt, contact-update→contact
     accept: async (w) => { noteFroms.push(w.from_fingerprint); return { note_id: w.note_id, thread_id: w.thread_id, from_fingerprint: w.from_fingerprint }; },
   };
   const receipt: ReceiptResponseSeam = {
-    verify: async (blob) => (blob === 'RECEIPT' ? fakeReceiptWire('BOBFP') : null),
-    accept: async (w) => { receiptNotes.push(w.note_id); return { note_id: w.note_id, thread_id: 't1', from_fingerprint: w.from_fingerprint }; },
+    verify: async (blob) => (blob === 'RECEIPT' ? fakeReceiptWire() : null),
+    accept: async (w) => { receiptNotes.push(w.note_id); return { note_id: w.note_id, thread_id: 't1', from_fingerprint: 'BOBFP' }; },
   };
 
   const summary = await consumeInboundContactUpdates(baseDeps({
@@ -229,36 +233,21 @@ test('no-cross-swallow: note→note, receipt→receipt, contact-update→contact
   assert.equal(summary.acked, 3, 'all three consumed + acked — no cross-swallow, no loss');
 });
 
-// ── REAL-CRYPTO DISCRIMINATOR: the seal layer never cross-swallows a note vs a receipt ──
-// A receipt is sealed with the SAME openpgp envelope as a note, so at the relay they are
-// byte-indistinguishable; the ONLY discriminator is the inner `type`, checked by each decryptor.
-test('real crypto: receipt/note decryptors round-trip their own type and reject the other (no cross-swallow)', async () => {
-  const receipt = fakeReceiptWire(OWNER.fingerprint);
-  const note = fakeNoteWire(OWNER.fingerprint);
-  const receiptBlob = await sealReceiptTo(receipt, OWNER.publicKeyArmored);
-  const noteBlob = await sealNoteClassicalFixture(note, OWNER.publicKeyArmored);
-
-  const decReceipt = receiptOpenpgpDecryptor(OWNER.privateKeyArmored, OWNER.passphrase);
-  const decNote = noteOpenpgpDecryptor(OWNER.privateKeyArmored, OWNER.passphrase);
-
-  // Each decryptor opens its OWN type…
-  const asReceipt = await decReceipt(receiptBlob);
-  assert.ok(asReceipt, 'a real sealed receipt decrypts to a ReceiptWireV0 via the receipt decryptor');
-  assert.equal(asReceipt?.type, RECEIPT_WIRE_TYPE);
-  assert.equal(asReceipt?.note_id, 'n1');
-  assert.equal(asReceipt?.nonce, 'deadbeef');
-
-  const asNote = await decNote(noteBlob);
-  assert.equal(asNote?.type, NOTE_WIRE_TYPE);
-
-  // …and returns null for the OTHER type (the cross-swallow guard — the 5-way routing depends on it).
-  assert.equal(await decReceipt(noteBlob), null, 'the receipt decryptor returns null for a note blob → falls through, never eaten as a receipt');
-  assert.equal(await decNote(receiptBlob), null, 'the note decryptor returns null for a receipt blob → falls through, never eaten as a note');
-
-  // sealReceiptTo refuses a non-receipt wire (domain guard, mirrors sealNoteTo).
-  await assert.rejects(
-    () => sealReceiptTo(note as unknown as ReceiptWireV0, OWNER.publicKeyArmored),
-    /refusing non-receipt wire type/,
-    'sealReceiptTo refuses a non-receipt wire type',
-  );
+// ── REAL-CRYPTO DISCRIMINATOR: the hybrid open layer never cross-swallows a note vs a receipt ──
+// Both are sealed with the same hybrid envelope; the ONLY discriminator is the inner `type`, checked by each parser after opening.
+test('real crypto: the receipt and note openers round-trip their own type and reject the other (no cross-swallow)', async () => {
+  const owner = await mintHybridRecipient();
+  const rk = receiptKeyToHex(newReceiptKey());
+  const receipt = buildReceiptWireV1(rk, 'n1', 'delivered')!;
+  const note = fakeNoteWire(owner.fingerprint);
+  const receiptBlob = await sealReceiptV1To(receipt, owner.publicKeyArmored, owner.pqKemPublicKey);
+  const noteBlob = await sealNoteTo(note, owner.publicKeyArmored, owner.pqKemPublicKey);
+  const open = (blob: string) => makeHybridOpener((pkg) => openMailboxEnvelope(pkg, owner.hybrid.secrets, owner.hybrid.myFp), (t: string) => ({ asReceipt: parseReceiptWireV1(t), asNote: parseNoteWire(t) }))(blob);
+  const r = await open(receiptBlob);
+  assert.deepEqual(r?.asReceipt, receipt, 'a real sealed receipt opens to a v1 receipt');
+  assert.equal(r?.asNote, null, 'and the note parser refuses it → never eaten as a note');
+  const n = await open(noteBlob);
+  assert.equal(n?.asNote?.type, NOTE_WIRE_TYPE);
+  assert.equal(n?.asReceipt, null, 'the receipt parser refuses a note → never eaten as a receipt');
+  await assert.rejects(() => sealReceiptV1To({ ...receipt, type: 'svrnty-note-v0' } as never, owner.publicKeyArmored, owner.pqKemPublicKey), /refusing non-receipt wire type/);
 });
