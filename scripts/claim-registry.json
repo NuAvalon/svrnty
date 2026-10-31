@@ -48,7 +48,7 @@
      "unbreakable encryption"
     ],
     "ok": [
-     "post-quantum (hybrid) encryption",
+     "a post-quantum (ML-KEM) encryption key",
      "quantum-resistant signing"
     ]
    },
@@ -349,7 +349,7 @@
     "\\bpq[-\\s]?protected\\b",
     "ml-kem[^.\\n]{0,20}(encrypts|encrypting)",
     "(are|is|gets?) encrypted[^.\\n]{0,20}(with |using |via )?(ml-kem|post-quantum)",
-    "post-quantum(?:[-\\s]+\\w+){0,4}[-\\s]+(encrypts|encrypting)"
+    "post-quantum(?:[-\\s,()/:]+\\w+){0,4}[-\\s,()/:]+(encrypts|encrypting)"
    ],
    "flips_with": "S15 (+ S14), Flint live co-verify; Nov-5 gate (Peter #179080)",
    "source": [

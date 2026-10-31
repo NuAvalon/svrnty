@@ -123,7 +123,7 @@ npm install
 npm run dev
 ```
 
-Needs Node 18.18+ (or 20+). Open `localhost:3000`, create your identity, share it with someone, exchange signed updates, and build trust over time. Your keys are generated locally and stored encrypted in your browser (IndexedDB). No server can read your data. No terms of service.
+Needs Node 18.18+ (or 20+). Open `localhost:3000`, create your identity, share it with someone, exchange signed updates, and build trust over time. Your keys are generated locally and stored encrypted in your browser (IndexedDB). No server can read your messages. No terms of service.
 
 To run your own relay for yourself or others:
 
