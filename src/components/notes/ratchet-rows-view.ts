@@ -71,7 +71,8 @@ export function ratchetViewFor(rows: ReadonlyArray<DeadLetterRow>, peerFp: strin
   const out: RatchetRowView[] = [];
   const seen = new Set<string>();
   for (const r of mine) {
-    const input = inputFor(r, outOfStep);
+    // the 'out of step -> your next message should bring them back' wording promises a recovery a headless peer cannot make (F1): an agent contact never gets it
+    const input = inputFor(r, outOfStep && !agentContact);
     if (!input) continue;
     let named = namedRow(contactName, input);
     // copy v0.12: where the button is not offered, the two desync hints must not point at it

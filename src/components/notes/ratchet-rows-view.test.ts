@@ -147,3 +147,12 @@ test('A6 static: the component hands the flag to the view-model and NotesInbox c
   assert.match(readFileSync(new URL('./NotesInbox.tsx', import.meta.url), 'utf8'), /agentContact=\{peerIsAgent\(threads, notes, selectedFp\)\}/);
   assert.match(readFileSync(new URL('./ratchet-rows-view.ts', import.meta.url), 'utf8'), /NOT a security check/);
 });
+
+test('A7 (Hypatia #2486) the reset flag never gives an AGENT contact the "out of step ... should bring them back" line: it reads the plain verdict line; a human with the flag still gets it', () => {
+  const r = () => [row({ reason: 'ratchet-unopenable', cause: 'first-frame-rejected' })];
+  const agent = ratchetViewFor(r(), PEER, 'Sam', true, true).rows[0];
+  const plain = namedRow('Sam', { kind: 'verdict', firstFrameRejected: true, outOfStep: false });
+  assert.deepEqual([agent.line, agent.hint], [plain.line, plain.hint]);
+  assert.doesNotMatch(agent.line, /out of step|bring them back/i);
+  assert.match(ratchetViewFor(r(), PEER, 'Sam', true, false).rows[0].line, /out of step/, 'the human direction is unchanged');
+});
