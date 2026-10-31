@@ -18,7 +18,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, countedOpen, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -187,9 +187,21 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
   };
 }
 
+// #712: consume stops between envelopes after this long, commits + acks what it consumed, and leaves the rest for the next pass, so a
+// deep backlog drains across passes instead of dying at the watchdog (the ward's POLL_TIMEOUT_S, 60-600 s; Weft cells run 55 s).
+// Default 40 s fits under the tightest of those with room for start-up. SVRNTY_CONSUME_BUDGET_MS overrides: digits only, 1 s-600 s.
+const CONSUME_BUDGET_MS = (() => {
+  const v = process.env.SVRNTY_CONSUME_BUDGET_MS ?? '';
+  return /^[0-9]{1,6}$/.test(v) ? Math.min(600_000, Math.max(1_000, Number(v))) : 40_000;
+})();
+
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
   // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
-  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY, deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}` });
+  const deps = await buildHeadlessConsumeDeps(owner, store, {
+    relayBase: RELAY,
+    budgetMs: CONSUME_BUDGET_MS,
+    deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
+  });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }
@@ -235,7 +247,7 @@ function trPacket(body: string): RatchetPacket | null {
   } catch { return null; }
 }
 
-async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string): Promise<string | null> {
+async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string, onLocked?: () => void): Promise<string | null> {
   const packet = trPacket(body);
   const peer = await ratchetPeerOf(contact);
   if (!packet || !peer) return null;
@@ -243,6 +255,7 @@ async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body:
   // load → advance → save is one locked unit: a send-tr interleaving here would have its chain advance
   // overwritten by this stale copy, and the next send would re-use that chain index (key reuse).
   return withWriterLockAsync(DIR, async () => {
+    onLocked?.();                                        // poll-json's attempt charge: only once the lock is HELD (Flint #2366)
     const sessions = loadTr();
     const snap = sessions[contact.fingerprint];
     if (snap) {
@@ -740,13 +753,12 @@ async function main() {
         }
         continue;
       }
-      const pt = await trOpen(artifact, c, note.body);
+      // counted + persisted once trOpen HOLDS the lock (Flint #2361/#2366): a kill inside receive counts, lock contention doesn't
+      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), (charge) => trOpen(artifact, c, note.body, charge));
       if (pt === null) {
-        attempts[key] = (attempts[key] ?? 0) + 1;
         decryptFailed++;
         continue;                                        // failed/consumed — counted, never stored
       }
-      delete attempts[key];
       appendFileSync(journalPath, JSON.stringify({
         note_id: note.note_id,
         peer_fp: note.from_fingerprint,
@@ -790,7 +802,9 @@ async function main() {
       // #720 counters (counts only; the ward allowlist in devin_quarantine names exactly these keys). `lost` = per-reason consumed losses
       // (headless has no dead-letter sink, so deadLettered/unrecorded/released stay 0 here); opened_* = which leg of the dual-read opened.
       held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
-      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical }));
+      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical,
+      // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
+      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0 }));
     return;
   }
 
