@@ -69,6 +69,13 @@ test('NEG locked through the REAL deps builder (no identity record) → locked',
   assert.equal(await pollLiveBookOnce(null), 'locked');
 });
 
+test('NEG 200 whose body is not a list ({} / null / a string / a number) → never "Caught up." (Archie #2401)', async () => {
+  for (const body of [{}, null, 'x', 7, { envelopes: [] }]) {
+    assert.equal(await pollLiveBookOnce({}, { buildDeps: depsWith(relay(200, body)) }), 'rejected', JSON.stringify(body));
+    assert.equal(await refreshOver(depsWith(relay(200, body))), REFRESH_NOTE.failed, JSON.stringify(body));
+  }
+});
+
 test('control: 200 [] (answered, nothing waiting) → "Caught up."', async () => {
   assert.equal(await pollLiveBookOnce({}, { buildDeps: depsWith(relay(200, [])) }), 'ok');
   assert.equal(await refreshOver(depsWith(relay(200, []))), REFRESH_NOTE.ok);

@@ -35,6 +35,8 @@ import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events';
 import { getHeldReport, subscribeHeld, type HeldReport } from '@/lib/notes/held-events';
 import { formatRelayDeadline, heldNotices } from './held-notice';
+import { getPollRefusedReport, subscribePollRefused, type PollRefusedReport } from '@/lib/notes/poll-status-events';
+import { pollRefusedNotice } from './poll-refused-notice';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY, notSentMessage, ratchetOffMessage } from './notes-copy';
 import {
@@ -142,6 +144,13 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
     () => heldNotices([{ reason: 'missing_key', count: heldReport.count, kept: 'relay', expiresAt: heldReport.expiresAt }], Date.now(), (ms) => formatRelayDeadline(ms))[0] ?? null,
     [heldReport],
   );
+  // copy v1 §B: the shared poll has been refused by the relay 3 times in a row (in memory; cleared on lock and on the first answered poll).
+  const [pollRefused, setPollRefused] = useState<PollRefusedReport>(getPollRefusedReport);
+  useEffect(() => {
+    setPollRefused(getPollRefusedReport());
+    return subscribePollRefused(setPollRefused);
+  }, []);
+  const refusedNotice = useMemo(() => pollRefusedNotice(pollRefused, (ms) => formatRelayDeadline(ms)), [pollRefused]);
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
   const [mobilePane, setMobilePane] = useState<'people' | 'thread'>('people');
@@ -483,6 +492,21 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                   {heldNotice.hint}
                 </p>
               ) : null}
+            </div>
+          ) : null}
+
+          {refusedNotice ? (
+            <div
+              role="status"
+              data-testid="notes-poll-refused-notice"
+              style={{ border: `1px solid ${E.muted}`, borderRadius: 10, padding: '10px 12px', fontSize: 13, lineHeight: 1.45, color: E.text }}
+            >
+              <p data-testid="notes-poll-refused-text" style={{ margin: 0 }}>
+                {refusedNotice.text}
+              </p>
+              <p data-testid="notes-poll-refused-hint" style={{ margin: '6px 0 0', color: E.muted }}>
+                {refusedNotice.hint}
+              </p>
             </div>
           ) : null}
 

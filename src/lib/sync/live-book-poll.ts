@@ -33,6 +33,7 @@ import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import { clearHeldReport, reportHeld } from '@/lib/notes/held-events';
+import { clearPollStatus, reportPollStatus } from '@/lib/notes/poll-status-events';
 import {
   loadKey,
   loadPQKeys,
@@ -398,6 +399,7 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // #720: the "kept because this device can't open it yet" report belongs to ONE identity. Drop it on session lock AND on identity switch
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
+onSessionLock(clearPollStatus); // copy v1 §B: identity A's refused-poll state never shows under identity B
 onSessionLock(() => receiptOutbox.clear()); // queued receipts and the dedupe set belong to the session that was locked
 
 /**
@@ -566,9 +568,14 @@ export async function pollLiveBookOnce(
   opts: { fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
 ): Promise<PollOnceStatus> {
   const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
-  if (!deps) return 'locked';
+  if (!deps) {
+    reportPollStatus('locked');
+    return 'locked';
+  }
   try {
-    return pollStatusOf(await consumeInboundContactUpdates(deps));
+    const status = pollStatusOf(await consumeInboundContactUpdates(deps));
+    reportPollStatus(status);
+    return status;
   } finally {
     deps.owner.cycle?.drop();
   }
@@ -576,7 +583,7 @@ export async function pollLiveBookOnce(
 
 export function startLiveBookPolling(
   identity: unknown,
-  opts: { intervalMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { intervalMs?: number; fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
 ): LiveBookPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
@@ -588,10 +595,13 @@ export function startLiveBookPolling(
     if (stopped || inFlight) return; // never overlap polls
     inFlight = true;
     try {
-      const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-      if (!deps) return; // locked / no identity — stay static, retry next tick
+      const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+      if (!deps) {
+        reportPollStatus('locked');
+        return; // locked / no identity — stay static, retry next tick
+      }
       try {
-        await consumeInboundContactUpdates(deps);
+        reportPollStatus(pollStatusOf(await consumeInboundContactUpdates(deps))); // copy v1 §B: 3 refused in a row → Chat notice
       } finally {
         deps.owner.cycle?.drop();
       }
