@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, quotedName, gateArrivalLine, gateListLine, TR_BODY } from './devin-comm-inbound';
+import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, quotedName, gateArrivalLine, gateListLine, countedOpen, TR_BODY } from './devin-comm-inbound';
 
 test('triple-ratchet packet → tr (journal decrypted plaintext only)', () => {
   assert.equal(classifyInbound(JSON.stringify({ type: TR_BODY, packet: { h: 'x' } })), 'tr');
@@ -204,4 +204,48 @@ test('both Gate prints in devin-comm.ts go through the escaping formatters', () 
   const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
   assert.ok(src.includes('console.log(gateArrivalLine(a));') && src.includes('console.log(gateListLine(a));'));
   assert.ok(!/console\.log\([^)]*a\.displayName/.test(src), 'no raw displayName in any console.log');
+});
+
+
+// --- Flint #2361: count the attempt BEFORE the expensive open, so a pass the watchdog kills mid-open still counts ---
+const MAX = 5;
+const never = () => new Promise<string | null>(() => {});                 // a trOpen that never returns (watchdog kill)
+function killedPass(disk: { json: string }, key: string): void {
+  const attempts = JSON.parse(disk.json) as Record<string, number>;
+  if ((attempts[key] ?? 0) >= MAX) return;                               // the caller's tombstone gate (devin-comm.ts)
+  void countedOpen(attempts, key, (a) => { disk.json = JSON.stringify(a); }, never);   // killed: never awaited to the end
+}
+
+test('countedOpen: a pass killed mid-open has ALREADY persisted the attempt (count 1)', () => {
+  const disk = { json: '{}' };
+  killedPass(disk, 'fp:n1');
+  assert.deepEqual(JSON.parse(disk.json), { 'fp:n1': 1 });
+});
+
+test('countedOpen: 5 killed passes reach MAX_ATTEMPTS, so the 6th pass tombstones it (visible dead-notice path)', () => {
+  const disk = { json: '{}' };
+  for (let i = 0; i < 7; i++) killedPass(disk, 'fp:n1');
+  assert.equal(JSON.parse(disk.json)['fp:n1'], MAX);                     // stops counting at the gate, never past it
+});
+
+test('countedOpen: control, an open that succeeds deletes the count; one that fails keeps it', async () => {
+  const attempts: Record<string, number> = { 'fp:n1': 1 };
+  const persisted: string[] = [];
+  const pt = await countedOpen(attempts, 'fp:n1', (a) => persisted.push(JSON.stringify(a)), async () => 'hello');
+  assert.equal(pt, 'hello');
+  assert.deepEqual(persisted, ['{"fp:n1":2}']);                          // counted + persisted BEFORE the open ran
+  assert.deepEqual(attempts, {});                                        // success: forgotten (the pass-end write saves this)
+  const miss = await countedOpen(attempts, 'fp:n2', () => {}, async () => null);
+  assert.equal(miss, null);
+  assert.deepEqual(attempts, { 'fp:n2': 1 });
+});
+
+test('static guard: poll-json opens tr packets ONLY through countedOpen', () => {
+  const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
+  const start = src.indexOf("const attemptsPath = `${DIR}/decrypt-attempts.json`;");
+  const end = src.indexOf('writeFileAtomic(attemptsPath, JSON.stringify(attempts));', start);
+  assert.ok(start > 0 && end > start, 'poll-json attempt block not found');
+  const block = src.slice(start, end);
+  assert.match(block, /await countedOpen\(attempts, key, \(a\) => writeFileAtomic\(attemptsPath, JSON\.stringify\(a\)\), \(\) => trOpen\(/);
+  assert.doesNotMatch(block.replace(/\(\) => trOpen\(/g, ''), /trOpen\(/, 'a direct trOpen in poll-json skips the count');
 });

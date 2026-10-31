@@ -140,3 +140,18 @@ export function deadNotesNotice(peerFp: string, items: { note_id: string; sent_a
   const times = items.map((i) => tok(i.sent_at)).sort();
   return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be decrypted after ${maxAttempts} tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to resend` };
 }
+
+/** One tr-packet open with a crash-safe attempt count (Flint #2361): the attempt is counted and PERSISTED before the
+ *  expensive open, so a pass the watchdog kills mid-open still counts it. Before this, the count was bumped only after
+ *  open() returned null and saved once at the end of the pass, so a packet that times out (instead of failing) never
+ *  reached MAX_ATTEMPTS: never tombstoned, never dead-noticed, and it starved everything after it on every pass.
+ *  Success forgets the count (the caller's end-of-pass write saves that). Pure apart from the given persist(). */
+export async function countedOpen<T>(attempts: Record<string, number>, key: string,
+    persist: (a: Record<string, number>) => void, open: () => Promise<T | null>): Promise<T | null> {
+  attempts[key] = (attempts[key] ?? 0) + 1;
+  persist(attempts);
+  const pt = await open();
+  if (pt !== null) delete attempts[key];
+  return pt;
+}
+

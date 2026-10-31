@@ -15,7 +15,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, countedOpen, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -593,13 +593,12 @@ async function main() {
         }
         continue;
       }
-      const pt = await trOpen(artifact, c, note.body);
+      // counted + persisted BEFORE the open (Flint #2361): a pass killed mid-open still counts toward the tombstone
+      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), () => trOpen(artifact, c, note.body));
       if (pt === null) {
-        attempts[key] = (attempts[key] ?? 0) + 1;
         decryptFailed++;
         continue;                                        // failed/consumed — counted, never stored
       }
-      delete attempts[key];
       appendFileSync(journalPath, JSON.stringify({
         note_id: note.note_id,
         peer_fp: note.from_fingerprint,
