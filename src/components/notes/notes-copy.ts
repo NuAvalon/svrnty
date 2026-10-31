@@ -42,6 +42,8 @@ export const NOTES_COPY = {
   sendUnconfirmed: "Couldn't confirm it was sent. The relay may already have it.",
   unsavedTextLabel: 'Your message',
   dismiss: 'Dismiss',
+  // #731: opens the contact's conversation from a "couldn't be opened" line, so the user can ask for a resend. PLACEHOLDER pending Hypatia.
+  cantOpenAsk: 'Open conversation',
   // S14: the recipient has no verified PQ KEM key; sends are skipped, never downgraded. Claim-safe wording (no 'quantum-safe').
   notSentNeedsUpgrade:
     'Not sent. Saved on this device. {name} needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.',

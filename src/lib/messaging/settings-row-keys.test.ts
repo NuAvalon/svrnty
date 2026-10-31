@@ -32,7 +32,10 @@ test('K2 a LIST prefix must be exactly an allowed prefix, so a list can never re
   for (const bad of ['', 'dead_', 'dead_letter', 'dead_letter:x', 'notes_', 'notes_encryption_salt', 'n', undefined, null, 7]) {
     assert.equal(isAllowedSettingsPrefix(bad), false, JSON.stringify(bad));
   }
-  assert.deepEqual([...SETTINGS_ROW_PREFIXES], ['dead_letter:'], 'a new prefix is a deliberate edit of this test');
+  assert.deepEqual([...SETTINGS_ROW_PREFIXES], ['dead_letter:', 'notice_seen:'], 'a new prefix is a deliberate edit of this test');
+  assert.equal(isAllowedSettingsPrefix('notice_seen:'), true);
+  assert.equal(isAllowedSettingsRowKey('notice_seen:cant_open_s'), true);
+  assert.equal(isAllowedSettingsRowKey('notice_seen:'), false);
 });
 
 test('K3 static: every encrypted-settings entry point checks the key/prefix BEFORE touching the store', () => {
