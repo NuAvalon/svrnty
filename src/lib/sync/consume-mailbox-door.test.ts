@@ -754,3 +754,16 @@ test('C43 T4: the case-insensitive match holds on BOTH sides: a note whose finge
   const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
   assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
 });
+
+// ── T5 / F5 (behavioural half; the structural half is consume-cells-tripwire.test.ts) ──
+test('C44 T5: a cell-shaped blob (constant size, random pad) on the receive path is never HELD, never raises a held notice, never becomes a note or a receipt, and never gets a ratchet reason', async () => {
+  const bytes = Uint8Array.from({ length: 2048 }, (_, i) => (i * 131 + 17) & 0xff);
+  const cell = Buffer.from(bytes).toString('base64');
+  const w = world([{ envelope_id: 'cell1', blob: cell, expires_at: exp6() }]);
+  const heldReports: number[] = [];
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({}), emitHeld: (n) => heldReports.push(n) }));
+  assert.equal(s.held, 0); assert.equal(s.notes, 0); assert.equal(s.delivered, 0);
+  assert.deepEqual(heldReports.filter((n) => n > 0), [], 'no held notice');
+  assert.equal(recorded(w.events).some((r) => r.reason === 'ratchet-desync' || r.reason === 'ratchet-local' || r.reason === 'session-reset'), false, 'no ratchet reason: it is not an authenticated contact\'s frame');
+  assert.equal(Object.keys(s.lost).some((k) => k.startsWith('ratchet') || k === 'session-reset'), false);
+});
