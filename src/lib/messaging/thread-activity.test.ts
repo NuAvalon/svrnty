@@ -7,6 +7,9 @@ const NOW = Date.parse('2026-10-31T14:30:00.000Z');
 const iso = (ms: number) => new Date(ms).toISOString();
 
 describe('thread last_activity_at (chat-list order)', () => {
+  it('the slack is the 5 minutes R5 (session-adopt-policy FUTURE_SLACK_MS) allows', () => {
+    assert.equal(ACTIVITY_FUTURE_SLACK_MS, 300_000);
+  });
   it('a first note sets the activity to its sent time', () => {
     assert.equal(nextLastActivity(undefined, '2026-10-30T10:00:00.000Z', NOW), '2026-10-30T10:00:00.000Z');
   });
