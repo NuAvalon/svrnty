@@ -51,6 +51,11 @@ export function formatNotSent(peerFingerprint: string, reason: string): string {
   return `NOT SENT to ${hex8(peerFingerprint)}: ${reason}`;
 }
 
+/** A send that did not get a clean answer from any relay but may have been stored by one: never worded "NOT SENT" (a re-send would duplicate). */
+export function formatUnconfirmed(peerFingerprint: string, reason: string): string {
+  return `UNCONFIRMED to ${hex8(peerFingerprint)}: ${reason}`;
+}
+
 function hex8(peerFingerprint: string): string {
   return (peerFingerprint.match(/^[0-9a-fA-F]+/)?.[0] ?? '').slice(0, 8).toLowerCase() || '?';
 }

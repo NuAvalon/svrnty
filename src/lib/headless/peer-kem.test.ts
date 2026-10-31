@@ -374,3 +374,71 @@ test('CLI send: the relay STORES the note then DROPS the connection → UNCONFIR
     assert.doesNotMatch(r.out, /"deposited":\s*true/);
   } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── failover T2 phase 2a (Archie #2633): the REAL CLI against two local relays ─────────────────────────────────────
+async function relayWith(status: number | 'ok'): Promise<{ base: string; deposits: Deposit[]; close: () => Promise<void> }> {
+  const deposits: Deposit[] = [];
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      deposits.push({ url: req.url ?? '', body: Buffer.concat(chunks).toString('utf8') });
+      if (status === 'ok') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } else { res.writeHead(status); res.end('no'); }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  return { base: `http://127.0.0.1:${port}/api/relay`, deposits, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test('CLI send, SVRNTY_RELAYS=T1,T2: T1 answers 429 (at-cap) => the SAME sealed bytes land on T2, exit 0, tier 1 in the result', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const [t1, t2] = [await relayWith(429), await relayWith('ok')];
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello over t2'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: `${t1.base},${t2.base}` });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /"deposited":\s*true/);
+    assert.match(r.out, /"tier":\s*1/);
+    assert.equal(t1.deposits.length, 1);
+    assert.equal(t2.deposits.length, 1);
+    assert.equal(t1.deposits[0].body, t2.deposits[0].body, 'byte-equal: sealed once, never re-sealed');
+  } finally { await t1.close(); await t2.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send, T1 ok: T2 is never contacted; and SVRNTY_RELAY (one relay) still works exactly as before', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const [t1, t2] = [await relayWith('ok'), await relayWith('ok')];
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: `${t1.base},${t2.base}` });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(t1.deposits.length, 1);
+    assert.equal(t2.deposits.length, 0, 'T2 untouched');
+    const r2 = await runCli(['send', idOf(peer).fingerprint, 'again'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: t2.base });
+    assert.equal(r2.code, 0, r2.err);
+    assert.equal(t2.deposits.length, 1, 'the one-relay form targets that relay');
+  } finally { await t1.close(); await t2.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send, T1 503 then T2 429: not deposited, exit non-zero, worded UNCONFIRMED (T1 may hold it), never "NOT SENT"', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const [t1, t2] = [await relayWith(503), await relayWith(429)];
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: `${t1.base},${t2.base}` });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /UNCONFIRMED to [0-9a-f]{8}: /);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+  } finally { await t1.close(); await t2.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI NEG: a malformed relay list fails loud at startup (never silently single-relay)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'x'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: 'http://127.0.0.1:1/api/relay,not a url' });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /relay list: not a URL/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
