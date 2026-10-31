@@ -519,10 +519,11 @@ export async function buildConsumeDeps(
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)
-    emitNote: (e) => emitNoteArrival(e),
+    // kind + to_fingerprint (Athena, notifications spec v1): a listener can tell a NEW inbound note from a receipt, and whose mail it is.
+    emitNote: (e) => emitNoteArrival({ ...e, kind: 'note', to_fingerprint: owner.fingerprint }),
     // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
     // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
-    emitReceipt: (e) => emitNoteArrival(e),
+    emitReceipt: (e) => emitNoteArrival({ ...e, kind: 'receipt', to_fingerprint: owner.fingerprint }),
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
     deadLetter: buildDeadLetterSink(owner),
