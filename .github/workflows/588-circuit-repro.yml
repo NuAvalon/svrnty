@@ -1,0 +1,37 @@
+# DRAFT, NOT RUN (author: apollo, #588 T3). Second-machine check for circuits/588-slotbind:
+# a clean GitHub runner builds the r1cs with a pinned circom binary and must reproduce
+# the pinned r1cs sha256 (pins.json); build.sh fails closed on a mismatch, an unpinned
+# binary, an unconstrained public wire, or a KAT difference.
+# Review area: Athena/Flint (workflow file). No secrets, no write permissions.
+name: 588-circuit-repro
+on:
+  pull_request:
+    paths: ['circuits/588-slotbind/**', '.github/workflows/588-circuit-repro.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        circom: ['2.1.6', '2.2.3']
+    defaults:
+      run:
+        working-directory: circuits/588-slotbind
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci --ignore-scripts
+      - name: fetch circom ${{ matrix.circom }} (sha256 is checked against pins.json by build.sh)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/circom" "https://github.com/iden3/circom/releases/download/v${{ matrix.circom }}/circom-linux-amd64"
+          chmod +x "$RUNNER_TEMP/circom"
+          sha256sum "$RUNNER_TEMP/circom"
+      - name: build + checks
+        run: CIRCOM="$RUNNER_TEMP/circom" ./build.sh
+      - name: print the r1cs sha256 this machine produced
+        run: sha256sum build/slotbind.r1cs
