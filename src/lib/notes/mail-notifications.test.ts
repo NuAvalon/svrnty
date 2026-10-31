@@ -119,7 +119,7 @@ test('M10 prefs: off by default, the name toggle cannot be on while the main one
   assert.deepEqual(loadMailNotifyPrefs(st), DEFAULT_PREFS, 'a torn value fails closed');
 });
 
-test('M11 copy == Hypatia svrnty_notifications_copy_v1 (9e1aef8d), verbatim, and none of her NEG phrases appear', () => {
+test('M11 copy == Hypatia svrnty_notifications_copy_v1 (9e1aef8d) + v1.1 named string (#188943), verbatim, and none of her NEG phrases appear', () => {
   assert.deepEqual(COPY, {
     toggle: 'Notify me about new notes on this device',
     toggleHelper: "Works only while svrnty is open or in a background tab. When svrnty is closed, it can't notify you.",
@@ -129,6 +129,10 @@ test('M11 copy == Hypatia svrnty_notifications_copy_v1 (9e1aef8d), verbatim, and
     nameToggleHelper: 'Names appear on your lock screen, where anyone holding your phone can see them.',
     denied: 'Notifications are blocked for svrnty in your browser settings.',
   });
+  // Hypatia copy v1.1 (#188943): the named variant. Pinned here with the v1 strings so a later edit can't drift it (Flint #188970).
+  assert.equal(NOTIFY_TITLE, 'New note');
+  assert.equal(NOTIFY_BODY_NAMED, 'From {name}');
+  assert.equal(COPY.notification, NOTIFY_TITLE, 'one title in both modes');
   const files = ['./mail-notifications.ts', '../../components/notes/MailNotificationsSettingsPanel.tsx', '../../components/notes/useMailNotifications.ts']
     .map((f) => readFileSync(join(__dirname, f), 'utf8').toLowerCase()).join('\n');
   for (const neg of ['private notification', 'anonymous notification', 'no one can tell', 'encrypted notification', 'instant', 'real-time', 'only you can see']) {
