@@ -5,7 +5,10 @@ import { SecureExportDialog, PrivateKeyExportDialog } from '@/components/SecureI
 import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
-import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts, getContactByFingerprint, updateContact } from '@/lib/identity/client-store';
+import { markAwaitingAck } from '@/lib/trust/method-delivery';
+import type { StoredContact } from '@/lib/contacts/apply-contact-update';
+import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { base64ToUint8 } from '@/lib/crypto/pq';
@@ -1777,6 +1780,20 @@ export function SoverentityFrontend({
       const deposited = result.deposited.length;
       const skipped = result.skipped.length;
       const failed = result.failed.length;
+      // svrnty-addressbook-ack-001: each landed deposit now owes an apply-ack — mark the edge
+      // 'awaiting-ack' + the update sig the ack must bind (fails safe: a marking error never
+      // un-sends the deposit — report send honestly, leave the edge unmarked).
+      if (result.update_sig) {
+        const landed = new Set(result.deposited);
+        const markAt = new Date().toISOString();
+        for (const rfp of req.recipientFingerprints) {
+          if (!landed.has(deriveMailboxId(rfp))) continue;
+          try {
+            const rec = await getContactByFingerprint(fp, rfp);
+            if (rec) await updateContact(rec.id, { metadata: markAwaitingAck(rec as unknown as StoredContact, result.update_sig, markAt) });
+          } catch { /* bookkeeping is best-effort; the send itself already reported honestly */ }
+        }
+      }
       // S14: a 'no-pq-kem' skip says "needs a security upgrade", never "no key" (contactUpdateSendMessage).
       const { message } = contactUpdateSendMessage(result);
       if (deposited === 0) {

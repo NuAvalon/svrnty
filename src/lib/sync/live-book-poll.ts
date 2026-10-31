@@ -58,9 +58,13 @@ import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam, ApplyAckResponseSeam, ApplyAckTarget } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
-import { noteOpenpgpDecryptor, parseNoteWire, receiptOpenpgpDecryptor, parseReceiptWire } from '@/lib/messaging/seal';
+import { noteOpenpgpDecryptor, parseNoteWire, receiptOpenpgpDecryptor, parseReceiptWire, applyAckOpenpgpDecryptor, parseApplyAckWire, sealApplyAckTo } from '@/lib/messaging/seal';
+import { buildApplyAckWire, verifyApplyAckWire } from '@/lib/crypto/apply-ack';
+import { base64ToUint8 } from '@/lib/crypto/pq';
+import { markAcked, pendingAckSig } from '@/lib/trust/method-delivery';
+import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
 import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
@@ -326,6 +330,117 @@ export function buildReceiptSeam(
   };
 }
 
+/**
+ * Store deps for the apply-ack seam — injected so tests can exercise the exact accept body without
+ * IndexedDB (same shape as {@link ReceiptSeamDeps}). Defaults are the real stores.
+ */
+export interface ApplyAckSeamDeps {
+  getContactByFingerprint: typeof getContactByFingerprint;
+  updateContact: typeof updateContact;
+}
+
+/**
+ * Build the APPLY-ACK seam bound to this owner (consume-mailbox ApplyAckResponseSeam) — the AUTHOR
+ * side (svrnty-addressbook-ack-001). When the owner polls their own mailbox and finds an apply-ack
+ * sealed to them, this recovers the outbound update mark on the edge to the claimed applier
+ * (metadata.method_delivery_sig — written by the send path when the deposit landed), checks the
+ * wire's (ack_of, to_fp, from_fingerprint) against it, and verifyApplyAckWire's the applier's
+ * signature — and only then writes 'acked' (the ONE line — inside accept, only on verify-true).
+ * Every other path (unknown applier, no awaiting mark, wrong ack_of, forged/garbled wire, contact
+ * without verifiable keys) returns null → terminal 'apply-ack-no-match', the floor 'awaiting-ack' →
+ * 'undelivered' holds. Anti-panopticon holds both ways: the ack asserted APPLIED on the recipient's
+ * side, and here it only graduates bookkeeping it already owed.
+ * The I/O accept performs: OUR stored contact for the applier (source of truth for the owed sig +
+ * their card keys), and the one metadata write.
+ */
+export function buildApplyAckSeam(
+  owner: OwnerIdentity,
+  hybrid?: HybridSecretsSource,
+  deps: ApplyAckSeamDeps = { getContactByFingerprint, updateContact },
+  legs?: OpenLegCounter, // #720: which leg opened (counts only)
+): ApplyAckResponseSeam {
+  // Single dual-read chokepoint, same discipline as the receipt seam: hybrid-FIRST + classical
+  // FALLBACK (off the N10 unlock cycle). parseApplyAckWire is the type-gate on BOTH legs →
+  // no-cross-swallow is byte-identical.
+  const classicalAck = applyAckOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase, owner.cycle);
+  const verifyAck = hybrid
+    ? dualReadOpener(
+        counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseApplyAckWire), 'hybrid', legs),
+        counted(classicalAck, 'classical', legs),
+      )
+    : counted(classicalAck, 'classical', legs);
+  return {
+    // null for a non-ack (contact.update / joiner / note / receipt) → consumeOne falls through;
+    // parseApplyAckWire is the discriminator (both legs), so this never eats a non-ack.
+    verify: (blob) => verifyAck(blob),
+    accept: async (wire) => {
+      // The edge to the claimed applier — source of truth for the owed update sig AND their card keys.
+      const rec = await deps.getContactByFingerprint(owner.fingerprint, wire.from_fingerprint);
+      if (!rec) return null; // applier not in book → drop
+      const owed = pendingAckSig(rec as unknown as StoredContact);
+      if (!owed) return null; // no awaiting mark for this peer → nothing to graduate (forged/stray ack)
+      const card = rec as {
+        public_key?: string; peer_public_key?: string;
+        pq_kem_public_key?: string; peer_pq_kem_public_key?: string;
+        pq_sig_public_key?: string; peer_pq_sig_public_key?: string;
+      };
+      const armored = String(card.public_key || card.peer_public_key || '');
+      const kemB64 = card.pq_kem_public_key || card.peer_pq_kem_public_key;
+      const sigB64 = card.pq_sig_public_key || card.peer_pq_sig_public_key;
+      if (!armored || !kemB64 || !sigB64) return null; // classical (no-PQ) contact → can't verify → fail-safe drop
+      let ok = false;
+      try {
+        ok = await verifyApplyAckWire(
+          wire,
+          { ackOf: owed, toFp: owner.fingerprint, fromFingerprint: rec.fingerprint },
+          armored,
+          base64ToUint8(sigB64),
+        );
+      } catch {
+        return null; // malformed card keys / armored → can't verify → fail-safe drop
+      }
+      if (!ok) return null; // forged / garbled / mismatched → floor holds, NO false 'acked'
+      // ★ THE ONE LINE: a VERIFIED apply-ack → mark the edge 'acked'. Idempotent on redelivery.
+      await deps.updateContact(rec.id, { metadata: markAcked(rec as unknown as StoredContact) });
+      return { id: rec.id, from_fingerprint: wire.from_fingerprint };
+    },
+  };
+}
+
+/**
+ * The recipient-emit closure for consume deps (svrnty-addressbook-ack-001): consumeOne hands the
+ * applied update's (to_fp, ack_of, author_public_key); this signs the apply-ack with the owner's
+ * identity (signWithEnvelope — same primitive the update itself rides), seals it to the author's
+ * pubkey, and deposits it to the author's own mailbox. Best-effort by contract (consumeOne already
+ * try/catches it); failures surface only in the console — a lost ack leaves the author's edge to
+ * decay honestly to 'undelivered'.
+ */
+export function makeSendApplyAck(
+  owner: OwnerIdentity,
+  opts: { fetchImpl?: typeof fetch; relayBase?: string; pqSigningSecretKey?: Uint8Array } = {},
+): (target: ApplyAckTarget) => Promise<void> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const relayBase = opts.relayBase ?? '/api/relay';
+  return async (target) => {
+    const wire = await buildApplyAckWire(
+      target.ack_of,
+      target.to_fp,
+      owner.fingerprint,
+      owner.privateKeyArmored,
+      owner.passphrase,
+      opts.pqSigningSecretKey,
+      owner.cycle,
+    );
+    const blob = await sealApplyAckTo(wire, target.author_public_key);
+    const res = await doFetch(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id: deriveMailboxId(target.to_fp), blob }),
+    });
+    if (!res.ok) throw new Error(`apply-ack deposit refused: ${res.status}`);
+  };
+}
+
 // deriveOwnerHybridSecrets moved to @/lib/crypto/living-book-receive (shared by the FE + headless consume
 // deps so the one dual-read chokepoint derives owner open-material the same way on both paths).
 
@@ -537,6 +652,8 @@ export async function buildConsumeDeps(
     joiner: buildJoinerSeam(owner, codes, hybrid, legs),
     note: buildNoteSeam(owner, undefined, hybrid, undefined, legs),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
+    applyAck: buildApplyAckSeam(owner, hybrid, undefined, legs),
+    sendApplyAck: makeSendApplyAck(owner, { fetchImpl: opts.fetchImpl }),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
     // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
@@ -550,6 +667,10 @@ export async function buildConsumeDeps(
     // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
     // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
     emitReceipt: (e) => emitNoteArrival(e),
+    // Apply-ack verified on the shared poll → an OUTBOUND update's edge graduated to 'acked'. Reuse the
+    // contact-book change bus with the record id + its own reason (the open book re-reads + repaints
+    // the phase — 'apply-ack' never resets last_interaction, unlike 'live-apply').
+    emitApplyAck: (e) => emitContactChange({ ids: [e.id], reason: 'apply-ack' }),
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
     deadLetter: buildDeadLetterSink(owner),

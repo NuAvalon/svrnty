@@ -8,6 +8,7 @@
 import type { TrustEdge } from '@/lib/trust/types';
 import { daysUntilDecay, isDecayed } from '@/lib/trust/types';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
+import { METHOD_DELIVERY_TTL_MS } from './method-delivery';
 
 export type LivingConnectionPhase = 'classical' | 'pending' | 'one-way' | 'linked';
 export type LivingTrustPhase = 'none' | 'outbound' | 'inbound' | 'mutual';
@@ -33,6 +34,7 @@ type EdgeBag = TrustEdge & {
     connection_status?: string;
     pending_intro?: unknown;
     method_delivery?: MethodDeliveryPhase;
+    method_delivery_at?: string;
     trust_outbound?: boolean;
     trust_probe?: 'pending' | 'no-ack' | 'reciprocal' | 'fleet-pending';
     last_moment?: string;
@@ -60,7 +62,15 @@ function relativeMoment(iso: string | null | undefined): string | null {
 
 function deliveryOf(edge: EdgeBag): MethodDeliveryPhase {
   const d = edge.metadata?.method_delivery;
-  if (d === 'awaiting-ack' || d === 'acked' || d === 'undelivered') return d;
+  // TTL-honest (svrnty-addressbook-ack-001): an 'awaiting-ack' whose mark is older than the horizon
+  // reads 'undelivered' — the peer had a full window of polls to ack; silence past it is honest
+  // non-arrival, not a forever-limbo "waiting". Mirrors methodDeliveryPhase's read (same constant).
+  if (d === 'awaiting-ack') {
+    const at = Date.parse(edge.metadata?.method_delivery_at ?? '');
+    if (!Number.isFinite(at) || Date.now() - at > METHOD_DELIVERY_TTL_MS) return 'undelivered';
+    return 'awaiting-ack';
+  }
+  if (d === 'acked' || d === 'undelivered') return d;
   return 'none';
 }
 

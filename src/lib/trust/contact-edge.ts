@@ -101,6 +101,7 @@ export function contactRecordToEdge(c: any): TrustEdge {
           connection_status: c.metadata.connection_status,
           pending_intro: c.metadata.pending_intro,
           method_delivery: c.metadata.method_delivery,
+          method_delivery_at: c.metadata.method_delivery_at,
           trust_outbound: c.metadata.trust_outbound,
           trust_probe: c.metadata.trust_probe,
           last_moment: c.metadata.last_moment,

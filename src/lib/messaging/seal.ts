@@ -13,6 +13,7 @@ import type { NoteWireV0 } from './types';
 import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
 import { RECEIPT_WIRE_TYPE, tryParseReceiptWire, type ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import { APPLY_ACK_WIRE_TYPE, tryParseApplyAckWire, type ApplyAckWireV0 } from '@/lib/crypto/apply-ack';
 
 export async function sealNoteTo(
   note: NoteWireV0,
@@ -130,6 +131,63 @@ export function receiptOpenpgpDecryptor(
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
       return parseReceiptWire(text); // null for any non-receipt shape → caller falls through
+    } catch {
+      return null;
+    }
+  };
+}
+
+// ── Apply-ack seal pair (svrnty-addressbook-ack-001) ────────────────────────────────────────────────
+// An apply-ack is sealed EXACTLY like a receipt (OpenPGP to the author's pubkey → opaque blob) so at
+// the relay it is byte-indistinguishable from any other deposit ({mailbox_id, blob}). The ONLY
+// difference is the inner `type` discriminator (APPLY_ACK_WIRE_TYPE), checked CLIENT-SIDE post-decrypt.
+// Separate pair (not a loosened sealNoteTo / sealReceiptTo) so each decryptor refuses every other
+// type — the no-cross-swallow in consumeOne depends on it. HYBRID UPGRADE rides the receipt pair's
+// own path when that lands (crypto/apply-ack.ts header) — for now the ack is a classical-envelope
+// artifact like the receipt it twins.
+
+/** Seal an apply-ack wire to the update author's OpenPGP pubkey → opaque blob (like sealReceiptTo). */
+export async function sealApplyAckTo(
+  ack: ApplyAckWireV0,
+  authorPublicKeyArmored: string,
+): Promise<string> {
+  if (ack.type !== APPLY_ACK_WIRE_TYPE) {
+    throw new Error('sealApplyAckTo: refusing non-apply-ack wire type');
+  }
+  const encryptionKeys = await readKey({ armoredKey: authorPublicKeyArmored });
+  const message = await createMessage({ text: JSON.stringify(ack) });
+  return (await encrypt({ message, encryptionKeys })) as string;
+}
+
+/**
+ * The apply-ack inner-wire type-gate, string in → ApplyAckWireV0 | null. Exported as a `WireParser` for
+ * the single dual-read chokepoint (hybrid-dual-read.ts: makeHybridOpener(openEnv, parseApplyAckWire)) so
+ * the hybrid leg and the classical leg run the EXACT same discriminator — no-cross-swallow byte-identical.
+ */
+export function parseApplyAckWire(innerUtf8: string): ApplyAckWireV0 | null {
+  try {
+    return tryParseApplyAckWire(JSON.parse(innerUtf8));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Decrypt opaque blob → ApplyAckWireV0, or null on any failure / non-ack (I-1 silent drop). Classical
+ * fallback leg of the dual-read; runs OFF the poll's N10 unlock cycle like the other decryptors.
+ */
+export function applyAckOpenpgpDecryptor(
+  recipientPrivateKeyArmored: string,
+  passphrase: string,
+  cycle?: UnlockCycle,
+): (blob: string) => Promise<ApplyAckWireV0 | null> {
+  return async (blob: string): Promise<ApplyAckWireV0 | null> => {
+    try {
+      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
+      const message = await readMessage({ armoredMessage: blob });
+      const { data } = await decrypt({ message, decryptionKeys });
+      const text = typeof data === 'string' ? data : await streamToText(data);
+      return parseApplyAckWire(text); // null for any non-ack shape → caller falls through
     } catch {
       return null;
     }

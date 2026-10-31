@@ -37,6 +37,7 @@ import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 import type { ReceiptWireV0 } from '@/lib/crypto/delivery-receipt';
+import type { ApplyAckWireV0 } from '@/lib/crypto/apply-ack';
 import type { OpenLegCounter } from './open-leg-counter';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
@@ -199,6 +200,56 @@ export interface ReceiptLiveEvent {
 }
 
 /**
+ * APPLY-ACK routing seam (svrnty-apply-ack-v0) — the mailbox's FIFTH inbound type, twin of the receipt
+ * seam. An apply-ack is sealed to the owner with the SAME openpgp envelope as the other types, so it
+ * DECRYPTS NON-NULL via the contact-update decryptor and would then be dropped on its missing
+ * `envelope.fingerprint` → silently ack-DELETED. This seam routes it FIRST, by its own type-checked
+ * decryptor, so the author's method_delivery 'awaiting-ack' actually graduates.
+ *   • verify — decrypt + type-check the blob as an apply-ack (parseApplyAckWire returns null for a
+ *     non-ack — note / receipt / joiner / contact-update → fall through). Does NOT authenticate —
+ *     that's accept's job (the wire's claimed ack_of/to_fp are meaningless until verifyApplyAckWire
+ *     runs against the recorded outbound update sig + the applier's held keys).
+ *   • accept — recover the outbound update mark (metadata.method_delivery_sig on the edge to
+ *     wire.from_fingerprint), look up the applier's keys, and verifyApplyAckWire. ★ 'acked' is
+ *     written ON EXACTLY ONE LINE (inside accept, only on verify-true) — never from a bare deposit or
+ *     relay flag. Returns the applier's fp for the repaint, or null if DROPPED (no awaiting mark /
+ *     forged / wrong ack_of — fail-safe: floor 'awaiting-ack' → 'undelivered' holds, NO false acked).
+ *     THROWS only on store I/O → retryable (the mark write is idempotent — a redelivered ack re-sets
+ *     'acked' harmlessly).
+ * Optional: a caller that omits it keeps the exact prior behaviour (acks fall to the contact-update
+ * path = the silent-loss; the runtime binding MUST wire this once over-wire ships).
+ */
+export interface ApplyAckResponseSeam {
+  verify: (blob: string) => Promise<ApplyAckWireV0 | null>;
+  accept: (wire: ApplyAckWireV0) => Promise<AcceptedApplyAck | null>;
+}
+
+/** The graduated edge's handles, returned by the apply-ack seam's accept for the book repaint. */
+export interface AcceptedApplyAck {
+  id: string; // the contact-record id whose method_delivery graduated
+  from_fingerprint: string; // the applier whose edge just graduated to 'acked'
+}
+
+/** Emitted after an apply-ack is verified + the edge marked 'acked', so the book repaints the phase. */
+export interface ApplyAckLiveEvent {
+  id: string;
+  from_fingerprint: string;
+}
+
+/**
+ * What the recipient-emit needs to seal + address an apply-ack back to an update's author. Produced
+ * by consumeOne ONLY on the applied branch — 'awaiting-ack' semantics assert APPLIED, never read.
+ */
+export interface ApplyAckTarget {
+  /** The update author's fingerprint — the ack's to_fp AND its mailbox address. */
+  to_fp: string;
+  /** The applied update's EnvelopeSignature.classical hex — WHICH update applied. */
+  ack_of: string;
+  /** The author's armored OpenPGP pubkey (from their record) — the seal target. */
+  author_public_key: string;
+}
+
+/**
  * THE ONE ACK DOOR (#720 R1). consume never asks the relay to delete an envelope that did not become a stored message unless a
  * metadata-only record of it was committed FIRST. `record` THROWS if it cannot commit (store locked, write failed): the envelope then
  * stays on the relay. `clear` removes the record of an envelope that has since opened (R5), and also throws on failure.
@@ -218,12 +269,21 @@ export interface ConsumeDeps {
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
   receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
+  applyAck?: ApplyAckResponseSeam; // apply-ack routing; omit → acks fall to contact-update path (silent-loss)
+  // Recipient-emit (svrnty-addressbook-ack-001): after a contact.update APPLIES, seal + deposit a
+  // destination-signed apply-ack back to its author so their edge graduates 'awaiting-ack' → 'acked'.
+  // Best-effort by contract — the closure must never throw into consume (an ack is protocol
+  // bookkeeping; a failed emit just leaves the author's edge to decay honestly to 'undelivered').
+  // Uniform + automatic on EVERY apply — it asserts APPLIED, never read (anti-panopticon). Omit →
+  // no ack emitted (tests / legacy callers → exact prior behaviour).
+  sendApplyAck?: (target: ApplyAckTarget) => Promise<void>;
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
+  emitApplyAck?: (event: ApplyAckLiveEvent) => void; // book-repaint seam (an edge graduated to 'acked')
   now?: () => string; // ISO timestamp source (inject for determinism)
   // ③ HNDL receive gate (Flint): true iff the owner ADVERTISES a kem pub but NO ML-KEM secret could be
   // derived (OwnerIdentity.kemPublicKey present && deriveOwnerHybridSecrets → undefined). Set by the deps
@@ -246,6 +306,7 @@ export interface ConsumeSummary {
   ignited: number;
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
   delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
+  acks: number; // apply-acks verified → outbound updates' edges marked 'acked' (the "Method update acknowledged" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
   held: number; // #720: hybrid packages KEPT on the relay because no kem secret is derivable yet (also counted in `dropped`, as before)
   deadLettered: number; // #720: terminal envelopes whose metadata record was committed, then acked
@@ -278,6 +339,7 @@ type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
+  | { kind: 'apply-ack'; event: ApplyAckLiveEvent } // apply-ack verified → edge marked 'acked' → ack + book repaint
   | { kind: 'terminal'; cls: TerminalClass } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack, after its record if it is a loss
   | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
   | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local'; fp?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
@@ -293,7 +355,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, acks: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, acked: 0 };
   deps.openLegs?.take(); // discard anything counted outside a poll: a poll reports only its own opens
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
@@ -434,6 +496,14 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
         deps.emitReceipt?.(outcome.event);
       } catch {
         /* inbox delivered-repaint is best-effort; a repaint failure must not block consume/ack */
+      }
+    } else if (outcome.kind === 'apply-ack') {
+      summary.acks++;
+      await door({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // edge marked 'acked' → consumed
+      try {
+        deps.emitApplyAck?.(outcome.event);
+      } catch {
+        /* book repaint is best-effort; a repaint failure must not block consume/ack */
       }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
@@ -662,6 +732,40 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     // wire null → not a receipt → fall through to the contact-update consume path.
   }
 
+  // APPLY-ACK ROUTING (svrnty-apply-ack-v0) — same discipline as the joiner/note/receipt seams above,
+  // same reason: an apply-ack decrypts NON-NULL via the contact-update decryptor, then drops on its
+  // missing `envelope.fingerprint` → silently ack-DELETED. Route it by its own type-checked decryptor.
+  // applyAck.verify returns null for a non-ack (note / receipt / joiner / contact-update → fall
+  // through unharmed), so this can never eat another type (5-way no-cross-swallow — ack-type ≠ the
+  // others). accept recovers the outbound update mark + verifies the applier's signature → graduates
+  // the edge's method_delivery to 'acked'.
+  if (deps.applyAck) {
+    let wire: ApplyAckWireV0 | null;
+    try {
+      wire = await deps.applyAck.verify(blob);
+    } catch {
+      wire = null; // a throwing apply-ack-verify is treated as not-an-ack → fall through (fail-safe)
+    }
+    if (wire) {
+      try {
+        if (dead()) return { kind: 'retryable' };
+        const graduated = await deps.applyAck.accept(wire);
+        // verified (matches a recorded outbound update + applier sig checks) → apply-ack (ack + repaint);
+        // dropped (no awaiting mark / forged / wrong ack_of / unverifiable applier) → terminal (silent
+        // ack — I-1, the floor 'awaiting-ack' → 'undelivered' holds, NO false 'acked').
+        return graduated
+          ? { kind: 'apply-ack', event: { id: graduated.id, from_fingerprint: graduated.from_fingerprint } }
+          : { kind: 'terminal', cls: { benign: 'apply-ack-no-match' } };
+      } catch (err) {
+        // A store I/O failure while marking a VERIFIED edge acked → leave for retry (at-least-once).
+        // The mark write is idempotent on the edge, so a redelivered ack re-sets 'acked' harmlessly.
+        console.error('[return-channel] apply-ack accept failed (left for retry):', err);
+        return { kind: 'retryable' };
+      }
+    }
+    // wire null → not an apply-ack → fall through to the contact-update consume path.
+  }
+
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
   let signed: SignedContactUpdate | null;
   try {
@@ -698,8 +802,27 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     throw e; // an unexpected (non-ApplyRejected) error → propagates to the guarded consume loop (wedge-immune)
   }
 
-  // persist may throw on a store I/O failure — that too propagates to the guarded loop (retryable).
+  // persist may throw on a store I/O failure — that too propagates to the guarded consume loop (retryable).
   if (dead()) return { kind: 'retryable' };
   await deps.store.persist(contact.current.id, applied.next);
+
+  // RECIPIENT-EMIT (svrnty-addressbook-ack-001): the update APPLIED + persisted → destination-sign an
+  // apply-ack back to its author. Uniform + automatic on every apply — APPLIED, never read
+  // (anti-panopticon). Best-effort: a failed emit must never block consume/ack — the author's edge
+  // just decays honestly to 'undelivered'. Fires ONLY on the applied branch: a stale/dup delivery is
+  // a terminal no-apply (exactly one ack per update), a rejected/tampered update is a loud refusal
+  // (no ack, refuse stays loud — anchor c).
+  if (deps.sendApplyAck) {
+    try {
+      await deps.sendApplyAck({
+        to_fp: signed.envelope.fingerprint,
+        ack_of: signed.signature.classical,
+        author_public_key: contact.current.public_key,
+      });
+    } catch (err) {
+      console.error('[return-channel] apply-ack emit failed (update still applied locally):', err);
+    }
+  }
+
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
 }

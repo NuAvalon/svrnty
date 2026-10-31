@@ -32,7 +32,7 @@ export const AUTHENTICATED_REASONS: ReadonlySet<DeadLetterReason> = new Set<Dead
  * Terminal outcomes that CONSUME a blob without losing a message: the content is already stored, or it was never a message.
  * Listed explicitly so "benign" cannot silently grow; a test pins this exact list. Anything terminal that is not here must write a row.
  */
-export const BENIGN_TERMINALS = ['contact-update-stale', 'joiner-already-known', 'receipt-no-match'] as const;
+export const BENIGN_TERMINALS = ['contact-update-stale', 'joiner-already-known', 'receipt-no-match', 'apply-ack-no-match'] as const;
 export type BenignTerminal = (typeof BENIGN_TERMINALS)[number];
 
 /**

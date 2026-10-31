@@ -16,7 +16,7 @@
 // caller — drives reactivity; (2) ContactManagement subscribes and re-reads/re-projects; (3) the caller emits
 // reason:'live-apply' after its foldLivingWins apply. The beat-4 live-signal testid keys off `source`.
 
-export type ContactChangeReason = 'ui-edit' | 'import' | 'live-apply' | 'delete';
+export type ContactChangeReason = 'ui-edit' | 'import' | 'live-apply' | 'delete' | 'apply-ack';
 
 export interface ContactChangeEvent {
   /** Contact-record ids that changed — subscribers re-project exactly these. Empty = coarse "re-read all" (the pull-to-refresh fallback, not the live beat). */

@@ -49,6 +49,8 @@ export interface ContactUpdateDeposit {
 export interface ContactUpdateSendPlan {
   deposits: ContactUpdateDeposit[];
   skipped: Array<{ fingerprint: string; reason: 'bad-fingerprint' | 'no-public-key' | 'no-pq-kem' | 'encrypt-failed' }>;
+  /** The signed update's EnvelopeSignature.classical hex — a recipient's apply-ack binds this as ack_of. */
+  update_sig: string;
 }
 
 /** The change the owner is publishing: the delta + the NEW monotonic card version. */
@@ -117,7 +119,7 @@ export async function buildContactUpdateDeposits(
     }
   }
 
-  return { deposits, skipped };
+  return { deposits, skipped, update_sig: signed.signature.classical };
 }
 
 /** Outcome of actually POSTing the deposits — honest per-recipient accounting for a "sent to N of M" UI. */
@@ -128,6 +130,12 @@ export interface SendContactUpdateResult {
   skipped: ContactUpdateSendPlan['skipped'];
   /** deposits whose POST failed (relay non-2xx or network error) — retryable, not a crypto failure. */
   failed: Array<{ mailbox_id: string; status: number | string }>;
+  /**
+   * The update's EnvelopeSignature.classical hex — the value a recipient's apply-ack binds as ack_of
+   * (svrnty-addressbook-ack-001). The caller records it per deposited peer as method_delivery_sig so a
+   * returning ack can graduate the edge. Absent only if no deposits were built.
+   */
+  update_sig?: string;
 }
 
 /**
@@ -146,7 +154,7 @@ export async function sendContactUpdate(
   const doFetch = opts.fetchImpl ?? fetch;
   const relayBase = opts.relayBase ?? '/api/relay';
 
-  const { deposits, skipped } = await buildContactUpdateDeposits(change, owner, recipients);
+  const { deposits, skipped, update_sig } = await buildContactUpdateDeposits(change, owner, recipients);
 
   const deposited: string[] = [];
   const failed: SendContactUpdateResult['failed'] = [];
@@ -164,5 +172,5 @@ export async function sendContactUpdate(
     }
   }
 
-  return { deposited, skipped, failed };
+  return { deposited, skipped, failed, update_sig };
 }
