@@ -31,7 +31,14 @@ function load(path: string): RowMap {
   return out;
 }
 
+let writes = 0;
+/** Test seam: how many times the dead-letter file was written in this process (Archie #189076 NEG: N losses in one poll = one write). */
+export function __deadLetterWritesForTest(): number {
+  return writes;
+}
+
 function save(path: string, rows: RowMap): void {
+  writes++;
   writeFileAtomic(path, JSON.stringify(rows), { mode: 0o600, backup: false });
   // writeFileAtomic creates at 0600, and umask can only remove bits; check anyway, in the same step (never trust a mode you didn't stat).
   const mode = statSync(path).mode & 0o777;
@@ -39,30 +46,44 @@ function save(path: string, rows: RowMap): void {
 }
 
 export function headlessDeadLetterSink(path: string, now: () => number = () => Date.now()): DeadLetterSink {
+  // STAGING (Archie #189076, Flint C1): one sink per poll. The file is read once, record()/clear() only change the in-memory map, and
+  // flush() writes it once if anything changed. consume-mailbox calls flush() before every ack chunk and acks only if it resolved, so
+  // record-before-ack holds while a backlog costs at most one write per chunk. A load or write failure throws out of record()/flush(),
+  // which leaves the envelope on the relay.
+  let rows: RowMap | null = null;
+  let dirty = false;
+  const loaded = (): RowMap => (rows ??= existsSync(path) ? load(path) : {});
+  const flush = async (): Promise<void> => {
+    if (!dirty || rows === null) return;
+    save(path, rows);
+    dirty = false;
+  };
   return {
     record: async (row) => {
-      const rows = existsSync(path) ? load(path) : {};
-      const prev = rows[row.envelope_id];
+      const m = loaded();
+      const prev = m[row.envelope_id];
       // The stored row carries the EARLIEST first_seen (FE parity: putDeadLetter keeps the first sighting).
       const kept: DeadLetterRow = prev && Date.parse(prev.first_seen) <= Date.parse(row.first_seen) ? { ...row, first_seen: prev.first_seen } : row;
-      rows[row.envelope_id] = kept;
-      save(path, rows);
+      m[row.envelope_id] = kept;
+      dirty = true;
       return kept;
     },
     clear: async (envelopeId) => {
-      if (!existsSync(path)) return;
-      const rows = load(path);
-      if (!(envelopeId in rows)) return;
-      delete rows[envelopeId];
-      save(path, rows);
+      if (rows === null && !existsSync(path)) return; // nothing was ever recorded: no file, no read
+      const m = loaded();
+      if (!(envelopeId in m)) return;
+      delete m[envelopeId];
+      dirty = true;
     },
     settle: async () => {
-      if (!existsSync(path)) return;
-      const rows = load(path);
-      const drop = planPrune(Object.values(rows), now());
-      if (drop.length === 0) return;
-      for (const id of drop) delete rows[id];
-      save(path, rows);
+      if (rows === null && !existsSync(path)) return;
+      const m = loaded();
+      for (const id of planPrune(Object.values(m), now())) {
+        delete m[id];
+        dirty = true;
+      }
+      await flush();
     },
+    flush,
   };
 }

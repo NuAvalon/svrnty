@@ -13,7 +13,7 @@ import { sealNoteTo } from '@/lib/messaging/seal';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
 import { type HeadlessOwner, pollHeadlessOnce, sendNoteFromHeadless } from './headless-client';
-import { headlessDeadLetterSink, DEAD_LETTER_FILE } from './headless-dead-letter';
+import { headlessDeadLetterSink, DEAD_LETTER_FILE, __deadLetterWritesForTest } from './headless-dead-letter';
 
 const RELAY = 'http://relay.test/api/relay';
 const CANARY = 'CANARY-713-body-text-never-in-a-row';
@@ -132,6 +132,8 @@ test('D5 sink unit: re-record keeps the EARLIEST first_seen; clear() removes the
     assert.equal(again.first_seen, '2026-10-30T10:00:00.000Z');
     await sink.record(row('b', '2026-10-31T19:00:00.000Z'));
     await sink.clear('b');
+    assert.equal(existsSync(path), false, 'staged: nothing is written before flush()');
+    await sink.flush!();
     assert.deepEqual(Object.keys(rowsAt(path)), ['a']);
     nowMs = Date.parse('2026-12-15T00:00:00.000Z');
     await sink.settle!();
@@ -142,4 +144,39 @@ test('D5 sink unit: re-record keeps the EARLIEST first_seen; clear() removes the
 test('D6 the CLI wires it: devin-comm\'s poll passes <agent dir>/dead-letters.json', () => {
   const src = readFileSync(join(__dirname, '../../../scripts/devin-comm.ts'), 'utf8');
   assert.match(src, /buildHeadlessConsumeDeps\(owner, store, \{ relayBase: RELAY, deadLetterPath: `\$\{DIR\}\/\$\{DEAD_LETTER_FILE\}` \}\)/);
+});
+
+test('D7 (Archie #189076) N losses in ONE poll = ONE write of the dead-letter file, and every row lands before its ack', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hdl-'));
+  try {
+    const B = await mint();
+    const r = relay();
+    for (let i = 0; i < 5; i++) {
+      const S = await mint();
+      await sendNoteFromHeadless({ owner: owner(S), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, body: `s${i}`, store: new HeadlessStore(), relayBase: RELAY, fetchImpl: r.fetchImpl });
+    }
+    const path = join(dir, DEAD_LETTER_FILE);
+    const before = __deadLetterWritesForTest();
+    const s = await pollHeadlessOnce(owner(B), new HeadlessStore(), { relayBase: RELAY, fetchImpl: r.fetchImpl, deadLetterPath: path });
+    assert.equal(s.deadLettered, 5);
+    assert.equal(__deadLetterWritesForTest() - before, 1, 'one write for five losses');
+    assert.equal(Object.keys(rowsAt(path)).length, 5);
+    assert.equal(r.acked.length, 5);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('D8 NEG a flush that FAILS (the dir cannot be created) → that chunk is NOT acked, and its records move from deadLettered to unrecorded', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hdl-'));
+  try {
+    const [A, B] = [await mint(), await mint()];
+    const r = relay();
+    await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, body: 'x', store: new HeadlessStore(), relayBase: RELAY, fetchImpl: r.fetchImpl });
+    const notADir = join(dir, 'plainfile');
+    writeFileSync(notADir, 'x');
+    const s = await pollHeadlessOnce(owner(B), new HeadlessStore(), { relayBase: RELAY, fetchImpl: r.fetchImpl, deadLetterPath: join(notADir, DEAD_LETTER_FILE) });
+    assert.deepEqual(r.acked, [], 'never acked unrecorded');
+    assert.equal(r.box.length, 1, 'still on the relay');
+    assert.equal(s.deadLettered, 0);
+    assert.equal(s.unrecorded, 1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
