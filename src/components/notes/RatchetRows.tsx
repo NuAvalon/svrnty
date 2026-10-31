@@ -16,11 +16,13 @@ import { solarEmber as E } from '@/components/recovery/solar-ember';
 
 const REFRESH_MS = 5000;
 
-export function RatchetRows({ ownerFingerprint, peerFingerprint, peerName, storeReady }: {
+export function RatchetRows({ ownerFingerprint, peerFingerprint, peerName, storeReady, agentContact }: {
   ownerFingerprint: string;
   peerFingerprint: string;
   peerName: string;
   storeReady: boolean;
+  /** The contact is an agent (headless peer): the Reset is not offered and the hints say so (copy v0.12). Not a security check. */
+  agentContact: boolean;
 }) {
   const [records, setRecords] = useState<DeadLetterRow[]>([]);
   const [outOfStep, setOutOfStep] = useState(false);
@@ -49,7 +51,7 @@ export function RatchetRows({ ownerFingerprint, peerFingerprint, peerName, store
     return () => { clearInterval(t); invalidate(); };
   }, [load, invalidate]);
 
-  const view = useMemo(() => ratchetViewFor(records, peerFingerprint, peerName, outOfStep), [records, peerFingerprint, peerName, outOfStep]);
+  const view = useMemo(() => ratchetViewFor(records, peerFingerprint, peerName, outOfStep, agentContact), [records, peerFingerprint, peerName, outOfStep, agentContact]);
   const dialog = useMemo(() => resetDialog(peerName, view.held), [peerName, view.held]);
 
   useEffect(() => { if (open) cancelRef.current?.focus(); }, [open]);

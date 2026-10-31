@@ -36,6 +36,7 @@ import { emitNoteArrival, subscribeNoteArrivals } from '@/lib/notes/note-events'
 import { getHeldReport, subscribeHeld, type HeldReport } from '@/lib/notes/held-events';
 import { formatRelayDeadline, heldNotices } from './held-notice';
 import { RatchetRows } from './RatchetRows';
+import { peerIsAgent } from './ratchet-rows-view';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY, notSentMessage, ratchetOffMessage } from './notes-copy';
 import {
@@ -659,7 +660,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
           ) : null}
 
           {selectedFp && fp ? (
-            <RatchetRows ownerFingerprint={fp} peerFingerprint={selectedFp} peerName={peerName} storeReady={storeReady} />
+            <RatchetRows ownerFingerprint={fp} peerFingerprint={selectedFp} peerName={peerName} storeReady={storeReady} agentContact={peerIsAgent(threads, notes, selectedFp)} />
           ) : null}
 
           <div

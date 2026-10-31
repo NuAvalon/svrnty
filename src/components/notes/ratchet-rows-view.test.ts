@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { namedRow } from './ratchet-rows';
 import { readFileSync } from 'node:fs';
-import { inputFor, ratchetViewFor } from './ratchet-rows-view';
-import { RESET_FAILED_LINE } from './ratchet-reset-copy';
+import { inputFor, peerIsAgent, ratchetViewFor, resetOffered } from './ratchet-rows-view';
+import { RESET_FAILED_LINE, RESET_UNAVAILABLE_HINT_HELD, RESET_UNAVAILABLE_HINT_RECORDED } from './ratchet-reset-copy';
 
 const PEER = 'ab'.repeat(32), OTHER = 'cd'.repeat(32);
 let n = 0;
@@ -84,4 +84,66 @@ test('R7 the reset-failed line is copy v0.11 by value, never claims the reset di
   assert.match(comp, /import \{ RESET_FAILED_LINE \} from '\.\/ratchet-reset-copy';/);
   assert.doesNotMatch(comp, /export const RESET_FAILED_LINE|Couldn't reset right now/, 'no provisional line left in the component');
   assert.equal((comp.match(/RESET_FAILED_LINE/g) ?? []).length, 2, 'imported once, rendered once');
+});
+
+const HELD = (o: Partial<DeadLetterRow> = {}) => row({ reason: 'ratchet-desync', phase: 'held', ...o });
+const RECORDED = (o: Partial<DeadLetterRow> = {}) => row({ reason: 'ratchet-desync', phase: 'recorded', ...o });
+
+test('A1 an AGENT contact: no Reset, and the two desync hints say so instead of pointing at a button that is not there (copy v0.12, by value); the lines are unchanged', () => {
+  const v = ratchetViewFor([HELD(), RECORDED()], PEER, 'Sam', false, true);
+  assert.equal(v.canReset, false);
+  const heldNamed = namedRow('Sam', { kind: 'desync', phase: 'held' }), recNamed = namedRow('Sam', { kind: 'desync', phase: 'recorded' });
+  const byLine = new Map(v.rows.map((r) => [r.line, r.hint]));
+  assert.equal(byLine.get(heldNamed.line), RESET_UNAVAILABLE_HINT_HELD);
+  assert.equal(byLine.get(recNamed.line), RESET_UNAVAILABLE_HINT_RECORDED);
+  assert.equal(RESET_UNAVAILABLE_HINT_HELD, "Resetting the message session isn't available for this contact yet.");
+  assert.equal(RESET_UNAVAILABLE_HINT_RECORDED, "This app couldn't keep the message itself, only a note that it arrived. Resetting the message session isn't available for this contact yet.");
+  for (const r of v.rows) assert.doesNotMatch(`${r.line} ${r.hint}`, /reset your message session|you can reset|ask \S+ to send it again/i, 'no pointer to the missing button, no resend advice');
+  assert.equal(v.held, 1, 'the held count is still the true number: one held record, the recorded one is not held');
+});
+
+test('A2 a HUMAN contact: the button is offered and Athena\'s v0.9 hints are untouched (the other direction of A1)', () => {
+  const v = ratchetViewFor([HELD(), RECORDED()], PEER, 'Sam', false, false);
+  assert.equal(v.canReset, true);
+  const hints = v.rows.map((r) => r.hint).sort();
+  assert.deepEqual(hints, [namedRow('Sam', { kind: 'desync', phase: 'held' }).hint, namedRow('Sam', { kind: 'desync', phase: 'recorded' }).hint].sort());
+  assert.ok(v.rows.some((r) => /reset your message session with them/i.test(r.hint ?? '')), 'the v0.9 hint still points at the button');
+});
+
+test('A3 for an agent contact every OTHER row is exactly Athena\'s copy (local, verdict, session-reset), and no row is dropped', () => {
+  const cases: Array<[Partial<DeadLetterRow>, ReturnType<typeof namedRow>]> = [
+    [{ reason: 'ratchet-local', phase: 'held' }, namedRow('Sam', { kind: 'local', phase: 'held' })],
+    [{ reason: 'ratchet-local', phase: 'recorded' }, namedRow('Sam', { kind: 'local', phase: 'recorded' })],
+    [{ reason: 'ratchet-unopenable', cause: 'malformed-frame' }, namedRow('Sam', { kind: 'verdict', firstFrameRejected: false, outOfStep: false })],
+    [{ reason: 'session-reset' }, namedRow('Sam', { kind: 'session-reset' })],
+  ];
+  for (const [o, want] of cases) {
+    const v = ratchetViewFor([row(o)], PEER, 'Sam', false, true);
+    assert.equal(v.rows.length, 1);
+    assert.deepEqual([v.rows[0].line, v.rows[0].hint], [want.line, want.hint], JSON.stringify(o));
+  }
+});
+
+test('A4 resetOffered is the one predicate: failed AND not an agent', () => {
+  assert.equal(resetOffered(true, false), true);
+  assert.equal(resetOffered(true, true), false);
+  assert.equal(resetOffered(false, false), false);
+  assert.equal(resetOffered(false, true), false);
+});
+
+test('A5 peerIsAgent reads what this device stored: a direct-thread participant or a note FROM them that declared it; fp case-insensitive; others ignored', () => {
+  const th = (fp: string, kind: 'human' | 'agent', tk: 'direct' | 'ring' = 'direct') => ({ kind: tk, participants: [{ fingerprint: fp, kind, display_name: 'x' }] });
+  assert.equal(peerIsAgent([th(PEER, 'agent')], [], PEER.toUpperCase()), true);
+  assert.equal(peerIsAgent([th(PEER, 'human')], [], PEER), false);
+  assert.equal(peerIsAgent([th(OTHER, 'agent')], [], PEER), false, "another contact's thread");
+  assert.equal(peerIsAgent([th(PEER, 'agent', 'ring')], [], PEER), false, 'a ring thread is not a statement about the direct contact');
+  assert.equal(peerIsAgent([], [{ from_fingerprint: PEER, participant_kind: 'agent' }], PEER), true);
+  assert.equal(peerIsAgent([], [{ from_fingerprint: OTHER, participant_kind: 'agent' }], PEER), false);
+  assert.equal(peerIsAgent([], [], PEER), false, 'unknown reads as human (the wire default), and the doc says this is not a security check');
+});
+
+test('A6 static: the component hands the flag to the view-model and NotesInbox computes it from threads + notes', () => {
+  assert.match(readFileSync(new URL('./RatchetRows.tsx', import.meta.url), 'utf8'), /ratchetViewFor\(records, peerFingerprint, peerName, outOfStep, agentContact\)/);
+  assert.match(readFileSync(new URL('./NotesInbox.tsx', import.meta.url), 'utf8'), /agentContact=\{peerIsAgent\(threads, notes, selectedFp\)\}/);
+  assert.match(readFileSync(new URL('./ratchet-rows-view.ts', import.meta.url), 'utf8'), /NOT a security check/);
 });
