@@ -1055,7 +1055,7 @@ export function SoverentityFrontend({
             <h2 style={s.heroTitle}>{TRUST_RECIPE_COPY.gateStart}</h2>
             <p style={s.heroSub}>
               A card, not an account. Generate a sovereign keypair. Your keys never leave your device.
-              Post-quantum-ready encryption. No server can read your data. No third-party trackers.
+              Post-quantum-ready encryption. No server can read your messages. No third-party trackers.
             </p>
           </div>
 
