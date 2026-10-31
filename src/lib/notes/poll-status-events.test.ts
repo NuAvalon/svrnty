@@ -82,6 +82,14 @@ test('store: one answered poll clears it and resets the run (2 more refusals do 
   assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: 1000 });
 });
 
+test('store: a checked-waiting poll is an ANSWERED poll: it clears the notice and is the "since" time', () => {
+  for (let i = 0; i < 3; i++) reportPollStatus('rejected');
+  reportPollStatus('checked-waiting', 77);
+  assert.equal(getPollRefusedReport().refused, false);
+  for (let i = 0; i < 3; i++) reportPollStatus('rejected');
+  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: 77 });
+});
+
 test('store: locked never shows it and ends the run', () => {
   reportPollStatus('rejected');
   reportPollStatus('rejected');

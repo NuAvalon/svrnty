@@ -2,17 +2,20 @@
 // Galaxy pull-to-refresh / refresh button: what the note under the map says after a check. "Caught up." is a claim that the mailbox was
 // read and nothing is waiting, so it is shown ONLY when the poll says 'ok'. A refused poll (e.g. 401 owner-auth) resolves without
 // throwing; before this it showed "Caught up." (Hypatia #2396). Anything that isn't a known status reads as "could not check".
+// Copy v2 (Hypatia, shared/outbox/hypatia/svrnty_poll_status_copy_v2.md sha256 54ba6eb0), verbatim.
 import type { PollOnceStatus } from '@/lib/sync/live-book-poll';
 
 export const REFRESH_NOTE = {
   checking: 'Checking for updates…',
   ok: 'Caught up.',
+  checkedWaiting: "Checked. Some messages couldn't be opened on this device and are still on the relay.",
   failed: 'Could not check right now.',
   locked: 'Unlock to check for messages.',
 } as const;
 
 export function refreshNoteFor(status: unknown): string {
   if (status === 'ok') return REFRESH_NOTE.ok;
+  if (status === 'checked-waiting') return REFRESH_NOTE.checkedWaiting;
   if (status === 'locked') return REFRESH_NOTE.locked;
   return REFRESH_NOTE.failed; // 'rejected', undefined, anything else
 }

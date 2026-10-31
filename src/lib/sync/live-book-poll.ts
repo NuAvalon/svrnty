@@ -547,13 +547,23 @@ export interface LiveBookPollHandle {
  * a full interval.
  */
 /**
- * What one poll can honestly say. 'ok' = the relay answered the poll; 'rejected' = the poll request itself was refused (e.g. 401
- * owner-auth), which is NOT an empty mailbox; 'locked' = no poll ran at all (locked / no identity). Only 'ok' may be shown as "Caught up."
+ * What one poll can honestly say (copy v2, Hypatia 54ba6eb0; Archie #2401/#2404):
+ * - 'ok': the relay answered with a list and nothing was left on it (every polled envelope acked; none held, none unrecorded). The ONLY
+ *   status that may be shown as "Caught up."
+ * - 'checked-waiting': the relay answered with a list, but envelopes are still on it (held, unrecorded, retryable, or an ack that failed).
+ * - 'rejected': the poll was refused (non-OK status) or the answer was not a list. NOT an empty mailbox.
+ * - 'locked': no poll ran (locked / no identity), or the unlock cycle ended mid-poll, so the mailbox state is unknown.
  */
-export type PollOnceStatus = 'ok' | 'rejected' | 'locked';
+export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'locked';
 
-export function pollStatusOf(summary: Pick<ConsumeSummary, 'rejected'>): PollOnceStatus {
-  return summary.rejected === undefined ? 'ok' : 'rejected';
+export function pollStatusOf(
+  summary: Pick<ConsumeSummary, 'rejected' | 'polled' | 'acked' | 'held' | 'unrecorded'>,
+  cycleEnded = false,
+): PollOnceStatus {
+  if (cycleEnded) return 'locked';
+  if (summary.rejected !== undefined) return 'rejected';
+  if (summary.held > 0 || summary.unrecorded > 0 || summary.acked < summary.polled) return 'checked-waiting';
+  return 'ok';
 }
 
 /**
@@ -573,7 +583,8 @@ export async function pollLiveBookOnce(
     return 'locked';
   }
   try {
-    const status = pollStatusOf(await consumeInboundContactUpdates(deps));
+    const summary = await consumeInboundContactUpdates(deps);
+    const status = pollStatusOf(summary, deps.owner.cycle?.ended);
     reportPollStatus(status);
     return status;
   } finally {
@@ -601,7 +612,8 @@ export function startLiveBookPolling(
         return; // locked / no identity — stay static, retry next tick
       }
       try {
-        reportPollStatus(pollStatusOf(await consumeInboundContactUpdates(deps))); // copy v1 §B: 3 refused in a row → Chat notice
+        const summary = await consumeInboundContactUpdates(deps);
+        reportPollStatus(pollStatusOf(summary, deps.owner.cycle?.ended)); // copy v1 §B: 3 refused in a row → Chat notice
       } finally {
         deps.owner.cycle?.drop();
       }

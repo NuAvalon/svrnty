@@ -1,5 +1,5 @@
 // src/components/trust-map-refresh-note.test.ts
-// "Caught up." must only follow a poll the relay ANSWERED (Hypatia #2396, Archie #2398). The refusal runs the REAL pollLiveBookOnce →
+// "Caught up." must only follow a poll the relay ANSWERED with a list and left nothing on (Hypatia #2396, Archie #2398/#2401/#2404, copy v2 54ba6eb0). The refusal runs the REAL pollLiveBookOnce →
 // consumeInboundContactUpdates path with a signing owner and an injected 401 relay; only the deps builder is injected (it needs IndexedDB).
 //
 // Run: npx tsx --test src/components/trust-map-refresh-note.test.ts
@@ -11,7 +11,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateKey, readKey } from 'openpgp';
 import type { ConsumeDeps } from '@/lib/sync/consume-mailbox';
-import { pollLiveBookOnce } from '@/lib/sync/live-book-poll';
+import { pollLiveBookOnce, pollStatusOf } from '@/lib/sync/live-book-poll';
+import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { REFRESH_NOTE, refreshNoteAfter, refreshNoteFor } from './trust-map-refresh-note';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -101,4 +102,82 @@ test('TrustMap renders the note from refreshNoteAfter, never a hard-coded "Caugh
   assert.ok(!src.includes("'Caught up.'"), 'no literal "Caught up." in TrustMap');
   const page = readFileSync(join(here, '..', '..', 'app', 'page.tsx'), 'utf8');
   assert.match(page, /const status = await pollLiveBookOnce\(identity\);[\s\S]{0,80}return status;/);
+});
+
+// ── copy v2: 'checked-waiting' (the relay answered with a list, but envelopes are still on it) ──
+
+const HYBRID_BLOB = JSON.stringify({ v: 1, alg: 'X25519+ML-KEM-1024/HKDF-SHA256/AES-256-GCM', mailbox_fp: 'ab'.repeat(32), epk: 'e', kem_ct: 'k', nonce: 'n', ct: 'c' });
+
+/** /queue answers with `envs`; /ack answers `ackStatus`. */
+function relayWith(envs: Array<{ envelope_id: string; blob: string }>, ackStatus = 200): typeof fetch {
+  return (async (url: string) => {
+    if (String(url).includes('/queue')) return new Response(JSON.stringify(envs), { status: 200 });
+    if (String(url).includes('/ack')) return new Response('{}', { status: ackStatus });
+    return new Response('nf', { status: 404 });
+  }) as unknown as typeof fetch;
+}
+
+function depsOver(over: Partial<ConsumeDeps>) {
+  return async (): Promise<ConsumeDeps> => ({
+    owner,
+    decrypt: async () => null,
+    store: { lookup: async () => null, persist: async () => {} },
+    relayBase: 'http://relay.test/api/relay',
+    now: () => '2026-10-31T06:00:00.000Z',
+    ...over,
+  });
+}
+
+test('NEG 200 + one HELD envelope (no usable kem secret) → the v2 line, never "Caught up."', async () => {
+  const b = depsOver({ hybridSecretMissing: true, fetchImpl: relayWith([{ envelope_id: 'e1', blob: HYBRID_BLOB }]) });
+  assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'checked-waiting');
+  const note = await refreshOver(b);
+  assert.equal(note, "Checked. Some messages couldn't be opened on this device and are still on the relay.");
+  assert.notEqual(note, REFRESH_NOTE.ok);
+});
+
+test('NEG 200 + UNRECORDED > 0 (its record could not be committed, left on the relay) → the v2 line', async () => {
+  const b = depsOver({
+    fetchImpl: relayWith([{ envelope_id: 'e1', blob: 'not-a-sealed-blob' }]),
+    deadLetter: { record: async () => { throw new Error('idb full'); }, clear: async () => {} },
+  });
+  assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'checked-waiting');
+  assert.equal(await refreshOver(b), REFRESH_NOTE.checkedWaiting);
+});
+
+test('NEG 200 + an envelope whose ACK failed (still on the relay) → the v2 line, never "Caught up."', async () => {
+  const b = depsOver({ fetchImpl: relayWith([{ envelope_id: 'e1', blob: 'not-a-sealed-blob' }], 500) });
+  assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'checked-waiting');
+});
+
+test('NEG the unlock cycle ended mid-poll (locked during the tick) → locked, never "Caught up."', async () => {
+  const cycle = makeUnlockCycle(owner.privateKeyArmored, owner.passphrase);
+  const b = depsOver({
+    owner: { ...owner, cycle },
+    decrypt: async () => {
+      cycle.drop();
+      return null;
+    },
+    fetchImpl: relayWith([{ envelope_id: 'e1', blob: 'x' }, { envelope_id: 'e2', blob: 'y' }]),
+  });
+  assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'locked');
+});
+
+test('control: 200 + one envelope consumed and acked (nothing left) → "Caught up."', async () => {
+  const b = depsOver({ fetchImpl: relayWith([{ envelope_id: 'e1', blob: 'not-a-sealed-blob' }]) });
+  assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'ok');
+  assert.equal(await refreshOver(b), REFRESH_NOTE.ok);
+});
+
+test('pollStatusOf table: only a clean, fully-acked, answered list is ok', () => {
+  const z = { polled: 0, acked: 0, held: 0, unrecorded: 0 };
+  assert.equal(pollStatusOf(z), 'ok');
+  assert.equal(pollStatusOf({ ...z, polled: 2, acked: 2 }), 'ok');
+  assert.equal(pollStatusOf({ ...z, held: 1 }), 'checked-waiting');
+  assert.equal(pollStatusOf({ ...z, unrecorded: 1 }), 'checked-waiting');
+  assert.equal(pollStatusOf({ ...z, polled: 2, acked: 1 }), 'checked-waiting');
+  assert.equal(pollStatusOf({ ...z, rejected: 401 }), 'rejected');
+  assert.equal(pollStatusOf({ ...z, rejected: 401, held: 1 }), 'rejected');
+  assert.equal(pollStatusOf(z, true), 'locked');
+  assert.equal(refreshNoteFor('checked-waiting'), REFRESH_NOTE.checkedWaiting);
 });

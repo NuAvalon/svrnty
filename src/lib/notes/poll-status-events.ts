@@ -2,7 +2,8 @@
 // #720 / copy v1 §B (Hypatia 07c6d5ae): whether the shared mailbox poll has been REFUSED by the relay on 3 consecutive polls, for the
 // Chat tab's notice. In memory only (nothing is stored at rest). Fed by every poll (background tick and pull-to-refresh); read by NotesInbox.
 //
-// Rules: 3 consecutive 'rejected' polls show the notice; the first 'ok' clears it and becomes the "since" time; 'locked' means no poll
+// Rules: 3 consecutive 'rejected' polls show the notice; the first answered poll ('ok' or 'checked-waiting': the relay DID answer) clears
+// it and becomes the "since" time; 'locked' means no poll
 // ran, which is expected, so it clears everything (never shown while locked); a thrown poll (network) is not a refusal and changes
 // nothing; clearPollStatus() runs on session lock / identity switch so identity A's state can never show under identity B.
 import type { PollOnceStatus } from '@/lib/sync/live-book-poll';
@@ -13,7 +14,7 @@ export type PollRefusedReport =
   | { refused: false }
   | {
       refused: true;
-      /** Device time (ms) of the last poll the relay answered in this session; absent if none. */
+      /** Device time (ms) of the last poll the relay answered ('ok' or 'checked-waiting') in this session; absent if none. */
       lastOkAt?: number;
     };
 
@@ -40,7 +41,7 @@ function set(next: PollRefusedReport): void {
 }
 
 export function reportPollStatus(status: PollOnceStatus, nowMs: number = Date.now()): void {
-  if (status === 'ok') {
+  if (status === 'ok' || status === 'checked-waiting') {
     consecutiveRejected = 0;
     lastOkAt = nowMs;
     return set(NONE);
