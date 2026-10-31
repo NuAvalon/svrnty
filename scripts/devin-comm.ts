@@ -545,8 +545,15 @@ async function main() {
     const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
     deps.joiner = buildLocalJoinerSeam(owner, store);
     const outcome = await consumeInboundBlob(deps, blob);
-    const ok = outcome.kind !== 'retryable';
-    console.log(JSON.stringify({ ok, outcome: outcome.kind }));
+    // #713 (Flint #189033): a LOSS terminal (not-in-book, unverified, undecryptable...) must not be reported as delivered over intake: no
+    // envelope_id exists here, so nothing records it, and the note would vanish silently. Report ok:false instead, so the sender's router
+    // falls back to the relay; the relay poll decides it again and records the loss there (a dead-letter row on the FE, a lost_<reason>
+    // counter on headless) before acking. A BENIGN terminal (already stored / stale) is a real decision and stays ok:true.
+    const loss = outcome.kind === 'terminal' && !('benign' in outcome.cls);
+    const ok = outcome.kind !== 'retryable' && !loss;
+    // The reason travels; a fingerprint never does (F3: unauthenticated for 'unverified', and not needed by the router either way).
+    const reason = outcome.kind === 'terminal' ? ('benign' in outcome.cls ? outcome.cls.benign : outcome.cls.reason) : undefined;
+    console.log(JSON.stringify(reason ? { ok, outcome: outcome.kind, reason } : { ok, outcome: outcome.kind }));
     return;
   }
 
