@@ -54,10 +54,9 @@ import {
   type ContactRecord,
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
-import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
+import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
-import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import type { TrustEvent } from '@/lib/trust/types';
@@ -301,18 +300,13 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   // Fail-closed: locked session / failed bind ⇒ no options ⇒ no sync.
   useEffect(() => {
     if (!fingerprint) return;
-    // Gated OFF for alpha (claim-gates.isPSIDiscoveryLive === false): the PSI discovery wire-in is
-    // present but DO-NOT-ADVERTISE until the e2e verify passes (determinism / unlinkability /
-    // set-change / stateless-reload) + Flint's at-rest-blinder co-verify. Ships dormant + honest —
-    // no discovery runs, no "see who you both know" claim — then this flips WITH the gate.
-    if (!isPSIDiscoveryLive()) return;
+    // Gated by claim-gates.isPSIDiscoveryLive (build-time, opt-in): startPsiDiscovery checks it BEFORE the bind ceremony, so a build with
+    // discovery off (prod: no satellite pin) makes no request to /api/satellite at all and advertises nothing.
     let stopped = false;
     let handle: { stop: () => void } | undefined;
-    void (async () => {
-      const options = await buildPsiSyncOptions(identity);
-      if (stopped || !options) return;
-      handle = startKnowLayerSync(identity, options);
-    })();
+    void startPsiDiscovery(identity, { cancelled: () => stopped }).then((h) => {
+      if (h) handle = h;
+    });
     return () => {
       stopped = true;
       handle?.stop();
