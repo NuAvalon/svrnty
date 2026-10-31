@@ -20,10 +20,11 @@ export { isBiometricSeamLive } from '../components/biometric/biometric-seam';
 /**
  * ML-KEM-1024 post-quantum ENCRYPTION (encapsulation) is wired into the send/seal path.
  *
- * FALSE today: `hybridEncapsulate()` has ZERO real callers (only the crypto/index barrel re-export) —
- * the seal is classical OpenPGP. Cards CARRY a pq_kem public key (mint = ED25519+ML-DSA-87+ML-KEM-1024)
- * but nothing encrypts with it yet. Carrying a key ≠ protection.
- * Flip to true WITH the first real `hybridEncapsulate` caller (and update claim-gates.test.ts).
+ * FALSE today, for the OPEN side. The SEND side is hybrid: notes, contact updates and joiner responses seal
+ * with X25519 + ML-KEM-1024 and refuse without a recipient ML-KEM key (seal-no-downgrade.test.ts,
+ * seal-primitives-no-downgrade.test.ts S1/S2/S5). It stays false because the open side still accepts
+ * classical envelopes and receipts are a separate path. Flip only when both close (and update
+ * claim-gates.test.ts).
  */
 export function isPQEncapLive(): boolean {
   return false;
