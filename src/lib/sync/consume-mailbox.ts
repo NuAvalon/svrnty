@@ -145,6 +145,8 @@ export interface NoteResponseSeam {
 export interface DroppedNote {
   dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync';
   fp?: string;
+  /** Why a ratchet frame did not open (a fixed token from DEAD_LETTER_CAUSES; the record keeps it only if it is on that list). */
+  cause?: string;
 }
 
 /** The persisted note's handles, returned by the note seam's accept for the inbox live-repaint. */
@@ -275,7 +277,7 @@ export interface ConsumeSummary {
  * What a terminal outcome IS. `benign` = the content is already stored or it was never a message (named, test-pinned list in
  * dead-letter.ts): acked with no record. Anything else is a LOSS and gets a record committed before the ack.
  */
-export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string };
+export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string; cause?: string };
 
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
@@ -283,7 +285,7 @@ type Outcome =
   | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
   | { kind: 'terminal'; cls: TerminalClass } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack, after its record if it is a loss
   | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
-  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
+  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
 /**
  * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
@@ -350,8 +352,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   };
   // Nothing is added to `toAck` in the consume loop itself: each envelope that may be acked goes through THE ACK DOOR below, which decides
   // WHAT must happen first (#720 R1: no ack of an envelope that did not become a stored message without a committed record of it).
-  type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string };
-  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string }> = [];
+  type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string; cause?: string };
+  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }> = [];
   const sink = deps.deadLetter;
   const toAck: string[] = [];
   const bump = (r: DeadLetterReason) => {
@@ -378,7 +380,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       // E1: an unsafe (attacker-chosen) id is recorded under a DERIVED safe key and the ORIGINAL id is acked, so it can neither be lost
       // unrecorded nor sit on the relay filling the mailbox. A row that cannot be built at all (not a string, an unreadable time) stays on the relay.
       const key = recordKeyFor(item.id);
-      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: item.need.reason, blob: item.blob, fp: item.need.fp }) : null;
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: item.need.reason, blob: item.blob, fp: item.need.fp, cause: item.need.cause }) : null;
       if (!row) {
         summary.unrecorded++;
         return;
@@ -426,7 +428,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     const backoff = deps.holdBackoff;
     const nowMs = Date.parse(now());
     if (!forced && backoff && Number.isFinite(nowMs) && !backoff.due(env.envelope_id, nowMs)) {
-      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: 'ratchet-desync', fp: backoff.fpOf(env.envelope_id) });
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: 'ratchet-desync', fp: backoff.fpOf(env.envelope_id), cause: 'ratchet-receive-failed' });
       summary.dropped++;
       return 'skipped';
     }
@@ -480,7 +482,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       // A benign terminal is consumed with no record; anything else is a LOSS and needs its record first.
       await door({ id: env.envelope_id, blob: env.blob, need: 'benign' in outcome.cls ? 'none' : outcome.cls });
     } else if (outcome.kind === 'held') {
-      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: outcome.reason ?? 'missing-key', fp: outcome.fp });
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: outcome.reason ?? 'missing-key', fp: outcome.fp, cause: outcome.cause });
       summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
@@ -524,7 +526,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     const idByKey = new Map<string, string>(); // record key -> the id the relay knows (they differ only for an unsafe id, E1)
     for (const h of heldNow) {
       const key = recordKeyFor(h.id);
-      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, phase: 'held' }) : null;
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, cause: h.cause, phase: 'held' }) : null;
       if (!row || !key) continue; // not a string: cannot be recorded or bounded; it stays on the relay
       try {
         const saved = await sink.record(row);
@@ -546,7 +548,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       // Released: the row now says RECORDED (this app no longer keeps the message), committed BEFORE the ack like every other record. If that
       // write fails the envelope stays held (not acked) and is released on a later poll.
       const key = h ? recordKeyFor(h.id) : null;
-      const row = h && key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, phase: 'recorded' }) : null;
+      const row = h && key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, cause: h.cause, phase: 'recorded' }) : null;
       if (h && row) {
         try {
           await sink.record(row);
@@ -690,8 +692,8 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
           // 'unverified' = the sender was never authenticated: no fingerprint travels with it (F3). The other two come after authentication.
           if (accepted.dropped === 'unverified') return { kind: 'terminal', cls: { reason: 'verify-failed' } };
           // v5.3 (Flint #2052): a ratchet frame this DEVICE could not open is HELD (kept on the relay, recorded at first sight, bounded), never acked as the sender's fault.
-          if (accepted.dropped === 'ratchet-local' || accepted.dropped === 'ratchet-desync') return { kind: 'held', reason: accepted.dropped, fp: accepted.fp };
-          return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp } };
+          if (accepted.dropped === 'ratchet-local' || accepted.dropped === 'ratchet-desync') return { kind: 'held', reason: accepted.dropped, fp: accepted.fp, cause: accepted.cause };
+          return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp, cause: accepted.cause } };
         }
         // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).
         return accepted

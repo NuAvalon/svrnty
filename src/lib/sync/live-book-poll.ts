@@ -205,9 +205,11 @@ export function buildNoteSeam(
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
       let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
+      let dropCause: string | undefined;
       const rec = await deps.accept({
-        onDrop: (r) => {
+        onDrop: (r, c) => {
           dropReason = r;
+          dropCause = c;
         },
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
@@ -253,7 +255,7 @@ export function buildNoteSeam(
         // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint
         // travels only for the reasons that come AFTER authentication (wire.from_fingerprint is attacker-controlled until then: F3).
         if (!dropReason) return null;
-        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint };
+        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint, ...(dropCause ? { cause: dropCause } : {}) };
       }
       // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint

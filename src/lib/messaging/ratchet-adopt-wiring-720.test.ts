@@ -72,11 +72,13 @@ interface Opts {
   hook?: (peer: string) => Promise<void>;
   spy?: { ctx?: { sentAt: string | undefined }; opened: number };
   storedSentAts?: () => Promise<string[]>;
+  noOpener?: boolean;
 }
 
 /** `rcv` receives `wire` from `snd` through the real acceptInboundNote, with the adopt policy built exactly the way live-book-poll builds it. */
 async function receive(rcv: Party, snd: Party, wire: NoteWireV0, o: Opts = {}) {
   const reasons: string[] = [];
+  const causes: Array<string | undefined> = [];
   const io = {
     putNote: async (n: NoteRecord) => { rcv.notes.set(n.note_id, n); },
     putThread: async (t: NoteThread) => { rcv.threads.set(t.thread_id, t); },
@@ -88,8 +90,8 @@ async function receive(rcv: Party, snd: Party, wire: NoteWireV0, o: Opts = {}) {
     wire,
     isAdmitted: async () => o.admitted ?? true,
     io: io as never,
-    onDrop: (x) => reasons.push(x),
-    openRatchet: (fp, body, ctx) => {
+    onDrop: (x, c) => { reasons.push(x); causes.push(c); },
+    openRatchet: o.noOpener ? undefined : (fp, body, ctx) => {
       if (o.spy) { o.spy.ctx = ctx; o.spy.opened++; }
       return openDirectNoteStagedTyped(
         fp, body, rcv.ratchet, peerOf(snd.ratchet), rcv.sess.io,
@@ -101,7 +103,7 @@ async function receive(rcv: Party, snd: Party, wire: NoteWireV0, o: Opts = {}) {
       if (o.hook) await o.hook(peer);
     },
   });
-  return { r, reasons };
+  return { r, reasons, causes };
 }
 
 /** Bob holds a CONFIRMED session with Alice (her n1 at T-1h opened and stored). Alice then resets: a NEW session whose frames Bob has not seen. */
@@ -281,6 +283,23 @@ test('W12b the future slack edge is exact (now + 5 min counts, one ms beyond is 
   assert.equal(await boom({ unconfirmed: false }), true);
 });
 
+test('W13 (cause-on-row) the drop carries WHY, as a fixed token: desync -> ratchet-receive-failed, a frame we cannot accept as a first frame -> first-frame-rejected, no opener -> no-ratchet-opener', async () => {
+  const { alice, bob } = await aliceResets();
+  const replay = (await sealFrom(alice, bob, 'replayed', memIO()))!;
+  const d = await receive(bob, alice, await wireFrom(alice, 'c1', replay, at(-7_200_000)));
+  assert.deepEqual([d.reasons, d.causes], [['ratchet-desync'], ['ratchet-receive-failed']]);
+  const carol = ident();                                                   // sealed to somebody else's keys: no session here can accept it as a first frame
+  const noSession = await party();
+  const toCarol = (await sealDirectNote(noSession.fp, 'not for you', alice.ratchet, peerOf(carol), memIO().io))!;
+  const f = await receive(noSession, alice, await wireFrom(alice, 'c2', toCarol, at(-1000)));
+  assert.deepEqual([f.reasons, f.causes], [['ratchet-unopenable'], ['first-frame-rejected']]);
+  // 'malformed-frame' is the opener's own token; through acceptInboundNote it is unreachable (isTripleRatchetBody is the same test decodeBody applies).
+  const none = await receive(bob, alice, await wireFrom(alice, 'c4', replay, at(-1000)), { noOpener: true });
+  assert.deepEqual([none.reasons, none.causes], [['ratchet-local'], ['no-ratchet-opener']]);
+  const unverified = await receive(bob, alice, { ...(await wireFrom(alice, 'c5', replay, at(-1000))), body: 'tampered' });
+  assert.deepEqual([unverified.reasons, unverified.causes], [['unverified'], [undefined]], 'no cause where the sender was never authenticated');
+});
+
 // W11: live-book-poll's composition needs IndexedDB, which this harness does not have, so the wiring is pinned by SOURCE (like the reset W2/W3 guards).
 // The real-browser proof (reset UI e2e) is what finally runs it.
 import { readFileSync } from 'node:fs';
@@ -297,6 +316,9 @@ test('W11 STATIC: live-book-poll builds the adopt policy from THIS owner\'s fp, 
     'sentAt: ctx?.sentAt,',
     'storedSentAts: () => listInboundSentAtFrom(fromFp),',
     'onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),',
+    'onDrop: (r, c) => {',
+    'dropCause = c;',
+    '...(dropCause ? { cause: dropCause } : {})',
     'onSessionReplaced: async (fp) =>',
     'await markSessionReset(fp);',
   ]) assert.ok(seam.includes(needle), `buildNoteSeam lost: ${needle}`);

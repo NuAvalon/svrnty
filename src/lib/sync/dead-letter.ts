@@ -69,6 +69,19 @@ export function classifyBlob(blob: string): BlobKind {
  */
 export const DEAD_LETTER_PHASES = ['held', 'recorded'] as const;
 export type DeadLetterPhase = (typeof DEAD_LETTER_PHASES)[number];
+/**
+ * WHY a ratchet frame did not open, as a closed set of fixed tokens (never any frame text). Athena's named rows read one of them: a verdict row says
+ * "out of step" only for 'first-frame-rejected'. Only the three ratchet reasons can carry one; anything outside this list is dropped at write and refused at read.
+ */
+export const DEAD_LETTER_CAUSES = [
+  'malformed-frame', 'first-frame-rejected', 'peer-card-has-no-pq-keys', // the frame's / the sender's card (verdict)
+  'session-row-unreadable', 'session-snapshot-corrupt', 'own-ratchet-identity-unavailable', 'contact-missing-after-admit', 'open-threw', 'no-ratchet-opener', // this device (local)
+  'ratchet-receive-failed', // the sessions disagree (desync)
+] as const;
+export type DeadLetterCause = (typeof DEAD_LETTER_CAUSES)[number];
+export const CAUSE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['ratchet-unopenable', 'ratchet-local', 'ratchet-desync']);
+export const isDeadLetterCause = (v: unknown): v is DeadLetterCause => (DEAD_LETTER_CAUSES as readonly unknown[]).includes(v);
+
 export const HOLDABLE_REASONS: ReadonlySet<DeadLetterReason> = new Set<DeadLetterReason>(['missing-key', 'ratchet-local', 'ratchet-desync']);
 
 export interface DeadLetterRow {
@@ -80,6 +93,8 @@ export interface DeadLetterRow {
   fp?: string;
   /** Only for HOLDABLE_REASONS: 'held' while the envelope is kept on the relay, 'recorded' once it is released. */
   phase?: DeadLetterPhase;
+  /** Only for the ratchet reasons: a fixed token saying why the open failed. */
+  cause?: DeadLetterCause;
 }
 
 // The relay lets a depositor choose the envelope id (retry-dedup), so it is attacker-controlled until proven otherwise (F4):
@@ -113,6 +128,7 @@ export function makeDeadLetterRow(a: {
   blob: string;
   fp?: string;
   phase?: DeadLetterPhase;
+  cause?: unknown;
 }): DeadLetterRow | null {
   const envelope_id = safeEnvelopeId(a.envelopeId);
   if (!envelope_id) return null;
@@ -120,6 +136,7 @@ export function makeDeadLetterRow(a: {
   const row: DeadLetterRow = { envelope_id, first_seen: a.firstSeen, reason: a.reason, blob_kind: classifyBlob(a.blob) };
   if (AUTHENTICATED_REASONS.has(a.reason) && typeof a.fp === 'string' && FP_HEX.test(a.fp)) row.fp = a.fp.toLowerCase();
   if (a.phase !== undefined && HOLDABLE_REASONS.has(a.reason) && (DEAD_LETTER_PHASES as readonly unknown[]).includes(a.phase)) row.phase = a.phase;
+  if (CAUSE_REASONS.has(a.reason) && isDeadLetterCause(a.cause)) row.cause = a.cause;
   return row;
 }
 
@@ -184,7 +201,7 @@ export function planBound(
 export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp', 'phase'].includes(k)) return null;
+  for (const k of Object.keys(o)) if (!['envelope_id', 'first_seen', 'reason', 'blob_kind', 'fp', 'phase', 'cause'].includes(k)) return null;
   const envelope_id = safeEnvelopeId(o.envelope_id);
   if (!envelope_id) return null;
   if (typeof o.first_seen !== 'string' || !Number.isFinite(Date.parse(o.first_seen))) return null;
@@ -198,6 +215,10 @@ export function parseDeadLetterRow(raw: unknown): DeadLetterRow | null {
   if (o.phase !== undefined) {
     if (!HOLDABLE_REASONS.has(row.reason) || !(DEAD_LETTER_PHASES as readonly unknown[]).includes(o.phase)) return null;
     row.phase = o.phase as DeadLetterPhase;
+  }
+  if (o.cause !== undefined) {
+    if (!CAUSE_REASONS.has(row.reason) || !isDeadLetterCause(o.cause)) return null;
+    row.cause = o.cause;
   }
   return row;
 }

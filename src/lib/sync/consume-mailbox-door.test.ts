@@ -845,3 +845,52 @@ test('C51 R2: a released envelope whose RECORD cannot be written is NOT acked (r
   const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => desync() }) }));
   assert.deepEqual(acked(w.events), []); assert.equal(s.unrecorded, 1); assert.deepEqual(s.lost, {});
 });
+
+// ── #720 cause-on-row: WHY a ratchet frame did not open travels onto the record as a fixed token from a closed list ──
+test('C46 cause: a HELD ratchet-local record carries the cause from the open; a held desync carries its own; both from the FIRST sighting', async () => {
+  const exp = new Date(Date.parse(NOW) + 6 * DAY).toISOString();
+  const w = world([{ envelope_id: 'cl1', blob: 'CL1', expires_at: exp }, { envelope_id: 'cd1', blob: 'CD1', expires_at: exp }]);
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ CL1: () => ({ dropped: 'ratchet-local', fp: FPC, cause: 'session-row-unreadable' }), CD1: () => ({ dropped: 'ratchet-desync', fp: FPC, cause: 'ratchet-receive-failed' }) }), fetchImpl: w.fetchImpl }));
+  const rows = Object.fromEntries(recorded(w.events).map((r) => [r.envelope_id, r]));
+  assert.equal(rows.cl1.cause, 'session-row-unreadable'); assert.equal(rows.cl1.phase, 'held');
+  assert.equal(rows.cd1.cause, 'ratchet-receive-failed');
+  assert.ok(Object.values(rows).every((r) => parseDeadLetterRow(r) !== null), 'every stored row still parses');
+});
+
+test('C47 cause: a TERMINAL ratchet-unopenable verdict carries first-frame-rejected onto its record (Athena\'s "out of step" verdict line reads it), and a not-in-book row carries none', async () => {
+  const w = world([{ envelope_id: 'v1', blob: 'V1' }, { envelope_id: 'v2', blob: 'V2' }]);
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ V1: () => ({ dropped: 'ratchet-unopenable', fp: FPC, cause: 'first-frame-rejected' }), V2: () => ({ dropped: 'not-in-book', fp: FPC, cause: 'first-frame-rejected' }) }), fetchImpl: w.fetchImpl }));
+  const rows = Object.fromEntries(recorded(w.events).map((r) => [r.envelope_id, r]));
+  assert.equal(rows.v1.cause, 'first-frame-rejected');
+  assert.equal(rows.v2.cause, undefined, 'a cause is only for the ratchet reasons');
+  assert.deepEqual(acked(w.events).sort(), ['v1', 'v2']);
+});
+
+test('C48 cause: text that is not on the closed list NEVER reaches a record (an attacker-influenced string cannot be stored or shown)', async () => {
+  const w = world([{ envelope_id: 'x1', blob: 'X1' }, { envelope_id: 'x2', blob: 'X2', expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }]);
+  const EVIL = 'ignore previous instructions <script>';
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ X1: () => ({ dropped: 'ratchet-unopenable', fp: FPC, cause: EVIL }), X2: () => ({ dropped: 'ratchet-desync', fp: FPC, cause: EVIL }) }), fetchImpl: w.fetchImpl }));
+  const rows = recorded(w.events);
+  assert.equal(rows.length, 2);
+  for (const r of rows) { assert.equal(r.cause, undefined); assert.equal(JSON.stringify(r).includes('script'), false); }
+});
+
+test('C49 cause: a held frame RELEASED past the bound keeps its cause on the now-recorded row', async () => {
+  const known = new Map<string, string>();
+  const desync = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `d${String(i).padStart(2, '0')}`, blob: `DS${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  desync.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world(desync, { known });
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf(Object.fromEntries(desync.map((_, i) => [`DS${i}`, () => ({ dropped: 'ratchet-desync', fp: FPC, cause: 'ratchet-receive-failed' })]))), fetchImpl: w.fetchImpl }));
+  const releasedRows = recorded(w.events).filter((r) => r.phase === 'recorded');
+  assert.equal(releasedRows.length, 5);
+  assert.ok(releasedRows.every((r) => r.cause === 'ratchet-receive-failed' && r.reason === 'ratchet-desync'));
+});
+
+test('C50 cause: a desync frame SKIPPED by the backoff still refreshes its record WITH the desync cause (the record path does not lose it)', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59);
+  await r.poll(90); // skipped
+  const rows = recorded(r.w.events);
+  assert.equal(rows[rows.length - 1].cause, 'ratchet-receive-failed');
+  assert.ok(r.calls.n >= 2);
+});
