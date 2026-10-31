@@ -291,6 +291,22 @@ export async function listNotesForThread(threadId: string): Promise<NoteRecord[]
   return out.sort((a, b) => a.sent_at.localeCompare(b.sent_at));
 }
 
+/**
+ * sent_at of every INBOUND note already stored from this contact, across all threads (#720 R5b replay guard: a peer's new first frame may replace our
+ * session only if its signed time is newer than all of these). The fingerprint compare ignores case, so a differently-cased copy still counts (the
+ * stricter direction: it can only make the guard refuse more).
+ */
+export async function listInboundSentAtFrom(peerFingerprint: string): Promise<string[]> {
+  const want = peerFingerprint.toLowerCase();
+  const out: string[] = [];
+  for (const t of await listThreads()) {
+    for (const n of await listNotesForThread(t.thread_id)) {
+      if (n.direction === 'inbound' && n.from_fingerprint.toLowerCase() === want) out.push(n.sent_at);
+    }
+  }
+  return out;
+}
+
 export async function deleteThread(threadId: string): Promise<void> {
   const notes = await listNotesForThread(threadId);
   for (const n of notes) await txDelete('notes', n.note_id);

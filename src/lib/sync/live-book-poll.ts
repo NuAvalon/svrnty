@@ -209,9 +209,11 @@ export function buildNoteSeam(
         },
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
-        openRatchet: async (fromFp, body) => {
+        openRatchet: async (fromFp, body, ctx) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
           const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
+          const { buildAdoptFirstFrame } = await import('@/lib/messaging/session-adopt-policy');
+          const { listInboundSentAtFrom } = await import('@/lib/messaging/store');
           const { openRatchetClassified } = await import('@/lib/messaging/ratchet-open');
           // v5.3: every failure comes back TYPED (local = this device, verdict = the frame/card), never a bare null. R4 + R2: open WITHOUT
           // persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
@@ -223,8 +225,25 @@ export function buildNoteSeam(
               }),
             contactExists: async () => !!(await getContactByFingerprint(owner.fingerprint, fromFp)),
             loadPeer: () => loadPeerRatchet(owner.fingerprint, fromFp),
-            open: (self, peer) => openDirectNoteStagedTyped(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint)),
+            // R5/R6: a peer's NEW first frame may replace our session, but only if the policy agrees (signed sent_at newer than every stored note from them,
+            // lower-fp tie-break while ours is unconfirmed). The stored notes are read only on a desync.
+            open: (self, peer) =>
+              openDirectNoteStagedTyped(
+                fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint),
+                buildAdoptFirstFrame({
+                  ownFingerprint: owner.fingerprint,
+                  peerFingerprint: fromFp,
+                  sentAt: ctx?.sentAt,
+                  storedSentAts: () => listInboundSentAtFrom(fromFp),
+                  now: Date.now,
+                }),
+              ),
           });
+        },
+        // R5: after the replacing note is stored and the session committed, that contact's held frames are released as session-reset records.
+        onSessionReplaced: async (fp) => {
+          const { markSessionReset } = await import('@/lib/messaging/dead-letter-store');
+          await markSessionReset(fp);
         },
       });
       if (!rec) {

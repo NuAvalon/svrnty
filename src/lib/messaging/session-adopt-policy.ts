@@ -36,3 +36,45 @@ export function mayAdoptFirstFrame(f: AdoptFacts): boolean {
   if (f.unconfirmed && f.ownFingerprint.toLowerCase() < f.peerFingerprint.toLowerCase()) return false; // we are the lower fp: ours wins
   return true;
 }
+
+// ISO-8601 with an explicit zone. Date.parse alone is lenient (Date.parse('5') is a date in 2001), and the replay guard is only as good as the time it compares.
+const STRICT_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+/** A wire/stored sent_at as epoch ms, or NaN for anything that is not a strict ISO-8601 timestamp with a zone (never defaults to now). */
+export function parseSentAtMs(v: unknown): number {
+  return typeof v === 'string' && STRICT_ISO.test(v) ? Date.parse(v) : NaN;
+}
+
+export interface AdoptWiring {
+  ownFingerprint: string;
+  peerFingerprint: string;
+  /** The SIGNED sent_at of the frame's note, exactly as it is on the wire. */
+  sentAt: string | undefined;
+  /** sent_at of every note already stored from this contact. Called only on a desync, under the session lock. */
+  storedSentAts: () => Promise<string[]>;
+  now: () => number;
+}
+
+/**
+ * The caller's answer to the opener's "may this new first frame replace our session?". The stored notes are read ONLY when asked (a desync), and a
+ * read that throws means NO (fail-closed; the frame stays a held desync). A stored sent_at that is not a strict timestamp has no usable time and is
+ * skipped: it cannot help a replayer (an old frame carries its own old signed time) and one odd note from a contact must not lock that contact out
+ * of healing for good.
+ */
+export function buildAdoptFirstFrame(w: AdoptWiring): (s: { unconfirmed: boolean }) => Promise<boolean> {
+  return async ({ unconfirmed }) => {
+    try {
+      const times = (await w.storedSentAts()).map(parseSentAtMs).filter((t) => Number.isFinite(t));
+      return mayAdoptFirstFrame({
+        unconfirmed,
+        ownFingerprint: w.ownFingerprint,
+        peerFingerprint: w.peerFingerprint,
+        sentAtMs: parseSentAtMs(w.sentAt),
+        newestStoredAtMs: times.length ? Math.max(...times) : null,
+        nowMs: w.now(),
+      });
+    } catch {
+      return false;
+    }
+  };
+}

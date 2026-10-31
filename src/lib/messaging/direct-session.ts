@@ -179,7 +179,7 @@ export interface StagedOpen {
  * both fingerprints, so it answers; the opener only reports what it can see (`unconfirmed` = a session WE initiated that has received nothing from the peer yet).
  * Absent = never adopt (the status quo).
  */
-export type AdoptFirstFrame = (s: { unconfirmed: boolean }) => boolean;
+export type AdoptFirstFrame = (s: { unconfirmed: boolean }) => boolean | Promise<boolean>;
 
 /**
  * Why a ratchet open did not produce a message, TYPED (#720 v5.3, Flint #2052). 'verdict' = the frame itself is bad (malformed, would not
@@ -237,7 +237,7 @@ export async function openDirectNoteStagedTyped(
       if (pt === null) {
         // R5: the peer may have RESET and sent a NEW first frame. Only if the caller's policy allows replacing (replay guard + R6 tie-break) do we try
         // it, and only a genuine FIRST frame can open here (acceptFirst rejects a continuation). Anything else stays the held desync it was.
-        const first = adopt && adopt({ unconfirmed: cur.snapshot.recvCk === null }) ? await TripleRatchet.acceptFirst(self, peer, packet) : null;
+        const first = adopt && (await adopt({ unconfirmed: cur.snapshot.recvCk === null })) ? await TripleRatchet.acceptFirst(self, peer, packet) : null;
         if (!first) return { failed: true, kind: 'desync', cause: 'ratchet-receive-failed' };
         plaintext = first.plaintext;
         next = first.session.exportState();

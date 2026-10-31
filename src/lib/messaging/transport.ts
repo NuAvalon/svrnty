@@ -272,7 +272,9 @@ export async function acceptInboundNote(args: {
   peerKind?: ParticipantKind;
   /** Open a triple-ratchet inner body. Required when the body is a ratchet packet. May return the plaintext (already committed, legacy)
    *  or a {@link StagedOpen}, whose session advance is committed HERE only after the note and thread are stored (R4). */
-  openRatchet?: (fromFingerprint: string, body: string) => Promise<string | StagedOpen | OpenFailure | null>;
+  openRatchet?: (fromFingerprint: string, body: string, ctx: { sentAt: string | undefined }) => Promise<string | StagedOpen | OpenFailure | null>;
+  /** #720 R5: told AFTER the note is stored and the session is committed that this open REPLACED our session with the sender (their reset), so their held frames can be released. Best effort: a throw is swallowed and the frames simply stay held. */
+  onSessionReplaced?: (fromFingerprint: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
   io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
   /**
@@ -308,7 +310,8 @@ export async function acceptInboundNote(args: {
       args.onDrop?.('ratchet-local');
       return null;
     }
-    const opened = await args.openRatchet(args.wire.from_fingerprint, body);
+    // ctx.sentAt is the note's SIGNED sent_at exactly as received (never defaulted to now): the replay guard in the opener's adopt policy reads it.
+    const opened = await args.openRatchet(args.wire.from_fingerprint, body, { sentAt: args.wire.sent_at });
     // #720 r2 (Flint): at-least-once redelivery. The session advances only AFTER the note and thread are stored (R4), so a frame that no
     // longer opens while this sender's note is already stored is a completed delivery whose ack never landed: its message key is spent.
     // Return the stored note (no drop, no loss record). Checked only on failure, so every R4 retry (session not yet advanced) still opens.
@@ -375,6 +378,9 @@ export async function acceptInboundNote(args: {
   // session untouched, so the retried envelope opens again. If this commit itself fails the note is already stored (putNote is idempotent
   // on note_id), the session is still un-advanced, and the retry re-opens, re-stores harmlessly and commits.
   if (staged) await staged.commit();
+  if (staged?.replaced) {
+    try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
+  }
   return record;
   } finally {
     staged?.release();
