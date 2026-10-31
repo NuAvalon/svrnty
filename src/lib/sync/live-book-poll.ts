@@ -547,21 +547,22 @@ export interface LiveBookPollHandle {
  * a full interval.
  */
 /**
- * What one poll can honestly say (copy v2, Hypatia 54ba6eb0; Archie #2401/#2404):
+ * What one poll can honestly say (copy v4, Hypatia c109fb20; Archie #2401/#2404/#2414):
  * - 'ok': the relay answered with a list and nothing was left on it (every polled envelope acked; none held, none unrecorded). The ONLY
  *   status that may be shown as "Caught up."
  * - 'checked-waiting': the relay answered with a list, but envelopes are still on it (held, unrecorded, retryable, or an ack that failed).
- * - 'rejected': the poll was refused (non-OK status) or the answer was not a list. NOT an empty mailbox.
+ * - 'rejected': the poll was refused (non-OK status). NOT an empty mailbox.
+ * - 'unreadable': the relay answered 2xx but the body was not a list. Also NOT an empty mailbox, and not a refusal.
  * - 'locked': no poll ran (locked / no identity), or the unlock cycle ended mid-poll, so the mailbox state is unknown.
  */
-export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'locked';
+export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'unreadable' | 'locked';
 
 export function pollStatusOf(
   summary: Pick<ConsumeSummary, 'rejected' | 'polled' | 'acked' | 'held' | 'unrecorded'>,
   cycleEnded = false,
 ): PollOnceStatus {
   if (cycleEnded) return 'locked';
-  if (summary.rejected !== undefined) return 'rejected';
+  if (summary.rejected !== undefined) return summary.rejected >= 200 && summary.rejected < 300 ? 'unreadable' : 'rejected';
   if (summary.held > 0 || summary.unrecorded > 0 || summary.acked < summary.polled) return 'checked-waiting';
   return 'ok';
 }

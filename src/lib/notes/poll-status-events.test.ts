@@ -79,7 +79,7 @@ test('store: one answered poll clears it and resets the run (2 more refusals do 
   reportPollStatus('rejected');
   assert.equal(getPollRefusedReport().refused, false);
   reportPollStatus('rejected');
-  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: 1000 });
+  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: 1000, kind: 'refused' });
 });
 
 test('store: a checked-waiting poll is an ANSWERED poll: it clears the notice and is the "since" time', () => {
@@ -87,7 +87,7 @@ test('store: a checked-waiting poll is an ANSWERED poll: it clears the notice an
   reportPollStatus('checked-waiting', 77);
   assert.equal(getPollRefusedReport().refused, false);
   for (let i = 0; i < 3; i++) reportPollStatus('rejected');
-  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: 77 });
+  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: 77, kind: 'refused' });
 });
 
 test('store: locked never shows it and ends the run', () => {
@@ -105,7 +105,7 @@ test('store: clearPollStatus (session lock) forgets the last answered time, so n
   reportPollStatus('ok', 5);
   clearPollStatus();
   for (let i = 0; i < 3; i++) reportPollStatus('rejected');
-  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: undefined });
+  assert.deepEqual(getPollRefusedReport(), { refused: true, lastOkAt: undefined, kind: 'refused' });
 });
 
 test('store: lockSession() runs the clear (the onSessionLock hook is wired)', () => {
@@ -127,23 +127,34 @@ test('store: subscribers are woken on change only, and a throwing subscriber is 
   assert.deepEqual(seen, [true, false]);
 });
 
-test('copy: both §B variants verbatim + the hedged hint; nothing when not refused', () => {
+test('copy: both §B "refused" variants verbatim + the hedged hint; nothing when not refused', () => {
   assert.equal(pollRefusedNotice({ refused: false }, fmt), null);
-  assert.deepEqual(pollRefusedNotice({ refused: true, lastOkAt: 42 }, fmt), {
+  assert.deepEqual(pollRefusedNotice({ refused: true, lastOkAt: 42, kind: 'refused' }, fmt), {
     text: "Couldn't check for new messages since T42. The relay refused this device's request.",
     hint: "If your device's date and time are wrong, fixing them may help.",
   });
-  assert.deepEqual(pollRefusedNotice({ refused: true }, fmt), {
+  assert.deepEqual(pollRefusedNotice({ refused: true, kind: 'refused' }, fmt), {
     text: "Couldn't check for new messages. The relay refused this device's request.",
     hint: POLL_REFUSED_COPY.hint,
   });
 });
 
+test('copy v3: both "couldn\'t be read" variants verbatim, with NO clock hint', () => {
+  assert.deepEqual(pollRefusedNotice({ refused: true, lastOkAt: 42, kind: 'unreadable' }, fmt), {
+    text: "Couldn't check for new messages since T42. The relay's reply couldn't be read.",
+  });
+  assert.deepEqual(pollRefusedNotice({ refused: true, kind: 'unreadable' }, fmt), {
+    text: "Couldn't check for new messages. The relay's reply couldn't be read.",
+  });
+});
+
 test('copy: never says caught up / up to date / no new messages / kept / safe / a count', () => {
-  for (const r of [{ refused: true as const, lastOkAt: 1 }, { refused: true as const }]) {
-    const n = pollRefusedNotice(r, fmt)!;
-    for (const re of NEVER_SAY) {
-      assert.ok(!re.test(n.text) && !re.test(n.hint), `${re} in ${n.text} / ${n.hint}`);
+  for (const kind of ['refused', 'unreadable'] as const) {
+    for (const r of [{ refused: true as const, lastOkAt: 1, kind }, { refused: true as const, kind }]) {
+      const n = pollRefusedNotice(r, fmt)!;
+      for (const re of NEVER_SAY) {
+        assert.ok(!re.test(n.text) && !re.test(n.hint ?? ''), `${re} in ${n.text} / ${n.hint}`);
+      }
     }
   }
 });
@@ -154,6 +165,51 @@ test('NEG pull-to-refresh path: 3 × queue 401 → the notice; 200 [] then clear
   assert.equal(getPollRefusedReport().refused, true);
   assert.equal(await pollLiveBookOnce({}, { buildDeps: depsWith(fetchImpl) }), 'ok');
   assert.equal(getPollRefusedReport().refused, false);
+});
+
+/** /queue answers each poll with the next item: a number = that status with an error body; 'bad' = 200 with a non-list body. */
+function relayKinds(seq: Array<number | 'bad'>): typeof fetch {
+  let i = 0;
+  return async () => {
+    const k = seq[Math.min(i++, seq.length - 1)];
+    if (k === 'bad') return new Response('{"envelopes":"nope"}', { status: 200 });
+    return new Response(k === 200 ? '[]' : '{}', { status: k });
+  };
+}
+
+test('NEG v3: 3 × malformed 200 → "couldn\'t be read", NO clock hint, never "refused"', async () => {
+  const f = relayKinds(['bad']);
+  for (let i = 0; i < 3; i++) assert.equal(await pollLiveBookOnce({}, { buildDeps: depsWith(f) }), 'unreadable');
+  const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
+  assert.equal(n.text, "Couldn't check for new messages. The relay's reply couldn't be read.");
+  assert.equal(n.hint, undefined);
+  assert.ok(!/refused/i.test(n.text));
+});
+
+test('NEG v3: 3 × 401 → "refused" + the clock hint', async () => {
+  const f = relayKinds([401]);
+  for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
+  assert.equal(n.text, "Couldn't check for new messages. The relay refused this device's request.");
+  assert.equal(n.hint, POLL_REFUSED_COPY.hint);
+});
+
+test('NEG v3: mixed 401, 401, malformed → the streak counts both; worded for the LATEST ("couldn\'t be read")', async () => {
+  const f = relayKinds([401, 401, 'bad']);
+  for (let i = 0; i < 3; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  const n = pollRefusedNotice(getPollRefusedReport(), fmt)!;
+  assert.equal(n.text, "Couldn't check for new messages. The relay's reply couldn't be read.");
+  assert.equal(n.hint, undefined);
+});
+
+test('NEG v3: an ok first, then 3 failures, the latest a 401 → "since <time>" + "refused" + hint', async () => {
+  const f = relayKinds([200, 'bad', 'bad', 401]);
+  for (let i = 0; i < 4; i++) await pollLiveBookOnce({}, { buildDeps: depsWith(f) });
+  const r = getPollRefusedReport();
+  assert.ok(r.refused && r.kind === 'refused' && typeof r.lastOkAt === 'number');
+  const n = pollRefusedNotice(r, fmt)!;
+  assert.match(n.text, /^Couldn't check for new messages since T\d+\. The relay refused this device's request\.$/);
+  assert.equal(n.hint, POLL_REFUSED_COPY.hint);
 });
 
 test('NEG pull-to-refresh path: locked never shows it', async () => {

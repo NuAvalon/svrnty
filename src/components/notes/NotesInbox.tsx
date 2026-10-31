@@ -144,7 +144,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
     () => heldNotices([{ reason: 'missing_key', count: heldReport.count, kept: 'relay', expiresAt: heldReport.expiresAt }], Date.now(), (ms) => formatRelayDeadline(ms))[0] ?? null,
     [heldReport],
   );
-  // copy v1 §B: the shared poll has been refused by the relay 3 times in a row (in memory; cleared on lock and on the first answered poll).
+  // copy v3 §B: the shared poll has failed 3 times in a row (refused, or a reply it couldn't read) (in memory; cleared on lock and on the first answered poll).
   const [pollRefused, setPollRefused] = useState<PollRefusedReport>(getPollRefusedReport);
   useEffect(() => {
     setPollRefused(getPollRefusedReport());
@@ -504,9 +504,11 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
               <p data-testid="notes-poll-refused-text" style={{ margin: 0 }}>
                 {refusedNotice.text}
               </p>
-              <p data-testid="notes-poll-refused-hint" style={{ margin: '6px 0 0', color: E.muted }}>
-                {refusedNotice.hint}
-              </p>
+              {refusedNotice.hint ? (
+                <p data-testid="notes-poll-refused-hint" style={{ margin: '6px 0 0', color: E.muted }}>
+                  {refusedNotice.hint}
+                </p>
+              ) : null}
             </div>
           ) : null}
 

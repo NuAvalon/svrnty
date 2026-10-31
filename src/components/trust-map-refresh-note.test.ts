@@ -72,7 +72,7 @@ test('NEG locked through the REAL deps builder (no identity record) → locked',
 
 test('NEG 200 whose body is not a list ({} / null / a string / a number) → never "Caught up." (Archie #2401)', async () => {
   for (const body of [{}, null, 'x', 7, { envelopes: [] }]) {
-    assert.equal(await pollLiveBookOnce({}, { buildDeps: depsWith(relay(200, body)) }), 'rejected', JSON.stringify(body));
+    assert.equal(await pollLiveBookOnce({}, { buildDeps: depsWith(relay(200, body)) }), 'unreadable', JSON.stringify(body));
     assert.equal(await refreshOver(depsWith(relay(200, body))), REFRESH_NOTE.failed, JSON.stringify(body));
   }
 });
@@ -132,7 +132,7 @@ test('NEG 200 + one HELD envelope (no usable kem secret) → the v2 line, never 
   const b = depsOver({ hybridSecretMissing: true, fetchImpl: relayWith([{ envelope_id: 'e1', blob: HYBRID_BLOB }]) });
   assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'checked-waiting');
   const note = await refreshOver(b);
-  assert.equal(note, "Checked. Some messages couldn't be opened on this device and are still on the relay.");
+  assert.equal(note, 'Checked. Some messages are still on the relay.');
   assert.notEqual(note, REFRESH_NOTE.ok);
 });
 
@@ -148,6 +148,21 @@ test('NEG 200 + UNRECORDED > 0 (its record could not be committed, left on the r
 test('NEG 200 + an envelope whose ACK failed (still on the relay) → the v2 line, never "Caught up."', async () => {
   const b = depsOver({ fetchImpl: relayWith([{ envelope_id: 'e1', blob: 'not-a-sealed-blob' }], 500) });
   assert.equal(await pollLiveBookOnce({}, { buildDeps: b }), 'checked-waiting');
+  const note = await refreshOver(b);
+  assert.equal(note, REFRESH_NOTE.checkedWaiting);
+  assert.ok(!/couldn't be opened/i.test(note), 'v4: an un-acked envelope may have been opened; never claim it was not');
+});
+
+test('static NEG (copy v4): the retired v2 checked-waiting text appears nowhere in src/ or app/', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const root = join(here, '..', '..');
+  let hits = '';
+  try {
+    hits = execFileSync('git', ['grep', '-n', '-F', "couldn't be opened on this device and are still on the relay", '--', 'src', 'app', ':!*.test.ts'], { cwd: root, encoding: 'utf8' });
+  } catch {
+    hits = ''; // git grep exits 1 when there are no hits
+  }
+  assert.equal(hits, '');
 });
 
 test('NEG the unlock cycle ended mid-poll (locked during the tick) → locked, never "Caught up."', async () => {
@@ -178,6 +193,11 @@ test('pollStatusOf table: only a clean, fully-acked, answered list is ok', () =>
   assert.equal(pollStatusOf({ ...z, polled: 2, acked: 1 }), 'checked-waiting');
   assert.equal(pollStatusOf({ ...z, rejected: 401 }), 'rejected');
   assert.equal(pollStatusOf({ ...z, rejected: 401, held: 1 }), 'rejected');
+  assert.equal(pollStatusOf({ ...z, rejected: 200 }), 'unreadable');
+  assert.equal(pollStatusOf({ ...z, rejected: 299 }), 'unreadable');
+  assert.equal(pollStatusOf({ ...z, rejected: 300 }), 'rejected');
+  assert.equal(pollStatusOf({ ...z, rejected: 199 }), 'rejected');
+  assert.equal(refreshNoteFor('unreadable'), REFRESH_NOTE.failed);
   assert.equal(pollStatusOf(z, true), 'locked');
   assert.equal(refreshNoteFor('checked-waiting'), REFRESH_NOTE.checkedWaiting);
 });
