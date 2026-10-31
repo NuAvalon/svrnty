@@ -38,6 +38,7 @@ import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 import type { ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import type { OpenLegCounter } from './open-leg-counter';
+import type { HoldBackoff } from './hold-backoff';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
@@ -232,6 +233,8 @@ export interface ConsumeDeps {
   // one "kept until" date has to be true for every message the count includes, and a missing or malformed date proves nothing.
   emitHeld?: (count: number, info?: { expiresAt?: string }) => void;
   deadLetter?: DeadLetterSink; // #720: record-before-ack for everything that did not become a stored message
+  // #720 T2b: when a held ratchet-DESYNC envelope is retried (every poll for its first hour, then hourly). Omit = retried every poll.
+  holdBackoff?: HoldBackoff;
 }
 
 export interface ConsumeSummary {
@@ -389,6 +392,15 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
     if (deps.owner.cycle?.ended) break;
+    // T2b: a held desync envelope that is not due yet is NOT tried (no ratchet open, no side effect). It still counts as held with its
+    // recorded reason + fingerprint, so the record and the keep bound behave as if it had been tried and failed again.
+    const backoff = deps.holdBackoff;
+    const nowMs = Date.parse(now());
+    if (backoff && Number.isFinite(nowMs) && !backoff.due(env.envelope_id, nowMs)) {
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: 'ratchet-desync', fp: backoff.fpOf(env.envelope_id) });
+      summary.dropped++;
+      continue;
+    }
     let outcome: Outcome;
     try {
       outcome = await consumeOne(env.blob, deps, now);
@@ -404,6 +416,10 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     // A cycle that died DURING this blob makes it look undecryptable (decryptors throw → terminal → ack-delete).
     // That is a lock/switch artefact, not a verdict on the blob: downgrade so it is never ack-deleted.
     if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
+    if (backoff && Number.isFinite(nowMs)) {
+      if (outcome.kind === 'held' && outcome.reason === 'ratchet-desync') backoff.attempted(env.envelope_id, outcome.fp, nowMs);
+      else backoff.forget(env.envelope_id); // opened, consumed, or no longer a desync hold: no schedule to keep
+    }
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
@@ -445,6 +461,9 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     }
   }
 
+
+  // T2b: forget the schedule of every envelope the relay no longer holds (acked, expired, released), so the map stays as small as the mailbox.
+  if (deps.holdBackoff && !deps.owner.cycle?.ended) deps.holdBackoff.keepOnly(new Set(envelopes.map((e) => e.envelope_id)));
 
   // Held envelopes (kept on the relay for retry): each gets a record so its FIRST-SEEN time survives across polls, then the keep bound
   // applies (<= 50 and <= 7 days; the OLDEST are released). A released envelope's record is already committed, so it is acked now.

@@ -13,6 +13,7 @@ import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { consumeInboundContactUpdates, type ConsumeDeps, type DeadLetterSink, type DroppedNote, type NoteResponseSeam } from './consume-mailbox';
 import { isMessageReason, parseDeadLetterRow, recordKeyFor, type DeadLetterRow } from './dead-letter';
+import { createHoldBackoff } from './hold-backoff';
 
 let OWNER: { fingerprint: string; publicKeyArmored: string; privateKeyArmored: string; passphrase: string };
 before(async () => {
@@ -586,4 +587,88 @@ test('C28 T2 B1-for-holds (Flint #2185, M3): outsiders can fill the missing-key 
   assert.equal(acked(w.events).includes('dsx'), false, 'the held desync frame is NOT released by an outsider-fillable group');
   assert.deepEqual(acked(w.events).sort(), Array.from({ length: 10 }, (_, i) => `mk${String(i).padStart(2, '0')}`), 'only the 10 oldest missing-key holds are released (bounded against their own group)');
   assert.equal(s.released, 10); assert.equal(s.held, 51); assert.deepEqual(s.lost, { 'missing-key': 10 });
+});
+
+// ── T2b (Flint #186298 T2): a held ratchet-DESYNC envelope is retried on every poll for its first hour, then hourly ──
+const MIN = 60_000;
+/** One held desync envelope on a relay that keeps returning it; a clock the test moves; a seam that counts how often the ratchet was actually tried. */
+function backoffRig(opts: { kind?: 'ratchet-desync' | 'ratchet-local' } = {}) {
+  const t0 = Date.parse(NOW);
+  const clock = { ms: t0 };
+  const known = new Map<string, string>();
+  const calls = { n: 0 };
+  const env = { envelope_id: 'bo1', blob: 'BO1', expires_at: new Date(t0 + 6 * DAY).toISOString() };
+  const w = world([env], { known });
+  const hb = createHoldBackoff();
+  const seam = (healed: () => boolean): NoteResponseSeam =>
+    seamOf({ BO1: () => { calls.n++; return healed() ? { note_id: 'n-BO1', thread_id: 't1', from_fingerprint: FPC } : { dropped: opts.kind ?? 'ratchet-desync', fp: FPC }; } });
+  const poll = (at: number, healed = () => false, withBackoff = true) => {
+    clock.ms = t0 + at * MIN;
+    return consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seam(healed), fetchImpl: w.fetchImpl, now: () => new Date(clock.ms).toISOString(), ...(withBackoff ? { holdBackoff: hb } : {}) }));
+  };
+  return { w, hb, calls, poll };
+}
+
+test('C29 T2b: in the first hour a held desync frame is tried on EVERY poll', async () => {
+  const r = backoffRig();
+  for (const at of [0, 1, 20, 59]) await r.poll(at);
+  assert.equal(r.calls.n, 4);
+  assert.deepEqual(acked(r.w.events), [], 'held, never acked');
+});
+
+test('C30 T2b: after the first hour it is tried hourly: skipped in between (the ratchet is not touched), tried again an hour after the last try', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59); // 2 tries, the last at +59m
+  const before = r.calls.n;
+  await r.poll(61); await r.poll(90); await r.poll(118);
+  assert.equal(r.calls.n, before, 'no try at +61, +90, +118 min: not due');
+  await r.poll(119);
+  assert.equal(r.calls.n, before + 1, 'an hour after the last try (+59m) it is tried again');
+  await r.poll(150);
+  assert.equal(r.calls.n, before + 1, 'and the hour restarts from that try');
+});
+
+test('C31 T2b: a SKIPPED poll still counts it as held with its recorded reason + fp: the record is refreshed, the held count is 1, nothing is acked or counted lost', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59);
+  const recordsBefore = recorded(r.w.events).length;
+  const s = await r.poll(90); // skipped
+  assert.equal(s.held, 1); assert.deepEqual(s.lost, {}); assert.equal(s.released, 0);
+  assert.deepEqual(acked(r.w.events), []);
+  const rows = recorded(r.w.events);
+  assert.ok(rows.length > recordsBefore, 'the skipped poll still goes through the record path');
+  const last = rows[rows.length - 1];
+  assert.equal(last.reason, 'ratchet-desync'); assert.equal(last.fp, FPC);
+});
+
+test('C32 T2b: when the frame finally opens it is stored + acked, and the schedule is forgotten', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59);
+  assert.equal(r.hb.size(), 1);
+  const s = await r.poll(119, () => true);
+  assert.equal(s.notes, 1);
+  assert.deepEqual(acked(r.w.events), ['bo1']);
+  assert.equal(r.hb.size(), 0, 'forgotten once it opened');
+});
+
+test('C33 T2b: an envelope that is gone from the relay is pruned from the schedule (the map stays as small as the mailbox)', async () => {
+  const r = backoffRig();
+  await r.poll(0);
+  assert.equal(r.hb.size(), 1);
+  const empty = world([]);
+  await consumeInboundContactUpdates(deps({ deadLetter: empty.sink, note: seamOf({}), fetchImpl: empty.fetchImpl, holdBackoff: r.hb }));
+  assert.equal(r.hb.size(), 0);
+});
+
+test('C34 T2b: only DESYNC is backed off: a ratchet-LOCAL hold is still tried on every poll, even two hours in', async () => {
+  const r = backoffRig({ kind: 'ratchet-local' });
+  for (const at of [0, 61, 90, 125, 126]) await r.poll(at);
+  assert.equal(r.calls.n, 5);
+  assert.equal(r.hb.size(), 0, 'a local hold never enters the schedule');
+});
+
+test('C35 T2b: without a holdBackoff in deps nothing changes: tried on every poll', async () => {
+  const r = backoffRig();
+  for (const at of [0, 61, 90, 125]) await r.poll(at, () => false, false);
+  assert.equal(r.calls.n, 4);
 });
