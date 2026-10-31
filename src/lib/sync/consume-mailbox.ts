@@ -412,6 +412,10 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     summary.lost[r] = (summary.lost[r] ?? 0) + 1;
   };
   // #712 S1: a chunk is written BEFORE it is acked. false = the write failed: ack none of these `pending` (left on the relay, `unrecorded`).
+  // The consumed-counters of a chunk that was never written go back to the last commit (Apollo #2429): it counts as `unrecorded` only.
+  type Committed = Pick<ConsumeSummary, 'applied' | 'ignited' | 'notes' | 'delivered' | 'dropped' | 'deduped' | 'lost'>;
+  const snapshot = (): Committed => ({ applied: summary.applied, ignited: summary.ignited, notes: summary.notes, delivered: summary.delivered, dropped: summary.dropped, deduped: summary.deduped, lost: { ...summary.lost } });
+  let committed = snapshot();
   const commitChunk = (pending: number): boolean => {
     if (!txn) return true;
     try {
@@ -420,8 +424,10 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
       summary.notes -= refused.length;
       summary.dropped += refused.length;
       for (let i = 0; i < refused.length; i++) bump('verify-failed');
+      committed = snapshot();
       return true;
     } catch (err) {
+      Object.assign(summary, committed, { lost: { ...committed.lost } });
       summary.unrecorded += pending;
       console.error('[return-channel] could not write a chunk of consumed envelopes (left on the relay):', err instanceof Error ? err.message : 'error');
       return false;

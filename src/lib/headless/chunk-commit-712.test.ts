@@ -285,6 +285,26 @@ test('#712 C1 bound (Flint #2417): a listing prunes only ITS relay + mailbox; an
   }
 });
 
+test('#712 C1 bound: an entry older than 7 days in a scope NO listing covers is gone after the next real commit (Apollo #2429)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    const old = new Date(Date.now() - 8 * 864e5).toISOString();
+    const staleElsewhere = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_old')!;
+    const freshElsewhere = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_new')!;
+    plant(book.path, [{ key: staleElsewhere, at: old }, { key: freshElsewhere }]);
+    await sendN(A, B, 1, relay.fetchImpl);
+    await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    const keys = keysOnDisk(book.path);
+    assert.ok(!keys.includes(staleElsewhere), 'past the TTL: gone, whatever its scope');
+    assert.ok(keys.includes(freshElsewhere), 'control: a fresh entry of another scope stays');
+  } finally {
+    book.done();
+  }
+});
+
 test('#712 C1 PIN: the relay lists a mailbox WHOLE (no LIMIT/OFFSET, no slice in /queue). If this goes red, C1 must switch to a per-poll write (Flint #2417 binding)', () => {
   const store = readFileSync(join(process.cwd(), 'src/lib/relay/mailbox-store.ts'), 'utf8');
   const fn = store.slice(store.indexOf('export function pollMailbox('), store.indexOf('export function ackDelete('));
@@ -388,6 +408,7 @@ test('#712 S1: a commit that fails sends NO ack for that chunk; the envelopes st
     assert.equal(relay.acks.length, 0, 'no ack request at all');
     assert.equal(s.acked, 0);
     assert.equal(s.unrecorded, 2, 'visible: consumed but not committed, so left on the relay');
+    assert.equal(s.notes, 0, 'a chunk that was never written is not counted as stored (Apollo #2429)');
     assert.equal(relay.queued(), 2);
     assert.equal(store.listNotes().length, 0, 'the in-memory copy was rolled back to the disk');
     const again = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
