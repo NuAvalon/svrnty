@@ -24,7 +24,7 @@ const RELAY = 'http://relay.test/api/relay';
 type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
 async function mint(): Promise<Id> {
   const a = await mintHeadlessAgent({ throwaway: true });
-  const id: any = a.introduction.card.identity;
+  const id = a.introduction.card.identity as unknown as { fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
   return {
     fp: id.fingerprint, pub: id.public_key,
     priv: a.secret_material.classicalPrivateKey, kpass: a.secret_material.classicalKpass,
@@ -414,6 +414,36 @@ test('#712 S1: a commit that fails sends NO ack for that chunk; the envelopes st
     const again = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(again.notes, 2);
     assert.equal(relay.queued(), 0);
+  } finally {
+    book.done();
+  }
+});
+
+test('#712 S1 two chunks (Apollo #2440 r2): chunk 1 is written, chunk 2\'s write fails -> counts keep chunk 1, chunk 2 is only `unrecorded`', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const book = tmpBook();
+  let locked = false;
+  const relay = mockRelay(() => {
+    if (!locked) {
+      locked = true;
+      chmodSync(book.dir, 0o500); // after chunk 1's ack: chunk 2's commit can neither lock nor rename
+    }
+  });
+  try {
+    book.open().upsertContact(asContact(A));
+    await sendN(A, B, 25, relay.fetchImpl);
+    let s;
+    try {
+      s = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    } finally {
+      chmodSync(book.dir, 0o700);
+    }
+    assert.deepEqual(relay.acks.map((a) => a.length), [20], 'only chunk 1 acked');
+    assert.equal(s.notes, 20, 'chunk 1 WAS written: its notes still count');
+    assert.equal(s.unrecorded, 5, 'chunk 2 was never written');
+    assert.equal(s.acked, 20);
+    assert.equal(relay.queued(), 5);
+    assert.equal(book.open().listNotes().length, 20);
   } finally {
     book.done();
   }
