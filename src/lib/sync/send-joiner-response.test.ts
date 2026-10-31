@@ -10,25 +10,32 @@ import { verifyJoinerResponse } from '../trust/joiner-response';
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
+import { deriveOwnerHybridSecrets } from '../crypto/living-book-receive';
+import type { LivingBookHybridSecrets } from '../crypto/living-book-sleeve';
 
 const pass = 'test-passphrase-sjr';
 const CODE = 'GROW42';
 
 let alicePriv: string, alicePub: string, aliceFp: string; // GIVER (mailbox owner / recipient)
+let aliceKemPub: string; // the giver's verified ML-KEM-1024 pubkey: S14 seals the response PQ-hybrid to it
+let aliceHybrid: LivingBookHybridSecrets; // the giver's open-material (S14 verify opens hybrid first)
 let bob: Awaited<ReturnType<typeof makeCanonicalSender>>;  // JOINER (sender)
 
 // Both parties are §5 CANONICAL identities (64-hex fp). Post-res1 the giver's fingerprintMatchesKey is
 // canonical-only, so a classical 40-hex joiner can no longer verify (pinned in joiner-response.test.ts).
 before(async () => {
-  ({ privateKeyArmored: alicePriv, publicKeyArmored: alicePub, fingerprint: aliceFp } = await makeCanonicalSender('Alice', pass));
+  const alice = await makeCanonicalSender('Alice', pass);
+  ({ privateKeyArmored: alicePriv, publicKeyArmored: alicePub, fingerprint: aliceFp } = alice);
+  aliceKemPub = alice.kemPublicKeyB64;
+  aliceHybrid = (await deriveOwnerHybridSecrets(alicePriv, pass, alice.kemPublicKeyB64, alice.kemSecretKeyB64))!;
   bob = await makeCanonicalSender('Bob', pass);
 });
 
 function bobSender() {
   return bob;
 }
-function aliceTarget(overrides: Partial<{ fingerprint: string; publicKeyArmored: string; inviteNonce: string }> = {}) {
-  return { fingerprint: aliceFp, publicKeyArmored: alicePub, inviteNonce: CODE, ...overrides };
+function aliceTarget(overrides: Partial<{ fingerprint: string; publicKeyArmored: string; giverPqKemPublicKey: string; inviteNonce: string }> = {}) {
+  return { fingerprint: aliceFp, publicKeyArmored: alicePub, giverPqKemPublicKey: aliceKemPub, inviteNonce: CODE, ...overrides };
 }
 
 // A §5 CANONICAL identity shaped as a joiner sender: openpgp (sign+enc) + ML-KEM/ML-DSA → a 64-hex
@@ -53,6 +60,7 @@ async function makeCanonicalSender(name: string, passphrase = 'pw-' + name) {
     fingerprint, epoch: 0, publicKeyArmored: publicKey, displayName: name,
     privateKeyArmored: privateKey, passphrase,
     kemPublicKeyB64: uint8ToBase64(pq.kem.publicKey),
+    kemSecretKeyB64: uint8ToBase64(pq.kem.secretKey),
     sigPublicKeyB64: uint8ToBase64(pq.signing.publicKey),
   };
 }
@@ -66,7 +74,7 @@ test('buildJoinerResponseDeposit: addresses the giver mailbox and round-trips th
   // The blob decrypts to Alice and verifies to Bob-as-KNOWN (the code is a solicited nonce Alice issued).
   const joiner = await verifyJoinerResponse(
     deposit!.blob,
-    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass },
+    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass, hybrid: aliceHybrid },
     (n) => n === CODE,
   );
   assert.ok(joiner, 'the deposited blob must verify to a PendingJoiner at the giver');
@@ -83,16 +91,18 @@ test('buildJoinerResponseDeposit: the blob is giver-bound (a wrong-fp verify rej
   // joiner were refused earlier (fingerprint binding, decrypt) Eve's null would pass for the wrong reason.
   const forAlice = await verifyJoinerResponse(
     deposit!.blob,
-    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass },
+    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass, hybrid: aliceHybrid },
     () => true,
   );
   assert.ok(forAlice, 'control: the blob verifies for its real giver, so a null for Eve is attributable to giver-binding');
   // A different owner (fresh key) polling with the SAME code oracle must NOT accept Alice’s response —
   // it can’t even decrypt it (encrypted to Alice), and giver_fingerprint is signed to Alice.
-  const { privateKeyArmored: evePriv, fingerprint: eveFp } = await makeCanonicalSender('Eve', pass);
+  const eve = await makeCanonicalSender('Eve', pass);
+  const { privateKeyArmored: evePriv, fingerprint: eveFp } = eve;
+  const eveHybrid = (await deriveOwnerHybridSecrets(evePriv, pass, eve.kemPublicKeyB64, eve.kemSecretKeyB64))!;
   const notForEve = await verifyJoinerResponse(
     deposit!.blob,
-    { fingerprint: eveFp, privateKeyArmored: evePriv, passphrase: pass },
+    { fingerprint: eveFp, privateKeyArmored: evePriv, passphrase: pass, hybrid: eveHybrid },
     () => true,
   );
   assert.equal(notForEve, null, 'a joiner-response encrypted+bound to Alice must not verify for Eve');
@@ -105,6 +115,20 @@ test('buildJoinerResponseDeposit: returns null on a target with no key / no fing
   assert.equal(await buildJoinerResponseDeposit(bobSender(), aliceTarget({ inviteNonce: '' })), null, 'no invite nonce → null');
   // A garbage recipient key must be caught (encrypt throws internally) → null, not a throw.
   assert.equal(await buildJoinerResponseDeposit(bobSender(), aliceTarget({ publicKeyArmored: 'not-a-key' })), null, 'bad giver key → null (no throw)');
+});
+
+// ── S14 (HNDL): fail-closed without the giver's pq_kem; the deposit is hybrid on the wire ──
+test('buildJoinerResponseDeposit (S14): a giver with NO pq_kem gets no deposit (null) — never a classical downgrade', async () => {
+  assert.equal(await buildJoinerResponseDeposit(bobSender(), aliceTarget({ giverPqKemPublicKey: '' })), null);
+  const noKem = aliceTarget();
+  delete (noKem as { giverPqKemPublicKey?: string }).giverPqKemPublicKey;
+  assert.equal(await buildJoinerResponseDeposit(bobSender(), noKem), null);
+});
+
+test('buildJoinerResponseDeposit (S14): the blob is a hybrid MailboxEnvelopePackage, not armored OpenPGP', async () => {
+  const deposit = await buildJoinerResponseDeposit(bobSender(), aliceTarget());
+  assert.ok(!deposit!.blob.includes('BEGIN PGP MESSAGE'));
+  assert.equal(JSON.parse(deposit!.blob).v, 1);
 });
 
 // ── sendJoinerResponse: honest POST accounting, fail-soft on relay/network errors ──
@@ -148,7 +172,7 @@ test('buildJoinerResponseDeposit: a CANONICAL sender threads its PQ pubkeys → 
   assert.ok(deposit, 'a valid canonical sender+target must produce a deposit');
   const joiner = await verifyJoinerResponse(
     deposit!.blob,
-    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass },
+    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass, hybrid: aliceHybrid },
     (n) => n === CODE,
   );
   assert.ok(joiner, 'the giver must recover the canonical joiner (proves the send-side threaded kem+sig)');
@@ -166,7 +190,7 @@ test('buildJoinerResponseDeposit: a CANONICAL sender WITHOUT its PQ pubkeys → 
   assert.ok(deposit, 'the deposit still builds (classical-only send) — the giver is what refuses it');
   const joiner = await verifyJoinerResponse(
     deposit!.blob,
-    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass },
+    { fingerprint: aliceFp, privateKeyArmored: alicePriv, passphrase: pass, hybrid: aliceHybrid },
     (n) => n === CODE,
   );
   assert.equal(joiner, null, 'a canonical joiner deposited without threaded PQ pubkeys must not verify');

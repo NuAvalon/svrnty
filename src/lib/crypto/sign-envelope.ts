@@ -5,7 +5,7 @@
 // vocabulary (src/lib/format/envelope.ts).
 //
 // WHAT THIS FIXES. The pre-0.1 signer used raw JSON.stringify({...}) as the signed bytes
-// (src/lib/trust/signals.ts canonicalSignPayload). That is key-order dependent, NFC-blind, and has
+// (the old signals.ts canonicalSignPayload, verify path deleted in #718). That is key-order dependent, NFC-blind, and has
 // no float/null discipline — a cross-implementation verifier, or a unicode display_name in a
 // different normal form, silently breaks verification. It also bound neither the message DOMAIN nor
 // the crypto SUITE, so:
@@ -47,6 +47,7 @@ import {
   decryptKey,
   sign as pgpSign,
 } from 'openpgp';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { hybridSign, hybridVerify } from './hybrid';
 
 /**
@@ -86,6 +87,7 @@ export async function signWithEnvelope(
   classicalPrivateKeyArmored: string,
   classicalPassphrase: string,
   pqSigningSecretKey?: Uint8Array,
+  cycle?: UnlockCycle,
 ): Promise<EnvelopeSignature> {
   const suiteId = pqSigningSecretKey ? SUITE_HYBRID : SUITE_CLASSICAL;
   const signedBytes = buildSignedBytes(domainTag, suiteId, canonicalInput);
@@ -100,11 +102,36 @@ export async function signWithEnvelope(
     return { classical: sig.classical, pq_signature: sig.post_quantum };
   }
 
-  const privateKeyObj = await readPrivateKey({ armoredKey: classicalPrivateKeyArmored });
-  const decryptedKey = await decryptKey({ privateKey: privateKeyObj, passphrase: classicalPassphrase });
+  // Classical branch only: a poll-cycle caller passes its UnlockCycle so poll+ack share one unlock.
+  const decryptedKey = cycle
+    ? await cycle.key()
+    : await decryptKey({
+        privateKey: await readPrivateKey({ armoredKey: classicalPrivateKeyArmored }),
+        passphrase: classicalPassphrase,
+      });
   const message = await createMessage({ text: signedBytes });
   const classicalSig = await pgpSign({ message, signingKeys: decryptedKey });
   return { classical: classicalSig.toString() };
+}
+
+/**
+ * A pq_signature field is either ABSENT (undefined: classical) or a non-empty string (hybrid). Anything else
+ * ('' / null / 0 / false / non-string) is malformed and must refuse, never read as "no PQ half" (#717, N12 F-2).
+ */
+export function isAbsentOrWellFormedPq(pq: unknown): boolean {
+  return pq === undefined || (typeof pq === 'string' && pq.length > 0);
+}
+
+/**
+ * Build the EnvelopeSignature from a wire object's two fields WITHOUT normalizing: a present pq_signature is
+ * passed through as-is, so verifyWithEnvelope's guard sees '' / null and refuses. Truthiness here
+ * (`pq ? {…} : {classical}`) would turn a malformed value into "absent" before the guard (#717).
+ * Pinned per caller by a NEG test (pq_signature '' and null refused) with a classical control beside it.
+ */
+export function envelopeSignatureOf(classical: string, pq_signature: unknown): EnvelopeSignature {
+  return pq_signature === undefined
+    ? { classical }
+    : ({ classical, pq_signature } as unknown as EnvelopeSignature);
 }
 
 /**
@@ -123,6 +150,12 @@ export async function verifyWithEnvelope(
   classicalPublicKeyArmored: string,
   pqSigningPublicKey?: Uint8Array,
 ): Promise<boolean> {
+  // A pq_signature that is PRESENT must be a non-empty string. Truthiness alone read '' (or null/0/false) as
+  // "no PQ half" and verified classical-only, so a caller gating PQ by `typeof === 'string'` let a holder of
+  // only the classical key through (Apollo N12 F-2). Absent / undefined stays the classical path.
+  if (signature.pq_signature !== undefined && (typeof signature.pq_signature !== 'string' || signature.pq_signature === '')) {
+    return false;
+  }
   const suiteId = signature.pq_signature ? SUITE_HYBRID : SUITE_CLASSICAL;
   const signedBytes = buildSignedBytes(domainTag, suiteId, canonicalInput);
 

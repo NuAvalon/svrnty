@@ -39,6 +39,49 @@ export function routeInbound(contact: unknown, body: string): JournalRoute {
 // Peer-chosen identifiers are echoed into a notice: plain tokens only, else '?'.
 const SAFE_TOKEN = /^[A-Za-z0-9._:#/-]{1,64}$/;
 const tok = (v: unknown): string => (typeof v === 'string' && SAFE_TOKEN.test(v) ? v : '?');
+/** The same sanitizer for journal-row fields a renderer might show (Flint #310: notice rows carry no raw peer value). */
+export const safeToken = tok;
+
+/**
+ * #2110 stop-gap until slice 4 keys note storage on (sender fp, note_id): a peer's note_id is sender-chosen, so a FULL id printed to a
+ * terminal (and pasted into a shared thread) is enough to collide with. Terminal output shows only a 13-char prefix (note_xxxxxxxx):
+ * enough to tell notes apart, too short to reuse. The full id stays in the 0600 journal. Not a plain token: '?'.
+ */
+export function shortNoteId(id: unknown): string {
+  const t = tok(id);
+  return t === '?' ? '?' : t.slice(0, 13);
+}
+
+// Text a PEER chose (a note body, a Gate arrival's self-name) printed to a terminal or an agent's pane. Every character in the categories
+// the portal strips (Cc, Cf, Cs, Co, Zl, Zp: controls incl. C1/NEL, format chars incl. bidi overrides + isolates, zero-width, BOM, tags,
+// soft hyphen, word joiner, surrogates, private use, line/paragraph separators) is shown as a visible \u{XXXX} escape (svrnty_send.py's
+// format), so peer text can neither forge a second line (e.g. a fake "[note … from <fp>…] Peter:" header) nor hide or reorder text.
+// One rule, by category, for the agent pane and for Peter's page (Archie #2121).
+// Plus the whole tag block U+E0000-E007F, as the portal's list has it: U+E0000 itself is UNASSIGNED (Cn), so the categories alone miss it.
+const DISPLAY_UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}\u{E0000}-\u{E007F}]/gu;
+export function displayLine(text: unknown): string {
+  return String(text ?? '').replace(DISPLAY_UNSAFE, (c) => `\\u{${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}}`);
+}
+
+/** A peer-chosen name inside double quotes: displayLine, and a " in the name is escaped too, so it can't close the quote early. */
+export function quotedName(name: unknown): string {
+  return `"${displayLine(name).replace(/"/g, '\\u{0022}')}"`;
+}
+
+/**
+ * The Gate line for a STRANGER who is waiting (not admitted). The self-chosen name is never shown as an identity (Hypatia #2123, Weft C2:
+ * the petname is ours, never the card's self-name): "someone calling themselves \"<name>\"", escaped and quoted. A malformed fp shows '?'.
+ */
+export function gateArrivalLine(a: { displayName?: unknown; fingerprint: unknown }): string {
+  const fp = tok(a.fingerprint);
+  const who = a.displayName ? `someone calling themselves ${quotedName(a.displayName)}` : 'someone';
+  return `[gate] ${who} (${fp}) is waiting at your Gate, not admitted. To let them in: admit-gate ${fp}`;
+}
+
+/** One row of `gate` (the list of waiting arrivals): the stranger's name escaped and quoted, the fp as a plain token. */
+export function gateListLine(a: { displayName?: unknown; fingerprint: unknown; inviteNonce?: unknown; mintChannel?: unknown; arrivedAt?: unknown }): string {
+  return `${tok(a.fingerprint)}  ${quotedName(a.displayName ?? '')}  via ${tok(a.inviteNonce)} (${tok(a.mintChannel)})  arrived ${displayLine(a.arrivedAt)}`;
+}
 
 /** A loom envelope ADDRESSED to this cell (a channel_post whose mentions include ownFp, or a
  *  task_request assigned to ownFp) → a one-line NOTICE for the journal; anything else
@@ -84,4 +127,16 @@ export function openTasksNotice(peerFp: string, items: { note_id: string; channe
   const note_id = 'open-tasks:' + createHash('sha256').update(ids.join('\n')).digest('hex').slice(0, 24);
   const chans = [...new Set(items.map((i) => i.channel))].sort().join(', ');
   return { note_id, text: `[loom] ${ids.length} open task_request(s) in ${chans} from ${tok(peerFp).slice(0, 8)}; briefs withheld until our loom reader lands, read them in your store.json` };
+}
+
+/** One notice for a peer's notes that never decrypted (tombstoned after MAX_ATTEMPTS). Without it a dead
+ *  note is only a `dead` counter on stdout: nobody is told (Archie #180230, the #637 silent-loss class).
+ *  Called with only the NEWLY dead notes (the caller marks announced ones), so a later death never
+ *  re-counts old ones (Archie #180425). Same set-hash dedup as openTasksNotice. Body-less: no ciphertext, no sender text, only count + window. */
+export function deadNotesNotice(peerFp: string, items: { note_id: string; sent_at: string }[], maxAttempts: number):
+    { note_id: string; text: string } {
+  const ids = items.map((i) => i.note_id).sort();
+  const note_id = 'dead-notes:' + createHash('sha256').update(ids.join('\n')).digest('hex').slice(0, 24);
+  const times = items.map((i) => tok(i.sent_at)).sort();
+  return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be decrypted after ${maxAttempts} tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to resend` };
 }

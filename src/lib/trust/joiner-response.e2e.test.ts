@@ -10,7 +10,8 @@ process.env.RELAY_DB_PATH = ':memory:'; // OPT-2: in-memory SQLite for tests (ru
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKey, readPrivateKey, decryptKey } from 'openpgp';
-import { buildJoinerResponse, encryptJoinerResponseTo, verifyJoinerResponse } from './joiner-response';
+import { buildJoinerResponse, verifyJoinerResponse } from './joiner-response';
+import { encryptJoinerResponseClassicalFixture } from '../messaging/seal-classical-fixture';
 import { depositEnvelope, pollMailbox, ackDelete } from '../relay/mailbox-store';
 import { deriveMailboxId } from '../relay/mailbox-auth';
 import { openpgpEnvelopeDecryptor } from '../sync/contact-update-envelope';
@@ -73,7 +74,7 @@ async function bobDepositsToAlice(): Promise<{ mailboxId: string; blob: string }
     },
     bobPriv, pass,
   );
-  const blob = await encryptJoinerResponseTo(signed, alicePub);
+  const blob = await encryptJoinerResponseClassicalFixture(signed, alicePub);
   const mailboxId = deriveMailboxId(aliceFp);
   const r = depositEnvelope(mailboxId, blob, NOW);
   assert.equal(r.ok, true, 'deposit must succeed (blob within size cap, mailbox not at cap)');

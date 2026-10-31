@@ -125,6 +125,17 @@ export type CanonicalPubs = {
   fingerprint: string;
 };
 
+/**
+ * Extract ONLY the raw 32-byte X25519 enc pubkey from an armored OpenPGP PUBLIC key. Thin reuse of the
+ * same `getEncryptionKey` + 0x40-strip path `canonicalPubsFromArmoredPublicKey` uses — exported for the
+ * living-book hybrid sleeve, which seals to the recipient's {x25519 (from armored), ML-KEM (from b64)} and
+ * therefore needs the enc leg WITHOUT the kem/sig fingerprint recompute. No new crypto.
+ */
+export async function encPubFromArmoredPublicKey(armoredPublicKey: string): Promise<Uint8Array> {
+  const key = await readKey({ armoredKey: armoredPublicKey });
+  return encPubFromOpenPgpKey(key);
+}
+
 export async function canonicalPubsFromArmoredPublicKey(
   armoredPublicKey: string,
   kemPublicKeyB64: string,

@@ -27,7 +27,8 @@
 
 import { decryptKey, readPrivateKey } from 'openpgp';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
-import { verifySatelliteKey, PINNED_SATELLITE_MAILBOX_FP_DEV } from '@/lib/crypto/psi-wire-seal';
+import { verifySatelliteKey, PINNED_SATELLITE_MAILBOX_FP_DEV, type PsiSessionKey } from '@/lib/crypto/psi-wire-seal';
+import { mailboxFpOf } from '@/lib/crypto/mailbox-keys';
 import {
   getAllContacts,
   loadKey,
@@ -103,9 +104,20 @@ export function buildKnowOverlayDeps(
   return {
     getTrustedPeers: async () => {
       const edges = await ownerEdges(store, ownerFingerprint);
+      // #704 (A) due queue: a peer with a live initiator session is `pending` (skipped until it completes or
+      // expires), so K-per-tick rotates through the book instead of re-initiating the first peer forever.
+      const withSession = new Set(
+        (await store.getAllContacts(ownerFingerprint))
+          .filter((c) => typeof c.psi_session_id === 'string' && c.psi_session_id.length > 0)
+          .map((c) => c.fingerprint),
+      );
       return edges
         .filter((e) => e.trusted && !isDecayed(e))
-        .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
+        .map((e) => ({
+          fingerprint: e.peer_fingerprint,
+          lastSync: lastSyncOf(e),
+          pending: withSession.has(e.peer_fingerprint),
+        }));
     },
 
     getKnownPeers: async () => {
@@ -118,6 +130,36 @@ export function buildKnowOverlayDeps(
       // truthy pcp EXCLUDES; undefined = not-private = included). Empty ⇒ fail-closed (reveals nothing).
       return edges
         .filter((e) => e.open_visibility === true && !e.per_contact_private)
+        .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
+    },
+
+    getTrustVisiblePeers: async () => {
+      const edges = await ownerEdges(store, ownerFingerprint);
+      // TRUST reveal set (piece-2) = the opt-in subset over MUTUAL bonds only. BLIND-UNTIL-MUTUAL is a
+      // HARD anti-coercion floor (Peter #172746 / Archie confirmed-model-delta #172822): a one-way /
+      // PENDING trust is NEVER revealed to anyone — especially not the person trusted (else they can
+      // coerce). So the reveal gates on `reciprocal` (the MUTUAL bond), NEVER one-way `trusted`. A peer
+      // is included ONLY if:
+      //   • e.mutual?.reciprocal === true   — the bond is MUTUAL. reciprocal has NO writer in this build
+      //       (#593 removed the affirm wire), so nothing passes this test and the mutual reveal stays dark,
+      //   • !isDecayed(e)                   — the bond is non-decayed,
+      //   • e.trust_visibility === true     — owner opted this bond into trust-viz (party-controlled),
+      //   • e.peer_discoverable_as_trusted === true — the peer's OWN viz-consent (party-controlled), AND
+      //   • !e.per_contact_private          — go-private excludes from every PSI reveal.
+      // (The OTHER party applies the same filter → a bond lands in BOTH input sets only when mutual AND
+      // both parties opted it visible → the intersection reveals ONLY mutual, party-consented bonds.)
+      // Every condition is TRUTHY-exclusion = fail-closed: absent/false EXCLUDES. Empty ⇒ reveals nothing.
+      // COUPLING: `reciprocal` has no writer since #593 → this stays empty = correctly DARK. A future writer
+      // must be a reviewed affirmation wire (Flint's floor (b)), never a local shortcut. `blocked` already dropped at ownerEdges.
+      return edges
+        .filter(
+          (e) =>
+            e.mutual?.reciprocal === true &&
+            !isDecayed(e) &&
+            e.trust_visibility === true &&
+            e.peer_discoverable_as_trusted === true &&
+            !e.per_contact_private,
+        )
         .map((e) => ({ fingerprint: e.peer_fingerprint, lastSync: lastSyncOf(e) }));
     },
 
@@ -179,8 +221,61 @@ const MAX_PSI_ATTEMPTS = 12; // ≈ 1h at the 5-min KNOW tick — matches the sa
 
 const CLEARED_PSI_SESSION: Partial<ContactRecord> = {
   psi_session_id: undefined, psi_sk_A: undefined, psi_pub: undefined,
-  psi_fp_order: undefined, psi_layer: undefined, psi_attempts: undefined,
+  psi_fp_order: undefined, psi_layer: undefined, psi_attempts: undefined, psi_pq_session: undefined,
 };
+
+// ── The initiator's per-session PQ response key must survive between ticks ───────────────────────────
+// With pqWrap the satellite SEALS the result to the response_pub the initiator registered at initiate, and delivers it
+// EXACTLY ONCE (infra/svrnty/satellite.py psi_get_result marks the session 'complete' on the first read). The matching
+// secret (PsiSessionKey) is minted at initiate, but completion runs on a LATER tick: if it is not persisted, the result
+// can never be opened and the first read destroys it (Chaos #183). Same lifetime and same handling as psi_sk_A: written
+// onto the peer's contact record (encrypted at rest), cleared on completion / expiry / de-consent.
+const PSI_SESSION_V = 1;
+const X25519_LEN = 32, MLKEM_PUB_LEN = 1568, MLKEM_SEC_LEN = 3168;
+
+function b64ToBytes(b64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  return new Uint8Array(Buffer.from(b64, 'base64'));
+}
+
+/** Serialize the initiator's PQ response key for the contact record. Contains SECRETS: persist only where psi_sk_A already lives. */
+export function serializePsiSession(k: PsiSessionKey): string {
+  return JSON.stringify({
+    v: PSI_SESSION_V,
+    x25519_pub: bytesToB64(k.keypair.x25519Pub), x25519_sec: bytesToB64(k.keypair.x25519Sec),
+    mlkem1024_pub: bytesToB64(k.keypair.mlkem1024Pub), mlkem1024_sec: bytesToB64(k.keypair.mlkem1024Sec),
+  });
+}
+
+/** Restore a persisted PQ response key, or null on ANY malformation (wrong version/lengths, bad base64, not a string). Fail-closed. */
+export function restorePsiSession(raw: unknown): PsiSessionKey | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  try {
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    if (o.v !== PSI_SESSION_V) return null;
+    const take = (k: string, len: number): Uint8Array | null => {
+      const v = o[k];
+      if (typeof v !== 'string') return null;
+      const b = b64ToBytes(v);
+      return b.length === len ? b : null;
+    };
+    const x25519Pub = take('x25519_pub', X25519_LEN), x25519Sec = take('x25519_sec', X25519_LEN);
+    const mlkem1024Pub = take('mlkem1024_pub', MLKEM_PUB_LEN), mlkem1024Sec = take('mlkem1024_sec', MLKEM_SEC_LEN);
+    if (!x25519Pub || !x25519Sec || !mlkem1024Pub || !mlkem1024Sec) return null;
+    const keypair = { x25519Pub, x25519Sec, mlkem1024Pub, mlkem1024Sec };
+    return {
+      keypair,
+      responsePub: { x25519_pub_b64: bytesToB64(x25519Pub), mlkem1024_pub_b64: bytesToB64(mlkem1024Pub), mailbox_fp: mailboxFpOf(keypair) },
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** Persist the sessions initiated this tick onto each peer's contact record (overwrite any prior — one in-flight per peer). */
 export async function savePsiInitiated(
@@ -200,6 +295,7 @@ export async function savePsiInitiated(
       psi_fp_order: s.fpOrder,
       psi_layer: 'know',
       psi_attempts: 0,
+      psi_pq_session: s.pqSession ? serializePsiSession(s.pqSession) : undefined,
     } as Partial<ContactRecord>);
   }
 }
@@ -245,7 +341,15 @@ export async function runPsiCompletionPass(
       }
       const keypair: PSIKeypair = { privateKey: c.psi_sk_A, publicKey: typeof c.psi_pub === 'string' ? c.psi_pub : '' };
       const layer: 'know' | 'trust' = c.psi_layer === 'trust' ? 'trust' : 'know';
-      const result = await completeFn(deps, c.psi_session_id as string, c.fingerprint, keypair, options, c.psi_fp_order as string[], layer);
+      const pqSession = restorePsiSession(c.psi_pq_session);
+      // Sealed wire but no usable response key (a session saved before this fix, or a damaged record): the satellite
+      // would seal the result to a key we no longer hold and consume it on the first read, so DO NOT read. Drop the
+      // session; the next tick re-initiates.
+      if (options.pqWrap && !pqSession) {
+        await store.updateContact(c.id, CLEARED_PSI_SESSION);
+        continue;
+      }
+      const result = await completeFn(deps, c.psi_session_id as string, c.fingerprint, keypair, options, c.psi_fp_order as string[], layer, pqSession ?? undefined);
       if (result && !('error' in result)) {
         await store.updateContact(c.id, CLEARED_PSI_SESSION); // applied → ephemeral delete
       } else {
@@ -256,7 +360,12 @@ export async function runPsiCompletionPass(
         );
       }
     } catch {
-      // local-only; never surface. Leave the session for a later tick.
+      // local-only; never surface. A THROWN completion counts as an attempt (same logical clock as not-ready), so a
+      // poisoned session expires instead of being retried forever (it used to leave psi_attempts untouched).
+      try {
+        const attempts = (typeof c.psi_attempts === 'number' ? c.psi_attempts : 0) + 1;
+        await store.updateContact(c.id, attempts > MAX_PSI_ATTEMPTS ? CLEARED_PSI_SESSION : ({ psi_attempts: attempts } as Partial<ContactRecord>));
+      } catch { /* store unavailable: retry next tick */ }
     }
   }
 }

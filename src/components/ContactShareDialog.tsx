@@ -17,6 +17,7 @@ import {
   hydrateOwnerCard,
   methodKindLabel,
   methodsForLens,
+  ownerLensFace,
   preferredMethod,
   type OwnerCardBag,
 } from '@/components/identity/owner-card';
@@ -203,7 +204,7 @@ export function ContactShareDialog({
 
         {lensBag && lensBag.lenses.length > 0 ? (
           <div className="mt-3 space-y-2" data-testid="share-lens-picker">
-            <p className="text-xs uppercase tracking-wider text-amber-500/80">Face for this handoff</p>
+            <p className="text-xs uppercase tracking-wider text-amber-500/80">Lens for this handoff</p>
             <div className="flex flex-wrap gap-1.5">
               {lensBag.lenses.map((l) => (
                 <button
@@ -222,17 +223,20 @@ export function ContactShareDialog({
               ))}
             </div>
             {(() => {
+              const face = ownerLensFace(lensBag, lensId);
               const pref = preferredMethod(lensBag, lensId);
               const shown = methodsForLens(lensBag, lensId);
               if (!shown.length) {
                 return (
                   <p className="text-xs text-gray-500">
+                    {face.displayName ? `${face.displayName} · ` : ''}
                     This lens has no extra methods yet. Recipients still get your signed name and key.
                   </p>
                 );
               }
               return (
                 <p className="text-xs text-gray-500 leading-relaxed">
+                  {face.displayName ? `Lens: ${face.displayName}. ` : ''}
                   {pref
                     ? `Preferred: ${methodKindLabel(pref.kind)}${pref.value ? ` · ${pref.value}` : ''}. `
                     : ''}
@@ -306,7 +310,7 @@ export function ContactShareDialog({
                     <p className="text-sm text-red-400">{shortCode.error}</p>
                   )}
                   <p className="text-xs text-gray-500 text-center max-w-xs">
-                    Creates a private, single-use link and shows it as a QR to scan. The server cannot read your data.
+                    Creates a multi-use link, valid up to 7 days, and shows it as a QR to scan. Anyone with the full link can open it; the server can&apos;t read its content.
                   </p>
                 </>
               ) : (
@@ -319,7 +323,7 @@ export function ContactShareDialog({
                   <p className="text-xs text-gray-500 text-center max-w-xs">
                     Scan with a phone camera to open the link and import this identity.
                     Anyone who can see this code can scan it, so don&apos;t leave it on display —
-                    it&apos;s single-use and expires in 15 minutes.
+                    it&apos;s a multi-use link, valid up to 7 days.
                   </p>
                 </>
               )}
@@ -460,7 +464,7 @@ export function ContactShareDialog({
                     </Button>
                   </div>
                   <p className="text-xs text-gray-500 text-center max-w-xs">
-                    Link expires after first use or 15 minutes. The server cannot read your data.
+                    Multi-use link, valid up to 7 days. Anyone with the full link can open it; the server can&apos;t read its content.
                   </p>
                 </>
               )}

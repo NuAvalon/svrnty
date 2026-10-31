@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NOTES_COPY } from './notes-copy';
+import { NOTES_COPY, notSentMessage } from './notes-copy';
 import { statusIsHonestFloor, statusLabel, outboundStatus } from './notes-status';
 
 describe('notes inbox copy — claim-honesty', () => {
@@ -31,22 +31,25 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.equal(blob.includes('unreachable'), false);
     // claim-honesty (Hypatia #167343 / GPT / Peter #167278): the relay sees mailbox-id +
     // timing + size + IP = communication metadata. NEVER claim it can't tell who you talk
-    // to; only confidentiality (can't read messages) is supportable.
+    // to. Chat copy has no essay masthead, so it also does not assert confidentiality here.
     assert.equal(blob.includes('who you talk to'), false);
     assert.equal(blob.includes('never learns who'), false);
     assert.equal(blob.includes('communication relationship'), false);
-    assert.equal(blob.includes('read your messages'), true);
+    assert.equal(blob.includes('read your messages'), false);
   });
 
-  it('receiving copy says saved / there when you open — not appears live', () => {
-    assert.match(NOTES_COPY.receiving, /saved to this device/i);
-    assert.match(NOTES_COPY.receiving, /there when you open/i);
-    assert.doesNotMatch(NOTES_COPY.receiving, /appears live/i);
-  });
-
-  it('uses the queue what-it-is heading', () => {
-    assert.equal(NOTES_COPY.heading, 'Encrypted messages, with the people you trust');
+  it('Chat tab is the window — no essay masthead', () => {
+    assert.equal(NOTES_COPY.tabLabel, 'Chat');
+    assert.equal(NOTES_COPY.heading, 'Chat');
     assert.equal(NOTES_COPY.sendAction, 'Send');
+    const blob = JSON.stringify(NOTES_COPY);
+    assert.doesNotMatch(blob, /Encrypted messages/);
+    assert.doesNotMatch(blob, /How notes travel/);
+    // "end-to-end encrypted" stays off this glass EXCEPT in the one ruled D2 line (Hypatia #776, KB#93726), which renders only for a
+    // peer we can actually send to (showRatchetOffLine requires a verified kem key). Everywhere else the ban holds.
+    const { ratchetOff, ...rest } = NOTES_COPY;
+    assert.doesNotMatch(JSON.stringify(rest), /end-to-end encrypted/i);
+    assert.match(ratchetOff, /Messages are still end-to-end encrypted\.$/);
   });
 
   it('inbox source never renders Delivered/Read/Expired as a live status', () => {
@@ -57,9 +60,29 @@ describe('notes inbox copy — claim-honesty', () => {
     assert.match(inbox, /NOTES_COPY\.sentUnconfirmed/);
     assert.doesNotMatch(inbox, /dangerouslySetInnerHTML/);
     assert.doesNotMatch(inbox, /\/api\/relay\/msg\/status/);
-    assert.match(copy, /A Delivered confirmation is coming/);
+    assert.doesNotMatch(inbox, /notes-field-mast/);
+    assert.doesNotMatch(inbox, /notes-heading/);
+    assert.doesNotMatch(inbox, /notes-receiving/);
+    assert.doesNotMatch(inbox, /How notes travel/);
+    assert.doesNotMatch(inbox, /Encrypted messages/);
+    // Receipts are LIVE in this build (verified-receipt Delivered, notes-delivered-display.test.ts + receipt-seam.test.ts), so the
+    // old "A Delivered confirmation is coming" promise would now be false and must not come back. The replacement helper line is
+    // Hypatia's wording (TG-1 repoint); this pins only the invariant: no stale future-tense promise of a delivery confirmation.
+    assert.doesNotMatch(copy, /Delivered confirmation is coming/);
     assert.doesNotMatch(status, /Delivered confirmation/);
     const liveStatus = [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');
     assert.doesNotMatch(liveStatus, /\b(Delivered|Read|Expired)\b/);
+  });
+});
+
+describe('S14 needs-upgrade copy', () => {
+  it('is distinct from the network failure, names the contact, and is claim-safe', () => {
+    assert.notEqual(NOTES_COPY.notSentNeedsUpgrade, NOTES_COPY.notSent);
+    assert.match(NOTES_COPY.notSentNeedsUpgrade, /^Not sent\. Saved on this device\. \{name\} needs to share an updated contact card \(security upgrade\)\. Ask them to re-share, then re-add\.$/);
+    assert.doesNotMatch(NOTES_COPY.notSentNeedsUpgrade, /Delivered|Read|Expired|unconfirmed|quantum|PQ-secure/i);
+  });
+  it('notSentMessage: no PQ key => needs-upgrade line with the name; with a PQ key => the plain not-sent line', () => {
+    assert.equal(notSentMessage({ name: 'Bob' }), 'Not sent. Saved on this device. Bob needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.');
+    assert.equal(notSentMessage({ name: 'Bob', pqKemPublicKey: 'KEM' }), NOTES_COPY.notSent);
   });
 });

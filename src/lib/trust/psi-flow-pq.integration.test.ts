@@ -27,6 +27,8 @@ import {
   type OrchestratorDeps,
   type PSISyncOptions,
 } from './mutual-trust-sync.js';
+import type { ContactRecord } from '../identity/client-store';
+import { buildKnowOverlayDeps, runKnowLayerSyncTick, savePsiInitiated, runPsiCompletionPass, type KnowOverlayStore } from '../sync/know-layer-sync';
 import { sealPsiToSatellite, openPsiFromSatellite } from '../crypto/psi-wire-seal.js';
 import {
   generateMailboxKeypair,
@@ -64,6 +66,7 @@ interface RelaySession {
   initiator_response_pub?: ResponsePub; // registered at initiate (PQ only)
   responder_blinded_set?: string[];
   reblinded_initiator_set?: string[];
+  result_consumed?: boolean; // oneShotResult only: the first /result read marks the session complete
 }
 interface MockResponse {
   ok: boolean;
@@ -78,7 +81,7 @@ interface WireLogEntry {
   opened?: Record<string, unknown>;
 }
 
-function makeRelay(satellite: MailboxKeypair) {
+function makeRelay(satellite: MailboxKeypair, opts: { oneShotResult?: boolean } = {}) {
   const sessions = new Map<string, RelaySession>();
   const log: WireLogEntry[] = [];
   let seq = 0;
@@ -172,6 +175,12 @@ function makeRelay(satellite: MailboxKeypair) {
         reblinded_initiator_set: s.reblinded_initiator_set,
       };
       log.push({ path: 'result', method, rawBody: '(GET, no body)' });
+      // The REAL satellite (infra/svrnty/satellite.py psi_get_result) delivers a result EXACTLY ONCE: the first read marks
+      // the session 'complete' whether or not the client could open what it was sealed to (Chaos #183).
+      if (opts.oneShotResult) {
+        if (s.result_consumed) return reply({ error: 'session complete' }, false, 410);
+        s.result_consumed = true;
+      }
       if (s.initiator_response_pub) {
         return reply(await sealPsiToSatellite(resultBody, pubKeysFromResponsePub(s.initiator_response_pub)));
       }
@@ -195,6 +204,8 @@ function makeClient(fingerprint: string, book: Contact[], satelliteKeys?: Mailbo
   const deps: OrchestratorDeps = {
     getTrustedPeers: async () => book.map((c) => ({ fingerprint: c.fp })),
     getKnownPeers: async () => book.filter((c) => c.consented).map((c) => ({ fingerprint: c.fp })),
+    // trust-PSI opt-in subset — no fixture contact opts in → empty (these tests drive the KNOW layer).
+    getTrustVisiblePeers: async () => [],
     applyMutualResult: async (peerFp, _layer, disclosed) => {
       disclosedByPeer.set(peerFp, disclosed);
     },
@@ -230,8 +241,9 @@ async function runRound(initiator: Client, responder: Client): Promise<string[]>
 async function withRelay<T>(
   satellite: MailboxKeypair,
   fn: (relay: ReturnType<typeof makeRelay>) => Promise<T>,
+  opts: { oneShotResult?: boolean } = {},
 ): Promise<T> {
-  const relay = makeRelay(satellite);
+  const relay = makeRelay(satellite, opts);
   const original = globalThis.fetch;
   (globalThis as unknown as { fetch: unknown }).fetch = relay.fetchImpl;
   try {
@@ -424,4 +436,63 @@ test('(adversarial) get_blinded sealed to the WRONG session key cannot be opened
     const responses = await respondToTrustSync(bob.deps, bob.options, 'know');
     assert.deepEqual(responses, [], 'wrong-key sealed response → open fails → fail-closed, no participation');
   });
+});
+
+
+// ── Chaos #183 / S54: the APP's persisted two-tick flow ───────────────────────────────────────────────────────────────
+// Every test above hands init.pqSession from initiate straight to complete IN MEMORY, which the app never does: it
+// persists the in-flight session (savePsiInitiated) and completes on a LATER tick (runPsiCompletionPass). That seam is
+// where the response key was lost, so these drive the real overlay/persistence path against a ONE-SHOT result relay.
+function seat(owner: string, others: string[], consented: string[], satelliteKeys?: MailboxPublicKeys) {
+  const recs: ContactRecord[] = others.map((fp) => ({
+    id: 'c-' + fp, fingerprint: fp, name: fp, public_key: 'PUB', trust_level: 'verified', added_at: '2026-01-01T00:00:00.000Z',
+    open_visibility: consented.includes(fp),
+  } as unknown as ContactRecord));
+  const store: KnowOverlayStore = {
+    getAllContacts: async () => recs,
+    updateContact: async (id, updates) => { const r = recs.find((x) => x.id === id)!; Object.assign(r, updates); },
+  };
+  const deps = buildKnowOverlayDeps(owner, store);
+  const options: PSISyncOptions = { satelliteUrl: 'http://relay', myFingerprint: owner, signFn: () => new Uint8Array(64), ...(satelliteKeys ? { pqWrap: { satelliteKeys } } : {}) };
+  return { owner, recs, store, deps, options };
+}
+
+async function appFlow(satellite: MailboxKeypair, pq: boolean, ticksBeforeBob = 0) {
+  const keys = pq ? toPublicKeys(satellite) : undefined;
+  return withRelay(satellite, async (relay) => {
+    const alice = seat(A, [B, X, Y, Z], [B, X, Y, Z], keys);
+    const bob = seat(B, [A, Y, Z, W], [A, Y, Z, W], keys);
+    const t1 = await runKnowLayerSyncTick(alice.deps, alice.options);        // tick 1: Alice initiates
+    await savePsiInitiated(alice.store, A, t1.initiated);                     // the app persists the in-flight session
+    for (let i = 0; i < ticksBeforeBob; i++) await runPsiCompletionPass(alice.store, A, alice.deps, alice.options); // not ready yet
+    await respondToTrustSync(bob.deps, bob.options, 'know');                  // Bob answers on his own tick
+    await runPsiCompletionPass(alice.store, A, alice.deps, alice.options);    // later tick: Alice completes
+    const forBob = alice.recs.find((r) => r.fingerprint === B)!;
+    return {
+      disclosed: [...((forBob.disclosed_circle as string[]) ?? [])].sort(),
+      sessionLeft: !!forBob.psi_session_id,
+      pqKeyLeft: forBob.psi_pq_session !== undefined,
+      resultReads: relay.log.filter((l) => l.path === 'result').length,
+    };
+  }, { oneShotResult: true });
+}
+
+test('(#183 regression, control) persisted two-tick app flow, CLASSICAL wire => disclosed_circle = {Y,Z}', async () => {
+  const r = await appFlow(generateMailboxKeypair(), false);
+  assert.deepEqual(r.disclosed, [Y, Z].sort());
+  assert.equal(r.sessionLeft, false, 'applied => the ephemeral session is dropped');
+});
+
+test('(#183 regression) persisted two-tick app flow WITH pqWrap lands the SAME intersection, reads the one-shot result once, and leaves no secret behind', async () => {
+  const r = await appFlow(generateMailboxKeypair(), true);
+  assert.deepEqual(r.disclosed, [Y, Z].sort(), 'the sealed result must be openable on the later tick');
+  assert.equal(r.resultReads, 1, 'the satellite delivers the result once; one read is all there is');
+  assert.equal(r.sessionLeft, false);
+  assert.equal(r.pqKeyLeft, false, 'Flint S54 cond.1: the response key never outlives the session (cleared on completion)');
+});
+
+test('(#183 regression) a not-ready tick before the responder answers keeps the response key, and the later tick still completes', async () => {
+  const r = await appFlow(generateMailboxKeypair(), true, 2);
+  assert.deepEqual(r.disclosed, [Y, Z].sort());
+  assert.equal(r.pqKeyLeft, false);
 });

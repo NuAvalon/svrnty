@@ -6,7 +6,7 @@ export const RELAY_COPY = {
   fieldLabel: 'Relay URL',
   placeholder: 'https://your-relay.example:8100',
   helper:
-    'A relay sees that and when you connect — never your notes (those stay sealed end-to-end). Switching relays moves your dead-drop, not your identity.',
+    "A relay sees your IP address, your identity key when you collect your mail, when you connect, which mailboxes your sealed messages go to (anyone with a contact's card can tell which mailbox is theirs), when each message is picked up, and how much you send, never what your messages say. Switching relays moves your dead-drop, not your identity.",
   switch: 'Switch to this relay',
   confirmTitle: 'Switch relay?',
   confirmBody:

@@ -1,9 +1,9 @@
 // src/lib/headless/headless-client.ts
 // The RUNTIME half of L2b: a headless (CLI/docker) svrnty client that RECEIVES (polls the smart mailbox,
-// decrypts → verifies → applies the inbound types) and SENDS (notes + trust-affirmations) — no browser,
+// decrypts → verifies → applies the inbound types) and SENDS notes — no browser,
 // no IndexedDB. It reuses the storage-agnostic consume core (consume-mailbox.ts) + the pure-crypto seams
-// (openpgpEnvelopeDecryptor / noteOpenpgpDecryptor / trustAffirmOpenpgpDecryptor / verifyNoteSender /
-// acceptTrustAffirm); the browser-only persistence is replaced by HeadlessStore.
+// (openpgpEnvelopeDecryptor / noteOpenpgpDecryptor / verifyNoteSender); the browser-only persistence is
+// replaced by HeadlessStore. (The trust-affirmation wire was removed in #593.)
 //
 // Owner key material is an INPUT (OwnerIdentity) — this module is decoupled from WHERE the keys come from.
 // The custody-store → OwnerIdentity adapter (Athena's custody lane) is the integration seam; a headless
@@ -17,17 +17,21 @@ import {
   type ConsumeSummary,
   type OwnerIdentity,
   type NoteResponseSeam,
-  type TrustAffirmResponseSeam,
 } from '@/lib/sync/consume-mailbox';
-import { openpgpEnvelopeDecryptor } from '@/lib/sync/contact-update-envelope';
-import { noteOpenpgpDecryptor, sealNoteTo } from '@/lib/messaging/seal';
+import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/contact-update-envelope';
+import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
-import { trustAffirmOpenpgpDecryptor } from '@/lib/trust/trust-affirm-seal';
-import { acceptTrustAffirm, affirmShouldApply } from '@/lib/trust/trust-affirm-consume';
-import { sendTrustAffirmToPeer } from '@/lib/trust/trust-affirm-transport';
-import { edgeTrusted } from '@/lib/trust/contact-edge';
+import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
+import { headlessDeadLetterSink } from './headless-dead-letter';
+// L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
+// (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
+import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
+import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
+import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
+import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
+import type { LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore } from './headless-store';
 import type { NoteWireV0, NoteRecord, NoteThread, ParticipantKind } from '@/lib/messaging/types';
@@ -38,17 +42,35 @@ export type HeadlessOwner = OwnerIdentity;
 export interface HeadlessOpts {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  /** #713: the agent dir's dead-letter file. Present → a loss is RECORDED (metadata row) before its envelope is acked, and a failed write
+   *  leaves the envelope on the relay. Absent → the old behaviour: the loss is only counted (summary.lost). */
+  deadLetterPath?: string;
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
-function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string): NoteResponseSeam {
-  const decryptNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter): NoteResponseSeam {
+  // Single dual-read chokepoint (Option-B, mirrors FE buildNoteSeam): hybrid-FIRST (makeHybridOpener →
+  // openMailboxEnvelope bound to MY secrets + parseNoteWire, the SAME type-gate the classical path uses →
+  // no-cross-swallow unchanged), classical FALLBACK. Classical-only when the owner has no derivable hybrid
+  // secret (classical identity, or custody ① pending — then the ③ gate leaves un-openable hybrid for retry).
+  const classicalNote = noteOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const verifyNote = hybrid
+    ? dualReadOpener<NoteWireV0>(
+        counted(makeHybridOpener<NoteWireV0>((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseNoteWire), 'hybrid', legs),
+        counted(classicalNote, 'classical', legs),
+      )
+    : counted(classicalNote, 'classical', legs);
   return {
-    verify: (blob) => decryptNote(blob),
+    verify: (blob) => verifyNote(blob),
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
-      if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
-      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return null; // in-book AND not-blocked — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety)
+      // #720 say-why, mirroring the FE seam (live-book-poll.ts): a DroppedNote carries the REASON, so the record is honest. A bare null was
+      // recorded as 'verify-failed' for BOTH cases, which made a stranger's genuine note look like forged crypto (Peter→Athena 10-31).
+      // No fingerprint travels with 'unverified' (from_fingerprint is attacker-controlled until verified: F3).
+      if (!(await verifyNoteSender(wire))) return { dropped: 'unverified' }; // unsigned / forged
+      // in-book AND not-blocked (I-2 + P1#2 survivor-safety). A blocked sender reports 'not-in-book' too, as the FE does: no separate
+      // "blocked" reason leaves this device.
+      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return { dropped: 'not-in-book', fp: wire.from_fingerprint };
       const sent_at = wire.sent_at || now();
       const rec: NoteRecord = {
         note_id: wire.note_id,
@@ -62,7 +84,12 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
         retention: { expires_at: null },
         wire_type: NOTE_WIRE_TYPE,
       };
-      store.putNote(rec); // throws → consumeOne treats as retryable (ack-follows-persist)
+      // FIRST WRITE WINS: a same-sender note that reuses a stored id with different content is refused; the stored note is what we acknowledge.
+      if (!store.putNote(rec)) {
+        noteRewriteRefused();
+        const kept = store.listNotes().find((x) => x.note_id === rec.note_id && x.direction === 'inbound' && x.from_fingerprint === rec.from_fingerprint)!;
+        return { note_id: kept.note_id, thread_id: kept.thread_id, from_fingerprint: kept.from_fingerprint };
+      } // throws → consumeOne treats as retryable (ack-follows-persist)
       const existing = store.listThreads().find((t) => t.thread_id === rec.thread_id);
       const thread: NoteThread = existing
         ? { ...existing, last_activity_at: sent_at }
@@ -83,47 +110,50 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
   };
 }
 
-// ── the mutual-trust AFFIRMATION seam, Node-backed (acceptTrustAffirm is already injection-based) ──
-function buildTrustAffirmSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string): TrustAffirmResponseSeam {
-  const decryptAffirm = trustAffirmOpenpgpDecryptor(owner.privateKeyArmored, owner.passphrase);
-  return {
-    verify: (blob) => decryptAffirm(blob),
-    accept: (wire) =>
-      acceptTrustAffirm({
-        wire,
-        ownerFingerprint: owner.fingerprint,
-        isAdmitted: async (fp) => admitContact(store.getContactByFingerprint(fp)), // FALSE-MUTUAL gate: in-book AND not-blocked (P1#2)
-        applyMutual: async (fromFp, trusts, sentAt) => {
-          const rec = store.getContactByFingerprint(fromFp);
-          if (!rec) throw new Error('headless applyMutual: contact vanished between admit and apply');
-          // PER-SENDER MONOTONICITY (#3 anti-rollback, Flint #169539 + NaN/future hardening #169647): apply
-          // only if the sender's SIGNED sent_at is plausible AND not strictly older than the last applied
-          // for this sender — a stale/replayed/back-dated "I trust you" must not overwrite a newer "I broke
-          // trust", and a garbage/future ts must not defeat or poison the ordering. last_affirm_at rides
-          // INSIDE `mutual`, persisted in the same updateContact as they_trust_me (crash-safe). `null` ⇒ drop.
-          const prevAffirmAt = (rec.mutual as { last_affirm_at?: string } | undefined)?.last_affirm_at;
-          if (!affirmShouldApply(sentAt, prevAffirmAt, Date.now())) return null;
-          const iTrustThem = edgeTrusted(rec); // reciprocal reads MY existing trusted state — no wire promotion
-          const mutual = { they_trust_me: trusts, last_sync: now(), reciprocal: iTrustThem && trusts, last_affirm_at: sentAt };
-          store.updateContact(rec.id, { mutual });
-          return { id: rec.id, reciprocal: mutual.reciprocal };
-        },
-      }),
-  };
-}
-
 /**
- * Assemble the consume deps for a headless owner over a HeadlessStore. The joiner (Grow-gate) seam is
- * omitted — headless agents don't run the browser Grow flow; contact-update + note + affirm cover receive.
+ * Assemble the consume deps for a headless owner over a HeadlessStore (ASYNC — it derives the owner's
+ * hybrid open-material). The joiner (Grow-gate) seam is omitted — headless agents don't run the browser
+ * Grow flow; contact-update + note cover receive (no affirm seam since #593).
+ *
+ * L7 HYBRID RECEIVE (single dual-read chokepoint, mirrors FE buildConsumeDeps): each of the 3 seams opens
+ * hybrid-FIRST (dualReadOpener over makeHybridOpener, off the owner's ML-KEM secret) then falls back to
+ * classical OpenPGP for in-flight legacy blobs. The owner's ML-KEM secret rides ON OwnerIdentity
+ * (kemSecretKey, custody ① — headless has no browser vault/loadPQKeys), B64 → deriveOwnerHybridSecrets.
+ *   • secret DERIVABLE ⇒ the hybrid path OPENS inbound hybrid mail; hybridSecretMissing=false.
+ *   • secret ABSENT/un-derivable (classical identity, or custody ① pending) ⇒ classical-only openers, and
+ *     hybridSecretMissing=true so Flint's ③ gate LEAVES an un-openable hybrid blob FOR RETRY (loud),
+ *     never silently acked+dropped — the mail waits until the secret arrives, never vanishes.
+ * The flag is keyed on ACTUAL derivability (not mere kem-pub presence) so a secret-HAVING agent never
+ * loops its mail retryable-FOREVER (the flip-side harm Flint pinned, #168382).
  */
-export function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): ConsumeDeps {
+export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeDeps> {
   const now = () => new Date().toISOString();
+  // Derive THIS owner's hybrid OPEN-material from the custody-threaded ML-KEM secret (OwnerIdentity.kemSecretKey,
+  // ① — the SAME helper + B64 contract the FE path uses). undefined for a classical identity OR when the secret
+  // is absent/un-derivable (① pending / wrong-length) → classical-only openers + the ③ loud-retry gate below.
+  // Headless key lifetime = PROCESS lifetime: the owner object holds the passphrase and the kem secret (base64) for the
+  // whole run, so this is derived per poll and its bytes are not zeroed. No tick-scope claim here (that is the FE poll).
+  const hybrid = await deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey);
+  const classicalCU = openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase);
+  const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
   return {
     owner,
-    decrypt: openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase),
+    openLegs: legs,
+    // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
+    decrypt: hybrid
+      ? dualReadOpener(
+          counted(makeHybridOpener((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseContactUpdateWire), 'hybrid', legs),
+          counted(classicalCU, 'classical', legs),
+        )
+      : counted(classicalCU, 'classical', legs),
     store: store.asContactStore(),
-    note: buildNoteSeam(owner, store, now),
-    affirm: buildTrustAffirmSeam(owner, store, now),
+    note: buildNoteSeam(owner, store, now, hybrid, legs),
+    // ③ loud-not-silent, keyed on ACTUAL derivability (Flint's hard gate #168382): advertise-kem-pub but the
+    // ML-KEM secret did NOT derive ⇒ a hybrid blob is LEFT FOR RETRY, never silently acked+dropped. The instant
+    // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
+    // looping it retryable-FOREVER (the flip-side harm). advertise-kem && !hybrid ⟺ missing.
+    hybridSecretMissing: !!owner.kemPublicKey && !hybrid,
+    deadLetter: opts.deadLetterPath ? headlessDeadLetterSink(opts.deadLetterPath) : undefined,
     relayBase: opts.relayBase,
     fetchImpl: opts.fetchImpl,
     now,
@@ -132,7 +162,7 @@ export function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessSt
 
 /** Poll the owner's smart mailbox ONCE: decrypt → verify → apply → persist → ack every pending envelope. */
 export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary> {
-  return consumeInboundContactUpdates(buildHeadlessConsumeDeps(owner, store, opts));
+  return consumeInboundContactUpdates(await buildHeadlessConsumeDeps(owner, store, opts));
 }
 
 export interface HeadlessPollHandle {
@@ -176,19 +206,26 @@ export function startHeadlessPolling(
 }
 
 // ── SEND ──────────────────────────────────────────────────────────────────────────────────────────
-// Trust-affirmations: reuse sendTrustAffirmToPeer (already Node-ready — pure sign→seal→POST, no store).
-export { sendTrustAffirmToPeer };
 
 /**
  * Send an over-wire note from a headless client: sign → seal → deposit to the peer's mailbox, and persist
  * the outbound copy to the local HeadlessStore. Mirrors messaging/transport.sendNoteToPeer but writes the
  * local copy to the Node store (sendNoteToPeer persists to the browser IndexedDB notes store).
+ *
+ * HNDL (L7): the seal is PQ-hybrid (living-book-sleeve, X25519+ML-KEM-1024) when the recipient's ML-KEM
+ * pubkey is supplied — the same fail-closed contract as transport.sendNoteToPeer: a recipient with no
+ * verified pq_kem is NOT deposited to (never a silent classical downgrade); the local copy is kept as
+ * "not sent" (deposited:false). So an agent's outbound mail is all-hybrid, and legacy/keyless peers are
+ * skipped loud-locally, never downgraded.
  */
 export async function sendNoteFromHeadless(args: {
   owner: HeadlessOwner;
   senderKind?: ParticipantKind;
   peerFingerprint: string;
   peerPublicKeyArmored: string;
+  /** Recipient's verified ML-KEM-1024 pubkey (base64). Present ⇒ PQ-hybrid seal (HNDL); ABSENT ⇒
+   *  fail-closed: NOT deposited (never downgraded to classical), local copy kept as not-sent. */
+  peerPqKemPublicKey?: string;
   body: string;
   threadId?: string;
   store: HeadlessStore;
@@ -221,13 +258,23 @@ export async function sendNoteFromHeadless(args: {
     args.owner.kemPublicKey,
     args.owner.sigPublicKey,
   );
-  const blob = await sealNoteTo(wire, args.peerPublicKeyArmored);
-  const mailbox_id = deriveMailboxId(args.peerFingerprint);
-  const res = await fetchImpl(`${relayBase}/envelope`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mailbox_id, blob }),
-  });
+  // fail-closed (HNDL): seal PQ-hybrid + deposit ONLY when the recipient has a verified ML-KEM-1024 pubkey.
+  // A recipient without one is NOT deposited to in a classical/downgraded form (never downgrade). The local
+  // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
+  // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
+  let deposited = false;
+  if (args.peerPqKemPublicKey) {
+    const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+    const mailbox_id = deriveMailboxId(args.peerFingerprint);
+    const res = await fetchImpl(`${relayBase}/envelope`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mailbox_id, blob }),
+    });
+    deposited = res.ok;
+  } else {
+    console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
+  }
 
   // local outbound copy (Node store)
   args.store.putNote({
@@ -242,5 +289,5 @@ export async function sendNoteFromHeadless(args: {
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
   });
-  return { note_id, thread_id, deposited: res.ok };
+  return { note_id, thread_id, deposited };
 }

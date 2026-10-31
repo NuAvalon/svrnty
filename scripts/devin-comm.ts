@@ -7,7 +7,7 @@
 //   npx tsx scripts/devin-comm.ts poll-json          — decrypt inbound → durable journal (flint §B cron)
 //   npx tsx scripts/devin-comm.ts loop [intervalMs]
 //   npx tsx scripts/devin-comm.ts grow [uses]          — mint a Grow shortlink (remote, multi-use)
-//   npx tsx scripts/devin-comm.ts join <url>           — resolve a Grow link, admit giver, send joiner-response
+//   npx tsx scripts/devin-comm.ts join <url> --expect-fp <fp64> --name <petname>  — resolve a Grow link, send joiner-response, THEN admit the giver (refuses on any mismatch)
 //   npx tsx scripts/devin-comm.ts gate                 — list Gate arrivals (verified joiners awaiting admit)
 //   npx tsx scripts/devin-comm.ts admit-gate <fp>      — admit a Gate arrival as Known → notes flow
 //   npx tsx scripts/devin-comm.ts admit <card.json>    — admit a new peer
@@ -15,14 +15,19 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
+import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
+import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
+import { deriveOwnerHybridSecrets } from '../src/lib/crypto/living-book-receive';
+import type { LivingBookHybridSecrets } from '../src/lib/crypto/living-book-sleeve';
 import { acceptJoinerAtGate, buildAdmitRecord } from '../src/lib/trust/grow-gate';
 import {
   isCodeOutstanding,
@@ -37,6 +42,9 @@ import { createRelay, resolveRelay } from '../src/lib/sync/relay';
 import { sendJoinerResponse } from '../src/lib/sync/send-joiner-response';
 import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPacket, type RatchetSnapshot } from '../src/lib/crypto/message-ratchet';
 import { strip0x40 } from '../src/lib/identity/raw-sign';
+import { fingerprintMatchesKey } from '../src/lib/identity/fingerprint';
+import { runJoin, parseJoinFlags } from '../src/lib/headless/join-grow-link';
+import { backupStoreBeforeJoin } from '../src/lib/headless/join-backup';
 import { base64ToUint8, uint8ToBase64 } from '../src/lib/crypto/pq';
 import * as openpgp from 'openpgp';
 
@@ -72,16 +80,11 @@ function loadMint(): SerializedMintArtifact {
   return JSON.parse(readFileSync(MINT, 'utf8'));
 }
 
+// The ONE owner builder: the custody helper maps every OwnerIdentity field, incl. custody ① kemSecretKey. Without it
+// the consumer has no hybrid open-material and can read only classical notes (10-30 incident: Mneme's hybrid-sealed
+// notes were refused at every seam). Pinned by src/lib/headless/devin-comm-owner-wiring.test.ts.
 function ownerFrom(a: SerializedMintArtifact): HeadlessOwner {
-  const id = a.public.card.identity;
-  return {
-    fingerprint: a.public.durable_id,
-    publicKeyArmored: id.public_key,
-    privateKeyArmored: a.private.classical_private_key,
-    passphrase: a.private.classical_kpass,
-    kemPublicKey: id.pq_kem_public_key,
-    sigPublicKey: id.pq_sig_public_key,
-  };
+  return custodyToHeadlessOwner(a);
 }
 
 // ── agent-local JSON state (issued Grow codes + Gate arrivals) ─────────────────────────────────
@@ -116,6 +119,13 @@ function saveGate(map: GateMap): void {
 function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): JoinerResponseSeam {
   const ownFp = owner.fingerprint;
   const codes = loadCodes(); // snapshot per poll — same as browser loadIssuedCodeMap
+  // #711 (b): the joiner-response is sealed PQ-hybrid to our KEM key (a CLI join and the web app both pass giverPqKemPublicKey). Without
+  // the hybrid open-material, verifyJoinerResponse could only try the classical leg, so the response never opened and the Gate stayed empty
+  // (Peter's web join to Athena's grow link, 2026-10-31). Same dual-read as the browser seam (live-book-poll.ts): hybrid first, classical
+  // fallback. Lazy + memoized: derived at most once per poll, and only when a joiner blob actually arrives. undefined for a classical owner.
+  let hybridMemo: Promise<LivingBookHybridSecrets | undefined> | null = null;
+  const hybrid = () =>
+    (hybridMemo ??= deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey));
   const acceptNonce = (nonce: string, joinerFp: string): boolean =>
     isCodeOutstanding(codes, ownFp, nonce, Date.now()) &&
     codeUnderCap(codes, ownFp, nonce) &&
@@ -124,7 +134,7 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
     verify: (blob) =>
       verifyJoinerResponse(
         blob,
-        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase },
+        { fingerprint: ownFp, privateKeyArmored: owner.privateKeyArmored, passphrase: owner.passphrase, hybrid },
         acceptNonce,
         { requirePq: false },
       ),
@@ -157,7 +167,8 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
 }
 
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
-  const deps = buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY });
+  // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
+  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY, deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}` });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }
@@ -228,7 +239,7 @@ function printNewArrivals(ownerFp: string, seen: Set<string>): void {
   for (const a of Object.values(g)) {
     if (seen.has(a.fingerprint)) continue;
     seen.add(a.fingerprint);
-    console.log(`[gate] ${a.displayName || a.fingerprint.slice(0, 12)} (${a.fingerprint}) waiting — admit-gate ${a.fingerprint} to let them in`);
+    console.log(gateArrivalLine(a));
   }
 }
 
@@ -259,6 +270,10 @@ async function main() {
 
   if (cmd === 'admit') {
     const card = JSON.parse(readFileSync(rest[0], 'utf8'));
+    // Never exit 0 when nothing usable was written (Archie #1310): a card with no fingerprint or no public key is refused, not stored.
+    if (typeof (card.fingerprint ?? card.durable_id) !== 'string' || !(card.fingerprint ?? card.durable_id) || typeof card.public_key !== 'string' || !card.public_key) {
+      throw new Error('admit refused: the card needs a fingerprint (or durable_id) and a public_key. Nothing was written.');
+    }
     const contact: HeadlessContact = {
       id: card.durable_id ?? card.fingerprint,
       fingerprint: card.fingerprint ?? card.durable_id,
@@ -268,6 +283,10 @@ async function main() {
       pq_kem_public_key: card.pq_kem_public_key,
     };
     store.upsertContact(contact);
+    // Defensive and UNTESTABLE by construction: the store's writer lock throws first on a failed write, so no test can reach "written but absent".
+    // Kept on purpose (Archie #1366); this is not a proven guarantee.
+    const back = store.getContactByFingerprint(contact.fingerprint);
+    if (!back || back.public_key !== contact.public_key) throw new Error(`admit failed: ${contact.fingerprint.slice(0, 16)} is not in the store after the write. Nothing is trusted.`);
     console.log(`admitted ${contact.fingerprint}`);
     return;
   }
@@ -300,40 +319,51 @@ async function main() {
   }
 
   if (cmd === 'join') {
-    // Resolve a Grow link → admit the giver → deposit our signed joiner-response to their mailbox.
-    const u = new URL(rest[0]);
-    const code = u.pathname.split('/c/')[1];
-    const keyFragment = u.hash.slice(1);
-    if (!code || !keyFragment) throw new Error('expected a /c/<code>#<key> Grow link');
-    const card = JSON.parse(await resolveRelay(code, keyFragment));
-    const id = card.identity ?? card;
-    const giverFp = id.fingerprint ?? card.durable_id;
-    if (!giverFp || !id.public_key) throw new Error('resolved card missing fingerprint/public_key');
-    store.upsertContact({
-      id: giverFp,
-      fingerprint: giverFp,
-      name: id.display_name || 'grow-giver',
-      public_key: id.public_key,
-      pq_sig_public_key: id.pq_sig_public_key,
-      pq_kem_public_key: id.pq_kem_public_key,
-      trust_level: 'known',
-    });
+    // Resolve a Grow link, deposit our signed joiner-response, and ONLY THEN admit the giver (src/lib/headless/join-grow-link.ts: Flint spec J1-J6).
+    //   devin-comm join <url> --expect-fp <fp64> --name <petname>
+    // --expect-fp is the fingerprint the person read out of band; the link alone proves nothing about who minted it. The petname is ours, never the card's.
     const myId = artifact.public.card.identity;
-    const r = await sendJoinerResponse(
-      {
-        fingerprint: owner.fingerprint,
-        epoch: 0, // headless agents are pre-rotation; matches the contact.update wire epoch
-        publicKeyArmored: myId.public_key,
-        displayName: myId.display_name || 'devin-local',
-        privateKeyArmored: owner.privateKeyArmored,
-        passphrase: owner.passphrase,
-        kemPublicKeyB64: myId.pq_kem_public_key,
-        sigPublicKeyB64: myId.pq_sig_public_key,
-      },
-      { fingerprint: giverFp, publicKeyArmored: id.public_key, inviteNonce: code },
-      { relayBase: RELAY },
-    );
-    console.log(JSON.stringify({ admitted: giverFp, joinerResponse: r }));
+    const out = await runJoin(parseJoinFlags(rest), {
+      backup: () => { backupStoreBeforeJoin(STORE); }, // J5: dated 0600 copy; skips ONLY when lstat says ENOENT, refuses a symlink or any other error (join-backup.ts)
+      resolve: (code, fragment) => resolveRelay(code, fragment),
+      derives: (fp, publicKey, pq) => fingerprintMatchesKey(fp, publicKey, pq),
+      deposit: (target) =>
+        sendJoinerResponse(
+          {
+            fingerprint: owner.fingerprint,
+            epoch: 0, // headless agents are pre-rotation; matches the contact.update wire epoch
+            publicKeyArmored: myId.public_key,
+            displayName: myId.display_name || 'devin-local',
+            privateKeyArmored: owner.privateKeyArmored,
+            passphrase: owner.passphrase,
+            kemPublicKeyB64: myId.pq_kem_public_key,
+            sigPublicKeyB64: myId.pq_sig_public_key,
+          },
+          target,
+          { relayBase: RELAY },
+        ),
+      admit: (contact) => store.upsertContact(contact),
+    });
+    if (!out.ok && out.refusal === 'admit-failed-after-deposit' && out.pending) {
+      // The deposit already succeeded, so the giver may have added us. Save their card (public material only) for a manual admit; do NOT re-run join.
+      const pend = `${STORE}.pending-admit-${out.pending.fingerprint.slice(0, 8)}.json`;
+      let saved = false;
+      try {
+        writeFileSync(pend, JSON.stringify({ fingerprint: out.pending.fingerprint, durable_id: out.pending.id, name: out.pending.name, public_key: out.pending.public_key, pq_sig_public_key: out.pending.pq_sig_public_key, pq_kem_public_key: out.pending.pq_kem_public_key }), { mode: 0o600 });
+        chmodSync(pend, 0o600);
+        saved = true;
+      } catch { /* reported below */ }
+      console.error(`joiner-response DEPOSITED, but admitting ${out.pending.name} failed${out.detail ? `: ${out.detail}` : ''}. They can add you; their replies will be dropped until you admit them. Do NOT re-run join (a second deposit counts against the link).`);
+      console.error(saved ? `Run: npx tsx scripts/devin-comm.ts admit ${pend}` : `Could not save their card either. Their fingerprint is ${out.pending.fingerprint}: get their card file from them and run: npx tsx scripts/devin-comm.ts admit <card.json>`);
+      process.exitCode = 1;
+      return;
+    }
+    if (!out.ok) {
+      console.error(`join refused: ${out.refusal}${out.detail ? ` (${out.detail})` : ''}. Nothing was admitted.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify({ admitted: out.admitted, fp8: out.fp8, name: out.name, joinerResponse: out.joinerResponse }));
     return;
   }
 
@@ -345,7 +375,7 @@ async function main() {
       return;
     }
     for (const a of arrivals) {
-      console.log(`${a.fingerprint}  "${a.displayName}"  via ${a.inviteNonce} (${a.mintChannel})  arrived ${a.arrivedAt}`);
+      console.log(gateListLine(a));
     }
     return;
   }
@@ -381,6 +411,11 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
+    // The outer hybrid seal needs the peer's ML-KEM key, taken from the ADMITTED record and re-checked
+    // against its fingerprint (#456). Resolve it BEFORE the ratchet chain is advanced + persisted: a refusal
+    // must leave ratchet-sessions.json untouched, not burn an index for a message that was never sent.
+    const kem = await resolvePeerKemForSend(peer);
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
     const rp = await ratchetPeerOf(peer);
     if (!rp) throw new Error(`peer ${fp} lacks ratchet keys (x25519/mlkem)`);
     const self = ratchetSelf(artifact);
@@ -396,8 +431,15 @@ async function main() {
       return packet;
     });
     const wire = JSON.stringify({ type: TR_BODY, packet });
-    const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, body: wire, store, relayBase: RELAY });
+    let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
+    const tf = trackedFetch(globalThis.fetch);
+    try {
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+    } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT; the chain already advanced
+      console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
+    }
     console.log(JSON.stringify(r));
+    if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent; this ratchet index is spent)')); process.exitCode = 1; }
     return;
   }
 
@@ -405,8 +447,19 @@ async function main() {
     const [fp, body] = rest;
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
-    const r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, body, store, relayBase: RELAY });
+    const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
+    if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); process.exitCode = 1; return; }
+    let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
+    const tf = trackedFetch(globalThis.fetch);
+    try {
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+    } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
+      console.error(sendThrowLine(fp, e, tf.stage())); process.exitCode = 1; return;
+    }
     console.log(JSON.stringify(r));
+    // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
+    // ping the webhook below for a reply that never left.
+    if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent)')); process.exitCode = 1; return; }
     // Peter's rule: replies to devin-cloud must also ping his automation webhook (wakes his session).
     if (fp === 'b0d61d883e39edb9a85ceb3ff3472e0cfd6cc6a4a0007c25eaa9275c9c5bea81') {
       try {
@@ -430,7 +483,7 @@ async function main() {
       const c = store.getContactByFingerprint(n.from_fingerprint);
       const pt = c && trPacket(n.body) ? await trOpen(artifact, c, n.body) : null;
       const shown = pt ?? n.body;
-      console.log(`[note ${n.note_id} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${shown}`);
+      console.log(`[note ${shortNoteId(n.note_id)} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${displayLine(shown)}`);
     }
     return;
   }
@@ -445,7 +498,13 @@ async function main() {
     // human `poll` command uses (pt ?? n.body) — a non-tr body or a failed decrypt is dropped, so no
     // raw wire or unauthenticated content ever reaches the quarantine table.
     const journalPath = `${DIR}/decrypt-journal.jsonl`;
-    await pollOnce(owner, store);
+    const consumed = await pollOnce(owner, store);
+    // "journaled 0" must not hide WHY (Athena #593, Archie #595): a poll the relay REFUSED looks identical to an
+    // empty mailbox in the journal summary. consume reports the refusal as `rejected` (the HTTP status);
+    // say it on stderr here and carry it in the stdout JSON below. Exit code is unchanged (0) on purpose.
+    if (consumed.rejected !== undefined) {
+      console.error(`POLL REFUSED by the relay: HTTP ${consumed.rejected} (a refused poll is not an empty mailbox)`);
+    }
     // poll-json-watermark-001: the journal IS the durable consumed-set —
     // a journaled note_id already had its one-shot decrypt spent, so
     // trOpen can only return null while re-paying readKey + importState +
@@ -484,6 +543,7 @@ async function main() {
     const openTasks = new Map<string, { note_id: string; channel: string; sent_at: string }[]>();
     let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
     let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
+    const deadByPeer = new Map<string, { note_id: string; sent_at: string }[]>();   // → one notice per peer
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
       if (journaledIds.has(`${note.from_fingerprint}:${note.note_id}`)) { skipped++; continue; }
       const c = store.getContactByFingerprint(note.from_fingerprint);
@@ -508,7 +568,7 @@ async function main() {
         appendFileSync(journalPath, JSON.stringify({
           note_id: note.note_id,
           peer_fp: note.from_fingerprint,
-          sent_at: note.sent_at,
+          sent_at: safeToken(note.sent_at),
           plaintext: notice,
           transport: 'loom-notice',
         }) + '\n');
@@ -535,7 +595,15 @@ async function main() {
         continue;
       }
       const key = `${note.from_fingerprint}:${note.note_id}`;
-      if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) { dead++; continue; }   // tombstoned (Mneme FINAL)
+      if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) {                       // tombstoned (Mneme FINAL)
+        dead++;
+        if (attempts[key] === MAX_ATTEMPTS) {                           // not yet announced (MAX+1 = announced)
+          const list = deadByPeer.get(note.from_fingerprint) ?? [];
+          list.push({ note_id: note.note_id, sent_at: note.sent_at });
+          deadByPeer.set(note.from_fingerprint, list);
+        }
+        continue;
+      }
       const pt = await trOpen(artifact, c, note.body);
       if (pt === null) {
         attempts[key] = (attempts[key] ?? 0) + 1;
@@ -557,15 +625,36 @@ async function main() {
       appendFileSync(journalPath, JSON.stringify({
         note_id: agg.note_id,
         peer_fp: peerFp,
-        sent_at: items.map((i) => i.sent_at).sort().at(-1),
+        sent_at: safeToken(items.map((i) => i.sent_at).sort().at(-1)),
         plaintext: agg.text,
         transport: 'loom-notice',
       }) + '\n');
       journaled++;
       loomNotices++;
     }
+    for (const [peerFp, items] of deadByPeer) {
+      const agg = deadNotesNotice(peerFp, items, MAX_ATTEMPTS);
+      for (const i of items) attempts[`${peerFp}:${i.note_id}`] = MAX_ATTEMPTS + 1;   // announced: never re-counted
+      if (journaledIds.has(`${peerFp}:${agg.note_id}`)) continue;   // same set already announced
+      appendFileSync(journalPath, JSON.stringify({
+        note_id: agg.note_id,
+        peer_fp: peerFp,
+        sent_at: safeToken(items.map((i) => i.sent_at).sort().at(-1)),
+        plaintext: agg.text,
+        transport: 'dead-notice',
+      }) + '\n');
+      journaled++;
+    }
     writeFileAtomic(attemptsPath, JSON.stringify(attempts));
-    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath }));
+    // polled / rejected / dropped come straight from consume's summary (see ConsumeSummary). `dropped` is an
+    // AGGREGATE for THIS poll with no sender in it, and it has two kinds: a terminal drop (undecryptable,
+    // bad signature, not-in-book) is counted once and acked away, but a RETRYABLE envelope stays in the mailbox
+    // and is counted again on every poll until it resolves. So a steady dropped>0 can be one stuck envelope.
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped,
+      // #720 counters (counts only; the ward allowlist in devin_quarantine names exactly these keys). `lost` = per-reason consumed losses
+      // (headless has no dead-letter sink, so deadLettered/unrecorded/released stay 0 here); opened_* = which leg of the dual-read opened.
+      held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
+      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical }));
     return;
   }
 
@@ -585,7 +674,7 @@ async function main() {
             seen.add(n.note_id);
             const c = store.getContactByFingerprint(n.from_fingerprint);
             const pt = c && trPacket(n.body) ? await trOpen(artifact, c, n.body) : null;
-            console.log(`[note ${n.note_id} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${pt ?? n.body}`);
+            console.log(`[note ${shortNoteId(n.note_id)} from ${n.from_fingerprint.slice(0, 12)}… @${n.sent_at}] ${displayLine(pt ?? n.body)}`);
           }
         }
       } catch (err) {

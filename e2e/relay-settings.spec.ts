@@ -50,9 +50,8 @@ test('Settings → Relay validates and never auto-switches', async ({ page }) =>
   await expect(panel).toBeVisible();
   await panel.scrollIntoViewIfNeeded();
   await expect(panel.getByTestId('relay-current')).toContainText("You're on:");
-  await expect(panel.getByTestId('relay-helper')).toContainText(
-    'never your notes (those stay sealed end-to-end)',
-  );
+  await expect(panel.getByTestId('relay-helper')).toContainText('never what your messages say');
+  await expect(panel.getByTestId('relay-helper')).toContainText('your identity key');
   await expect(panel.getByTestId('relay-switch')).toBeDisabled();
 
   await panel.getByTestId('relay-url-input').fill('https://reg.example:8101');

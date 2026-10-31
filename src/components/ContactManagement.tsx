@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   Shield, UserPlus, Search, Share2,
-  Check, Edit, Download, Upload, RefreshCw, FileJson, Eye,
+  Check, Edit, Download, Upload, RefreshCw, FileJson,
   ShieldCheck, Copy, MoreHorizontal, Users
 } from 'lucide-react';
 import {
@@ -17,14 +17,21 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu';
-import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { ContactShareDialog } from '@/components/ContactShareDialog';
 import { ImportContactsDialog } from '@/components/ImportContactsDialog';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
 import { MasterAddressBookList } from '@/components/contacts/MasterAddressBookList';
-import { ContactDetailDialog } from '@/components/contacts/ContactDetailDialog';
+import { BOOK_SORTS, sortBookContacts, type BookSort } from '@/components/contacts/sort-book';
+import { ContactActionCard } from '@/components/contacts/ContactActionCard';
+import { VivreCaution } from '@/components/VivreBurn';
+import { contactHasDistress } from '@/lib/trust/distress';
 import { InviteToSvrntyDialog } from '@/components/contacts/InviteToSvrntyDialog';
+import { CardMenuItem } from '@/components/ui/CardActionMenu';
+import { FirstVisitHint } from '@/components/ui/FirstVisitHint';
+import { ContactMethodLink } from '@/components/contacts/ContactMethodLink';
+import { safeEmailLink, safePhoneLink } from '@/lib/contacts/safe-contact-link';
+import { VerifySheet } from '@/components/verify/VerifySheet';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { contactRecordToEdge, edgeTrusted } from '@/lib/trust/contact-edge';
 import { ownerHasVerified, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
@@ -32,7 +39,9 @@ import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import { visualForEdge } from '@/components/trust/trust-phase-visual';
 import {
   buildLinkToSvrntyUpdate,
+  defaultShareSettings,
   isPendingSvrntyContact,
+  readShareSettings,
   type ContactShareSettings,
 } from '@/lib/contacts/contact-lane';
 import { createRelay } from '@/lib/sync/relay';
@@ -45,11 +54,12 @@ import {
   type ContactRecord,
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
-import { buildPsiSyncOptions, startKnowLayerSync } from '@/lib/sync/know-layer-sync';
+import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
-import { isPSIDiscoveryLive } from '@/lib/claim-gates';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
+import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
+import type { TrustEvent } from '@/lib/trust/types';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
@@ -135,41 +145,10 @@ function visualForContact(contact: Contact) {
 interface ContactsProps {
   identity: any;
   onContactsChange?: () => void;
-}
-
-// --- Helpers ---
-
-function TrustBadge({ contact }: { contact: Contact }) {
-  const visual = visualForContact(contact);
-  return (
-    <Badge
-      className="border font-medium"
-      data-testid="contact-trust-badge"
-      data-bond-state={visual.bondState}
-      style={{
-        fontFamily: E.fontMono,
-        letterSpacing: '0.06em',
-        background: visual.lit
-          ? 'color-mix(in srgb, var(--se-accent2) 12%, transparent)'
-          : visual.bondState === 'trust-sent'
-            ? 'transparent'
-            : 'color-mix(in srgb, var(--se-dim) 12%, transparent)',
-        color: visual.chipColorCss,
-        borderColor: visual.lit ? E.borderLit : visual.bondState === 'trust-sent' ? E.muted : E.border,
-        borderStyle: visual.shape === 'dashed-hollow' ? 'dashed' : 'solid',
-      }}
-    >
-      {visual.label}
-    </Badge>
-  );
-}
-
-function TrustIcon({ contact, className = "h-5 w-5" }: { contact: Contact; className?: string }) {
-  const visual = visualForContact(contact);
-  if (visual.lit) {
-    return <ShieldCheck className={className} style={{ color: E.accent2 }} />;
-  }
-  return <Eye className={className} style={{ color: visual.chipColorCss }} />;
+  /** Same hop as Galaxy → Chat. */
+  onOpenChat?: (contact: { fingerprint: string; name: string }) => void;
+  /** Same hop as Galaxy → Send update (revise a method for this peer). */
+  onSendMethodUpdate?: (contact: { fingerprint: string; name: string }) => void;
 }
 
 // Convert IndexedDB ContactRecord to component Contact type
@@ -197,19 +176,26 @@ function recordToContact(r: ContactRecord): Contact {
 
 // --- Main Component ---
 
-export function ContactManagement({ identity, onContactsChange }: ContactsProps) {
+export function ContactManagement({ identity, onContactsChange, onOpenChat, onSendMethodUpdate }: ContactsProps) {
   const [contacts, setContacts] = useState<Contact[]>([]);
   // Live-beat: contact ids whose latest repaint came from a peer's incoming apply (reason:'live-apply') → data-live="push".
   const [liveIds, setLiveIds] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [bookSort, setBookSort] = useState<BookSort>('name-asc');
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
+  const [bookSheetExpanded, setBookSheetExpanded] = useState(true);
+  const [bookActionsOpen, setBookActionsOpen] = useState(false);
+  const bookCardRef = useRef<HTMLDivElement>(null);
+  const [verifyOpen, setVerifyOpen] = useState(false);
+  const [trustAfterVerify, setTrustAfterVerify] = useState(false);
+  const verifiedForTrust = useRef(false);
 
   // Dialog visibility
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
-  const [showDetailDialog, setShowDetailDialog] = useState(false);
+  const [, setShowDetailDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
   const [showShareIdentityDialog, setShowShareIdentityDialog] = useState(false);
   const [showImportExchangeDialog, setShowImportExchangeDialog] = useState(false);
@@ -289,6 +275,11 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     if (fingerprint) loadContacts();
   }, [fingerprint, loadContacts]);
 
+  useEffect(() => {
+    if (!selectedContact || selectionMode) return;
+    bookCardRef.current?.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+  }, [selectedContact?.id, selectionMode]);
+
   // Live-beat: a peer's edit → the return-channel caller applies it IN Alice's page → emits reason:'live-apply'.
   // We re-project the book IN-PLACE (no reload / no navigation — the honest hinge) and mark the ignited rows
   // data-live="push" so beat-4 can prove Alice self-updated LIVE, not via pull-to-refresh. `source:'broadcast'`
@@ -309,18 +300,13 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
   // Fail-closed: locked session / failed bind ⇒ no options ⇒ no sync.
   useEffect(() => {
     if (!fingerprint) return;
-    // Gated OFF for alpha (claim-gates.isPSIDiscoveryLive === false): the PSI discovery wire-in is
-    // present but DO-NOT-ADVERTISE until the e2e verify passes (determinism / unlinkability /
-    // set-change / stateless-reload) + Flint's at-rest-blinder co-verify. Ships dormant + honest —
-    // no discovery runs, no "see who you both know" claim — then this flips WITH the gate.
-    if (!isPSIDiscoveryLive()) return;
+    // Gated by claim-gates.isPSIDiscoveryLive (build-time, opt-in): startPsiDiscovery checks it BEFORE the bind ceremony, so a build with
+    // discovery off (prod: no satellite pin) makes no request to /api/satellite at all and advertises nothing.
     let stopped = false;
     let handle: { stop: () => void } | undefined;
-    void (async () => {
-      const options = await buildPsiSyncOptions(identity);
-      if (stopped || !options) return;
-      handle = startKnowLayerSync(identity, options);
-    })();
+    void startPsiDiscovery(identity, { cancelled: () => stopped }).then((h) => {
+      if (h) handle = h;
+    });
     return () => {
       stopped = true;
       handle?.stop();
@@ -356,14 +342,16 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     return true;
   });
 
-  const masterRows = filteredContacts.map((c) => {
+  const sortedContacts = sortBookContacts(filteredContacts, bookSort);
+
+  const masterRows = sortedContacts.map((c) => {
     const edge = contactRecordToEdge(c);
     const living = livingEdgeStatus(edge);
     return {
       id: c.id,
       name: c.name,
       email: c.email,
-      fingerprint: c.fingerprint,
+      fingerprint: edge.peer_fingerprint || c.fingerprint,
       public_key: c.public_key,
       trust_level: c.trust_level,
       blocked: isContactBlocked(c),
@@ -371,6 +359,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
       pending: isPendingSvrntyContact(c),
       living,
       lastMoment: living.lastMoment,
+      distress: contactHasDistress(c),
     };
   });
 
@@ -522,44 +511,29 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
     try {
       setLoading(true);
       setError(null);
-      await updateContact(contact.id, {
-        trust_level: newLevel,
-        trusted: newLevel === 'trusted',
-        trusted_since: newLevel === 'trusted' ? new Date().toISOString() : null,
-        ...(newLevel === 'trusted' && { verified_at: new Date().toISOString() }),
-        // #111 (survivor-safety): untrusting clears open_visibility — the UI gates
-        // open-visibility on TRUSTED contacts, so dropping trust must drop the reveal
-        // consent with it (reveal set = trusted ∩ open_vis ∩ !blocked, by construction).
-        ...(newLevel === 'unverified' && {
-          metadata: {
-            ...(contact.metadata || {}),
-            share_settings: { ...(contact.metadata?.share_settings || {}), open_visibility: false },
-          },
-        }),
-      } as any);
-      // Satellite trust commitment (blind — satellite never sees who you're trusting)
-      if (contact.fingerprint) {
-        const fps = [fingerprint, contact.fingerprint].sort();
-        const hashInput = fps.join('') + 'trust-v1';
-        const encoder = new TextEncoder();
-        const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(hashInput));
-        const hashHex = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-        try {
-          if (newLevel === 'trusted') {
-            await fetch('/api/trust/commit', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ fingerprint, commitment_hash: hashHex }),
-            });
-          } else {
-            await fetch('/api/trust/revoke', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ fingerprint, commitment_hash: hashHex }),
-            });
-          }
-        } catch { /* satellite offline — local trust still works */ }
-      }
+      // Route through the single trust-transition chokepoint: local write (+trust_history +#111) +
+      // blind satellite commit/revoke + PSI reconcile + EMIT-ONLY deposit — so this surface and the
+      // trust-MAP surface (app/page.tsx) can't drift (Flint floor-verify #173014). EMIT-ONLY: nothing
+      // local flips reciprocal; the peer's verified receive does.
+      await applyTrustTransition(
+        {
+          fingerprint,
+          publicKeyArmored: identity?.identity?.public_key,
+          pqKemPublicKey: identity?.post_quantum?.kem_public_key,
+          pqSigPublicKey: identity?.post_quantum?.sig_public_key,
+        },
+        {
+          contactId: contact.id,
+          fingerprint: contact.fingerprint,
+          publicKeyArmored: contact.public_key,
+          blocked: isContactBlocked(contact),
+          openVisibility: contact.metadata?.share_settings?.open_visibility === true,
+          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
+          metadata: contact.metadata as Record<string, unknown> | undefined,
+          priorTrustHistory: (contact as { trust_history?: TrustEvent[] }).trust_history ?? [],
+        },
+        newLevel === 'trusted',
+      );
       if (selectedContact && selectedContact.id === contact.id) {
         setSelectedContact({
           ...selectedContact,
@@ -567,20 +541,6 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           blocked: selectedContact.blocked,
         });
       }
-      // #572 part 2 (flip-blocker b): mirror the POST-change reveal invariant to the satellite
-      // allowed_senders row. Untrust drops trust → DELETE; (re)trust → ADD iff still open-vis ∩ !blocked.
-      // Fire-and-forget + fail-soft (gated dark pre-flip) — never blocks or breaks the local trust toggle.
-      const psiTrusted = newLevel === 'trusted';
-      void reconcileAllowedOnConsentChange({
-        ownerFp: fingerprint,
-        senderFp: contact.fingerprint,
-        consent: {
-          trusted: psiTrusted,
-          openVisibility: psiTrusted && contact.metadata?.share_settings?.open_visibility === true,
-          blocked: isContactBlocked(contact),
-          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
-        },
-      });
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trust');
@@ -1007,7 +967,7 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         boxShadow: 'var(--se-glass-shadow)',
-        overflow: 'hidden',
+        overflow: 'visible',
       }}
     >
       
@@ -1111,20 +1071,44 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
         )}
 
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
-            <Input
-              placeholder="Search by name, email, fingerprint..."
-              className="pl-8"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+          <div className="flex w-full sm:w-auto flex-1 items-center gap-2">
+            <div className="relative min-w-0 flex-1 sm:w-72 sm:flex-none">
+              <Search className="absolute left-2 top-2.5 h-4 w-4" style={{ color: E.dim }} />
+              <Input
+                placeholder="Search by name, email, fingerprint..."
+                className="pl-8"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{
+                  fontFamily: E.fontSans,
+                  background: E.inputBg,
+                  borderColor: E.border,
+                  color: E.text,
+                }}
+              />
+            </div>
+            <select
+              data-testid="contacts-book-sort"
+              aria-label="Sort contacts"
+              value={bookSort}
+              onChange={(e) => setBookSort(e.target.value as BookSort)}
               style={{
                 fontFamily: E.fontSans,
-                background: E.inputBg,
-                borderColor: E.border,
+                fontSize: 12,
                 color: E.text,
+                background: E.inputBg,
+                border: `1px solid ${E.border}`,
+                borderRadius: 8,
+                padding: '8px 10px',
+                flexShrink: 0,
               }}
-            />
+            >
+              {BOOK_SORTS.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
           </div>
           <Button onClick={() => setShowAddDialog(true)} style={emberPrimaryBtn}>
             <UserPlus className="h-4 w-4 mr-2" />
@@ -1656,14 +1640,17 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
             {bulkGroupNote ? (
               <p style={{ margin: 0, fontSize: 11, color: E.ok, fontFamily: E.fontSans }}>{bulkGroupNote}</p>
             ) : (
-              <p style={{ margin: 0, fontSize: 11, color: E.dim, fontFamily: E.fontSans }}>
+              <FirstVisitHint id="book-groups" label="Groups stay on this device">
                 Groups are local private tags (stripped on the wire). Introduce / resync / privacy need fleet.
-              </p>
+              </FirstVisitHint>
             )}
           </div>
         )}
 
-        <div className="w-full">
+        <div
+          className="w-full contacts-book-pane"
+          data-card-open={selectedContact && !selectionMode ? '1' : '0'}
+        >
             {loading ? (
               <div className="flex justify-center p-8">
                 <RefreshCw className="h-8 w-8 animate-spin" style={{ color: E.dim }} />
@@ -1698,21 +1685,236 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
                 </p>
               </div>
             ) : (
-              <MasterAddressBookList
-                rows={masterRows}
-                selectedIds={selectedIds}
-                selectionMode={selectionMode}
-                liveIds={liveIds}
-                onToggleSelect={toggleSelected}
+              <div
+                key={`${bookScope}-${showBlocked}-${groupFilterTag ?? ''}-${searchQuery}`}
+                className="contacts-book-scroll"
+                data-testid="contacts-book-scroll"
+                role="region"
+                aria-label="Contacts"
+                tabIndex={0}
+              >
+                <MasterAddressBookList
+                  rows={masterRows}
+                  selectedIds={selectedIds}
+                  selectionMode={selectionMode}
+                  liveIds={liveIds}
+                  openId={selectionMode ? undefined : selectedContact?.id}
+                  onToggleSelect={toggleSelected}
                 onOpen={(id) => {
+                  if (selectedContact?.id === id) {
+                    setSelectedContact(null);
+                    setBookSheetExpanded(false);
+                    setBookActionsOpen(false);
+                    return;
+                  }
                   const contact = contacts.find((c) => c.id === id);
                   if (!contact) return;
                   setSelectedContact(contact);
-                  setShowDetailDialog(true);
+                  setBookSheetExpanded(true);
+                  setBookActionsOpen(false);
+                  setShowDetailDialog(false);
                 }}
-              />
+                />
+              </div>
             )}
-          </div>
+          {selectedContact && !selectionMode ? (() => {
+          const focused = contacts.find((c) => c.id === selectedContact.id) ?? selectedContact;
+          const edge = contactRecordToEdge(focused);
+          const vis = visualForContact(focused);
+          const svrn = isSvrnNetworkContact(focused);
+          const pending = isPendingSvrntyContact(focused);
+          const verified = ownerHasVerified(edge);
+          const trusted = isTrusted(focused);
+          const fp = String(edge.peer_fingerprint || focused.fingerprint || '').replace(/[^0-9a-fA-F]/g, '');
+          const canChat = !!onOpenChat && svrn && fp.length >= 16;
+          const closeMenu = () => setBookActionsOpen(false);
+          const tags = focused.metadata?.tags || [];
+          const groupChoices = Array.from(new Set([...contacts.flatMap((c) => c.metadata?.tags || []), ...tags])).sort();
+          const share = readShareSettings(focused);
+          return (
+            <div ref={bookCardRef} className="contacts-book-card">
+            <ContactActionCard
+              testId="contact-action-card"
+              name={focused.name}
+              fingerprint={svrn ? (fp || undefined) : undefined}
+              bondLabel={vis.label}
+              bondColor={vis.chipColorCss}
+              lit={vis.lit}
+              distress={contactHasDistress(focused)}
+              introPending={pending}
+              expanded={bookSheetExpanded}
+              onToggleExpand={() => setBookSheetExpanded((v) => !v)}
+              onClose={() => {
+                setSelectedContact(null);
+                setBookActionsOpen(false);
+                setBookSheetExpanded(false);
+              }}
+              canChat={canChat}
+              onChat={() => onOpenChat?.({ fingerprint: fp, name: focused.name })}
+              canSendUpdate={!!onSendMethodUpdate && svrn && !pending && fp.length >= 16}
+              onSendUpdate={() => onSendMethodUpdate?.({ fingerprint: fp, name: focused.name })}
+              actionsOpen={bookActionsOpen}
+              onActionsOpenChange={setBookActionsOpen}
+              actionsSide="up"
+              actions={(
+                <>
+                  {!svrn ? (
+                    <CardMenuItem label="Invite to SVRNTY" onClick={() => { setInviteOpen(true); closeMenu(); }} />
+                  ) : null}
+                  {!svrn ? (
+                    <CardMenuItem
+                      label="Link to SVRNTY"
+                      onClick={() => { setLinkError(null); setLinkDialogOpen(true); closeMenu(); }}
+                    />
+                  ) : null}
+                  <CardMenuItem
+                    label="Edit"
+                    onClick={() => { openEditDialog(focused); closeMenu(); }}
+                  />
+                  {svrn && !pending ? (
+                    <CardMenuItem
+                      testId={trusted ? 'galaxy-trust-remove' : 'galaxy-trust'}
+                      label={trusted ? 'Remove trust' : 'Trust'}
+                      primary={!trusted}
+                      danger={trusted}
+                      onClick={() => {
+                        if (trusted) setConfirmKind('break');
+                        else if (!verified) {
+                          verifiedForTrust.current = false;
+                          setTrustAfterVerify(true);
+                          setVerifyOpen(true);
+                        } else setConfirmKind('trust');
+                        closeMenu();
+                      }}
+                    />
+                  ) : null}
+                  {svrn ? (
+                    <CardMenuItem
+                      label="Give a piece"
+                      onClick={() => { setShowShardGiveDialog(true); closeMenu(); }}
+                    />
+                  ) : null}
+                  <CardMenuItem
+                    label="Block"
+                    danger
+                    onClick={() => {
+                      setConfirmKind(isContactBlocked(focused) ? 'unblock' : 'block');
+                      closeMenu();
+                    }}
+                  />
+                  <CardMenuItem
+                    label="Remove"
+                    danger
+                    onClick={() => { setConfirmKind('remove'); closeMenu(); }}
+                  />
+                </>
+              )}
+              more={(
+                <>
+                  {contactHasDistress(focused) ? <VivreCaution /> : null}
+                  {focused.email ? (
+                    <p style={{ margin: '8px 0 0', fontSize: 12 }}>
+                      <ContactMethodLink safe={safeEmailLink(focused.email)} style={{ color: E.muted }} />
+                    </p>
+                  ) : null}
+                  {focused.contact_info?.phones?.[0] ? (
+                    <p style={{ margin: '4px 0 0', fontSize: 12 }}>
+                      <ContactMethodLink
+                        safe={safePhoneLink(focused.contact_info.phones[0])}
+                        style={{ color: E.muted }}
+                      />
+                    </p>
+                  ) : null}
+                  <div style={{ marginTop: 10 }}>
+                    {svrn && focused.fingerprint ? (
+                      <p
+                        data-testid="living-fingerprint"
+                        style={{
+                          margin: 0,
+                          fontFamily: E.fontMono,
+                          fontSize: 11,
+                          color: E.dim,
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {focused.fingerprint.match(/.{1,4}/g)?.join(' ')}
+                      </p>
+                    ) : (
+                      <p
+                        data-testid="classical-no-fingerprint"
+                        style={{ margin: 0, fontSize: 12, color: E.muted, lineHeight: 1.45 }}
+                      >
+                        Classical book — no fingerprint. A fingerprint exists only with a living key
+                        (invite or link this person to SVRNTY).
+                      </p>
+                    )}
+                  </div>
+                  {groupChoices.length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                      {groupChoices.map((tag) => {
+                        const on = tags.includes(tag);
+                        return (
+                          <button
+                            key={tag}
+                            type="button"
+                            onClick={() => { void handleToggleGroup(tag); }}
+                            style={{
+                              fontSize: 11,
+                              color: on ? E.accent : E.muted,
+                              border: `1px solid ${on ? E.borderLit : E.border}`,
+                              borderRadius: 6,
+                              padding: '2px 8px',
+                              background: on
+                                ? 'color-mix(in srgb, var(--se-accent) 12%, transparent)'
+                                : 'transparent',
+                              cursor: 'pointer',
+                              fontFamily: E.fontSans,
+                            }}
+                          >
+                            {tag}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                  {svrn ? (
+                    <div data-testid="contact-share-settings" style={{ marginTop: 10 }}>
+                      {([
+                        ['share_card', 'Show them my card'],
+                        ['open_visibility', 'Open visibility for trusted contacts'],
+                      ] as const).map(([key, label]) => (
+                        <label
+                          key={key}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: 12,
+                            color: E.muted,
+                            cursor: 'pointer',
+                            marginTop: 6,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!share[key]}
+                            disabled={key === 'open_visibility' && !edgeTrusted(focused)}
+                            onChange={(e) => {
+                              void handleShareSettingsChange({ ...defaultShareSettings(), ...share, [key]: e.target.checked });
+                            }}
+                          />
+                          {label}
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            />
+            </div>
+          );
+        })() : null}
+        </div>
 
         {/* === DIALOGS === */}
 
@@ -1788,53 +1990,26 @@ export function ContactManagement({ identity, onContactsChange }: ContactsProps)
           </DialogContent>
         </Dialog>
 
-        <ContactDetailDialog
-          open={showDetailDialog}
-          contact={selectedContact}
-          onClose={() => setShowDetailDialog(false)}
-          trustBadge={selectedContact ? <TrustBadge contact={selectedContact} /> : null}
-          trustIcon={selectedContact ? <TrustIcon contact={selectedContact} className="h-4 w-4" /> : null}
-          isTrusted={!!selectedContact && isTrusted(selectedContact)}
-          isBlocked={!!selectedContact && isContactBlocked(selectedContact)}
-          ownerVerified={!!selectedContact && ownerHasVerified(contactRecordToEdge(selectedContact))}
-          onOwnerVerify={(method) => {
+        <VerifySheet
+          open={!!(verifyOpen && selectedContact)}
+          onClose={() => {
+            const continueTrust = trustAfterVerify && verifiedForTrust.current;
+            setVerifyOpen(false);
+            setTrustAfterVerify(false);
+            verifiedForTrust.current = false;
+            if (continueTrust) setConfirmKind('trust');
+          }}
+          displayName={selectedContact?.name || ''}
+          fingerprint={selectedContact?.fingerprint || ''}
+          onConfirm={async (method) => {
             if (!selectedContact) return;
             if (!isSvrnNetworkContact(selectedContact)) {
               setError('Trust is SVRNTY-only — link this classical contact first.');
               return;
             }
-            void handleOwnerVerify(selectedContact, method);
+            await handleOwnerVerify(selectedContact, method);
+            verifiedForTrust.current = true;
           }}
-          onTrustToggle={() => {
-            if (!selectedContact) return;
-            if (!isSvrnNetworkContact(selectedContact)) {
-              setError('Trust is SVRNTY-only — link this classical contact first.');
-              return;
-            }
-            setConfirmKind(isTrusted(selectedContact) ? 'break' : 'trust');
-          }}
-          onEdit={() => {
-            if (!selectedContact) return;
-            openEditDialog(selectedContact);
-            setShowDetailDialog(false);
-          }}
-          onGivePiece={() => {
-            setShowShardGiveDialog(true);
-            setShowDetailDialog(false);
-          }}
-          onBlockToggle={() => {
-            if (!selectedContact) return;
-            setConfirmKind(isContactBlocked(selectedContact) ? 'unblock' : 'block');
-          }}
-          onRemove={() => setConfirmKind('remove')}
-          onInvite={() => setInviteOpen(true)}
-          onLinkToSvrnty={() => {
-            setLinkError(null);
-            setLinkDialogOpen(true);
-          }}
-          availableGroups={Array.from(new Set(contacts.flatMap(c => c.metadata?.tags || []))).sort()}
-          onToggleGroup={(tag) => { void handleToggleGroup(tag); }}
-          onShareSettingsChange={(next) => { void handleShareSettingsChange(next); }}
         />
 
         <TrustActionConfirmDialog

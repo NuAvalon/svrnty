@@ -18,6 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { mailboxConfig } from './mailbox-config';
+import { safeEnvelopeId } from '@/lib/sync/dead-letter';
 
 export interface Envelope {
   /** Relay-assigned (or client-supplied, Apollo retry-dedup contract) unique id — the handle for
@@ -139,10 +140,10 @@ export function depositEnvelope(
   const d = db();
   sweepExpired(now); // lazy GC on write
 
-  const envId =
-    typeof clientEnvelopeId === 'string' && clientEnvelopeId.length > 0
-      ? clientEnvelopeId
-      : crypto.randomUUID();
+  // A client-chosen id must pass the SAME rule the consumer applies (#720 v5.2 E1: hardening; the consume side's check is the
+  // real guard, since any relay can hand back any id). No route passes one today; whoever wires it inherits this. Absent → ours.
+  if (clientEnvelopeId !== undefined && safeEnvelopeId(clientEnvelopeId) === null) return { ok: false, status: 400 };
+  const envId = clientEnvelopeId ?? crypto.randomUUID();
 
   // Retry-dedup (Apollo): a re-deposit of the same (mailbox, envelope_id) is idempotent — already
   // stored + already counted, so return OK without a duplicate row (uniform with a fresh OK).
@@ -165,22 +166,23 @@ export function depositEnvelope(
 
 /**
  * Non-destructive poll (owner-only — the route enforces owner-auth BEFORE calling this).
- * Returns the pending envelopes as `{envelope_id, blob}` (oldest first). A never-used mailbox reads
- * as empty (`[]`), indistinguishable to the owner from a drained one — and never reachable by a
- * non-owner at all.
+ * Returns the pending envelopes as `{envelope_id, blob, expires_at}` (oldest first). `expires_at` (ms) is the stored column the
+ * sweep deletes on, so it IS the moment the relay drops the envelope; a client must show this, never its own first-poll time + TTL
+ * (the TTL runs from deposit). A never-used mailbox reads as empty (`[]`), indistinguishable to the owner from a drained one —
+ * and never reachable by a non-owner at all.
  */
 export function pollMailbox(
   mailboxId: string,
   now: number,
-): Array<{ envelope_id: string; blob: string }> {
+): Array<{ envelope_id: string; blob: string; expires_at: number }> {
   const d = db();
   sweepExpired(now);
   const rows = d
     .prepare(
-      'SELECT envelope_id, blob FROM envelopes WHERE mailbox_id = ? AND expires_at > ? ORDER BY deposited_at ASC, rowid ASC',
+      'SELECT envelope_id, blob, expires_at FROM envelopes WHERE mailbox_id = ? AND expires_at > ? ORDER BY deposited_at ASC, rowid ASC',
     )
-    .all(mailboxId, now) as Array<{ envelope_id: string; blob: string }>;
-  return rows.map((r) => ({ envelope_id: r.envelope_id, blob: r.blob }));
+    .all(mailboxId, now) as Array<{ envelope_id: string; blob: string; expires_at: number }>;
+  return rows.map((r) => ({ envelope_id: r.envelope_id, blob: r.blob, expires_at: r.expires_at }));
 }
 
 /** Ack-delete (owner-only). Removes the listed ids from the mailbox. Returns the count removed. */

@@ -10,7 +10,8 @@ import {
   createMessage,
   sign as pgpSign,
 } from 'openpgp';
-import { createSignal, verifySignal, vouchSignal } from './signals';
+import { createSignal, verifySignal, vouchSignal, SIGNAL_MAX_AGE_MS } from './signals';
+import { formatSignalMessage, parseSignalMessage } from './transport';
 import { signSlugClaim, verifySignedSlugClaim } from './slug-claim';
 import { generatePQKeypairBundle, uint8ToBase64, type PQSigningKeypair } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
@@ -95,13 +96,18 @@ test('NFC robustness: composed vs decomposed unicode verify identically', async 
   assert.equal(await verifySignal({ ...s, payload: vouchSignal(decomposed) }, publicKey), true);
 });
 
-test('legacy back-compat: a pre-0.1 with-from JSON.stringify signature still verifies', async () => {
+test('#718: legacy pre-0.1 signatures are REFUSED (L1 with-from and L2 from-unsigned); only the 0.1 envelope verifies', async () => {
+  // The legacy verify loop sunset on ~2026-08-23 (7-day freshness window after 0.1). No code on any branch
+  // emits these bytes; it was the only path into hybridVerify's classical-only branch besides verifyWithEnvelope.
   const payload = vouchSignal('bob');
   const timestamp = new Date().toISOString();
-  const legacyBytes = JSON.stringify({ payload, from: fingerprint, to: TO, timestamp });
-  const signature = await pgpSignText(legacyBytes);
-  const legacySignal = { payload, from: fingerprint, to: TO, timestamp, signature };
-  assert.equal(await verifySignal(legacySignal, publicKey), true);
+  const l1 = await pgpSignText(JSON.stringify({ payload, from: fingerprint, to: TO, timestamp }));
+  assert.equal(await verifySignal({ payload, from: fingerprint, to: TO, timestamp, signature: l1 }, publicKey), false, 'L1');
+  const l2 = await pgpSignText(JSON.stringify({ payload, to: TO, timestamp }));
+  assert.equal(await verifySignal({ payload, from: fingerprint, to: TO, timestamp, signature: l2 }, publicKey), false, 'L2');
+  // control: the same content through the 0.1 envelope verifies
+  const s = await createSignal(payload, fingerprint, TO, privateKey, passphrase);
+  assert.equal(await verifySignal(s, publicKey), true);
 });
 
 test('downgrade resistance: stripping the PQ half of a hybrid signal fails', async () => {
@@ -143,4 +149,58 @@ test('F6: an attacker cannot claim a slug for a key they do not hold', async () 
   // fingerprint == H(public_key) holds (both Alice's), but the signature was made by Mallory's
   // key, so it fails to verify against Alice's public_key. Refused.
   assert.equal(await verifySignedSlugClaim(forged), false);
+});
+
+test('#717: a malformed pq_signature ("" / null / 0 / false) refuses, never reads as classical', async () => {
+  const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
+  assert.equal(await verifySignal(s, publicKey), true); // control
+  for (const bad of ['', null, 0, false] as unknown[]) {
+    assert.equal(await verifySignal({ ...s, pq_signature: bad } as typeof s, publicKey), false, `pq=${JSON.stringify(bad)}`);
+  }
+});
+
+test('#718: the paste transport keeps pq_signature raw ("" stays "", absent stays absent), so verify can refuse it', async () => {
+  const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
+  const back = parseSignalMessage(formatSignalMessage(s));
+  assert.ok(back);
+  assert.equal(back.pq_signature, undefined, 'absent stays absent');
+  assert.equal(await verifySignal(back, publicKey), true); // control
+  const forged = parseSignalMessage(formatSignalMessage({ ...s, pq_signature: '' }));
+  assert.ok(forged);
+  assert.equal(forged.pq_signature, '', '"" must survive the transport, not become absent');
+  assert.equal(await verifySignal(forged, publicKey), false);
+  const h = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase, pq.secretKey);
+  const hb = parseSignalMessage(formatSignalMessage(h));
+  assert.equal(hb?.pq_signature, h.pq_signature, 'hybrid round-trips');
+  assert.equal(await verifySignal(hb!, publicKey, pq.publicKey), true);
+});
+
+test('#718 P5 (Apollo #1906): the 7-day freshness window is pinned both ways; the legacy deletion argument rests on it', async () => {
+  const s = await createSignal(vouchSignal('bob'), fingerprint, TO, privateKey, passphrase);
+  const ts = Date.parse(s.timestamp);
+  const DAY = 24 * 60 * 60 * 1000;
+  assert.equal(SIGNAL_MAX_AGE_MS, 7 * DAY);
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 6 * DAY }), true, '6 days old verifies');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 8 * DAY }), false, '8 days old is refused');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts - 8 * DAY }), false, '8 days in the future is refused');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 7 * DAY }), true, 'exactly 7 days still verifies');
+  assert.equal(await verifySignal(s, publicKey, undefined, { nowMs: ts + 7 * DAY + 1 }), false, '7 days + 1 ms is refused');
+  assert.equal(await verifySignal({ ...s, timestamp: 'not a time' }, publicKey), false, 'an unreadable timestamp is refused');
+});
+
+test('#718 P5b (Apollo #2097): a VALIDLY SIGNED garbage timestamp is refused by the freshness guard itself, not by the signature', async () => {
+  const { signWithEnvelope } = await import('../crypto/sign-envelope');
+  const { canonicalize } = await import('../format/canonical');
+  const { DOMAIN_TRUST_SIGNAL } = await import('../format/envelope');
+  const payload = vouchSignal('bob');
+  // the exact canonical input signals.ts signs (trustSignalCanonicalInput is module-private)
+  const signAt = async (timestamp: string) => {
+    const sig = await signWithEnvelope(DOMAIN_TRUST_SIGNAL, canonicalize({ payload, from: fingerprint, to: TO, timestamp }), privateKey, passphrase);
+    return { payload, from: fingerprint, to: TO, timestamp, signature: sig.classical };
+  };
+  const now = new Date().toISOString();
+  assert.equal(await verifySignal(await signAt(now), publicKey), true, 'control: this hand-built signing path matches what verifySignal checks');
+  for (const ts of ['not a time', '', '2026-13-45T99:99:99Z']) {
+    assert.equal(await verifySignal(await signAt(ts), publicKey), false, `signed timestamp ${JSON.stringify(ts)} is refused`);
+  }
 });

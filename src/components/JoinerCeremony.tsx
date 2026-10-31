@@ -114,7 +114,14 @@ async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: stri
           ? { kemPublicKeyB64: id.post_quantum.kem_public_key, sigPublicKeyB64: id.post_quantum.sig_public_key }
           : {}),
       },
-      { fingerprint: peer.fingerprint, publicKeyArmored: peer.publicKey, inviteNonce: code },
+      {
+        fingerprint: peer.fingerprint,
+        publicKeyArmored: peer.publicKey,
+        // HNDL: the giver's ML-KEM-1024 pubkey → hybrid seal. Absent (classical giver card) ⇒
+        // buildJoinerResponseDeposit fail-closed-skips (null), never a classical/downgraded deposit.
+        giverPqKemPublicKey: peer.pq?.pq_kem_public_key,
+        inviteNonce: code,
+      },
     );
     if (!res.ok) {
       console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);
@@ -207,7 +214,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         setPhase('card');
       } catch (err: any) {
         if (cancelled) return;
-        setError(err?.message || 'This link has expired or already been used.');
+        setError(err?.message || "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask the person who shared it for a new one.");
       }
     })();
 
@@ -419,12 +426,12 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
           {peer.alarm === 'quiet' && peer.pq && (
             isPQEncapLive() ? (
               <p style={{ color: C.emerald, fontSize: 12, marginTop: 8 }}>
-                ✓ Post-quantum protected — a signed card carrying a verified encryption key.
+                {/* claim-sweep:ok gated-by=isPQEncapLive: true-branch of the ternary */}
+                ✓ Post-quantum (hybrid) encryption — a signed card carrying a verified encryption key.
               </p>
             ) : (
               <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
-                Post-quantum ready — this card carries a verified post-quantum encryption key;
-                protection activates when the encryption seam is live.
+                This card's post-quantum encryption key is verified.
               </p>
             )
           )}
