@@ -10,6 +10,7 @@ import type { NoteWireV0, ParticipantKind } from './types';
 import { newNoteId, putNote, putThread, listThreads, newThreadId, newReceiptNonce, getNote } from './store';
 import { newReceiptKey, receiptKeyToHex } from '@/lib/crypto/receipt-mac';
 import type { NoteRecord } from './types';
+import { nextLastActivity } from './thread-activity';
 import { isTripleRatchetBody, chooseWireBody, ownerBoundRatchetIO, type OpenFailure, type RatchetIO, type StagedOpen } from './direct-session';
 import type { RatchetIdentity, RatchetPeer } from '@/lib/crypto/message-ratchet';
 
@@ -235,11 +236,11 @@ async function sendNoteToPeerStaged(args: SendNoteToPeerArgs, prog: SendProgress
         },
       ],
       created_at: sent_at,
-      last_activity_at: sent_at,
+      last_activity_at: nextLastActivity(undefined, sent_at, Date.now()),
       retention: { expires_at: null },
     };
   } else {
-    thread = { ...thread, last_activity_at: sent_at };
+    thread = { ...thread, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
   }
   await (args.io?.putThread ?? putThread)(thread);
 
@@ -364,11 +365,11 @@ export async function acceptInboundNote(args: {
       ],
       ring_channel_id: args.wire.ring_channel_id,
       created_at: sent_at,
-      last_activity_at: sent_at,
+      last_activity_at: nextLastActivity(undefined, sent_at, Date.now()),
       retention: { expires_at: null },
     };
   } else {
-    thread = { ...thread, last_activity_at: sent_at };
+    thread = { ...thread, last_activity_at: nextLastActivity(thread.last_activity_at, sent_at, Date.now()) };
   }
   await (args.io?.putThread ?? putThread)(thread);
   // R4: ONLY NOW is the ratchet advance persisted: the note and its thread are durably stored. A failure anywhere above leaves the

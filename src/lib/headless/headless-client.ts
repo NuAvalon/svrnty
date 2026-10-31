@@ -22,6 +22,7 @@ import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/con
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
+import { nextLastActivity } from '@/lib/messaging/thread-activity';
 import { admitContact } from '@/lib/trust/admit-contact';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
@@ -77,7 +78,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
       store.putNote(rec); // throws → consumeOne treats as retryable (ack-follows-persist)
       const existing = store.listThreads().find((t) => t.thread_id === rec.thread_id);
       const thread: NoteThread = existing
-        ? { ...existing, last_activity_at: sent_at }
+        ? { ...existing, last_activity_at: nextLastActivity(existing.last_activity_at, sent_at, Date.now()) }
         : {
             thread_id: rec.thread_id,
             kind: wire.ring_channel_id ? 'ring' : 'direct',
@@ -86,7 +87,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
             ],
             ring_channel_id: wire.ring_channel_id,
             created_at: sent_at,
-            last_activity_at: sent_at,
+            last_activity_at: nextLastActivity(undefined, sent_at, Date.now()),
             retention: { expires_at: null },
           };
       store.putThread(thread);
