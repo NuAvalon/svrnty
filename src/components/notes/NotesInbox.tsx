@@ -37,6 +37,9 @@ import { getHeldReport, subscribeHeld, type HeldReport } from '@/lib/notes/held-
 import { formatRelayDeadline, heldNotices } from './held-notice';
 import { RatchetRows } from './RatchetRows';
 import { peerIsAgent } from './ratchet-rows-view';
+import { cantOpenNotices } from './cant-open-notice';
+import { getCantOpenSDismissedAt, listDeadLetters, setCantOpenSDismissedAt } from '@/lib/messaging/dead-letter-store';
+import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { toNoteableContacts, type ContactRow } from './notes-contacts';
 import { NOTES_BOUNDS, NOTES_COPY, notSentMessage, ratchetOffMessage } from './notes-copy';
 import {
@@ -100,6 +103,8 @@ const primaryBtn: CSSProperties = {
 };
 
 const STORE_REREAD_MS = 1_500;
+// #731: the dead-letter rows change only when a poll records one, so they are re-read less often than notes.
+const DEAD_LETTER_REREAD_MS = 15_000;
 
 function bookNames(records: ContactRow[]): FieldName[] {
   const out: FieldName[] = [];
@@ -144,6 +149,9 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
     () => heldNotices([{ reason: 'missing_key', count: heldReport.count, kept: 'relay', expiresAt: heldReport.expiresAt }], Date.now(), (ms) => formatRelayDeadline(ms))[0] ?? null,
     [heldReport],
   );
+  // #731: messages that reached this device but couldn't be opened (local metadata-only rows), and when the S line was last dismissed.
+  const [deadRows, setDeadRows] = useState<DeadLetterRow[]>([]);
+  const [sDismissedAt, setSDismissedAt] = useState<string | null>(null);
   const [sender, setSender] = useState<OwnerNoteSender | null>(null);
   const [failedIds, setFailedIds] = useState<Record<string, true>>({});
   const [mobilePane, setMobilePane] = useState<'people' | 'thread'>('people');
@@ -153,6 +161,10 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
 
   const rows = useMemo(() => toNoteableContacts(book), [book]);
   const names = useMemo(() => bookNames(book), [book]);
+  const cantOpen = useMemo(() => {
+    const byFp = new Map(names.map((n) => [n.fingerprint, n.name]));
+    return cantOpenNotices(deadRows, (f) => byFp.get(normalizeFingerprintHex(f)) ?? null, sDismissedAt);
+  }, [deadRows, names, sDismissedAt]);
   const sendable = useMemo(() => new Set(rows.map((r) => r.fingerprint)), [rows]);
   const wantFocus = normalizeFingerprintHex(focusFingerprint || '');
 
@@ -221,6 +233,38 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
     if (!storeReady) return;
     void loadThreads();
   }, [storeReady, loadThreads]);
+
+  const loadDeadLetters = useCallback(async () => {
+    if (!isNotesStoreUnlocked()) return;
+    try {
+      const [list, dismissed] = await Promise.all([listDeadLetters(), getCantOpenSDismissedAt()]);
+      setDeadRows(list);
+      setSDismissedAt(dismissed);
+    } catch {
+      setDeadRows([]); // locked mid-read: show nothing rather than a stale count
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!storeReady) return;
+    void loadDeadLetters();
+    const id = window.setInterval(() => void loadDeadLetters(), DEAD_LETTER_REREAD_MS);
+    const unsub = subscribeNoteArrivals(() => void loadDeadLetters());
+    return () => {
+      window.clearInterval(id);
+      unsub();
+    };
+  }, [storeReady, loadDeadLetters]);
+
+  const dismissCantOpenS = async () => {
+    const now = new Date().toISOString();
+    setSDismissedAt(now);
+    try {
+      await setCantOpenSDismissedAt(now);
+    } catch {
+      /* not saved: the line comes back next time the inbox loads, which is the safe direction */
+    }
+  };
 
   useEffect(() => {
     if (!storeReady) return;
@@ -485,6 +529,40 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                   {heldNotice.hint}
                 </p>
               ) : null}
+            </div>
+          ) : null}
+
+          {cantOpen.length > 0 ? (
+            <div
+              role="status"
+              data-testid="notes-cant-open"
+              style={{ border: `1px solid ${E.muted}`, borderRadius: 10, padding: '10px 12px', fontSize: 13, lineHeight: 1.45, color: E.text }}
+            >
+              {cantOpen.map((n) => (
+                <div key={n.fingerprint ?? n.group} data-testid={`notes-cant-open-${n.group}`} style={{ margin: '0 0 6px' }}>
+                  <p style={{ margin: 0 }}>{n.text}</p>
+                  {n.group === 'R' && n.fingerprint && sendable.has(normalizeFingerprintHex(n.fingerprint)) ? (
+                    <button
+                      type="button"
+                      data-testid="notes-cant-open-ask"
+                      onClick={() => onPickContact(normalizeFingerprintHex(n.fingerprint ?? ''))}
+                      style={{ marginTop: 4, background: 'none', border: 'none', padding: 0, color: E.accent, cursor: 'pointer', fontSize: 13 }}
+                    >
+                      {NOTES_COPY.cantOpenAsk}
+                    </button>
+                  ) : null}
+                  {n.group === 'S' ? (
+                    <button
+                      type="button"
+                      data-testid="notes-cant-open-dismiss"
+                      onClick={() => void dismissCantOpenS()}
+                      style={{ marginTop: 4, background: 'none', border: 'none', padding: 0, color: E.muted, cursor: 'pointer', fontSize: 13 }}
+                    >
+                      {NOTES_COPY.dismiss}
+                    </button>
+                  ) : null}
+                </div>
+              ))}
             </div>
           ) : null}
 
