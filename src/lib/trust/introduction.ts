@@ -357,11 +357,14 @@ export async function verifyIntroduction(
   if (c.recipient_fingerprint.toUpperCase() !== recipient.fingerprint.toUpperCase()) return null;
   if (c.nonce !== envelope.nonce) return null;
   // S1 (Flint #175185): the displayed name must be EXACTLY the one the newcomer signed consent for —
-  // reject a card that renames them (deadname/survivor-safety). Both are covered by their signers'
-  // signatures (steps 7/8), so this cheap pre-check just fails fast; the sigs make it unforgeable.
+  // reject a card that renames them (deadname/survivor-safety). This is NOT a fast-fail duplicate of the signatures: a hostile INTRODUCER
+  // can sign an envelope that says "Deadname" while carrying the newcomer's genuine consent for "Newt". Both signatures then verify, and
+  // this cross-check is the only thing that stops it (Flint #2685: pinned by a test that re-signs the hostile envelope).
   if (c.display_name !== envelope.introduced_display_name) return null;
 
-  // 6) Invariant-1 — the newcomer's self-asserted fp must hash to the presented key (canonical recompute if PQ).
+  // 6) Invariant-1 — the newcomer's self-asserted fp must hash to the presented key (canonical recompute if PQ). Also load-bearing against a
+  //    hostile introducer: it can sign introduced_fingerprint = a VICTIM's fp with the ATTACKER's key and a consent the attacker signs with that same
+  //    key; both signatures verify and only this check refuses to bind the victim's fp to the attacker's key (Flint #2685).
   if (!(await fingerprintMatchesKey(envelope.introduced_fingerprint, envelope.introduced_public_key, {
     kem_public_key: envelope.introduced_pq_kem_public_key,
     sig_public_key: envelope.introduced_pq_sig_public_key,

@@ -21,8 +21,9 @@ import {
   DOMAIN_INTRODUCTION_CONSENT,
   DOMAIN_JOINER_RESPONSE,
   introductionSigningInput,
+  introductionConsentSigningInput,
 } from '../format/envelope';
-import { verifyWithEnvelope } from '../crypto/sign-envelope';
+import { verifyWithEnvelope, signWithEnvelope } from '../crypto/sign-envelope';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
 import { sealLivingBookHybrid } from '../crypto/living-book-sleeve';
@@ -35,7 +36,7 @@ const NONCE = 'INTRO-7K9QX';
 // + decrypts. Stranger (Sybil) — NOT in Rachel's know set / forges. Carol — a different recipient (scoping).
 let ivanPriv: string, ivanPub: string, ivanFp: string;
 let rachelPub: string, rachelFp: string;
-let sybilPriv: string;
+let sybilPriv: string, sybilPubKey: string;
 let carolPriv: string, carolPub: string, carolFp: string;
 
 // A §5 CANONICAL newcomer (64-hex fp): ed25519 + ML-KEM/ML-DSA → fingerprintMatchesKey (canonical-only) passes.
@@ -79,7 +80,7 @@ before(async () => {
   };
   ({ privateKey: ivanPriv, publicKey: ivanPub, fp: ivanFp } = await mk('Ivan'));
   ({ publicKey: rachelPub, fp: rachelFp } = await mk('Rachel'));
-  ({ privateKey: sybilPriv } = await mk('Sybil'));
+  ({ privateKey: sybilPriv, publicKey: sybilPubKey } = await mk('Sybil'));
   ({ privateKey: carolPriv, publicKey: carolPub, fp: carolFp } = await mk('Carol'));
   newt = await makeCanonicalIdentity('Newt');
   rachelH = await mintHybridRecipient();
@@ -383,4 +384,34 @@ test('recipient-binding: an introduction FULLY valid for Carol (consent and enve
   const blob = await toRachel(signed); // Rachel CAN open it, so only the binding to HER fingerprint can stop it
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null, 'addressed to Carol, not Rachel');
   assert.ok(await verifyIntroduction(blob, { fingerprint: carolFp, hybrid: rachelH.hybrid }, knowsIvan), 'control: with the claimed fingerprint = Carol, the same blob verifies (so nothing else was rejecting it)');
+});
+
+// ── Hostile INTRODUCER cases (Flint #2685): the introducer RE-SIGNS the hostile envelope, so both signatures verify and ONLY the cross-checks stop it ──
+const resignAsIvan = async (envelope: ReturnType<typeof buildIntroductionEnvelope>, consentSignature: Awaited<ReturnType<typeof newtConsent>>['consentSignature']) => ({
+  envelope,
+  signature: await signWithEnvelope(DOMAIN_INTRODUCTION, introductionSigningInput(envelope), ivanPriv, pass),
+  consent_signature: consentSignature,
+});
+
+test('★ S1 deadname (real attack): the INTRODUCER signs an envelope naming "Deadname" while carrying Newt\'s GENUINE consent for "Newt"; both signatures verify, and the display_name cross-check alone drops it', async () => {
+  const c = await newtConsent({ displayName: 'Newt' });
+  const env = buildIntroductionEnvelope(ivanArgs(c)); // honest build: name = Newt
+  env.introduced_display_name = 'Deadname'; // hostile edit BEFORE the introducer signs
+  const signed = await resignAsIvan(env, c.consentSignature);
+  assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION, introductionSigningInput(signed.envelope), signed.signature, ivanPub), 'precondition: the introducer\'s signature over the hostile envelope IS valid');
+  assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION_CONSENT, introductionConsentSigningInput(c.consent), c.consentSignature, newt.publicKey), 'precondition: Newt\'s consent signature IS valid');
+  assert.equal(await verifyIntroduction(await toRachel(signed), rachel(), knowsIvan), null, 'only the name cross-check stops it');
+});
+
+test('★ Invariant-1 (real attack): the INTRODUCER signs introduced_fingerprint = a VICTIM\'s fp with the ATTACKER\'s key and a consent the attacker signs with that key; both signatures verify, and the fp-hashes-to-key check alone drops it', async () => {
+  const consent = buildIntroductionConsent({ introducedFp: carolFp, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Carol', nonce: NONCE, ts: '2026-10-19T00:00:00Z' });
+  const consentSignature = await signIntroductionConsent(consent, sybilPriv, pass); // the attacker signs "Carol's" consent with ITS key
+  const env = buildIntroductionEnvelope({
+    introducerFp: ivanFp, recipientFp: rachelFp, introducedFp: carolFp, introducedPubKeyArmored: sybilPubKey,
+    introducedName: 'Carol', consent, consentSignature, context: 'x', ts: '2026-10-19T00:00:00Z',
+  });
+  const signed = await resignAsIvan(env, consentSignature);
+  assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION, introductionSigningInput(env), signed.signature, ivanPub), 'precondition: the introducer\'s signature IS valid');
+  assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION_CONSENT, introductionConsentSigningInput(consent), consentSignature, sybilPubKey), 'precondition: the consent verifies under the presented (attacker) key');
+  assert.equal(await verifyIntroduction(await toRachel(signed), rachel(), knowsIvan), null, 'only Invariant-1 stops binding Carol\'s fp to the attacker\'s key');
 });
