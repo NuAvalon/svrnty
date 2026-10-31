@@ -22,6 +22,7 @@ import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/con
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
+import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
@@ -74,7 +75,12 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
         retention: { expires_at: null },
         wire_type: NOTE_WIRE_TYPE,
       };
-      store.putNote(rec); // throws → consumeOne treats as retryable (ack-follows-persist)
+      // FIRST WRITE WINS: a same-sender note that reuses a stored id with different content is refused; the stored note is what we acknowledge.
+      if (!store.putNote(rec)) {
+        noteRewriteRefused();
+        const kept = store.listNotes().find((x) => x.note_id === rec.note_id && x.direction === 'inbound' && x.from_fingerprint === rec.from_fingerprint)!;
+        return { note_id: kept.note_id, thread_id: kept.thread_id, from_fingerprint: kept.from_fingerprint };
+      } // throws → consumeOne treats as retryable (ack-follows-persist)
       const existing = store.listThreads().find((t) => t.thread_id === rec.thread_id);
       const thread: NoteThread = existing
         ? { ...existing, last_activity_at: sent_at }
