@@ -13,6 +13,8 @@
 // The test prevents a premature/dishonest flip: whoever wires the capability flips the constant AND
 // updates the test in the same change, so CI enforces copy ⇔ reality.
 
+import { isDevBuild } from './satellite/satellite-base-url';
+
 // The honest-signal barrel: re-export the biometric gate so every claim gate imports from ONE module.
 // (biometric-seam exports pure, node-safe helpers — no JSX — so this is a plain function re-export.)
 export { isBiometricSeamLive } from '../components/biometric/biometric-seam';
@@ -65,16 +67,22 @@ export function isPQWireLive(): boolean {
 /**
  * PSI mutual-contact DISCOVERY (the KNOW-layer "trust map") is wired end-to-end and LIVE (dev).
  *
- * TRUE as of the dev flip (2026-10-04): startKnowLayerSync runs; the client wire-in (per-peer blinder
+ * TRUE ONLY in a DEV build (see the BUILD-TIME note below; prod has no satellite pin yet).
+ * Was an unconditional true from the dev flip (2026-10-04): startKnowLayerSync runs; the client wire-in (per-peer blinder
  * persisted on the contact record → initiator completes on a later tick → mutual set applied;
  * forward-revocation on retract) is active. Graduated on: piece-1 two-layer reveal + edgeTrusted
  * single-helper (flip-gate #1 closed), the e2e verify (determinism / unlinkability / set-change→
  * new-session / stateless-reload), Flint's at-rest-blinder co-verify, and Peter's informed reconfirm.
  * SCOPE (honest): block≡offline is DIRECT-block only; mutual-mediated/transitive block (#156420) is
  * piece-2, NOT yet live — copy says "blocked directly," not "fully blocked." PROD stays separately gated.
+ *
+ * BUILD-TIME (Archie #2588 / #2601, Flint #2583): the satellite key pin (psi-wire-seal.ts) is the DEV satellite's, so a prod build can never
+ * complete a PSI sync, yet it would still POST the user's fingerprint + sign pubkey to /bind on every tick and claim PQ discovery. It is live only
+ * in a DEV build (NEXT_PUBLIC_SVRNTY_DOMAIN starts "dev.", inlined at build time), via the SAME isDevBuild predicate the /api/satellite proxy fence
+ * uses, so the two gates cannot disagree. An unset or unknown domain is prod and fails closed (dark). The registry rows are "env".
  */
 export function isPSIDiscoveryLive(): boolean {
-  return true;
+  return isDevBuild(process.env.NEXT_PUBLIC_SVRNTY_DOMAIN);
 }
 
 /**
