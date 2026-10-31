@@ -60,8 +60,13 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
     verify: (blob) => verifyNote(blob),
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
-      if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
-      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return null; // in-book AND not-blocked — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety)
+      // #720 say-why, mirroring the FE seam (live-book-poll.ts): a DroppedNote carries the REASON, so the record is honest. A bare null was
+      // recorded as 'verify-failed' for BOTH cases, which made a stranger's genuine note look like forged crypto (Peter→Athena 10-31).
+      // No fingerprint travels with 'unverified' (from_fingerprint is attacker-controlled until verified: F3).
+      if (!(await verifyNoteSender(wire))) return { dropped: 'unverified' }; // unsigned / forged
+      // in-book AND not-blocked (I-2 + P1#2 survivor-safety). A blocked sender reports 'not-in-book' too, as the FE does: no separate
+      // "blocked" reason leaves this device.
+      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return { dropped: 'not-in-book', fp: wire.from_fingerprint };
       const sent_at = wire.sent_at || now();
       const rec: NoteRecord = {
         note_id: wire.note_id,
