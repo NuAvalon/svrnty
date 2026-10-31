@@ -14,6 +14,13 @@ got=$(sha256sum build/slotbind.r1cs | cut -d' ' -f1)
 want=$(node -p "require('./$PINS').r1cs_sha256")
 [ "$got" = "$want" ] || { echo "REFUSED: r1cs sha256 $got != pinned $want"; exit 1; }
 echo "r1cs sha256 OK ($got)"
+# The witness-generator wasm is what devices run. It is deterministic per compiler version but differs between versions, so it is pinned per version (the version is identified by the pinned binary hash above).
+ver=$(node -p "const p=require('./$PINS');Object.entries(p.circom_binaries_sha256).find(([v,h])=>h==='$bin_sha')[0]")
+wgot=$(sha256sum build/slotbind_js/slotbind.wasm | cut -d' ' -f1)
+wwant=$(node -p "require('./$PINS').wasm_sha256['$ver']")
+[ "$wgot" = "$wwant" ] || { echo "REFUSED: wasm sha256 $wgot != pinned $wwant (circom $ver)"; exit 1; }
+echo "wasm sha256 OK ($wgot, circom $ver)"
+echo "recorded, not enforced: sym $(sha256sum build/slotbind.sym | cut -d' ' -f1)"
 node r2c.cjs build/slotbind.r1cs
 node kat.cjs
 for s in A B; do node build/slotbind_js/generate_witness.js build/slotbind_js/slotbind.wasm build/input_$s.json build/w_$s.wtns; echo "KAT witness $s accepted"; done

@@ -1,7 +1,7 @@
 # DRAFT, NOT RUN (author: apollo, #588 T3). Second-machine check for circuits/588-slotbind:
 # a clean GitHub runner builds the r1cs with a pinned circom binary and must reproduce
-# the pinned r1cs sha256 (pins.json); build.sh fails closed on a mismatch, an unpinned
-# binary, an unconstrained public wire, or a KAT difference.
+# the pinned r1cs sha256 AND the per-compiler-version witness-generator wasm sha256 (pins.json);
+# build.sh fails closed on a mismatch, an unpinned binary, an unconstrained public wire, or a KAT difference.
 # Review area: Athena/Flint (workflow file). No secrets, no write permissions.
 name: 588-circuit-repro
 on:
@@ -13,6 +13,7 @@ permissions:
 jobs:
   repro:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +23,8 @@ jobs:
         working-directory: circuits/588-slotbind
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
