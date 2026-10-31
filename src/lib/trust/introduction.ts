@@ -370,8 +370,12 @@ export async function verifyIntroduction(
     sig_public_key: envelope.introduced_pq_sig_public_key,
   }))) return null;
 
-  // Suite floor (both signatures) — reject classical-only if PQ required.
-  if (opts.requirePq && (!signature.pq_signature || !consent_signature.pq_signature)) return null;
+  // SUITE FLOOR, derived from the KEY MATERIAL (Flint #2685), not from a caller opt: verifyWithEnvelope accepts a classical-only signature even when a PQ
+  // verification key is supplied (acceptClassicalOnly = no pq half present), so without this floor anyone holding only the classical key (the HNDL / quantum
+  // case) could mint a fresh classical-only signature that verifies. If the HELD introducer key has a PQ signing key, the introducer's signature MUST carry the
+  // PQ half; if the newcomer's card carries a PQ signing key (a canonical identity), the consent signature MUST. `requirePq` stays as an extra, stricter floor.
+  if ((opts.requirePq || introducerKey.pqSigningPublicKey !== undefined) && !signature.pq_signature) return null;
+  if ((opts.requirePq || envelope.introduced_pq_sig_public_key !== undefined) && !consent_signature.pq_signature) return null;
 
   // 7) INTRODUCER signature over the envelope, vs the HELD introducer key (verified, not TOFU).
   let introducerOk = false;

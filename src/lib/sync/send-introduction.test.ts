@@ -20,7 +20,7 @@ async function card(over: { recipientFp?: string; introducerFp?: string; display
     introducedFp: newt.fingerprint, introducerFp: over.introducerFp ?? ivan.fingerprint, recipientFp: over.recipientFp ?? rachel.fingerprint,
     displayName: over.consentName ?? 'Newt', nonce: NONCE, ts: '2026-10-31T00:00:00Z',
   });
-  const consentSignature = await signIntroductionConsent(consent, newt.privateKeyArmored, newt.passphrase);
+  const consentSignature = await signIntroductionConsent(consent, newt.privateKeyArmored, newt.passphrase, newt.pqSigSecretKey); // a canonical newcomer signs hybrid
   return {
     fingerprint: newt.fingerprint, publicKeyArmored: newt.publicKeyArmored, displayName: over.displayName ?? 'Newt',
     pqKemPublicKeyB64: newt.pqKemPublicKey, pqSigPublicKeyB64: newt.pqSigPublicKey, consent, consentSignature,

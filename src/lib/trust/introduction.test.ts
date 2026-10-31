@@ -93,7 +93,7 @@ const toRachel = (signed: Parameters<typeof encryptIntroductionTo>[0]) => encryp
 const knowsIvan = (fp: string) => (fp === ivanFp ? { publicKeyArmored: ivanPub } : null);
 
 // Build Newt's recipient-scoped consent (signed by Newt), then Ivan's honest introduction args.
-async function newtConsent(o: { recipientFp?: string; introducerFp?: string; nonce?: string; displayName?: string } = {}) {
+async function newtConsent(o: { recipientFp?: string; introducerFp?: string; nonce?: string; displayName?: string; classicalConsent?: boolean } = {}) {
   const consent = buildIntroductionConsent({
     introducedFp: newt.fingerprint,
     introducerFp: o.introducerFp ?? ivanFp,
@@ -102,7 +102,7 @@ async function newtConsent(o: { recipientFp?: string; introducerFp?: string; non
     nonce: o.nonce ?? NONCE,
     ts: '2026-10-19T00:00:00Z',
   });
-  const consentSignature = await signIntroductionConsent(consent, newt.privateKey, newt.passphrase);
+  const consentSignature = await signIntroductionConsent(consent, newt.privateKey, newt.passphrase, o.classicalConsent ? undefined : newt.sigSecretKey); // a canonical newcomer signs hybrid; the floor refuses classical-only
   return { consent, consentSignature };
 }
 function ivanArgs(consent: Awaited<ReturnType<typeof newtConsent>>, o: Partial<BuildIntroductionArgs> = {}): BuildIntroductionArgs {
@@ -399,7 +399,7 @@ test('★ S1 deadname (real attack): the INTRODUCER signs an envelope naming "De
   env.introduced_display_name = 'Deadname'; // hostile edit BEFORE the introducer signs
   const signed = await resignAsIvan(env, c.consentSignature);
   assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION, introductionSigningInput(signed.envelope), signed.signature, ivanPub), 'precondition: the introducer\'s signature over the hostile envelope IS valid');
-  assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION_CONSENT, introductionConsentSigningInput(c.consent), c.consentSignature, newt.publicKey), 'precondition: Newt\'s consent signature IS valid');
+  assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION_CONSENT, introductionConsentSigningInput(c.consent), c.consentSignature, newt.publicKey, newt.sigPublicKey), 'precondition: Newt\'s consent signature IS valid');
   assert.equal(await verifyIntroduction(await toRachel(signed), rachel(), knowsIvan), null, 'only the name cross-check stops it');
 });
 
@@ -414,4 +414,25 @@ test('★ Invariant-1 (real attack): the INTRODUCER signs introduced_fingerprint
   assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION, introductionSigningInput(env), signed.signature, ivanPub), 'precondition: the introducer\'s signature IS valid');
   assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION_CONSENT, introductionConsentSigningInput(consent), consentSignature, sybilPubKey), 'precondition: the consent verifies under the presented (attacker) key');
   assert.equal(await verifyIntroduction(await toRachel(signed), rachel(), knowsIvan), null, 'only Invariant-1 stops binding Carol\'s fp to the attacker\'s key');
+});
+
+// ── Suite floor (Flint #2685): PQ signatures are REQUIRED whenever the key material says they exist ───────────────────────────────
+test('suite floor (consent): a CANONICAL newcomer (PQ keys on the card) whose consent signature is classical-only is dropped; the same consent signed hybrid verifies', async () => {
+  const classical = await newtConsent({ classicalConsent: true });
+  const downgraded = await buildSignedIntroduction(ivanArgs(classical), ivanPriv, pass);
+  assert.equal(await verifyIntroduction(await toRachel(downgraded), rachel(), knowsIvan), null, 'a holder of only the classical key could mint this');
+  const hybrid = await newtConsent();
+  const ok = await buildSignedIntroduction(ivanArgs(hybrid), ivanPriv, pass);
+  assert.ok(await verifyIntroduction(await toRachel(ok), rachel(), knowsIvan), 'control');
+});
+
+test('suite floor (introducer): if the HELD introducer key has a PQ signing key, a classical-only introducer signature is dropped; the hybrid-signed one verifies', async () => {
+  const ivanPq = generatePQKeypairBundle();
+  const knowsIvanPq = (fp: string) => (fp === ivanFp ? { publicKeyArmored: ivanPub, pqSigningPublicKey: ivanPq.signing.publicKey } : null);
+  const c = await newtConsent();
+  const classicalOnly = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  assert.equal(await verifyIntroduction(await toRachel(classicalOnly), rachel(), knowsIvanPq), null, 'classical-only vs a held PQ key');
+  const hybrid = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass, ivanPq.signing.secretKey);
+  assert.ok(await verifyIntroduction(await toRachel(hybrid), rachel(), knowsIvanPq), 'control: hybrid-signed');
+  assert.ok(await verifyIntroduction(await toRachel(classicalOnly), rachel(), knowsIvan), 'control: the same classical-only signature is fine when NO PQ key is held');
 });
