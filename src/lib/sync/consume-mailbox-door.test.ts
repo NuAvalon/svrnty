@@ -806,3 +806,42 @@ test('C47 phase: if the RECORDED re-write fails, the frame is NOT acked and stay
   assert.deepEqual(acked(w.events), [], 'the oldest was due for release, but its recorded row could not be written: no ack');
   assert.equal(s.released, 0); assert.equal(s.unrecorded, 1); assert.equal(s.held, 51, 'it is still counted as held');
 });
+
+// ── R2: a frame the user's session reset released is recorded as session-reset and acked WITHOUT being opened ──
+const relSink = (w: ReturnType<typeof world>, released: Map<string, string> | (() => Promise<Map<string, string>>)): DeadLetterSink => ({
+  ...w.sink,
+  releasedByReset: async () => (typeof released === 'function' ? released() : released),
+});
+
+test('C48 R2: a reset-released envelope is acked WITHOUT being opened, recorded as session-reset with the contact\'s fp, and counted as lost[session-reset]', async () => {
+  const calls = { n: 0 };
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => { calls.n++; return desync(); } }) }));
+  assert.equal(calls.n, 0, 'never opened');
+  assert.deepEqual(acked(w.events), ['rs1']);
+  const rows = recorded(w.events);
+  assert.equal(rows.length, 1); assert.equal(rows[0].reason, 'session-reset'); assert.equal(rows[0].fp, FPC); assert.equal(rows[0].phase, undefined);
+  assert.deepEqual(s.lost, { 'session-reset': 1 }); assert.equal(s.held, 0);
+  assert.ok(w.events.findIndex((e) => e.t === 'record') < w.events.findIndex((e) => e.t === 'ack'), 'record before ack');
+});
+
+test('C49 R2: only the LISTED envelopes are released: another held frame from the same contact is still tried and still held', async () => {
+  const calls = { n: 0 };
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }, { envelope_id: 'keep', blob: 'KP', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => desync(), KP: () => { calls.n++; return desync(); } }) }));
+  assert.deepEqual(acked(w.events), ['rs1']);
+  assert.equal(calls.n, 1); assert.equal(s.held, 1);
+});
+
+test('C50 R2: if releasedByReset THROWS the poll carries on: nothing is released, the frame is tried like any held frame and stays held', async () => {
+  const calls = { n: 0 };
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, async () => { throw new Error('store locked'); }), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => { calls.n++; return desync(); } }) }));
+  assert.equal(calls.n, 1); assert.deepEqual(acked(w.events), []); assert.equal(s.held, 1);
+});
+
+test('C51 R2: a released envelope whose RECORD cannot be written is NOT acked (record-before-ack holds for resets too)', async () => {
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }], { failRecord: () => true });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => desync() }) }));
+  assert.deepEqual(acked(w.events), []); assert.equal(s.unrecorded, 1); assert.deepEqual(s.lost, {});
+});

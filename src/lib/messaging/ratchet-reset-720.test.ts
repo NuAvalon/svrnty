@@ -121,3 +121,14 @@ test('W3 static: deleteRatchetSession touches ONLY the ratchet_sessions store, d
   assert.doesNotMatch(fn, /\.clear\(|deleteDatabase|transaction\(\[|'notes'|'threads'|'contacts'|dead_letter/, 'never a clear(), another store, or a bulk delete');
   assert.equal((fn.match(/os\.delete\(/g) ?? []).length, 1);
 });
+
+test('W4 static: resetMessageSession deletes the SESSION first and marks the held frames second (marking first could release frames for a reset that failed); the store reads/writes the right rows', () => {
+  const sr = src('./session-reset.ts');
+  const body = sr.slice(sr.indexOf('export async function resetMessageSession'));
+  assert.ok(body.indexOf('resetRatchetSession(') > -1 && body.indexOf('resetRatchetSession(') < body.indexOf('markSessionReset('), 'session delete BEFORE marking');
+  assert.match(body, /markSessionReset\(peerFingerprint\.toLowerCase\(\)\)/);
+  const ds = src('./dead-letter-store.ts');
+  assert.match(ds, /resetMarksFor\(await listDeadLetters\(\), peerFp\)[\s\S]*putDeadLetter\(m\)/);
+  assert.match(ds, /r\.reason === 'session-reset' && r\.fp\) out\.set\(r\.envelope_id, r\.fp\)/);
+  assert.match(src('../sync/live-book-poll.ts'), /releasedByReset: async \(\) => \{\s*assertNotesStoreOpenFor\(openOwner\(\), owner\.fingerprint\);\s*return releasedByReset\(\);/, 'the sink method is owner-checked');
+});

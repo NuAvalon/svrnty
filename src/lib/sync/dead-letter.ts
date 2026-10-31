@@ -123,6 +123,25 @@ export function makeDeadLetterRow(a: {
   return row;
 }
 
+/**
+ * How many frames from ONE contact this app is still holding because their session cannot open them (the number the reset dialog shows
+ * BEFORE the user confirms, Flint reset-semantics R2). Held ratchet frames only: not recorded rows, not other contacts', not missing-key.
+ */
+export function heldCountFor(rows: ReadonlyArray<DeadLetterRow>, fp: string): number {
+  return heldRatchetRowsFor(rows, fp).length;
+}
+function heldRatchetRowsFor(rows: ReadonlyArray<DeadLetterRow>, fp: string): DeadLetterRow[] {
+  const want = fp.toLowerCase();
+  return rows.filter((r) => (r.reason === 'ratchet-local' || r.reason === 'ratchet-desync') && r.phase === 'held' && r.fp === want);
+}
+/**
+ * R2: at a reset, each held ratchet row of that contact becomes a NAMED session-reset record (a verdict: no phase). The envelopes are acked by
+ * the next poll, which finds these rows and releases them without trying to open them again (releasedByReset below).
+ */
+export function resetMarksFor(rows: ReadonlyArray<DeadLetterRow>, fp: string): DeadLetterRow[] {
+  return heldRatchetRowsFor(rows, fp).map((r) => ({ envelope_id: r.envelope_id, first_seen: r.first_seen, reason: 'session-reset' as const, blob_kind: r.blob_kind, fp: r.fp }));
+}
+
 export const KEEP_MAX_COUNT = 50; // F1: held envelopes kept per mailbox
 export const KEEP_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // F1: and for at most this long after first seen
 

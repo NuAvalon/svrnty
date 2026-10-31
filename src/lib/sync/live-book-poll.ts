@@ -67,7 +67,7 @@ import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { receiptKeyFromHex, verifyReceiptTag } from '@/lib/crypto/receipt-mac';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
-import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
+import { getDeadLetter, pruneDeadLetters, putDeadLetter, releasedByReset, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 
@@ -421,6 +421,10 @@ export function buildDeadLetterSink(owner: OwnerIdentity, openOwner: () => strin
     settle: async () => {
       assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
       await pruneDeadLetters(Date.now());
+    },
+    releasedByReset: async () => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      return releasedByReset();
     },
   };
 }

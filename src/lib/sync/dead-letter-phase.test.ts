@@ -44,3 +44,32 @@ test('PH5 makeDeadLetterRow carries the phase only for a holdable reason, and on
   assert.equal(mk('ratchet-desync', undefined)?.phase, undefined);
   assert.ok(parseDeadLetterRow(mk('ratchet-desync', 'held')), 'what make builds, parse accepts');
 });
+
+// ── R2 (reset releases that contact's HELD frames) ──
+import { heldCountFor, resetMarksFor, type DeadLetterRow } from './dead-letter';
+const FP2 = 'ab'.repeat(32);
+const row = (id: string, reason: DeadLetterReason, fp: string | undefined, phase?: 'held' | 'recorded'): DeadLetterRow =>
+  parseDeadLetterRow({ envelope_id: id, first_seen: T, reason, blob_kind: 'other', ...(fp ? { fp } : {}), ...(phase ? { phase } : {}) })!;
+
+test('RS1 heldCountFor counts ONLY that contact\'s HELD ratchet-local / ratchet-desync rows (not recorded, not other contacts, not missing-key, not verdicts)', () => {
+  const rows = [
+    row('a', 'ratchet-desync', FP, 'held'), row('b', 'ratchet-local', FP, 'held'),
+    row('c', 'ratchet-desync', FP, 'recorded'), row('d', 'ratchet-desync', FP2, 'held'),
+    row('e', 'missing-key', undefined, 'held'), row('f', 'ratchet-unopenable', FP), row('g', 'session-reset', FP),
+  ];
+  assert.equal(heldCountFor(rows, FP), 2);
+  assert.equal(heldCountFor(rows, FP2), 1);
+  assert.equal(heldCountFor(rows, FP.toUpperCase()), 2, 'fingerprint case does not matter');
+  assert.equal(heldCountFor(rows, 'ee'.repeat(32)), 0);
+});
+
+test('RS2 resetMarksFor rewrites exactly those held rows as session-reset verdicts (same id + first_seen + fp, NO phase), and touches nothing else', () => {
+  const rows = [row('a', 'ratchet-desync', FP, 'held'), row('b', 'ratchet-local', FP, 'held'), row('c', 'ratchet-desync', FP2, 'held'), row('d', 'ratchet-desync', FP, 'recorded')];
+  const marks = resetMarksFor(rows, FP);
+  assert.deepEqual(marks.map((m) => m.envelope_id).sort(), ['a', 'b']);
+  for (const m of marks) {
+    assert.equal(m.reason, 'session-reset'); assert.equal(m.fp, FP); assert.equal(m.first_seen, T); assert.equal(m.phase, undefined);
+    assert.ok(parseDeadLetterRow(m), 'a mark is a valid row');
+  }
+  assert.deepEqual(resetMarksFor(rows, 'ee'.repeat(32)), []);
+});

@@ -4,7 +4,7 @@
 // from it, never a sender the device did not authenticate. A record is committed BEFORE the relay is told to delete the envelope.
 
 import { deleteEncryptedSetting, getEncryptedSetting, listEncryptedSettings, putEncryptedSetting } from './store';
-import { parseDeadLetterRow, planPrune, safeEnvelopeId, type DeadLetterRow } from '@/lib/sync/dead-letter';
+import { heldCountFor, parseDeadLetterRow, planPrune, resetMarksFor, safeEnvelopeId, type DeadLetterRow } from '@/lib/sync/dead-letter';
 
 const PREFIX = 'dead_letter:';
 
@@ -40,6 +40,29 @@ export async function listDeadLetters(): Promise<DeadLetterRow[]> {
     if (row && key === `${PREFIX}${row.envelope_id}`) out.push(row);
   }
   return out.sort((a, b) => Date.parse(a.first_seen) - Date.parse(b.first_seen) || (a.envelope_id < b.envelope_id ? -1 : 1));
+}
+
+/** How many frames from this contact are held right now (the reset dialog's count). */
+export async function countHeldFor(peerFp: string): Promise<number> {
+  return heldCountFor(await listDeadLetters(), peerFp);
+}
+
+/**
+ * R2: turn this contact's held ratchet rows into session-reset records. Returns how many. Idempotent (a second call finds none held).
+ * Call it AFTER the session row was deleted: if marking fails the frames simply stay held and a repeated reset marks them; the other order
+ * could release frames for a reset that then failed.
+ */
+export async function markSessionReset(peerFp: string): Promise<number> {
+  const marks = resetMarksFor(await listDeadLetters(), peerFp);
+  for (const m of marks) await putDeadLetter(m);
+  return marks.length;
+}
+
+/** The envelopes a reset released, by record key -> the contact's fp. Read ONCE per poll: the poll acks them without opening them. */
+export async function releasedByReset(): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const r of await listDeadLetters()) if (r.reason === 'session-reset' && r.fp) out.set(r.envelope_id, r.fp);
+  return out;
 }
 
 /** Clear the record once the message opens (R5: the message replaces the flag). */

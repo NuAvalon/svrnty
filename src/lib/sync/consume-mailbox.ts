@@ -204,6 +204,8 @@ export interface DeadLetterSink {
   clear(envelopeId: string): Promise<void>;
   /** Once per poll, after records were written (retention pruning). Best effort: a failure here never affects what is acked. */
   settle?(): Promise<void>;
+  /** R2: envelopes a user's session reset released (record key -> contact fp). Read once per poll; each is recorded as session-reset and acked WITHOUT being opened. Best effort: if it throws, the frames just stay held. */
+  releasedByReset?(): Promise<ReadonlyMap<string, string>>;
 }
 
 export interface ConsumeDeps {
@@ -391,10 +393,28 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // T4 (Flint #186298): a held frame never blocks a NEWER frame from the same peer that DOES open (each envelope is decided on its own), and a
   // later frame can heal a gap: once a NOTE from contact X is stored this poll, X's held frames are tried again in the same poll (below).
   const healed = new Set<string>(); // lower-cased fingerprints of the contacts a note from whom was stored this poll
+  let resetReleased: ReadonlyMap<string, string> = new Map();
+  if (sink?.releasedByReset) {
+    try {
+      resetReleased = await sink.releasedByReset();
+    } catch {
+      /* best effort: the frames stay held and are released on a later poll */
+    }
+  }
   const handle = async (env: (typeof envelopes)[number], forced: boolean): Promise<'ended' | 'skipped' | Outcome['kind']> => {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
     if (deps.owner.cycle?.ended) return 'ended';
+    // R2: a frame the user's session reset released is recorded as session-reset and acked WITHOUT being opened (opening it again would only
+    // fail and flip its record back to a hold).
+    const relFp = resetReleased.get(recordKeyFor(env.envelope_id) ?? '');
+    if (relFp !== undefined) {
+      deps.holdBackoff?.forget(env.envelope_id);
+      summary.dropped++;
+      await door({ id: env.envelope_id, blob: env.blob, need: { reason: 'session-reset', fp: relFp } });
+      if (toAck.length >= ACK_CHUNK) await flushAckChunk(toAck.splice(0, ACK_CHUNK));
+      return 'terminal';
+    }
     // T2b: a held desync envelope that is not due yet is NOT tried (no ratchet open, no side effect). It still counts as held with its
     // recorded reason + fingerprint, so the record and the keep bound behave as if it had been tried and failed again.
     // A T4 retry (forced) is the one reason to try it before it is due: its peer just proved the session works.
