@@ -3,7 +3,7 @@
 // Pure. The caller (the note receive seam) supplies the facts it alone knows: the note's SIGNED sent_at, the newest sent_at already stored from
 // that contact, both fingerprints; the opener supplies `unconfirmed`.
 //
-//   R5b REPLAY GUARD  the signed sent_at must be newer than EVERY note already stored from that contact; if none is stored, within the relay
+//   R5b REPLAY GUARD  (upper bound: not dated beyond now + FUTURE_SLACK_MS) the signed sent_at must be newer than EVERY note already stored from that contact; if none is stored, within the relay
 //                     window (7 days) of now. A third party re-depositing an old sealed first frame from this contact (whose note may have aged
 //                     out of the store) must not rewind the session to its original state. A third party cannot change the signed sent_at.
 //   R6 TIE-BREAK      a session WE initiated that has received nothing from the peer yet is 'unconfirmed'. If the peer's first frame arrives while ours
@@ -12,6 +12,9 @@
 // Authentication is NOT decided here: this runs only after the note's sender signature verified and the sender is admitted (N-R5c).
 
 export const RELAY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The future slack. A stored note dated further than this beyond now is ignored by the replay guard (and counted); a candidate first frame dated further than this beyond now is never adopted. The two edges are the same on purpose: ignoring a far-future stored note is only safe while a far-future frame can never have been adopted into one. */
+export const FUTURE_SLACK_MS = 5 * 60 * 1000;
 
 export interface AdoptFacts {
   unconfirmed: boolean;
@@ -26,6 +29,9 @@ export interface AdoptFacts {
 
 export function mayAdoptFirstFrame(f: AdoptFacts): boolean {
   if (!Number.isFinite(f.sentAtMs) || !Number.isFinite(f.nowMs)) return false;
+  // R5b upper bound (Flint #2352/#2360, Archie #2354): a first frame dated beyond now + slack is never adopted (it stays a held desync). Without it, the
+  // guard ignoring far-future STORED notes would make a replay of an adopted far-future frame "newer than everything considered", adopted again.
+  if (f.sentAtMs > f.nowMs + FUTURE_SLACK_MS) return false;
   // R5b replay guard
   if (f.newestStoredAtMs !== null) {
     if (!Number.isFinite(f.newestStoredAtMs) || !(f.sentAtMs > f.newestStoredAtMs)) return false;
@@ -44,9 +50,6 @@ const STRICT_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}
 export function parseSentAtMs(v: unknown): number {
   return typeof v === 'string' && STRICT_ISO.test(v) ? Date.parse(v) : NaN;
 }
-
-/** A stored note dated further than this beyond now is not evidence of what the contact has sent (a broken clock, or a far-future note): ignored by the replay guard, and counted. */
-export const FUTURE_SLACK_MS = 5 * 60 * 1000;
 
 /** Counts only, per poll (like the open-leg counter): how many stored notes the replay guard ignored for being dated in the future. */
 export interface AdoptCounter {

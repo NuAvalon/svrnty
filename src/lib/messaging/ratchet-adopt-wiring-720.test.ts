@@ -283,6 +283,26 @@ test('W12b the future slack edge is exact (now + 5 min counts, one ms beyond is 
   assert.equal(await boom({ unconfirmed: false }), true);
 });
 
+test('W12c (Flint #2352/#2360, Archie #2354) a first frame dated beyond now + 5 min never adopts: (a) now + 10 min is held, (b) once a far-future stored note is ignored, a replay carrying that same far-future time is still refused, (c) now + 4 min adopts', async () => {
+  const ask = (stored: string[], sentAt: string) => buildAdoptFirstFrame({ ownFingerprint: 'bb', peerFingerprint: 'aa', sentAt, storedSentAts: async () => stored, now: () => NOW })({ unconfirmed: false });
+  const tenMin = 10 * 60 * 1000;
+  assert.equal(await ask([at(-5000)], at(tenMin)), false, '(a) now + 10 min, a real note stored: refused');
+  assert.equal(await ask([], at(tenMin)), false, '(a) now + 10 min, nothing stored: refused');
+  assert.equal(await ask([at(tenMin)], at(tenMin)), false, '(b) the far-future note is ignored by the guard, and a replay carrying the same far-future time is STILL refused');
+  assert.equal(await ask([at(30 * 24 * 3_600_000)], at(30 * 24 * 3_600_000)), false, '(b) a month ahead: same');
+  assert.equal(await ask([at(-5000)], at(4 * 60 * 1000)), true, '(c) control: now + 4 min is inside the slack and adopts');
+  // end to end through the note seam: the frame stays a held desync and the session is untouched
+  const { alice, bob, aliceNew } = await aliceResets();
+  const before = JSON.stringify(bob.sess.rows.get(alice.fp));
+  const f2 = (await sealFrom(alice, bob, 'dated ten minutes ahead', aliceNew))!;
+  const held = await receive(bob, alice, await wireFrom(alice, 'fut', f2, at(tenMin)));
+  assert.equal(held.r, null); assert.deepEqual(held.reasons, ['ratchet-desync']); assert.equal(bob.hooks.length, 0);
+  assert.equal(JSON.stringify(bob.sess.rows.get(alice.fp)), before, 'a far-future first frame changed nothing');
+  const f3 = (await sealFrom(alice, bob, 'a real reset', aliceNew))!;
+  const got = await receive(bob, alice, await wireFrom(alice, 'n3', f3, at(-1000)));
+  assert.ok(got.r, 'control: the same sender with an honest clock still resets'); assert.equal(bob.hooks.length, 1);
+});
+
 test('W13 (cause-on-row) the drop carries WHY, as a fixed token: desync -> ratchet-receive-failed, a frame we cannot accept as a first frame -> first-frame-rejected, no opener -> no-ratchet-opener', async () => {
   const { alice, bob } = await aliceResets();
   const replay = (await sealFrom(alice, bob, 'replayed', memIO()))!;
