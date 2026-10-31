@@ -51,7 +51,7 @@ test('dualSeal:true on dev → RETIRED: one hybrid deposit, no classical copy, t
     dualSeal: true, body: 'dual', store, relayBase: RELAY, fetchImpl,
   });
   assert.equal(r.deposited, true);
-  assert.notEqual(r.deposited_classical, true, 'no classical copy is ever deposited on dev');
+  assert.equal('deposited_classical' in r, false, 'no classical leg exists on dev');
   const box = boxes.get(deriveMailboxId(B.fp))!;
   assert.equal(box.length, 1, 'one envelope');
   assert.ok(asMailboxEnvelopePackage(box[0].blob) != null, 'it is the hybrid package');
@@ -68,7 +68,7 @@ test('dualSeal absent → single hybrid deposit (status quo)', async () => {
     body: 'single', store, relayBase: RELAY, fetchImpl,
   });
   assert.equal(r.deposited, true);
-  assert.equal(r.deposited_classical, undefined);
+  assert.equal('deposited_classical' in r, false);
   assert.equal(boxes.get(deriveMailboxId(B.fp))!.length, 1);
 });
 

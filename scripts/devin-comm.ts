@@ -461,13 +461,8 @@ async function main() {
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      // dual-seal-interim-001: while canon main lacks the dual-read consume leg, second-deposit a
-      // classical copy to the same mbx so classical receivers still land the note (option B,
-      // hybrid-note-receive-gap-001). Interim knob — remove post-merge. Default ON for the window
-      // (silent-off would re-ghost classical peers); SVRNTY_DUAL_SEAL=0 makes the classical-readable
-      // trade the sender's explicit call, never silent.
-      // Ported onto dev (Athena, Peter #188994): the interim is retired on this build (see headless-client sendNoteFromHeadless), so it is
-      // OFF unless asked for, and asking only logs a warning. SVRNTY_DUAL_SEAL=1 keeps the old opt-in spelling working.
+      // dual-seal-interim-001 is RETIRED on this build (dev seals no classical notes; every dev consumer dual-reads). SVRNTY_DUAL_SEAL=1 is
+      // still accepted so old wrappers don't break, but it only logs a warning: no classical copy is ever made or deposited.
       const dualSeal = process.env.SVRNTY_DUAL_SEAL === '1';
       r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, dualSeal, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
