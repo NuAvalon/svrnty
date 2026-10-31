@@ -7,11 +7,12 @@
 //   X  too late        expired                                                      count only
 //   S  not a contact   not-in-book                                                  ONE presence line: no number, no fp, no name, no time
 //   R  a contact's     ratchet-unopenable, ratchet-local                            count + the contact's name + "ask them to resend"
+//   L  a former contact  R rows whose sender is no longer in the book                count only, no name/fp/ask (Hypatia #188146 (a))
 // unverified-frame is not a message (dead-letter.ts NON_MESSAGE_REASONS) and never counts.
 
 import { isMessageReason, type DeadLetterReason, type DeadLetterRow } from '@/lib/sync/dead-letter';
 
-export type CantOpenGroup = 'R' | 'U' | 'X' | 'S';
+export type CantOpenGroup = 'R' | 'L' | 'U' | 'X' | 'S';
 
 const GROUP: Record<DeadLetterReason, CantOpenGroup | null> = {
   'unknown-format': 'U',
@@ -45,13 +46,17 @@ export const cantOpenU = (n: number) =>
 export const cantOpenX = (n: number) =>
   n === 1 ? "1 message arrived after its time limit and wasn't opened." : `${n} messages arrived after their time limit and weren't opened.`;
 export const CANT_OPEN_S = "People who aren't in your contacts tried to message you. svrnty doesn't open those.";
+export const cantOpenL = (n: number) =>
+  n === 1
+    ? "1 message from someone no longer in your contacts couldn't be opened on this device. This device didn't keep it."
+    : `${n} messages from people no longer in your contacts couldn't be opened on this device. This device didn't keep them.`;
 export const cantOpenR = (n: number, name: string) =>
   `${msgs(n)} from ${name} couldn't be opened on this device. Ask ${name} to send ${n === 1 ? 'it' : 'them'} again.`;
 
 /**
- * The lines to show, actionable first (R by contact, then U, X, S). No rows → no lines.
+ * The lines to show, actionable first (R by contact, then L, U, X, S). No rows → no lines.
  * nameFor resolves an AUTHENTICATED fingerprint to the contact's name in the book. An R row whose sender is no longer in the book has no
- * name to ask, so it counts in U (no name is ever shown for it).
+ * one to ask: it counts in L, which shows no name. (Not U: U says svrnty can't tell who sent them, which is false for an authenticated sender.)
  * sDismissedAt: when the user last dismissed the S line (ISO), or null. S shows only if a not-in-book row was first seen after that.
  */
 export function cantOpenNotices(
@@ -61,6 +66,7 @@ export function cantOpenNotices(
 ): CantOpenNotice[] {
   const byContact = new Map<string, { name: string; n: number }>();
   let u = 0;
+  let left = 0;
   let x = 0;
   let sNew = false;
   const dismissed = sDismissedAt === null ? null : Date.parse(sDismissedAt);
@@ -69,7 +75,7 @@ export function cantOpenNotices(
     if (g === 'R') {
       const name = row.fp ? nameFor(row.fp) : null;
       if (!row.fp || !name) {
-        u++;
+        left++;
         continue;
       }
       const hit = byContact.get(row.fp) ?? { name, n: 0 };
@@ -85,6 +91,7 @@ export function cantOpenNotices(
   }
   const out: CantOpenNotice[] = [];
   for (const [fingerprint, { name, n }] of byContact) out.push({ group: 'R', text: cantOpenR(n, name), fingerprint });
+  if (left > 0) out.push({ group: 'L', text: cantOpenL(left) });
   if (u > 0) out.push({ group: 'U', text: cantOpenU(u) });
   if (x > 0) out.push({ group: 'X', text: cantOpenX(x) });
   if (sNew) out.push({ group: 'S', text: CANT_OPEN_S });

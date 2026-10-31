@@ -62,11 +62,16 @@ test('C5 NEG: a U or X row never shows a name or fingerprint, even if a row some
   }
 });
 
-test('C6 an R row whose sender left the book (no name) counts in U, never shows its fingerprint', () => {
-  const out = cantOpenNotices([row('ratchet-unopenable', { fp: GONE }), row('ratchet-local')], nameFor, null);
-  assert.deepEqual(out.map((n) => n.group), ['U']);
-  assert.match(out[0].text, /^2 messages couldn't be opened/);
-  assert.doesNotMatch(out[0].text, /[0-9a-f]{8,}/i);
+test('C6 an R row whose sender left the book counts in L (Hypatia #188146 (a)): exact copy, no name, no fp, no ask, never U', () => {
+  const out = cantOpenNotices([row('ratchet-unopenable', { fp: GONE }), row('ratchet-local'), row('decrypt-failed')], nameFor, null);
+  assert.deepEqual(out, [
+    { group: 'L', text: "2 messages from people no longer in your contacts couldn't be opened on this device. This device didn't keep them." },
+    { group: 'U', text: "1 message couldn't be opened on this device, so svrnty can't tell who sent it. This device didn't keep it." },
+  ]);
+  assert.deepEqual(cantOpenNotices([row('ratchet-local', { fp: GONE })], nameFor, null), [
+    { group: 'L', text: "1 message from someone no longer in your contacts couldn't be opened on this device. This device didn't keep it." },
+  ]);
+  for (const n of out) assert.doesNotMatch(n.text, /[0-9a-f]{8,}/i);
 });
 
 test('C7 S: ONE presence line, exact copy, no digit, no hex run, no name, whatever the count', () => {
@@ -94,10 +99,10 @@ test('C8 S after a dismissal: hidden until a row first seen LATER exists, then t
 
 test('C9 NEG copy: no "decrypt", no "lost forever", "deleted" or "blocked" in any line', () => {
   const all = cantOpenNotices(
-    [row('decrypt-failed'), row('expired'), row('not-in-book'), row('ratchet-unopenable', { fp: ALICE })],
+    [row('decrypt-failed'), row('expired'), row('not-in-book'), row('ratchet-unopenable', { fp: ALICE }), row('ratchet-local', { fp: GONE })],
     nameFor,
     null,
   ).map((n) => n.text);
-  assert.equal(all.length, 4);
+  assert.equal(all.length, 5);
   for (const t of all) assert.doesNotMatch(t, /decrypt|lost forever|deleted|blocked/i);
 });
