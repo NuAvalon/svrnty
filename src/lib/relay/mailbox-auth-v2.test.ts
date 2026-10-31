@@ -27,6 +27,7 @@ import {
   OWNER_AUTH_V2_HEADER,
   DOMAIN_MAILBOX_OWNER_V2,
   verifyOwnerRequestV2,
+  ownerSignedMessageV2,
   type MailboxAuthKeypair,
 } from './mailbox-auth-v2';
 
@@ -72,6 +73,42 @@ test('D1: mbx2_ id is deterministic per auth key, distinct across keys, and in t
   assert.equal(isMailboxIdV2(id), true);
   assert.equal(isMailboxIdV2('mbx_' + id.slice(5)), false, 'a v1-shaped id is never treated as v2');
   assert.throws(() => deriveMailboxIdV2({ edPublicKey: A.edPublicKey.slice(1), dsaPublicKey: A.dsaPublicKey }));
+});
+
+// ---- KNOWN-ANSWER vectors (Flint #2189 condition). Expected values computed INDEPENDENTLY in Python (hashlib + struct + json sort_keys)
+// from the public-key bytes, not by this module. Every other reader (Python cells, the Weft) must reproduce them: a drift there means
+// polling the wrong mailbox, which is silent loss.
+
+const KAT_ED_PUB = 'd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737'; // ed25519.getPublicKey(32 x 0x11)
+const KAT_DSA_PUB_SHA256 = '80d5337fba46deb2112b8e3b3ea453e446bfcd311f4bf2bb79fdeb2aff45165d'; // ml_dsa87.keygen(32 x 0x22).publicKey
+const KAT_ID = 'mbx2_49ff5d1d47e8bdb98c1f6ddc460a55fe859e6c73f6b574b56f0a3969090f5273';
+const KAT_POLL_MSG =
+  '000000177376726e74793a6d61696c626f782d6f776e65723a763200000004706f6c6c000000947b226d61696c626f785f6964223a226d6278325f343966663564' +
+  '31643437653862646239386331663664646334363061353566653835396536633733663662353734623536663061333936393039306635323733222c226e6f6e6365' +
+  '223a223030303130323033303430353036303730383039306130623063306430653066222c227473223a313730303030303030303030307d';
+const KAT_ACK_MSG_SHA256 = '24367197ff0c96350c6a2e37eafe23231d714897652b23e67b6c354beed46009'; // envelope_ids ['e1','e2'], 213 bytes
+
+function katKeys() {
+  const edPublicKey = ed25519.getPublicKey(new Uint8Array(32).fill(0x11));
+  const dsaPublicKey = ml_dsa87.keygen(new Uint8Array(32).fill(0x22)).publicKey;
+  return { edPublicKey, dsaPublicKey };
+}
+
+test('KAT: fixed keys -> the exact mbx2_ id (pins the domain tag, LP framing, field order, hash and hex)', async () => {
+  const { sha256 } = await import('@noble/hashes/sha2.js');
+  const k = katKeys();
+  assert.equal(bytesToHex(k.edPublicKey), KAT_ED_PUB, 'Ed25519 keygen from the seed (RFC 8032)');
+  assert.equal(bytesToHex(sha256(k.dsaPublicKey)), KAT_DSA_PUB_SHA256, 'ML-DSA-87 keygen from the seed (FIPS 204)');
+  assert.equal(deriveMailboxIdV2(k), KAT_ID);
+});
+
+test('KAT: the exact bytes a poll signs, and the digest of the bytes an ack signs', async () => {
+  const { sha256 } = await import('@noble/hashes/sha2.js');
+  const nonce = '000102030405060708090a0b0c0d0e0f';
+  assert.equal(bytesToHex(ownerSignedMessageV2('poll', KAT_ID, nonce, 1_700_000_000_000)), KAT_POLL_MSG);
+  const ack = ownerSignedMessageV2('ack', KAT_ID, nonce, 1_700_000_000_000, ['e1', 'e2']);
+  assert.equal(ack.length, 213);
+  assert.equal(bytesToHex(sha256(ack)), KAT_ACK_MSG_SHA256);
 });
 
 // ---- done_when 1: no fingerprint / identity key / identity signature in any v2 owner request

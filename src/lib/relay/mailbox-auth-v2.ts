@@ -66,8 +66,12 @@ function claimJson(op: OwnerOpV2, mailboxId: string, nonce: string, ts: number, 
     ? canonicalize({ mailbox_id: mailboxId, envelope_ids: envelopeIds ?? [], nonce, ts })
     : canonicalize({ mailbox_id: mailboxId, nonce, ts });
 }
-function signedMessage(op: OwnerOpV2, claim: string): Uint8Array {
-  return concatBytes(lpStr(DOMAIN_MAILBOX_OWNER_V2), lpStr(op), lpStr(claim));
+/**
+ * The exact bytes both halves sign: LP('svrnty:mailbox-owner:v2') ‖ LP(op) ‖ LP(canonical claim). Exported as the reference for every
+ * other implementation (Python cells, the Weft); a known-answer test pins it byte for byte.
+ */
+export function ownerSignedMessageV2(op: OwnerOpV2, mailboxId: string, nonce: string, ts: number, envelopeIds?: string[]): Uint8Array {
+  return concatBytes(lpStr(DOMAIN_MAILBOX_OWNER_V2), lpStr(op), lpStr(claimJson(op, mailboxId, nonce, ts, envelopeIds)));
 }
 
 /** The wire bundle (base64url JSON in {@link OWNER_AUTH_V2_HEADER}). These keys and NO others. */
@@ -121,7 +125,7 @@ export function signOwnerRequestV2(args: {
 }): { mailboxId: string; headers: Record<string, string> } {
   const mailboxId = deriveMailboxIdV2(args.keypair);
   const nonce = bytesToHex(randomBytes(16));
-  const msg = signedMessage(args.op, claimJson(args.op, mailboxId, nonce, args.now, args.envelopeIds));
+  const msg = ownerSignedMessageV2(args.op, mailboxId, nonce, args.now, args.envelopeIds);
   const bundle: OwnerAuthV2Bundle = {
     v: 2,
     ed_pub: bytesToB64url(args.keypair.edPublicKey),
@@ -157,7 +161,7 @@ export async function verifyOwnerRequestV2(
     const sig = b64urlToBytes(b.sig);
     const pq = b64urlToBytes(b.pq_sig);
     if (sig.length !== ED_SIG_LEN || pq.length !== DSA_SIG_LEN) return false;
-    const msg = signedMessage(op, claimJson(op, mailboxId, b.nonce, b.ts, envelopeIds));
+    const msg = ownerSignedMessageV2(op, mailboxId, b.nonce, b.ts, envelopeIds);
     if (!ed25519.verify(sig, msg, pub.edPublicKey)) return false;
     return ml_dsa87.verify(pq, msg, pub.dsaPublicKey);
   } catch {
