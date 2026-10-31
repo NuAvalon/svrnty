@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { namedRow } from './ratchet-rows';
+import { readFileSync } from 'node:fs';
 import { inputFor, ratchetViewFor } from './ratchet-rows-view';
+import { RESET_FAILED_LINE } from './ratchet-reset-copy';
 
 const PEER = 'ab'.repeat(32), OTHER = 'cd'.repeat(32);
 let n = 0;
@@ -73,4 +75,13 @@ test('R6 nothing from a record but fixed copy reaches the view: an envelope id n
   const r = row({ reason: 'ratchet-desync', phase: 'held', envelope_id: 'SECRET-ENVELOPE-ID-123' });
   const v = ratchetViewFor([r], PEER, 'Sam', false);
   assert.doesNotMatch(JSON.stringify(v), /SECRET-ENVELOPE-ID-123/);
+});
+
+test('R7 the reset-failed line is copy v0.11 by value, never claims the reset did not happen, and the component takes it from the copy file (no inline string)', () => {
+  assert.equal(RESET_FAILED_LINE, "The reset didn't finish. Try again.");
+  assert.doesNotMatch(RESET_FAILED_LINE, /couldn't reset|failed|safe|kept|\d/i);
+  const comp = readFileSync(new URL('./RatchetRows.tsx', import.meta.url), 'utf8');
+  assert.match(comp, /import \{ RESET_FAILED_LINE \} from '\.\/ratchet-reset-copy';/);
+  assert.doesNotMatch(comp, /export const RESET_FAILED_LINE|Couldn't reset right now/, 'no provisional line left in the component');
+  assert.equal((comp.match(/RESET_FAILED_LINE/g) ?? []).length, 2, 'imported once, rendered once');
 });

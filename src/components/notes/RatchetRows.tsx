@@ -11,10 +11,8 @@ import { resetMessageSession } from '@/lib/messaging/session-reset';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { resetDialog, resetButtonLabel } from './ratchet-rows';
 import { ratchetViewFor } from './ratchet-rows-view';
+import { RESET_FAILED_LINE } from './ratchet-reset-copy';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
-
-// PROVISIONAL (Apollo): the one line this component needs that copy v0_10 does not have. Observed-only, no cause, no promise. Hypatia to freeze or replace.
-export const RESET_FAILED_LINE = "Couldn't reset right now.";
 
 const REFRESH_MS = 5000;
 
