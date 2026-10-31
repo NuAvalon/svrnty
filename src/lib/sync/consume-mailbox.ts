@@ -203,6 +203,9 @@ export interface DeadLetterSink {
   clear(envelopeId: string): Promise<void>;
   /** Once per poll, after records were written (retention pruning). Best effort: a failure here never affects what is acked. */
   settle?(): Promise<void>;
+  /** Optional STAGING: when present, record()/clear() may only buffer, and flush() commits them. consume-mailbox calls it before every
+   *  ack chunk and acks the chunk only if it resolved. */
+  flush?(): Promise<void>;
 }
 
 export interface ConsumeDeps {
@@ -317,8 +320,29 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
   //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
   const ACK_CHUNK = 20;
+  // A STAGING sink (one with flush(), e.g. the headless file sink) buffers record()/clear() and commits them in ONE write before each ack
+  // chunk, so a backlog of N losses costs at most ceil(N/20) writes, not N (Archie #189076, Flint C1). Record-before-ack still holds: a
+  // chunk is acked only after flush() succeeded. If flush() throws, NOTHING in that chunk is acked (it stays on the relay for a later poll)
+  // and every staged record in it is re-counted from deadLettered to unrecorded. A sink without flush() (the FE) writes in record() as before.
+  const stagedRecords = new Set<string>();
   const flushAckChunk = async (chunk: string[]) => {
     if (chunk.length === 0 || deps.owner.cycle?.ended) return;
+    const staging = deps.deadLetter?.flush;
+    if (staging) {
+      try {
+        await staging.call(deps.deadLetter);
+      } catch (err) {
+        for (const id of chunk) {
+          if (stagedRecords.delete(id)) {
+            summary.deadLettered--;
+            summary.unrecorded++;
+          }
+        }
+        console.error('[return-channel] could not commit dead-letter records (chunk left on the relay):', err instanceof Error ? err.message : 'error');
+        return;
+      }
+      for (const id of chunk) stagedRecords.delete(id);
+    }
     const ackHeaders = await signMailboxAckRequest({
       mailboxId,
       envelopeIds: chunk,
@@ -376,6 +400,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       try {
         await sink.record(row);
         summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
         bump(item.need.reason);
         toAck.push(item.id);
       } catch (err) {
