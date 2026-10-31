@@ -1,7 +1,6 @@
 // Proxy to satellite slug claim API
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
 
 // Slug: lowercase alphanumeric + hyphens/underscores, 3-40 chars
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{2,39}$/;
@@ -28,7 +27,7 @@ export async function POST(
     if (!body.fingerprint) {
       return NextResponse.json({ error: 'fingerprint is required' }, { status: 400 });
     }
-    const res = await fetch(`${SATELLITE_URL}/slug/${encodeURIComponent(name)}/claim`, {
+    const res = await fetch(`${satelliteBaseUrl()}/slug/${encodeURIComponent(name)}/claim`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
