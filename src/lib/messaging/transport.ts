@@ -284,6 +284,11 @@ export async function acceptInboundNote(args: {
    * sender could not be authenticated; 'not-in-book' and 'ratchet-unopenable' come only after authentication succeeded.
    */
   onDrop?: (reason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync', cause?: string) => void;
+  /**
+   * FIRST WRITE WINS: told (once) when a note from the SAME sender reused an already-stored note_id with DIFFERENT content. The stored row is
+   * kept as it was, the stored note is returned (like a redelivery: acked, no loss record), and the frame's ratchet advance is still committed.
+   */
+  onRewriteRefused?: () => void;
 }): Promise<NoteRecord | null> {
   // AUTHENTICATE before admit (Flint #55 merge-gate): a note's from_fingerprint is attacker-controlled
   // until the signature is verified and bound to the carried public_key. Unsigned or forged ⇒ drop
@@ -341,6 +346,15 @@ export async function acceptInboundNote(args: {
   // R5: a StagedOpen holds the per-peer session lock. It is freed by commit() below, or HERE on any other exit (putNote/putThread
   // throwing included), so a failed store write can never leave a peer's session locked.
   try {
+  // FIRST WRITE WINS (Archie #2653, Flint #2650): the same sender may REDELIVER a stored note (identical content: proceed, putNote is idempotent), but may
+  // not REWRITE it. A different body, thread or time under a stored note_id is refused and the stored row is left exactly as it was. The frame was
+  // legitimately consumed (its key is spent), so its ratchet advance is still committed: only its CONTENT is refused. Without that, the receiver's
+  // session would sit one step behind what the sender believes. The lock is released by the finally below on every exit.
+  if (prior && (prior.body !== body || prior.thread_id !== args.wire.thread_id || (!!args.wire.sent_at && prior.sent_at !== args.wire.sent_at))) {
+    if (staged) await staged.commit();
+    args.onRewriteRefused?.();
+    return prior;
+  }
   const sent_at = args.wire.sent_at || new Date().toISOString();
   const record: NoteRecord = {
     note_id: args.wire.note_id,

@@ -430,7 +430,7 @@
    "id": "G-3",
    "kind": "gated",
    "gate": "isPQWireLive",
-   "gate_value_at_sha": true,
+   "gate_value_at_sha": "env",
    "claim": "PQ-blinded mutual DISCOVERY (the PSI transport wire is hybrid)",
    "patterns": [
     "\\bpost.?quantum\\b.{0,30}\\b(?:discovery|mutual)",
@@ -456,10 +456,10 @@
    "id": "G-4",
    "kind": "gated",
    "gate": "isPSIDiscoveryLive",
-   "gate_value_at_sha": true,
+   "gate_value_at_sha": "env",
    "claim": "Find your mutual contacts (KNOW-layer trust map)",
    "scope": "dev (flip 2026-10-04); block = DIRECT only",
-   "conflict": "RULED (Flint lane:svrnty #41, Archie #39): hard-coded `return true` since ce8420b (Athena, 2026-10-04, one-branch era) → ON for ANYTHING built from main (prod, self-hosters). Prod commit UNKNOWN (svrnty.is/api/version reports \"unknown\"). Flint did NOT give a PROD/self-host go. Fix: env flag NEXT_PUBLIC_PSI_DISCOVERY_LIVE, default OFF on main, true in the dev build (PR to dev → main); prod-on = Peter's call. When it lands, set gate_value_at_sha to \"env\" (the validator enforces it).",
+   "conflict": "RULED (Flint lane:svrnty #41, Archie #39): hard-coded `return true` since ce8420b (Athena, 2026-10-04, one-branch era) → ON for ANYTHING built from main (prod, self-hosters). Prod commit UNKNOWN (svrnty.is/api/version reports \"unknown\"). Flint did NOT give a PROD/self-host go. Fix: env flag NEXT_PUBLIC_PSI_DISCOVERY_LIVE, default OFF on main, true in the dev build (PR to dev → main); prod-on = Peter's call. LANDED on apollo/psi-prod-off-v2 (Archie #2601 re-ruled the flag): the gate is isDevBuild(NEXT_PUBLIC_SVRNTY_DOMAIN), the SAME predicate as the /api/satellite proxy fence (src/lib/satellite/satellite-base-url.ts); gate_value_at_sha is \"env\"; a build with an unset or non-dev domain is prod and has isPSIDiscoveryLive() AND isPQWireLive() false. No separate build arg.",
    "source": [
     "claim-gates.ts",
     "DAG S29/C1"

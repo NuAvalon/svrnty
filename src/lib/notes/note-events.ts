@@ -10,6 +10,11 @@ export type NoteArrivalEvent = {
   note_id?: string;
   thread_id?: string;
   from_fingerprint?: string;
+  /** What arrived. 'note' = an inbound note persisted after a signed + admitted check; 'receipt' = a delivery receipt for one of OUR notes.
+   *  Absent = a same-page send or an older emitter: repaint only, never a notification (mail-notifications fails closed on it). */
+  kind?: 'note' | 'receipt';
+  /** The identity the note was delivered to (the polling owner), so a listener in another tab/identity can ignore it. */
+  to_fingerprint?: string;
 };
 
 type Listener = (evt: NoteArrivalEvent) => void;

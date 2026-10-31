@@ -22,7 +22,9 @@ import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/con
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
+import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
+import { headlessDeadLetterSink } from './headless-dead-letter';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
 import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
@@ -40,6 +42,9 @@ export type HeadlessOwner = OwnerIdentity;
 export interface HeadlessOpts {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  /** #713: the agent dir's dead-letter file. Present → a loss is RECORDED (metadata row) before its envelope is acked, and a failed write
+   *  leaves the envelope on the relay. Absent → the old behaviour: the loss is only counted (summary.lost). */
+  deadLetterPath?: string;
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
@@ -59,8 +64,13 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
     verify: (blob) => verifyNote(blob),
     accept: async (wire: NoteWireV0) => {
       // authenticate (public_key↔from_fingerprint + sig) BEFORE admit — a note is forgeable until verified.
-      if (!(await verifyNoteSender(wire))) return null; // unsigned / forged — silent drop
-      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return null; // in-book AND not-blocked — stranger OR blocked sender dropped (I-2 + P1#2 survivor-safety)
+      // #720 say-why, mirroring the FE seam (live-book-poll.ts): a DroppedNote carries the REASON, so the record is honest. A bare null was
+      // recorded as 'verify-failed' for BOTH cases, which made a stranger's genuine note look like forged crypto (Peter→Athena 10-31).
+      // No fingerprint travels with 'unverified' (from_fingerprint is attacker-controlled until verified: F3).
+      if (!(await verifyNoteSender(wire))) return { dropped: 'unverified' }; // unsigned / forged
+      // in-book AND not-blocked (I-2 + P1#2 survivor-safety). A blocked sender reports 'not-in-book' too, as the FE does: no separate
+      // "blocked" reason leaves this device.
+      if (!admitContact(store.getContactByFingerprint(wire.from_fingerprint))) return { dropped: 'not-in-book', fp: wire.from_fingerprint };
       const sent_at = wire.sent_at || now();
       const rec: NoteRecord = {
         note_id: wire.note_id,
@@ -74,7 +84,12 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
         retention: { expires_at: null },
         wire_type: NOTE_WIRE_TYPE,
       };
-      store.putNote(rec); // throws → consumeOne treats as retryable (ack-follows-persist)
+      // FIRST WRITE WINS: a same-sender note that reuses a stored id with different content is refused; the stored note is what we acknowledge.
+      if (!store.putNote(rec)) {
+        noteRewriteRefused();
+        const kept = store.listNotes().find((x) => x.note_id === rec.note_id && x.direction === 'inbound' && x.from_fingerprint === rec.from_fingerprint)!;
+        return { note_id: kept.note_id, thread_id: kept.thread_id, from_fingerprint: kept.from_fingerprint };
+      } // throws → consumeOne treats as retryable (ack-follows-persist)
       const existing = store.listThreads().find((t) => t.thread_id === rec.thread_id);
       const thread: NoteThread = existing
         ? { ...existing, last_activity_at: sent_at }
@@ -138,6 +153,7 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
     // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
     // looping it retryable-FOREVER (the flip-side harm). advertise-kem && !hybrid ⟺ missing.
     hybridSecretMissing: !!owner.kemPublicKey && !hybrid,
+    deadLetter: opts.deadLetterPath ? headlessDeadLetterSink(opts.deadLetterPath) : undefined,
     relayBase: opts.relayBase,
     fetchImpl: opts.fetchImpl,
     now,

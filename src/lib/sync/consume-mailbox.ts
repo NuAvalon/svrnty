@@ -209,6 +209,9 @@ export interface DeadLetterSink {
   settle?(): Promise<void>;
   /** R2: envelopes a user's session reset released (record key -> contact fp). Read once per poll; each is recorded as session-reset and acked WITHOUT being opened. Best effort: if it throws, the frames just stay held. */
   releasedByReset?(): Promise<ReadonlyMap<string, string>>;
+  /** Optional STAGING: when present, record()/clear() may only buffer, and flush() commits them. consume-mailbox calls it before every
+   *  ack chunk and acks the chunk only if it resolved. */
+  flush?(): Promise<void>;
 }
 
 export interface ConsumeDeps {
@@ -270,7 +273,7 @@ export interface ConsumeSummary {
   adopt_future_ignored?: number;
   released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
-  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth), or a 2xx whose body was not a list; absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
 /**
@@ -322,15 +325,39 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
   // ever compared and handed on, never used to decide whether a blob is consumed.
   const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
-  if (!Array.isArray(envelopes)) return summary;
+  if (!Array.isArray(envelopes)) {
+    summary.rejected = res.status; // an answer that isn't a list is not an empty mailbox (Archie #2401)
+    return summary;
+  }
   summary.polled = envelopes.length;
 
   // 2) Consume each envelope independently; flush acks in 20-id chunks so
   //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
   //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
   const ACK_CHUNK = 20;
+  // A STAGING sink (one with flush(), e.g. the headless file sink) buffers record()/clear() and commits them in ONE write before each ack
+  // chunk, so a backlog of N losses costs at most ceil(N/20) writes, not N (Archie #189076, Flint C1). Record-before-ack still holds: a
+  // chunk is acked only after flush() succeeded. If flush() throws, NOTHING in that chunk is acked (it stays on the relay for a later poll)
+  // and every staged record in it is re-counted from deadLettered to unrecorded. A sink without flush() (the FE) writes in record() as before.
+  const stagedRecords = new Set<string>();
   const flushAckChunk = async (chunk: string[]) => {
     if (chunk.length === 0 || deps.owner.cycle?.ended) return;
+    const staging = deps.deadLetter?.flush;
+    if (staging) {
+      try {
+        await staging.call(deps.deadLetter);
+      } catch (err) {
+        for (const id of chunk) {
+          if (stagedRecords.delete(id)) {
+            summary.deadLettered--;
+            summary.unrecorded++;
+          }
+        }
+        console.error('[return-channel] could not commit dead-letter records (chunk left on the relay):', err instanceof Error ? err.message : 'error');
+        return;
+      }
+      for (const id of chunk) stagedRecords.delete(id);
+    }
     const ackHeaders = await signMailboxAckRequest({
       mailboxId,
       envelopeIds: chunk,
@@ -388,6 +415,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       try {
         await sink.record(row);
         summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
         bump(item.need.reason);
         toAck.push(item.id);
       } catch (err) {

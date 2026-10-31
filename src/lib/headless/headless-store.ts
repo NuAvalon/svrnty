@@ -198,15 +198,22 @@ export class HeadlessStore {
   }
 
   // --- notes (mirror the messaging store surface the note-accept uses) ---
-  putNote(n: NoteRecord): void {
+  /**
+   * Returns false only when an INBOUND note was REFUSED because it reused a stored note_id with different content (FIRST WRITE WINS, Archie #2653):
+   * the stored row is kept as it was. Everything else stores (true). A byte-identical redelivery re-persists harmlessly.
+   */
+  putNote(n: NoteRecord): boolean {
+    let stored = true;
     this.mutate(() => {
       // note_id is sender-chosen: keyed on it alone, a peer who knew one of our ids (our outbound copies)
       // could replace that row. Same sender + direction + id = redelivery, re-persisted harmlessly (Chaos #170).
       const i = this.data.notes.findIndex((x) =>
         x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
       if (i === -1) this.data.notes.push(n);
+      else if (n.direction === 'inbound' && (this.data.notes[i].body !== n.body || this.data.notes[i].thread_id !== n.thread_id || this.data.notes[i].sent_at !== n.sent_at)) stored = false;
       else this.data.notes[i] = n;
     });
+    return stored;
   }
   listNotes(): NoteRecord[] {
     return [...this.data.notes];
