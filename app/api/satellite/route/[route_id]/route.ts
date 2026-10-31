@@ -12,8 +12,7 @@
 // satellite. Range-polling a catch-up window = one GET per past window (consent-delta-transport.ts
 // HORIZON_WINDOWS); each route_id is independently blinded, so the proxy learns no linkage.
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
 
 const ROUTE_ID_RE = /^[0-9a-fA-F]{32}$/;
 
@@ -27,7 +26,7 @@ export async function GET(
       return NextResponse.json({ error: 'Invalid route_id' }, { status: 400 });
     }
 
-    const res = await fetch(`${SATELLITE_URL}/route/${route_id}`);
+    const res = await fetch(`${satelliteBaseUrl()}/route/${route_id}`);
     const text = await res.text();
     try {
       return NextResponse.json(JSON.parse(text), { status: res.status });

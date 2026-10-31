@@ -1,8 +1,7 @@
 // Proxy to satellite registration. Forwards the four public keys the satellite
 // re-hashes into the identity fingerprint. Never forwards email.
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
 
 const SHORT_MAX = 4096;
 const KEY_HEX_MAX = 16384; // ML-DSA-87 pubkey hex is 5184 chars
@@ -36,7 +35,7 @@ export async function POST(request: NextRequest) {
     if (!body.fingerprint || !body.public_key) {
       return NextResponse.json({ error: 'fingerprint and public_key are required' }, { status: 400 });
     }
-    const res = await fetch(`${SATELLITE_URL}/register`, {
+    const res = await fetch(`${satelliteBaseUrl()}/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

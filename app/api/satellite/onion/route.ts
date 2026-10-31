@@ -15,8 +15,7 @@
 //   envelope shape and MUST update BOTH this allowlist and psi-proxy-body.ts in lockstep, or a field
 //   silently stops forwarding. Folding the two into one shared helper is a #556-time cleanup.
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
 
 // MailboxEnvelopePackage string fields (mailbox-envelope.ts:39). `v` is the numeric literal 1 and is
 // handled explicitly below; everything else is opaque base64/hex.
@@ -61,7 +60,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid onion cell' }, { status: 400 });
     }
 
-    const res = await fetch(`${SATELLITE_URL}/onion`, {
+    const res = await fetch(`${satelliteBaseUrl()}/onion`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
