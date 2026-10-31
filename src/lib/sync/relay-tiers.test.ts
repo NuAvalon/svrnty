@@ -3,7 +3,7 @@
 // Run: npx tsx --test src/lib/sync/relay-tiers.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_RELAYS, depositWithFailover, failoverWorthy, mergeRelaySummaries, parseRelayList } from './relay-tiers';
+import { MAX_RELAYS, depositWithFailover, failoverWorthy, isPrivateHost, mergeRelaySummaries, parseRelayList } from './relay-tiers';
 import type { ConsumeSummary } from './consume-mailbox';
 
 const D = 'https://dev.svrnty.is/api/relay';
@@ -13,7 +13,7 @@ test('L1 one relay: SVRNTY_RELAY keeps working, the default applies, a trailing 
   assert.deepEqual(parseRelayList({ SVRNTY_RELAY: 'http://10.0.0.5:3000/api/relay/' }, D), ['http://10.0.0.5:3000/api/relay']);
 });
 test('L2 SVRNTY_RELAYS wins over SVRNTY_RELAY, keeps order, drops duplicates and blanks', () => {
-  assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: ' https://a.test/r , http://b.test/r,, https://a.test/r/ ', SVRNTY_RELAY: 'https://x.test/r' }, D), ['https://a.test/r', 'http://b.test/r']);
+  assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: ' https://a.test/r , http://b.local/r,, https://a.test/r/ ', SVRNTY_RELAY: 'https://x.test/r' }, D), ['https://a.test/r', 'http://b.local/r']);
   assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: '   ', SVRNTY_RELAY: 'https://x.test/r' }, D), ['https://x.test/r'], 'a blank list falls back to the single form');
 });
 test('L3 NEG: a misconfigured list is LOUD, never silently single-relay', () => {
@@ -85,4 +85,26 @@ test('M2 NEG: a refused or failed relay is never hidden by a healthy one', () =>
   assert.equal(m.rejected, 401);
   assert.deepEqual([m.relays, m.relaysFailed, m.relaysRejected], [3, 1, 1]);
   assert.equal(m.polled, 4, 'the healthy relays still count');
+});
+
+test('H1 NEG (Flint #2650 a): plain http is refused for a public host, so the owner-auth header and the poll never cross the internet in the clear', () => {
+  for (const u of ['http://example.com/api/relay', 'http://8.8.8.8/api/relay', 'http://172.32.0.1/api/relay', 'http://172.15.255.255/api/relay', 'http://192.169.0.1/api/relay',
+    'http://1.2.3.4.nip.io/api/relay', 'http://0.0.0.0/api/relay', 'http://dev.svrnty.is/api/relay', 'http://[2001:db8::1]/api/relay', 'http://127.0.0.1.evil.com/api/relay']) {
+    assert.throws(() => parseRelayList({ SVRNTY_RELAYS: u }, D), /plain http is only for a private host/, u);
+    assert.throws(() => parseRelayList({ SVRNTY_RELAY: u }, D), /plain http is only for a private host/, 'single form too: ' + u);
+  }
+  assert.throws(() => parseRelayList({ SVRNTY_RELAYS: 'https://a.test/r,http://example.com/r' }, D), /plain http/, 'one public http entry in a list');
+});
+test('H2 plain http IS fine on a private network, and https is fine anywhere', () => {
+  for (const u of ['http://127.0.0.1:3000/r', 'http://127.9.9.9/r', 'http://localhost:3000/r', 'http://10.1.2.3/r', 'http://172.16.0.1/r', 'http://172.31.255.254/r', 'http://172.20.1.2/r',
+    'http://192.168.1.5/r', 'http://169.254.7.7/r', 'http://[::1]:3000/r', 'http://[fe80::1]/r', 'http://[fd00::5]/r', 'http://box.local/r', 'http://relay-camelot:3000/r', 'http://2130706433/r']) {
+    assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: u }, D), [u], u);
+  }
+  assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: 'https://example.com/r' }, D), ['https://example.com/r']);
+});
+test('H3 isPrivateHost edges', () => {
+  assert.equal(isPrivateHost(''), false);
+  assert.equal(isPrivateHost('a.b'), false);
+  assert.equal(isPrivateHost('LOCALHOST'), true);
+  assert.equal(isPrivateHost('::'), false, 'the unspecified address is not a private peer');
 });

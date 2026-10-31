@@ -13,6 +13,24 @@ import type { ConsumeSummary } from '@/lib/sync/consume-mailbox';
 export const MAX_RELAYS = 4;
 
 /**
+ * Is this URL hostname on a private network? Loopback (127/8, ::1, localhost), RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16,
+ * fe80::/10), IPv6 unique-local (fc00::/7), `*.local`, or a SINGLE-LABEL name (no dot: resolved by the local resolver, e.g. a docker service
+ * name; it cannot be a public DNS name). Anything else, including every dotted public name, is public. `new URL` has already normalised
+ * decimal/hex/octal IPv4 spellings to dotted form, so those cannot slip past.
+ */
+export function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  if (h.includes(':')) return h === '::1' || /^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h);
+  return !h.includes('.') && h.length > 0;
+}
+
+/**
  * The ordered, de-duplicated relay bases. `SVRNTY_RELAYS` (comma list) wins; `SVRNTY_RELAY` (one) is the old form and stays valid.
  * THROWS on an entry that is not an http(s) URL or on more than MAX_RELAYS: a misconfigured failover must be loud, not silently single-relay.
  */
@@ -29,6 +47,8 @@ export function parseRelayList(env: { SVRNTY_RELAYS?: string; SVRNTY_RELAY?: str
       throw new Error(`relay list: not a URL: ${JSON.stringify(s.slice(0, 60))}`);
     }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error(`relay list: only http(s) relays: ${JSON.stringify(s.slice(0, 60))}`);
+    // Plain http carries the signed owner-auth header and the poll in the clear: allowed only on a private network (Flint #2650 (a)).
+    if (u.protocol === 'http:' && !isPrivateHost(u.hostname)) throw new Error(`relay list: plain http is only for a private host (loopback, 10/8, 172.16/12, 192.168/16, link-local, *.local, a single-label name); use https: ${JSON.stringify(s.slice(0, 60))}`);
     if (!out.includes(s)) out.push(s);
   }
   if (out.length === 0) throw new Error('relay list: no relay configured');
