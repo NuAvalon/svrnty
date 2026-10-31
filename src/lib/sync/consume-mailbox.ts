@@ -388,18 +388,22 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     }
   };
 
-  for (const env of envelopes) {
+  // T4 (Flint #186298): a held frame never blocks a NEWER frame from the same peer that DOES open (each envelope is decided on its own), and a
+  // later frame can heal a gap: once a NOTE from contact X is stored this poll, X's held frames are tried again in the same poll (below).
+  const healed = new Set<string>(); // lower-cased fingerprints of the contacts a note from whom was stored this poll
+  const handle = async (env: (typeof envelopes)[number], forced: boolean): Promise<'ended' | 'skipped' | Outcome['kind']> => {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
-    if (deps.owner.cycle?.ended) break;
+    if (deps.owner.cycle?.ended) return 'ended';
     // T2b: a held desync envelope that is not due yet is NOT tried (no ratchet open, no side effect). It still counts as held with its
     // recorded reason + fingerprint, so the record and the keep bound behave as if it had been tried and failed again.
+    // A T4 retry (forced) is the one reason to try it before it is due: its peer just proved the session works.
     const backoff = deps.holdBackoff;
     const nowMs = Date.parse(now());
-    if (backoff && Number.isFinite(nowMs) && !backoff.due(env.envelope_id, nowMs)) {
+    if (!forced && backoff && Number.isFinite(nowMs) && !backoff.due(env.envelope_id, nowMs)) {
       heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: 'ratchet-desync', fp: backoff.fpOf(env.envelope_id) });
       summary.dropped++;
-      continue;
+      return 'skipped';
     }
     let outcome: Outcome;
     try {
@@ -431,6 +435,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       }
     } else if (outcome.kind === 'note') {
       summary.notes++;
+      healed.add(String(outcome.event.from_fingerprint).toLowerCase());
       await door({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // persisted to the inbox → consumed; a record from an earlier poll is cleared
       try {
         deps.emitNote?.(outcome.event);
@@ -459,8 +464,28 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       const batch = toAck.splice(0, ACK_CHUNK);
       await flushAckChunk(batch);
     }
-  }
+    return outcome.kind;
+  };
 
+  for (const env of envelopes) if ((await handle(env, false)) === 'ended') break;
+
+  // T4: retry the held frames (desync and local) of every contact whose note was stored this poll. A retried frame that opens is consumed as
+  // usual and may itself heal the next one, so go round until a round frees nothing. Bounded: each round only retries what is still held.
+  for (let round = 0; healed.size > 0 && round <= envelopes.length && !deps.owner.cycle?.ended; round++) { // `round` cap: termination never rests on `freed` alone
+    const retry = heldNow.filter((h) => h.reason !== 'missing-key' /* carries no fp today; the check keeps it out if one ever does */ && h.fp !== undefined && healed.has(h.fp.toLowerCase()));
+    if (retry.length === 0) break;
+    let freed = 0;
+    for (const h of retry) {
+      const env = envelopes.find((e) => e.envelope_id === h.id);
+      if (!env) continue; // cannot happen (heldNow only holds envelopes of this poll); nothing is touched, and the round ends by `freed`
+      heldNow.splice(heldNow.indexOf(h), 1);
+      summary.dropped--; // it was counted as not-consumed when first held; handle() counts it again if it is still held
+      const kind = await handle(env, true);
+      if (kind === 'ended') break;
+      if (kind === 'applied' || kind === 'note' || kind === 'receipt' || kind === 'terminal') freed++; // consumed: it may have healed the next one
+    }
+    if (freed === 0) break;
+  }
 
   // T2b: forget the schedule of every envelope the relay no longer holds (acked, expired, released), so the map stays as small as the mailbox.
   if (deps.holdBackoff && !deps.owner.cycle?.ended) deps.holdBackoff.keepOnly(new Set(envelopes.map((e) => e.envelope_id)));

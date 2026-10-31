@@ -672,3 +672,85 @@ test('C35 T2b: without a holdBackoff in deps nothing changes: tried on every pol
   for (const at of [0, 61, 90, 125]) await r.poll(at, () => false, false);
   assert.equal(r.calls.n, 4);
 });
+
+// ── T4 (Flint #186298): a held frame never blocks a newer frame from the same peer that opens; a stored note heals that peer's held frames in the SAME poll ──
+const OTHER = 'ef'.repeat(32);
+const exp6 = () => new Date(Date.parse(NOW) + 6 * DAY).toISOString();
+const okNote = (id: string, fp = FPC) => ({ note_id: id, thread_id: 't1', from_fingerprint: fp });
+const desync = (fp = FPC) => ({ dropped: 'ratchet-desync', fp });
+
+test('C36 T4: a held desync frame does not block a NEWER note from the same peer: the note is stored and acked, the held frame stays held', async () => {
+  const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ D1: () => { calls.d++; return desync(); }, N1: () => okNote('n-N1') }) }));
+  assert.deepEqual(acked(w.events), ['n1']);
+  assert.equal(s.notes, 1); assert.equal(s.held, 1); assert.equal(s.dropped, 1, 'the still-held frame is counted once, not twice');
+  assert.equal(calls.d, 2, 'tried at first sight and again after the peer\'s note was stored (T4), and still held');
+});
+
+test('C37 T4: a frame that only opens AFTER a later note from its peer was stored is healed in the SAME poll (and counted as a note, not as dropped)', async () => {
+  let stored = false;
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => (stored ? okNote('n-D1') : desync()), N1: () => { stored = true; return okNote('n-N1'); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']);
+  assert.equal(s.notes, 2); assert.equal(s.held, 0); assert.equal(s.dropped, 0); assert.deepEqual(s.lost, {});
+});
+
+test('C38 T4 x T2b: the retry is FORCED: a desync frame that is not due yet (backed off) is still tried when its peer\'s note is stored', async () => {
+  const t0 = Date.parse(NOW);
+  const hb = createHoldBackoff();
+  hb.attempted('d1', FPC, t0 - 120 * MIN); hb.attempted('d1', FPC, t0 - 30 * MIN); // past the first hour, last try 30 min ago: NOT due
+  assert.equal(hb.due('d1', t0), false);
+  let stored = false; const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => { calls.d++; return stored ? okNote('n-D1') : desync(); }, N1: () => { stored = true; return okNote('n-N1'); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note, holdBackoff: hb }));
+  assert.equal(calls.d, 1, 'skipped at first (not due), then tried once by the T4 retry');
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
+  assert.equal(hb.size(), 0, 'healed: the schedule is forgotten');
+});
+
+test('C39 T4: only THAT peer\'s held frames are retried: a note from someone else does not touch them', async () => {
+  const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ D1: () => { calls.d++; return desync(FPC); }, N1: () => okNote('n-N1', OTHER) }) }));
+  assert.equal(calls.d, 1, 'not retried');
+  assert.equal(s.held, 1); assert.deepEqual(acked(w.events), ['n1']);
+});
+
+test('C40 T4: a retry that opens can heal the NEXT held frame: rounds run until one frees nothing (D2 needs D1, D1 needs N1)', async () => {
+  const done = new Set<string>();
+  const w = world([{ envelope_id: 'd2', blob: 'D2', expires_at: exp6() }, { envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({
+    D2: () => (done.has('D1') ? (done.add('D2'), okNote('n-D2')) : desync()),
+    D1: () => (done.has('N1') ? (done.add('D1'), okNote('n-D1')) : desync()),
+    N1: () => (done.add('N1'), okNote('n-N1')),
+  });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'd2', 'n1']);
+  assert.equal(s.notes, 3); assert.equal(s.held, 0); assert.equal(s.dropped, 0);
+});
+
+test('C41 T4: the peer match ignores letter case (the same contact\'s fingerprint can arrive in either case)', async () => {
+  let stored = false;
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => (stored ? okNote('n-D1', FPC) : desync(FPC.toUpperCase())), N1: () => { stored = true; return okNote('n-N1', FPC); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
+});
+
+test('C42 T4: a held frame is NOT retried when no note from its peer was stored (no spurious second try, no change in the held count)', async () => {
+  const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ D1: () => { calls.d++; return desync(); } }) }));
+  assert.equal(calls.d, 1); assert.equal(s.held, 1); assert.equal(s.dropped, 1);
+});
+
+test('C43 T4: the case-insensitive match holds on BOTH sides: a note whose fingerprint arrives upper-case heals a held frame recorded lower-case', async () => {
+  let stored = false;
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => (stored ? okNote('n-D1', FPC) : desync(FPC)), N1: () => { stored = true; return okNote('n-N1', FPC.toUpperCase()); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
+});
