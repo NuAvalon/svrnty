@@ -25,6 +25,8 @@ import {
 import { verifyWithEnvelope } from '../crypto/sign-envelope';
 import { generatePQKeypairBundle, uint8ToBase64 } from '../crypto/pq';
 import { mintCanonicalFingerprint } from '../identity/fingerprint';
+import { sealLivingBookHybrid } from '../crypto/living-book-sleeve';
+import { mintHybridRecipient, type HybridRecipient } from '../sync/hybrid-test-fixture';
 
 const pass = 'test-passphrase-intro';
 const NONCE = 'INTRO-7K9QX';
@@ -32,8 +34,8 @@ const NONCE = 'INTRO-7K9QX';
 // Introducer (Ivan) — already in the recipient's KNOW set; signs the envelope. Recipient (Rachel) — receives
 // + decrypts. Stranger (Sybil) — NOT in Rachel's know set / forges. Carol — a different recipient (scoping).
 let ivanPriv: string, ivanPub: string, ivanFp: string;
-let rachelPriv: string, rachelPub: string, rachelFp: string;
-let sybilPriv: string, sybilPub: string, sybilFp: string;
+let rachelPub: string, rachelFp: string;
+let sybilPriv: string;
 let carolPriv: string, carolPub: string, carolFp: string;
 
 // A §5 CANONICAL newcomer (64-hex fp): ed25519 + ML-KEM/ML-DSA → fingerprintMatchesKey (canonical-only) passes.
@@ -63,6 +65,9 @@ async function makeCanonicalIdentity(name: string): Promise<CanonicalIdentity> {
 }
 
 let newt: CanonicalIdentity; // the newcomer being introduced
+// The RECIPIENTS hold real hybrid mailbox secrets (the introduction is sealed ML-KEM-1024 + X25519, no classical leg since #310). Their `*Fp` stays the
+// OpenPGP fp the envelopes are addressed to; the recipient-binding check compares THAT to the fingerprint the verifier claims as its own.
+let rachelH: HybridRecipient, carolH: HybridRecipient;
 
 before(async () => {
   const mk = async (name: string) => {
@@ -73,13 +78,16 @@ before(async () => {
     return { privateKey, publicKey, fp };
   };
   ({ privateKey: ivanPriv, publicKey: ivanPub, fp: ivanFp } = await mk('Ivan'));
-  ({ privateKey: rachelPriv, publicKey: rachelPub, fp: rachelFp } = await mk('Rachel'));
-  ({ privateKey: sybilPriv, publicKey: sybilPub, fp: sybilFp } = await mk('Sybil'));
+  ({ publicKey: rachelPub, fp: rachelFp } = await mk('Rachel'));
+  ({ privateKey: sybilPriv } = await mk('Sybil'));
   ({ privateKey: carolPriv, publicKey: carolPub, fp: carolFp } = await mk('Carol'));
   newt = await makeCanonicalIdentity('Newt');
+  rachelH = await mintHybridRecipient();
+  carolH = await mintHybridRecipient();
 });
 
-const rachel = () => ({ fingerprint: rachelFp, privateKeyArmored: rachelPriv, passphrase: pass });
+const rachel = () => ({ fingerprint: rachelFp, hybrid: rachelH.hybrid });
+const toRachel = (signed: Parameters<typeof encryptIntroductionTo>[0]) => encryptIntroductionTo(signed, rachelH.publicKeyArmored, rachelH.pqKemPublicKey);
 // Rachel's know-set oracle: Ivan is known (return his held key); anyone else → null (gate rejects).
 const knowsIvan = (fp: string) => (fp === ivanFp ? { publicKeyArmored: ivanPub } : null);
 
@@ -110,7 +118,7 @@ function ivanArgs(consent: Awaited<ReturnType<typeof newtConsent>>, o: Partial<B
 test('round-trip: a valid dual-signed introduction verifies → newcomer surfaced KNOWN with introducer provenance', async () => {
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   const result = await verifyIntroduction(blob, rachel(), knowsIvan);
   assert.ok(result, 'valid introduction must verify');
   assert.equal(result!.fingerprint, newt.fingerprint);
@@ -130,7 +138,7 @@ test('round-trip (hybrid): Newt consent-signs hybrid + Ivan signs hybrid → ver
   assert.ok(consentSignature.pq_signature, 'consent must carry a pq half');
   // Ivan is classical here (plain curve25519 key, no ML-DSA) — so requirePq SHOULD still fail unless Ivan is hybrid.
   const signedClassicalIvan = await buildSignedIntroduction(ivanArgs({ consent, consentSignature }), ivanPriv, pass);
-  const blobCl = await encryptIntroductionTo(signedClassicalIvan, rachelPub);
+  const blobCl = await toRachel(signedClassicalIvan);
   assert.equal(await verifyIntroduction(blobCl, rachel(), knowsIvan, { requirePq: true }), null,
     'requirePq rejects when the INTRODUCER half is classical-only');
   // Without requirePq, the hybrid-consent + classical-introducer introduction still verifies.
@@ -146,7 +154,7 @@ test('anti-downgrade: stripping the pq half of a hybrid introducer signature fai
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass, newt.sigSecretKey);
   assert.ok(signed.signature.pq_signature);
   delete signed.signature.pq_signature; // suite flips → signed bytes differ → classical half fails
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), () => ({ publicKeyArmored: ivanPub, pqSigningPublicKey: newt.sigPublicKey })), null);
 });
 
@@ -155,7 +163,7 @@ test('S1: a forged/absent newcomer consent signature is rejected — cannot intr
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
   signed.consent_signature = { classical: 'Zm9yZ2Vk' }; // garbage consent sig
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -167,7 +175,7 @@ test('S1: a consent signed by someone OTHER than the newcomer is rejected (→ n
   });
   const sybilSig = await signIntroductionConsent(consent, sybilPriv, pass);
   const signed = await buildSignedIntroduction(ivanArgs({ consent, consentSignature: sybilSig }), ivanPriv, pass);
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -188,8 +196,7 @@ test('★ consent recipient-SCOPING: a consent Newt gave for Carol cannot be reu
     },
     signature: { classical: 'x' }, consent_signature: sig,
   };
-  const { createMessage, encrypt, readKey } = await import('openpgp');
-  const blob = (await encrypt({ message: await createMessage({ text: JSON.stringify(forged) }), encryptionKeys: await readKey({ armoredKey: rachelPub }) })) as string;
+  const blob = await sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(forged)), rachelH.publicKeyArmored, rachelH.pqKemPublicKey);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null,
     'a consent scoped to Carol must not authorize an introduction to Rachel');
 });
@@ -205,7 +212,7 @@ test('★ S1 deadname-bind: a consent signed for "Newt" cannot introduce them as
   // card says "Deadname" → dropped at the step-5 display_name cross-check (deadname/survivor-safety).
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
   signed.envelope.introduced_display_name = 'Deadname';
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null,
     'renaming the card away from the consented name must drop');
 });
@@ -214,14 +221,14 @@ test('★ S1 deadname-bind: a consent signed for "Newt" cannot introduce them as
 test('know-set gate: an introduction from someone NOT in the recipient know-set is dropped (→ null)', async () => {
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), () => null), null, 'introducer not in know-set → dismissed');
 });
 
 test('know-set gate: a throwing lookup oracle fails closed (→ null)', async () => {
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), () => { throw new Error('store down'); }), null);
 });
 
@@ -229,7 +236,7 @@ test('know-set gate: a throwing lookup oracle fails closed (→ null)', async ()
 test('recipient-binding: an introduction addressed to Carol is rejected by Rachel even if she can decrypt (→ null)', async () => {
   const c = await newtConsent({ recipientFp: carolFp });
   const signed = await buildSignedIntroduction(ivanArgs(c, { recipientFp: carolFp }), ivanPriv, pass);
-  const blobToRachel = await encryptIntroductionTo(signed, rachelPub); // encrypt to Rachel so she CAN open it
+  const blobToRachel = await toRachel(signed); // encrypt to Rachel so she CAN open it
   assert.equal(await verifyIntroduction(blobToRachel, rachel(), knowsIvan), null, 'recipient_fp=Carol ≠ Rachel');
 });
 
@@ -238,7 +245,7 @@ test('introducer forgery: Sybil signs the envelope but claims to be Ivan → fai
   const c = await newtConsent();
   // Sybil signs the (introducer=Ivan) envelope with HER key. Rachel verifies against the HELD Ivan key → fails.
   const signed = await buildSignedIntroduction(ivanArgs(c), sybilPriv, pass);
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -246,7 +253,7 @@ test('tamper: mutating the context after signing fails the introducer signature 
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
   signed.envelope.context = 'tampered';
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -254,7 +261,7 @@ test('tamper: swapping the newcomer public key (keep fp) fails (Invariant-1 or s
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
   signed.envelope.introduced_public_key = carolPub; // fp no longer hashes to the key
-  const blob = await encryptIntroductionTo(signed, rachelPub);
+  const blob = await toRachel(signed);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -276,8 +283,7 @@ test('Invariant-1: a newcomer fingerprint that does not hash to its public key i
     },
     signature: { classical: 'x' }, consent_signature: sig,
   };
-  const { createMessage, encrypt, readKey } = await import('openpgp');
-  const blob = (await encrypt({ message: await createMessage({ text: JSON.stringify(forged) }), encryptionKeys: await readKey({ armoredKey: rachelPub }) })) as string;
+  const blob = await sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(forged)), rachelH.publicKeyArmored, rachelH.pqKemPublicKey);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -285,15 +291,14 @@ test('Invariant-1: a newcomer fingerprint that does not hash to its public key i
 test('confidentiality: a blob encrypted to Rachel cannot be opened by Carol (→ null)', async () => {
   const c = await newtConsent();
   const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
-  const blobToRachel = await encryptIntroductionTo(signed, rachelPub);
-  const carol = { fingerprint: carolFp, privateKeyArmored: carolPriv, passphrase: pass };
+  const blobToRachel = await toRachel(signed);
+  const carol = { fingerprint: carolFp, hybrid: carolH.hybrid };
   assert.equal(await verifyIntroduction(blobToRachel, carol, knowsIvan), null);
 });
 
 test('demux: a joiner-response-shaped blob is dropped by verifyIntroduction (→ null)', async () => {
   const notAnIntro = { envelope: { joiner_fingerprint: 'x', joiner_epoch: 1, joiner_public_key: 'k', joiner_display_name: 'n', giver_fingerprint: 'g', invite_nonce: 'c', ts: 't' }, signature: { classical: 'x' } };
-  const { createMessage, encrypt, readKey } = await import('openpgp');
-  const blob = (await encrypt({ message: await createMessage({ text: JSON.stringify(notAnIntro) }), encryptionKeys: await readKey({ armoredKey: rachelPub }) })) as string;
+  const blob = await sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(notAnIntro)), rachelH.publicKeyArmored, rachelH.pqKemPublicKey);
   assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null);
 });
 
@@ -334,4 +339,40 @@ test('build: optional pq keys OMITTED (not null) when absent — canonical stays
   const env = buildIntroductionEnvelope(ivanArgs(c, { introducedPqKemPublicKey: undefined, introducedPqSigPublicKey: undefined }));
   assert.equal('introduced_pq_kem_public_key' in env, false);
   assert.equal('introduced_pq_sig_public_key' in env, false);
+});
+
+// ── Hybrid-only (no classical leg, #310 posture) ──────────────────────────────────────────────────────────
+test('no-downgrade (send): sealing an introduction WITHOUT the recipient ML-KEM key THROWS; it never produces a classical blob', async () => {
+  const c = await newtConsent();
+  const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  await assert.rejects(encryptIntroductionTo(signed, rachelH.publicKeyArmored), /refusing to seal without the recipient ML-KEM key/);
+  await assert.rejects(encryptIntroductionTo(signed, rachelH.publicKeyArmored, ''), /no classical downgrade/);
+});
+
+test('no-downgrade (receive): a CLASSICAL OpenPGP blob of a perfectly valid introduction is dropped, and a recipient with no hybrid secrets opens nothing', async () => {
+  const c = await newtConsent();
+  const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  const { createMessage, encrypt, readKey } = await import('openpgp');
+  const classical = (await encrypt({ message: await createMessage({ text: JSON.stringify(signed) }), encryptionKeys: await readKey({ armoredKey: rachelPub }) })) as string;
+  assert.equal(await verifyIntroduction(classical, rachel(), knowsIvan), null, 'classical blob: no fallback leg');
+  const hybridBlob = await toRachel(signed);
+  assert.ok(await verifyIntroduction(hybridBlob, rachel(), knowsIvan), 'control: the same introduction sealed hybrid verifies');
+  assert.equal(await verifyIntroduction(hybridBlob, { fingerprint: rachelFp }, knowsIvan), null, 'no hybrid secrets => nothing opens');
+});
+
+test('open-leg counter: a successful open reports the hybrid leg once; a counter that throws never changes the result', async () => {
+  const c = await newtConsent();
+  const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  const blob = await toRachel(signed);
+  const legs: string[] = [];
+  assert.ok(await verifyIntroduction(blob, { ...rachel(), onOpenLeg: (l) => legs.push(l) }, knowsIvan));
+  assert.deepEqual(legs, ['hybrid']);
+  assert.ok(await verifyIntroduction(blob, { ...rachel(), onOpenLeg: () => { throw new Error('counter fault'); } }, knowsIvan));
+});
+
+test('a hybrid blob sealed to SOMEONE ELSE (Carol) does not open for Rachel', async () => {
+  const c = await newtConsent();
+  const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  const toCarol = await encryptIntroductionTo(signed, carolH.publicKeyArmored, carolH.pqKemPublicKey);
+  assert.equal(await verifyIntroduction(toCarol, rachel(), knowsIvan), null);
 });

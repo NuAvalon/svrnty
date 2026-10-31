@@ -43,14 +43,12 @@ import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '..
 import { fingerprintMatchesKey, KEM_PUB_LEN } from '../identity/fingerprint';
 import { base64ToUint8 } from '../crypto/pq';
 import {
-  createMessage,
-  encrypt,
-  readKey,
-  readPrivateKey,
-  decryptKey,
-  readMessage,
-  decrypt,
-} from 'openpgp';
+  sealLivingBookHybrid,
+  openLivingBookHybrid,
+  resolveHybrid,
+  type HybridSecretsSource,
+} from '../crypto/living-book-sleeve';
+import { asMailboxEnvelopePackage } from '../sync/hybrid-dual-read';
 
 /** The wire artifact: the introducer's envelope + BOTH signatures (introducer over the envelope, newcomer
  *  over the consent token). Opaque once encrypted to the recipient. */
@@ -231,10 +229,15 @@ export async function buildSignedIntroduction(
 export async function encryptIntroductionTo(
   signed: SignedIntroduction,
   recipientPublicKeyArmored: string,
+  recipientPqKemB64?: string,
 ): Promise<string> {
-  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(signed) });
-  return (await encrypt({ message, encryptionKeys })) as string;
+  // HYBRID ONLY (HNDL), the same rule as every other deposit since #310: wraps the ALREADY-SIGNED introduction with the recipient's ML-KEM-1024
+  // pubkey. Without that key this THROWS (like sealNoteTo / encryptJoinerResponseTo): the send-site skips a recipient with no pq_kem, so this is
+  // the loud backstop for a caller bug, never a silent classical send. (P1 was written 10-19 as OpenPGP-only; it was never deployed.)
+  if (!recipientPqKemB64) {
+    throw new Error('encryptIntroductionTo: refusing to seal without the recipient ML-KEM key (no classical downgrade)');
+  }
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), recipientPublicKeyArmored, recipientPqKemB64);
 }
 
 // ─────────────────────────── RECIPIENT side: verify ───────────────────────────
@@ -280,17 +283,24 @@ function isWellFormed(signed: unknown): signed is SignedIntroduction {
 
 async function decryptIntroBlob(
   blob: string,
-  recipientPrivateKeyArmored: string,
-  passphrase: string,
+  hybrid: HybridSecretsSource | undefined,
+  onOpenLeg?: (leg: 'hybrid') => void,
 ): Promise<SignedIntroduction | null> {
+  // HYBRID ONLY: there are no classical-era introductions to keep reading (this wire never shipped), so a blob that is not a hybrid package,
+  // or a recipient with no derivable hybrid secrets, is a silent null, never a fallback to an OpenPGP leg.
+  if (!hybrid || asMailboxEnvelopePackage(blob) == null) return null;
   try {
-    const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
-    const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
-    const message = await readMessage({ armoredMessage: blob });
-    const { data } = await decrypt({ message, decryptionKeys });
-    const text = typeof data === 'string' ? data : await streamToText(data);
-    const parsed = JSON.parse(text) as unknown;
-    return isWellFormed(parsed) ? parsed : null;
+    const h = await resolveHybrid(hybrid);
+    const pt = h ? await openLivingBookHybrid(blob, h.secrets, h.myFp) : null;
+    if (!pt) return null;
+    const parsed = JSON.parse(new TextDecoder().decode(pt)) as unknown;
+    if (!isWellFormed(parsed)) return null;
+    try {
+      onOpenLeg?.('hybrid');
+    } catch {
+      /* a counter fault must never change what opens */
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -300,7 +310,7 @@ async function decryptIntroBlob(
  * Verify an inbound introduction → the KNOWN newcomer, or null (silent drop). THE ONLY WAY to obtain a
  * {@link PendingIntroduction}. Order is cheap→crypto for DoS resistance (the mailbox is open — garbage must
  * not burn signature CPU):
- *   1. decrypt to our key (else null); 2. structural well-formedness (in decrypt);
+ *   1. open the hybrid package with our mailbox secrets (else null; there is no classical leg); 2. structural well-formedness (in decrypt);
  *   3. recipient-binding: envelope.recipient_fingerprint === our own fp  [cheap] (no replay to another recipient)
  *   4. KNOW-SET gate: introducerLookup(introducer_fp) → the HELD introducer key, or null if not in our know-set [cheap]
  *   5. consent cross-binding: the consent token names EXACTLY (introduced, introducer, recipient=us) + nonce===envelope.nonce [cheap]
@@ -320,11 +330,11 @@ async function decryptIntroBlob(
  */
 export async function verifyIntroduction(
   blob: string,
-  recipient: { fingerprint: string; privateKeyArmored: string; passphrase: string },
+  recipient: { fingerprint: string; hybrid?: HybridSecretsSource; onOpenLeg?: (leg: 'hybrid') => void },
   introducerLookup: (introducerFp: string) => { publicKeyArmored: string; pqSigningPublicKey?: Uint8Array } | null,
   opts: { requirePq?: boolean } = {},
 ): Promise<PendingIntroduction | null> {
-  const signed = await decryptIntroBlob(blob, recipient.privateKeyArmored, recipient.passphrase);
+  const signed = await decryptIntroBlob(blob, recipient.hybrid, recipient.onOpenLeg);
   if (!signed) return null;
   const { envelope, signature, consent_signature } = signed;
 
@@ -420,18 +430,4 @@ export async function verifyIntroduction(
     nonce: envelope.nonce,
     ts: envelope.ts,
   };
-}
-
-async function streamToText(data: unknown): Promise<string> {
-  const maybe = data as { getReader?: () => ReadableStreamDefaultReader };
-  if (typeof maybe?.getReader !== 'function') return String(data);
-  const reader = maybe.getReader();
-  const dec = new TextDecoder();
-  let out = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    out += typeof value === 'string' ? value : dec.decode(value as BufferSource, { stream: true });
-  }
-  return out;
 }
