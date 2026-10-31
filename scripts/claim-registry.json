@@ -345,7 +345,7 @@
    "patterns": [
     "\\bpost.?quantum\\b.{0,25}\\b(?:messages?|notes?|chats?|messaging)\\b",
     "\\bpq\\b.{0,10}\\b(?:messages?|notes?)\\b",
-    "post-quantum(?:[-\\s]+\\w+){0,4}[-\\s]+(protected|encrypted|encryption(?![-\\s]+keys?\\b))",
+    "post-quantum(?:[-\\s,()/:]+\\w+){0,4}[-\\s,()/:]+(protected|encrypted|encryption(?![-\\s,()/:]+keys?\\b))",
     "\\bpq[-\\s]?protected\\b",
     "ml-kem[^.\\n]{0,20}(encrypts|encrypting)",
     "(are|is|gets?) encrypted[^.\\n]{0,20}(with |using |via )?(ml-kem|post-quantum)",

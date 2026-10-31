@@ -6,6 +6,8 @@
 // families). Run: npx --no-install tsx --test scripts/claim-detectors.test.ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pqAbsoluteOverclaim, invulnerabilityOverclaim, pqBadgeOverclaim, pqResistantIdentityOverclaim, nodeZeroOverclaim, relayMetadataPrivacyOverclaim, smartRelayOverclaim, mailboxDeliveryOverclaim, deliveredOverclaim, connectedOverclaim } from './claim-detectors';
 
 type Case = [string, boolean, string];
@@ -270,3 +272,36 @@ for (const [label, cases, flag] of FAMILIES) {
     }
   });
 }
+
+// --- G-1 punctuation gap (launch copy-fix spec 9585bac1 item 6; fixtures = Hypatia's g1_punctuation_test.py 71d110d4, verbatim) ---
+// The registry pattern must catch "post-quantum" claims whose words are separated by punctuation, not only spaces/hyphens.
+describe('G-1 registry pattern: punctuation between the words', () => {
+  const g1 = JSON.parse(readFileSync(join(__dirname, 'claim-registry.json'), 'utf8')).claims.find((c: { id: string }) => c.id === 'G-1');
+  const NEW = new RegExp(g1.patterns.find((p: string) => p.startsWith('post-quantum(?:') && p.includes('protected|encrypted')), 'i');
+  const OLD = /post-quantum(?:[-\s]+\w+){0,4}[-\s]+(protected|encrypted|encryption(?![-\s]+keys?\b))/i;
+  const HIT = [
+    '✓ Post-quantum (hybrid) encryption — a signed card carrying a verified encryption key.',
+    'Post-quantum, end-to-end encrypted messages.',
+    'post-quantum/hybrid encrypted',
+    'Post-quantum (ML-KEM-1024) protected notes',
+    'post-quantum: encrypted by default',
+    'Post-quantum encrypted messages',
+  ];
+  const MISS = [
+    'This card carries a verified post-quantum encryption key.',
+    'Each identity advertises a post-quantum encryption key, and the hybrid X25519 + ML-KEM-1024 primitives are built and tested',
+    'a post-quantum (ML-KEM) encryption key',
+  ];
+  it('NEG first: the old pattern misses the punctuation forms', () => {
+    assert.equal(HIT.slice(0, 5).filter((s) => !OLD.test(s)).length, 5);
+  });
+  it('the registry pattern catches every punctuation form', () => {
+    for (const s of HIT) assert.equal(NEW.test(s), true, s);
+  });
+  it('and still passes an encryption KEY (a key is not protection)', () => {
+    for (const s of MISS) assert.equal(NEW.test(s), false, s);
+  });
+  it('a post-quantum-ready hedge is caught by the pattern (the hedge rule, not the pattern, excuses it)', () => {
+    assert.equal(NEW.test('Post-quantum-ready encryption. No server can read your messages.'), true);
+  });
+});

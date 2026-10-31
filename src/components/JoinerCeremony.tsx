@@ -431,8 +431,7 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
               </p>
             ) : (
               <p style={{ color: C.faint, fontSize: 12, marginTop: 8 }}>
-                Post-quantum ready — this card carries a verified post-quantum encryption key;
-                protection activates when the encryption seam is live.
+                This card carries a verified post-quantum encryption key.
               </p>
             )
           )}

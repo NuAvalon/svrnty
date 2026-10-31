@@ -24,6 +24,7 @@ describe('Relay settings glass — Flint copy + fail-closed switch', () => {
       'your identity key',
       'which mailboxes your sealed messages go to',
       "anyone with a contact's card can tell which mailbox is theirs",
+      'when each message is picked up',
       'how much you send',
       'never what your messages say',
     ]) {
