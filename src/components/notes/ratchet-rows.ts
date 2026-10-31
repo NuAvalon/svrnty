@@ -1,7 +1,7 @@
 // src/components/notes/ratchet-rows.ts
 // #720 reliable receive, UI half (slice 2d-4 + T3): the NAMED rows shown in a contact's thread for a message from that AUTHENTICATED,
 // ADMITTED contact that did not open, and the user-initiated "Reset message session" action.
-// Pure: no React, no I/O. Every user-facing string is Hypatia's copy v0.9 (svrnty_720_receive_copy_v0_9.md, sha256 88387ea0) BY VALUE and
+// Pure: no React, no I/O. Every user-facing string is Hypatia's copy v0.10 (svrnty_720_receive_copy_v0_10.md, sha256 b8a38157) BY VALUE and
 // a test pins each one. Semantics: Flint ratchet_reset_semantics_v1.md (sha256 05bac511) R1-R7.
 // Rule for every line: say what THIS device observed. A named row exists only because the sender was authenticated and admitted (v2 R3).
 
@@ -50,7 +50,7 @@ export function namedRow(contact: string, row: NamedRowInput): NamedRow {
     case 'verdict':
       if (row.firstFrameRejected && row.outOfStep) {
         return {
-          line: `A message from ${contact} couldn't be opened: your message sessions are out of step. Your next message to ${contact} brings them back in step; then ask them to send it again.`,
+          line: `A message from ${contact} couldn't be opened: your message sessions are out of step. Your next message to ${contact} should bring them back in step; then ask them to send it again.`,
         };
       }
       return {

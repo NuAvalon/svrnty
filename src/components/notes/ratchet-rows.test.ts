@@ -43,7 +43,7 @@ test('VERDICT: the v0.5 dead-letter lines, also for a first-frame-rejected that 
 
 test('R4/R6 out of step: one neutral line, only for first-frame-rejected while out of step', () => {
   assert.deepEqual(namedRow('Ana', { kind: 'verdict', firstFrameRejected: true, outOfStep: true }), {
-    line: "A message from Ana couldn't be opened: your message sessions are out of step. Your next message to Ana brings them back in step; then ask them to send it again.",
+    line: "A message from Ana couldn't be opened: your message sessions are out of step. Your next message to Ana should bring them back in step; then ask them to send it again.",
   });
 });
 
