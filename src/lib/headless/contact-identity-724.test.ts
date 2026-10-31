@@ -203,3 +203,14 @@ test('U3 control: a whole-row patch that repeats the identity and changes only a
   s.updateContact('X', { ...row, name: 'ember (Weft)' });
   assert.equal(s.getContactByFingerprint('fpX')?.name, 'ember (Weft)');
 });
+
+test('U4 (Apollo) a case-only fingerprint patch passes the identity check but must NOT rewrite the stored fingerprint: the row stays findable by its own string', () => {
+  const { s } = store();
+  s.upsertContact({ id: 'X', fingerprint: 'abcdef0123456789', name: 'ember', public_key: 'pkX', trust_level: 'trusted' });
+  s.updateContact('X', { fingerprint: 'ABCDEF0123456789', name: 'ember (Weft)' });
+  const x = s.getContactByFingerprint('abcdef0123456789');
+  assert.ok(x, 'still found by the fingerprint it was admitted under');
+  assert.equal(x?.fingerprint, 'abcdef0123456789');
+  assert.equal(x?.trust_level, 'trusted');
+  assert.equal(x?.name, 'ember (Weft)', 'the label change in the same patch still applies');
+});

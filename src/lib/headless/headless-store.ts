@@ -222,7 +222,9 @@ export class HeadlessStore {
           throw new Error(`headless updateContact: refusing to change ${k} on an existing contact (a new key is a new contact)`);
         }
       }
-      this.data.contacts[i] = { ...row, ...patch, id };
+      // The row's own fingerprint string is pinned on write: assertFingerprintUnchanged ignores case and whitespace, but lookups compare with ===,
+      // so a case-only patch would otherwise rewrite the stored string and detach the contact from its trust row.
+      this.data.contacts[i] = { ...row, ...patch, id, fingerprint: row.fingerprint };
     });
   }
 
