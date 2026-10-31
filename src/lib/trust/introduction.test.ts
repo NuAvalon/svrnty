@@ -376,3 +376,11 @@ test('a hybrid blob sealed to SOMEONE ELSE (Carol) does not open for Rachel', as
   const toCarol = await encryptIntroductionTo(signed, carolH.publicKeyArmored, carolH.pqKemPublicKey);
   assert.equal(await verifyIntroduction(toCarol, rachel(), knowsIvan), null);
 });
+
+test('recipient-binding: an introduction FULLY valid for Carol (consent and envelope both name Carol), sealed to Rachel, is dropped by Rachel', async () => {
+  const forCarol = await newtConsent({ recipientFp: carolFp });
+  const signed = await buildSignedIntroduction(ivanArgs(forCarol, { recipientFp: carolFp }), ivanPriv, pass);
+  const blob = await toRachel(signed); // Rachel CAN open it, so only the binding to HER fingerprint can stop it
+  assert.equal(await verifyIntroduction(blob, rachel(), knowsIvan), null, 'addressed to Carol, not Rachel');
+  assert.ok(await verifyIntroduction(blob, { fingerprint: carolFp, hybrid: rachelH.hybrid }, knowsIvan), 'control: with the claimed fingerprint = Carol, the same blob verifies (so nothing else was rejecting it)');
+});
