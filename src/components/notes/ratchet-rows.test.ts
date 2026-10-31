@@ -1,4 +1,4 @@
-// #720 UI half: the named ratchet rows + the reset action. Every string is Hypatia's copy v0.8 (301f2981) by value; the NEGs are the
+// #720 UI half: the named ratchet rows + the reset action. Every string is Hypatia's copy v0.9 (88387ea0) by value; the NEGs are the
 // copy doc's own (LOCAL never says "ask them to resend", VERDICT never says "keep trying") plus the reset surfaces' NEVER list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,6 +7,8 @@ import { namedRow, resetButtonLabel, resetCountLine, resetDialog, resetExplainer
 const ALL: NamedRowInput[] = [
   { kind: 'local', phase: 'held' },
   { kind: 'local', phase: 'recorded' },
+  { kind: 'desync', phase: 'held' },
+  { kind: 'desync', phase: 'recorded' },
   { kind: 'verdict' },
   { kind: 'verdict', firstFrameRejected: true },
   { kind: 'verdict', outOfStep: true },
@@ -56,8 +58,25 @@ test('NEG: "send it again" NEVER renders for a LOCAL row (a resend fails the sam
   for (const phase of ['held', 'recorded'] as const) assert.doesNotMatch(text(namedRow('Ana', { kind: 'local', phase })), /send it again/i);
 });
 
-test('NEG: "keep trying" NEVER renders for a non-LOCAL row (nothing retries it)', () => {
-  for (const r of ALL.filter((r) => r.kind !== 'local')) assert.doesNotMatch(text(namedRow('Ana', r)), /keep trying/i);
+test('NEG: "keep trying" NEVER renders for a VERDICT or session-reset row, nor a RECORDED one (nothing retries them)', () => {
+  const notRetried = ALL.filter((r) => r.kind === 'verdict' || r.kind === 'session-reset' || ('phase' in r && r.phase === 'recorded'));
+  for (const r of notRetried) assert.doesNotMatch(text(namedRow('Ana', r)), /keep trying/i, JSON.stringify(r));
+});
+
+test('DESYNC (v0.9): exact held + recorded lines', () => {
+  assert.deepEqual(namedRow('Ana', { kind: 'desync', phase: 'held' }), {
+    line: "A message from Ana couldn't be opened on this device yet: your message sessions are out of step. This app will keep trying.",
+    hint: 'If messages from Ana keep failing to open, you can reset your message session with them.',
+  });
+  assert.deepEqual(namedRow('Ana', { kind: 'desync', phase: 'recorded' }), {
+    line: "A message from Ana arrived but couldn't be opened on this device.",
+    hint: "This app couldn't keep the message itself, only a note that it arrived. If messages from Ana keep failing, reset your message session with them, then ask them to send it again.",
+  });
+});
+
+test('NEG (v0.9): a DESYNC row never says "missing a key", and never "send it again" while HELD', () => {
+  for (const phase of ['held', 'recorded'] as const) assert.doesNotMatch(text(namedRow('Ana', { kind: 'desync', phase })), /missing a key/i);
+  assert.doesNotMatch(text(namedRow('Ana', { kind: 'desync', phase: 'held' })), /send (it|them) again/i);
 });
 
 test('the reset action: exact button, explainer, confirm/cancel; Cancel has focus', () => {
