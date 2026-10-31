@@ -10,7 +10,7 @@ const inbox = () => readFileSync(new URL('./NotesInbox.tsx', import.meta.url), '
 
 test('W1 the inbox builds its lines ONLY through cantOpenNotices, from the local rows and the saved dismissal', () => {
   const src = inbox();
-  assert.match(src, /cantOpenNotices\(deadRows, \(f\) => byFp\.get\(normalizeFingerprintHex\(f\)\) \?\? null, sDismissedAt\)/);
+  assert.match(src, /cantOpenNotices\(deadRows, \(f\) => byFp\.get\(normalizeFingerprintHex\(f\)\) \?\? null, sDismissedAt, \(f\) => peerIsAgent\(threads, notes, f\)\)/);
   assert.match(src, /listDeadLetters\(\), getCantOpenSDismissedAt\(\)/);
   assert.doesNotMatch(src, /keptDeadLettered/, 'the old count line is not used here: #731 copy replaces it');
 });

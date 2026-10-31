@@ -163,8 +163,9 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
   const names = useMemo(() => bookNames(book), [book]);
   const cantOpen = useMemo(() => {
     const byFp = new Map(names.map((n) => [n.fingerprint, n.name]));
-    return cantOpenNotices(deadRows, (f) => byFp.get(normalizeFingerprintHex(f)) ?? null, sDismissedAt);
-  }, [deadRows, names, sDismissedAt]);
+    // An agent contact is never told to reset its session (the same peerIsAgent the Reset button reads, #318).
+    return cantOpenNotices(deadRows, (f) => byFp.get(normalizeFingerprintHex(f)) ?? null, sDismissedAt, (f) => peerIsAgent(threads, notes, f));
+  }, [deadRows, names, sDismissedAt, threads, notes]);
   const sendable = useMemo(() => new Set(rows.map((r) => r.fingerprint)), [rows]);
   const wantFocus = normalizeFingerprintHex(focusFingerprint || '');
 
