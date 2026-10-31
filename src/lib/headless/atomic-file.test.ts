@@ -1,12 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from './atomic-file';
 import { HeadlessStore } from './headless-store';
 
 const dir = () => mkdtempSync(join(tmpdir(), 'atomic-file-'));
+const HELPER = join(__dirname, 'atomic-file.helper.ts');
+const node = (args: string[]) => spawn(process.execPath, ['--import', 'tsx', HELPER, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+const ready = (p: ReturnType<typeof node>) =>
+  new Promise<void>((res) => p.stdout!.on('data', (b) => { if (String(b).includes('ready')) res(); }));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const TORN = '{"contacts": [{"id": "c1", "fingerp';          // a write caught half-way
 
 test('writeFileAtomic: content, 0600, no tmp left behind', () => {
@@ -80,4 +86,61 @@ test('writeFileAtomic: a stale tmp from a crashed run (even a symlink) is replac
   writeFileAtomic(p, '{"ok":true}');
   assert.equal(readFileSync(victim, 'utf8'), 'keep');
   assert.equal(readFileSync(p, 'utf8'), '{"ok":true}');
+});
+
+// ── headless-store-atomic-flush-001 anchor 4 ──
+// argon's live wound (2026-10-30, twice in 15min): a writer killed
+// mid-flush left store.json at 0 bytes; every consumer crash-looped on
+// JSON.parse and the next flush persisted the empty book. The contract
+// these tests pin: at ANY kill point the target holds a COMPLETE book —
+// the previous generation or the new one — because the bytes only ever
+// exist at the target via rename, never via truncate+write. A stale
+// <file>.tmp.<pid> may linger (reclaimed by the next write — separate
+// test above); a torn target must be impossible.
+test('SIGKILL mid-flush: the target is always a complete book — old or new gen, never torn', async () => {
+  const SIZE = 8_000_000;   // wide window: stringify + write + fsync of ~8MB per flush
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const d = dir(); const p = join(d, 'store.json');
+    const child = node(['flushloop', d, p, String(SIZE)]);
+    await ready(child);                                  // gen-0 on disk, loop running
+    await sleep(Math.random() * 30);                     // land somewhere mid-flight
+    child.kill('SIGKILL');
+    await new Promise((r) => child.on('exit', r));
+
+    const raw = readFileSync(p, 'utf8');
+    assert.ok(raw.length > SIZE, `attempt ${attempt}: book intact, not truncated (${raw.length}B)`);
+    const book = JSON.parse(raw);                        // must parse — torn is impossible
+    assert.ok(Number.isInteger(book.gen) && book.gen >= 0,
+      `attempt ${attempt}: holds a real generation (old or new), gen=${book.gen}`);
+    if (existsSync(`${p}.bak`)) {
+      const bak = JSON.parse(readFileSync(`${p}.bak`, 'utf8'));
+      assert.ok(Number.isInteger(bak.gen), `attempt ${attempt}: .bak also a complete book`);
+    }
+  }
+});
+
+test('HeadlessStore: SIGKILL mid-flush, restart — contacts + notes intact (the argon wound shape)', async () => {
+  const SIZE = 8_000_000;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const d = dir();
+    const child = node(['storeloop', d, String(SIZE)]);
+    await ready(child);                                  // 3 contacts seeded, putNote loop running
+    await sleep(Math.random() * 30);
+    child.kill('SIGKILL');
+    await new Promise((r) => child.on('exit', r));
+
+    const p = join(d, 'store.json');
+    const raw = readFileSync(p, 'utf8');
+    assert.ok(raw.length > 0, `attempt ${attempt}: store.json never 0B`);
+    // The restart path — this is where the wound bit: a torn file meant
+    // "start fresh" and the next flush persisted the empty book. With
+    // atomic flush the file always parses, so load() either succeeds
+    // with real data or refuses loud — it can never go silent-empty.
+    const store = new HeadlessStore({ path: p });
+    assert.equal(store.listContacts().length, 3, `attempt ${attempt}: seeded contacts survived`);
+    assert.ok(store.listNotes().length >= 0);
+    // And the restart store can keep writing — the book is usable, not wedged.
+    store.upsertContact({ id: 'c4', fingerprint: 'fp4', name: 'post-kill write' } as never);
+    assert.ok(new HeadlessStore({ path: p }).getContactByFingerprint('fp4'));
+  }
 });
