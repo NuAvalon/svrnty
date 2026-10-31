@@ -38,6 +38,7 @@ import type { NoteWireV0 } from '@/lib/messaging/types';
 import { asMailboxEnvelopePackage } from './hybrid-dual-read';
 import type { ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import type { OpenLegCounter } from './open-leg-counter';
+import type { AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import type { HoldBackoff } from './hold-backoff';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
@@ -218,6 +219,7 @@ export interface ConsumeDeps {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
+  adoptCounts?: AdoptCounter; // #720 R5: stored notes the session-adopt replay guard ignored for being future-dated (omit = adopt_future_ignored is absent)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
@@ -262,6 +264,8 @@ export interface ConsumeSummary {
    */
   opened_hybrid: number;
   opened_classical: number;
+  /** #720 R5: stored notes the session-adopt replay guard ignored this poll because they were dated beyond now + 5 min. Counts only; absent when no counter was wired. */
+  adopt_future_ignored?: number;
   released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
   rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
@@ -294,6 +298,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
   const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, acked: 0 };
   deps.openLegs?.take(); // discard anything counted outside a poll: a poll reports only its own opens
+  deps.adoptCounts?.take();
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -591,6 +596,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     summary.opened_hybrid = legs.hybrid;
     summary.opened_classical = legs.classical;
   }
+  if (deps.adoptCounts) summary.adopt_future_ignored = deps.adoptCounts.take().future_ignored;
   return summary;
 }
 

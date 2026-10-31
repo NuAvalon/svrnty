@@ -55,6 +55,7 @@ import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
 import { holdBackoff } from '@/lib/sync/hold-backoff';
 import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
+import { createAdoptCounter, type AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
@@ -177,6 +178,7 @@ export function buildNoteSeam(
   // tests / legacy callers → exact prior behaviour (no receipt sent).
   sendReceipt?: (wire: NoteWireV0) => Promise<void>,
   legs?: OpenLegCounter, // #720: which leg opened (counts only)
+  adoptCounts?: AdoptCounter, // #720 R5: stored notes the adopt replay guard ignored for being future-dated (counts only)
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
@@ -236,6 +238,7 @@ export function buildNoteSeam(
                   sentAt: ctx?.sentAt,
                   storedSentAts: () => listInboundSentAtFrom(fromFp),
                   now: Date.now,
+                  onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),
                 }),
               ),
           });
@@ -516,9 +519,11 @@ export async function buildConsumeDeps(
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
   const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
+  const adoptCounts = createAdoptCounter(); // #720 R5: future-dated stored notes the adopt replay guard ignored (counts only)
   return {
     owner,
     openLegs: legs,
+    adoptCounts,
     decrypt: hybrid
       ? dualReadOpener(
           counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire), 'hybrid', legs),
@@ -531,7 +536,7 @@ export async function buildConsumeDeps(
     // the send is QUEUED (receipt-outbox.ts), never awaited, so a failed or slow receipt cannot fail or delay the note.
     note: buildNoteSeam(owner, undefined, hybrid, async (wire) => {
       await emitDeliveredReceipt(wire, { fetchImpl: opts.fetchImpl });
-    }, legs),
+    }, legs, adoptCounts),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR

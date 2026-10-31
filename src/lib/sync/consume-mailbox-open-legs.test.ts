@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { generateKey, readKey } from 'openpgp';
 import { consumeInboundContactUpdates, type ConsumeDeps } from './consume-mailbox';
 import { counted, createOpenLegCounter } from './open-leg-counter';
+import { createAdoptCounter } from '@/lib/messaging/session-adopt-policy';
 
 let OWNER: { fingerprint: string; publicKeyArmored: string; privateKeyArmored: string; passphrase: string };
 before(async () => {
@@ -46,4 +47,16 @@ test('P2 counts made OUTSIDE a poll (a stale bump) are discarded at poll start: 
 test('P3 with no counter wired the fields are 0, never undefined (stable summary shape for poll-json)', async () => {
   const s = await consumeInboundContactUpdates(deps({}));
   assert.equal(s.opened_hybrid, 0); assert.equal(s.opened_classical, 0);
+});
+
+test('P4 (#720 R5) the summary carries this poll\'s ignored future-dated adopt notes, discards counts made outside a poll, and the field is ABSENT when no counter is wired', async () => {
+  const adoptCounts = createAdoptCounter();
+  adoptCounts.bumpFutureIgnored(7); // outside a poll: discarded at poll start
+  const decrypt = async (b: string) => { if (b === 'x') adoptCounts.bumpFutureIgnored(2); return null; };
+  const s = await consumeInboundContactUpdates(deps({ adoptCounts, decrypt, fetchImpl: relay(['x']) }));
+  assert.equal(s.adopt_future_ignored, 2);
+  const next = await consumeInboundContactUpdates(deps({ adoptCounts, fetchImpl: relay([]) }));
+  assert.equal(next.adopt_future_ignored, 0);
+  const bare = await consumeInboundContactUpdates(deps({}));
+  assert.equal('adopt_future_ignored' in bare, false);
 });

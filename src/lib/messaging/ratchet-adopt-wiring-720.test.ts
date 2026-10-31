@@ -9,6 +9,7 @@
 //   W5  with nothing stored from that contact the 7-day window decides. W6 a missing / non-ISO signed time never adopts.
 //   W7  a throwing hook cannot undo a stored note + committed session. W8 (N-R5c) an unverified or non-admitted frame never reaches the opener at all.
 //   W9  (N-R6) both sides reset at once: exactly the LOWER fingerprint's session survives and the two converge.
+//   W12 (Archie #2350) a stored note dated beyond now + 5 min is IGNORED by the replay guard and counted, so one far-future note cannot lock a contact out of resetting.
 //   W10 a stored-notes reader that throws means NO, and an unparsable stored time is skipped. W11 STATIC guard on the live composition (live-book-poll + store).
 // Run: npx tsx --test src/lib/messaging/ratchet-adopt-wiring-720.test.ts
 import { test } from 'node:test';
@@ -22,7 +23,7 @@ import { signNoteWire } from './note-auth';
 import { acceptInboundNote } from './transport';
 import { NOTE_WIRE_TYPE } from './domains';
 import { sealDirectNote, openDirectNoteStagedTyped } from './direct-session';
-import { buildAdoptFirstFrame, RELAY_WINDOW_MS } from './session-adopt-policy';
+import { buildAdoptFirstFrame, createAdoptCounter, FUTURE_SLACK_MS, RELAY_WINDOW_MS } from './session-adopt-policy';
 import type { NoteRecord, NoteThread, NoteWireV0 } from './types';
 
 const ident = (): RatchetIdentity => {
@@ -251,6 +252,33 @@ test('W10 a stored-times reader that throws means NO; an unparsable stored time 
   assert.equal(await ask([at(-9000), at(-5000)], at(-4000)), true, 'newer than all of them');
 });
 
+test('W12 (Archie #2350) one FAR-FUTURE stored note from the contact does not lock them out: a real reset adopts, a replayed old first frame is still refused, and the ignored note is counted', async () => {
+  const { alice, bob, aliceNew } = await aliceResets();
+  bob.notes.set('future', { note_id: 'future', thread_id: 'thr', direction: 'inbound', from_fingerprint: alice.fp, to_fingerprints: [], sent_at: at(30 * 24 * 3_600_000), body: 'dated a month ahead', participant_kind: 'human', retention: { expires_at: null }, wire_type: NOTE_WIRE_TYPE } as NoteRecord);
+  const before = JSON.stringify(bob.sess.rows.get(alice.fp));
+  const replay = (await sealFrom(alice, bob, 'replayed old first frame', memIO()))!;
+  const refused = await receive(bob, alice, await wireFrom(alice, 'rp', replay, at(-7_200_000)));   // older than the real stored n1
+  assert.equal(refused.r, null); assert.deepEqual(refused.reasons, ['ratchet-desync']);
+  assert.equal(JSON.stringify(bob.sess.rows.get(alice.fp)), before, 'control: the replay changed nothing');
+  const f2 = (await sealFrom(alice, bob, 'a real reset', aliceNew))!;
+  const got = await receive(bob, alice, await wireFrom(alice, 'n2', f2, at(-1000)));
+  assert.ok(got.r, 'newer than every REAL stored note: adopted despite the future-dated one'); assert.equal(bob.hooks.length, 1);
+});
+
+test('W12b the future slack edge is exact (now + 5 min counts, one ms beyond is ignored and counted), and the counter reports then resets', async () => {
+  const counter = createAdoptCounter();
+  const ask = (stored: string[], sentAt: string) => buildAdoptFirstFrame({ ownFingerprint: 'bb', peerFingerprint: 'aa', sentAt, storedSentAts: async () => stored, now: () => NOW, onIgnoredFuture: (n) => counter.bumpFutureIgnored(n) })({ unconfirmed: false });
+  assert.equal(await ask([at(FUTURE_SLACK_MS)], at(-1000)), false, 'dated exactly now + slack: still counts as evidence, so a frame older than it is refused');
+  assert.deepEqual(counter.take(), { future_ignored: 0 });
+  assert.equal(await ask([at(FUTURE_SLACK_MS + 1)], at(-1000)), true, 'one ms beyond the slack: ignored');
+  assert.equal(await ask([at(FUTURE_SLACK_MS + 1), at(2 * FUTURE_SLACK_MS)], at(-1000)), true);
+  assert.deepEqual(counter.take(), { future_ignored: 3 }, '1 + 2 ignored notes');
+  assert.deepEqual(counter.take(), { future_ignored: 0 }, 'take() resets');
+  // a counter that throws must not change the answer
+  const boom = buildAdoptFirstFrame({ ownFingerprint: 'bb', peerFingerprint: 'aa', sentAt: at(-1000), storedSentAts: async () => [at(FUTURE_SLACK_MS + 5)], now: () => NOW, onIgnoredFuture: () => { throw new Error('x'); } });
+  assert.equal(await boom({ unconfirmed: false }), true);
+});
+
 // W11: live-book-poll's composition needs IndexedDB, which this harness does not have, so the wiring is pinned by SOURCE (like the reset W2/W3 guards).
 // The real-browser proof (reset UI e2e) is what finally runs it.
 import { readFileSync } from 'node:fs';
@@ -266,9 +294,14 @@ test('W11 STATIC: live-book-poll builds the adopt policy from THIS owner\'s fp, 
     'peerFingerprint: fromFp,',
     'sentAt: ctx?.sentAt,',
     'storedSentAts: () => listInboundSentAtFrom(fromFp),',
+    'onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),',
     'onSessionReplaced: async (fp) =>',
     'await markSessionReset(fp);',
   ]) assert.ok(seam.includes(needle), `buildNoteSeam lost: ${needle}`);
+  // the counter must reach BOTH the note seam and the consume deps, or the count is silently never reported
+  const whole = lbp;
+  assert.ok(whole.includes('}, legs, adoptCounts),'), 'the note seam is built with the adopt counter');
+  assert.ok(/openLegs: legs,\s*adoptCounts,/.test(whole), 'the consume deps carry the adopt counter');
   const store = read('./store.ts');
   const reader = store.slice(store.indexOf('export async function listInboundSentAtFrom'), store.indexOf('export async function deleteThread'));
   assert.ok(reader.includes("n.direction === 'inbound'") && reader.includes('n.from_fingerprint.toLowerCase() === want'), 'the reader must count inbound notes from the peer, case-insensitively');

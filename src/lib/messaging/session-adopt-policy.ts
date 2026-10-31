@@ -45,6 +45,23 @@ export function parseSentAtMs(v: unknown): number {
   return typeof v === 'string' && STRICT_ISO.test(v) ? Date.parse(v) : NaN;
 }
 
+/** A stored note dated further than this beyond now is not evidence of what the contact has sent (a broken clock, or a far-future note): ignored by the replay guard, and counted. */
+export const FUTURE_SLACK_MS = 5 * 60 * 1000;
+
+/** Counts only, per poll (like the open-leg counter): how many stored notes the replay guard ignored for being dated in the future. */
+export interface AdoptCounter {
+  bumpFutureIgnored(n: number): void;
+  /** Return the count since the last take() and reset it. consume calls it at the start (discard) and end (report) of a poll. */
+  take(): { future_ignored: number };
+}
+export function createAdoptCounter(): AdoptCounter {
+  let n = 0;
+  return {
+    bumpFutureIgnored: (k) => { if (Number.isInteger(k) && k > 0) n += k; },
+    take: () => { const out = { future_ignored: n }; n = 0; return out; },
+  };
+}
+
 export interface AdoptWiring {
   ownFingerprint: string;
   peerFingerprint: string;
@@ -53,6 +70,8 @@ export interface AdoptWiring {
   /** sent_at of every note already stored from this contact. Called only on a desync, under the session lock. */
   storedSentAts: () => Promise<string[]>;
   now: () => number;
+  /** Told how many stored notes were ignored for being dated beyond now + FUTURE_SLACK_MS. A throw here changes nothing. */
+  onIgnoredFuture?: (n: number) => void;
 }
 
 /**
@@ -64,14 +83,21 @@ export interface AdoptWiring {
 export function buildAdoptFirstFrame(w: AdoptWiring): (s: { unconfirmed: boolean }) => Promise<boolean> {
   return async ({ unconfirmed }) => {
     try {
-      const times = (await w.storedSentAts()).map(parseSentAtMs).filter((t) => Number.isFinite(t));
+      const nowMs = w.now();
+      const parsed = (await w.storedSentAts()).map(parseSentAtMs).filter((t) => Number.isFinite(t));
+      // A stored note dated more than the slack beyond now cannot be what an honest contact last sent (their clock was wrong, or it was
+      // dated on purpose): left in, one such note would make "newer than every stored note" impossible for that contact for good. Ignored, and counted.
+      const times = parsed.filter((t) => t <= nowMs + FUTURE_SLACK_MS);
+      if (parsed.length > times.length) {
+        try { w.onIgnoredFuture?.(parsed.length - times.length); } catch { /* counting never changes the answer */ }
+      }
       return mayAdoptFirstFrame({
         unconfirmed,
         ownFingerprint: w.ownFingerprint,
         peerFingerprint: w.peerFingerprint,
         sentAtMs: parseSentAtMs(w.sentAt),
         newestStoredAtMs: times.length ? Math.max(...times) : null,
-        nowMs: w.now(),
+        nowMs,
       });
     } catch {
       return false;
