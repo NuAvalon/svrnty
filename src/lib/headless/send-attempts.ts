@@ -13,7 +13,9 @@
 // to the other agent state (send-attempts.jsonl). INTENT is appended BEFORE
 // the seal/deposit attempt; OUTCOME after (or on throw). An intent with no
 // outcome IS the corpse — the send died mid-flight and the record names
-// what it was carrying (peer fp + mailbox_id + resendable body).
+// what it was carrying (peer fp + mailbox_id + note_id + body LENGTH). The body itself is never journaled (Flint #189121): the
+// resend copy is the store's outbound row under the same note_id, and a hash of a short body ("ok") is guessable, so nothing
+// derived from the body is kept either.
 //
 // Pure module: no crypto, no relay, no store knowledge. It never decides
 // anything about a note — it records and pairs. The receiver-land leg
@@ -27,7 +29,8 @@ export interface SendAttempt {
   mailbox_id: string;           // '' for a local-route hop (no mailbox involved)
   ts: string;                   // ISO
   wire?: string;                // 'sealed' | 'sealed-tr' | 'deposit' | 'route'
-  body?: string;                // intent only — resend material, same custody as the store's outbound copy
+  body_bytes?: number;          // intent only — UTF-8 byte length of the body (never the body, never a hash of it)
+  recipient?: string;           // intent only — the local contact name for peer_fp (a label, no key material)
   stage?: string;               // outcome: SendStage | 'resolve' | 'ratchet' | 'seal' | 'deliver'
   deposited?: boolean;
   error?: string;
@@ -46,7 +49,8 @@ export interface AuditRow {
   first_ts?: string;
   last_ts?: string;
   error?: string;
-  body?: string;                // carried from the intent for resend tooling
+  body_bytes?: number;          // carried from the intent (resend tooling reads the body from the store by note_id)
+  recipient?: string;
 }
 
 const FILE = 'send-attempts.jsonl';
@@ -125,7 +129,8 @@ export function auditAttempts(records: SendAttempt[]): AuditRow[] {
       first_ts: i?.ts ?? last?.ts,
       last_ts: last?.ts ?? i?.ts,
       error: last?.error ?? last?.reason,
-      body: i?.body,
+      body_bytes: i?.body_bytes,
+      recipient: i?.recipient,
     });
   }
   for (const o of unpaired) {
@@ -140,4 +145,15 @@ export function auditAttempts(records: SendAttempt[]): AuditRow[] {
     });
   }
   return rows;
+}
+
+/** Bounded retention (Flint #189121: 14 days, same as the hop trail). Pure: returns the lines to keep, newest-safe (unparseable lines go). */
+export const ATTEMPTS_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+export function pruneAttempts(text: string, nowMs: number, maxAgeMs: number = ATTEMPTS_MAX_AGE_MS): string {
+  const keep: string[] = [];
+  for (const rec of parseAttempts(text)) {
+    const t = Date.parse(rec.ts);
+    if (Number.isFinite(t) && nowMs - t <= maxAgeMs) keep.push(JSON.stringify(rec));
+  }
+  return keep.length ? keep.join('\n') + '\n' : '';
 }

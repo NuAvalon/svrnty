@@ -17,7 +17,7 @@
 // Secrets live in ~/.svrnty-agent/ — outside the repo, never committed.
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
-import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
@@ -27,7 +27,7 @@ import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-
 import { sendNoteFromHeadless, sealNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine, errorLine } from '../src/lib/headless/peer-kem';
-import { attemptsPath, parseAttempts, auditAttempts, type SendAttempt } from '../src/lib/headless/send-attempts';
+import { attemptsPath, parseAttempts, auditAttempts, pruneAttempts, type SendAttempt } from '../src/lib/headless/send-attempts';
 import { consumeInboundContactUpdates, consumeInboundBlob, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { deriveMailboxId } from '../src/lib/relay/mailbox-auth';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
@@ -72,9 +72,14 @@ const RELAY = process.env.SVRNTY_RELAY ?? 'https://dev.svrnty.is/api/relay';
 // INTENT before the attempt, OUTCOME after — an intent with no outcome is a
 // corpse (send died mid-flight, which is exactly what a silent-death wound
 // needs named). A logging failure NEVER aborts the send it describes.
+const ATTEMPTS_PRUNE_AT_BYTES = 256 * 1024;
 const logAttempt = (rec: SendAttempt): void => {
   try {
-    appendFileSync(attemptsPath(DIR), JSON.stringify(rec) + '\n', { mode: 0o600 });
+    const p = attemptsPath(DIR);
+    appendFileSync(p, JSON.stringify(rec) + '\n', { mode: 0o600 }); // 0600 at birth (umask can only remove bits)
+    const st = statSync(p);
+    if (st.mode & 0o077) chmodSync(p, 0o600); // never trust a mode you didn't stat (a pre-existing file could be wider)
+    if (st.size > ATTEMPTS_PRUNE_AT_BYTES) writeFileAtomic(p, pruneAttempts(readFileSync(p, 'utf8'), Date.now()), { mode: 0o600, backup: false }); // 14 d bound
   } catch { /* audit must never kill a send */ }
 };
 const attemptNow = (): string => new Date().toISOString();
@@ -438,7 +443,7 @@ async function main() {
     // against its fingerprint (#456). Resolve it BEFORE the ratchet chain is advanced + persisted: a refusal
     // must leave ratchet-sessions.json untouched, not burn an index for a message that was never sent.
     const noteId = `note_${globalThis.crypto.randomUUID()}`;
-    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed-tr', body });
+    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed-tr', body_bytes: Buffer.byteLength(body, 'utf8'), recipient: store.getContactByFingerprint(fp)?.name });
     const kem = await resolvePeerKemForSend(peer);
     if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed-tr', stage: 'resolve', deposited: false, error: kem.reason }); process.exitCode = 1; return; }
     const rp = await ratchetPeerOf(peer);
@@ -475,7 +480,7 @@ async function main() {
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
     const noteId = `note_${globalThis.crypto.randomUUID()}`;
-    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', body });
+    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', body_bytes: Buffer.byteLength(body, 'utf8'), recipient: store.getContactByFingerprint(fp)?.name });
     const kem = await resolvePeerKemForSend(peer);   // admitted record only, fingerprint-bound (#456)
     if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: 'resolve', deposited: false, error: kem.reason }); process.exitCode = 1; return; }
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
@@ -521,7 +526,7 @@ async function main() {
     const peer = store.getContactByFingerprint(fp);
     if (!peer) throw new Error(`peer ${fp} not admitted`);
     const noteId = `note_${globalThis.crypto.randomUUID()}`;
-    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', body });
+    logAttempt({ kind: 'intent', note_id: noteId, peer_fp: fp, mailbox_id: deriveMailboxId(fp), ts: attemptNow(), wire: 'sealed', body_bytes: Buffer.byteLength(body, 'utf8'), recipient: store.getContactByFingerprint(fp)?.name });
     const kem = await resolvePeerKemForSend(peer);
     if (!kem.ok) { console.error(formatNotSent(fp, kem.reason)); logAttempt({ kind: 'outcome', note_id: noteId, peer_fp: fp, mailbox_id: '', ts: attemptNow(), wire: 'sealed', stage: 'resolve', deposited: false, error: kem.reason }); process.exitCode = 1; return; }
     const r = await sealNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, noteId });
