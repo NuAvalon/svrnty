@@ -14,6 +14,7 @@ import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gat
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
+import { useMailNotifications } from '@/components/notes/useMailNotifications';
 import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { TrustEdge, TrustEvent } from '@/lib/trust/types';
@@ -342,6 +343,12 @@ export default function Home() {
       if (mainTab !== 'notes') setNotesActivity(true);
     });
   }, [mainTab]);
+
+  // Phase 1 mail notifications (opt-in in Settings; only while open or in a background tab). Active, unlocked identity only (N3/N4).
+  useMailNotifications({
+    activeFingerprint: appState === 'unlocked' ? identity?.identity?.fingerprint ?? null : null,
+    unlocked: appState === 'unlocked',
+  });
 
   useEffect(() => {
     if (mainTab === 'notes') setNotesActivity(false);
