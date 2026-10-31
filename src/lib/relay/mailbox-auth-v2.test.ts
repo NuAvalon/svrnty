@@ -260,3 +260,9 @@ test('done_when 10: nothing outside its own module imports the /mailbox/register
     .filter((p) => /mailbox-registry-client/.test(readFileSync(p, 'utf8')));
   assert.deepEqual(offenders, []);
 });
+
+test('NEG: freshness is two-sided: a bundle dated 10 min in the FUTURE is refused too (else one signed header stays replayable until its ts)', async () => {
+  const id = deriveMailboxIdV2(A);
+  assert.equal((await poll(id, pollHeaders(A, Date.now() + 10 * 60_000))).status, 401, 'future-dated, outside the window');
+  assert.equal((await poll(id, pollHeaders(A, Date.now()))).status, 200, 'control: a current bundle is accepted');
+});
