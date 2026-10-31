@@ -14,7 +14,7 @@ const RELAY = 'http://relay.test/api/relay';
 type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
 async function mint(): Promise<Id> {
   const a = await mintHeadlessAgent({ throwaway: true });
-  const id: any = a.introduction.card.identity;
+  const id = a.introduction.card.identity as unknown as { fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
   return { fp: id.fingerprint, pub: id.public_key, priv: a.secret_material.classicalPrivateKey, kpass: a.secret_material.classicalKpass,
     kem: id.pq_kem_public_key, kemSec: uint8ToBase64(a.secret_material.mlkem1024Sec), sig: id.pq_sig_public_key };
 }
