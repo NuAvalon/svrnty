@@ -15,8 +15,10 @@ test('G1 a dev build (domain dev.*) gets whatever SATELLITE_URL says, dev hosts 
   assert.equal(isDevBuild('DEV.svrnty.is'), true);
 });
 
-test('G2 NEG: a prod build REFUSES a dev satellite host (the exact cross-env line Flint named)', () => {
-  for (const url of ['http://dev-satellite:8100', 'http://dev-registration:8101', 'https://dev.svrnty.is', 'http://DEV-satellite:8100', 'http://dev:9']) {
+test('G2 NEG: a prod build REFUSES every host not on its allowlist: dev names, lookalikes, IP literals, strangers', () => {
+  for (const url of ['http://dev-satellite:8100', 'http://dev-registration:8101', 'https://dev.svrnty.is', 'http://DEV-satellite:8100', 'http://dev:9',
+    // Flint #2602 probes that passed the old denylist: a lookalike, a dev container's IP on the shared net, loopback v6
+    'http://devsatellite:8100', 'http://172.18.0.9:8100', 'http://[::1]:8100', 'http://dev-outpost-satellite:8100', 'http://example.com']) {
     assert.throws(() => satelliteBaseUrl({ SATELLITE_URL: url, NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), SatelliteEnvRefused, url);
   }
 });
@@ -28,10 +30,16 @@ test('G3 an unset or unknown domain counts as prod (fail closed)', () => {
   assert.equal(isDevBuild(undefined), false);
 });
 
-test('G4 a prod build keeps working with its own hosts, and refuses a URL it cannot parse', () => {
+test('G4 a prod build forwards ONLY to its allowlist (the prod service names or SATELLITE_ALLOWED_HOSTS), and refuses a URL it cannot parse', () => {
   assert.equal(satelliteBaseUrl({ NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), 'http://registration:8101');
   assert.equal(satelliteBaseUrl({ SATELLITE_URL: 'http://satellite:8100', NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), 'http://satellite:8100');
-  assert.equal(satelliteBaseUrl({ SATELLITE_URL: 'http://devices.example:1', NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), 'http://devices.example:1', 'only a "dev" / "dev-" first label is refused');
+  for (const h of ['registration', 'satellite', 'outpost-registration', 'outpost-satellite']) {
+    assert.equal(satelliteBaseUrl({ SATELLITE_URL: `http://${h}:8100`, NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), `http://${h}:8100`, h);
+  }
+  // a self-hoster names their own hosts; a listed IP literal is STILL refused (Archie #2607)
+  assert.equal(satelliteBaseUrl({ SATELLITE_URL: 'https://sat.example.org', NEXT_PUBLIC_SVRNTY_DOMAIN: 'id.example.org', SATELLITE_ALLOWED_HOSTS: ' sat.example.org , other ' }), 'https://sat.example.org');
+  assert.throws(() => satelliteBaseUrl({ SATELLITE_URL: 'http://10.0.0.5:8100', NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is', SATELLITE_ALLOWED_HOSTS: '10.0.0.5' }), SatelliteEnvRefused);
+  assert.throws(() => satelliteBaseUrl({ SATELLITE_URL: 'ftp://satellite:21', NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), SatelliteEnvRefused, 'http(s) only');
   assert.throws(() => satelliteBaseUrl({ SATELLITE_URL: 'dev-satellite:8100', NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), SatelliteEnvRefused);
   assert.throws(() => satelliteBaseUrl({ SATELLITE_URL: 'not a url', NEXT_PUBLIC_SVRNTY_DOMAIN: 'svrnty.is' }), SatelliteEnvRefused);
 });
