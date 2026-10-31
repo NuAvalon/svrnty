@@ -723,12 +723,17 @@ export async function consumeInboundBlob(deps: ConsumeDeps, blob: string): Promi
   // Same downgrade as the relay loop: a cycle that died mid-fold makes a
   // verified-looking blob read undecryptable — undecided, not terminal.
   if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
+  // Ported onto dev 6cdbb63a (Athena, Peter #188994): dev split 'held' (#720: a hybrid blob this owner can't open YET) out of
+  // 'retryable'. Over intake there is no envelope_id to hold, so 'held' keeps its pre-split meaning: retryable, the transport falls back
+  // to the relay and the relay loop holds it there. Terminal stays CONSUMED as before (R-4). OPEN QUESTION for Mneme/Flint: dev's relay
+  // loop commits a dead-letter record before acking a loss (#713); an intake terminal has no such record.
+  if (outcome.kind === 'held') outcome = { kind: 'retryable' };
   // Repaint parity with the relay loop: fire the matching live-event seam
   // when the deps carry one (headless deps don't — best-effort either way).
   try {
     if (outcome.kind === 'applied') deps.emit?.(outcome.event);
     else if (outcome.kind === 'note') deps.emitNote?.(outcome.event);
-    else if (outcome.kind === 'affirm') deps.emitTrust?.(outcome.event);
+    else if (outcome.kind === 'receipt') deps.emitReceipt?.(outcome.event);
   } catch {
     /* live-beat is best-effort; a repaint failure never changes the verdict */
   }

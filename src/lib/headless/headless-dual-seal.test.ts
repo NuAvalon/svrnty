@@ -42,32 +42,26 @@ function mockRelay() {
   return { fetchImpl, boxes };
 }
 
-test('dualSeal:true → TWO deposits to the same mbx: hybrid package first, armored classical second', async () => {
+test('dualSeal:true on dev → RETIRED: one hybrid deposit, no classical copy, the send still succeeds (dev seals no classical notes)', async () => {
   const A = await mint(), B = await mint();
-  const store = new HeadlessStore(`/tmp/ds-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const store = new HeadlessStore({ path: `/tmp/ds-${Date.now()}-${Math.random().toString(36).slice(2)}.json` });
   const { fetchImpl, boxes } = mockRelay();
   const r = await sendNoteFromHeadless({
     owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
     dualSeal: true, body: 'dual', store, relayBase: RELAY, fetchImpl,
   });
   assert.equal(r.deposited, true);
-  assert.equal(r.deposited_classical, true);
+  assert.notEqual(r.deposited_classical, true, 'no classical copy is ever deposited on dev');
   const box = boxes.get(deriveMailboxId(B.fp))!;
-  assert.equal(box.length, 2, 'two envelopes in one mailbox');
-  const [hybridBlob, classicalBlob] = [box[0].blob, box[1].blob];
-  // leg 1 = hybrid MailboxEnvelopePackage (raw JSON), leg 2 = armored OpenPGP
-  assert.ok(asMailboxEnvelopePackage(hybridBlob) != null, 'first blob is the hybrid package');
-  assert.match(classicalBlob, /-----BEGIN PGP MESSAGE-----/, 'second blob is the classical armored seal');
-  // both carry the SAME signed wire → same note_id → receiver dedup lands ONE row
-  const pkg = asMailboxEnvelopePackage(hybridBlob)!;
-  assert.ok(JSON.stringify(pkg).length > 0);
-  const local = store.listNotes().filter(n => n.note_id === r.note_id);
-  assert.equal(local.length, 1, 'one local outbound copy');
+  assert.equal(box.length, 1, 'one envelope');
+  assert.ok(asMailboxEnvelopePackage(box[0].blob) != null, 'it is the hybrid package');
+  assert.doesNotMatch(box[0].blob, /-----BEGIN PGP MESSAGE-----/);
+  assert.equal(store.listNotes().filter(n => n.note_id === r.note_id).length, 1, 'one local outbound copy');
 });
 
 test('dualSeal absent → single hybrid deposit (status quo)', async () => {
   const A = await mint(), B = await mint();
-  const store = new HeadlessStore(`/tmp/ds-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const store = new HeadlessStore({ path: `/tmp/ds-${Date.now()}-${Math.random().toString(36).slice(2)}.json` });
   const { fetchImpl, boxes } = mockRelay();
   const r = await sendNoteFromHeadless({
     owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
@@ -80,7 +74,7 @@ test('dualSeal absent → single hybrid deposit (status quo)', async () => {
 
 test('dualSeal on a kem-less peer → still fail-closed NOT-SENT (never a classical downgrade)', async () => {
   const A = await mint(), B = await mint();
-  const store = new HeadlessStore(`/tmp/ds-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const store = new HeadlessStore({ path: `/tmp/ds-${Date.now()}-${Math.random().toString(36).slice(2)}.json` });
   const { fetchImpl, boxes } = mockRelay();
   const r = await sendNoteFromHeadless({
     owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub,

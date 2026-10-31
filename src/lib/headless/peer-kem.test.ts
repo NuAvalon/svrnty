@@ -137,11 +137,9 @@ test('CLI send: a bound kem on the admitted record → hybrid deposit, exit 0, n
       const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
       assert.equal(r.code, 0, r.err);
       assert.equal(JSON.parse(r.out.trim().split('\n').pop()!).deposited, true);
-      // dual-seal-interim-001: while canon lacks the dual-read consume leg, `send` second-deposits a
-      // classical copy to the same mbx (interim knob in devin-comm.ts) — 2 deposits, not 1.
-      assert.equal(deposits.length, 2);
+      // dual-seal-interim-001 is retired on dev (receivers dual-read; seal.ts seals no classical notes): ONE hybrid deposit.
+      assert.equal(deposits.length, 1);
       assert.match(deposits[0].url, /\/api\/relay\/envelope$/);
-      assert.match(deposits[1].url, /\/api\/relay\/envelope$/);
       assert.doesNotMatch(r.err, /NOT SENT/);
     });
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -350,7 +348,7 @@ test('CLI send: the relay ACCEPTS the note but saving the local copy then fails 
   const port = (server.address() as { port: number }).port;
   try {
     const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
-    assert.equal(deposits.length, 2, 'dual-seal interim: relay received the hybrid + classical pair');
+    assert.equal(deposits.length, 1, 'the relay did receive the note');
     assert.notEqual(r.code, 0);
     assert.match(r.err, /^DEPOSITED to [0-9a-f]{8}, but saving the local copy failed \(.+\); do NOT resend$/m);
     assert.doesNotMatch(r.err, /NOT SENT/);

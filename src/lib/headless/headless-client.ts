@@ -226,12 +226,15 @@ export async function sealNoteFromHeadless(args: {
    *  confidentiality trade (classical-readable-or-lost) is the sender's call, never silent. Receivers
    *  dedupe on (note_id, direction, from_fingerprint) → a dual-read receiver lands ONE row. Remove post-merge. */
   dualSeal?: boolean;
+  /** Internal (sendNoteFromHeadless): return the local outbound record instead of writing it, so the relay send keeps dev's order
+   *  seal → deposit → local copy (a save that fails AFTER a deposit reports DEPOSITED, never NOT SENT; peer-kem.test pins it). */
+  deferLocalCopy?: boolean;
   body: string;
   threadId?: string;
   store: HeadlessStore;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
-}): Promise<{ note_id: string; thread_id: string; blob: string | null; classicalBlob?: string | null }> {
+}): Promise<{ note_id: string; thread_id: string; blob: string | null; classicalBlob?: string | null; localCopy?: NoteRecord }> {
   const now = () => new Date().toISOString();
   const thread_id = args.threadId ?? `thr_${args.owner.fingerprint.slice(0, 6)}_${args.peerFingerprint.slice(0, 6)}`;
   const note_id = args.noteId ?? `note_${globalThis.crypto.randomUUID()}`;
@@ -261,14 +264,17 @@ export async function sealNoteFromHeadless(args: {
   if (args.peerPqKemPublicKey) {
     blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
     if (args.dualSeal) {
-      classicalBlob = await sealNoteTo(wire, args.peerPublicKeyArmored);
+      // dual-seal-interim-001 was "while canon lacks the dual-read consume leg". Dev has dual-read (hybrid-first + classical fallback in
+      // every consumer) and seal.ts no longer seals classical notes at all (no classical downgrade, Flint). So on dev the interim is
+      // retired: the hybrid deposit goes out as usual, the classical copy is skipped, and the send never fails because of it.
+      console.warn('[headless-notes] dualSeal requested but retired on this build (receivers dual-read); hybrid only');
     }
   } else {
     console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT sealed (never downgrade, HNDL)');
   }
 
   // local outbound copy (Node store)
-  args.store.putNote({
+  const localCopy: NoteRecord = {
     note_id,
     thread_id,
     direction: 'outbound',
@@ -279,7 +285,9 @@ export async function sealNoteFromHeadless(args: {
     participant_kind: args.senderKind ?? 'agent',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
-  });
+  };
+  if (args.deferLocalCopy) return { note_id, thread_id, blob, classicalBlob, localCopy };
+  args.store.putNote(localCopy);
   return { note_id, thread_id, blob, classicalBlob };
 }
 
@@ -320,7 +328,7 @@ export async function sendNoteFromHeadless(args: {
   // Seal via the sibling (sign → seal → local copy); deposit the SAME blob the
   // seal-only path would hand a router (R-1). blob:null = the HNDL fail-closed
   // (no verified peer kem) — NOT deposited, never downgraded to classical.
-  const sealed = await sealNoteFromHeadless(args);
+  const sealed = await sealNoteFromHeadless({ ...args, deferLocalCopy: true });
   let deposited = false;
   let deposited_classical: boolean | undefined;
   if (sealed.blob !== null) {
@@ -340,5 +348,8 @@ export async function sendNoteFromHeadless(args: {
       deposited_classical = res2.ok;
     }
   }
+  // dev's order: the local outbound copy is written AFTER the deposit (kept as "not sent" when not deposited). If this write throws after a
+  // successful deposit, the CLI reports DEPOSITED-but-save-failed and tells the caller not to resend.
+  if (sealed.localCopy) args.store.putNote(sealed.localCopy);
   return { note_id: sealed.note_id, thread_id: sealed.thread_id, deposited, deposited_classical };
 }
