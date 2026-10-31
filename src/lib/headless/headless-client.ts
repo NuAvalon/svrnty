@@ -24,6 +24,7 @@ import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
+import { headlessDeadLetterSink } from './headless-dead-letter';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
 import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
@@ -41,6 +42,9 @@ export type HeadlessOwner = OwnerIdentity;
 export interface HeadlessOpts {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  /** #713: the agent dir's dead-letter file. Present → a loss is RECORDED (metadata row) before its envelope is acked, and a failed write
+   *  leaves the envelope on the relay. Absent → the old behaviour: the loss is only counted (summary.lost). */
+  deadLetterPath?: string;
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
@@ -149,6 +153,7 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
     // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
     // looping it retryable-FOREVER (the flip-side harm). advertise-kem && !hybrid ⟺ missing.
     hybridSecretMissing: !!owner.kemPublicKey && !hybrid,
+    deadLetter: opts.deadLetterPath ? headlessDeadLetterSink(opts.deadLetterPath) : undefined,
     relayBase: opts.relayBase,
     fetchImpl: opts.fetchImpl,
     now,
