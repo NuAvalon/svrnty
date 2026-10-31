@@ -9,16 +9,18 @@
     "2.1.6": "571c1a2faf99115c1b2bb397e92fa19292ad9d939da8dd83dc8096a053453c3c",
     "2.2.3": "3f603c198ba712cb8fb3e34f59bbf75c445ddd8cf3596a305ea57c31000083be"
   },
+  "witness_calculator_js_sha256": {
+    "2.1.6": "2bf018b05cb6dc399e72f57721d0f7b236b1a4a2d438d8b1c6763e9cd38ac8a8",
+    "2.2.3": "cc2d37b2cff2a589dd86f8636f1a1dc9fe4a854550b021aa0cea2e235d14e942"
+  },
   "recorded_not_enforced": {
     "sym_sha256": "2c7a90bc786a2c2a400c5f6630c29407bcab16a5c0687d9bf1e0df081bd2c610",
     "witness_js_sha256": {
       "2.1.6": {
-        "generate_witness.js": "e9f90211859797466368231b5f02afeb84afa497c3ccd04129e0a57a5c5a3eff",
-        "witness_calculator.js": "2bf018b05cb6dc399e72f57721d0f7b236b1a4a2d438d8b1c6763e9cd38ac8a8"
+        "generate_witness.js": "e9f90211859797466368231b5f02afeb84afa497c3ccd04129e0a57a5c5a3eff"
       },
       "2.2.3": {
-        "generate_witness.js": "4995a2e6b01432f76182abec6a831fdaf7f840384035072002ccaa43101b14d4",
-        "witness_calculator.js": "cc2d37b2cff2a589dd86f8636f1a1dc9fe4a854550b021aa0cea2e235d14e942"
+        "generate_witness.js": "4995a2e6b01432f76182abec6a831fdaf7f840384035072002ccaa43101b14d4"
       }
     }
   },
