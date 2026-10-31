@@ -5,7 +5,7 @@
 // isPQEncapLive() stays false until Flint flips it. Do not market this as Signal-grade.
 
 import { TripleRatchet, type RatchetIdentity, type RatchetPacket, type RatchetPeer, type RatchetSnapshot } from '@/lib/crypto/message-ratchet';
-import { readRatchetSession, putRatchetSession, notesStoreOwner, type RatchetSessionRead } from './store';
+import { readRatchetSession, putRatchetSession, deleteRatchetSession, notesStoreOwner, type RatchetSessionRead } from './store';
 import { assertNotesStoreOpenFor } from './notes-owner-guard';
 import { acquirePeerSessionLock, peerSessionLockName, type LockRelease } from './peer-session-lock';
 
@@ -48,6 +48,8 @@ export interface RatchetIO {
   read: (peerFingerprint: string) => Promise<RatchetSessionRead>;
   /** CAS write (R5): succeeds only if the stored row is still at `expectedVersion` (0 = no row yet); otherwise throws RatchetSessionConflictError. */
   put: (peerFingerprint: string, snapshot: RatchetSnapshot, expectedVersion: number) => Promise<void>;
+  /** Reset (#720 R1): delete this peer's session row, whatever state it is in (readable or not). Returns whether a row existed. The CALLER holds the per-peer lock. */
+  remove: (peerFingerprint: string) => Promise<boolean>;
   /** Who the session store is open for; scopes the per-peer lock name so two identities never block each other. */
   scope?: string;
   /** Test seam: replaces the real per-peer lock. Production leaves it unset and gets navigator.locks (or the in-process queue). */
@@ -59,7 +61,7 @@ function lockSession(io: RatchetIO, peerFingerprint: string): Promise<LockReleas
   return io.acquireLock ? io.acquireLock(peerFingerprint) : acquirePeerSessionLock(peerSessionLockName(io.scope, peerFingerprint));
 }
 /** The raw store handle, with NO owner check. Production code never uses it directly: it goes through {@link ownerBoundRatchetIO}. */
-export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatchetSession };
+export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatchetSession, remove: deleteRatchetSession };
 
 /**
  * R2: the session store is tab-local module state, open for ONE identity. Bind every session read AND write to the owner the
@@ -76,9 +78,25 @@ export function ownerBoundRatchetIO(
   return {
     read: async (peerFp) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.read(peerFp); },
     put: async (peerFp, snapshot, expectedVersion) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.put(peerFp, snapshot, expectedVersion); },
+    remove: async (peerFp) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.remove(peerFp); },
     scope: ownerFingerprint,
     acquireLock: inner.acquireLock,
   };
+}
+
+/**
+ * #720 RESET (Flint reset-semantics R1): drop ONLY this device's session row for ONE contact, under the same per-peer lock as open and
+ * seal, so it cannot race an in-flight open or commit. Kept: identity, the contact, trust, every stored note and thread, every dead-letter
+ * record. The next note sent to that contact finds no row and starts a new session through the existing initiate path (R3): no handshake, no
+ * automatic send. User-initiated only; the caller is the confirm dialog. Returns whether a row existed.
+ */
+export async function resetRatchetSession(ownerFingerprint: string, peerFingerprint: string, io: RatchetIO = ownerBoundRatchetIO(ownerFingerprint)): Promise<boolean> {
+  const release = await lockSession(io, peerFingerprint);
+  try {
+    return await io.remove(peerFingerprint);
+  } finally {
+    release();
+  }
 }
 
 /** A session row exists for this peer but cannot be read. Never treated as "no session" (R3). */

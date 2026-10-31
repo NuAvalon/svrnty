@@ -460,6 +460,30 @@ export async function readRatchetSession(peerFingerprint: string): Promise<Ratch
   }
 }
 
+/**
+ * Delete ONE peer's session row (#720 reset, Flint reset-semantics R1). Returns whether a row existed. Reads and deletes in one readwrite
+ * transaction. UNCONDITIONAL on purpose (no version compare): a reset must also clear an UNREADABLE row, which has no version to compare.
+ * The caller holds the per-peer session lock (R5), which is what keeps this from racing an open or a seal. Touches no other store and no
+ * other peer: notes, threads, trust and dead-letter records are not here.
+ */
+export async function deleteRatchetSession(peerFingerprint: string): Promise<boolean> {
+  const db = await openDb();
+  return new Promise<boolean>((resolve, reject) => {
+    const tx = db.transaction('ratchet_sessions', 'readwrite');
+    const os = tx.objectStore('ratchet_sessions');
+    let existed = false;
+    const cur = os.get(peerFingerprint);
+    cur.onsuccess = () => {
+      existed = cur.result !== undefined;
+      if (existed) os.delete(peerFingerprint);
+    };
+    cur.onerror = () => reject(cur.error);
+    tx.oncomplete = () => resolve(existed);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('ratchet session delete aborted'));
+  });
+}
+
 /** Back-compat for existing callers/exports: the snapshot, or null for BOTH absent and unreadable. New code uses readRatchetSession. */
 export async function getRatchetSession(peerFingerprint: string): Promise<RatchetSnapshot | null> {
   const r = await readRatchetSession(peerFingerprint);
