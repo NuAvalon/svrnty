@@ -17,6 +17,7 @@ import {
   type ConsumeSummary,
   type OwnerIdentity,
   type NoteResponseSeam,
+  type ReceiptResponseSeam,
 } from '@/lib/sync/consume-mailbox';
 import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/contact-update-envelope';
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
@@ -25,6 +26,9 @@ import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
 import { headlessDeadLetterSink } from './headless-dead-letter';
+import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
+import { parseReceiptWireV1, type ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
+import { newReceiptKey, receiptKeyFromHex, receiptKeyToHex, verifyReceiptTag } from '@/lib/crypto/receipt-mac';
 // L7 single dual-read chokepoint (Option-B): the headless consume deps compose the SAME dualReadOpener
 // (hybrid-first → classical) the FE buildConsumeDeps uses, off the owner's ML-KEM secret (custody ①).
 import { makeHybridOpener, dualReadOpener } from '@/lib/sync/hybrid-dual-read';
@@ -50,7 +54,7 @@ export interface HeadlessOpts {
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
-function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter): NoteResponseSeam {
+function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter, receipts?: ReceiptCandidates): NoteResponseSeam {
   // Single dual-read chokepoint (Option-B, mirrors FE buildNoteSeam): hybrid-FIRST (makeHybridOpener →
   // openMailboxEnvelope bound to MY secrets + parseNoteWire, the SAME type-gate the classical path uses →
   // no-cross-swallow unchanged), classical FALLBACK. Classical-only when the owner has no derivable hybrid
@@ -102,6 +106,10 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
             };
       const r = store.acceptInboundNote(rec, threadFor, admitContact);
       if (r === 'not-admitted') return { dropped: 'not-in-book', fp: wire.from_fingerprint };
+      // Layer 1 R1: a NEW note, or a byte-identical redelivery (C2: our first receipt may have been lost while the sender's key is unspent),
+      // is a receipt CANDIDATE. Never a FWW refusal ('kept'). Nothing is sent here: the note is durable only at its chunk commit, and the
+      // emit must never hold the writer lock (C1). sendHeadlessReceipts() sends after the pass, for what the store then actually holds.
+      if (r === 'stored') receipts?.set(`${wire.from_fingerprint}:${wire.note_id}`, wire);
       if (r === 'kept') {
         // FIRST WRITE WINS: a same-sender note that reuses a stored id with different content is refused; the stored note is what we acknowledge.
         noteRewriteRefused();
@@ -111,6 +119,72 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
       return { note_id: rec.note_id, thread_id: rec.thread_id, from_fingerprint: rec.from_fingerprint };
     },
   };
+}
+
+/** Layer 1: receipt candidates collected during ONE poll, at most one per (sender fp, note_id). Holds the verified wire (never logged). */
+export type ReceiptCandidates = Map<string, NoteWireV0>;
+
+/**
+ * Layer 1 S2 (spec v1 65bac8aa, Flint C1): the SENDER half of "Delivered" for a headless owner, mirroring live-book-poll.buildReceiptSeam.
+ * Hybrid-only (a v1 receipt is never sealed classical), 'delivered' only, OUR outbound row with a stored key, verifyReceiptTag, then the row
+ * becomes delivered with the key REMOVED, through the store's group commit (markDelivered → mutate → the #712 chunk write, never a separate
+ * write per receipt). Anything else (unknown note, an inbound note with that id, no key, wrong code, forged / transplanted tag) → null: the
+ * row and its key are untouched, so the real receipt can still land. A false "Delivered" is unreachable: markDelivered is called on ONE line.
+ */
+export function buildHeadlessReceiptSeam(owner: HeadlessOwner, store: HeadlessStore, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter): ReceiptResponseSeam {
+  const verifyReceipt = hybrid
+    ? counted(makeHybridOpener<ReceiptWireV1>((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseReceiptWireV1), 'hybrid', legs)
+    : async () => null;
+  return {
+    verify: (blob) => verifyReceipt(blob),
+    accept: async (wire) => {
+      if (wire.code !== 'delivered') return null; // the only code this build acts on; never 'read'
+      const note = store.findOutboundNote(owner.fingerprint, wire.note_id);
+      if (!note) return null; // unknown, or an inbound note that merely shares the id
+      const rk = receiptKeyFromHex(note.receipt_key);
+      if (!rk) return null; // no stored key (an older note, or already confirmed)
+      const peerFp = note.to_fingerprints[0];
+      if (!peerFp) return null;
+      if (!verifyReceiptTag(rk, note.note_id, wire.code, wire.tag)) return null; // forged / transplanted / wrong code: the key survives
+      store.markDelivered(owner.fingerprint, note.note_id); // ★ THE ONE LINE: verified → delivered, key dropped (group commit)
+      return { note_id: note.note_id, thread_id: note.thread_id, from_fingerprint: peerFp };
+    },
+  };
+}
+
+/** Counts only (never an id, a key or a tag). */
+export interface ReceiptSendSummary {
+  sent: number;
+  skipped: number;
+  failed: number;
+}
+
+/**
+ * Layer 1 R1, AFTER the poll (Flint C1/C2/C3): send the collected receipts. Called once the consume pass returned, so no chunk is open and
+ * no writer lock is held by this process; each POST is bounded by emitDeliveredReceipt's 8 s timeout and they run concurrently (one wait).
+ * A candidate gets a receipt only if, NOW:
+ *  - the store holds that inbound note byte-identical to the wire (it was durably committed: a chunk whose write failed was rolled back, a
+ *    note refused at the commit re-apply (C2) is not there, and a different-content redelivery (FWW) never became a candidate), and
+ *  - its sender is admitted on this copy (C3: re-checked here, never trusted from the caller's order: a receipt to a stranger or a blocked
+ *    sender would be a liveness oracle).
+ * emitDeliveredReceipt itself refuses a kem-less sender (no downgrade) and a wire without a 64-hex receipt_key, and never throws.
+ */
+export async function sendHeadlessReceipts(store: HeadlessStore, candidates: ReceiptCandidates, opts: HeadlessOpts = {}): Promise<ReceiptSendSummary> {
+  const out: ReceiptSendSummary = { sent: 0, skipped: 0, failed: 0 };
+  const due: NoteWireV0[] = [];
+  for (const wire of candidates.values()) {
+    const held = store.listNotes().find((n) => n.direction === 'inbound' && n.note_id === wire.note_id && n.from_fingerprint === wire.from_fingerprint);
+    const durable = !!held && held.body === wire.body && held.thread_id === wire.thread_id && held.sent_at === (wire.sent_at || held.sent_at);
+    if (!durable || !admitContact(store.getContactByFingerprint(wire.from_fingerprint))) {
+      out.skipped++;
+      continue;
+    }
+    due.push(wire);
+  }
+  candidates.clear();
+  const results = await Promise.all(due.map((w) => emitDeliveredReceipt(w, { fetchImpl: opts.fetchImpl, relayBase: opts.relayBase })));
+  for (const r of results) out[r]++;
+  return out;
 }
 
 /**
@@ -129,7 +203,10 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
  * The flag is keyed on ACTUAL derivability (not mere kem-pub presence) so a secret-HAVING agent never
  * loops its mail retryable-FOREVER (the flip-side harm Flint pinned, #168382).
  */
-export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeDeps> {
+/** ConsumeDeps plus layer 1's post-pass receipt send. Call sendReceipts() AFTER consumeInboundContactUpdates(deps) returned. */
+export type HeadlessConsumeDeps = ConsumeDeps & { sendReceipts: () => Promise<ReceiptSendSummary> };
+
+export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<HeadlessConsumeDeps> {
   const now = () => new Date().toISOString();
   // Derive THIS owner's hybrid OPEN-material from the custody-threaded ML-KEM secret (OwnerIdentity.kemSecretKey,
   // ① — the SAME helper + B64 contract the FE path uses). undefined for a classical identity OR when the secret
@@ -139,6 +216,7 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
   const hybrid = await deriveOwnerHybridSecrets(owner.privateKeyArmored, owner.passphrase, owner.kemPublicKey, owner.kemSecretKey);
   const classicalCU = openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase);
   const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
+  const receipts: ReceiptCandidates = new Map();
   return {
     owner,
     openLegs: legs,
@@ -150,7 +228,9 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
         )
       : counted(classicalCU, 'classical', legs),
     store: store.asContactStore(),
-    note: buildNoteSeam(owner, store, now, hybrid, legs),
+    note: buildNoteSeam(owner, store, now, hybrid, legs, receipts),
+    // Layer 1 S2: a verified receipt marks OUR outbound note delivered inside the poll's group commit
+    receipt: buildHeadlessReceiptSeam(owner, store, hybrid, legs),
     // ③ loud-not-silent, keyed on ACTUAL derivability (Flint's hard gate #168382): advertise-kem-pub but the
     // ML-KEM secret did NOT derive ⇒ a hybrid blob is LEFT FOR RETRY, never silently acked+dropped. The instant
     // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
@@ -163,6 +243,7 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
     // #712: one store write per ack chunk, before its ack; a redelivered envelope the store already holds is acked unopened (C1)
     chunk: store.asChunkTxn(now),
     outOfTime: deadline(opts),
+    sendReceipts: () => sendHeadlessReceipts(store, receipts, opts),
   };
 }
 
@@ -174,8 +255,11 @@ function deadline(opts: HeadlessOpts): (() => boolean) | undefined {
 }
 
 /** Poll the owner's smart mailbox ONCE: decrypt → verify → apply → persist → ack every pending envelope. */
-export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary> {
-  return consumeInboundContactUpdates(await buildHeadlessConsumeDeps(owner, store, opts));
+export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary & { receipts_sent: number }> {
+  const deps = await buildHeadlessConsumeDeps(owner, store, opts);
+  const summary = await consumeInboundContactUpdates(deps);
+  const r = await deps.sendReceipts(); // layer 1: after the pass, with no chunk open and no writer lock held
+  return { ...summary, receipts_sent: r.sent };
 }
 
 export interface HeadlessPollHandle {
@@ -254,6 +338,11 @@ export async function sendNoteFromHeadless(args: {
   const note_id = args.noteId ?? `note_${globalThis.crypto.randomUUID()}`;
   const sent_at = args.sentAt ?? now();
 
+  // Layer 1 S1 (mirrors transport.ts): a per-note freshness nonce + a fresh 32-byte receipt KEY, minted BEFORE signing so both are under the
+  // sender's signature and inside the sealed wire. The key is kept ONLY on our outbound row below (store.json: the bodies' protection) and
+  // is dropped when a verified receipt lands; it is never printed, journaled, dead-lettered or trailed.
+  const receipt_nonce = Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (x) => x.toString(16).padStart(2, '0')).join('');
+  const receipt_key = receiptKeyToHex(newReceiptKey());
   const unsigned: NoteWireV0 = {
     type: NOTE_WIRE_TYPE,
     note_id,
@@ -262,6 +351,8 @@ export async function sendNoteFromHeadless(args: {
     sent_at,
     body: args.body,
     participant_kind: args.senderKind ?? 'agent',
+    receipt_nonce,
+    receipt_key,
   };
   const wire = await signNoteWire(
     unsigned,
@@ -301,6 +392,9 @@ export async function sendNoteFromHeadless(args: {
     participant_kind: args.senderKind ?? 'agent',
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
+    receipt_nonce,
+    // only a deposited note can ever be confirmed; a fail-closed (not sent) copy keeps no key
+    ...(deposited ? { receipt_key } : {}),
   });
   return { note_id, thread_id, deposited };
 }

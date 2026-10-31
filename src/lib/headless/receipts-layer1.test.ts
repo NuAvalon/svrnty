@@ -1,0 +1,442 @@
+// src/lib/headless/receipts-layer1.test.ts
+// Run: npx tsx --test src/lib/headless/receipts-layer1.test.ts
+//
+// Layer 1 (spec v1 65bac8aa; Flint C1-C4, Hypatia, Archie): headless agents send and verify "Delivered" receipts, with the SAME MAC, wire and
+// hybrid seal as the FE. Real minted identities, real hybrid seals, an in-memory relay with one box per mailbox, file-backed stores with the
+// writer lock. Each spec NEG is one test below (N1-N9), plus the end-to-end round trip (E1).
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+void createHash;
+import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
+import { uint8ToBase64 } from '@/lib/crypto/pq';
+import { consumeInboundContactUpdates } from '@/lib/sync/consume-mailbox';
+import type { DeadLetterRow } from '@/lib/sync/dead-letter';
+import { DEAD_LETTER_FILE } from './headless-dead-letter';
+import { HeadlessStore, type HeadlessContact } from './headless-store';
+import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, sendHeadlessReceipts, sendNoteFromHeadless } from './headless-client';
+import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
+import { buildReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
+import { sealReceiptV1To } from '@/lib/messaging/seal';
+import { receiptKeyToHex, newReceiptKey } from '@/lib/crypto/receipt-mac';
+import type { NoteWireV0 } from '@/lib/messaging/types';
+
+const RELAY = 'http://relay.test/api/relay';
+
+type Id = { fp: string; pub: string; priv: string; kpass: string; kem: string; kemSec: string; sig: string };
+async function mint(): Promise<Id> {
+  const a = await mintHeadlessAgent({ throwaway: true });
+  const id = a.introduction.card.identity as unknown as { fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
+  return {
+    fp: id.fingerprint, pub: id.public_key,
+    priv: a.secret_material.classicalPrivateKey, kpass: a.secret_material.classicalKpass,
+    kem: id.pq_kem_public_key, kemSec: uint8ToBase64(a.secret_material.mlkem1024Sec), sig: id.pq_sig_public_key,
+  };
+}
+function owner(id: Id): HeadlessOwner {
+  return {
+    fingerprint: id.fp, publicKeyArmored: id.pub, privateKeyArmored: id.priv, passphrase: id.kpass,
+    kemPublicKey: id.kem, kemSecretKey: id.kemSec, sigPublicKey: id.sig,
+  };
+}
+function asContact(id: Id, over: Partial<HeadlessContact> = {}): HeadlessContact {
+  return { id: 'c_' + id.fp.slice(0, 8), fingerprint: id.fp, public_key: id.pub, pq_sig_public_key: id.sig, pq_kem_public_key: id.kem, trust_level: 'known', ...over };
+}
+
+/** In-memory smart mailbox. `acks` records every /ack body; `failAck(n)` makes the next n /ack calls throw (a kill after the commit). */
+function mockRelay(onAck?: (ids: string[]) => void) {
+  const boxes = new Map<string, Array<{ envelope_id: string; blob: string }>>();
+  const acks: string[][] = [];
+  let seq = 0;
+  let failAcks = 0;
+  let queueReply: 'ok' | 'refused' | 'unreadable' = 'ok';
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    if (u.includes('/envelope')) {
+      const { mailbox_id, blob } = JSON.parse(String(init?.body ?? '{}'));
+      if (!boxes.has(mailbox_id)) boxes.set(mailbox_id, []);
+      boxes.get(mailbox_id)!.push({ envelope_id: `env_${++seq}`, blob });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (u.includes('/queue')) {
+      if (queueReply === 'refused') return new Response('{}', { status: 401 });
+      if (queueReply === 'unreadable') return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      const mid = new URL(u).searchParams.get('mailbox_id') ?? '';
+      return new Response(JSON.stringify(boxes.get(mid) ?? []), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (u.includes('/ack')) {
+      if (failAcks > 0) {
+        failAcks--;
+        throw new Error('killed between commit and ack');
+      }
+      const { mailbox_id, envelope_ids } = JSON.parse(String(init?.body ?? '{}'));
+      onAck?.(envelope_ids);
+      acks.push(envelope_ids);
+      boxes.set(mailbox_id, (boxes.get(mailbox_id) ?? []).filter((e) => !envelope_ids.includes(e.envelope_id)));
+      return new Response(JSON.stringify({ deleted: (envelope_ids as string[]).length }), { status: 200 });
+    }
+    return new Response('nf', { status: 404 });
+  }) as unknown as typeof fetch;
+  const queued = () => [...boxes.values()].reduce((n, q) => n + q.length, 0);
+  const listIds = () => [...boxes.values()].flat().map((e) => e.envelope_id);
+  return { fetchImpl, acks, queued, listIds, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
+}
+
+function tmpBook(): { dir: string; path: string; open: () => HeadlessStore; hash: () => string; done: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), 'svrnty-712-'));
+  const path = join(dir, 'store.json');
+  return {
+    dir, path,
+    open: () => new HeadlessStore({ path, lockDir: dir }),
+    hash: () => createHash('sha256').update(readFileSync(path)).digest('hex'),
+    done: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+async function sendN(from: Id, to: Id, n: number, fetchImpl: typeof fetch, tag = 'n'): Promise<void> {
+  const s = new HeadlessStore();
+  for (let i = 0; i < n; i++) {
+    const r = await sendNoteFromHeadless({ owner: owner(from), peerFingerprint: to.fp, peerPublicKeyArmored: to.pub, peerPqKemPublicKey: to.kem, body: `${tag} ${i}`, store: s, relayBase: RELAY, fetchImpl });
+    assert.equal(r.deposited, true);
+  }
+}
+
+
+const mbox = (id: Id) => deriveMailboxId(id.fp);
+/** A's persistent store (so its outbound row + receipt key survive to A's own poll). */
+function agentBook() {
+  const b = tmpBook();
+  return { ...b, store: b.open() };
+}
+async function send(from: Id, to: Id, store: HeadlessStore, fetchImpl: typeof fetch, body = 'hello', extra: { noteId?: string; sentAt?: string } = {}) {
+  const r = await sendNoteFromHeadless({ owner: owner(from), peerFingerprint: to.fp, peerPublicKeyArmored: to.pub, peerPqKemPublicKey: to.kem, body, store, relayBase: RELAY, fetchImpl, ...extra });
+  assert.equal(r.deposited, true);
+  return r;
+}
+/** Envelopes waiting in one mailbox (the mock lists per mailbox). */
+async function inbox(relay: ReturnType<typeof mockRelay>, id: Id): Promise<Array<{ envelope_id: string; blob: string }>> {
+  const res = await relay.fetchImpl(`${RELAY}/queue?mailbox_id=${encodeURIComponent(mbox(id))}`);
+  return (await res.json()) as Array<{ envelope_id: string; blob: string }>;
+}
+async function deposit(relay: ReturnType<typeof mockRelay>, to: Id, blob: string) {
+  await relay.fetchImpl(`${RELAY}/envelope`, { method: 'POST', body: JSON.stringify({ mailbox_id: mbox(to), blob }) });
+}
+
+test('E1 round trip: A→B note; B stores it and sends ONE receipt; A verifies it → delivered:true, the key gone, delivered 1; one store write', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const a = agentBook();
+  const b = tmpBook();
+  try {
+    a.store.upsertContact(asContact(B));
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    const { note_id } = await send(A, B, a.store, relay.fetchImpl, 'ping');
+    const rk = a.store.findOutboundNote(A.fp, note_id)?.receipt_key;
+    assert.match(rk ?? '', /^[0-9a-f]{64}$/, 'S1: our outbound row keeps the key');
+    const sb = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(sb.notes, 1);
+    assert.equal(sb.receipts_sent, 1);
+    assert.equal((await inbox(relay, A)).length, 1, 'one receipt in A\'s mailbox');
+    const before = a.store.writes;
+    const sa = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(sa.delivered, 1);
+    assert.equal(sa.receipts_sent, 0, 'a receipt never earns a receipt');
+    assert.equal(a.store.writes - before, 1, 'C1: the delivered rewrite rode the poll\'s ONE chunk write');
+    const row = a.open().findOutboundNote(A.fp, note_id)!;
+    assert.equal(row.delivered, true);
+    assert.equal(row.receipt_key, undefined, 'the key dies with the confirmation');
+    assert.equal(a.open().listNotes().length, 1, 'N6: a receipt is never stored as a note');
+    assert.equal((await inbox(relay, A)).length, 0, 'the receipt envelope was acked');
+  } finally {
+    a.done();
+    b.done();
+  }
+});
+
+test('N1 no receipt unless persisted: a stranger, a blocked sender, a FWW refusal, a failed chunk write and a C2 block each send NONE', async () => {
+  const [A, B] = [await mint(), await mint()];
+  // (a) stranger (not in B's book) and (b) blocked
+  for (const contact of [null, { blocked: true }] as const) {
+    const relay = mockRelay();
+    const b = tmpBook();
+    try {
+      const bs = b.open();
+      if (contact) bs.upsertContact(asContact(A, contact));
+      await send(A, B, new HeadlessStore(), relay.fetchImpl);
+      const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+      assert.equal(s.notes, 0);
+      assert.equal(s.receipts_sent, 0);
+      assert.equal((await inbox(relay, A)).length, 0, contact ? 'blocked: no receipt' : 'stranger: no receipt (no liveness oracle)');
+    } finally {
+      b.done();
+    }
+  }
+  // (c) a failed chunk write: the note is not durable → no receipt (and it stays on the relay)
+  {
+    const relay = mockRelay();
+    const b = tmpBook();
+    try {
+      const bs = b.open();
+      bs.upsertContact(asContact(A));
+      await send(A, B, new HeadlessStore(), relay.fetchImpl);
+      const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+      deps.chunk!.commit = () => {
+        throw new Error('disk full');
+      };
+      await consumeInboundContactUpdates(deps);
+      const r = await deps.sendReceipts();
+      assert.deepEqual(r, { sent: 0, skipped: 1, failed: 0 });
+      assert.equal((await inbox(relay, A)).length, 0);
+      assert.equal((await inbox(relay, B)).length, 1, 'the note stays on the relay');
+    } finally {
+      b.done();
+    }
+  }
+  // (d) C2: the sender is blocked by a concurrent writer before the chunk commit → the note is not stored → no receipt
+  {
+    const [X, Y] = [await mint(), await mint()];
+    const relay = mockRelay();
+    const b = tmpBook();
+    try {
+      const seed = b.open();
+      seed.upsertContact(asContact(X));
+      seed.upsertContact(asContact(Y));
+      await send(X, B, new HeadlessStore(), relay.fetchImpl, 'x');
+      await send(Y, B, new HeadlessStore(), relay.fetchImpl, 'y');
+      const bs = b.open();
+      const other = b.open();
+      const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+      const accept = deps.note!.accept;
+      let calls = 0;
+      deps.note!.accept = async (w) => {
+        if (++calls === 2) other.updateContact(asContact(X).id, { blocked: true });
+        return accept(w);
+      };
+      await consumeInboundContactUpdates(deps);
+      const r = await deps.sendReceipts();
+      assert.equal(r.sent, 1, 'Y only');
+      assert.equal((await inbox(relay, X)).length, 0, 'X (blocked before the commit) gets no receipt');
+      assert.equal((await inbox(relay, Y)).length, 1);
+    } finally {
+      b.done();
+    }
+  }
+});
+
+test('N2 static: the headless path never builds a receipt itself and names no code but delivered (never read / seen / opened)', () => {
+  // code only: comments may name the forbidden codes to explain the rule
+  const src = readFileSync(join(__dirname, 'headless-client.ts'), 'utf8').split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).map((l) => l.replace(/\s\/\/ .*$/, '')).join('\n');
+  assert.doesNotMatch(src, /buildReceiptWireV1\(/, 'the wire is built only inside emitDeliveredReceipt, which hard-codes delivered');
+  assert.doesNotMatch(src, /['"](read|seen|opened)['"]/);
+  const emit = readFileSync(join(__dirname, '../messaging/receipt-emit.ts'), 'utf8');
+  assert.deepEqual([...emit.matchAll(/buildReceiptWireV1\([^)]*\)/g)].map((m) => /'delivered'\)$/.test(m[0])), [true]);
+});
+
+test('N3 no downgrade: a sender with no ML-KEM key gets no receipt', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    await send(A, B, new HeadlessStore(), relay.fetchImpl);
+    const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    const accept = deps.note!.accept;
+    let wire: NoteWireV0 | undefined;
+    deps.note!.accept = async (w) => {
+      wire = w;
+      return accept(w);
+    };
+    await consumeInboundContactUpdates(deps);
+    assert.ok(wire);
+    // the same stored, admitted note, but its (signature-bound) wire carries no kem key: emitDeliveredReceipt must refuse it
+    const kemless = { ...wire!, pq_kem_public_key: undefined } as NoteWireV0;
+    const r = await sendHeadlessReceipts(bs, new Map([[`${A.fp}:${kemless.note_id}`, kemless]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.deepEqual(r, { sent: 0, skipped: 1, failed: 0 });
+    assert.equal((await inbox(relay, A)).length, 0);
+  } finally {
+    b.done();
+  }
+});
+
+test('N4 canary: the receipt key never reaches stdout/stderr, the dead-letter file, or any file in the agent dir but the store', async () => {
+  const [A, B, S] = [await mint(), await mint(), await mint()];
+  const relay = mockRelay();
+  const a = agentBook();
+  const b = tmpBook();
+  const said: string[] = [];
+  const orig = { log: console.log, error: console.error, warn: console.warn, info: console.info };
+  const cap = (...x: unknown[]) => void said.push(x.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' '));
+  const outW = process.stdout.write.bind(process.stdout);
+  const errW = process.stderr.write.bind(process.stderr);
+  try {
+    a.store.upsertContact(asContact(B));
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    console.log = console.error = console.warn = console.info = cap;
+    (process.stdout as unknown as { write: unknown }).write = (c: unknown) => (said.push(String(c)), true);
+    (process.stderr as unknown as { write: unknown }).write = (c: unknown) => (said.push(String(c)), true);
+    const { note_id } = await send(A, B, a.store, relay.fetchImpl, 'canary');
+    const rk = a.store.findOutboundNote(A.fp, note_id)!.receipt_key!;
+    await send(S, B, new HeadlessStore(), relay.fetchImpl, 'stranger'); // a loss → a dead-letter row in B's dir
+    await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, deadLetterPath: join(b.dir, DEAD_LETTER_FILE) });
+    await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl, deadLetterPath: join(a.dir, DEAD_LETTER_FILE) });
+    Object.assign(console, orig);
+    process.stdout.write = outW;
+    process.stderr.write = errW;
+    assert.ok(rk.length === 64);
+    assert.equal(said.filter((l) => l.includes(rk)).length, 0, 'never in any output');
+    for (const dir of [a.dir, b.dir]) {
+      for (const f of readdirSync(dir)) {
+        // store.json and its own previous copy store.json.bak: the store, the key's ONLY home (sealed at rest when a key is configured; the .bak
+        // is never more exposed than the book, headless-store.ts sealBackup). Everything else in the agent dir must never hold it.
+        if (f === 'store.json' || f === 'store.json.bak' || f.startsWith('.')) continue;
+        assert.equal(readFileSync(join(dir, f), 'utf8').includes(rk), false, `${f} must not hold the key`);
+      }
+    }
+    assert.ok(existsSync(join(b.dir, DEAD_LETTER_FILE)), 'control: the dead-letter file was written');
+    assert.equal(readFileSync(b.path, 'utf8').includes(rk), false, 'B never stores the key (inbound rows carry none)');
+    assert.equal(readFileSync(a.path, 'utf8').includes(rk), false, 'A dropped it on confirmation');
+  } finally {
+    Object.assign(console, orig);
+    process.stdout.write = outW;
+    process.stderr.write = errW;
+    a.done();
+    b.done();
+  }
+});
+
+test('N5 forged / wrong-code / transplanted receipts never mark Delivered, and the key survives for the real one', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const a = agentBook();
+  try {
+    a.store.upsertContact(asContact(B));
+    const n1 = await send(A, B, a.store, relay.fetchImpl, 'one');
+    const n2 = await send(A, B, a.store, relay.fetchImpl, 'two');
+    const rk1 = a.store.findOutboundNote(A.fp, n1.note_id)!.receipt_key!;
+    const rk2 = a.store.findOutboundNote(A.fp, n2.note_id)!.receipt_key!;
+    const forged = buildReceiptWireV1(receiptKeyToHex(newReceiptKey()), n1.note_id, 'delivered')!; // a relay-forged tag
+    const wrongCode = buildReceiptWireV1(rk1, n1.note_id, 'read')!; // right key, a code this build never acts on
+    const transplanted = { ...buildReceiptWireV1(rk2, n2.note_id, 'delivered')!, note_id: n1.note_id }; // note 2's tag on note 1
+    for (const w of [forged, wrongCode, transplanted]) await deposit(relay, A, await sealReceiptV1To(w, A.pub, A.kem));
+    const s = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s.delivered, 0);
+    const row1 = a.open().findOutboundNote(A.fp, n1.note_id)!;
+    assert.equal(row1.delivered, undefined);
+    assert.equal(row1.receipt_key, rk1, 'the key survives');
+    assert.equal(a.open().findOutboundNote(A.fp, n2.note_id)!.receipt_key, rk2);
+    // the REAL receipt still lands afterwards
+    await deposit(relay, A, await sealReceiptV1To(buildReceiptWireV1(rk1, n1.note_id, 'delivered')!, A.pub, A.kem));
+    const s2 = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s2.delivered, 1);
+    assert.equal(a.open().findOutboundNote(A.fp, n1.note_id)!.delivered, true);
+  } finally {
+    a.done();
+  }
+});
+
+test('N7 (C1) N receipts + M notes in one poll = ONE store write per ack chunk; no receipt POST while .writer.lock is held', async () => {
+  const [A, B] = [await mint(), await mint()];
+  let posts = 0;
+  let underLock = 0;
+  const a = agentBook();
+  const base = mockRelay();
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (String(url).includes('/envelope')) {
+      posts++;
+      if (existsSync(join(a.dir, '.writer.lock'))) underLock++;
+    }
+    return base.fetchImpl(url, init);
+  }) as unknown as typeof fetch;
+  const relay = { ...base, fetchImpl };
+  const b = tmpBook();
+  try {
+    a.store.upsertContact(asContact(B));
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    // A sends 3 notes to B; B sends 4 notes to A; B polls (3 receipts out); then A polls ONE mailbox with 3 receipts + 4 notes
+    const ids = [];
+    for (let i = 0; i < 3; i++) ids.push((await send(A, B, a.store, fetchImpl, `a${i}`)).note_id);
+    for (let i = 0; i < 4; i++) await send(B, A, new HeadlessStore(), fetchImpl, `b${i}`);
+    await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl });
+    assert.equal((await inbox(relay, A)).length, 7);
+    const before = a.store.writes;
+    posts = 0;
+    const s = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl });
+    assert.equal(s.delivered, 3);
+    assert.equal(s.notes, 4);
+    assert.equal(a.store.writes - before, 1, '7 envelopes = one chunk = ONE write (receipt rewrites ride it)');
+    assert.equal(posts, 4, 'A answers B\'s 4 notes');
+    assert.equal(underLock, 0, 'no receipt POST started while the writer lock was held');
+    for (const id of ids) assert.equal(a.open().findOutboundNote(A.fp, id)!.delivered, true);
+  } finally {
+    a.done();
+    b.done();
+  }
+});
+
+test('N8 (C2) a byte-identical redelivery re-emits once per poll; a different-content one (FWW refusal) emits nothing', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    // the same signed note deposited twice (the sender retried): one poll → ONE receipt (dedupe per poll)
+    const blob = await (async () => {
+      const box = mockRelay();
+      await send(A, B, new HeadlessStore(), box.fetchImpl, 'same', { noteId: 'n-same', sentAt: '2026-10-31T20:00:00.000Z' });
+      return (await inbox(box, B))[0].blob;
+    })();
+    await deposit(relay, B, blob);
+    await deposit(relay, B, blob);
+    const s1 = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s1.notes, 2);
+    assert.equal(s1.receipts_sent, 1, 'at most one receipt per (sender, note_id) per poll');
+    // a later poll with the identical note again: re-emits ONCE (the first receipt may have been lost)
+    await deposit(relay, B, blob);
+    const s2 = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s2.receipts_sent, 1);
+    // the same note_id with different content: refused (FWW), no receipt
+    await send(A, B, new HeadlessStore(), relay.fetchImpl, 'rewritten', { noteId: 'n-same', sentAt: '2026-10-31T20:00:00.000Z' });
+    const s3 = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s3.notes, 1, 'consumed as the stored note');
+    assert.equal(s3.receipts_sent, 0);
+    assert.equal(b.open().listNotes()[0].body, 'same');
+    assert.equal((await inbox(relay, A)).length, 2);
+  } finally {
+    b.done();
+  }
+});
+
+test('N9 (C3) the emit path re-checks admitContact itself: a candidate from a stranger or a blocked sender is refused when called directly', async () => {
+  const [A, S, B] = [await mint(), await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    await send(A, B, new HeadlessStore(), relay.fetchImpl, 'from A');
+    const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    const accept = deps.note!.accept;
+    let wire: NoteWireV0 | undefined;
+    deps.note!.accept = async (w) => ((wire = w), accept(w));
+    await consumeInboundContactUpdates(deps);
+    // the note is stored; now A is blocked before the emit: the same candidate is refused
+    bs.updateContact(asContact(A).id, { blocked: true });
+    assert.deepEqual(await sendHeadlessReceipts(bs, new Map([[`${A.fp}:${wire!.note_id}`, wire!]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), { sent: 0, skipped: 1, failed: 0 });
+    // a stranger's wire, even if a note with its id were in the store: refused (S is not in the book)
+    bs.putNote({ ...b.open().listNotes()[0], from_fingerprint: S.fp });
+    const strangerWire = { ...wire!, from_fingerprint: S.fp, public_key: S.pub, pq_kem_public_key: S.kem };
+    assert.deepEqual(await sendHeadlessReceipts(bs, new Map([[`${S.fp}:${wire!.note_id}`, strangerWire]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), { sent: 0, skipped: 1, failed: 0 });
+    assert.equal((await inbox(relay, A)).length + (await inbox(relay, S)).length, 0);
+  } finally {
+    b.done();
+  }
+});

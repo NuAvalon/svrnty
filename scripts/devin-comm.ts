@@ -174,7 +174,7 @@ const CONSUME_BUDGET_MS = (() => {
   return /^[0-9]{1,6}$/.test(v) ? Math.min(600_000, Math.max(1_000, Number(v))) : 40_000;
 })();
 
-async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
+async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary & { receipts_sent: number }> {
   // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
   const deps = await buildHeadlessConsumeDeps(owner, store, {
     relayBase: RELAY,
@@ -182,7 +182,11 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
     deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
   });
   deps.joiner = buildLocalJoinerSeam(owner, store);
-  return consumeInboundContactUpdates(deps);
+  const consumed = await consumeInboundContactUpdates(deps);
+  // Layer 1: "Delivered" receipts go out AFTER the pass (no chunk open, no writer lock held by this process; Flint C1), and only for notes
+  // the store now holds from admitted senders (C2/C3). Counts only.
+  const r = await deps.sendReceipts();
+  return { ...consumed, receipts_sent: r.sent };
 }
 
 // ── triple-ratchet (tr-v1) headless consume/send — mirrors messaging/direct-session.ts ─────────
@@ -668,7 +672,9 @@ async function main() {
       held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
       opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical,
       // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
-      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0 }));
+      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0,
+      // layer 1: receipts verified → our outbound notes now Delivered / receipts this poll sent back to senders (counts only)
+      delivered: consumed.delivered, receipts_sent: consumed.receipts_sent }));
     return;
   }
 
