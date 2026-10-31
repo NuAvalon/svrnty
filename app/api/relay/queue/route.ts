@@ -9,6 +9,7 @@
 import { NextResponse } from 'next/server';
 import { pollMailbox } from '@/lib/relay/mailbox-store';
 import { verifyMailboxPollAuth } from '@/lib/relay/mailbox-auth';
+import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
 import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { isMailboxClaimed } from '@/lib/relay/claim-registry';
 
@@ -25,7 +26,11 @@ export async function GET(request: Request) {
 
     // Owner check precedes ALL store access. Non-owners (incl. no-auth / bad-auth) take the uniform
     // path below and never learn whether the mailbox exists.
-    const isOwner = await verifyMailboxPollAuth(request, mailboxId, Date.now());
+    // #721: a v2 (mbx2_) id is verified ONLY by its own auth key (no fingerprint, no identity key); a v1 id ONLY by v1. A bundle of the
+    // other version fails here, on the same uniform path.
+    const isOwner = isMailboxIdV2(mailboxId)
+      ? await verifyOwnerRequestV2(request, 'poll', mailboxId, Date.now())
+      : await verifyMailboxPollAuth(request, mailboxId, Date.now());
     if (!isOwner) return nonOwner();
 
     // §5.1 BETA-ADMISSION (layer A, criterion-1): under the inviteRequired profile an UNCLAIMED mailbox
