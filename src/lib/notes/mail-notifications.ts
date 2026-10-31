@@ -14,6 +14,7 @@
 // - never the note text, never a fingerprint, never a count.
 
 import type { NoteArrivalEvent } from './note-events';
+import { boundDisplayText } from '@/components/notes/notes-text';
 
 // ── copy (Hypatia 9e1aef8d, verbatim) ──────────────────────────────────────────────────────────────────────────────────────
 export const COPY = {
@@ -84,22 +85,38 @@ export function decideMailNotification(i: DecideInput): MailNotification | null 
   if (i.event.kind !== 'note') return null; // receipts, our own sends and anything unlabelled never notify (fail closed)
   if (!i.activeFingerprint || !i.event.to_fingerprint) return null;
   if (i.event.to_fingerprint.toLowerCase() !== i.activeFingerprint.toLowerCase()) return null; // N4: another identity's mail (e.g. another tab)
-  const base: MailNotification = { title: COPY.notification, tag: NOTIFICATION_TAG };
-  const name = i.localContactName?.trim();
-  if (i.prefs.showSender && i.unlocked && name) {
-    return { ...base, body: senderLine(name) };
+  const base: MailNotification = { title: NOTIFY_TITLE, tag: NOTIFICATION_TAG };
+  if (i.prefs.showSender && i.unlocked) {
+    const body = senderLine(i.localContactName);
+    if (body) return { ...base, body };
   }
   return base;
 }
 
 /**
- * The sender line shown under "New note" when the nested toggle is on. Hypatia's copy v1 (9e1aef8d) doesn't define this string yet
- * (asked 🦉12735). Until she does, it is OFF: senderLine returns the name ONLY through this single constant, so the copy change is one line + its pin.
+ * Hypatia #188943 (copy v1.1): the TITLE is always the constant, so the tag collapse and every title-keyed NEG hold in both modes; the name
+ * goes in the BODY, which a phone's own "hide sensitive content" setting may hide on the lock screen (a safer placement, not a guarantee:
+ * Flint N1 and the toggle's lock-screen warning stand).
  */
-export const SENDER_LINE_PENDING_COPY = true;
-export function senderLine(name: string): string | undefined {
+export const NOTIFY_TITLE = 'New note';
+export const NOTIFY_BODY_NAMED = 'From {name}';
+/** Kept for the PR #334 history: the named variant was held OFF until the string above existed. */
+export const SENDER_LINE_PENDING_COPY = false;
+const NAME_MAX = 64;
+// Linear check (no nested quantifiers): only hex + separators, with at least 8 hex digits → it's a fingerprint, not a name.
+const looksLikeFingerprint = (s: string): boolean => /^[0-9a-f\s….:-]+$/i.test(s) && (s.match(/[0-9a-f]/gi)?.length ?? 0) >= 8;
+
+/**
+ * The body for a named notification, or undefined (→ title only). The name is the LOCAL contact book entry's name (the user's petname if
+ * they set one, else the card display name the contact was saved with), never anything from the envelope (N2). Rendered as plain text:
+ * NFC, control + bidi stripped (boundDisplayText, the same as the Notes list) AND every Unicode format character (Cf: zero-width, bidi marks,
+ * tag chars), bounded. A "name" that is really a fingerprint is refused (never a fingerprint on the lock screen).
+ */
+export function senderLine(rawName: string | null | undefined): string | undefined {
   if (SENDER_LINE_PENDING_COPY) return undefined;
-  return name;
+  const name = boundDisplayText(rawName, NAME_MAX).replace(/\p{Cf}/gu, '').trim();
+  if (!name || looksLikeFingerprint(name)) return undefined;
+  return NOTIFY_BODY_NAMED.replace('{name}', name);
 }
 
 // ── showing it ────────────────────────────────────────────────────────────────────────────────────────────────────────────

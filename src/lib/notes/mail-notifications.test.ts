@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  COPY, DEFAULT_PREFS, NOTIFICATION_TAG, SENDER_LINE_PENDING_COPY, decideMailNotification, loadMailNotifyPrefs, saveMailNotifyPrefs,
+  COPY, DEFAULT_PREFS, NOTIFICATION_TAG, NOTIFY_BODY_NAMED, NOTIFY_TITLE, SENDER_LINE_PENDING_COPY, decideMailNotification, senderLine, loadMailNotifyPrefs, saveMailNotifyPrefs,
   showMailNotification, type DecideInput,
 } from './mail-notifications';
 
@@ -41,7 +41,7 @@ test('M4 NEG (N4) another identity\'s mail: to_fingerprint ≠ the active identi
   assert.ok(decideMailNotification(base({ event: { kind: 'note', from_fingerprint: BOB, to_fingerprint: ME.toUpperCase() } })), 'case-insensitive match');
 });
 
-test('M5 (N1/N3) the sender is NEVER shown by default, nor while locked, nor without a LOCAL contact name; and not at all until Hypatia\'s string lands', () => {
+test('M5 (N1/N3) the sender is NEVER shown by default, nor while locked, nor without a usable LOCAL contact name', () => {
   for (const over of [
     { prefs: { enabled: true, showSender: false } },
     { prefs: { enabled: true, showSender: true }, unlocked: false },
@@ -52,8 +52,24 @@ test('M5 (N1/N3) the sender is NEVER shown by default, nor while locked, nor wit
     assert.equal(n.title, 'New note');
     assert.equal(n.body, undefined, JSON.stringify(over));
   }
-  assert.equal(SENDER_LINE_PENDING_COPY, true, 'the named variant stays off until copy exists (asked Hypatia 🦉12735)');
-  assert.equal(decideMailNotification(base({ prefs: { enabled: true, showSender: true } }))!.body, undefined);
+});
+
+test('M5b (Hypatia #188943) named mode: title stays "New note", body "From {name}", from the local name only', () => {
+  assert.equal(SENDER_LINE_PENDING_COPY, false);
+  assert.equal(NOTIFY_TITLE, 'New note');
+  assert.equal(NOTIFY_BODY_NAMED, 'From {name}');
+  assert.deepEqual(decideMailNotification(base({ prefs: { enabled: true, showSender: true }, localContactName: 'Work' })), { title: 'New note', body: 'From Work', tag: NOTIFICATION_TAG });
+});
+
+test('M5c NEG the name is plain text: control, bidi overrides and every format char (zero-width, LRM/RLM, tags) are stripped; bounded; never a fingerprint', () => {
+  const cf = [0x200b, 0x200e, 0x200f, 0x2060, 0xfeff, 0xe0041].map((c) => String.fromCodePoint(c)).join('');
+  const rlo = String.fromCodePoint(0x202e);
+  assert.equal(senderLine(`B${cf}o${rlo}b\u0007`), 'From Bob');
+  assert.equal(senderLine(cf + rlo), undefined, 'nothing visible left → title only');
+  assert.equal(senderLine('x'.repeat(500))!.length, 'From '.length + 64);
+  for (const fpish of ['cdcdcdcd', 'CDCDCDCD…EFEFEFEF', 'cdcd cdcd cdcd', 'ab:cd:ef:01:23']) assert.equal(senderLine(fpish), undefined, fpish);
+  assert.equal(senderLine('Cafe'), 'From Cafe', 'a short word that happens to be hex-ish is still a name');
+  assert.equal(senderLine('Bob 1234abcd'), 'From Bob 1234abcd', 'a real name containing hex is a name');
 });
 
 test('M6 NEG canary: no field of the notification ever carries note text, a fingerprint or ids, whatever the event carries', () => {
@@ -61,6 +77,7 @@ test('M6 NEG canary: no field of the notification ever carries note text, a fing
   const n = decideMailNotification(base({ event: ev, localContactName: 'Bob', prefs: { enabled: true, showSender: true } }))!;
   const flat = JSON.stringify(n);
   for (const bad of [CANARY, BOB, ME, BOB.slice(0, 8)]) assert.equal(flat.includes(bad), false, bad);
+  assert.equal(n.body, 'From Bob', 'only the local name travels');
 });
 
 test('M7 NEG (N2) verify-failed / not-in-book / blocked notes never reach the bus: emitNote runs ONLY on consume-mailbox\'s kind "note" branch', () => {
