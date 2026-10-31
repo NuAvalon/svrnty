@@ -170,7 +170,16 @@ export interface StagedOpen {
   commit: () => Promise<void>;
   /** Give the lock back without committing (the note was not stored). Safe to call after commit() and more than once. */
   release: () => void;
+  /** R5: this open REPLACED an existing session with the peer's new first frame (the receiving side of a reset). The caller releases that contact's held frames AFTER the note is stored and commit() ran. */
+  replaced?: boolean;
 }
+
+/**
+ * R5/R6 (Flint reset-semantics): decides whether a peer's NEW first frame may replace the session we hold. The CALLER knows the signed sent_at, the stored notes and
+ * both fingerprints, so it answers; the opener only reports what it can see (`unconfirmed` = a session WE initiated that has received nothing from the peer yet).
+ * Absent = never adopt (the status quo).
+ */
+export type AdoptFirstFrame = (s: { unconfirmed: boolean }) => boolean;
 
 /**
  * Why a ratchet open did not produce a message, TYPED (#720 v5.3, Flint #2052). 'verdict' = the frame itself is bad (malformed, would not
@@ -193,8 +202,9 @@ export async function openDirectNoteStaged(
   self: RatchetIdentity,
   peer: RatchetPeer,
   io: RatchetIO = realRatchetIO,
+  adopt?: AdoptFirstFrame,
 ): Promise<StagedOpen | null> {
-  const r = await openDirectNoteStagedTyped(peerFingerprint, body, self, peer, io);
+  const r = await openDirectNoteStagedTyped(peerFingerprint, body, self, peer, io, adopt);
   return 'failed' in r ? null : r;
 }
 
@@ -205,6 +215,7 @@ export async function openDirectNoteStagedTyped(
   self: RatchetIdentity,
   peer: RatchetPeer,
   io: RatchetIO = realRatchetIO,
+  adopt?: AdoptFirstFrame,
 ): Promise<StagedOpen | OpenFailure> {
   const packet = decodeBody(body);
   if (!packet) return { failed: true, kind: 'verdict', cause: 'malformed-frame' };
@@ -215,6 +226,7 @@ export async function openDirectNoteStagedTyped(
     if (cur.state === 'unreadable') return { failed: true, kind: 'local', cause: 'session-row-unreadable' }; // R3: never acceptFirst over an unreadable row (it would overwrite the real session)
     let plaintext: string;
     let next: RatchetSnapshot;
+    let replaced = false;
     if (cur.state === 'ok') {
       const session = TripleRatchet.importState(cur.snapshot);
       if (!session) return { failed: true, kind: 'local', cause: 'session-snapshot-corrupt' };
@@ -222,9 +234,18 @@ export async function openDirectNoteStagedTyped(
       // T2 (Flint #186298): the frame came inside a note signed by an AUTHENTICATED, ADMITTED contact, so a receive failure is not an attack; it is a
       // session that no longer agrees (theirs, ours, or a lost frame). 'desync' is HELD and retried, never acked as a verdict: a later frame, or a
       // user-initiated reset, can heal it.
-      if (pt === null) return { failed: true, kind: 'desync', cause: 'ratchet-receive-failed' };
-      plaintext = pt;
-      next = session.exportState();
+      if (pt === null) {
+        // R5: the peer may have RESET and sent a NEW first frame. Only if the caller's policy allows replacing (replay guard + R6 tie-break) do we try
+        // it, and only a genuine FIRST frame can open here (acceptFirst rejects a continuation). Anything else stays the held desync it was.
+        const first = adopt && adopt({ unconfirmed: cur.snapshot.recvCk === null }) ? await TripleRatchet.acceptFirst(self, peer, packet) : null;
+        if (!first) return { failed: true, kind: 'desync', cause: 'ratchet-receive-failed' };
+        plaintext = first.plaintext;
+        next = first.session.exportState();
+        replaced = true;
+      } else {
+        plaintext = pt;
+        next = session.exportState();
+      }
     } else {
       const first = await TripleRatchet.acceptFirst(self, peer, packet);
       if (!first) return { failed: true, kind: 'verdict', cause: 'first-frame-rejected' };
@@ -238,6 +259,7 @@ export async function openDirectNoteStagedTyped(
     return {
       plaintext,
       release,
+      ...(replaced ? { replaced: true } : {}),
       commit: async () => {
         if (ended) throw new Error('staged ratchet open already ended');
         try { await io.put(peerFingerprint, next, expected); } finally { release(); }
