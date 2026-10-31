@@ -1,0 +1,12 @@
+{
+  "circom_binaries_sha256": {
+    "2.1.6": "f3958483caaaa0cdd3912df5049e2e635eab4d09b9a66807be9633d547859f12",
+    "2.2.3": "85342c7ff332d948df7c0c50ecf201e6129349aef550ce873f3c811b79fe53a3"
+  },
+  "circom_command": "circom slotbind.circom --r1cs --wasm --sym --O2 -l node_modules -o build",
+  "r1cs_sha256": "4f334609c93f39cc4acd0eff773bba2cdd203941a358e2160c884c4ede1a711b",
+  "constraints": 6574,
+  "public_wires": 4,
+  "snarkjs": "0.7.6",
+  "status": "WORKING DRAFT. Not reviewed (R5 pending). circom version pick (2.1.6 vs 2.2.3) is open; both give the same r1cs under --O2, so either hash is accepted until the pick."
+}

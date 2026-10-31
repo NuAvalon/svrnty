@@ -1,0 +1,11 @@
+{
+  "name": "svrnty-588-slotbind",
+  "version": "0.0.0",
+  "private": true,
+  "description": "#588 slot-binding circuit + its pinned tooling. Own lockfile on purpose: the app's package.json stays untouched.",
+  "dependencies": {
+    "circomlib": "2.0.5",
+    "circomlibjs": "0.1.7",
+    "snarkjs": "0.7.6"
+  }
+}
