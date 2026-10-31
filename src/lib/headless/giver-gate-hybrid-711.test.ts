@@ -12,6 +12,9 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
+import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
+import { buildJoinerResponse, encryptJoinerResponseTo, type SignedJoinerResponse } from '@/lib/trust/joiner-response';
 
 type Env = { envelope_id: string; mailbox_id: string; blob: string };
 type Stub = { base: string; envelopes: Env[]; acked: string[]; close: () => Promise<void> };
@@ -103,4 +106,67 @@ test('#711 REAL CLI: giver mints a link, a CLI joiner joins (hybrid-sealed respo
     await stub.close();
     for (const d of [gdir, jdir]) rmSync(d, { recursive: true, force: true });
   }
+});
+
+// ── NEGs (Flint #188931 check 2): this PR opens the hybrid path into nonce + signature verification on the CLI giver, which nobody had
+// exercised negatively. Each crafted response is properly hybrid-sealed to the giver (so it OPENS) and must still be refused. A crafted VALID
+// control in the same harness proves the NEGs fail for the right reason (not because crafting is broken).
+type Agent = { fp: string; pub: string; priv: string; kpass: string; kem: string; sig: string };
+async function throwaway(): Promise<Agent> {
+  const a = await mintHeadlessAgent({ throwaway: true });
+  const id = a.introduction.card.identity as unknown as { fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string };
+  return { fp: id.fingerprint, pub: id.public_key, priv: a.secret_material.classicalPrivateKey, kpass: a.secret_material.classicalKpass, kem: id.pq_kem_public_key, sig: id.pq_sig_public_key };
+}
+async function giverWithCode(stub: Stub, gdir: string): Promise<{ fp: string; pub: string; kem: string; code: string }> {
+  assert.equal((await cli(gdir, stub.base, ['mint'])).status, 0);
+  const g = await cli(gdir, stub.base, ['grow', '1']);
+  assert.equal(g.status, 0, g.out);
+  const url = JSON.parse(g.out.trim().split('\n').pop()!).url as string;
+  const code = new URL(url).pathname.split('/').pop()!;
+  const id = JSON.parse(readFileSync(join(gdir, 'mint.json'), 'utf8')).public.card.identity;
+  return { fp: id.fingerprint, pub: id.public_key, kem: id.pq_kem_public_key, code };
+}
+async function craft(giver: { fp: string; pub: string; kem: string }, card: Agent, signer: Agent, nonce: string, tamper?: (s: SignedJoinerResponse) => void): Promise<string> {
+  const signed = await buildJoinerResponse({ joinerFp: card.fp, joinerEpoch: 0, joinerPubKeyArmored: card.pub, joinerName: 'mallory', giverFp: giver.fp, inviteNonce: nonce,
+    joinerPqKemPublicKey: card.kem, joinerPqSigPublicKey: card.sig }, signer.priv, signer.kpass);
+  tamper?.(signed);
+  return encryptJoinerResponseTo(signed, giver.pub, giver.kem);
+}
+async function runCase(name: string, make: (giver: { fp: string; pub: string; kem: string; code: string }, B: Agent, C: Agent) => Promise<string>, expectAtGate: boolean) {
+  const stub = await startStubRelay();
+  const gdir = mkdtempSync(join(tmpdir(), 'g711-neg-'));
+  try {
+    const giver = await giverWithCode(stub, gdir);
+    const [B, C] = [await throwaway(), await throwaway()];
+    const before = JSON.stringify(JSON.parse(readFileSync(join(gdir, 'issued-codes.json'), 'utf8')));
+    stub.envelopes.push({ envelope_id: 'crafted1', mailbox_id: deriveMailboxId(giver.fp), blob: await make(giver, B, C) });
+    assert.equal((await cli(gdir, stub.base, ['poll-json'])).status, 0);
+    const gate = await cli(gdir, stub.base, ['gate']);
+    const storePath = join(gdir, 'store.json');
+    const book = (existsSync(storePath) ? JSON.parse(readFileSync(storePath, 'utf8')).contacts : []) as Array<{ fingerprint: string }>;
+    assert.equal(book.some((c) => c.fingerprint.toLowerCase() === B.fp.toLowerCase()), false, `${name}: never in the book`);
+    const after = JSON.stringify(JSON.parse(readFileSync(join(gdir, 'issued-codes.json'), 'utf8')));
+    if (expectAtGate) {
+      assert.match(gate.out, new RegExp(B.fp.slice(0, 8), 'i'), `${name}: control must reach the Gate: ` + gate.out.slice(-300));
+    } else {
+      assert.match(gate.out, /no one waiting at the Gate/, `${name}: must NOT reach the Gate: ` + gate.out.slice(-300));
+      assert.equal(after, before, `${name}: the issued code's accepted set is unchanged`);
+    }
+  } finally {
+    await stub.close();
+    rmSync(gdir, { recursive: true, force: true });
+  }
+}
+
+test('#711 control: a crafted, correctly signed, hybrid-sealed response on an outstanding code DOES reach the Gate (the NEG harness works)', async () => {
+  await runCase('control', (g, B) => craft(g, B, B, g.code), true);
+});
+test('#711 NEG forged signer: the card is B but the response is signed with C\'s key → not at the Gate, not in the book, code unchanged', async () => {
+  await runCase('forged-signer', (g, B, C) => craft(g, B, C, g.code), false);
+});
+test('#711 NEG tampered after signing: the display name is changed after B signed → refused', async () => {
+  await runCase('tampered', (g, B) => craft(g, B, B, g.code, (s) => { (s.envelope as unknown as { joiner_display_name: string }).joiner_display_name = 'admin'; }), false);
+});
+test('#711 NEG unsolicited: correctly signed by B, but the invite nonce is not an outstanding code → refused', async () => {
+  await runCase('bad-nonce', (g, B) => craft(g, B, B, 'NOTACODE'), false);
 });
