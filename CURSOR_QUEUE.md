@@ -103,43 +103,7 @@ For the DV/survivor population this copy protects, the surveillance fear ("could
 - Copy-only. **NO crypto / data-source change** (already fixed to `disclosed_circle` in 22fd5164). Update the `peerMeshLegend` string + its test assertion.
 - Gate: Hypatia re-greens the legend copy → Athena undraft + merge → #106 fully closed (both halves).
 
-## 6. Messaging UX: contact-list date + bubble wrap + 3-state send status  [render-glass, no crypto]
-
-_Source: Archie's brief cursor_brief_v0.md (sha1 d5b36a49), Peter's go #189233 (items 1-3). Copy of record for item 3: Hypatia svrnty_message_status_copy_v1.md (sha256 f30ee46c)._
-
-### Repo + branch (exact)
-- Repo: NuAvalon/svrnty. Base: the CURRENT tip of branch `dev` (6e66dd1 at 17:30Z on 10-31, moving as the merge queue lands; rebase onto the latest `dev` before opening the PR). Do NOT use `main`.
-- Create branch `cursor/contact-list-date-and-bubble-wrap` off `dev`. Open the PR against `dev`. Never push to `dev` or `main` directly.
-- Touch ONLY: src/components/**/NotesInbox.tsx (row time, ~:544), the date-format helper next to formatNoteClock, app/globals.css (.notes-bubble ~:517), and new tests. Don't touch anything under src/lib/crypto, src/lib/sync, src/lib/messaging, scripts/, app/api.
-
-### Item 1: date on contact-list rows
-Today the row shows formatNoteClock(person.lastAt) only, so last week reads "3:12 PM".
-- Same local day → time ("3:12 PM", existing formatNoteClock)
-- Yesterday → "Yesterday"
-- Within the last 6 days → weekday ("Tue")
-- Older, same year → "Oct 24"; different year → "Oct 24, 2025"
-- Device locale via toLocaleDateString / Intl (Intl.RelativeTimeFormat OK); no hard-coded English except "Yesterday" if not using Intl.
-- Keep in-thread day headings (formatNoteDay) unchanged.
-Tests (NEG): a note from 8 days ago never renders as only a clock; a future-dated lastAt (≤ now+5m) renders as a time, never "Tomorrow"; one test per bucket boundary (midnight, 6 vs 7 days, Dec 31 → Jan 1).
-
-### Item 2: message bubble overflows phone width
-- .notes-bubble has no overflow-wrap. Add `overflow-wrap: anywhere` on the bubble body <p>.
-- e2e NEG (Playwright, Pixel 7 project): a 300-char unbroken string (e.g., a fingerprint) → bubble.scrollWidth ≤ viewport width; no horizontal page scroll.
-
-### Done when
-- Unit + e2e tests above pass; existing suites green in CI (desktop-chromium + Pixel 7).
-- PR description lists every file touched; no changes outside the list.
-- Reviewers: Apollo (code), Hypatia (copy/format). Merge per the dev queue: Athena or Flint approves (never the author) and merges; the HOLD was lifted 10-31.
-
-### Item 3 (added 10-31 ~22:15Z): message send-status, 3 honest states (Peter #188988/#188999; Hypatia copy of record svrnty_message_status_copy_v1.md sha256 f30ee46c)
-- States, each true by its own event: "Sending…" (existing) → "Sent to the relay" (NEW: the deposit returned 2xx) → "Delivered" (existing: ONLY on a verified receipt). "Unconfirmed: it may or may not be on the relay." ONLY on 5xx/timeout/throw. Refusals keep their existing lines. Never "Read", never a "read" colour.
-- MIGRATION: today's `sentUnconfirmed` ("Sent · unconfirmed.") also covers the 2xx case, which is now WRONG. Split it into sentToRelay + unconfirmed; update the notes-copy comments + the TG-1 examples with it.
-- "Awaiting delivery confirmation" only when that contact has sent a receipt before. Agents/old apps stay at "Sent to the relay" (true; it never upgrades).
-- Optional icons: 1 tick = on the relay, 2 ticks = delivered.
-- Receipts are automatic, no toggle (Peter #188999); the recipient disclosure line ships with it (Hypatia).
-- Scope: UI + notes-copy strings only. Do not change how receipts are sent or verified (src/lib/sync, src/lib/messaging logic stay as they are; read the existing deposit result + receipt state).
-
-## 3. Connect-UX — one-step grow-link (kill the 5-step joiner ceremony)  [HOLD — NOT a Cursor task now: partly shipped (paste field, 8448572); the one-step gate landing overlaps the gate-message spec (Archie v0 + Hypatia copy v0.2 1e4b5882). Do not build until Archie re-issues it.]
+## 1. Connect-UX — one-step grow-link (kill the 5-step joiner ceremony)  [HOLD — NOT a Cursor task now: partly shipped (paste field, 8448572); the one-step gate landing overlaps the gate-message spec (Archie v0 + Hypatia copy v0.2 1e4b5882). Do not build until Archie re-issues it.]
 
 **Priority — queued above Verify-in-Galaxy** (Peter #155748: the 5-step ceremony is the priority; connect precedes verify in the user journey). Archie-spec'd; Hypatia finalizes microcopy; Archie claim-gates the trust-touching framing; **Apollo wires the add-logic + grow-link crypto POST-FLIP.** cursor builds the **UI shell + flow + `/c/{code}` resolve NOW, wired against the add-logic INTERFACE (typed stub) — never implement the crypto / trust / gate plumbing.**
 
