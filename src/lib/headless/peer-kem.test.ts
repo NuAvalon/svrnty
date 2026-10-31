@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mintHeadlessAgent, serializeMintArtifact } from '../identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { resolvePeerKemForSend, formatNotSent, errorLine, trackedFetch, sendThrowLine } from './peer-kem';
+import { resolvePeerKemForSend, formatNotSent, depositFailureLine, errorLine, trackedFetch, sendThrowLine } from './peer-kem';
 
 type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
 const idOf = (a: Minted) => a.introduction.card.identity as unknown as {
@@ -175,7 +175,7 @@ test('CLI send: a swapped kem (does not match the fingerprint) → refused loudl
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('CLI send: the relay rejecting the deposit is NOT silent — stderr line + non-zero exit', async () => {
+test('CLI send: a relay 503 is NOT silent and is UNCONFIRMED, not "NOT SENT" (a 5xx can come back after the relay stored it; pin changed on purpose, Archie #2649 b)', async () => {
   const peer = await mintHeadlessAgent({ throwaway: true });
   const { dir } = await senderDir([contactOf(peer)]);
   const server = createServer((_q, res) => { res.writeHead(503); res.end('no'); });
@@ -184,9 +184,46 @@ test('CLI send: the relay rejecting the deposit is NOT silent — stderr line + 
   try {
     const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the relay did not accept the deposit/);
+    assert.match(r.err, /UNCONFIRMED to [0-9a-f]{8}: the relay answered 503; it may or may not be in their mailbox\. Check before resending/);
+    assert.doesNotMatch(r.err, /NOT SENT/);
     assert.match(r.out, /"deposited":\s*false/);
+    assert.match(r.out, /"status":\s*503/);
   } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: a relay 429 (a definite refusal) stays "NOT SENT" and names the status, so the failover rule can tell a refusal from an outage', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const server = createServer((_q, res) => { res.writeHead(429); res.end('full'); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the relay refused the deposit \(HTTP 429\); nothing was stored/);
+    assert.doesNotMatch(r.err, /UNCONFIRMED/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('depositFailureLine: 5xx and 408 are UNCONFIRMED; every other status is a definite NOT SENT that names it; no status keeps the old NOT SENT text; the local tail is kept', () => {
+  const fp = 'ab'.repeat(32);
+  for (const st of [500, 502, 503, 504, 408]) {
+    assert.match(depositFailureLine(fp, st), new RegExp(`^UNCONFIRMED to abababab: the relay answered ${st}; `), String(st));
+    assert.doesNotMatch(depositFailureLine(fp, st), /NOT SENT/);
+  }
+  for (const st of [400, 401, 403, 404, 413, 429]) {
+    assert.match(depositFailureLine(fp, st), new RegExp(`^NOT SENT to abababab: the relay refused the deposit \\(HTTP ${st}\\)`), String(st));
+    assert.doesNotMatch(depositFailureLine(fp, st), /UNCONFIRMED/);
+  }
+  assert.equal(depositFailureLine(fp, undefined), 'NOT SENT to abababab: the relay did not accept the deposit');
+  assert.match(depositFailureLine(fp, 503, 'kept locally; this ratchet index is spent'), /; kept locally; this ratchet index is spent$/);
+  assert.match(depositFailureLine(fp, 429, 'kept locally'), /; kept locally$/);
+});
+
+test('static: both send paths in devin-comm word a failed deposit through depositFailureLine with the relay status (no inline "did not accept the deposit" claim left)', () => {
+  const src = readFileSync(resolve(REPO, 'scripts/devin-comm.ts'), 'utf8');
+  assert.equal((src.match(/depositFailureLine\(fp, r\.status,/g) ?? []).length, 2);
+  assert.doesNotMatch(src, /formatNotSent\(fp, 'the relay did not accept the deposit/);
 });
 
 test('CLI send-tr: a bound kem → ratchet packet inside the hybrid outer, ONE deposit, session persisted', async () => {

@@ -217,7 +217,7 @@ export async function sendNoteFromHeadless(args: {
   fetchImpl?: typeof fetch;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
+}): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** the relay's HTTP status when it answered; absent if nothing was posted */ status?: number }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
   const now = () => new Date().toISOString();
@@ -247,6 +247,7 @@ export async function sendNoteFromHeadless(args: {
   // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
   // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
   let deposited = false;
+  let status: number | undefined;
   if (args.peerPqKemPublicKey) {
     const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
     const mailbox_id = deriveMailboxId(args.peerFingerprint);
@@ -256,6 +257,7 @@ export async function sendNoteFromHeadless(args: {
       body: JSON.stringify({ mailbox_id, blob }),
     });
     deposited = res.ok;
+    status = res.status;
   } else {
     console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
   }
@@ -273,5 +275,5 @@ export async function sendNoteFromHeadless(args: {
     retention: { expires_at: null },
     wire_type: NOTE_WIRE_TYPE,
   });
-  return { note_id, thread_id, deposited };
+  return { note_id, thread_id, deposited, ...(status !== undefined ? { status } : {}) };
 }
