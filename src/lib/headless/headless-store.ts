@@ -10,6 +10,10 @@
 
 import { readJsonStrict, writeFileAtomic } from './atomic-file';
 import { withWriterLock } from './writer-lock';
+import { assertFingerprintUnchanged } from '@/lib/identity/contact-identity';
+
+/** The fields that make a row WHO it is; updateContact may repeat them, never change them (#724). */
+const IDENTITY_KEY_FIELDS = ['public_key', 'pq_sig_public_key', 'pq_kem_public_key'] as const;
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
@@ -209,7 +213,16 @@ export class HeadlessStore {
     this.mutate(() => {
       const i = this.data.contacts.findIndex((x) => x.id === id);
       if (i === -1) throw new Error(`headless updateContact: contact ${id} not found`);
-      this.data.contacts[i] = { ...this.data.contacts[i], ...patch, id };
+      const row = this.data.contacts[i];
+      // #724 follow-up (Apollo #2203): the invariant lives in the writer, not only in today's callers. A patch may repeat the
+      // row's own identity (persist passes whole rows) but never change it: a new fingerprint or key is a new contact.
+      if ('fingerprint' in patch) assertFingerprintUnchanged(row.fingerprint, patch.fingerprint);
+      for (const k of IDENTITY_KEY_FIELDS) {
+        if (k in patch && patch[k] !== row[k]) {
+          throw new Error(`headless updateContact: refusing to change ${k} on an existing contact (a new key is a new contact)`);
+        }
+      }
+      this.data.contacts[i] = { ...row, ...patch, id };
     });
   }
 

@@ -175,3 +175,31 @@ test('L6 every store.upsertContact in devin-comm.ts runs inside withAdmitLog (jo
     assert.ok(src.slice(Math.max(0, i - 5), i + 1).some((l) => l.includes('withAdmitLog(')), `unlogged contact write at devin-comm.ts:${i + 1}`);
   }
 });
+
+// #724 follow-up (Apollo #2203): the OTHER headless writer, updateContact(id, patch), guards identity itself.
+test('U1 updateContact refuses a patch that changes the fingerprint; the row is untouched', () => {
+  const { s } = store();
+  s.upsertContact({ id: 'X', fingerprint: 'fpX', name: 'ember', public_key: 'pkX', trust_level: 'trusted' });
+  assert.throws(() => s.updateContact('X', { fingerprint: 'fpY' }), /immutable/);
+  const x = s.getContactByFingerprint('fpX');
+  assert.equal(x?.trust_level, 'trusted');
+  assert.ok(!s.getContactByFingerprint('fpY'), 'no row under the new fingerprint');
+});
+
+test('U2 updateContact refuses a patch that changes any key field; the row keeps its keys', () => {
+  const { s } = store();
+  s.upsertContact({ id: 'X', fingerprint: 'fpX', name: 'ember', public_key: 'pkX', pq_kem_public_key: 'kemX', pq_sig_public_key: 'sigX' });
+  assert.throws(() => s.updateContact('X', { public_key: 'pkY' }), /public_key/);
+  assert.throws(() => s.updateContact('X', { pq_kem_public_key: 'kemY' }), /pq_kem_public_key/);
+  assert.throws(() => s.updateContact('X', { pq_sig_public_key: 'sigY' }), /pq_sig_public_key/);
+  const x = s.getContactByFingerprint('fpX');
+  assert.deepEqual([x?.public_key, x?.pq_kem_public_key, x?.pq_sig_public_key], ['pkX', 'kemX', 'sigX']);
+});
+
+test('U3 control: a whole-row patch that repeats the identity and changes only a label is applied', () => {
+  const { s } = store();
+  s.upsertContact({ id: 'X', fingerprint: 'fpX', name: 'ember', public_key: 'pkX' });
+  const row = s.getContactByFingerprint('fpX')!;
+  s.updateContact('X', { ...row, name: 'ember (Weft)' });
+  assert.equal(s.getContactByFingerprint('fpX')?.name, 'ember (Weft)');
+});
