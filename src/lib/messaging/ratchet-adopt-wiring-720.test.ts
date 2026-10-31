@@ -246,6 +246,9 @@ test('W10 a stored-times reader that throws means NO; an unparsable stored time 
   assert.equal(await ask(['garbage', at(-5000)], at(-1000)), true, 'garbage skipped, newer than the real one');
   assert.equal(await ask(['garbage', at(-5000)], at(-6000)), false, 'garbage skipped, but older than the real one');
   assert.equal(await ask(['garbage'], at(-1000)), true, 'only garbage stored = nothing stored: inside the window');
+  assert.equal(await ask([at(-9000), at(-5000)], at(-7000)), false, 'newer than the OLDEST stored note but not the NEWEST: refused (the guard is against every stored note)');
+  assert.equal(await ask([at(-5000), at(-9000)], at(-7000)), false, 'order of the stored list does not matter');
+  assert.equal(await ask([at(-9000), at(-5000)], at(-4000)), true, 'newer than all of them');
 });
 
 // W11: live-book-poll's composition needs IndexedDB, which this harness does not have, so the wiring is pinned by SOURCE (like the reset W2/W3 guards).
