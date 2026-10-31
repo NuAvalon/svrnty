@@ -138,20 +138,29 @@ export function deadNotesNotice(peerFp: string, items: { note_id: string; sent_a
   const ids = items.map((i) => i.note_id).sort();
   const note_id = 'dead-notes:' + createHash('sha256').update(ids.join('\n')).digest('hex').slice(0, 24);
   const times = items.map((i) => tok(i.sent_at)).sort();
-  return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be decrypted after ${maxAttempts} tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to resend` };
+  return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be opened on this device after ${maxAttempts} tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to send them again` };
 }
 
-/** One tr-packet open with a crash-safe attempt count (Flint #2361): the attempt is counted and PERSISTED before the
- *  expensive open, so a pass the watchdog kills mid-open still counts it. Before this, the count was bumped only after
- *  open() returned null and saved once at the end of the pass, so a packet that times out (instead of failing) never
- *  reached MAX_ATTEMPTS: never tombstoned, never dead-noticed, and it starved everything after it on every pass.
- *  Success forgets the count (the caller's end-of-pass write saves that). Pure apart from the given persist(). */
+/** One tr-packet open with a crash-safe attempt count (Flint #2361, #2366). open() gets a one-shot charge() and must
+ *  call it once it HOLDS the store writer lock, right before the ratchet step: the attempt is counted and PERSISTED
+ *  then, so a pass the watchdog kills inside receive still counts it, while a pass that never got the lock (contention,
+ *  or killed during the 30 s wait: open() throws before charging) counts NOTHING, so contention can't tombstone a
+ *  decryptable packet. A null returned without charging (no packet / no peer, decided before the lock) is a definitive
+ *  cheap failure and is charged here. A throw after charging keeps the count. Success forgets it (the caller's
+ *  end-of-pass write saves that). Before this, the count was bumped only after a null and saved at the end of the pass,
+ *  so a packet that times out could never reach MAX_ATTEMPTS. Pure apart from the given persist(). */
 export async function countedOpen<T>(attempts: Record<string, number>, key: string,
-    persist: (a: Record<string, number>) => void, open: () => Promise<T | null>): Promise<T | null> {
-  attempts[key] = (attempts[key] ?? 0) + 1;
-  persist(attempts);
-  const pt = await open();
-  if (pt !== null) delete attempts[key];
+    persist: (a: Record<string, number>) => void, open: (charge: () => void) => Promise<T | null>): Promise<T | null> {
+  let charged = false;
+  const charge = () => {
+    if (charged) return;
+    charged = true;
+    attempts[key] = (attempts[key] ?? 0) + 1;
+    persist(attempts);
+  };
+  const pt = await open(charge);
+  if (pt === null) charge();
+  else delete attempts[key];
   return pt;
 }
 

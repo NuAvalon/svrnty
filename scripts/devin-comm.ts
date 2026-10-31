@@ -196,7 +196,7 @@ function trPacket(body: string): RatchetPacket | null {
   } catch { return null; }
 }
 
-async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string): Promise<string | null> {
+async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string, onLocked?: () => void): Promise<string | null> {
   const packet = trPacket(body);
   const peer = await ratchetPeerOf(contact);
   if (!packet || !peer) return null;
@@ -204,6 +204,7 @@ async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body:
   // load → advance → save is one locked unit: a send-tr interleaving here would have its chain advance
   // overwritten by this stale copy, and the next send would re-use that chain index (key reuse).
   return withWriterLockAsync(DIR, async () => {
+    onLocked?.();                                        // poll-json's attempt charge: only once the lock is HELD (Flint #2366)
     const sessions = loadTr();
     const snap = sessions[contact.fingerprint];
     if (snap) {
@@ -593,8 +594,8 @@ async function main() {
         }
         continue;
       }
-      // counted + persisted BEFORE the open (Flint #2361): a pass killed mid-open still counts toward the tombstone
-      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), () => trOpen(artifact, c, note.body));
+      // counted + persisted once trOpen HOLDS the lock (Flint #2361/#2366): a kill inside receive counts, lock contention doesn't
+      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), (charge) => trOpen(artifact, c, note.body, charge));
       if (pt === null) {
         decryptFailed++;
         continue;                                        // failed/consumed — counted, never stored
