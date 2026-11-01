@@ -11,7 +11,8 @@ export function nextLastActivity(prev: string | undefined, sentAt: string, nowMs
   const sent = Date.parse(sentAt);
   // An unparsable sender time carries no ordering information: count it as "now".
   const candidate = Math.min(Number.isFinite(sent) ? sent : nowMs, ceiling);
-  // A previously stored value is clamped too, so a thread already pinned by the old overwrite rule heals instead of sticking.
+  // A previously stored value is clamped too, so a thread already pinned by the old overwrite rule heals on its NEXT note instead of sticking.
+  // Until a note arrives nothing rewrites it: the stored value is unchanged and a list that sorts on it still shows the pin.
   const before = prev === undefined ? NaN : Date.parse(prev);
   const kept = Number.isFinite(before) ? Math.min(before, ceiling) : -Infinity;
   return new Date(Math.max(kept, candidate)).toISOString();
