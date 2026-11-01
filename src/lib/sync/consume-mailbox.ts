@@ -411,9 +411,13 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   if (deps.outOfTime) summary.deferred = 0;
   const keyOf = (e: { envelope_id?: unknown; blob?: unknown } | null | undefined) => (txn && e ? envelopeDedupeKey(relayBase, mailboxId, e.envelope_id, e.blob) : null);
   // an /ack names ids only: every listed key behind an id (#737: a reused id with two blobs in one listing has TWO keys; the ack drops both)
+  // Each envelope's key is derived ONCE, here, and handle() reuses it (Apollo #3370): the key hashes the whole blob (noble sha256, ~0.5 ms per
+  // 4 KB) and this pass runs BEFORE the time budget applies, so a second derivation per envelope doubled an unbudgeted cost on a full mailbox.
+  const keyByEnv = new Map<unknown, string | null>();
   const keysById = new Map<string, string[]>();
   for (const e of envelopes) {
     const k = keyOf(e);
+    keyByEnv.set(e, k);
     if (k === null || typeof e.envelope_id !== 'string') continue;
     const ks = keysById.get(e.envelope_id);
     if (ks) ks.push(k);
@@ -626,7 +630,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
     if (deps.owner.cycle?.ended) return 'ended';
-    const key = keyOf(env);
+    const key = keyByEnv.has(env) ? (keyByEnv.get(env) ?? null) : keyOf(env); // derived once in the upfront pass
     // C1 (#326): a previous commit already holds this envelope (killed between commit and ack). Ack it WITHOUT opening: a ratchet frame's
     // message key is spent on the first open, so a second open would fail and record a loss for a message that is safely stored.
     // Through THE ACK DOOR as a stored message ('clear'), like any other: a sink clears a stale record of it first (#720 R1/R5).

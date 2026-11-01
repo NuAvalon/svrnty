@@ -89,7 +89,11 @@ function mockRelay(onAck?: (ids: string[]) => void) {
       boxes.set(m, kept);
     }
   };
-  return { fetchImpl, acks, queued, listIds, blobOf, reissue, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
+  /** #737: a relay that lists TWO envelopes under ONE id (a reused id; different blobs): `renameId` is re-listed as `keepId`, both kept. */
+  const twin = (keepId: string, renameId: string) => {
+    for (const [m, q] of boxes) boxes.set(m, q.map((e) => (e.envelope_id === renameId ? { ...e, envelope_id: keepId } : e)));
+  };
+  return { fetchImpl, acks, queued, listIds, blobOf, reissue, twin, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
 }
 
 function tmpBook(): { dir: string; path: string; open: () => HeadlessStore; hash: () => string; done: () => void } {
@@ -580,4 +584,44 @@ test('#737 upgrade window, stated: a v1-format (id-only) own-scope entry does no
   } finally {
     book.done();
   }
+});
+
+test('#737 NEG (Apollo #3370 survivor 2): TWO envelopes under ONE reused id, both committed, a later commit with both listed, the ack killed twice: neither is ever opened again', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    await sendN(A, B, 2, relay.fetchImpl, 'twin');
+    const [id1, id2] = relay.listIds();
+    relay.twin(id1, id2); // the relay lists both messages under id1
+    assert.deepEqual(relay.listIds(), [id1, id1]);
+    relay.failAck(1);
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed between commit and ack/);
+    assert.equal(book.open().appliedEnvelopeCount(), 2, 'both twins committed under their own (id, blob) keys');
+    // a FRESH message forces the next pass to COMMIT (a dedupe-only pass writes nothing), and a commit prunes every own-scope key absent from
+    // its listing: it must keep BOTH twins' keys (both are listed), or the next poll re-opens the dropped twin. The ack is killed again.
+    await sendN(A, B, 1, relay.fetchImpl, 'fresh');
+    relay.failAck(1);
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed between commit and ack/);
+    assert.equal(book.open().appliedEnvelopeCount(), 3, 'that commit keeps both twins\' keys (+ the fresh one): both twins are in its listing');
+    const s = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s.opened_hybrid + s.opened_classical, 0, 'neither twin (nor the fresh one) is opened a second time: a ratchet key is spent on the first open');
+    assert.equal(s.deduped, 3);
+    assert.deepEqual(relay.listIds(), [], 'every id is acked once all of its envelopes are decided');
+    assert.deepEqual(book.open().listNotes().map((n) => n.body).sort(), ['fresh 0', 'twin 0', 'twin 1'], 'each message stored exactly once');
+  } finally {
+    book.done();
+  }
+});
+
+test('#737 NEG (Apollo #3370 survivor 3): an envelope whose id or blob is not a string has NO dedupe key, so it is never deduped', () => {
+  const mbx = 'mbx_0123456789abcdef';
+  assert.equal(typeof envelopeDedupeKey(RELAY, mbx, 'env_1', 'a blob'), 'string', 'control: a string id + blob has a key');
+  for (const blob of [undefined, null, 42, {}, ['a blob'], new Uint8Array([1, 2])]) {
+    assert.equal(envelopeDedupeKey(RELAY, mbx, 'env_1', blob), null, `blob ${JSON.stringify(blob)} must not be coerced into a key`);
+  }
+  for (const id of [undefined, null, 42, {}]) assert.equal(envelopeDedupeKey(RELAY, mbx, id, 'a blob'), null, `id ${JSON.stringify(id)}`);
+  // and two different non-string blobs can never collide into one key that dedupes the second against the first
+  assert.equal(envelopeDedupeKey(RELAY, mbx, 'env_1', 1), envelopeDedupeKey(RELAY, mbx, 'env_1', 2), 'both null: neither is a key');
 });
