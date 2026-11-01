@@ -42,7 +42,7 @@ export function groupFor(reason: DeadLetterReason): CantOpenGroup | null {
 export interface CantOpenNotice {
   group: CantOpenGroup;
   text: string;
-  /** R only: the contact to open so the user can ask for a resend. */
+  /** R only: the contact whose conversation 'Open conversation' opens (NotesInbox shows it only when this device can message them). No resend ask: copy of record 70c7888d. */
   fingerprint?: string;
 }
 
