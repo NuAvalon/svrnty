@@ -303,3 +303,7 @@ describe('runner: a gate name is matched literally in an annotation reason (Flin
     assert.equal(escapeRegExp('isMutualTrustWireLive'), 'isMutualTrustWireLive');
   });
 });
+
+// The `order` kind's NEGs (scripts/claim-order.test.ts) run in THIS CI step (qa.yml runs claim-sweep.test.ts by name): importing them here
+// keeps them in CI without a workflow edit (the NuAvalon token has no workflow scope).
+import './claim-order.test';

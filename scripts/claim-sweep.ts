@@ -35,15 +35,22 @@
  * annotations) so a PR can't flip a boolean / delete a claim / self-add an annotation to pass itself.
  * (scripts/ and src/lib/ are CODEOWNERS-fenced.)
  *
+ * ORDER ROWS (`order_rows`, kind `order`, scripts/claim-order.ts; Hypatia spec 91e8f2e7 + 1da9cf5f + 9cae8b68): each pins ONE known site
+ * where a status word may be written only after (or only inside the branch of) the event that makes it true. A malformed row = exit 2;
+ * a regressed site = exit 1. They protect THOSE sites only; the PR-template status line is the control for new ones.
+ * REQUIRED IDS (REQUIRED_ORDER_IDS in claim-order.ts): every pinned id must be present, or exit 2. Deleting a row is therefore not impossible,
+ * it is a TWO-place edit (the row + the pinned list) that shows in the diff and is RED if only one is done; retiring a row stays a reviewer's call.
+ *
  * Invocation (from repo root): npx --no-install tsx scripts/claim-sweep.ts [--assert-root=A,B]
  * Exit: 0 clean · 1 claim violations · 2 config error.
  */
 import { readFileSync, existsSync } from 'fs';
 import { resolve, relative, sep } from 'path';
+import { OrderConfigError, checkOrderRows, validateOrderRows, type OrderFailure } from './claim-order';
 import * as gates from '../src/lib/claim-gates';
 import { SCAN_ROOTS } from './claim-sweep.map';
 import {
-  ConfigError, loadRegistry, compileRegistry, buildAnchorIndex, checkRequires, scanText, walkFiles,
+  ConfigError, REGISTRY_PATH, loadRegistry, compileRegistry, buildAnchorIndex, checkRequires, scanText, walkFiles,
   type AnchorStatus, type Violation, type HonoredAnnotation, type CompiledClaim, type RegistryClaim,
 } from './claim-sweep-lib';
 
@@ -147,14 +154,33 @@ function main(): void {
     honored.push(...r.honored);
   }
 
+  // order rows (fail-closed: a malformed row is a config error; any regressed site ship-blocks)
+  let orderFails: OrderFailure[];
+  let orderCount: number;
+  try {
+    const raw = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as { order_rows?: unknown };
+    const rows = validateOrderRows(raw.order_rows); // shape, then every REQUIRED_ORDER_IDS present (default ON; deleting a row alone = exit 2)
+    orderCount = rows.length;
+    const repo = resolve(REGISTRY_PATH, '..', '..');
+    orderFails = checkOrderRows(rows, (p) => {
+      const abs = resolve(repo, p);
+      return existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+    });
+  } catch (e) {
+    if (e instanceof OrderConfigError) configError(`order rows: ${e.message}`);
+    throw e;
+  }
+  console.log(`  order rows: ${orderCount} (${orderFails.length === 0 ? 'every pinned site holds' : `${orderFails.length} FAILED`}; they protect these sites only, not new ones)`);
+
   console.log(`\nhonored claim-sweep:ok annotations: ${honored.length}`);
   for (const h of honored) console.log(`  ${h.file}:${h.line}  [${h.claimId}]  annotation @${h.annotationLine}: "${h.reason}"`);
 
-  if (violations.length === 0) {
-    console.log(`\n✅ claim-sweep PASS — ${files.length} files, ${enforced.length} enforced claims, no dishonest claims.`);
+  if (violations.length === 0 && orderFails.length === 0) {
+    console.log(`\n✅ claim-sweep PASS — ${files.length} files, ${enforced.length} enforced claims, ${orderCount} order rows, no dishonest claims.`);
     process.exit(0);
   }
-  console.error(`\n❌ claim-sweep SHIP-BLOCK — ${violations.length} dishonest claim(s):\n`);
+  for (const f of orderFails) console.error(`  ❌ order ${f.id} step ${f.step} at ${f.at}`);
+  console.error(`\n❌ claim-sweep SHIP-BLOCK — ${violations.length} dishonest claim(s), ${orderFails.length} order row failure(s):\n`);
   const claimText = new Map(registryClaims.map((c) => [c.id, c.claim]));
   for (const v of violations) {
     console.error(`  ${v.file}:${v.line}  [${v.claimId} · ${v.kind}]  ${v.evidence.map((e) => `"${e}"`).join(', ')}`);

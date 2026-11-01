@@ -1559,5 +1559,127 @@
   "W3": "H-8",
   "W4": "CR-1",
   "W5b": "H-9"
- }
+ },
+ "order_rows": [
+  {
+   "id": "OR-1",
+   "kind": "order",
+   "claim": "\"Caught up.\" ('ok') only after the refused/unreadable and held/unrecorded/unacked cases have been ruled out",
+   "file": "src/lib/sync/live-book-poll.ts",
+   "anchor_kind": "function",
+   "function": "^export function pollStatusOf\\(",
+   "event": {
+    "pattern": "if \\(summary\\.rejected !== undefined\\)|if \\(summary\\.held > 0",
+    "count": 2
+   },
+   "status": {
+    "pattern": "return 'ok';",
+    "count": 1
+   },
+   "rule": "event-before-status",
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#325",
+    "Hypatia copy v4 c109fb20"
+   ]
+  },
+  {
+   "id": "OR-2",
+   "kind": "order",
+   "claim": "a 2xx /queue whose body is not a list sets rejected (it is not an empty mailbox)",
+   "file": "src/lib/sync/consume-mailbox.ts",
+   "anchor_kind": "function",
+   "function": "^async function consumeOnce\\(",
+   "event": {
+    "pattern": "if \\(!Array\\.isArray\\(envelopes\\)\\)",
+    "count": 1
+   },
+   "status": {
+    "pattern": "summary\\.rejected = res\\.status",
+    "count": 2
+   },
+   "rule": "status-only-on-branch",
+   "in_branch": 1,
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "Archie #2401",
+    "9dd2cf2",
+    "spec v2 1da9cf5f + v3 9cae8b68 (anchor = consumeOnce)"
+   ]
+  },
+  {
+   "id": "OR-3",
+   "kind": "order",
+   "claim": "poll-json prints UNREADABLE only for a 2xx non-list answer and REFUSED only otherwise",
+   "file": "scripts/devin-comm.ts",
+   "anchor_kind": "block",
+   "function": "^  if \\(cmd === 'poll-json'\\) \\{",
+   "event": {
+    "pattern": "if \\(consumed\\.rejected >= 200 && consumed\\.rejected <= 299\\)",
+    "count": 1
+   },
+   "status": {
+    "pattern": "POLL UNREADABLE",
+    "count": 1
+   },
+   "rule": "status-only-on-branch",
+   "in_branch": 1,
+   "else_status": {
+    "pattern": "POLL REFUSED",
+    "count": 1
+   },
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#340",
+    "Hypatia #3019"
+   ]
+  },
+  {
+   "id": "OR-4",
+   "kind": "order",
+   "claim": "the hop trail says 'dropped' only after that envelope's ack returned 2xx (recorded AND acked)",
+   "file": "src/lib/sync/consume-mailbox.ts",
+   "anchor_kind": "function",
+   "function": "const flushAckChunk = async \\(",
+   "event": {
+    "pattern": "if \\(ackRes\\.ok\\) \\{",
+    "count": 1
+   },
+   "status": {
+    "pattern": "hop\\(deps, 'dropped'",
+    "count": 1
+   },
+   "rule": "status-only-on-branch",
+   "in_branch": 1,
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#344 R2 4fcc559",
+    "Hypatia #3123",
+    "Flint #3124"
+   ]
+  },
+  {
+   "id": "OR-5",
+   "kind": "order",
+   "claim": "with a staging sink, the hop trail says 'held' only after settle() wrote the held rows (the non-staging record-time hop is not pinned here)",
+   "file": "src/lib/sync/consume-mailbox.ts",
+   "anchor_kind": "function",
+   "function": "^async function consumeOnce\\(",
+   "event": {
+    "pattern": "await sink\\.settle\\(\\);",
+    "count": 1
+   },
+   "status": {
+    "pattern": "for \\(const h of pendingHeld\\) hop\\(deps, 'held'",
+    "count": 1
+   },
+   "rule": "status-in-event-block",
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#344 R2 4fcc559",
+    "Hypatia #3123",
+    "spec v4 b66cbec3 (Flint #3152: event-before-status could not see the try/catch)"
+   ]
+  }
+ ]
 }
