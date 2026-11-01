@@ -60,6 +60,7 @@ function mockRelay(onAck?: (ids: string[]) => void) {
       if (queueReply === 'refused') return new Response('{}', { status: 401 });
       if (queueReply === 'unreadable') return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
       const mid = new URL(u).searchParams.get('mailbox_id') ?? '';
+      polled.add(mid);
       return new Response(JSON.stringify(boxes.get(mid) ?? []), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (u.includes('/ack')) {
@@ -75,7 +76,10 @@ function mockRelay(onAck?: (ids: string[]) => void) {
     }
     return new Response('nf', { status: 404 });
   }) as unknown as typeof fetch;
-  const queued = () => [...boxes.values()].reduce((n, q) => n + q.length, 0);
+  // the backlog of the mailbox(es) under test = the ones that were polled. Layer 1 receipts go back to the SENDERS' own mailboxes, which
+  // these tests never poll, so they don't count here (receipts are pinned in receipts-layer1.test.ts).
+  const polled = new Set<string>();
+  const queued = () => [...boxes.entries()].filter(([m]) => polled.size === 0 || polled.has(m)).reduce((n, [, q]) => n + q.length, 0);
   const listIds = () => [...boxes.values()].flat().map((e) => e.envelope_id);
   return { fetchImpl, acks, queued, listIds, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
 }

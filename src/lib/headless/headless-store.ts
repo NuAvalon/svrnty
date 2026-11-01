@@ -375,6 +375,26 @@ export class HeadlessStore {
     });
     return r === false ? 'not-admitted' : r;
   }
+  /** Layer 1: OUR outbound note with this id (sent by `ownerFp`), or null. An inbound note that shares the id never matches. */
+  findOutboundNote(ownerFp: string, noteId: string): NoteRecord | null {
+    return this.data.notes.find((x) => x.direction === 'outbound' && x.note_id === noteId && x.from_fingerprint === ownerFp) ?? null;
+  }
+
+  /**
+   * Layer 1 S2: a VERIFIED receipt marks our outbound note delivered and drops its receipt key, as ONE change (inside a #712 chunk it rides
+   * the chunk's single write, Flint C1). Re-applied at the commit onto a fresh read: idempotent (a row already confirmed, or gone, is left
+   * as it is). Never refuses (the op returns no false), so commitChunk never reports it as a refused note.
+   */
+  markDelivered(ownerFp: string, noteId: string): void {
+    this.mutate(() => {
+      const i = this.data.notes.findIndex((x) => x.direction === 'outbound' && x.note_id === noteId && x.from_fingerprint === ownerFp);
+      if (i === -1) return;
+      const { receipt_key: _spent, ...rest } = this.data.notes[i];
+      void _spent;
+      this.data.notes[i] = { ...rest, delivered: true };
+    });
+  }
+
   listThreads(): NoteThread[] {
     return [...this.data.threads];
   }
