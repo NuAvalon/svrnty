@@ -31,22 +31,25 @@ test('healPinnedThread re-reads the row, reads the notes, lowers via healedLastA
   assert.match(b, /txGet<ThreadRow>\('threads'/, 're-reads the row before writing (a note may have written its own time)');
   assert.match(b, /listNotesForThread\(/, 'reads the thread\'s own notes for the newest plausible time');
   assert.match(b, /healedLastActivity\(/, 'the value comes from the pure function');
-  assert.match(b, /txPutIfPresent\('threads'/, 'it persists the lowered value with a check-and-put');
+  assert.match(b, /txPutIfUnchanged\('threads'/, 'it persists the lowered value with a compare-and-swap');
+  assert.match(b, /txPutIfUnchanged\('threads', thread\.thread_id, row\.enc,/, 'against the ciphertext it decrypted (row.enc), not a fresh read');
   assert.doesNotMatch(b, /await putThread\(/, 'it never uses the plain put, which would bring a deleted thread back');
   // A DELETED thread must never come back: deleteThread removes the notes first and the row last, so a list load that raced it can find no row.
   assert.match(b, /if \(!row\) return thread;/, 'a missing row returns without writing');
-  assert.ok(b.indexOf('if (!row) return thread;') >= 0 && b.indexOf('if (!row) return thread;') < b.indexOf('txPutIfPresent('), 'the no-row return comes BEFORE the write');
-  assert.ok(b.indexOf('encryptJson(next)') >= 0 && b.indexOf('encryptJson(next)') < b.indexOf('txPutIfPresent('), 'it encrypts BEFORE the transaction (WebCrypto cannot run inside one)');
+  assert.ok(b.indexOf('if (!row) return thread;') >= 0 && b.indexOf('if (!row) return thread;') < b.indexOf('txPutIfUnchanged('), 'the no-row return comes BEFORE the write');
+  assert.ok(b.indexOf('encryptJson(next)') >= 0 && b.indexOf('encryptJson(next)') < b.indexOf('txPutIfUnchanged('), 'it encrypts BEFORE the transaction (WebCrypto cannot run inside one)');
   assert.doesNotMatch(b, /row \? await decryptJson/, 'there is no fallback to the stale copy when the row is gone');
   assert.match(b, /catch/, 'it never throws into the list load');
 });
 
-test('txPutIfPresent is ONE readwrite transaction: the existence check and the write have no await between them', () => {
-  const b = body('txPutIfPresent');
+test('txPutIfUnchanged is ONE readwrite transaction that compares BOTH the iv and the ciphertext before it puts, with no await between', () => {
+  const b = body('txPutIfUnchanged');
   assert.equal((b.match(/db\.transaction\(/g) ?? []).length, 1, 'exactly one transaction');
   assert.match(b, /'readwrite'/, 'a readwrite transaction');
-  assert.match(b, /existing\.onsuccess = \(\) => \{\s*if \(existing\.result !== undefined\) \{\s*os\.put\(value\);/, 'the put happens inside the get\'s onsuccess, only when the row exists');
+  assert.match(b, /current\.enc\.iv === expected\.iv/, 'it compares the iv');
+  assert.match(b, /current\.enc\.ciphertext === expected\.ciphertext/, 'it compares the ciphertext');
+  assert.match(b, /existing\.onsuccess = \(\) => \{[\s\S]*if \(current\?\.enc && [\s\S]*\) \{\s*os\.put\(value\);/, 'the put happens inside the get\'s onsuccess, only when the compare holds');
   const afterTx = b.slice(b.indexOf('db.transaction('));
   assert.doesNotMatch(afterTx, /\bawait\b/, 'no await after the transaction opens (it would let the transaction auto-commit)');
-  assert.match(b, /return new Promise\(/, 'resolves on complete with whether it wrote');
+  assert.doesNotMatch(SRC, /txPutIfPresent/, 'the weaker put-if-present helper is gone');
 });

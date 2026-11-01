@@ -113,12 +113,14 @@ async function txGetAll<T>(store: string): Promise<T[]> {
 }
 
 /**
- * Put a row ONLY IF a row with this key still exists, as ONE readwrite transaction: the existence check and the write have no await between them, so
- * IndexedDB (which serialises readwrite transactions on a store) lets either a concurrent delete commit first (the check misses and nothing is written)
- * or this write commit first (and the delete then removes it). Either way a deleted row stays deleted. Returns whether it wrote. Callers must encrypt
- * BEFORE calling: WebCrypto cannot run inside an IndexedDB transaction without the transaction auto-committing.
+ * Compare-and-swap on the row's ciphertext, as ONE readwrite transaction: get the row, and put the new one ONLY IF the stored blob is still exactly the
+ * one the caller decrypted (same iv AND same ciphertext). Every encryptJson draws a fresh iv, so ANY write since the caller's read (a delete, an
+ * arriving note writing its own time, a rename) makes the compare fail and nothing is written; a plain "put if present" would still write back the
+ * whole record decrypted before the await and roll such a write back. There is no await between the get and the put (both run inside onsuccess), and
+ * IndexedDB serialises readwrite transactions on a store. Returns whether it wrote. Callers must encrypt BEFORE calling: WebCrypto cannot run inside an
+ * IndexedDB transaction without the transaction auto-committing.
  */
-async function txPutIfPresent(store: string, key: string, value: unknown): Promise<boolean> {
+async function txPutIfUnchanged(store: string, key: string, expected: EncryptedBlob, value: unknown): Promise<boolean> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readwrite');
@@ -126,7 +128,8 @@ async function txPutIfPresent(store: string, key: string, value: unknown): Promi
     let wrote = false;
     const existing = os.get(key);
     existing.onsuccess = () => {
-      if (existing.result !== undefined) {
+      const current = existing.result as { enc?: EncryptedBlob } | undefined;
+      if (current?.enc && current.enc.iv === expected.iv && current.enc.ciphertext === expected.ciphertext) {
         os.put(value);
         wrote = true;
       }
@@ -285,8 +288,8 @@ async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<Note
   try {
     const row = await txGet<ThreadRow>('threads', thread.thread_id);
     // The row is GONE: the conversation was deleted after this list was read (deleteThread removes the notes first and the row last). A missing row is
-    // never written: the thread stays in THIS list as read and is gone on the next load. (A delete that lands AFTER this check is caught by the
-    // single-transaction write below.)
+    // never written: the thread stays in THIS list as read and is gone on the next load. (A change that lands AFTER this check is caught by the
+    // compare-and-swap below.)
     if (!row) return thread;
     const current = await decryptJson<NoteThread>(row.enc);
     let sentAts: string[] | null = null;
@@ -298,10 +301,11 @@ async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<Note
     const value = healedLastActivity(current.last_activity_at, sentAts, nowMs);
     if (value === null) return current;
     const next: NoteThread = { ...current, last_activity_at: value };
-    // Encrypt first, then check-and-write in ONE transaction: the row can still disappear between the re-read above and this write (a delete is its own
-    // series of transactions), and a plain put would bring a deleted conversation back.
+    // Encrypt first, then compare-and-swap in ONE transaction against the ciphertext we decrypted: the row can change between the re-read above and this
+    // write (a delete, or a note writing its own time), and a plain put would bring a deleted conversation back or roll that write back. If anything
+    // wrote since, the heal is skipped; the next load re-checks, and readLastActivity bounds the sort meanwhile.
     const enc = await encryptJson(next);
-    const wrote = await txPutIfPresent('threads', thread.thread_id, { thread_id: thread.thread_id, enc } satisfies ThreadRow);
+    const wrote = await txPutIfUnchanged('threads', thread.thread_id, row.enc, { thread_id: thread.thread_id, enc } satisfies ThreadRow);
     return wrote ? next : thread;
   } catch {
     return thread;
