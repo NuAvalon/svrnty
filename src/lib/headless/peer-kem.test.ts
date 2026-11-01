@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mintHeadlessAgent, serializeMintArtifact } from '../identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { resolvePeerKemForSend, formatNotSent, errorLine, trackedFetch, sendThrowLine } from './peer-kem';
+import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, errorLine, trackedFetch, sendThrowLine } from './peer-kem';
 
 type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
 const idOf = (a: Minted) => a.introduction.card.identity as unknown as {
@@ -175,7 +175,7 @@ test('CLI send: a swapped kem (does not match the fingerprint) → refused loudl
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('CLI send: the relay rejecting the deposit is NOT silent — stderr line + non-zero exit', async () => {
+test('CLI send: a relay 503 is NOT silent and is UNCONFIRMED, not "NOT SENT" (a 5xx can come back after the relay stored it; pin changed on purpose, Archie #2649 b)', async () => {
   const peer = await mintHeadlessAgent({ throwaway: true });
   const { dir } = await senderDir([contactOf(peer)]);
   const server = createServer((_q, res) => { res.writeHead(503); res.end('no'); });
@@ -184,9 +184,46 @@ test('CLI send: the relay rejecting the deposit is NOT silent — stderr line + 
   try {
     const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the relay did not accept the deposit/);
+    assert.match(r.err, /UNCONFIRMED to [0-9a-f]{8}: the relay answered 503; it may or may not be in their mailbox; kept locally\. Resending could deliver it twice\.$/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
     assert.match(r.out, /"deposited":\s*false/);
+    assert.match(r.out, /"status":\s*503/);
   } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: a relay 429 (a definite refusal) stays "NOT SENT" and names the status, so the failover rule can tell a refusal from an outage', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const server = createServer((_q, res) => { res.writeHead(429); res.end('full'); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the relay refused the deposit \(HTTP 429\); nothing was stored/);
+    assert.doesNotMatch(r.err, /UNCONFIRMED/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('depositFailureLine: 5xx and 408 are UNCONFIRMED; every other status is a definite NOT SENT that names it; no status keeps the old NOT SENT text; the local tail is kept', () => {
+  const fp = 'ab'.repeat(32);
+  for (const st of [500, 502, 503, 504, 408]) {
+    assert.match(depositFailureLine(fp, st), new RegExp(`^UNCONFIRMED to abababab: the relay answered ${st}; `), String(st));
+    assert.doesNotMatch(depositFailureLine(fp, st), /NOT SENT/);
+  }
+  for (const st of [400, 401, 403, 404, 413, 429]) {
+    assert.match(depositFailureLine(fp, st), new RegExp(`^NOT SENT to abababab: the relay refused the deposit \\(HTTP ${st}\\)`), String(st));
+    assert.doesNotMatch(depositFailureLine(fp, st), /UNCONFIRMED/);
+  }
+  assert.equal(depositFailureLine(fp, undefined), 'NOT SENT to abababab: the relay did not accept the deposit');
+  assert.match(depositFailureLine(fp, 503, 'kept locally; this ratchet index is spent'), /; kept locally; this ratchet index is spent\. Resending could deliver it twice\.$/);
+  assert.match(depositFailureLine(fp, 429, 'kept locally'), /; kept locally$/);
+});
+
+test('static: both send paths in devin-comm word a failed deposit through depositFailureLine with the relay status (no inline "did not accept the deposit" claim left)', () => {
+  const src = readFileSync(resolve(REPO, 'scripts/devin-comm.ts'), 'utf8');
+  assert.equal((src.match(/depositFailureLine\(fp, r\.status,/g) ?? []).length, 2);
+  assert.doesNotMatch(src, /formatNotSent\(fp, 'the relay did not accept the deposit/);
 });
 
 test('CLI send-tr: a bound kem → ratchet packet inside the hybrid outer, ONE deposit, session persisted', async () => {
@@ -263,7 +300,7 @@ test('CLI send: relay UNREACHABLE (fetch throws, not deposited:false) → UNCONF
   try {
     const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, new RegExp(`^UNCONFIRMED to ${idOf(peer).fingerprint.slice(0, 8)}: no response from the relay \\(.+\\); it may or may not be in their mailbox\\. Check before resending$`, 'm'));
+    assert.match(r.err, new RegExp(`^UNCONFIRMED to ${idOf(peer).fingerprint.slice(0, 8)}: no response from the relay \\(.+\\); it may or may not be in their mailbox\\. Resending could deliver it twice\\.$`, 'm'));
     assert.doesNotMatch(r.err, /NOT SENT/);
     assert.doesNotMatch(r.out, /"deposited":\s*true/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -275,7 +312,7 @@ test('CLI send-tr: relay UNREACHABLE → UNCONFIRMED line that says the ratchet 
   try {
     const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
     assert.notEqual(r.code, 0);
-    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay \(.+\); it may or may not be in their mailbox\. Check before resending; this ratchet index is spent$/m);
+    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay \(.+\); it may or may not be in their mailbox; this ratchet index is spent\. Resending could deliver it twice\.$/m);
     assert.doesNotMatch(r.err, /NOT SENT/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -301,14 +338,40 @@ test('sendThrowLine: NOT SENT only where PROVEN undelivered; DEPOSITED after a 2
   const fp = 'abcdef0123456789', e = new Error('boom');
   assert.match(sendThrowLine(fp, e, 'before-post'), /^NOT SENT to abcdef01: the send failed before reaching the relay \(boom\)$/);
   const unc = sendThrowLine(fp, e, 'unreachable');
-  assert.match(unc, /^UNCONFIRMED to abcdef01: no response from the relay \(boom\); it may or may not be in their mailbox\. Check before resending$/);
+  assert.match(unc, /^UNCONFIRMED to abcdef01: no response from the relay \(boom\); it may or may not be in their mailbox\. Resending could deliver it twice\.$/);
   assert.doesNotMatch(unc, /NOT SENT/);                                         // not PROVEN undelivered, so never NOT SENT
   assert.match(sendThrowLine(fp, e, 'refused'), /^NOT SENT to abcdef01: the relay did not accept the deposit, and saving the local copy failed \(boom\)$/);
   const dep = sendThrowLine(fp, e, 'deposited');
   assert.match(dep, /^DEPOSITED to abcdef01, but saving the local copy failed \(boom\); do NOT resend$/);
   assert.doesNotMatch(dep, /NOT SENT/);
-  assert.match(sendThrowLine(fp, e, 'unreachable', true), /Check before resending; this ratchet index is spent$/);
+  assert.match(sendThrowLine(fp, e, 'unreachable', true), /ratchet index is spent\. Resending could deliver it twice\.$/);
   assert.doesNotMatch(sendThrowLine(fp, e, 'unreachable', false), /spent/);
+});
+
+// ── the UNCONFIRMED sentence (task #739 follow-up, Hypatia copy): every route ends with it, none says "Check before" ──
+test('every UNCONFIRMED line ends with "Resending could deliver it twice." exactly once; no line says "Check before"; NOT SENT / DEPOSITED never carry it', () => {
+  const fp = 'abcdef0123456789', e = new Error('boom'), END = 'Resending could deliver it twice.';
+  const unconfirmed = [
+    formatUnconfirmed(fp, 'x'),
+    ...[500, 502, 503, 504, 599, 408].flatMap((st) => [depositFailureLine(fp, st), depositFailureLine(fp, st, 'this ratchet index is spent')]),
+    sendThrowLine(fp, e, 'unreachable'),
+    sendThrowLine(fp, e, 'unreachable', true),
+  ];
+  for (const line of unconfirmed) {
+    assert.match(line, /^UNCONFIRMED to abcdef01: /, line);
+    assert.ok(line.endsWith(` ${END}`), `ends with the sentence: ${line}`);
+    assert.equal(line.split(END).length - 1, 1, `the sentence appears once: ${line}`);
+    assert.doesNotMatch(line, /check before/i, line);
+    assert.doesNotMatch(line, /NOT SENT/, line);
+  }
+  const others = [
+    depositFailureLine(fp, 429), depositFailureLine(fp, 400), depositFailureLine(fp, undefined), depositFailureLine(fp, 429, 'this ratchet index is spent'),
+    formatNotSent(fp, 'because'), sendThrowLine(fp, e, 'before-post'), sendThrowLine(fp, e, 'refused'), sendThrowLine(fp, e, 'deposited'),
+  ];
+  for (const line of others) {
+    assert.doesNotMatch(line, /Resending could deliver it twice/, line);
+    assert.doesNotMatch(line, /check before/i, line);
+  }
 });
 
 test('CLI send: a throw BEFORE the POST (signing fails) is NOT blamed on the network', async () => {

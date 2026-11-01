@@ -461,7 +461,7 @@ export async function sendNoteFromHeadless(args: {
   hopTrailDir?: string;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
+}): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** the relay's HTTP status when it answered; absent if nothing was posted */ status?: number }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relayBase = args.relayBase ?? '/api/relay';
   const now = () => new Date().toISOString();
@@ -498,6 +498,7 @@ export async function sendNoteFromHeadless(args: {
   // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
   // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
   let deposited = false;
+  let status: number | undefined;
   if (args.peerPqKemPublicKey) {
     const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
     const peer = trailPeer(args.store, args.peerFingerprint); // layer 3 (fail-open; never a fingerprint)
@@ -510,6 +511,7 @@ export async function sendNoteFromHeadless(args: {
       body: JSON.stringify({ mailbox_id, blob }),
     });
     deposited = res.ok;
+    status = res.status;
     if (deposited) recordHop(args.hopTrailDir, 'relay-accepted', { note_id }, peer); // a 2xx: "on the relay"
   } else {
     console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
@@ -531,5 +533,5 @@ export async function sendNoteFromHeadless(args: {
     // only a deposited note can ever be confirmed; a fail-closed (not sent) copy keeps no key
     ...(deposited ? { receipt_key } : {}),
   });
-  return { note_id, thread_id, deposited };
+  return { note_id, thread_id, deposited, ...(status !== undefined ? { status } : {}) };
 }

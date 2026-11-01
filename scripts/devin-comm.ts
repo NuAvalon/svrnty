@@ -25,7 +25,7 @@ import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, receiptCounts, type HeadlessOwner, type ReceiptCounts } from '../src/lib/headless/headless-client';
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
-import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
+import { resolvePeerKemForSend, formatNotSent, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
 import { deriveOwnerHybridSecrets } from '../src/lib/crypto/living-book-receive';
@@ -471,7 +471,7 @@ async function main() {
       console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
     }
     console.log(JSON.stringify(r));
-    if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent; this ratchet index is spent)')); process.exitCode = 1; }
+    if (!r.deposited) { console.error(depositFailureLine(fp, r.status, 'kept locally; this ratchet index is spent')); process.exitCode = 1; }
     return;
   }
 
@@ -491,7 +491,7 @@ async function main() {
     console.log(JSON.stringify(r));
     // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
     // ping the webhook below for a reply that never left.
-    if (!r.deposited) { console.error(formatNotSent(fp, 'the relay did not accept the deposit (kept locally as not sent)')); process.exitCode = 1; return; }
+    if (!r.deposited) { console.error(depositFailureLine(fp, r.status, 'kept locally')); process.exitCode = 1; return; }
     // Peter's rule: replies to devin-cloud must also ping his automation webhook (wakes his session).
     if (fp === 'b0d61d883e39edb9a85ceb3ff3472e0cfd6cc6a4a0007c25eaa9275c9c5bea81') {
       try {
