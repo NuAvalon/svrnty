@@ -4,7 +4,10 @@
 // Run: npx tsx --test src/lib/headless/headless-failover-2a.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readHopTrail } from './hop-trail';
 import { formatNotSent, formatUnconfirmed } from './peer-kem';
 import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
@@ -113,6 +116,28 @@ async function recvWith(blobsOn: Array<'r1' | 'r2'>) {
   bStore.upsertContact(contact(s.A));
   return { s, r, bStore };
 }
+test('H1 hop trail over a failover walk: sealed + deposited (the REQUEST) once for the whole walk; relay-accepted only if some relay answered 2xx, and only once', async () => {
+  const hopsOf = async (script: Partial<Record<string, number | 'throw'>>) => {
+    const [A, B] = [await mint(), await mint()];
+    const r = relays(script);
+    const dir = mkdtempSync(join(tmpdir(), 'hop-fo-'));
+    try {
+      const out = await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, body: 'hello', store: new HeadlessStore(), relayBases: [R1, R2], fetchImpl: r.fetchImpl, hopTrailDir: dir });
+      return { out, posts: r.posts.length, hops: readHopTrail(dir, out.note_id).map((h) => h.hop) };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  const ok = await hopsOf({ [R1]: 503 });
+  assert.equal(ok.out.deposited, true);
+  assert.equal(ok.posts, 2, 'both relays were posted to');
+  assert.deepEqual(ok.hops, ['sealed', 'deposited', 'relay-accepted'], 'one row each, not one per attempt');
+  const refused = await hopsOf({ [R1]: 503, [R2]: 503 });
+  assert.equal(refused.out.deposited, false);
+  assert.equal(refused.posts, 2);
+  assert.deepEqual(refused.hops, ['sealed', 'deposited'], 'no relay-accepted: "on the relay" would be false');
+  const first = await hopsOf({});
+  assert.deepEqual(first.hops, ['sealed', 'deposited', 'relay-accepted']);
+  assert.equal(first.posts, 1, 'the first relay took it: the second is never contacted');
+});
 test('P1 the SAME blob in BOTH relays => one stored note, and both relays are acked clean (nothing left on either)', async () => {
   const { s, r, bStore } = await recvWith(['r1', 'r2']);
   const m = await pollHeadlessAllRelays(owner(s.B), bStore, [R1, R2], { fetchImpl: r.fetchImpl });
