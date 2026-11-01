@@ -1,6 +1,6 @@
 // Honest send-status. The blind mailbox has no delivery query — EXCEPT a VERIFIED delivery receipt (the S62 designated-verifier MAC
-// receipt, checked in live-book-poll.buildReceiptSeam), which alone graduates "Sent · unconfirmed." → "Delivered".
-// Every UNVERIFIED path stays the floor: Delivered/Read/Expired are forbidden unless receipt-backed.
+// receipt, checked in live-book-poll.buildReceiptSeam), which alone graduates "Sent to the relay" → "Delivered".
+// Every UNVERIFIED path stays the 2xx floor: Delivered/Read/Expired are forbidden unless receipt-backed.
 
 import { NOTES_COPY } from './notes-copy';
 
@@ -19,7 +19,7 @@ export function outboundStatus(deposited: boolean, delivered = false): NoteBubbl
 
 export function statusLabel(status: NoteBubbleStatus): string {
   if (status === 'delivered') return NOTES_COPY.delivered;
-  if (status === 'sent-unconfirmed') return NOTES_COPY.sentUnconfirmed;
+  if (status === 'sent-unconfirmed') return NOTES_COPY.sentToRelay;
   if (status === 'not-sent') return NOTES_COPY.notSent;
   return '';
 }
@@ -36,8 +36,8 @@ export function peerSendsReceipts(notes: ReadonlyArray<{ direction: string; deli
 /**
  * The secondary hint "Awaiting delivery confirmation" PROMISES that a receipt may arrive. Only the browser sends receipts: our
  * agents never do, and a classical contact cannot. So the promise is made only for a peer who has already proven it sends them
- * (observed capability, same shape as the ratchet's D1 rule); otherwise the note shows the bare floor "Sent · unconfirmed." and
- * nothing that implies a confirmation is coming. (Hypatia #745.)
+ * (observed capability, same shape as the ratchet's D1 rule); otherwise the note shows the bare floor "Sent to the relay" and
+ * nothing that implies a confirmation is coming. (Hypatia #745.) Agents and old apps stay on that floor — true; it never upgrades.
  */
 export function showAwaitingHint(a: {
   outbound: boolean;
@@ -79,7 +79,7 @@ export function statusIsHonest(status: NoteBubbleStatus, text: string): boolean 
     return text === NOTES_COPY.delivered && !/\b(Read|Expired)\b/.test(text);
   }
   if (FORBIDDEN_LIVE_STATUS.test(text)) return false;
-  return text === NOTES_COPY.sentUnconfirmed || text === NOTES_COPY.notSent || text === '';
+  return text === NOTES_COPY.sentToRelay || text === NOTES_COPY.notSent || text === '';
 }
 
 /**
@@ -89,5 +89,5 @@ export function statusIsHonest(status: NoteBubbleStatus, text: string): boolean 
  */
 export function statusIsHonestFloor(text: string): boolean {
   if (FORBIDDEN_LIVE_STATUS.test(text)) return false;
-  return text === NOTES_COPY.sentUnconfirmed || text === NOTES_COPY.notSent || text === '';
+  return text === NOTES_COPY.sentToRelay || text === NOTES_COPY.notSent || text === '';
 }

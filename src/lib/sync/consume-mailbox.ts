@@ -40,6 +40,8 @@ import type { ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import type { OpenLegCounter } from './open-leg-counter';
 import type { AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import type { HoldBackoff } from './hold-backoff';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
@@ -209,6 +211,49 @@ export interface DeadLetterSink {
   settle?(): Promise<void>;
   /** R2: envelopes a user's session reset released (record key -> contact fp). Read once per poll; each is recorded as session-reset and acked WITHOUT being opened. Best effort: if it throws, the frames just stay held. */
   releasedByReset?(): Promise<ReadonlyMap<string, string>>;
+  /** Optional STAGING: when present, record()/clear() may only buffer, and flush() commits them. consume-mailbox calls it before every
+   *  ack chunk and acks the chunk only if it resolved. */
+  flush?(): Promise<void>;
+}
+
+/**
+ * #712: one store write per ack chunk (headless). Mutations the seams make after enter(key) belong to that envelope; commit() writes
+ * everything since the last commit in ONE write and only then may that chunk be acked. commit() THROWS when the write fails: none of
+ * the chunk is acked. A commit returns the keys whose note a re-apply refused (sender blocked meanwhile, C2). isStored is the C1
+ * dedupe: an envelope a previous commit already holds is acked without being opened again. Omit it and consume is unchanged (FE).
+ */
+export interface ChunkTxn {
+  enter(key: string | null): void;
+  isStored(key: string): boolean;
+  stored(key: string): void;
+  acked(keys: string[]): void;
+  commit(live?: ListingScope): { refused: string[] };
+  abort(): void;
+}
+
+/**
+ * A clean poll's WHOLE listing (#712 C1 bound, Flint #2417): the keys of every envelope it returned, and the relay + mailbox they belong
+ * to. Only built from a 2xx array reply, so a refused or unreadable poll can never prune.
+ */
+export interface ListingScope {
+  scope: string;
+  keys: ReadonlySet<string>;
+}
+
+/** Which relay + mailbox a dedupe key belongs to: a dedupe key is `<scope>.<id hash>`, so a listing prunes only its own scope. */
+export function envelopeDedupeScope(relayBase: string, mailboxId: string): string {
+  return bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope-scope:v1|${relayBase}|${mailboxId}`)));
+}
+
+/**
+ * The C1 dedupe key: which relay, which mailbox, which relay-assigned id (#2312: stable across redelivery). Hashed, so an attacker-chosen
+ * id is never stored as-is (E1). null for an id that is not a string: such an envelope is never deduped, it takes the normal path.
+ * Trusting the relay's id here adds nothing a relay can't already do: it can withhold or delete any envelope.
+ */
+export function envelopeDedupeKey(relayBase: string, mailboxId: string, envelopeId: unknown): string | null {
+  if (typeof envelopeId !== 'string') return null;
+  const id = bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope:v1|${relayBase}|${mailboxId}|${envelopeId}`)));
+  return `${envelopeDedupeScope(relayBase, mailboxId)}.${id}`;
 }
 
 export interface ConsumeDeps {
@@ -241,6 +286,8 @@ export interface ConsumeDeps {
   deadLetter?: DeadLetterSink; // #720: record-before-ack for everything that did not become a stored message
   // #720 T2b: when a held ratchet-DESYNC envelope is retried (every poll for its first hour, then hourly). Omit = retried every poll.
   holdBackoff?: HoldBackoff;
+  chunk?: ChunkTxn; // #712: one store write per ack chunk, written before the chunk is acked; omit = a write per mutation (as before)
+  outOfTime?: () => boolean; // #712: checked before each envelope; true = stop, commit + ack what was consumed, leave the rest (`deferred`)
 }
 
 export interface ConsumeSummary {
@@ -270,7 +317,9 @@ export interface ConsumeSummary {
   adopt_future_ignored?: number;
   released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
-  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
+  deduped?: number; // #712 C1: redelivered envelopes a previous commit already holds, acked WITHOUT opening (present when chunk is wired)
+  deferred?: number; // #712: envelopes left on the relay because the pass ran out of time (present when outOfTime is wired)
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth), or a 2xx whose body was not a list; absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
 /**
@@ -294,6 +343,14 @@ type Outcome =
  * message cannot wedge the channel.
  */
 export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<ConsumeSummary> {
+  try {
+    return await consumeOnce(deps);
+  } finally {
+    deps.chunk?.abort(); // #712: an exit mid-chunk (a throw) writes nothing of it; after the last commit nothing is open (no-op)
+  }
+}
+
+async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   const relayBase = deps.relayBase ?? '/api/relay';
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
@@ -322,15 +379,45 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
   // ever compared and handed on, never used to decide whether a blob is consumed.
   const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
-  if (!Array.isArray(envelopes)) return summary;
+  if (!Array.isArray(envelopes)) {
+    summary.rejected = res.status; // an answer that isn't a list is not an empty mailbox (Archie #2401)
+    return summary;
+  }
   summary.polled = envelopes.length;
+  const txn = deps.chunk;
+  if (txn) summary.deduped = 0;
+  if (deps.outOfTime) summary.deferred = 0;
+  const keyOf = (id: unknown) => (txn ? envelopeDedupeKey(relayBase, mailboxId, id) : null);
+  // reached only with a 2xx array (a refused or unreadable poll returned above): the one listing a commit may prune from
+  const live: ListingScope = { scope: envelopeDedupeScope(relayBase, mailboxId), keys: new Set(envelopes.flatMap((e) => keyOf(e.envelope_id) ?? [])) };
 
   // 2) Consume each envelope independently; flush acks in 20-id chunks so
   //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
   //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
   const ACK_CHUNK = 20;
+  // A STAGING sink (one with flush(), e.g. the headless file sink) buffers record()/clear() and commits them in ONE write before each ack
+  // chunk, so a backlog of N losses costs at most ceil(N/20) writes, not N (Archie #189076, Flint C1). Record-before-ack still holds: a
+  // chunk is acked only after flush() succeeded. If flush() throws, NOTHING in that chunk is acked (it stays on the relay for a later poll)
+  // and every staged record in it is re-counted from deadLettered to unrecorded. A sink without flush() (the FE) writes in record() as before.
+  const stagedRecords = new Set<string>();
   const flushAckChunk = async (chunk: string[]) => {
     if (chunk.length === 0 || deps.owner.cycle?.ended) return;
+    const staging = deps.deadLetter?.flush;
+    if (staging) {
+      try {
+        await staging.call(deps.deadLetter);
+      } catch (err) {
+        for (const id of chunk) {
+          if (stagedRecords.delete(id)) {
+            summary.deadLettered--;
+            summary.unrecorded++;
+          }
+        }
+        console.error('[return-channel] could not commit dead-letter records (chunk left on the relay):', err instanceof Error ? err.message : 'error');
+        return;
+      }
+      for (const id of chunk) stagedRecords.delete(id);
+    }
     const ackHeaders = await signMailboxAckRequest({
       mailboxId,
       envelopeIds: chunk,
@@ -348,8 +435,12 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       headers: { ...ackHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: chunk }),
     });
-    if (ackRes.ok) summary.acked += chunk.length;
+    if (ackRes.ok) {
+      summary.acked += chunk.length;
+      txn?.acked(chunk.flatMap((id) => keyOf(id) ?? []));
+    }
   };
+
   // Nothing is added to `toAck` in the consume loop itself: each envelope that may be acked goes through THE ACK DOOR below, which decides
   // WHAT must happen first (#720 R1: no ack of an envelope that did not become a stored message without a committed record of it).
   type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string; cause?: string };
@@ -358,6 +449,69 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
   const toAck: string[] = [];
   const bump = (r: DeadLetterReason) => {
     summary.lost[r] = (summary.lost[r] ?? 0) + 1;
+  };
+  // #712 S1: a chunk is written BEFORE it is acked. false = the write failed: ack none of these `pending` (left on the relay, `unrecorded`).
+  // The consumed-counters of a chunk that was never written go back to the last commit (Apollo #2429): it counts as `unrecorded` only.
+  // PINNED ORDER per ack chunk (Flint #189113/#189122): store save (txn.commit) → dead-letter flush (flushAckChunk) → ack. No ack if either
+  // write fails. A failed store save leaves the chunk's dead-letter ops STAGED (the sink keeps them for its next flush) and the chunk UNACKED.
+  type Committed = Pick<ConsumeSummary, 'applied' | 'ignited' | 'notes' | 'delivered' | 'dropped' | 'deduped' | 'lost'>;
+  const snapshot = (): Committed => ({ applied: summary.applied, ignited: summary.ignited, notes: summary.notes, delivered: summary.delivered, dropped: summary.dropped, deduped: summary.deduped, lost: { ...summary.lost } });
+  let committed = snapshot();
+  // The envelopes whose note a re-apply may refuse at commit (C2), by dedupe key: what a loss row for it needs (the fp is authenticated).
+  const notesByKey = new Map<string, { id: string; blob: string; fp: string }>();
+  // `ids` = the envelopes this commit covers that are about to be acked. An id dropped from it here is NOT acked (stays on the relay).
+  const commitChunk = async (ids: string[]): Promise<boolean> => {
+    if (!txn) return true;
+    let refused: string[];
+    try {
+      refused = txn.commit(live).refused;
+    } catch (err) {
+      Object.assign(summary, committed, { lost: { ...committed.lost } });
+      summary.unrecorded += ids.length;
+      // their dead-letter rows stay staged in the sink (written at its next flush, harmless for an envelope still on the relay), but none
+      // of these is acked now, so none counts as dead-lettered (= recorded, then acked)
+      for (const id of ids) if (stagedRecords.delete(id)) summary.deadLettered--;
+      console.error('[return-channel] could not write a chunk of consumed envelopes (left on the relay):', err instanceof Error ? err.message : 'error');
+      return false;
+    }
+    // C2: the sender was blocked (or removed) by a concurrent writer after the note opened. Consumed exactly like a blocked sender's note
+    // on its first apply: an honest 'not-in-book' loss (#332), and with a sink its ROW is staged before the ack (#713), never acked unrecorded.
+    for (const k of refused) {
+      const n = notesByKey.get(k);
+      summary.notes--;
+      summary.dropped++;
+      if (!n) {
+        // Flint #2829 (a): UNREACHABLE by construction (commit() refuses only keys whose note this pass applied). Loud if it ever fires:
+        // there is nothing to record a row from, so it is counted as before. Counts only: never the key or an envelope id.
+        console.error('[return-channel] UNREACHABLE: a chunk commit refused a key with no note in this pass (counted not-in-book, no row)');
+        bump('not-in-book');
+        continue;
+      }
+      const i = ids.indexOf(n.id);
+      if (!sink) {
+        bump('not-in-book');
+        continue;
+      }
+      const key = recordKeyFor(n.id);
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: 'not-in-book', blob: n.blob, fp: n.fp }) : null;
+      try {
+        if (!row) throw new Error('unrecordable envelope id');
+        await sink.record(row);
+        summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(n.id);
+        bump('not-in-book');
+      } catch (err) {
+        if (i !== -1) ids.splice(i, 1);
+        summary.unrecorded++;
+        console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
+      }
+    }
+    for (const k of refused) notesByKey.delete(k);
+    committed = snapshot();
+    return true;
+  };
+  const commitThenAck = async (chunk: string[]) => {
+    if (await commitChunk(chunk)) await flushAckChunk(chunk);
   };
 
   // THE ACK DOOR. Run inline, one envelope at a time, so #307's incremental chunked drain keeps working. Without a sink (headless) behaviour
@@ -388,6 +542,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       try {
         await sink.record(row);
         summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
         bump(item.need.reason);
         toAck.push(item.id);
       } catch (err) {
@@ -412,6 +567,16 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
     if (deps.owner.cycle?.ended) return 'ended';
+    const key = keyOf(env.envelope_id);
+    // C1 (#326): a previous commit already holds this envelope (killed between commit and ack). Ack it WITHOUT opening: a ratchet frame's
+    // message key is spent on the first open, so a second open would fail and record a loss for a message that is safely stored.
+    // Through THE ACK DOOR as a stored message ('clear'), like any other: a sink clears a stale record of it first (#720 R1/R5).
+    if (txn && key && txn.isStored(key)) {
+      summary.deduped!++;
+      await door({ id: env.envelope_id, blob: env.blob, need: 'clear' });
+      if (toAck.length >= ACK_CHUNK) await commitThenAck(toAck.splice(0, ACK_CHUNK));
+      return 'terminal';
+    }
     // R2: a frame the user's session reset released is recorded as session-reset and acked WITHOUT being opened (opening it again would only
     // fail and flip its record back to a hold).
     const relFp = resetReleased.get(recordKeyFor(env.envelope_id) ?? '');
@@ -419,7 +584,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       deps.holdBackoff?.forget(env.envelope_id);
       summary.dropped++;
       await door({ id: env.envelope_id, blob: env.blob, need: { reason: 'session-reset', fp: relFp } });
-      if (toAck.length >= ACK_CHUNK) await flushAckChunk(toAck.splice(0, ACK_CHUNK));
+      if (toAck.length >= ACK_CHUNK) await commitThenAck(toAck.splice(0, ACK_CHUNK));
       return 'terminal';
     }
     // T2b: a held desync envelope that is not due yet is NOT tried (no ratchet open, no side effect). It still counts as held with its
@@ -432,6 +597,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       summary.dropped++;
       return 'skipped';
     }
+    txn?.enter(key); // only an envelope that is actually opened this pass belongs to the chunk (a not-yet-due hold returned above)
     let outcome: Outcome;
     try {
       outcome = await consumeOne(env.blob, deps, now);
@@ -451,6 +617,8 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       if (outcome.kind === 'held' && outcome.reason === 'ratchet-desync') backoff.attempted(env.envelope_id, outcome.fp, nowMs);
       else backoff.forget(env.envelope_id); // opened, consumed, or no longer a desync hold: no schedule to keep
     }
+    if (txn && key && (outcome.kind === 'applied' || outcome.kind === 'note' || outcome.kind === 'receipt')) txn.stored(key);
+    if (txn && key && outcome.kind === 'note') notesByKey.set(key, { id: env.envelope_id, blob: env.blob, fp: outcome.event.from_fingerprint });
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
@@ -489,16 +657,23 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     }
     if (toAck.length >= ACK_CHUNK) {
       const batch = toAck.splice(0, ACK_CHUNK);
-      await flushAckChunk(batch);
+      await commitThenAck(batch);
     }
     return outcome.kind;
   };
 
-  for (const env of envelopes) if ((await handle(env, false)) === 'ended') break;
+  for (let n = 0; n < envelopes.length; n++) {
+    // #712: out of time. Stop BETWEEN envelopes, before the watchdog; what was consumed is committed + acked below.
+    if (deps.outOfTime?.()) {
+      summary.deferred = envelopes.length - n;
+      break;
+    }
+    if ((await handle(envelopes[n], false)) === 'ended') break;
+  }
 
   // T4: retry the held frames (desync and local) of every contact whose note was stored this poll. A retried frame that opens is consumed as
   // usual and may itself heal the next one, so go round until a round frees nothing. Bounded: each round only retries what is still held.
-  for (let round = 0; healed.size > 0 && round <= envelopes.length && !deps.owner.cycle?.ended; round++) { // `round` cap: termination never rests on `freed` alone
+  for (let round = 0; healed.size > 0 && round <= envelopes.length && !deps.owner.cycle?.ended && !deps.outOfTime?.(); round++) { // `round` cap: termination never rests on `freed` alone
     const retry = heldNow.filter((h) => h.reason !== 'missing-key' /* carries no fp today; the check keeps it out if one ever does */ && h.fp !== undefined && healed.has(h.fp.toLowerCase()));
     if (retry.length === 0) break;
     let freed = 0;
@@ -567,13 +742,6 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     stillHeld.push(...heldNow);
   }
   summary.held = stillHeld.length;
-  if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
-    try {
-      await sink.settle();
-    } catch {
-      /* retention is housekeeping; it must not affect consume or ack */
-    }
-  }
 
   // #720: report how many blobs are being KEPT because this device cannot open them yet. Reported on every CLEAN poll, including 0, so a
   // notice clears once they open or expire. NOT reported when the poll was refused (returned above) or the unlock cycle ended mid-tick:
@@ -588,6 +756,17 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
 
   // 3) Ack-delete any remaining terminal envelopes (owner-signed), in chunks. apply is idempotent, so a crash before ack
   //    just redelivers and re-applies harmlessly (at-least-once). Cycle ended mid-tick: flushAckChunk skips (it can't be signed).
+  //    #712: the last partial chunk is written first (the cycle-ended case too: its ops passed the per-write dead() checks).
+  // PINNED ORDER for the last chunk too: store save FIRST, then any dead-letter write (settle commits staged rows + prunes), then the acks.
+  // A failed store save skips settle, so its dead-letter ops stay STAGED (not written ahead of the store) and nothing is acked.
+  if (!(await commitChunk(toAck))) toAck.length = 0;
+  else if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
+    try {
+      await sink.settle();
+    } catch {
+      /* retention is housekeeping; it must not affect consume or ack (a staged row it could not write is flushed before its ack below) */
+    }
+  }
   while (toAck.length > 0 && !deps.owner.cycle?.ended) {
     const batch = toAck.splice(0, ACK_CHUNK);
     await flushAckChunk(batch);

@@ -13,7 +13,7 @@ import { withWriterLock } from './writer-lock';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
-import type { KnownContact, ContactStore } from '@/lib/sync/consume-mailbox';
+import type { KnownContact, ContactStore, ChunkTxn, ListingScope } from '@/lib/sync/consume-mailbox';
 import type { NoteRecord, NoteThread } from '@/lib/messaging/types';
 
 /** A stored contact in the headless book — the fields the consume seams + admit + mutual-apply touch. */
@@ -37,6 +37,22 @@ interface HeadlessData {
   contacts: HeadlessContact[];
   notes: NoteRecord[];
   threads: NoteThread[];
+  // #712 C1: envelopes whose contents a chunk commit already holds, keyed by consume's envelopeDedupeKey (a hash, never the raw id).
+  // A redelivered one (killed between commit and ack) is acked WITHOUT being opened again. Bounded: see commitChunk.
+  applied_envelopes?: AppliedEnvelope[];
+}
+
+interface AppliedEnvelope {
+  key: string;
+  at: string; // ISO, when the commit that holds it ran
+}
+
+/** = the relay's envelope TTL: an entry older than this can no longer match a live envelope, and is never trusted to skip an open. */
+const APPLIED_TTL_MS = 7 * 24 * 3600e3;
+
+function freshEntry(e: AppliedEnvelope, nowMs: number): boolean {
+  const at = Date.parse(e.at);
+  return Number.isFinite(at) && nowMs - at < APPLIED_TTL_MS;
 }
 
 /**
@@ -111,6 +127,9 @@ export class HeadlessStore {
   private readonly path: string | null;
   private readonly lockDir: string | null;
   private readonly atRestKey: Uint8Array | null;
+  private writeCount = 0;
+  // #712: while a chunk is open, mutations apply to the in-memory copy AND are recorded (closures over their ARGUMENTS) for the commit.
+  private chunk: { ops: Array<{ key: string | null; op: () => unknown }>; key: string | null; stored: Set<string>; acked: Set<string> } | null = null;
 
   constructor(opts: { path?: string; lockDir?: string; atRestKey?: Uint8Array } = {}) {
     this.path = opts.path ?? null;
@@ -142,11 +161,23 @@ export class HeadlessStore {
       contacts: book?.contacts ?? [],
       notes: book?.notes ?? [],
       threads: book?.threads ?? [],
+      ...(Array.isArray(book?.applied_envelopes) ? { applied_envelopes: book.applied_envelopes } : {}),
     };
+  }
+
+  /** How many times this instance wrote the book (counts only; #712 S3/S5). */
+  get writes(): number {
+    return this.writeCount;
+  }
+
+  /** Size of the #712 dedupe set on this copy (counts only). */
+  appliedEnvelopeCount(): number {
+    return this.data.applied_envelopes?.length ?? 0;
   }
 
   private flush(): void {
     if (!this.path) return;
+    this.writeCount++;
     const json = JSON.stringify(this.data, null, 2);
     // at-rest: encrypt when a key is present (prod agents MUST pass one); plaintext only for dev/test parity.
     const key = this.atRestKey;
@@ -157,18 +188,111 @@ export class HeadlessStore {
     );
   }
 
-  /** One read-modify-write unit: under the writer lock, re-read, apply, flush (see class doc). */
-  private mutate(apply: () => void): void {
-    if (!this.path || !this.lockDir) {
-      apply();
-      this.flush();
-      return;
+  /**
+   * One read-modify-write unit: under the writer lock, re-read, apply, flush (see class doc). Inside an open chunk (#712) the change
+   * applies to the in-memory copy now and is re-applied onto a fresh read at commitChunk, so `apply` must compute everything it needs
+   * from this.data and its own arguments, never from a value read before it ran.
+   */
+  private mutate<T>(apply: () => T): T {
+    if (this.chunk) {
+      const r = apply();
+      this.chunk.ops.push({ key: this.chunk.key, op: apply });
+      return r;
     }
-    withWriterLock(this.lockDir, () => {
-      this.load();
-      apply();
+    if (!this.path || !this.lockDir) {
+      const r = apply();
       this.flush();
+      return r;
+    }
+    return withWriterLock(this.lockDir, () => {
+      this.load();
+      const r = apply();
+      this.flush();
+      return r;
     });
+  }
+
+  /**
+   * #712: write one ack chunk. Under the writer lock ONCE: re-read, re-apply the chunk's ops in order (a concurrent writer's records
+   * survive; a block it wrote wins, C2), record the chunk's stored envelopes in the dedupe set (C1, same write = S3), write once.
+   * Returns the keys whose note a re-apply refused (the sender is no longer admitted). Throws if the write fails: the caller acks NONE
+   * of the chunk, and this copy is rolled back to the disk.
+   * The dedupe set keeps an entry only while it is younger than the relay TTL, was not acked by this process, and (when `live` is
+   * given) is still in the poll's listing IF it belongs to that listing's relay + mailbox: the relay lists a mailbox WHOLE
+   * (mailbox-store.ts pollMailbox has no LIMIT, pinned by a test), so an id missing from it was acked or expired and can never be
+   * redelivered. Another relay's or mailbox's entries are never pruned by it (Flint #2417).
+   */
+  commitChunk(now: string, live?: ListingScope): { refused: string[] } {
+    const c = this.chunk;
+    this.chunk = null;
+    // nothing consumed into this chunk: no write (the dedupe set is pruned at the next real commit)
+    if (!c || (c.ops.length === 0 && c.stored.size === 0)) return { refused: [] };
+    const nowMs = Date.parse(now);
+    const run = (reapply: boolean) => {
+      // Without the lock nothing else writes this copy, so the ops already ran on it (a refusal then was returned to its caller).
+      // A refusal only counts for an envelope consume marked stored: one refused on its first apply never was.
+      const refused = new Set<string>();
+      if (reapply) for (const { key, op } of c.ops) if (op() === false && key && c.stored.has(key)) refused.add(key);
+      const listed = (e: AppliedEnvelope) => !live || !e.key.startsWith(`${live.scope}.`) || live.keys.has(e.key);
+      const keep = (this.data.applied_envelopes ?? []).filter((e) => freshEntry(e, nowMs) && !c.acked.has(e.key) && listed(e));
+      for (const k of c.stored) if (!refused.has(k) && !keep.some((e) => e.key === k)) keep.push({ key: k, at: now });
+      this.data.applied_envelopes = keep;
+      this.flush();
+      return [...refused];
+    };
+    try {
+      if (!this.path || !this.lockDir) return { refused: run(false) };
+      return { refused: withWriterLock(this.lockDir, () => {
+        this.load();
+        return run(true);
+      }) };
+    } catch (err) {
+      try {
+        this.load(); // drop the chunk's in-memory changes: nothing of it was written
+      } catch {
+        /* the book is unreadable: the next command stops on it (fail-closed load) */
+      }
+      throw err;
+    }
+  }
+
+  /** Drop an open chunk without writing it (consume exited mid-chunk). The copy goes back to the disk. */
+  abortChunk(): void {
+    if (!this.chunk) return;
+    this.chunk = null;
+    if (this.path) this.load();
+  }
+
+  /**
+   * The #712 transaction seam consume drives (ConsumeDeps.chunk). `now` stamps dedupe entries. Mutations through this store between
+   * enter() and commit() belong to the entered envelope.
+   */
+  asChunkTxn(now: () => string): ChunkTxn {
+    const open = () => (this.chunk ??= { ops: [], key: null, stored: new Set(), acked: new Set() });
+    let pendingAcked = new Set<string>();
+    return {
+      enter: (key) => {
+        open().key = key;
+      },
+      isStored: (key) => {
+        const nowMs = Date.parse(now());
+        return (this.data.applied_envelopes ?? []).some((e) => e.key === key && freshEntry(e, nowMs));
+      },
+      stored: (key) => {
+        open().stored.add(key);
+      },
+      acked: (keys) => {
+        for (const k of keys) pendingAcked.add(k);
+      },
+      commit: (live) => {
+        const c = open();
+        for (const k of pendingAcked) c.acked.add(k);
+        const r = this.commitChunk(now(), live);
+        pendingAcked = new Set();
+        return r;
+      },
+      abort: () => this.abortChunk(),
+    };
   }
 
   // --- contacts ---
@@ -198,15 +322,22 @@ export class HeadlessStore {
   }
 
   // --- notes (mirror the messaging store surface the note-accept uses) ---
-  putNote(n: NoteRecord): void {
+  /**
+   * Returns false only when an INBOUND note was REFUSED because it reused a stored note_id with different content (FIRST WRITE WINS, Archie #2653):
+   * the stored row is kept as it was. Everything else stores (true). A byte-identical redelivery re-persists harmlessly.
+   */
+  putNote(n: NoteRecord): boolean {
+    let stored = true;
     this.mutate(() => {
       // note_id is sender-chosen: keyed on it alone, a peer who knew one of our ids (our outbound copies)
       // could replace that row. Same sender + direction + id = redelivery, re-persisted harmlessly (Chaos #170).
       const i = this.data.notes.findIndex((x) =>
         x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
       if (i === -1) this.data.notes.push(n);
+      else if (n.direction === 'inbound' && (this.data.notes[i].body !== n.body || this.data.notes[i].thread_id !== n.thread_id || this.data.notes[i].sent_at !== n.sent_at)) stored = false;
       else this.data.notes[i] = n;
     });
+    return stored;
   }
   listNotes(): NoteRecord[] {
     return [...this.data.notes];
@@ -217,6 +348,32 @@ export class HeadlessStore {
       if (i === -1) this.data.threads.push(t);
       else this.data.threads[i] = t;
     });
+  }
+
+  /**
+   * Store an inbound note and its thread as ONE change, admitted against the copy it is applied to (#712 C2): re-applied at a chunk
+   * commit, a sender blocked by a concurrent writer since the note was opened is refused there, exactly as before the poll. `threadFor`
+   * builds the thread from the CURRENT one on that copy. Returns 'not-admitted' (nothing stored) when the sender is not admitted, and
+   * 'kept' (nothing changed) when the note reuses a stored inbound id with different content: FIRST WRITE WINS, the same rule as putNote.
+   * The op returns false ONLY for not-admitted: that is the refusal commitChunk reports (a 'kept' note is stored, the stored row stands).
+   */
+  acceptInboundNote(n: NoteRecord, threadFor: (existing: NoteThread | undefined) => NoteThread, admit: (c: HeadlessContact | null) => boolean): 'stored' | 'kept' | 'not-admitted' {
+    const r = this.mutate((): 'stored' | 'kept' | false => {
+      if (!admit(this.getContactByFingerprint(n.from_fingerprint))) return false;
+      // same key as putNote: sender + direction + id (Chaos #170)
+      const i = this.data.notes.findIndex((x) =>
+        x.note_id === n.note_id && x.direction === n.direction && x.from_fingerprint === n.from_fingerprint);
+      const prev = i === -1 ? undefined : this.data.notes[i];
+      if (prev && n.direction === 'inbound' && (prev.body !== n.body || prev.thread_id !== n.thread_id || prev.sent_at !== n.sent_at)) return 'kept';
+      if (i === -1) this.data.notes.push(n);
+      else this.data.notes[i] = n;
+      const t = threadFor(this.data.threads.find((x) => x.thread_id === n.thread_id));
+      const j = this.data.threads.findIndex((x) => x.thread_id === t.thread_id);
+      if (j === -1) this.data.threads.push(t);
+      else this.data.threads[j] = t;
+      return 'stored';
+    });
+    return r === false ? 'not-admitted' : r;
   }
   listThreads(): NoteThread[] {
     return [...this.data.threads];

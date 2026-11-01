@@ -37,6 +37,8 @@ import { getHeldReport, subscribeHeld, type HeldReport } from '@/lib/notes/held-
 import { formatRelayDeadline, heldNotices } from './held-notice';
 import { RatchetRows } from './RatchetRows';
 import { peerIsAgent } from './ratchet-rows-view';
+import { getPollRefusedReport, subscribePollRefused, type PollRefusedReport } from '@/lib/notes/poll-status-events';
+import { pollRefusedNotice } from './poll-refused-notice';
 import { cantOpenNotices } from './cant-open-notice';
 import { getCantOpenSDismissedAt, listDeadLetters, setCantOpenSDismissedAt } from '@/lib/messaging/dead-letter-store';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
@@ -47,6 +49,7 @@ import {
   filterFieldPeople,
   formatNoteClock,
   formatNoteDay,
+  formatNoteListWhen,
   mergeFieldPeople,
   previewLine,
   sortFieldPeople,
@@ -149,6 +152,13 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
     () => heldNotices([{ reason: 'missing_key', count: heldReport.count, kept: 'relay', expiresAt: heldReport.expiresAt }], Date.now(), (ms) => formatRelayDeadline(ms))[0] ?? null,
     [heldReport],
   );
+  // copy v3 §B: the shared poll has failed 3 times in a row (refused, or a reply it couldn't read) (in memory; cleared on lock and on the first answered poll).
+  const [pollRefused, setPollRefused] = useState<PollRefusedReport>(getPollRefusedReport);
+  useEffect(() => {
+    setPollRefused(getPollRefusedReport());
+    return subscribePollRefused(setPollRefused);
+  }, []);
+  const refusedNotice = useMemo(() => pollRefusedNotice(pollRefused, (ms) => formatRelayDeadline(ms)), [pollRefused]);
   // #731: messages that reached this device but couldn't be opened (local metadata-only rows), and when the S line was last dismissed.
   const [deadRows, setDeadRows] = useState<DeadLetterRow[]>([]);
   const [sDismissedAt, setSDismissedAt] = useState<string | null>(null);
@@ -457,7 +467,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
         // deposited:false = the relay refused it (a 4xx) or the recipient was skipped (S14, no verified PQ KEM key). Either way it is not sent.
         setStatus(notSentMessage(selected));
       } else {
-        setStatus(NOTES_COPY.sentUnconfirmed);
+        setStatus(NOTES_COPY.sentToRelay);
       }
       emitNoteArrival({ note_id: result.note_id, thread_id: result.thread_id });
       await loadThreads();
@@ -477,7 +487,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
     if (note.direction !== 'outbound') return 'inbound';
     if (failedIds[note.note_id]) return 'not-sent';
     // delivered flips to 'delivered' ONLY when a verified receipt set note.delivered (consume seam);
-    // otherwise the honest floor 'sent-unconfirmed'. (Athena — Nov-5 delivered-receipt.)
+    // otherwise the honest 2xx floor ('sent-unconfirmed' → "Sent to the relay"). (Athena — Nov-5 delivered-receipt.)
     return outboundStatus(true, note.delivered === true);
   };
 
@@ -528,6 +538,23 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
               {heldNotice.hint ? (
                 <p data-testid="notes-held-hint" style={{ margin: '6px 0 0', color: E.muted }}>
                   {heldNotice.hint}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {refusedNotice ? (
+            <div
+              role="status"
+              data-testid="notes-poll-refused-notice"
+              style={{ border: `1px solid ${E.muted}`, borderRadius: 10, padding: '10px 12px', fontSize: 13, lineHeight: 1.45, color: E.text }}
+            >
+              <p data-testid="notes-poll-refused-text" style={{ margin: 0 }}>
+                {refusedNotice.text}
+              </p>
+              {refusedNotice.hint ? (
+                <p data-testid="notes-poll-refused-hint" style={{ margin: '6px 0 0', color: E.muted }}>
+                  {refusedNotice.hint}
                 </p>
               ) : null}
             </div>
@@ -621,8 +648,8 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                         </span>
                       </span>
                       {person.lastAt ? (
-                        <span style={{ fontSize: 11, color: E.dim, flexShrink: 0 }}>
-                          {formatNoteClock(person.lastAt)}
+                        <span data-testid="notes-list-when" style={{ fontSize: 11, color: E.dim, flexShrink: 0 }}>
+                          {formatNoteListWhen(person.lastAt)}
                         </span>
                       ) : null}
                     </button>
@@ -755,7 +782,7 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
               // gated twice: (1) PER-NOTE, only a note sent through the live flow (it carries receipt_nonce; Hypatia #172241 +
               // Flint #172222), and (2) PER-PEER, only a peer who has ALREADY sent us a verified receipt (Hypatia #745): our
               // agents never send receipts and a classical contact cannot, so for them the note keeps the bare floor
-              // "Sent · unconfirmed." and nothing implies a confirmation is coming. The hint disappears at graduation.
+              // "Sent to the relay" and nothing implies a confirmation is coming. The hint disappears at graduation.
               const awaitingDelivery = showAwaitingHint({
                 outbound,
                 status,
@@ -774,12 +801,23 @@ export function NotesInbox({ identity, focusFingerprint, focusName, onOpenGalaxy
                     data-testid={`notes-bubble-${n.note_id}`}
                     data-direction={n.direction}
                   >
-                    <p style={{ margin: '0 0 6px', whiteSpace: 'pre-wrap', fontSize: 14 }}>
+                    <p className="notes-bubble-body" style={{ margin: '0 0 6px', whiteSpace: 'pre-wrap', fontSize: 14 }}>
                       {boundDisplayText(n.body, NOTES_BOUNDS.body)}
                     </p>
                     <p style={{ margin: 0, fontSize: 11, color: E.dim, display: 'flex', gap: 8, justifyContent: outbound ? 'flex-end' : 'flex-start' }}>
                       <span>{formatNoteClock(n.sent_at)}</span>
-                      {label ? <span data-testid="notes-sent-status">{label}</span> : null}
+                      {label ? (
+                        <span data-testid="notes-sent-status">
+                          {label}
+                          {status === 'delivered' || status === 'sent-unconfirmed' ? (
+                            <span
+                              className="notes-ticks"
+                              data-ticks={status === 'delivered' ? '2' : '1'}
+                              aria-hidden="true"
+                            />
+                          ) : null}
+                        </span>
+                      ) : null}
                     </p>
                     {awaitingDelivery ? (
                       <p

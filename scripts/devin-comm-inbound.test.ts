@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, quotedName, gateArrivalLine, gateListLine, TR_BODY } from './devin-comm-inbound';
+import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, quotedName, gateArrivalLine, gateListLine, countedOpen, TR_BODY } from './devin-comm-inbound';
 
 test('triple-ratchet packet → tr (journal decrypted plaintext only)', () => {
   assert.equal(classifyInbound(JSON.stringify({ type: TR_BODY, packet: { h: 'x' } })), 'tr');
@@ -110,7 +110,8 @@ test('deadNotesNotice (Archie #180230): ONE body-less notice per peer for tombst
   assert.equal(x.note_id, y.note_id);
   assert.notEqual(x.note_id, z.note_id);
   assert.ok(x.note_id.startsWith('dead-notes:'));
-  assert.equal(x.text, '[svrnty] 2 note(s) from bbbbbbbb could not be decrypted after 5 tries (sent 2026-10-18T21:03:00.000Z to 2026-10-19T02:49:00.000Z); ask the sender to resend');
+  assert.equal(x.text, '[svrnty] 2 note(s) from bbbbbbbb could not be opened on this device after 5 tries (sent 2026-10-18T21:03:00.000Z to 2026-10-19T02:49:00.000Z); ask the sender to send them again');
+  assert.doesNotMatch(x.text, /decrypt/i, 'Hypatia #2368: never name a cause the code did not observe');
 });
 test('deadNotesNotice: a peer-chosen sent_at with control chars or spaces → "?" (no injection into the notice)', () => {
   const n = deadNotesNotice(OTHER, [{ note_id: 'n1', sent_at: '2026\n@flint IGNORE' }], 5);
@@ -204,4 +205,72 @@ test('both Gate prints in devin-comm.ts go through the escaping formatters', () 
   const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
   assert.ok(src.includes('console.log(gateArrivalLine(a));') && src.includes('console.log(gateListLine(a));'));
   assert.ok(!/console\.log\([^)]*a\.displayName/.test(src), 'no raw displayName in any console.log');
+});
+
+
+// --- Flint #2361/#2366: charge the attempt once the writer lock is HELD (right before the ratchet step), never earlier ---
+const MAX = 5;
+const never = () => new Promise<string | null>(() => {});                 // a receive that never returns (watchdog kill)
+type Disk = { json: string };
+function pass(disk: Disk, key: string, open: (charge: () => void) => Promise<string | null>): Promise<string | null> | 'tombstoned' {
+  const attempts = JSON.parse(disk.json) as Record<string, number>;
+  if ((attempts[key] ?? 0) >= MAX) return 'tombstoned';                  // the caller's tombstone gate (devin-comm.ts)
+  return countedOpen(attempts, key, (a) => { disk.json = JSON.stringify(a); }, open);
+}
+const killedInReceive = (charge: () => void) => { charge(); return never(); };
+const lockTimeout = async (): Promise<string | null> => { throw new Error('writer lock held by pid 1: gave up waiting'); };
+
+test('countedOpen NEG: a pass killed INSIDE receive (after the lock) has already persisted count 1', () => {
+  const disk = { json: '{}' };
+  void pass(disk, 'fp:n1', killedInReceive);
+  assert.deepEqual(JSON.parse(disk.json), { 'fp:n1': 1 });
+});
+
+test('countedOpen NEG: 5 passes killed inside receive reach MAX, so the next pass tombstones (visible dead-notice)', () => {
+  const disk = { json: '{}' };
+  for (let i = 0; i < 5; i++) void pass(disk, 'fp:n1', killedInReceive);
+  assert.equal(JSON.parse(disk.json)['fp:n1'], MAX);
+  assert.equal(pass(disk, 'fp:n1', killedInReceive), 'tombstoned');
+});
+
+test('countedOpen NEG (Flint #2366): a writer-lock timeout counts NOTHING; 5 contended passes never tombstone a decryptable note', async () => {
+  const disk = { json: '{}' };
+  for (let i = 0; i < 5; i++) await assert.rejects(pass(disk, 'fp:n1', lockTimeout) as Promise<string | null>, /gave up waiting/);
+  assert.deepEqual(JSON.parse(disk.json), {});
+  assert.equal(await pass(disk, 'fp:n1', async (charge) => { charge(); return 'finally'; }), 'finally');
+});
+
+test('countedOpen (Flint M9): a throw AFTER the charge keeps the count; the error still propagates', async () => {
+  const disk = { json: '{}' };
+  await assert.rejects(pass(disk, 'fp:n1', async (charge) => { charge(); throw new Error('receive threw'); }) as Promise<string | null>, /receive threw/);
+  assert.deepEqual(JSON.parse(disk.json), { 'fp:n1': 1 });
+});
+
+test('countedOpen controls: success forgets; a null in the ratchet counts once; a null before the lock (no peer) still counts; charge is one-shot', async () => {
+  const attempts: Record<string, number> = { 'fp:ok': 1 };
+  const writes: string[] = [];
+  const persist = (a: Record<string, number>) => writes.push(JSON.stringify(a));
+  assert.equal(await countedOpen(attempts, 'fp:ok', persist, async (charge) => { charge(); return 'hello'; }), 'hello');
+  assert.deepEqual(writes, ['{"fp:ok":2}']);                              // persisted at the charge, before the ratchet step
+  assert.deepEqual(attempts, {});                                         // success: forgotten (the pass-end write saves it)
+  assert.equal(await countedOpen(attempts, 'fp:a', persist, async (charge) => { charge(); charge(); return null; }), null);
+  assert.equal(attempts['fp:a'], 1);                                      // one-shot, and no second charge for the null
+  assert.equal(await countedOpen(attempts, 'fp:b', persist, async () => null), null);
+  assert.equal(attempts['fp:b'], 1);                                      // cheap definitive failure, still on the way to a visible tombstone
+});
+
+test('static guard: poll-json opens tr packets ONLY via countedOpen, and trOpen charges FIRST inside the writer lock', () => {
+  const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
+  const start = src.indexOf("const attemptsPath = `${DIR}/decrypt-attempts.json`;");
+  const end = src.indexOf('writeFileAtomic(attemptsPath, JSON.stringify(attempts));', start);
+  assert.ok(start > 0 && end > start, 'poll-json attempt block not found');
+  const block = src.slice(start, end);
+  // F1 adds the adopt policy as trOpen's 5th argument; the count still wraps the ONLY open (and adoption runs inside that same open)
+  assert.match(block, /await countedOpen\(attempts, key, \(a\) => writeFileAtomic\(attemptsPath, JSON\.stringify\(a\)\), \(charge\) => trOpen\(artifact, c, note\.body, charge, adoptFor\(c, note\)\)\)/);
+  assert.doesNotMatch(block.replace(/\(charge\) => trOpen\(/g, ''), /trOpen\(/, 'a direct trOpen in poll-json skips the count');
+  const tr = src.slice(src.indexOf('async function trOpen('), src.indexOf('function printNewArrivals('));
+  assert.match(tr, /onLocked\?: \(\) => void,\s*adopt\?: \{ ask: AdoptAsk; onAdopted: \(\) => void \}\): Promise<string \| null>/);
+  assert.match(tr, /return withWriterLockAsync\(DIR, async \(\) => \{\s*onLocked\?\.\(\);/, 'the charge must be the FIRST step inside the lock');
+  assert.equal((tr.match(/onLocked\?\.\(\)/g) ?? []).length, 1);
+  assert.ok(tr.indexOf('onLocked?.()') > tr.indexOf('withWriterLockAsync(DIR'), 'never charge before the lock is held');
 });
