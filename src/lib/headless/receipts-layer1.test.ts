@@ -160,6 +160,38 @@ test('E1 round trip: A→B note; B stores it and sends ONE receipt; A verifies i
   }
 });
 
+test('F-RL (Apollo #3227): a receipt the relay REFUSES (429, its per-IP deposit limit) is counted receipts_failed, never receipts_sent; not retried', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const base = mockRelay();
+  let refuse = false;
+  const fetchImpl = (async (url: string, init?: RequestInit) => {
+    if (refuse && String(url).includes('/envelope')) return new Response('{"error":"rate limited"}', { status: 429 });
+    return base.fetchImpl(url, init);
+  }) as unknown as typeof fetch;
+  const a = agentBook();
+  const b = tmpBook();
+  try {
+    a.store.upsertContact(asContact(B));
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    await send(A, B, a.store, fetchImpl, 'one');
+    await send(A, B, a.store, fetchImpl, 'two');
+    refuse = true; // B's receipt deposits hit the limit
+    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl });
+    assert.equal(s.notes, 2, 'the notes themselves are stored');
+    assert.equal(s.receipts_sent, 0);
+    assert.equal(s.receipts_failed, 2, 'both refused receipts are COUNTED, not silent');
+    assert.equal(s.receipts_skipped, 0);
+    refuse = false;
+    const again = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl });
+    assert.equal(again.receipts_sent + again.receipts_failed, 0, 'not retried (a named limit: those notes stay "Sent to the relay" for A)');
+    assert.equal((await inbox({ ...base, fetchImpl }, A)).length, 0, 'no receipt reached A');
+  } finally {
+    a.done();
+    b.done();
+  }
+});
+
 test('N1 no receipt unless persisted: a stranger, a blocked sender, a FWW refusal, a failed chunk write and a C2 block each send NONE', async () => {
   const [A, B] = [await mint(), await mint()];
   // (a) stranger (not in B's book) and (b) blocked

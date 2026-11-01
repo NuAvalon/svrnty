@@ -290,11 +290,21 @@ function deadline(opts: HeadlessOpts): (() => boolean) | undefined {
 }
 
 /** Poll the owner's smart mailbox ONCE: decrypt → verify → apply → persist → ack every pending envelope. */
-export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary & { receipts_sent: number }> {
+/** Layer 1's receipt counts for one poll, ALL of them (Apollo F-RL, Hypatia #3228): `sent` alone would read as the whole story. */
+export interface ReceiptCounts {
+  receipts_sent: number;
+  /** POSTed and NOT accepted (e.g. the relay's per-IP deposit limit, 429), or the POST threw/timed out. Not retried. */
+  receipts_failed: number;
+  /** never POSTed: the note is not durably stored, the sender is no longer admitted, or the wire can't address a receipt */
+  receipts_skipped: number;
+}
+export const receiptCounts = (r: ReceiptSendSummary): ReceiptCounts => ({ receipts_sent: r.sent, receipts_failed: r.failed, receipts_skipped: r.skipped });
+
+export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary & ReceiptCounts> {
   const deps = await buildHeadlessConsumeDeps(owner, store, opts);
   const summary = await consumeInboundContactUpdates(deps);
   const r = await deps.sendReceipts(); // layer 1: after the pass, with no chunk open and no writer lock held
-  return { ...summary, receipts_sent: r.sent };
+  return { ...summary, ...receiptCounts(r) };
 }
 
 export interface HeadlessPollHandle {
