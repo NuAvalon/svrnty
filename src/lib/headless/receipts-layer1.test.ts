@@ -18,7 +18,7 @@ import { consumeInboundContactUpdates } from '@/lib/sync/consume-mailbox';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { DEAD_LETTER_FILE } from './headless-dead-letter';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, receiptsPerPoll, sendHeadlessReceipts, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, buildHeadlessConsumeDeps, pickReceipts, pollHeadlessOnce, receiptsPerPoll, sendHeadlessReceipts, sendNoteFromHeadless } from './headless-client';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { buildReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { sealReceiptV1To } from '@/lib/messaging/seal';
@@ -769,7 +769,75 @@ test('G-RO-9 cap: receiptsPerPoll 0 sends NONE (all counted capped); 2 sends the
   }
 });
 
-test('G-RO-9 order NEG (Archie #3241): a sender who BACK-DATES sent_at (1970) but deposited LAST does not take the slot; the earlier deposit wins', async () => {
+// G-RO-9 fairness (Flint #3242, Archie #3244): a random SENDER first (pickReceipts), then that sender's earliest-arrived note.
+/** mulberry32: a small seeded PRNG, so the fairness tests are deterministic. */
+const seeded = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+
+test('G-RO-9 fairness NEG (a): X back-dates sent_at to 1970 and it buys nothing: the RNG alone picks the sender (both outcomes shown)', async () => {
+  const winners: string[] = [];
+  for (const rng of [() => 0.99, () => 0]) { // 0.99: no swap (Y, arrived first, leads); 0: swap (X leads)
+    const [X, Y, B] = [await mint(), await mint(), await mint()];
+    const relay = mockRelay();
+    const xs = agentBook();
+    const ys = agentBook();
+    const b = tmpBook();
+    try {
+      xs.store.upsertContact(asContact(B));
+      ys.store.upsertContact(asContact(B));
+      const bs = b.open();
+      bs.upsertContact(asContact(X));
+      bs.upsertContact(asContact(Y));
+      const fromY = await send(Y, B, ys.store, relay.fetchImpl, 'deposited first');
+      const fromX = await send(X, B, xs.store, relay.fetchImpl, 'back-dated, deposited last', { sentAt: '1970-01-01T00:00:00.000Z' });
+      const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, receiptsPerPoll: 1, receiptRng: rng });
+      assert.deepEqual([s.notes, s.receipts_sent, s.receipts_capped], [2, 1, 1]);
+      await pollHeadlessOnce(owner(Y), ys.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+      await pollHeadlessOnce(owner(X), xs.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+      const yGot = ys.open().findOutboundNote(Y.fp, fromY.note_id)!.delivered === true;
+      const xGot = xs.open().findOutboundNote(X.fp, fromX.note_id)!.delivered === true;
+      assert.notEqual(yGot, xGot, 'exactly one of them got the slot');
+      winners.push(yGot ? 'Y' : 'X');
+    } finally {
+      xs.done();
+      ys.done();
+      b.done();
+    }
+  }
+  assert.deepEqual(winners, ['Y', 'X'], 'the seed decides; the 1970 stamp is not an input');
+});
+
+test('G-RO-9 fairness NEG (b): X with 20 due receipts and Y with 1 → over 4,000 seeded draws Y gets the one slot ~half the time, not 1/21', () => {
+  const rng = seeded(20261101);
+  for (const senders of [[...Array(20).fill('X'), 'Y'], ['Y', ...Array(20).fill('X')]]) { // Y arriving last, then first
+    let y = 0;
+    for (let n = 0; n < 4000; n++) if (senders[pickReceipts(senders, 1, rng)[0]] === 'Y') y++;
+    assert.ok(y > 0.45 * 4000 && y < 0.55 * 4000, `Y won ${y}/4000`);
+  }
+});
+
+test('G-RO-9 fairness NEG (c): every sender gets one before anyone gets a second; within a sender, earliest-ARRIVED first', () => {
+  const senders = ['X', 'X', 'Y', 'X', 'Z']; // arrival order
+  for (let seed = 1; seed <= 50; seed++) {
+    const rng = seeded(seed);
+    const two = pickReceipts(senders, 2, rng).map((i) => senders[i]);
+    assert.equal(new Set(two).size, 2, `k=2: two DIFFERENT senders (seed ${seed})`);
+    const three = pickReceipts(senders, 3, seeded(seed)).map((i) => senders[i]).sort();
+    assert.deepEqual(three, ['X', 'Y', 'Z'], `k=3 with 3 senders: one each (seed ${seed})`);
+    const four = pickReceipts(senders, 4, seeded(seed));
+    assert.deepEqual(four.filter((i) => senders[i] === 'X'), [0, 1], `k=4: X's second slot is its next arrival (seed ${seed})`);
+    assert.deepEqual(pickReceipts(senders, 10, seeded(seed)).sort((a, b) => a - b), [0, 1, 2, 3, 4], 'k > due: every receipt, once');
+  }
+  assert.deepEqual(pickReceipts(senders, 0, seeded(1)), [], 'k=0: none');
+  assert.deepEqual(pickReceipts([], 3, seeded(1)), [], 'nothing due: none');
+  assert.deepEqual(pickReceipts(['X', 'Y'], 1, () => 1), [0], 'an rng returning 1 is clamped to j = i (no swap, no out-of-range index)');
+});
+
+test('G-RO-9 fairness (c) end-to-end: k=2, X has 2 due and Y has 1 → one receipt to each sender', async () => {
   const [X, Y, B] = [await mint(), await mint(), await mint()];
   const relay = mockRelay();
   const xs = agentBook();
@@ -781,15 +849,13 @@ test('G-RO-9 order NEG (Archie #3241): a sender who BACK-DATES sent_at (1970) bu
     const bs = b.open();
     bs.upsertContact(asContact(X));
     bs.upsertContact(asContact(Y));
-    const fromY = await send(Y, B, ys.store, relay.fetchImpl, 'deposited first');
-    const fromX = await send(X, B, xs.store, relay.fetchImpl, 'back-dated, deposited last', { sentAt: '1970-01-01T00:00:00.000Z' });
-    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, receiptsPerPoll: 1 });
-    assert.equal(s.notes, 2);
-    assert.deepEqual([s.receipts_sent, s.receipts_capped], [1, 1]);
-    await pollHeadlessOnce(owner(Y), ys.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-    await pollHeadlessOnce(owner(X), xs.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-    assert.equal(ys.open().findOutboundNote(Y.fp, fromY.note_id)!.delivered, true, 'Y deposited first: Y\'s receipt went out');
-    assert.notEqual(xs.open().findOutboundNote(X.fp, fromX.note_id)!.delivered, true, 'X\'s 1970 stamp did not buy the slot');
+    await send(X, B, xs.store, relay.fetchImpl, 'x1');
+    await send(X, B, xs.store, relay.fetchImpl, 'x2');
+    await send(Y, B, ys.store, relay.fetchImpl, 'y1');
+    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, receiptsPerPoll: 2 });
+    assert.deepEqual([s.receipts_sent, s.receipts_capped], [2, 1]);
+    assert.equal((await pollHeadlessOnce(owner(X), xs.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl })).delivered, 1, 'X: one');
+    assert.equal((await pollHeadlessOnce(owner(Y), ys.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl })).delivered, 1, 'Y: one');
   } finally {
     xs.done();
     ys.done();

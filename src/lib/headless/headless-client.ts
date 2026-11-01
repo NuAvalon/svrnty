@@ -56,11 +56,13 @@ export interface HeadlessOpts {
   hopTrailDir?: string;
   /** G-RO-9 (b): receipts sent per poll. Absent → receiptsPerPoll() (SVRNTY_RECEIPTS_PER_POLL, default 1). Tests pass it explicitly. */
   receiptsPerPoll?: number;
+  /** G-RO-9 fairness: uniform [0,1) source for pickReceipts. Absent → crypto randomness. Tests inject a seeded one. */
+  receiptRng?: () => number;
 }
 
 /**
- * G-RO-9 (b), Archie lane:svrnty #3234: at most this many "delivered" receipts per poll, earliest-DEPOSITED first (the relay's listing
- * order; never the sender's sent_at, Archie #3241); the rest are counted as
+ * G-RO-9 (b), Archie lane:svrnty #3234: at most this many "delivered" receipts per poll, chosen fairly by SENDER at random (pickReceipts;
+ * never by the sender's sent_at, Archie #3241/#3244); the rest are counted as
  * receipts_capped and DROPPED (not retried yet: the sender just sees no Delivered, never a false one). Why: receipts share the relay's
  * per-IP deposit bucket (RELAY_RATE_LIMIT_MAX, default 10 per 60 s) with the cells' REAL sends, and our cells share one egress IP, so an
  * uncapped backlog drain could make the next real send fail with 429 (Apollo F-RL #3227). With k=1 and the cron intervals (bare-metal
@@ -68,6 +70,44 @@ export interface HeadlessOpts {
  * poll frequency MOVES that bound. Env: SVRNTY_RECEIPTS_PER_POLL, digits only, 0-10 (0 = send none, just count); anything else = 1.
  */
 export const RECEIPTS_PER_POLL_DEFAULT = 1;
+
+/** A uniform [0,1) from the platform CSPRNG (Node 19+ and browsers both have globalThis.crypto). */
+export function cryptoRng(): number {
+  const a = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(a);
+  return a[0] / 2 ** 32;
+}
+
+/**
+ * G-RO-9 fairness (Flint #3242, Archie #3244): which due receipts go out under the cap. `senders[i]` = the sender fp of due receipt i, in
+ * ARRIVAL order (the relay's deposit order). Rounds: each round shuffles the senders that still have a due receipt (Fisher-Yates over
+ * `rng`) and takes each one's earliest-ARRIVED remaining receipt, until `cap` are picked. So every sender with a due receipt has the SAME
+ * chance at the first slot whatever its volume, a second receipt per sender only comes after every sender got one, and NO sender-supplied
+ * field (sent_at, note_id) touches the order: the input is only who sent it and when it arrived. The limit, stated: fair PER POLL, not
+ * over time (stateless; across polls the odds are equal per sender, never a guarantee). Returns the picked indices.
+ */
+export function pickReceipts(senders: readonly string[], cap: number, rng: () => number): number[] {
+  const queues = new Map<string, number[]>();
+  for (const [i, fp] of senders.entries()) {
+    const q = queues.get(fp);
+    if (q) q.push(i);
+    else queues.set(fp, [i]);
+  }
+  const picked: number[] = [];
+  let live = [...queues.values()];
+  while (picked.length < cap && live.length > 0) {
+    for (let i = live.length - 1; i > 0; i--) {
+      const j = Math.min(i, Math.floor(rng() * (i + 1)));
+      [live[i], live[j]] = [live[j], live[i]];
+    }
+    for (const q of live) {
+      if (picked.length >= cap) break;
+      picked.push(q.shift()!);
+    }
+    live = live.filter((q) => q.length > 0);
+  }
+  return picked;
+}
 export function receiptsPerPoll(env: Record<string, string | undefined> = process.env): number {
   const v = env.SVRNTY_RECEIPTS_PER_POLL;
   return v !== undefined && /^[0-9]{1,2}$/.test(v) && Number(v) <= 10 ? Number(v) : RECEIPTS_PER_POLL_DEFAULT;
@@ -216,13 +256,12 @@ export async function sendHeadlessReceipts(store: HeadlessStore, candidates: Rec
     duePeer.push(peer);
   }
   candidates.clear();
-  // G-RO-9 (b): ARRIVAL order, then the per-poll cap. Arrival = the order consume stored the notes = the relay's listing order
-  // (ORDER BY deposited_at, relay-stamped). NEVER the note's sent_at (Archie #3241): that comes from the sender's wire, so a back-dated
-  // or badly clocked sender would win the one slot every poll and starve every other sender's receipts (capped ones are not retried).
-  const order = due.map((_, i) => i);
+  // G-RO-9 (b) + fairness: at most `cap`, chosen by pickReceipts (a random SENDER first, then its earliest-arrived note). Arrival = the
+  // order consume stored the notes = the relay's listing order (ORDER BY deposited_at, relay-stamped). NEVER the note's sent_at (Archie
+  // #3241): a capped receipt is dropped and its envelope acked, so this poll's winners are the ONLY receipts these notes will ever get.
   const cap = opts.receiptsPerPoll ?? receiptsPerPoll();
-  const send = order.slice(0, cap);
-  out.capped = order.length - send.length;
+  const send = pickReceipts(due.map((w) => w.from_fingerprint), cap, opts.receiptRng ?? cryptoRng);
+  out.capped = due.length - send.length;
   const results = await Promise.all(send.map((i) => emitDeliveredReceipt(due[i], { fetchImpl: opts.fetchImpl, relayBase: opts.relayBase })));
   for (const [j, r] of results.entries()) {
     out[r]++;
