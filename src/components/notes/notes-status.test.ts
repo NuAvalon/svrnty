@@ -18,7 +18,7 @@ test('outboundStatus: delivered ONLY when the verified flag is true; else the fl
 
 test('statusLabel maps delivered → the delivered copy; floor otherwise', () => {
   assert.equal(statusLabel('delivered'), NOTES_COPY.delivered);
-  assert.equal(statusLabel('sent-unconfirmed'), NOTES_COPY.sentUnconfirmed);
+  assert.equal(statusLabel('sent-unconfirmed'), NOTES_COPY.sentToRelay);
   assert.equal(statusLabel('not-sent'), NOTES_COPY.notSent);
   assert.equal(statusLabel('inbound'), '');
 });
@@ -27,7 +27,7 @@ test('statusIsHonest: "Delivered" is honest ONLY for the verified delivered stat
   // valid receipt → delivered status + delivered copy → honest
   assert.equal(statusIsHonest('delivered', NOTES_COPY.delivered), true);
   // no-receipt → floor status + floor copy → honest
-  assert.equal(statusIsHonest('sent-unconfirmed', NOTES_COPY.sentUnconfirmed), true);
+  assert.equal(statusIsHonest('sent-unconfirmed', NOTES_COPY.sentToRelay), true);
   assert.equal(statusIsHonest('not-sent', NOTES_COPY.notSent), true);
   // forged/unverified trying to show Delivered on a NON-delivered status → DISHONEST (rejected → floor)
   assert.equal(statusIsHonest('sent-unconfirmed', 'Delivered'), false);
@@ -43,7 +43,7 @@ test('statusIsHonestFloor (back-compat): the pure floor still forbids Delivered/
   assert.equal(statusIsHonestFloor('Delivered'), false);
   assert.equal(statusIsHonestFloor('Read'), false);
   assert.equal(statusIsHonestFloor('Expired'), false);
-  assert.equal(statusIsHonestFloor(NOTES_COPY.sentUnconfirmed), true);
+  assert.equal(statusIsHonestFloor(NOTES_COPY.sentToRelay), true);
   assert.equal(statusIsHonestFloor(NOTES_COPY.notSent), true);
   assert.equal(statusIsHonestFloor(NOTES_COPY.delivered), false); // 'Delivered' rejected by the pure floor
 });
