@@ -146,3 +146,21 @@ describe('a malformed row is a CONFIG error (exit 2), never a pass', () => {
     assert.throws(() => validateOrderRows([base(), base()]), OrderConfigError);
   });
 });
+
+describe('status-in-event-block (spec v4 b66cbec3): a status moved past the catch is RED (Flint #3152\'s exact mutant)', () => {
+  it('OR-5: the held hop moved from inside try { await sink.settle(); … } to just after the catch → RED', () => {
+    const r = ROWS.find((x) => x.id === 'OR-5')!;
+    assert.equal(r.rule, 'status-in-event-block');
+    const ls = lines(r.file);
+    const st = idx(ls, new RegExp(r.status.pattern))[0];
+    const catchAt = ls.findIndex((l, i) => i > st && /^\s*\} catch \{/.test(l));
+    const closeAt = ls.findIndex((l, i) => i > catchAt && /^\s*\}\s*$/.test(l));
+    assert.ok(catchAt > st && closeAt > catchAt, 'found the try/catch around the held hop');
+    const m = [...ls];
+    const [line] = m.splice(st, 1);
+    m.splice(closeAt, 0, line); // closeAt shifted up by one after the splice: this lands right after the catch's closing brace
+    assert.ok(check(r, withFile(r.file, m.join('\n'))).length > 0, 'a held hop that runs even when settle() threw must be RED');
+    // the same move under the OLD rule passed: that is the hole this rule closes
+    assert.deepEqual(check({ ...r, rule: 'event-before-status' }, withFile(r.file, m.join('\n'))), []);
+  });
+});

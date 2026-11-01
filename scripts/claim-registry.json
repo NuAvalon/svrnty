@@ -1673,11 +1673,12 @@
     "pattern": "for \\(const h of pendingHeld\\) hop\\(deps, 'held'",
     "count": 1
    },
-   "rule": "event-before-status",
+   "rule": "status-in-event-block",
    "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
    "source": [
     "#344 R2 4fcc559",
-    "Hypatia #3123"
+    "Hypatia #3123",
+    "spec v4 b66cbec3 (Flint #3152: event-before-status could not see the try/catch)"
    ]
   }
  ]

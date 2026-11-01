@@ -2,7 +2,9 @@
  * scripts/claim-order.ts — the claim registry's `order` kind (Hypatia spec v1 91e8f2e7 + v2 1da9cf5f + v3 9cae8b68; Flint #3128/#3130).
  *
  * A row pins ONE known site where a status word must be written only after the event that makes it true (or only inside the branch
- * that event opens). The sweep fails CI if that site regresses. LIMIT, carried verbatim in every row: it protects these sites only and
+ * that event opens). Rules: event-before-status (line order; ONLY where the event cannot fail, e.g. early returns),
+ * status-in-event-block (spec v4 b66cbec3: the status sits in the innermost Block holding the event, after it; for events that can
+ * THROW: an await / commit / ack / settle; a status moved past the catch is RED), status-only-on-branch (inside the event's if-branch). The sweep fails CI if that site regresses. LIMIT, carried verbatim in every row: it protects these sites only and
  * cannot find a new one; the PR-template status line is the control for new sites.
  *
  * FAIL-CLOSED, in this order, BEFORE any order comparison (Flint #3128): a missing file → FAIL; an anchor matching ≠ 1 line → FAIL;
@@ -27,7 +29,7 @@ export interface OrderRow {
   function: string; // regex for the ONE line that opens the function / block
   event: OrderPattern;
   status: OrderPattern;
-  rule: 'event-before-status' | 'status-only-on-branch';
+  rule: 'event-before-status' | 'status-in-event-block' | 'status-only-on-branch';
   /** status-only-on-branch: how many of the status matches must sit INSIDE the event's then-branch (the rest elsewhere in the body) */
   in_branch?: number;
   /** status-only-on-branch: an optional second status that must sit (count times) inside the event's ELSE branch */
@@ -69,7 +71,8 @@ export function validateOrderRows(rows: unknown): OrderRow[] {
     exactCount(id, 'event.count', r.event?.count);
     re(id, 'status.pattern', r.status?.pattern);
     exactCount(id, 'status.count', r.status?.count);
-    if (r.rule !== 'event-before-status' && r.rule !== 'status-only-on-branch') throw new OrderConfigError(`${id}: unknown rule "${String(r.rule)}"`);
+    if (r.rule !== 'event-before-status' && r.rule !== 'status-in-event-block' && r.rule !== 'status-only-on-branch') throw new OrderConfigError(`${id}: unknown rule "${String(r.rule)}"`);
+    if (r.rule === 'status-in-event-block' && r.event.count !== 1) throw new OrderConfigError(`${id}: status-in-event-block needs exactly ONE event line`);
     if (r.rule === 'status-only-on-branch') {
       if (r.event.count !== 1) throw new OrderConfigError(`${id}: status-only-on-branch needs exactly ONE event (the branch condition)`);
       exactCount(id, 'in_branch', r.in_branch);
@@ -137,6 +140,24 @@ function linesMatching(lines: string[], rx: RegExp, from: number, to: number): n
   return out;
 }
 
+/** The innermost Block (inside `within`) whose range contains `line`: the statements that run only if the event line completed. */
+function innermostBlock(sf: ts.SourceFile, within: ts.Node, line: number): ts.Block | undefined {
+  let best: ts.Block | undefined;
+  let bestSize = Infinity;
+  const visit = (n: ts.Node) => {
+    if (ts.isBlock(n)) {
+      const [a, b] = rangeOf(sf, n);
+      if (line >= a && line <= b && b - a < bestSize) {
+        best = n;
+        bestSize = b - a;
+      }
+    }
+    n.forEachChild(visit);
+  };
+  within.forEachChild(visit);
+  return best;
+}
+
 /** The IfStatement whose condition starts on `line` (the event line), inside `within`. */
 function ifOn(sf: ts.SourceFile, within: ts.Node, line: number): ts.IfStatement | undefined {
   let found: ts.IfStatement | undefined;
@@ -198,6 +219,17 @@ export function checkOrderRows(rows: OrderRow[], read: (path: string) => string 
       if (early.length) fail(`4 status before (or on) the last event line ${last}`, early.join(','));
       continue;
     }
+    if (r.rule === 'status-in-event-block') {
+      const blk = innermostBlock(sf, node, ev[0]);
+      if (!blk) {
+        fail('4 no Block contains the event line', ev[0]);
+        continue;
+      }
+      const br = rangeOf(sf, blk);
+      const bad = st.filter((l) => !(l > ev[0] && l <= br[1] && l >= br[0]));
+      if (bad.length) fail(`4 status outside the event's block (${br[0]}-${br[1]}) or not after the event line ${ev[0]}`, bad.join(','));
+      continue;
+    }
     // status-only-on-branch
     const branch = ifOn(sf, node, ev[0]);
     if (!branch) {
@@ -232,7 +264,7 @@ export function describeOrderRows(rows: OrderRow[], read: (path: string) => stri
   return rows.map((r) => {
     const text = read(r.file);
     if (text === null) return `${r.id} ${r.file}: MISSING`;
-    const sf = ts.createSourceFile(r.file, text, ts.ScriptTarget.Latest, true);
+    const sf = ts.createSourceFile(r.file, text, ts.ScriptTarget.Latest, true, r.file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     const lines = codeLines(sf);
     const a = linesMatching(lines, new RegExp(r.function), 1, lines.length);
     const n = a.length === 1 ? nodeStartingOn(sf, a[0], r.anchor_kind) : undefined;
