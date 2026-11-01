@@ -22,7 +22,7 @@ import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact }
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
-import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { sendNoteFromHeadless, buildHeadlessConsumeDeps, receiptCounts, type HeadlessOwner, type ReceiptCounts } from '../src/lib/headless/headless-client';
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
@@ -178,7 +178,7 @@ const CONSUME_BUDGET_MS = (() => {
   return /^[0-9]{1,6}$/.test(v) ? Math.min(600_000, Math.max(1_000, Number(v))) : 40_000;
 })();
 
-async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary & { receipts_sent: number }> {
+async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary & ReceiptCounts> {
   // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
   const deps = await buildHeadlessConsumeDeps(owner, store, {
     relayBase: RELAY,
@@ -191,7 +191,7 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
   // Layer 1: "Delivered" receipts go out AFTER the pass (no chunk open, no writer lock held by this process; Flint C1), and only for notes
   // the store now holds from admitted senders (C2/C3). Counts only.
   const r = await deps.sendReceipts();
-  return { ...consumed, receipts_sent: r.sent };
+  return { ...consumed, ...receiptCounts(r) };
 }
 
 // ── triple-ratchet (tr-v1) headless consume/send — mirrors messaging/direct-session.ts ─────────
@@ -709,8 +709,10 @@ async function main() {
       opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical,
       // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
       deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0,
-      // layer 1: receipts verified → our outbound notes now Delivered / receipts this poll sent back to senders (counts only)
-      delivered: consumed.delivered, receipts_sent: consumed.receipts_sent,
+      // layer 1: receipts verified → our outbound notes now Delivered / receipts this poll sent back to senders, refused or failed (NOT
+      // retried; e.g. past the relay's per-IP deposit limit), skipped, and capped (past SVRNTY_RECEIPTS_PER_POLL, default 1: dropped, not
+      // retried; G-RO-9). Counts only; Apollo F-RL: sent alone hid the failures
+      delivered: consumed.delivered, receipts_sent: consumed.receipts_sent, receipts_failed: consumed.receipts_failed, receipts_skipped: consumed.receipts_skipped, receipts_capped: consumed.receipts_capped,
       // F1: sessions replaced by a contact's post-reset first frame, and journaled notes left out of the replay guard for being future-dated
       adopted, future_ignored: futureIgnored }));
     return;

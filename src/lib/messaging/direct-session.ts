@@ -172,6 +172,8 @@ export interface StagedOpen {
   release: () => void;
   /** R5: this open REPLACED an existing session with the peer's new first frame (the receiving side of a reset). The caller releases that contact's held frames AFTER the note is stored and commit() ran. */
   replaced?: boolean;
+  /** L-318a: this open STARTED the session we hold with the peer (a first frame opened with no session stored, or a replacement). The caller records the frame's signed sent_at as the adopt floor AFTER commit. */
+  startedSession?: boolean;
 }
 
 /**
@@ -227,6 +229,7 @@ export async function openDirectNoteStagedTyped(
     let plaintext: string;
     let next: RatchetSnapshot;
     let replaced = false;
+    let started = false;
     if (cur.state === 'ok') {
       const session = TripleRatchet.importState(cur.snapshot);
       if (!session) return { failed: true, kind: 'local', cause: 'session-snapshot-corrupt' };
@@ -242,6 +245,7 @@ export async function openDirectNoteStagedTyped(
         plaintext = first.plaintext;
         next = first.session.exportState();
         replaced = true;
+        started = true;
       } else {
         plaintext = pt;
         next = session.exportState();
@@ -251,6 +255,7 @@ export async function openDirectNoteStagedTyped(
       if (!first) return { failed: true, kind: 'verdict', cause: 'first-frame-rejected' };
       plaintext = first.plaintext;
       next = first.session.exportState();
+      started = true;
     }
     const expected = cur.state === 'ok' ? cur.version : 0;
     let ended = false;
@@ -260,6 +265,7 @@ export async function openDirectNoteStagedTyped(
       plaintext,
       release,
       ...(replaced ? { replaced: true } : {}),
+      ...(started ? { startedSession: true } : {}),
       commit: async () => {
         if (ended) throw new Error('staged ratchet open already ended');
         try { await io.put(peerFingerprint, next, expected); } finally { release(); }

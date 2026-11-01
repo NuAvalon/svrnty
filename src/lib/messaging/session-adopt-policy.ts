@@ -72,6 +72,8 @@ export interface AdoptWiring {
   sentAt: string | undefined;
   /** sent_at of every note already stored from this contact. Called only on a desync, under the session lock. */
   storedSentAts: () => Promise<string[]>;
+  /** L-318a: the newest signed sent_at of a first frame this session started from, kept apart from the notes so deleting a conversation cannot lower the bar. Absent / undefined = no floor. A throw means NO, like storedSentAts. */
+  adoptedFloorAt?: () => Promise<string | undefined>;
   now: () => number;
   /** Told how many stored notes were ignored for being dated beyond now + FUTURE_SLACK_MS. A throw here changes nothing. */
   onIgnoredFuture?: (n: number) => void;
@@ -88,6 +90,9 @@ export function buildAdoptFirstFrame(w: AdoptWiring): (s: { unconfirmed: boolean
     try {
       const nowMs = w.now();
       const parsed = (await w.storedSentAts()).map(parseSentAtMs).filter((t) => Number.isFinite(t));
+      // L-318a: the floor counts like one more stored note (the same future filter, so a far-future floor cannot lock the contact out either).
+      const floorAt = w.adoptedFloorAt ? await w.adoptedFloorAt() : undefined;
+      if (floorAt !== undefined) { const f = parseSentAtMs(floorAt); if (Number.isFinite(f)) parsed.push(f); }
       // A stored note dated more than the slack beyond now cannot be what an honest contact last sent (their clock was wrong, or it was
       // dated on purpose): left in, one such note would make "newer than every stored note" impossible for that contact for good. Ignored, and counted.
       const times = parsed.filter((t) => t <= nowMs + FUTURE_SLACK_MS);
