@@ -19,9 +19,10 @@ export const MAX_RELAYS = 4;
 
 /**
  * Is this URL hostname on a private network? Loopback (127/8, ::1, localhost), RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16,
- * fe80::/10), IPv6 unique-local (fc00::/7), `*.local`, or a SINGLE-LABEL name (no dot: resolved by the local resolver, e.g. a docker service
- * name; it cannot be a public DNS name). Anything else, including every dotted public name, is public. `new URL` has already normalised
- * decimal/hex/octal IPv4 spellings to dotted form, so those cannot slip past.
+ * fe80::/10), IPv6 unique-local (fc00::/7), or `*.local` / `*.localhost`. Anything else is public, INCLUDING a bare single-label name such as
+ * `relay` or a docker service name: a bare name can resolve through the host's DNS search domains to a PUBLIC machine, and whoever answers there can
+ * return a 200 so a note reads DEPOSITED while it is on no relay of ours (Flint, #361 F1). Use the IP, `*.local` or https for those. `new URL`
+ * has already normalised decimal/hex/octal IPv4 spellings to dotted form, so those cannot slip past.
  */
 export function isPrivateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
@@ -32,7 +33,7 @@ export function isPrivateHost(hostname: string): boolean {
     return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
   }
   if (h.includes(':')) return h === '::1' || /^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h);
-  return !h.includes('.') && h.length > 0;
+  return false;
 }
 
 /**
@@ -53,7 +54,7 @@ export function parseRelayList(env: { SVRNTY_RELAYS?: string; SVRNTY_RELAY?: str
     }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error(`relay list: only http(s) relays: ${JSON.stringify(s.slice(0, 60))}`);
     // Plain http carries the signed owner-auth header and the poll in the clear: allowed only on a private network (Flint #2650 (a)).
-    if (u.protocol === 'http:' && !isPrivateHost(u.hostname)) throw new Error(`relay list: plain http is only for a private host (loopback, 10/8, 172.16/12, 192.168/16, link-local, *.local, a single-label name); use https: ${JSON.stringify(s.slice(0, 60))}`);
+    if (u.protocol === 'http:' && !isPrivateHost(u.hostname)) throw new Error(`relay list: plain http is only for a private host (loopback, 10/8, 172.16/12, 192.168/16, link-local, *.local); use https: ${JSON.stringify(s.slice(0, 60))}`);
     if (!out.includes(s)) out.push(s);
   }
   if (out.length === 0) throw new Error('relay list: no relay configured');
@@ -76,6 +77,29 @@ export interface DepositOutcome {
   unconfirmed: boolean;
   /** The HTTP status of the LAST relay that answered; absent if none did (every request threw). */
   status?: number;
+  /** Every attempt that made it UNCONFIRMED, in order: the relay's HOST (never a path, query or credentials) and the status it answered, absent if the request threw. */
+  unconfirmedBy?: UnconfirmedAttempt[];
+}
+
+export interface UnconfirmedAttempt {
+  relay: string;
+  status?: number;
+}
+
+/** A relay named for a status line: its host (and port) only. Never a path, query or userinfo; `#N` when the base is not an absolute URL. */
+export function relayLabel(base: string, index: number): string {
+  try {
+    const host = new URL(base).host;
+    if (host) return host.slice(0, 64);
+  } catch { /* a relative base such as '/api/relay' */ }
+  return `#${index + 1}`;
+}
+
+/** The reason half of the multi-relay UNCONFIRMED line: WHICH relays left it unconfirmed and what each said. Hosts only. */
+export function unconfirmedReason(by: readonly UnconfirmedAttempt[] | undefined): string {
+  if (!by || by.length === 0) return 'a relay may have stored it';
+  const said = by.map((a) => `relay ${a.relay} ${a.status !== undefined ? `answered HTTP ${a.status}` : 'did not answer'}`);
+  return by.length === 1 ? `${said[0]}; it may have stored it` : `${said.join(', ')}; any of them may have stored it`;
 }
 
 /**
@@ -90,6 +114,7 @@ export async function depositWithFailover(
   let unconfirmed = false;
   let threw = 0;
   let status: number | undefined;
+  const by: UnconfirmedAttempt[] = [];
   let firstError: unknown;
   for (let i = 0; i < relays.length; i++) {
     tried++;
@@ -99,17 +124,18 @@ export async function depositWithFailover(
     } catch (err) {
       threw++;
       unconfirmed = true;
+      by.push({ relay: relayLabel(relays[i], i) });
       if (firstError === undefined) firstError = err;
       continue;
     }
     status = res.status;
-    if (res.ok) return { deposited: true, tier: i, tried, unconfirmed, status };
+    if (res.ok) return { deposited: true, tier: i, tried, unconfirmed, status, ...(by.length ? { unconfirmedBy: by } : {}) };
     // 408 is failover-worthy AND unconfirmed (the request may have been read before the relay timed out); same class as a 5xx (peer-kem depositFailureLine)
-    if (res.status >= 500 || res.status === 408) unconfirmed = true;
-    if (!failoverWorthy(res.status)) return { deposited: false, tier: null, tried, unconfirmed, status };
+    if (res.status >= 500 || res.status === 408) { unconfirmed = true; by.push({ relay: relayLabel(relays[i], i), status: res.status }); }
+    if (!failoverWorthy(res.status)) return { deposited: false, tier: null, tried, unconfirmed, status, ...(by.length ? { unconfirmedBy: by } : {}) };
   }
   if (threw === tried && firstError !== undefined) throw firstError;
-  return { deposited: false, tier: null, tried, unconfirmed, ...(status !== undefined ? { status } : {}) };
+  return { deposited: false, tier: null, tried, unconfirmed, ...(status !== undefined ? { status } : {}), ...(by.length ? { unconfirmedBy: by } : {}) };
 }
 
 /**

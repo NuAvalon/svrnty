@@ -206,7 +206,7 @@ test('CLI send: a relay 429 (a definite refusal) stays "NOT SENT" and names the 
 });
 
 // ── failover (SVRNTY_RELAYS): the wording follows what the WALK saw, not just the last relay ─────────────────────
-async function cliSendOverRelays(statuses: number[], cmd: 'send' | 'send-tr' = 'send'): Promise<{ code: number | null; err: string; hits: number[] }> {
+async function cliSendOverRelays(statuses: number[], cmd: 'send' | 'send-tr' = 'send'): Promise<{ code: number | null; err: string; hits: number[]; hosts: string[] }> {
   const peer = await mintHeadlessAgent({ throwaway: true });
   const { dir } = await senderDir([contactOf(peer)]);
   const hits: number[] = [];
@@ -215,28 +215,30 @@ async function cliSendOverRelays(statuses: number[], cmd: 'send' | 'send-tr' = '
     const ports = await Promise.all(servers.map((sv) => new Promise<number>((r) => sv.listen(0, '127.0.0.1', () => r((sv.address() as { port: number }).port)))));
     const relays = ports.map((p) => `http://127.0.0.1:${p}/api/relay`).join(',');
     const r = await runCli([cmd, idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: relays });
-    return { code: r.code, err: r.err, hits };
+    return { code: r.code, err: r.err, hits, hosts: ports.map((p) => `127.0.0.1:${p}`) };
   } finally { await Promise.all(servers.map((sv) => new Promise<void>((r) => sv.close(() => r())))); rmSync(dir, { recursive: true, force: true }); }
 }
 
-test('CLI send over 2 relays: 503 then 503 → UNCONFIRMED "a relay may have stored it", ending with the resend sentence; both relays were tried', async () => {
+test('CLI send over 2 relays: 503 then 503 → UNCONFIRMED naming BOTH relays (host:port) and what each said, ending with the resend sentence; both were tried', async () => {
   const r = await cliSendOverRelays([503, 503]);
   assert.notEqual(r.code, 0);
   assert.deepEqual(r.hits, [0, 1]);
-  assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: a relay may have stored it; kept locally\. Resending could deliver it twice\.$/m);
+  assert.equal(r.err.trim().split('\n').pop(), `UNCONFIRMED to ${r.err.match(/UNCONFIRMED to ([0-9a-f]{8})/)![1]}: relay ${r.hosts[0]} answered HTTP 503, relay ${r.hosts[1]} answered HTTP 503; any of them may have stored it; kept locally. Resending could deliver it twice.`);
+  assert.doesNotMatch(r.err, /\/api\/relay|envelope/, 'hosts only: no path in the line');
   assert.doesNotMatch(r.err, /NOT SENT/);
 });
 
 test('CLI send over 2 relays: 503 then a 400 that ends the walk → still UNCONFIRMED (the first relay may hold it), never NOT SENT', async () => {
   const r = await cliSendOverRelays([503, 400]);
   assert.deepEqual(r.hits, [0, 1]);
-  assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: a relay may have stored it; kept locally\. Resending could deliver it twice\.$/m);
+  assert.match(r.err, new RegExp(`^UNCONFIRMED to [0-9a-f]{8}: relay ${r.hosts[0].replace('.', '\\.')} answered HTTP 503; it may have stored it; kept locally\\. Resending could deliver it twice\\.$`, 'm'));
+  assert.doesNotMatch(r.err, new RegExp(r.hosts[1].replace('.', '\\.')), 'the relay that refused cleanly (400) is not named as unconfirmed');
   assert.doesNotMatch(r.err, /NOT SENT/);
 });
 
 test('CLI send over 2 relays: 408 then 408 → UNCONFIRMED (a 408 is an outage, same class as a 5xx), not a definite refusal', async () => {
   const r = await cliSendOverRelays([408, 408]);
-  assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: a relay may have stored it; kept locally\./m);
+  assert.match(r.err, new RegExp(`^UNCONFIRMED to [0-9a-f]{8}: relay ${r.hosts[0].replace('.', '\\.')} answered HTTP 408, relay ${r.hosts[1].replace('.', '\\.')} answered HTTP 408; any of them may have stored it; kept locally\\.`, 'm'));
   assert.doesNotMatch(r.err, /NOT SENT/);
 });
 
@@ -252,7 +254,7 @@ test('CLI send over 2 relays: 429 then 429 → a definite refusal: NOT SENT nami
 
 test('CLI send-tr over 2 relays: 503 then 503 → UNCONFIRMED that says the ratchet index is spent, ending with the resend sentence', async () => {
   const r = await cliSendOverRelays([503, 503], 'send-tr');
-  assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: a relay may have stored it; kept locally; this ratchet index is spent\. Resending could deliver it twice\.$/m);
+  assert.match(r.err, new RegExp(`^UNCONFIRMED to [0-9a-f]{8}: relay ${r.hosts[0].replace('.', '\\.')} answered HTTP 503, relay ${r.hosts[1].replace('.', '\\.')} answered HTTP 503; any of them may have stored it; kept locally; this ratchet index is spent\\. Resending could deliver it twice\\.$`, 'm'));
   assert.doesNotMatch(r.err, /NOT SENT/);
 });
 
