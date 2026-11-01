@@ -21,8 +21,8 @@ const body = (name: string) => {
 test('listThreads heals each pinned thread and sorts on the bounded value', () => {
   const b = body('listThreads');
   assert.match(b, /healPinnedThread\(/, 'listThreads calls healPinnedThread');
-  assert.match(b, /readLastActivity\(/, 'the sort uses readLastActivity, not the raw stored value');
-  assert.doesNotMatch(b, /b\.last_activity_at\.localeCompare\(a\.last_activity_at\)/, 'the raw-value sort is gone');
+  assert.match(b, /activityMs\(/, 'the sort uses the bounded numeric key, not the raw stored text');
+  assert.doesNotMatch(b, /localeCompare/, 'no string comparison of timestamps is left in the sort');
 });
 
 test('healPinnedThread re-reads the row, reads the notes, lowers via healedLastActivity and writes once', () => {
@@ -32,5 +32,9 @@ test('healPinnedThread re-reads the row, reads the notes, lowers via healedLastA
   assert.match(b, /listNotesForThread\(/, 'reads the thread\'s own notes for the newest plausible time');
   assert.match(b, /healedLastActivity\(/, 'the value comes from the pure function');
   assert.match(b, /await putThread\(next\)/, 'it persists the lowered value');
+  // A DELETED thread must never come back: deleteThread removes the notes first and the row last, so a list load that raced it can find no row.
+  assert.match(b, /if \(!row\) return thread;/, 'a missing row returns without writing');
+  assert.ok(b.indexOf('if (!row) return thread;') >= 0 && b.indexOf('if (!row) return thread;') < b.indexOf('await putThread(next)'), 'the no-row return comes BEFORE the write');
+  assert.doesNotMatch(b, /row \? await decryptJson/, 'there is no fallback to the stale copy when the row is gone');
   assert.match(b, /catch/, 'it never throws into the list load');
 });

@@ -60,3 +60,13 @@ export function readLastActivity(stored: string, nowMs: number): string {
   const ceiling = nowMs + ACTIVITY_FUTURE_SLACK_MS;
   return t <= ceiling ? stored : new Date(ceiling).toISOString();
 }
+
+/**
+ * The sort key for a thread: the bounded time as a NUMBER. Comparing the ISO strings is only right when every stored value is a UTC string with the same
+ * shape; a value written by an older build can carry an offset (+05:00) or no milliseconds, and as text it can sort hours out of place. readLastActivity
+ * always returns a string Date.parse can read (the stored value when it parses, else the epoch or the ceiling), so an unreadable stored value is 0 and
+ * sorts last.
+ */
+export function activityMs(stored: string, nowMs: number): number {
+  return Date.parse(readLastActivity(stored, nowMs));
+}

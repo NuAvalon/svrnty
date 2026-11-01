@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ACTIVITY_FUTURE_SLACK_MS, nextLastActivity, needsLastActivityHeal, healedLastActivity, readLastActivity } from './thread-activity';
+import { ACTIVITY_FUTURE_SLACK_MS, nextLastActivity, needsLastActivityHeal, healedLastActivity, readLastActivity, activityMs } from './thread-activity';
 import { sortFieldPeople, mergeFieldPeople, type FieldPerson } from '../../components/notes/notes-field';
 import type { NoteThread } from './types';
 
@@ -125,5 +125,22 @@ describe('readLastActivity / mergeFieldPeople (the backstop when a heal could no
     const people = mergeFieldPeople({ ownerFp: 'me', threads: [thread], names: [], sendable: new Set(['fp-x']), previews: {}, nowMs: NOW });
     assert.equal(people[0].lastAt, CEIL);
     assert.equal(thread.last_activity_at, PIN, 'reading never rewrites the stored value');
+  });
+});
+
+describe('sorting compares times, not text (an older build can have stored an offset or no milliseconds)', () => {
+  // As text '2026-10-30T12:00:00+05:00' sorts AFTER '2026-10-30T09:00:00.000Z', but it is 07:00Z, so it is the OLDER one.
+  const OFFSET = '2026-10-30T12:00:00+05:00';
+  const ZULU = '2026-10-30T09:00:00.000Z';
+  it('activityMs orders them by the instant, and an unreadable value is 0', () => {
+    assert.ok(activityMs(ZULU, NOW) > activityMs(OFFSET, NOW));
+    assert.equal(activityMs('garbage', NOW), 0);
+    assert.equal(activityMs(PIN, NOW), NOW + ACTIVITY_FUTURE_SLACK_MS, 'a far-future value is bounded');
+  });
+  it('sortFieldPeople (the order the user sees) puts the later instant first whatever the text looks like', () => {
+    const p = (id: string, at: string): FieldPerson => ({ fingerprint: id, name: id, threadId: id, preview: '', lastAt: at, sendable: true });
+    assert.deepEqual(sortFieldPeople([p('offset', OFFSET), p('zulu', ZULU)]).map((x) => x.threadId), ['zulu', 'offset']);
+    assert.deepEqual(sortFieldPeople([p('zulu', ZULU), p('offset', OFFSET)]).map((x) => x.threadId), ['zulu', 'offset']);
+    assert.deepEqual(sortFieldPeople([p('nomillis', '2026-10-30T09:00:01Z'), p('zulu', ZULU)]).map((x) => x.threadId), ['nomillis', 'zulu'], 'one second later, no milliseconds');
   });
 });

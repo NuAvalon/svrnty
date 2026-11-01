@@ -6,7 +6,7 @@ import type { NoteRecord, NoteThread, RingChannel } from './types';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { isAllowedSettingsPrefix, isAllowedSettingsRowKey } from './settings-row-keys';
-import { needsLastActivityHeal, healedLastActivity, readLastActivity } from './thread-activity';
+import { needsLastActivityHeal, healedLastActivity, activityMs } from './thread-activity';
 
 const DB_NAME = 'svrnty-notes';
 const DB_VERSION = 2;
@@ -245,7 +245,7 @@ export async function listThreads(): Promise<NoteThread[]> {
   const now = Date.now();
   const healed: NoteThread[] = [];
   for (const thread of out) healed.push(await healPinnedThread(thread, now));
-  return healed.sort((a, b) => readLastActivity(b.last_activity_at, now).localeCompare(readLastActivity(a.last_activity_at, now)));
+  return healed.sort((a, b) => activityMs(b.last_activity_at, now) - activityMs(a.last_activity_at, now));
 }
 
 /**
@@ -259,7 +259,10 @@ async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<Note
   if (!needsLastActivityHeal(thread.last_activity_at, nowMs)) return thread;
   try {
     const row = await txGet<ThreadRow>('threads', thread.thread_id);
-    const current = row ? await decryptJson<NoteThread>(row.enc) : thread;
+    // The row is GONE: the conversation was deleted after this list was read (deleteThread removes the notes first and the row last). Writing the
+    // stale copy back would undo a delete, so a missing row is never written: the thread stays in THIS list as read and is gone on the next load.
+    if (!row) return thread;
+    const current = await decryptJson<NoteThread>(row.enc);
     let sentAts: string[] | null = null;
     try {
       sentAts = (await listNotesForThread(thread.thread_id)).map((n) => n.sent_at);

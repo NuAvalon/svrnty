@@ -159,7 +159,13 @@ export function sortFieldPeople(people: FieldPerson[]): FieldPerson[] {
     const aActive = a.lastAt ? 1 : 0;
     const bActive = b.lastAt ? 1 : 0;
     if (aActive !== bActive) return bActive - aActive;
-    if (a.lastAt && b.lastAt && a.lastAt !== b.lastAt) return b.lastAt.localeCompare(a.lastAt);
+    if (a.lastAt && b.lastAt && a.lastAt !== b.lastAt) {
+      // As NUMBERS: an older build can have stored an offset (+05:00) or no-millisecond string, which sorts hours out of place as text.
+      const am = Date.parse(a.lastAt);
+      const bm = Date.parse(b.lastAt);
+      if (Number.isFinite(am) && Number.isFinite(bm) && am !== bm) return bm - am;
+      if (am !== bm) return Number.isFinite(bm) ? 1 : Number.isFinite(am) ? -1 : b.lastAt.localeCompare(a.lastAt);
+    }
     return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
   });
 }
