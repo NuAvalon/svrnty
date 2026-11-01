@@ -122,6 +122,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
   const [landing, setLanding] = useState<GateLanding | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [linkCode, setLinkCode] = useState<string | null>(link?.code ?? null);
   const cancelRef = useRef(0);
 
   const reset = useCallback(() => {
@@ -145,6 +146,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
   const runFlow = useCallback(
     async (parsed: ConnectLinkParse) => {
       const ticket = ++cancelRef.current;
+      setLinkCode(parsed.code);
       setPhase('resolving');
       try {
         const r = await logicRef.resolve(parsed);
@@ -283,7 +285,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
             Opening the secure channel…
           </h2>
           <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-            Retrieving and decrypting their card.
+            Retrieving and decrypting their card.{linkCode ? ` Code: ${linkCode}` : ''}
           </p>
         </div>
       )}
