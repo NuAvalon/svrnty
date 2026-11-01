@@ -47,7 +47,13 @@ interface AppliedEnvelope {
   at: string; // ISO, when the commit that holds it ran
 }
 
-/** = the relay's envelope TTL: an entry older than this can no longer match a live envelope, and is never trusted to skip an open. */
+/**
+ * Age bound for entries NO listing covers (another relay's or mailbox's scope, or a commit without a listing). It is NOT a trust bound:
+ * the relay's envelope TTL is configurable (RELAY_ENVELOPE_TTL_MS, mailbox-config.ts), so an envelope can still be listed after 7 days.
+ * Inside a listing's own scope, membership in that clean listing decides, never age (G-RO-5, #326 L1): an entry is written only by a
+ * commit that holds its envelope's contents, so it is acked without a second open (for a ratchet frame, whose key the first open spent,
+ * a second open fails and records a false loss).
+ */
 const APPLIED_TTL_MS = 7 * 24 * 3600e3;
 
 function freshEntry(e: AppliedEnvelope, nowMs: number): boolean {
@@ -217,10 +223,12 @@ export class HeadlessStore {
    * survive; a block it wrote wins, C2), record the chunk's stored envelopes in the dedupe set (C1, same write = S3), write once.
    * Returns the keys whose note a re-apply refused (the sender is no longer admitted). Throws if the write fails: the caller acks NONE
    * of the chunk, and this copy is rolled back to the disk.
-   * The dedupe set keeps an entry only while it is younger than the relay TTL, was not acked by this process, and (when `live` is
-   * given) is still in the poll's listing IF it belongs to that listing's relay + mailbox: the relay lists a mailbox WHOLE
-   * (mailbox-store.ts pollMailbox has no LIMIT, pinned by a test), so an id missing from it was acked or expired and can never be
-   * redelivered. Another relay's or mailbox's entries are never pruned by it (Flint #2417).
+   * The dedupe set drops an entry acked by this process. Otherwise, for an entry of the listing's OWN relay + mailbox (`live` given):
+   * kept while that clean listing still holds its id, whatever its age (G-RO-5), and dropped once it does not: the relay lists a mailbox
+   * WHOLE (mailbox-store.ts pollMailbox has no LIMIT, pinned by a test), so an id missing from it was acked or expired and can never be
+   * redelivered. That also bounds this scope by the listing's size (the relay's per-mailbox cap). Any OTHER entry (another relay's or
+   * mailbox's, which this listing can't speak for: Flint #2417; or every entry when no listing is given) is kept only while younger
+   * than APPLIED_TTL_MS.
    */
   commitChunk(now: string, live?: ListingScope): { refused: string[] } {
     const c = this.chunk;
@@ -233,8 +241,10 @@ export class HeadlessStore {
       // A refusal only counts for an envelope consume marked stored: one refused on its first apply never was.
       const refused = new Set<string>();
       if (reapply) for (const { key, op } of c.ops) if (op() === false && key && c.stored.has(key)) refused.add(key);
-      const listed = (e: AppliedEnvelope) => !live || !e.key.startsWith(`${live.scope}.`) || live.keys.has(e.key);
-      const keep = (this.data.applied_envelopes ?? []).filter((e) => freshEntry(e, nowMs) && !c.acked.has(e.key) && listed(e));
+      const ownScope = (e: AppliedEnvelope) => !!live && e.key.startsWith(`${live.scope}.`);
+      const keep = (this.data.applied_envelopes ?? []).filter(
+        (e) => !c.acked.has(e.key) && (ownScope(e) ? live!.keys.has(e.key) : freshEntry(e, nowMs)),
+      );
       for (const k of c.stored) if (!refused.has(k) && !keep.some((e) => e.key === k)) keep.push({ key: k, at: now });
       this.data.applied_envelopes = keep;
       this.flush();
@@ -274,10 +284,9 @@ export class HeadlessStore {
       enter: (key) => {
         open().key = key;
       },
-      isStored: (key) => {
-        const nowMs = Date.parse(now());
-        return (this.data.applied_envelopes ?? []).some((e) => e.key === key && freshEntry(e, nowMs));
-      },
+      // consume asks only for an envelope of the listing it is consuming, so the key is in that listing: trusted whatever its age
+      // (G-RO-5). Keys are hashes of relay + mailbox + the relay-assigned id (#338: never a client id), so an old entry can't match a new one.
+      isStored: (key) => (this.data.applied_envelopes ?? []).some((e) => e.key === key),
       stored: (key) => {
         open().stored.add(key);
       },

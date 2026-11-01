@@ -392,7 +392,7 @@ async function main() {
     }
     const rows = readHopTrail(DIR, id);
     if (!rows.length) {
-      console.log('no hop rows for that id on this host');
+      console.log('no hop rows for that id on this host (the trail keeps up to 14 days or 5 MB, so older rows may have been pruned)');
       return;
     }
     for (const r of rows) console.log(`${r.ts}  ${renderHop(r)}${r.peer ? `  (${r.peer})` : ''}`);

@@ -19,7 +19,7 @@
 //  Per-side truth (Hypatia): sender hops = sealed, deposited, relay-accepted, receipt-verified; receiver hops = polled, opened,
 //  persisted, receipt-sent, dropped:<reason>, held:<reason>. `opened` is "decrypted on this host", never "read"/"seen".
 
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, renameSync, writeSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { DEAD_LETTER_REASONS, type DeadLetterReason } from '@/lib/sync/dead-letter';
@@ -160,9 +160,16 @@ function prune(path: string, nowMs: number): void {
   }
   try {
     writeSync(fd, lines.join(''));
-  } finally {
+  } catch (e) {
     closeSync(fd);
+    try {
+      unlinkSync(tmp); // n1 (Flint): never leave the temp behind; ids only, so tidiness, not exposure
+    } catch {
+      /* fail-open */
+    }
+    throw e;
   }
+  closeSync(fd);
   renameSync(tmp, path);
 }
 
@@ -240,6 +247,20 @@ function readHopTrailRaw(path: string): HopRow[] {
 }
 
 /** Rows for one note_id or envelope_id, oldest first. */
+/** G-RO-1 (Apollo #3155 F-A): the ids (note_id or envelope_id) that already have a `hop` row. Read ONCE per poll by the writers that
+ *  must write a hop once per id ('polled', 'persisted'), so a backlog listed on every poll can't evict a stalled note's own rows.
+ *  Fail-open: no dir or an unreadable trail = an empty set (the hop is then written, as before). */
+export function hopIdsSeen(dir: string | undefined, hop: Hop): Set<string> {
+  const out = new Set<string>();
+  if (!dir) return out;
+  for (const r of readHopTrailRaw(join(dir, HOP_TRAIL_FILE))) {
+    if (r.hop !== hop) continue;
+    const id = r.note_id ?? r.envelope_id;
+    if (typeof id === 'string') out.add(id);
+  }
+  return out;
+}
+
 export function readHopTrail(dir: string, id: string): HopRow[] {
   return readHopTrailRaw(join(dir, HOP_TRAIL_FILE)).filter((r) => r.note_id === id || r.envelope_id === id);
 }
