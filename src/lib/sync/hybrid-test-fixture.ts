@@ -16,6 +16,8 @@ export interface HybridRecipient {
   passphrase: string;
   pqKemPublicKey: string;
   pqSigPublicKey: string;
+  /** ML-DSA-87 signing secret (raw bytes) of the minted identity, so a test can sign hybrid (classical + PQ). */
+  pqSigSecretKey: Uint8Array;
   /** base64 ML-KEM-1024 secret, as the vault PQ bundle hands it to the FE poll (lazy derivation input). */
   kemSecretKeyB64: string;
   hybrid: LivingBookHybridSecrets;
@@ -32,7 +34,7 @@ export async function mintHybridRecipient(): Promise<HybridRecipient> {
   if (!hybrid) throw new Error('fixture: could not derive hybrid secrets');
   return {
     fingerprint: id.fingerprint, publicKeyArmored: id.public_key, privateKeyArmored, passphrase,
-    pqKemPublicKey, pqSigPublicKey: id.pq_sig_public_key, kemSecretKeyB64, hybrid,
+    pqKemPublicKey, pqSigPublicKey: id.pq_sig_public_key, pqSigSecretKey: a.secret_material.mldsa87Secret, kemSecretKeyB64, hybrid,
   };
 }
 
