@@ -20,6 +20,7 @@ import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNo
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
+import { appendAdmitLog, withAdmitLog, sha256Hex, keysSha256, type AdmitResult } from '../src/lib/headless/admit-log';
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, pollHeadlessAllRelays, receiptCounts, type HeadlessOwner, type ReceiptCounts } from '../src/lib/headless/headless-client';
@@ -303,24 +304,43 @@ async function main() {
   }
 
   if (cmd === 'admit') {
-    const card = JSON.parse(readFileSync(rest[0], 'utf8'));
+    const raw = readFileSync(rest[0]);
+    let card: Record<string, unknown> | null = null;
+    try { card = JSON.parse(raw.toString('utf8')); } catch { /* refused below */ }
+    // Every outcome leaves a provenance line, refusals included (#724 follow-up, admit-log.ts).
+    const prov = { source: 'admit' as const, fp: card?.fingerprint ?? card?.durable_id, card_sha256: sha256Hex(raw), keys_sha256: keysSha256(card) };
+    const refuse = (result: AdmitResult, msg: string): never => { appendAdmitLog(DIR, { ...prov, result }); throw new Error(msg); };
+    if (!card || typeof card !== 'object' || Array.isArray(card)) refuse('refused:bad-card', 'admit refused: the card is not a JSON object. Nothing was written.');
+    const c = card as { fingerprint?: string; durable_id?: string; public_key?: string; pq_sig_public_key?: string; pq_kem_public_key?: string; name?: string };
     // Never exit 0 when nothing usable was written (Archie #1310): a card with no fingerprint or no public key is refused, not stored.
-    if (typeof (card.fingerprint ?? card.durable_id) !== 'string' || !(card.fingerprint ?? card.durable_id) || typeof card.public_key !== 'string' || !card.public_key) {
-      throw new Error('admit refused: the card needs a fingerprint (or durable_id) and a public_key. Nothing was written.');
+    if (typeof (c.fingerprint ?? c.durable_id) !== 'string' || !(c.fingerprint ?? c.durable_id) || typeof c.public_key !== 'string' || !c.public_key) {
+      refuse('refused:no-key', 'admit refused: the card needs a fingerprint (or durable_id) and a public_key. Nothing was written.');
+    }
+    // #724 Invariant-1 at the door: the card's keys must hash to its fingerprint, as the join path already requires (:derives).
+    // Without this, a card claiming a contact's fingerprint with other keys overwrote that contact's keys. Rotation isn't
+    // reachable yet (#723), so a durable_id that differs from the fingerprint can only be a forgery or a mix-up: refused.
+    const claimedFp = (c.fingerprint ?? c.durable_id) as string;
+    if (c.durable_id !== undefined && c.fingerprint !== undefined && c.durable_id !== c.fingerprint) {
+      refuse('refused:durable-id', 'admit refused: durable_id and fingerprint differ (no rotation path exists yet). Nothing was written.');
+    }
+    if (!(await fingerprintMatchesKey(claimedFp, c.public_key as string, { kem_public_key: c.pq_kem_public_key, sig_public_key: c.pq_sig_public_key }))) {
+      refuse('refused:unbound', 'admit refused: the card\'s keys do not hash to its fingerprint. Nothing was written.');
     }
     const contact: HeadlessContact = {
-      id: card.durable_id ?? card.fingerprint,
-      fingerprint: card.fingerprint ?? card.durable_id,
-      name: card.name ?? 'devin-cloud',
-      public_key: card.public_key,
-      pq_sig_public_key: card.pq_sig_public_key,
-      pq_kem_public_key: card.pq_kem_public_key,
+      id: claimedFp,
+      fingerprint: claimedFp,
+      name: c.name ?? 'devin-cloud',
+      public_key: c.public_key as string,
+      pq_sig_public_key: c.pq_sig_public_key,
+      pq_kem_public_key: c.pq_kem_public_key,
     };
-    store.upsertContact(contact);
-    // Defensive and UNTESTABLE by construction: the store's writer lock throws first on a failed write, so no test can reach "written but absent".
-    // Kept on purpose (Archie #1366); this is not a proven guarantee.
-    const back = store.getContactByFingerprint(contact.fingerprint);
-    if (!back || back.public_key !== contact.public_key) throw new Error(`admit failed: ${contact.fingerprint.slice(0, 16)} is not in the store after the write. Nothing is trusted.`);
+    withAdmitLog(DIR, prov, () => {
+      store.upsertContact(contact);
+      // Defensive and UNTESTABLE by construction: the store's writer lock throws first on a failed write, so no test can reach "written but absent".
+      // Kept on purpose (Archie #1366); this is not a proven guarantee.
+      const back = store.getContactByFingerprint(contact.fingerprint);
+      if (!back || back.public_key !== contact.public_key) throw new Error(`admit failed: ${contact.fingerprint.slice(0, 16)} is not in the store after the write. Nothing is trusted.`);
+    });
     console.log(`admitted ${contact.fingerprint}`);
     return;
   }
@@ -376,7 +396,11 @@ async function main() {
           target,
           { relayBase: RELAY },
         ),
-      admit: (contact) => store.upsertContact(contact),
+      admit: (contact) => withAdmitLog(
+        DIR,
+        { source: 'join', fp: contact.fingerprint, card_sha256: sha256Hex(JSON.stringify(contact)), keys_sha256: keysSha256(contact) },
+        () => store.upsertContact(contact),
+      ),
     });
     if (!out.ok && out.refusal === 'admit-failed-after-deposit' && out.pending) {
       // The deposit already succeeded, so the giver may have added us. Save their card (public material only) for a manual admit; do NOT re-run join.
@@ -439,7 +463,7 @@ async function main() {
       const arrival = g[owner.fingerprint]?.[fp];
       if (!arrival) throw new Error(`no gate arrival ${fp}`);
       const rec = buildAdmitRecord(arrival, {});
-      store.upsertContact({                       // re-entrant: same lock, one unit with the gate removal
+      const gated: HeadlessContact = {
         id: arrival.fingerprint,
         fingerprint: arrival.fingerprint,
         name: rec.name,
@@ -448,7 +472,12 @@ async function main() {
         trust_level: rec.trust_level,
         pq_sig_public_key: rec.pq_sig_public_key,
         pq_kem_public_key: rec.pq_kem_public_key,
-      });
+      };
+      withAdmitLog(                               // re-entrant: same lock, one unit with the gate removal
+        DIR,
+        { source: 'admit-gate', fp: arrival.fingerprint, card_sha256: sha256Hex(JSON.stringify(arrival)), keys_sha256: keysSha256(gated) },
+        () => store.upsertContact(gated),
+      );
       delete g[owner.fingerprint][fp];
       if (!Object.keys(g[owner.fingerprint]).length) delete g[owner.fingerprint];
       saveGate(g);
