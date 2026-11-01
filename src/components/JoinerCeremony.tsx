@@ -170,6 +170,17 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         if (!fp) {
           // Peter's "the Grow link needs to tell you to open your .svrnty vault." No active identity =
           // nothing to add them to. A dedicated screen, not a scary error.
+          // Connect-UX #3 (continuous flow): the pending link rides sessionStorage through
+          // mint/unlock — app/page.tsx picks it up the moment the session is unlocked and the
+          // card lands in the Gate with no re-paste.
+          try {
+            sessionStorage.setItem(
+              'svrnty:pending-connect',
+              JSON.stringify({ code, keyFragment }),
+            );
+          } catch {
+            /* storage unavailable — the honest "open your vault" screen still stands */
+          }
           setNoIdentity(true);
           return;
         }
@@ -341,8 +352,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         <Badge tone="gold" label="A card is waiting for you" />
         <h2 style={headingStyle}>Open your SVRNTY vault</h2>
         <p style={subStyle}>
-          Someone shared their card with you. To add them, open your own SVRNTY vault first — set up or
-          unlock your identity, then open this link again.
+          Someone shared their card with you. Set up or unlock your identity — the card is kept waiting
+          and lands in your Gate as soon as you&apos;re in. No re-paste.
         </p>
         <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
       </Shell>
