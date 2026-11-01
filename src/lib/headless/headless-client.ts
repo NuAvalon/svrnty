@@ -38,6 +38,7 @@ import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
 import type { LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore } from './headless-store';
+import { DECRYPTED_HOP, type Hop, peerLabel, recordHop } from './hop-trail';
 import type { NoteWireV0, NoteRecord, NoteThread, ParticipantKind } from '@/lib/messaging/types';
 
 /** The headless owner's unlocked key material — same shape the consume core signs poll/ack with. */
@@ -51,10 +52,19 @@ export interface HeadlessOpts {
   /** #713: the agent dir's dead-letter file. Present → a loss is RECORDED (metadata row) before its envelope is acked, and a failed write
    *  leaves the envelope on the relay. Absent → the old behaviour: the loss is only counted (summary.lost). */
   deadLetterPath?: string;
+  /** Layer 3: the agent dir that holds hop-trail.jsonl. Absent → no trail (FE, tests). The trail never affects a send or a poll. */
+  hopTrailDir?: string;
+}
+
+/** Layer 3: the ONLY peer label a trail row gets: 'person', a valid agent name, or nothing (never a fingerprint or prefix). */
+function trailPeer(store: HeadlessStore, fp: string | undefined, kind?: unknown): string | undefined {
+  const c = fp ? store.getContactByFingerprint(fp) : undefined;
+  const k = typeof kind === 'string' ? kind : typeof c?.kind === 'string' ? (c.kind as string) : undefined;
+  return peerLabel(k, typeof c?.name === 'string' ? c.name : undefined);
 }
 
 // ── the over-wire NOTE seam, Node-backed (mirrors live-book-poll.buildNoteSeam + acceptInboundNote) ──
-function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter, receipts?: ReceiptCandidates): NoteResponseSeam {
+function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => string, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter, receipts?: ReceiptCandidates, trail?: string): NoteResponseSeam {
   // Single dual-read chokepoint (Option-B, mirrors FE buildNoteSeam): hybrid-FIRST (makeHybridOpener →
   // openMailboxEnvelope bound to MY secrets + parseNoteWire, the SAME type-gate the classical path uses →
   // no-cross-swallow unchanged), classical FALLBACK. Classical-only when the owner has no derivable hybrid
@@ -104,6 +114,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
               last_activity_at: sent_at,
               retention: { expires_at: null },
             };
+      recordHop(trail, DECRYPTED_HOP, { note_id: wire.note_id }, trailPeer(store, wire.from_fingerprint, rec.participant_kind)); // decrypted on this host
       const r = store.acceptInboundNote(rec, threadFor, admitContact);
       if (r === 'not-admitted') return { dropped: 'not-in-book', fp: wire.from_fingerprint };
       // Layer 1 R1: a NEW note, or a byte-identical redelivery (C2: our first receipt may have been lost while the sender's key is unspent),
@@ -131,7 +142,7 @@ export type ReceiptCandidates = Map<string, NoteWireV0>;
  * write per receipt). Anything else (unknown note, an inbound note with that id, no key, wrong code, forged / transplanted tag) → null: the
  * row and its key are untouched, so the real receipt can still land. A false "Delivered" is unreachable: markDelivered is called on ONE line.
  */
-export function buildHeadlessReceiptSeam(owner: HeadlessOwner, store: HeadlessStore, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter): ReceiptResponseSeam {
+export function buildHeadlessReceiptSeam(owner: HeadlessOwner, store: HeadlessStore, hybrid?: LivingBookHybridSecrets, legs?: OpenLegCounter, verified?: Set<string>): ReceiptResponseSeam {
   const verifyReceipt = hybrid
     ? counted(makeHybridOpener<ReceiptWireV1>((pkg) => openMailboxEnvelope(pkg, hybrid.secrets, hybrid.myFp), parseReceiptWireV1), 'hybrid', legs)
     : async () => null;
@@ -147,6 +158,7 @@ export function buildHeadlessReceiptSeam(owner: HeadlessOwner, store: HeadlessSt
       if (!peerFp) return null;
       if (!verifyReceiptTag(rk, note.note_id, wire.code, wire.tag)) return null; // forged / transplanted / wrong code: the key survives
       store.markDelivered(owner.fingerprint, note.note_id); // ★ THE ONE LINE: verified → delivered, key dropped (group commit)
+      verified?.add(note.note_id); // layer 3: the trail row is written AFTER the pass, only if the store then really holds delivered
       return { note_id: note.note_id, thread_id: note.thread_id, from_fingerprint: peerFp };
     },
   };
@@ -172,19 +184,35 @@ export interface ReceiptSendSummary {
 export async function sendHeadlessReceipts(store: HeadlessStore, candidates: ReceiptCandidates, opts: HeadlessOpts = {}): Promise<ReceiptSendSummary> {
   const out: ReceiptSendSummary = { sent: 0, skipped: 0, failed: 0 };
   const due: NoteWireV0[] = [];
+  const duePeer: Array<string | undefined> = [];
   for (const wire of candidates.values()) {
     const held = store.listNotes().find((n) => n.direction === 'inbound' && n.note_id === wire.note_id && n.from_fingerprint === wire.from_fingerprint);
     const durable = !!held && held.body === wire.body && held.thread_id === wire.thread_id && held.sent_at === (wire.sent_at || held.sent_at);
+    const peer = durable ? trailPeer(store, wire.from_fingerprint, held!.participant_kind) : undefined; // the SENDER's declared kind
+    if (durable) recordHop(opts.hopTrailDir, 'persisted', { note_id: wire.note_id }, peer);
     if (!durable || !admitContact(store.getContactByFingerprint(wire.from_fingerprint))) {
       out.skipped++;
       continue;
     }
     due.push(wire);
+    duePeer.push(peer);
   }
   candidates.clear();
   const results = await Promise.all(due.map((w) => emitDeliveredReceipt(w, { fetchImpl: opts.fetchImpl, relayBase: opts.relayBase })));
-  for (const r of results) out[r]++;
+  for (const [i, r] of results.entries()) {
+    out[r]++;
+    if (r === 'sent') recordHop(opts.hopTrailDir, 'receipt-sent', { note_id: due[i].note_id }, duePeer[i]);
+  }
   return out;
+}
+
+/** Layer 3, AFTER the pass: receipt-verified only for notes the store now really holds as delivered (a rolled-back chunk writes none). */
+function recordVerifiedHops(owner: HeadlessOwner, store: HeadlessStore, verified: Set<string>, dir: string | undefined): void {
+  for (const id of verified) {
+    const note = store.findOutboundNote(owner.fingerprint, id);
+    if (note?.delivered === true) recordHop(dir, 'receipt-verified', { note_id: id }, trailPeer(store, note.to_fingerprints[0]));
+  }
+  verified.clear();
 }
 
 /**
@@ -217,6 +245,8 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
   const classicalCU = openpgpEnvelopeDecryptor(owner.privateKeyArmored, owner.passphrase);
   const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
   const receipts: ReceiptCandidates = new Map();
+  const verified = new Set<string>(); // layer 3: receipt-verified note ids of this poll, checked against the store after the pass
+  const trail = opts.hopTrailDir;
   return {
     owner,
     openLegs: legs,
@@ -228,9 +258,9 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
         )
       : counted(classicalCU, 'classical', legs),
     store: store.asContactStore(),
-    note: buildNoteSeam(owner, store, now, hybrid, legs, receipts),
+    note: buildNoteSeam(owner, store, now, hybrid, legs, receipts, trail),
     // Layer 1 S2: a verified receipt marks OUR outbound note delivered inside the poll's group commit
-    receipt: buildHeadlessReceiptSeam(owner, store, hybrid, legs),
+    receipt: buildHeadlessReceiptSeam(owner, store, hybrid, legs, verified),
     // ③ loud-not-silent, keyed on ACTUAL derivability (Flint's hard gate #168382): advertise-kem-pub but the
     // ML-KEM secret did NOT derive ⇒ a hybrid blob is LEFT FOR RETRY, never silently acked+dropped. The instant
     // a derivable secret is present (① landed), this is FALSE → the dualReadOpener OPENS hybrid mail instead of
@@ -243,7 +273,12 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
     // #712: one store write per ack chunk, before its ack; a redelivered envelope the store already holds is acked unopened (C1)
     chunk: store.asChunkTxn(now),
     outOfTime: deadline(opts),
-    sendReceipts: () => sendHeadlessReceipts(store, receipts, opts),
+    sendReceipts: () => {
+      recordVerifiedHops(owner, store, verified, trail);
+      return sendHeadlessReceipts(store, receipts, opts);
+    },
+    // layer 3: listed / dropped / held, by the relay's envelope id (a reason outside the fixed lists is refused by recordHop)
+    onHop: trail ? (h, id, reason) => void recordHop(trail, (h === 'polled' ? 'polled' : `${h}:${reason ?? ''}`) as Hop, { envelope_id: id }) : undefined,
   };
 }
 
@@ -328,6 +363,8 @@ export async function sendNoteFromHeadless(args: {
   store: HeadlessStore;
   relayBase?: string;
   fetchImpl?: typeof fetch;
+  /** Layer 3: the agent dir holding hop-trail.jsonl (absent → no trail). */
+  hopTrailDir?: string;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
 }): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
@@ -369,13 +406,17 @@ export async function sendNoteFromHeadless(args: {
   let deposited = false;
   if (args.peerPqKemPublicKey) {
     const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
+    const peer = trailPeer(args.store, args.peerFingerprint); // layer 3 (fail-open; never a fingerprint)
+    recordHop(args.hopTrailDir, 'sealed', { note_id }, peer);
     const mailbox_id = deriveMailboxId(args.peerFingerprint);
+    recordHop(args.hopTrailDir, 'deposited', { note_id }, peer); // the REQUEST, about to be sent: proves nothing about the relay
     const res = await fetchImpl(`${relayBase}/envelope`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mailbox_id, blob }),
     });
     deposited = res.ok;
+    if (deposited) recordHop(args.hopTrailDir, 'relay-accepted', { note_id }, peer); // a 2xx: "on the relay"
   } else {
     console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
   }
