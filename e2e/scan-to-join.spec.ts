@@ -62,7 +62,7 @@ test.describe('Scan-to-join — camera QR receive side', () => {
 
     await dialog.getByTestId('scan-invite-cancel').click();
     await expect(dialog.getByLabel(/paste your invite link/i)).toBeVisible();
-    await dialog.getByLabel(/paste your invite link/i).fill('not-an-invite');
+    await dialog.getByLabel(/paste your invite link/i).fill('not an invite!!');
     await dialog.getByRole('button', { name: /^join$/i }).click();
     await expect(dialog.getByText(/doesn't look like a svrnty connect link/i)).toBeVisible();
   });
