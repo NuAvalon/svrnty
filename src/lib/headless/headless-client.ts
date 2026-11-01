@@ -23,7 +23,7 @@ import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/con
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
-import { depositWithFailover, mergeRelaySummaries, type DepositOutcome, type RelayPoll } from '@/lib/sync/relay-tiers';
+import { depositWithFailover, mergeRelaySummaries, type DepositOutcome, type RelayPoll, type UnconfirmedAttempt } from '@/lib/sync/relay-tiers';
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
 import { headlessDeadLetterSink } from './headless-dead-letter';
@@ -491,7 +491,7 @@ export async function sendNoteFromHeadless(args: {
   hopTrailDir?: string;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** which relay carried it (index in relayBases), null if none */ tier?: number | null; /** a failed attempt may still hold the note: never claim 'not sent' */ unconfirmed?: boolean; /** the HTTP status of the last relay that answered; absent if none answered (nothing posted, or every request threw) */ status?: number }> {
+}): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** which relay carried it (index in relayBases), null if none */ tier?: number | null; /** a failed attempt may still hold the note: never claim 'not sent' */ unconfirmed?: boolean; /** the HTTP status of the last relay that answered; absent if none answered (nothing posted, or every request threw) */ status?: number; /** which relays left it unconfirmed (host + status), for the status line */ unconfirmedBy?: UnconfirmedAttempt[] }> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const relays = args.relayBases && args.relayBases.length > 0 ? args.relayBases : [args.relayBase ?? '/api/relay'];
   const now = () => new Date().toISOString();
@@ -561,5 +561,5 @@ export async function sendNoteFromHeadless(args: {
     // only a deposited note can ever be confirmed; a fail-closed (not sent) copy keeps no key
     ...(deposited ? { receipt_key } : {}),
   });
-  return { note_id, thread_id, deposited, ...(outcome ? { tier: outcome.tier, unconfirmed: outcome.unconfirmed, ...(outcome.status !== undefined ? { status: outcome.status } : {}) } : {}) };
+  return { note_id, thread_id, deposited, ...(outcome ? { tier: outcome.tier, unconfirmed: outcome.unconfirmed, ...(outcome.status !== undefined ? { status: outcome.status } : {}), ...(outcome.unconfirmedBy ? { unconfirmedBy: outcome.unconfirmedBy } : {}) } : {}) };
 }
