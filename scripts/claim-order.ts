@@ -13,6 +13,8 @@
  * Bodies of .ts/.tsx come from the TypeScript PARSER (a '{' in a string, regex, template or JSX can't shift the end). Comments are blanked
  * before matching. Patterns are matched per LINE; counts are matching LINES inside the body.
  * Output on FAIL: row id + step + file:line. Never the matched text.
+ * REQUIRED IDS: REQUIRED_ORDER_IDS below; a missing one = config error. Deletion becomes a TWO-place visible edit (row + pinned list),
+ * not an impossible one; retiring a row is still a reviewer's call.
  */
 import ts from 'typescript';
 
@@ -54,11 +56,19 @@ const exactCount = (id: string, tag: string, n: unknown): number => {
   return n;
 };
 
-/** Validates the row SHAPE (a malformed row is a config error = exit 2, never a pass). */
-export function validateOrderRows(rows: unknown): OrderRow[] {
+/**
+ * REQUIRED ROW IDS (Hypatia #3185, Archie #3187). validateOrderRows refuses (config error, exit 2) unless every id below is in `order_rows`,
+ * so deleting a row from the registry ALONE is RED. This does not make deletion impossible: it makes it a TWO-place edit (the registry row
+ * AND this list), visible in one diff and RED in CI if only one is done. Retiring a row is still a reviewer's call, now one they can see.
+ * The check is ON BY DEFAULT: a caller that skips it must pass `[]` explicitly (only single-row fixture tests do), which shows in a diff.
+ */
+export const REQUIRED_ORDER_IDS: readonly string[] = Object.freeze(['OR-1', 'OR-2', 'OR-3', 'OR-4', 'OR-5']);
+
+/** Validates the row SHAPE (a malformed row is a config error = exit 2, never a pass), THEN that every `required` id is present. */
+export function validateOrderRows(rows: unknown, required: readonly string[] = REQUIRED_ORDER_IDS): OrderRow[] {
   if (!Array.isArray(rows) || rows.length === 0) throw new OrderConfigError('order_rows is missing or empty: refusing to pass (would be fake-green)');
   const seen = new Set<string>();
-  return rows.map((r: any) => {
+  const valid = rows.map((r: any) => {
     if (!r || typeof r.id !== 'string' || !/^OR-\d+$/.test(r.id)) throw new OrderConfigError(`order row without a valid id (OR-<n>): ${JSON.stringify(r?.id)}`);
     const id = r.id;
     if (seen.has(id)) throw new OrderConfigError(`duplicate order row id ${id}`);
@@ -88,6 +98,13 @@ export function validateOrderRows(rows: unknown): OrderRow[] {
     if (!Array.isArray(r.source) || r.source.length === 0) throw new OrderConfigError(`${id}: no source`);
     return r as OrderRow;
   });
+  const missing = required.filter((id) => !seen.has(id));
+  if (missing.length > 0) {
+    throw new OrderConfigError(
+      `required order row(s) missing: ${missing.join(', ')}. Retiring a row = delete it AND its id from REQUIRED_ORDER_IDS (scripts/claim-order.ts) in the same PR`,
+    );
+  }
+  return valid;
 }
 
 /** The file's lines with every comment blanked (newlines kept, so line numbers hold). */

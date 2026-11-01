@@ -38,6 +38,8 @@
  * ORDER ROWS (`order_rows`, kind `order`, scripts/claim-order.ts; Hypatia spec 91e8f2e7 + 1da9cf5f + 9cae8b68): each pins ONE known site
  * where a status word may be written only after (or only inside the branch of) the event that makes it true. A malformed row = exit 2;
  * a regressed site = exit 1. They protect THOSE sites only; the PR-template status line is the control for new ones.
+ * REQUIRED IDS (REQUIRED_ORDER_IDS in claim-order.ts): every pinned id must be present, or exit 2. Deleting a row is therefore not impossible,
+ * it is a TWO-place edit (the row + the pinned list) that shows in the diff and is RED if only one is done; retiring a row stays a reviewer's call.
  *
  * Invocation (from repo root): npx --no-install tsx scripts/claim-sweep.ts [--assert-root=A,B]
  * Exit: 0 clean · 1 claim violations · 2 config error.
@@ -157,7 +159,7 @@ function main(): void {
   let orderCount: number;
   try {
     const raw = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as { order_rows?: unknown };
-    const rows = validateOrderRows(raw.order_rows);
+    const rows = validateOrderRows(raw.order_rows); // shape, then every REQUIRED_ORDER_IDS present (default ON; deleting a row alone = exit 2)
     orderCount = rows.length;
     const repo = resolve(REGISTRY_PATH, '..', '..');
     orderFails = checkOrderRows(rows, (p) => {

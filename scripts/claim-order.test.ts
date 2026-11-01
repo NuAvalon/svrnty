@@ -5,11 +5,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ORDER_LIMIT, OrderConfigError, checkOrderRows, validateOrderRows, type OrderRow } from './claim-order';
+import { ORDER_LIMIT, OrderConfigError, REQUIRED_ORDER_IDS, checkOrderRows, validateOrderRows, type OrderRow } from './claim-order';
 
 const ROOT = join(__dirname, '..');
 const REG = JSON.parse(readFileSync(join(ROOT, 'scripts/claim-registry.json'), 'utf8'));
-const ROWS = validateOrderRows(REG.order_rows);
+const ROWS = validateOrderRows(REG.order_rows); // the sweep's call: required ids ON (the default)
 const realRead = (p: string) => (existsSync(join(ROOT, p)) ? readFileSync(join(ROOT, p), 'utf8') : null);
 /** The real tree, with ONE file's text replaced. */
 const withFile = (file: string, text: string | null) => (p: string) => (p === file ? text : realRead(p));
@@ -136,32 +136,34 @@ describe('comments are blanked at EVERY token (Archie #3177 L-c)', () => {
 
 describe('a malformed row is a CONFIG error (exit 2), never a pass', () => {
   const base = () => JSON.parse(JSON.stringify(REG.order_rows[0]));
+  // single-row fixtures: opt OUT of the required-ids check explicitly, so each throw below is for ITS reason, not a missing OR-2..5
+  const NO_REQUIRED: readonly string[] = [];
   it('empty or missing order_rows', () => {
-    assert.throws(() => validateOrderRows([]), OrderConfigError);
-    assert.throws(() => validateOrderRows(undefined), OrderConfigError);
+    assert.throws(() => validateOrderRows([], NO_REQUIRED), OrderConfigError);
+    assert.throws(() => validateOrderRows(undefined, NO_REQUIRED), OrderConfigError);
   });
   it('a limit that is not the LIMIT sentence verbatim', () => {
     const r = base();
     r.limit = 'Protects this site.';
-    assert.throws(() => validateOrderRows([r]), OrderConfigError);
+    assert.throws(() => validateOrderRows([r], NO_REQUIRED), OrderConfigError);
   });
   it('a count that is not an exact integer >= 1 (no "≥1", no 0)', () => {
     for (const bad of [0, '≥1', 1.5, undefined]) {
       const r = base();
       r.status.count = bad;
-      assert.throws(() => validateOrderRows([r]), OrderConfigError, String(bad));
+      assert.throws(() => validateOrderRows([r], NO_REQUIRED), OrderConfigError, String(bad));
     }
   });
   it('an unknown rule, or a regex that does not compile', () => {
     const r1 = base();
     r1.rule = 'before-ish';
-    assert.throws(() => validateOrderRows([r1]), OrderConfigError);
+    assert.throws(() => validateOrderRows([r1], NO_REQUIRED), OrderConfigError);
     const r2 = base();
     r2.event.pattern = '(unclosed';
-    assert.throws(() => validateOrderRows([r2]), OrderConfigError);
+    assert.throws(() => validateOrderRows([r2], NO_REQUIRED), OrderConfigError);
   });
   it('duplicate ids', () => {
-    assert.throws(() => validateOrderRows([base(), base()]), OrderConfigError);
+    assert.throws(() => validateOrderRows([base(), base()], NO_REQUIRED), OrderConfigError);
   });
 });
 
@@ -180,5 +182,25 @@ describe('status-in-event-block (spec v4 b66cbec3): a status moved past the catc
     assert.ok(check(r, withFile(r.file, m.join('\n'))).length > 0, 'a held hop that runs even when settle() threw must be RED');
     // the same move under the OLD rule passed: that is the hole this rule closes
     assert.deepEqual(check({ ...r, rule: 'event-before-status' }, withFile(r.file, m.join('\n'))), []);
+  });
+});
+
+describe('required ids (Hypatia #3185, Archie #3187): deleting a row from the registry ALONE is RED', () => {
+  const without = (id: string) => (REG.order_rows as { id: string }[]).filter((r) => r.id !== id);
+  it('the real registry holds every required id (the control)', () => {
+    assert.deepEqual(validateOrderRows(REG.order_rows).map((r) => r.id).sort(), [...REQUIRED_ORDER_IDS].sort());
+  });
+  it('NEG: delete OR-4 from the registry → config error (exit 2), naming OR-4', () => {
+    assert.throws(() => validateOrderRows(without('OR-4')), (e: unknown) => e instanceof OrderConfigError && /OR-4/.test(e.message));
+  });
+  it('each required row, deleted alone → config error', () => {
+    for (const id of REQUIRED_ORDER_IDS) assert.throws(() => validateOrderRows(without(id)), OrderConfigError, id);
+  });
+  it('the two-place edit: row AND id removed together loads (retiring stays possible, and visible in the diff)', () => {
+    const rest = REQUIRED_ORDER_IDS.filter((id) => id !== 'OR-4');
+    assert.deepEqual(validateOrderRows(without('OR-4'), rest).map((r) => r.id).sort(), [...rest].sort());
+  });
+  it('the list is frozen (no runtime push/splice can shrink it)', () => {
+    assert.ok(Object.isFrozen(REQUIRED_ORDER_IDS));
   });
 });
