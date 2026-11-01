@@ -38,5 +38,7 @@ jobs:
         run: CIRCOM="$RUNNER_TEMP/circom" ./build.sh
       - name: build.sh NEGs (a KAT, r1cs, wasm or witness-js mismatch must be refused; ~1 min per case)
         run: CIRCOM="$RUNNER_TEMP/circom" ./test-build-negs.sh
+      - name: harness NEGs (r2c, kat and cmp_test must exit nonzero on their own failure)
+        run: CIRCOM="$RUNNER_TEMP/circom" ./test-harness-negs.sh
       - name: print the r1cs sha256 this machine produced
         run: sha256sum build/slotbind.r1cs
