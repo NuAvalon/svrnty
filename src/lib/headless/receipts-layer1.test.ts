@@ -477,9 +477,9 @@ test('L3-E1 round trip: each side writes ONLY its own hops; no fingerprint, body
   const b = tmpBook();
   try {
     const as = a.open();
-    as.upsertContact(asContact(B, { name: 'bee', kind: 'agent' }));
+    as.upsertContact(asContact(B, { name: 'bee' }));
     const bs = b.open();
-    bs.upsertContact(asContact(A, { name: 'ay', kind: 'agent' }));
+    bs.upsertContact(asContact(A, { name: 'ay' }));
     const sent = await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
       body: 'TRAIL-BODY-CANARY', store: as, relayBase: RELAY, fetchImpl: relay.fetchImpl, noteId: 'note_l3e1', hopTrailDir: a.dir });
     assert.equal(sent.deposited, true);
@@ -492,7 +492,10 @@ test('L3-E1 round trip: each side writes ONLY its own hops; no fingerprint, body
     await pollHeadlessOnce(owner(A), a.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl, hopTrailDir: a.dir });
     assert.equal(a.open().findOutboundNote(A.fp, 'note_l3e1')?.delivered, true);
     assert.deepEqual(hopsFor(a.dir, 'note_l3e1'), ['sealed', 'deposited', 'relay-accepted', 'receipt-verified']);
-    assert.deepEqual(readHopTrail(a.dir, 'note_l3e1').map((r) => r.peer), ['bee', 'bee', 'bee', 'bee']);
+    // R1 (Flint #3122): production contacts carry no kind, so SENDER rows name no peer (omitted, never guessed); the RECEIVER's rows
+    // take the kind from the sender's signed wire declaration (a headless sender declares 'agent'), so they name the local contact.
+    assert.deepEqual(readHopTrail(a.dir, 'note_l3e1').map((r) => r.peer), [undefined, undefined, undefined, undefined]);
+    assert.deepEqual(readHopTrail(b.dir, 'note_l3e1').map((r) => r.peer), ['ay', 'ay', 'ay']);
     // Hypatia NEG: a SENDER's trail never holds opened/persisted for its own note; a receiver's never holds the sender hops
     for (const h of ['opened', 'persisted', 'receipt-sent']) assert.ok(!hopsFor(a.dir, 'note_l3e1').includes(h as never), h);
     for (const h of ['sealed', 'deposited', 'relay-accepted', 'receipt-verified']) assert.ok(!hopsFor(b.dir, 'note_l3e1').includes(h as never), h);
@@ -539,7 +542,7 @@ test('L3-E3 no hopTrailDir (FE, every existing caller) = no trail file is ever c
   const b = tmpBook();
   try {
     const bs = b.open();
-    bs.upsertContact(asContact(A, { name: 'ay', kind: 'agent' }));
+    bs.upsertContact(asContact(A, { name: 'ay' }));
     await send(A, B, new HeadlessStore(), relay.fetchImpl, 'x', { noteId: 'note_l3e3' });
     await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(existsSync(join(b.dir, HOP_TRAIL_FILE)), false);
@@ -556,7 +559,7 @@ test('L3-E4 fail-open: a trail path that cannot be written never stops a send or
     const bad = join(b.dir, 'not-a-dir');
     writeFileSync(bad, 'a file where a dir should be');
     const bs = b.open();
-    bs.upsertContact(asContact(A, { name: 'ay', kind: 'agent' }));
+    bs.upsertContact(asContact(A, { name: 'ay' }));
     const sent = await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
       body: 'still goes', store: new HeadlessStore(), relayBase: RELAY, fetchImpl: relay.fetchImpl, noteId: 'note_l3e4', hopTrailDir: bad });
     assert.equal(sent.deposited, true);
@@ -612,9 +615,9 @@ test('L3-E7 a FAILED chunk write: the receiver trail says decrypted, never persi
   try {
     // (a) receiver: the note decrypts, but its chunk commit fails, so it is NOT durable
     const bs = b.open();
-    bs.upsertContact(asContact(A, { name: 'ay', kind: 'agent' }));
+    bs.upsertContact(asContact(A, { name: 'ay' }));
     const as = a.open();
-    as.upsertContact(asContact(B, { name: 'bee', kind: 'agent' }));
+    as.upsertContact(asContact(B, { name: 'bee' }));
     await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
       body: 'x', store: as, relayBase: RELAY, fetchImpl: relay.fetchImpl, noteId: 'note_l3e7', hopTrailDir: a.dir });
     const dB = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, hopTrailDir: b.dir });
@@ -640,6 +643,39 @@ test('L3-E7 a FAILED chunk write: the receiver trail says decrypted, never persi
     assert.ok(!hopsFor(a.dir, 'note_l3e7').includes('receipt-verified'), 'a rolled-back Delivered never reaches the trail');
   } finally {
     a.done();
+    b.done();
+  }
+});
+
+test('L3-E8 R2 (Hypatia #3123): "dropped" is written only once the drop is TRUE (recorded AND acked); a failed save or ack writes none', async () => {
+  const [S, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open(); // S is NOT in B's book → its note is a not-in-book loss
+    await sendNoteFromHeadless({ owner: owner(S), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem,
+      body: 'hi', store: new HeadlessStore(), relayBase: RELAY, fetchImpl: relay.fetchImpl, noteId: 'note_l3e8' });
+    const envId = (await inbox(relay, B))[0].envelope_id;
+    const opts = { relayBase: RELAY, fetchImpl: relay.fetchImpl, hopTrailDir: b.dir, deadLetterPath: join(b.dir, 'dead-letters.json') };
+    // (a) the drop is STAGED, then the store save fails: nothing is acked, the envelope stays on the relay → NO 'dropped' row
+    const d1 = await buildHeadlessConsumeDeps(owner(B), bs, opts);
+    d1.chunk!.commit = () => {
+      throw new Error('disk full');
+    };
+    await consumeInboundContactUpdates(d1);
+    assert.ok(relay.listIds().includes(envId), 'still on the relay');
+    assert.ok(!hopsFor(b.dir, envId).some((h) => h.startsWith('dropped:')), 'a failed commit must not say dropped');
+    // (b) a real save, but the ack is killed: the row is durable, the envelope is still on the relay → still NO 'dropped'
+    relay.failAck(1);
+    const d2 = await buildHeadlessConsumeDeps(owner(B), b.open(), opts);
+    await consumeInboundContactUpdates(d2).catch(() => undefined);
+    assert.ok(relay.listIds().includes(envId), 'the ack never landed');
+    assert.ok(!hopsFor(b.dir, envId).some((h) => h.startsWith('dropped:')), 'an unacked drop must not say dropped');
+    // (c) the next poll acks it → NOW 'dropped:not-in-book', exactly once
+    await pollHeadlessOnce(owner(B), b.open(), opts);
+    assert.ok(!relay.listIds().includes(envId), 'acked');
+    assert.deepEqual(hopsFor(b.dir, envId).filter((h) => h.startsWith('dropped:')), ['dropped:not-in-book']);
+  } finally {
     b.done();
   }
 });

@@ -10,6 +10,10 @@
 //  2. ids + timestamps + hop names only: ts (THIS host's write time, UTC), hop (fixed list), note_id / envelope_id (opaque ids),
 //     agent (our own name), peer (an agent NAME or the literal 'person'). NO other fields, ever. Never content, keys, tags, or any
 //     fingerprint or fingerprint prefix: a hex-looking "name" is refused, a peer we cannot name is OMITTED, never guessed.
+//     WHERE THE PEER'S KIND COMES FROM (Flint #3122 R1): on RECEIVER rows, the sender's own signed wire declaration (participant_kind),
+//     so only a sender can mislabel itself, and only in our local trail. On SENDER rows, a local contact kind; HeadlessContact rows
+//     carry none today, so sender rows OMIT the peer (production shows "delivered (receipt verified)", not "delivered to {name}'s app").
+//     Naming them needs a local kind written at join: a separate PR, where 'person' wins whenever local and wire disagree.
 //  3. BOUNDED: 14 days, 5 MB; pruned on write. 0600 at birth (umask 077 for the create + fstat check in the same step).
 //  4. FAIL-OPEN: a trail fault never wedges a send or a poll. recordHop() never throws; it returns false instead.
 //  Per-side truth (Hypatia): sender hops = sealed, deposited, relay-accepted, receipt-verified; receiver hops = polled, opened,
@@ -258,7 +262,7 @@ export function renderHop(r: HopRow): string {
     case 'persisted':
       return 'stored on this host';
     case 'receipt-sent':
-      return 'delivery receipt sent';
+      return 'delivery receipt sent to the relay'; // = emitDeliveredReceipt 'sent' = res.ok: the relay accepted it, not "the sender received it" (Hypatia #3121)
     default:
       return r.hop.startsWith('dropped:') ? `dropped on this host (${r.hop.slice(8)})` : `held on this host (${r.hop.slice(5)})`;
   }
