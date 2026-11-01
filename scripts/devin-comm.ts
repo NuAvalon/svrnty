@@ -515,8 +515,14 @@ async function main() {
     // "journaled 0" must not hide WHY (Athena #593, Archie #595): a poll the relay REFUSED looks identical to an
     // empty mailbox in the journal summary. consume reports the refusal as `rejected` (the HTTP status);
     // say it on stderr here and carry it in the stdout JSON below. Exit code is unchanged (0) on purpose.
+    // A 2xx is not a refusal: since the non-list fix, rejected = 200 means the relay ANSWERED, but not with a list
+    // (Hypatia #3019, Archie #3026; the app's "couldn't be read" vs "refused" split). Saying REFUSED there would be false.
     if (consumed.rejected !== undefined) {
-      console.error(`POLL REFUSED by the relay: HTTP ${consumed.rejected} (a refused poll is not an empty mailbox)`);
+      if (consumed.rejected >= 200 && consumed.rejected <= 299) {
+        console.error(`POLL UNREADABLE: the relay answered HTTP ${consumed.rejected} but not with a list (an unreadable answer is not an empty mailbox)`);
+      } else {
+        console.error(`POLL REFUSED by the relay: HTTP ${consumed.rejected} (a refused poll is not an empty mailbox)`);
+      }
     }
     // poll-json-watermark-001: the journal IS the durable consumed-set —
     // a journaled note_id already had its one-shot decrypt spent, so

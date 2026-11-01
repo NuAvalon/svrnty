@@ -96,6 +96,26 @@ test('poll-json: the status is named EXACTLY (a 429 is not reported as a 401)', 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('poll-json: a 2xx that is NOT a list is UNREADABLE, never "REFUSED" (Hypatia #3019); a 401 stays REFUSED', async () => {
+  const dir = await agentDir();
+  try {
+    await withRelay(() => ({ status: 200, body: '{}' }), async (relay) => {
+      const r = await runCli(['poll-json'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.equal(r.code, 0, r.err);
+      assert.match(r.err, /^POLL UNREADABLE: the relay answered HTTP 200 but not with a list \(an unreadable answer is not an empty mailbox\)$/m);
+      assert.doesNotMatch(r.err, /REFUSED/, 'the relay answered: it did not refuse');
+      const s = summaryOf(r.out);
+      assert.equal(s.rejected, 200);
+      assert.equal(s.polled, 0);
+    });
+    await withRelay(() => ({ status: 401, body: '{"error":"unauthorized"}' }), async (relay) => {
+      const r = await runCli(['poll-json'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.match(r.err, /^POLL REFUSED by the relay: HTTP 401/m);
+      assert.doesNotMatch(r.err, /UNREADABLE/);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('poll-json: a CLEAN empty poll says rejected:null and prints no refusal; the old keys are all still there', async () => {
   const dir = await agentDir();
   try {
