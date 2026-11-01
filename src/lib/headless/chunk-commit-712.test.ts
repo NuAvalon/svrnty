@@ -651,9 +651,9 @@ test('#358: one poll derives each envelope\'s dedupe key ONCE — the blob is re
     const reads = new Map<string, number>();
     const instrumented = (async (url: string, init?: RequestInit) => {
       const u = String(url);
-      if (!u.includes('/queue')) return relay.fetchImpl(url as any, init);
+      if (!u.includes('/queue')) return relay.fetchImpl(url, init);
       // consume the real listing once, then hand back getter-wrapped objects
-      const real = await relay.fetchImpl(url as any, init);
+      const real = await relay.fetchImpl(url, init);
       const list = (await real.json()) as Array<{ envelope_id: string; blob: string }>;
       const wrapped = list.map((e) => {
         const { blob, ...rest } = e;
