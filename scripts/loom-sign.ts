@@ -42,14 +42,41 @@ function mintPath(): string {
   return p;
 }
 
+/**
+ * F-339 (Archie #3205, Flint #3217): mint.json is a SECRET file. Every failure to read, parse or shape-check it throws this FIXED
+ * message, never e.message and never a byte position: on Node 22 a JSON.parse error QUOTES part of its input, so a truncated or corrupt
+ * mint would put a fragment of a private key field on stderr, which the caller logs. Decoding happens here too, so a bad base64
+ * field can't surface either.
+ */
+const MINT_UNREADABLE = 'mint.json unreadable'; // pinned by src/lib/headless/loom-sign-mint-parse.test.ts
+
+interface MintSecrets { secret: Record<string, Uint8Array>; durableId: string }
+
+function readMint(fields: readonly string[], needDurableId: boolean): MintSecrets {
+  const path = mintPath(); // outside the try: its refusal (exit 2) names the env vars, not the file
+  try {
+    const m = JSON.parse(readFileSync(path, 'utf8')) as { private?: Record<string, unknown>; public?: Record<string, unknown> };
+    const secret: Record<string, Uint8Array> = {};
+    for (const f of fields) {
+      const v = m?.private?.[f];
+      if (typeof v !== 'string' || !v) throw new Error('shape');
+      secret[f] = base64ToUint8(v);
+    }
+    const durableId = m?.public?.durable_id;
+    if (needDurableId && (typeof durableId !== 'string' || !durableId)) throw new Error('shape');
+    return { secret, durableId: typeof durableId === 'string' ? durableId : '' };
+  } catch {
+    throw new Error(MINT_UNREADABLE); // FIXED: the cause is dropped on purpose (it can carry key bytes)
+  }
+}
+
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
 
   if (cmd === 'sign') {
     const msg = new Uint8Array(readFileSync(0));   // binary-safe stdin
-    const mint = JSON.parse(readFileSync(mintPath(), 'utf8'));   // touched, never printed
-    const seed = base64ToUint8(mint.private.ed25519_seed);
-    console.log(bytesToHex(rawSign(msg, seed)));
+    const { secret } = readMint(['ed25519_seed'], false);   // touched, never printed (nor any of its bytes on a parse error)
+    console.log(bytesToHex(rawSign(msg, secret.ed25519_seed)));
     return;
   }
 
@@ -103,11 +130,11 @@ async function main() {
     const [contactCardJsonPath] = rest;
     const msg = readFileSync(0, 'utf8');
     const contact = JSON.parse(readFileSync(contactCardJsonPath, 'utf8')) as ContactKeys;
-    const mint = JSON.parse(readFileSync(mintPath(), 'utf8'));
+    const mint = readMint(['ed25519_seed', 'mldsa87_secret'], true);
     const sender: SenderKeys = {
-      signSeed: base64ToUint8(mint.private.ed25519_seed),
-      sigSecret: base64ToUint8(mint.private.mldsa87_secret),
-      senderFingerprint: mint.public.durable_id,
+      signSeed: mint.secret.ed25519_seed,
+      sigSecret: mint.secret.mldsa87_secret,
+      senderFingerprint: mint.durableId,
     };
     const armored = await encryptToContact(msg, contact, sender);
     console.log(armored);
@@ -120,13 +147,13 @@ async function main() {
     const [senderCardJsonPath] = rest.filter((a) => !a.startsWith('--'));
     const allowUnverified = rest.includes('--allow-unverified');
     const armored = readFileSync(0, 'utf8');
-    const mint = JSON.parse(readFileSync(mintPath(), 'utf8'));
+    const mint = readMint(['x25519_sec', 'mlkem1024_sec', 'x25519_pub', 'mlkem1024_pub'], true);
     const me: MyKeys = {
-      x25519Sec: base64ToUint8(mint.private.x25519_sec),
-      mlkem1024Sec: base64ToUint8(mint.private.mlkem1024_sec),
-      x25519Pub: base64ToUint8(mint.private.x25519_pub),
-      mlkem1024Pub: base64ToUint8(mint.private.mlkem1024_pub),
-      myFingerprint: mint.public.durable_id,
+      x25519Sec: mint.secret.x25519_sec,
+      mlkem1024Sec: mint.secret.mlkem1024_sec,
+      x25519Pub: mint.secret.x25519_pub,
+      mlkem1024Pub: mint.secret.mlkem1024_pub,
+      myFingerprint: mint.durableId,
     };
     const senderCard = senderCardJsonPath
       ? (JSON.parse(readFileSync(senderCardJsonPath, 'utf8')) as ContactKeys)
