@@ -624,6 +624,31 @@ test('replay window: an unreadable or empty consent time is refused (fail-closed
   assert.equal(await consentDated('not-a-time'), null);
   assert.equal(await consentDated(''), null);
 });
+test('replay window: the consent time is read ONLY as strict ISO-8601 UTC (what toISOString writes); every other form is refused, never interpreted', async () => {
+  const noOffset = (ms: number) => iso(ms).replace(/\.\d{3}Z$/, ''); // '2026-11-01T11:00:00': an hour before the clock IF read as UTC
+  const was = process.env.TZ;
+  try {
+    for (const tz of ['UTC', 'America/New_York', 'Asia/Kolkata']) {
+      process.env.TZ = tz;
+      assert.equal(await consentDated(noOffset(RN - 3_600_000)), null, `no offset, ${tz}`);
+    }
+  } finally {
+    if (was === undefined) delete process.env.TZ; else process.env.TZ = was;
+  }
+  assert.equal(await consentDated('2026-11-01'), null, 'a bare date');
+  assert.equal(await consentDated('Nov 1 2026 11:00:00'), null, 'an engine-specific form Date.parse would read');
+  assert.equal(await consentDated(iso(RN - 3_600_000).replace('Z', '+00:00')), null, 'an offset form, even +00:00');
+  assert.equal(await consentDated('2026-11-01T06:00:00-05:00'), null, 'a non-UTC offset');
+  assert.equal(await consentDated(iso(RN - 3_600_000).replace('.000Z', '.0001Z')), null, 'four fractional digits');
+  assert.equal(await consentDated(iso(RN - 3_600_000).toLowerCase()), null, 'lower-case t and z');
+  assert.equal(await consentDated(iso(RN - 3_600_000) + ' '), null, 'trailing space');
+  assert.equal(await consentDated('2026-11-01T11:00Z'), null, 'no seconds: V8 reads this as a valid time, the strict pattern does not');
+  assert.equal(await consentDated(' ' + iso(RN - 3_600_000)), null, 'a leading space');
+  // the forms the honest builder writes still verify
+  assert.ok(await consentDated(iso(RN - 3_600_000)), 'toISOString output (three digits)');
+  assert.ok(await consentDated('2026-11-01T11:00:00Z'), 'no fractional digits');
+  assert.ok(await consentDated('2026-11-01T11:00:00.5Z'), 'one fractional digit');
+});
 test('replay window: the NEWCOMER\'s time decides: a stale envelope time with a fresh consent verifies, a fresh envelope time with a stale consent is refused', async () => {
   assert.ok(await consentDated(iso(RN - 60_000), '2025-01-01T00:00:00Z'), 'old introducer time, fresh consent');
   assert.equal(await consentDated(iso(RN - 8 * 24 * 3_600_000), iso(RN)), null, 'fresh introducer time, 8-day-old consent');
