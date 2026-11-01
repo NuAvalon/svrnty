@@ -54,6 +54,22 @@ export interface HeadlessOpts {
   deadLetterPath?: string;
   /** Layer 3: the agent dir that holds hop-trail.jsonl. Absent → no trail (FE, tests). The trail never affects a send or a poll. */
   hopTrailDir?: string;
+  /** G-RO-9 (b): receipts sent per poll. Absent → receiptsPerPoll() (SVRNTY_RECEIPTS_PER_POLL, default 1). Tests pass it explicitly. */
+  receiptsPerPoll?: number;
+}
+
+/**
+ * G-RO-9 (b), Archie lane:svrnty #3234: at most this many "delivered" receipts per poll, oldest note first; the rest are counted as
+ * receipts_capped and DROPPED (not retried yet: the sender just sees no Delivered, never a false one). Why: receipts share the relay's
+ * per-IP deposit bucket (RELAY_RATE_LIMIT_MAX, default 10 per 60 s) with the cells' REAL sends, and our cells share one egress IP, so an
+ * uncapped backlog drain could make the next real send fail with 429 (Apollo F-RL #3227). With k=1 and the cron intervals (bare-metal
+ * every 1 min, docker every 2 min) the fleet sends at most 2*1 + 3*0.5 = 3.5 receipts/min, leaving >= 6/min for real sends. A change to
+ * poll frequency MOVES that bound. Env: SVRNTY_RECEIPTS_PER_POLL, digits only, 0-10 (0 = send none, just count); anything else = 1.
+ */
+export const RECEIPTS_PER_POLL_DEFAULT = 1;
+export function receiptsPerPoll(env: Record<string, string | undefined> = process.env): number {
+  const v = env.SVRNTY_RECEIPTS_PER_POLL;
+  return v !== undefined && /^[0-9]{1,2}$/.test(v) && Number(v) <= 10 ? Number(v) : RECEIPTS_PER_POLL_DEFAULT;
 }
 
 /** Layer 3: the ONLY peer label a trail row gets: 'person', a valid agent name, or nothing (never a fingerprint or prefix). */
@@ -169,6 +185,7 @@ export interface ReceiptSendSummary {
   sent: number;
   skipped: number;
   failed: number;
+  capped: number; // G-RO-9 (b): due, but past this poll's cap: not POSTed, dropped
 }
 
 /**
@@ -182,7 +199,7 @@ export interface ReceiptSendSummary {
  * emitDeliveredReceipt itself refuses a kem-less sender (no downgrade) and a wire without a 64-hex receipt_key, and never throws.
  */
 export async function sendHeadlessReceipts(store: HeadlessStore, candidates: ReceiptCandidates, opts: HeadlessOpts = {}): Promise<ReceiptSendSummary> {
-  const out: ReceiptSendSummary = { sent: 0, skipped: 0, failed: 0 };
+  const out: ReceiptSendSummary = { sent: 0, skipped: 0, failed: 0, capped: 0 };
   const due: NoteWireV0[] = [];
   const duePeer: Array<string | undefined> = [];
   for (const wire of candidates.values()) {
@@ -198,10 +215,19 @@ export async function sendHeadlessReceipts(store: HeadlessStore, candidates: Rec
     duePeer.push(peer);
   }
   candidates.clear();
-  const results = await Promise.all(due.map((w) => emitDeliveredReceipt(w, { fetchImpl: opts.fetchImpl, relayBase: opts.relayBase })));
-  for (const [i, r] of results.entries()) {
+  // G-RO-9 (b): oldest note first (the sender's sent_at; an unparseable one sorts last; ties keep arrival order), then the per-poll cap.
+  const at = (w: NoteWireV0) => {
+    const t = Date.parse(w.sent_at ?? '');
+    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+  };
+  const order = due.map((_, i) => i).sort((x, y) => at(due[x]) - at(due[y]) || x - y);
+  const cap = opts.receiptsPerPoll ?? receiptsPerPoll();
+  const send = order.slice(0, cap);
+  out.capped = order.length - send.length;
+  const results = await Promise.all(send.map((i) => emitDeliveredReceipt(due[i], { fetchImpl: opts.fetchImpl, relayBase: opts.relayBase })));
+  for (const [j, r] of results.entries()) {
     out[r]++;
-    if (r === 'sent') recordHop(opts.hopTrailDir, 'receipt-sent', { note_id: due[i].note_id }, duePeer[i]);
+    if (r === 'sent') recordHop(opts.hopTrailDir, 'receipt-sent', { note_id: due[send[j]].note_id }, duePeer[send[j]]);
   }
   return out;
 }
@@ -297,8 +323,10 @@ export interface ReceiptCounts {
   receipts_failed: number;
   /** never POSTed: the note is not durably stored, the sender is no longer admitted, or the wire can't address a receipt */
   receipts_skipped: number;
+  /** due, but past this poll's cap (G-RO-9 b, receiptsPerPoll): never POSTed and dropped, not retried */
+  receipts_capped: number;
 }
-export const receiptCounts = (r: ReceiptSendSummary): ReceiptCounts => ({ receipts_sent: r.sent, receipts_failed: r.failed, receipts_skipped: r.skipped });
+export const receiptCounts = (r: ReceiptSendSummary): ReceiptCounts => ({ receipts_sent: r.sent, receipts_failed: r.failed, receipts_skipped: r.skipped, receipts_capped: r.capped });
 
 export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStore, opts: HeadlessOpts = {}): Promise<ConsumeSummary & ReceiptCounts> {
   const deps = await buildHeadlessConsumeDeps(owner, store, opts);

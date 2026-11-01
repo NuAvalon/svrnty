@@ -18,7 +18,7 @@ import { consumeInboundContactUpdates } from '@/lib/sync/consume-mailbox';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
 import { DEAD_LETTER_FILE } from './headless-dead-letter';
 import { HeadlessStore, type HeadlessContact } from './headless-store';
-import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, sendHeadlessReceipts, sendNoteFromHeadless } from './headless-client';
+import { type HeadlessOwner, buildHeadlessConsumeDeps, pollHeadlessOnce, receiptsPerPoll, sendHeadlessReceipts, sendNoteFromHeadless } from './headless-client';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { buildReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { sealReceiptV1To } from '@/lib/messaging/seal';
@@ -177,7 +177,7 @@ test('F-RL (Apollo #3227): a receipt the relay REFUSES (429, its per-IP deposit 
     await send(A, B, a.store, fetchImpl, 'one');
     await send(A, B, a.store, fetchImpl, 'two');
     refuse = true; // B's receipt deposits hit the limit
-    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl });
+    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl, receiptsPerPoll: 10 }); // cap out of the way: this pins the FAILED count
     assert.equal(s.notes, 2, 'the notes themselves are stored');
     assert.equal(s.receipts_sent, 0);
     assert.equal(s.receipts_failed, 2, 'both refused receipts are COUNTED, not silent');
@@ -224,7 +224,7 @@ test('N1 no receipt unless persisted: a stranger, a blocked sender, a FWW refusa
       };
       await consumeInboundContactUpdates(deps);
       const r = await deps.sendReceipts();
-      assert.deepEqual(r, { sent: 0, skipped: 1, failed: 0 });
+      assert.deepEqual(r, { sent: 0, skipped: 1, failed: 0, capped: 0 });
       assert.equal((await inbox(relay, A)).length, 0);
       assert.equal((await inbox(relay, B)).length, 1, 'the note stays on the relay');
     } finally {
@@ -291,7 +291,7 @@ test('N3 no downgrade: a sender with no ML-KEM key gets no receipt', async () =>
     // the same stored, admitted note, but its (signature-bound) wire carries no kem key: emitDeliveredReceipt must refuse it
     const kemless = { ...wire!, pq_kem_public_key: undefined } as NoteWireV0;
     const r = await sendHeadlessReceipts(bs, new Map([[`${A.fp}:${kemless.note_id}`, kemless]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-    assert.deepEqual(r, { sent: 0, skipped: 1, failed: 0 });
+    assert.deepEqual(r, { sent: 0, skipped: 1, failed: 0, capped: 0 });
     assert.equal((await inbox(relay, A)).length, 0);
   } finally {
     b.done();
@@ -398,11 +398,11 @@ test('N7 (C1) N receipts + M notes in one poll = ONE store write per ack chunk; 
     const ids = [];
     for (let i = 0; i < 3; i++) ids.push((await send(A, B, a.store, fetchImpl, `a${i}`)).note_id);
     for (let i = 0; i < 4; i++) await send(B, A, new HeadlessStore(), fetchImpl, `b${i}`);
-    await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl });
+    await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl, receiptsPerPoll: 10 }); // 3 receipts in ONE poll (the cap is pinned by G-RO-9 below)
     assert.equal((await inbox(relay, A)).length, 7);
     const before = a.store.writes;
     posts = 0;
-    const s = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl });
+    const s = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl, receiptsPerPoll: 10 }); // A answers 4 in one poll
     assert.equal(s.delivered, 3);
     assert.equal(s.notes, 4);
     assert.equal(a.store.writes - before, 1, '7 envelopes = one chunk = ONE write (receipt rewrites ride it)');
@@ -464,11 +464,11 @@ test('N9 (C3) the emit path re-checks admitContact itself: a candidate from a st
     await consumeInboundContactUpdates(deps);
     // the note is stored; now A is blocked before the emit: the same candidate is refused
     bs.updateContact(asContact(A).id, { blocked: true });
-    assert.deepEqual(await sendHeadlessReceipts(bs, new Map([[`${A.fp}:${wire!.note_id}`, wire!]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), { sent: 0, skipped: 1, failed: 0 });
+    assert.deepEqual(await sendHeadlessReceipts(bs, new Map([[`${A.fp}:${wire!.note_id}`, wire!]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), { sent: 0, skipped: 1, failed: 0, capped: 0 });
     // a stranger's wire, even if a note with its id were in the store: refused (S is not in the book)
     bs.putNote({ ...b.open().listNotes()[0], from_fingerprint: S.fp });
     const strangerWire = { ...wire!, from_fingerprint: S.fp, public_key: S.pub, pq_kem_public_key: S.kem };
-    assert.deepEqual(await sendHeadlessReceipts(bs, new Map([[`${S.fp}:${wire!.note_id}`, strangerWire]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), { sent: 0, skipped: 1, failed: 0 });
+    assert.deepEqual(await sendHeadlessReceipts(bs, new Map([[`${S.fp}:${wire!.note_id}`, strangerWire]]), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), { sent: 0, skipped: 1, failed: 0, capped: 0 });
     assert.equal((await inbox(relay, A)).length + (await inbox(relay, S)).length, 0);
   } finally {
     b.done();
@@ -490,7 +490,7 @@ test('N10 a FWW refusal (\'kept\') never becomes a receipt CANDIDATE: asserted o
     const deps = await buildHeadlessConsumeDeps(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     const summary = await consumeInboundContactUpdates(deps);
     assert.equal(summary.notes, 1, 'the rewrite was consumed (acked) as the stored note');
-    assert.deepEqual(await deps.sendReceipts(), { sent: 0, skipped: 0, failed: 0 }, 'the refused rewrite was never a candidate');
+    assert.deepEqual(await deps.sendReceipts(), { sent: 0, skipped: 0, failed: 0, capped: 0 }, 'the refused rewrite was never a candidate');
     assert.equal(b.open().listNotes().find((n) => n.note_id === 'n-fww')!.body, 'first');
   } finally {
     b.done();
@@ -710,4 +710,104 @@ test('L3-E8 R2 (Hypatia #3123): "dropped" is written only once the drop is TRUE 
   } finally {
     b.done();
   }
+});
+
+// G-RO-9 (b), Archie #3234: at most receiptsPerPoll receipts per poll (default 1 via SVRNTY_RECEIPTS_PER_POLL), OLDEST note first; the
+// rest are counted receipts_capped and dropped (not retried yet), so one poll can never spend the relay's shared per-IP deposit bucket.
+test('G-RO-9 cap: 3 due receipts, the DEFAULT cap (1) → ONE sent, for the OLDEST note; 2 capped; none of the capped ones is sent later', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const a = agentBook();
+  const b = tmpBook();
+  const saved = process.env.SVRNTY_RECEIPTS_PER_POLL;
+  delete process.env.SVRNTY_RECEIPTS_PER_POLL;
+  try {
+    a.store.upsertContact(asContact(B));
+    const bs = b.open();
+    bs.upsertContact(asContact(A));
+    const ids: string[] = [];
+    for (const body of ['first', 'second', 'third']) {
+      ids.push((await send(A, B, a.store, relay.fetchImpl, body)).note_id);
+      await new Promise((r) => setTimeout(r, 5)); // distinct sent_at, so "oldest" is well-defined
+    }
+    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s.notes, 3);
+    assert.equal(s.receipts_sent, 1, 'the default cap is 1 per poll');
+    assert.equal(s.receipts_capped, 2);
+    assert.equal(s.receipts_failed + s.receipts_skipped, 0);
+    const sa = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(sa.delivered, 1);
+    assert.deepEqual(ids.map((id) => a.open().findOutboundNote(A.fp, id)!.delivered === true), [true, false, false], 'the OLDEST note got the receipt');
+    const again = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(again.receipts_sent + again.receipts_capped, 0, 'capped receipts are dropped, not retried (named limit)');
+  } finally {
+    if (saved === undefined) delete process.env.SVRNTY_RECEIPTS_PER_POLL;
+    else process.env.SVRNTY_RECEIPTS_PER_POLL = saved;
+    a.done();
+    b.done();
+  }
+});
+
+test('G-RO-9 cap: receiptsPerPoll 0 sends NONE (all counted capped); 2 sends the two oldest', async () => {
+  for (const [k, sent, capped] of [[0, 0, 3], [2, 2, 1]] as const) {
+    const [A, B] = [await mint(), await mint()];
+    const relay = mockRelay();
+    const a = agentBook();
+    const b = tmpBook();
+    try {
+      a.store.upsertContact(asContact(B));
+      const bs = b.open();
+      bs.upsertContact(asContact(A));
+      for (const body of ['x', 'y', 'z']) await send(A, B, a.store, relay.fetchImpl, body);
+      const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, receiptsPerPoll: k });
+      assert.equal(s.receipts_sent, sent, `k=${k}`);
+      assert.equal(s.receipts_capped, capped, `k=${k}`);
+      assert.equal((await inbox(relay, A)).length, sent, `k=${k}: exactly that many receipts reached A`);
+    } finally {
+      a.done();
+      b.done();
+    }
+  }
+});
+
+test('G-RO-9 env: SVRNTY_RECEIPTS_PER_POLL is digits only, 0-10; unset, empty or anything else → 1', () => {
+  const at = (v: string | undefined) => receiptsPerPoll(v === undefined ? {} : { SVRNTY_RECEIPTS_PER_POLL: v });
+  assert.equal(at(undefined), 1);
+  for (const [v, n] of [['0', 0], ['1', 1], ['7', 7], ['10', 10], ['05', 5]] as const) assert.equal(at(v), n, v);
+  for (const v of ['', '11', '99', '-1', '1.5', ' 2', '2 ', 'abc', '1e1', '0x2', '100']) assert.equal(at(v), 1, JSON.stringify(v));
+});
+
+// Apollo #3227 test gaps, riding G-RO-9 (Archie #3229).
+test('R3 (Apollo): findOutboundNote matches ONLY our outbound row: an inbound row with the same id never matches, even one holding a key', () => {
+  const store = new HeadlessStore();
+  const me = 'f'.repeat(64);
+  const other = 'e'.repeat(64);
+  const row = (over: Record<string, unknown>) => ({
+    note_id: 'note_shared', thread_id: 't1', direction: 'inbound', from_fingerprint: other, to_fingerprints: [me],
+    sent_at: '2026-11-01T00:00:00.000Z', body: 'x', participant_kind: 'agent', retention: { expires_at: null },
+    receipt_key: receiptKeyToHex(newReceiptKey()), ...over,
+  }) as unknown as Parameters<HeadlessStore['putNote']>[0];
+  store.putNote(row({})); // inbound, from them, WITH a key (a state the code never writes; the guard must not rely on that)
+  assert.equal(store.findOutboundNote(me, 'note_shared'), null, 'inbound from them: no match');
+  store.putNote(row({ note_id: 'note_mine_in', from_fingerprint: me })); // inbound, but stamped with OUR fingerprint
+  assert.equal(store.findOutboundNote(me, 'note_mine_in'), null, 'direction inbound: no match, whoever it is from');
+  store.putNote(row({ note_id: 'note_theirs_out', direction: 'outbound' })); // outbound, but not ours
+  assert.equal(store.findOutboundNote(me, 'note_theirs_out'), null, 'outbound from another identity: no match');
+  store.putNote(row({ note_id: 'note_ours', direction: 'outbound', from_fingerprint: me }));
+  assert.equal(store.findOutboundNote(me, 'note_ours')?.note_id, 'note_ours', 'control: our outbound row matches');
+});
+
+test('R8 (Apollo): a note that was NEVER deposited keeps no receipt key (no peer KEM key: fail-closed; or the relay refused the deposit)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const refusing = (async (url: string, init?: RequestInit) =>
+    String(url).includes('/envelope') ? new Response('{"error":"no"}', { status: 500 }) : relay.fetchImpl(url, init)) as unknown as typeof fetch;
+  const store = new HeadlessStore();
+  const noKem = await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: '', body: 'no kem', store, relayBase: RELAY, fetchImpl: relay.fetchImpl });
+  const refused = await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, body: 'refused', store, relayBase: RELAY, fetchImpl: refusing });
+  const ok = await sendNoteFromHeadless({ owner: owner(A), peerFingerprint: B.fp, peerPublicKeyArmored: B.pub, peerPqKemPublicKey: B.kem, body: 'ok', store, relayBase: RELAY, fetchImpl: relay.fetchImpl });
+  assert.deepEqual([noKem.deposited, refused.deposited, ok.deposited], [false, false, true]);
+  assert.equal(store.findOutboundNote(A.fp, noKem.note_id)?.receipt_key, undefined, 'fail-closed copy: no key');
+  assert.equal(store.findOutboundNote(A.fp, refused.note_id)?.receipt_key, undefined, 'refused deposit: no key');
+  assert.match(store.findOutboundNote(A.fp, ok.note_id)?.receipt_key ?? '', /^[0-9a-f]{64}$/, 'control: a deposited note keeps its key');
 });

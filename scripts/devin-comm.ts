@@ -710,8 +710,9 @@ async function main() {
       // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
       deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0,
       // layer 1: receipts verified → our outbound notes now Delivered / receipts this poll sent back to senders, refused or failed (NOT
-      // retried; e.g. past the relay's per-IP deposit limit), and skipped (counts only; Apollo F-RL: sent alone hid the failures)
-      delivered: consumed.delivered, receipts_sent: consumed.receipts_sent, receipts_failed: consumed.receipts_failed, receipts_skipped: consumed.receipts_skipped,
+      // retried; e.g. past the relay's per-IP deposit limit), skipped, and capped (past SVRNTY_RECEIPTS_PER_POLL, default 1: dropped, not
+      // retried; G-RO-9). Counts only; Apollo F-RL: sent alone hid the failures
+      delivered: consumed.delivered, receipts_sent: consumed.receipts_sent, receipts_failed: consumed.receipts_failed, receipts_skipped: consumed.receipts_skipped, receipts_capped: consumed.receipts_capped,
       // F1: sessions replaced by a contact's post-reset first frame, and journaled notes left out of the replay guard for being future-dated
       adopted, future_ignored: futureIgnored }));
     return;
