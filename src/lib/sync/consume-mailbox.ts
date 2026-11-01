@@ -266,8 +266,9 @@ export interface ConsumeDeps {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
-  /** Layer 3 hop trail (headless only): told, by the RELAY's envelope id, which envelopes were listed, dropped (recorded + acked) or
-   *  held. Omit = no-op (FE). It can never change what is consumed or acked: a throw from it is swallowed. */
+  /** Layer 3 hop trail (headless only): told, by the RELAY's envelope id, which envelopes were listed, dropped (recorded + acked: told only
+   *  after that envelope's ack returned 2xx) or held (told once its held row is durable). Omit = no-op (FE). It can never change what is
+   *  consumed or acked: a throw from it is swallowed. */
   onHop?: (hop: 'polled' | 'dropped' | 'held', envelopeId: string, reason?: DeadLetterReason) => void;
   adoptCounts?: AdoptCounter; // #720 R5: stored notes the session-adopt replay guard ignored for being future-dated (omit = adopt_future_ignored is absent)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
@@ -414,6 +415,10 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   // chunk is acked only after flush() succeeded. If flush() throws, NOTHING in that chunk is acked (it stays on the relay for a later poll)
   // and every staged record in it is re-counted from deadLettered to unrecorded. A sink without flush() (the FE) writes in record() as before.
   const stagedRecords = new Set<string>();
+  // Layer 3 R2 (Hypatia #3123, Flint #3124): a trail hop states an event, so it is written only once that event is TRUE. 'dropped' =
+  // recorded AND acked: queued when the row is staged, told only after ITS envelope's ack chunk returns 2xx (after the flush, so the row is
+  // durable). A failed store save / flush / ack leaves the envelope on the relay and writes no 'dropped'. 'held' is told after settle().
+  const pendingDrop = new Map<string, DeadLetterReason>();
   const flushAckChunk = async (chunk: string[]) => {
     if (chunk.length === 0 || deps.owner.cycle?.ended) return;
     const staging = deps.deadLetter?.flush;
@@ -452,6 +457,12 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     if (ackRes.ok) {
       summary.acked += chunk.length;
       txn?.acked(chunk.flatMap((id) => keyOf(id) ?? []));
+      for (const id of chunk) {
+        const r = pendingDrop.get(id);
+        if (r === undefined) continue;
+        pendingDrop.delete(id);
+        hop(deps, 'dropped', id, r); // R2: recorded (flushed above) and acked: now it is true
+      }
     }
   };
 
@@ -514,7 +525,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
         summary.deadLettered++;
         if (sink.flush) stagedRecords.add(n.id);
         bump('not-in-book');
-        hop(deps, 'dropped', n.id, 'not-in-book');
+        pendingDrop.set(n.id, 'not-in-book'); // R2: told after its ack
       } catch (err) {
         if (i !== -1) ids.splice(i, 1);
         summary.unrecorded++;
@@ -560,7 +571,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
         if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
         bump(item.need.reason);
         toAck.push(item.id);
-        hop(deps, 'dropped', item.id, item.need.reason);
+        pendingDrop.set(item.id, item.need.reason); // R2: told after its ack
       } catch (err) {
         summary.unrecorded++;
         console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
@@ -711,6 +722,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   // Held envelopes (kept on the relay for retry): each gets a record so its FIRST-SEEN time survives across polls, then the keep bound
   // applies (<= 50 and <= 7 days; the OLDEST are released). A released envelope's record is already committed, so it is acked now.
   const stillHeld: typeof heldNow = [];
+  const pendingHeld: typeof heldNow = [];
   if (sink && !deps.owner.cycle?.ended) {
     const seen: Array<{ envelope_id: string; first_seen: string; group: string }> = [];
     const byId = new Map(heldNow.map((h) => [h.id, h]));
@@ -722,7 +734,8 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
       try {
         const saved = await sink.record(row);
         idByKey.set(key, h.id);
-        hop(deps, 'held', h.id, h.reason);
+        if (sink.flush) pendingHeld.push(h); // R2: a STAGED held row is durable only after settle(); told then
+        else hop(deps, 'held', h.id, h.reason); // a sink without staging wrote it in record()
         // #720 r2 (Flint, B1 for holds): an admitted contact's LOCAL frame is bounded only against that contact's own; 'missing-key' holds
         // (outsider-depositable while this device has no kem secret) share their own group. A group may only push out its own.
         const group = h.reason === 'missing-key' ? 'missing-key' : `${h.reason}:${(h.fp ?? '').toLowerCase()}`; // each ratchet class is bounded per contact, apart from the others
@@ -751,6 +764,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
         }
       }
       toAck.push(id);
+      if (h) pendingDrop.set(id, h.reason); // R2: a release past the keep bound is recorded + acked, so its trail says dropped (after its ack)
       summary.released++;
       bump(h?.reason ?? 'missing-key'); // a released LOCAL ratchet frame counts as 'ratchet-local', apart from the sender-side 'ratchet-unopenable'
     }
@@ -780,6 +794,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   else if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
     try {
       await sink.settle();
+      for (const h of pendingHeld) hop(deps, 'held', h.id, h.reason); // R2: the held rows are written now
     } catch {
       /* retention is housekeeping; it must not affect consume or ack (a staged row it could not write is flushed before its ack below) */
     }
