@@ -38,7 +38,8 @@ import { deriveOwnerHybridSecrets } from '@/lib/crypto/living-book-receive';
 import type { LivingBookHybridSecrets } from '@/lib/crypto/living-book-sleeve';
 import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore } from './headless-store';
-import { DECRYPTED_HOP, type Hop, peerLabel, recordHop } from './hop-trail';
+import { DECRYPTED_HOP, type Hop, hopIdsSeen, peerLabel, recordHop } from './hop-trail';
+import type { DeadLetterReason } from '@/lib/sync/dead-letter';
 import type { NoteWireV0, NoteRecord, NoteThread, ParticipantKind } from '@/lib/messaging/types';
 
 /** The headless owner's unlocked key material — same shape the consume core signs poll/ack with. */
@@ -183,13 +184,17 @@ export interface ReceiptSendSummary {
  */
 export async function sendHeadlessReceipts(store: HeadlessStore, candidates: ReceiptCandidates, opts: HeadlessOpts = {}): Promise<ReceiptSendSummary> {
   const out: ReceiptSendSummary = { sent: 0, skipped: 0, failed: 0 };
+  const persistedSeen = hopIdsSeen(opts.hopTrailDir, 'persisted'); // G-RO-1 n-b (Apollo): a redelivered stored note writes 'persisted' once
   const due: NoteWireV0[] = [];
   const duePeer: Array<string | undefined> = [];
   for (const wire of candidates.values()) {
     const held = store.listNotes().find((n) => n.direction === 'inbound' && n.note_id === wire.note_id && n.from_fingerprint === wire.from_fingerprint);
     const durable = !!held && held.body === wire.body && held.thread_id === wire.thread_id && held.sent_at === (wire.sent_at || held.sent_at);
     const peer = durable ? trailPeer(store, wire.from_fingerprint, held!.participant_kind) : undefined; // the SENDER's declared kind
-    if (durable) recordHop(opts.hopTrailDir, 'persisted', { note_id: wire.note_id }, peer);
+    if (durable && !persistedSeen.has(wire.note_id)) {
+      persistedSeen.add(wire.note_id);
+      recordHop(opts.hopTrailDir, 'persisted', { note_id: wire.note_id }, peer);
+    }
     if (!durable || !admitContact(store.getContactByFingerprint(wire.from_fingerprint))) {
       out.skipped++;
       continue;
@@ -278,7 +283,17 @@ export async function buildHeadlessConsumeDeps(owner: HeadlessOwner, store: Head
       return sendHeadlessReceipts(store, receipts, opts);
     },
     // layer 3: listed / dropped / held, by the relay's envelope id (a reason outside the fixed lists is refused by recordHop)
-    onHop: trail ? (h, id, reason) => void recordHop(trail, (h === 'polled' ? 'polled' : `${h}:${reason ?? ''}`) as Hop, { envelope_id: id }) : undefined,
+    // G-RO-1 (Apollo #3155 F-A): 'polled' once per envelope id (the trail's ids, read once per poll), so a backlog listed on every poll
+    // can't evict a stalled note's own rows from the 5 MB cap. dropped:/held: are written once by construction (an id leaves after it).
+    onHop: trail
+      ? ((polledSeen) => (h: 'polled' | 'dropped' | 'held', id: string, reason?: DeadLetterReason) => {
+          if (h === 'polled') {
+            if (polledSeen.has(id)) return;
+            polledSeen.add(id);
+          }
+          void recordHop(trail, (h === 'polled' ? 'polled' : `${h}:${reason ?? ''}`) as Hop, { envelope_id: id });
+        })(hopIdsSeen(trail, 'polled'))
+      : undefined,
   };
 }
 
