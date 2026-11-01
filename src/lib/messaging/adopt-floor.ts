@@ -46,6 +46,8 @@ export function raisedFloor(existingIso: string | undefined, candidateIso: unkno
   const c = parseSentAtMs(candidateIso);
   if (!Number.isFinite(c) || !Number.isFinite(nowMs)) return null; // an unusable time is never a floor
   if (c > nowMs + FUTURE_SLACK_MS) return null;
-  const e = existingIso === undefined ? NaN : parseSentAtMs(existingIso);
+  // a STORED floor beyond now + slack is as good as absent (the read side ignores it), so a genuine frame replaces it (Athena #3315: heals a row written by any other path)
+  const e0 = existingIso === undefined ? NaN : parseSentAtMs(existingIso);
+  const e = e0 > nowMs + FUTURE_SLACK_MS ? NaN : e0;
   return Number.isFinite(e) && e >= c ? null : (candidateIso as string);
 }

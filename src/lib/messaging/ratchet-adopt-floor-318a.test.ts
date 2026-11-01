@@ -199,6 +199,8 @@ test('F6 the pure pieces: the floor only rises and never beyond now + slack, the
   assert.equal(raisedFloor(undefined, at(FUTURE_SLACK_MS), NOW), at(FUTURE_SLACK_MS), 'now + slack exactly is still storable');
   assert.equal(raisedFloor(undefined, at(FUTURE_SLACK_MS + 1), NOW), null, 'one ms beyond now + slack is not');
   assert.equal(raisedFloor(a, at(10 * 365 * 86_400_000), NOW), null, 'a far-future candidate never replaces a real floor'); assert.equal(raisedFloor(undefined, a, NaN), null);
+  assert.equal(raisedFloor(at(10 * 365 * 86_400_000), b, NOW), b, 'a STORED far-future floor is treated as absent, so a genuine frame replaces it (Athena #3315)');
+  assert.equal(raisedFloor(at(FUTURE_SLACK_MS), b, NOW), null, 'but a stored floor within the slack still counts');
   const fp = 'ab12'.repeat(16);
   assert.deepEqual(parseAdoptFloorRow({ fp, sent_at: a }), { fp, sent_at: a });
   for (const bad of [null, 5, [], {}, { fp, sent_at: a, extra: 1 }, { fp: fp.toUpperCase(), sent_at: a }, { fp: 'xyz', sent_at: a }, { fp, sent_at: 'not a time' }, { fp }, { sent_at: a }]) assert.equal(parseAdoptFloorRow(bad), null, JSON.stringify(bad));
