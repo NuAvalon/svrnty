@@ -298,7 +298,7 @@ export interface ConsumeDeps {
   // #720 T2b: when a held ratchet-DESYNC envelope is retried (every poll for its first hour, then hourly). Omit = retried every poll.
   holdBackoff?: HoldBackoff;
   chunk?: ChunkTxn; // #712: one store write per ack chunk, written before the chunk is acked; omit = a write per mutation (as before)
-  outOfTime?: () => boolean; // #712: checked before each envelope; true = stop, commit + ack what was consumed, leave the rest (`deferred`)
+  outOfTime?: () => boolean; // #712: checked before each envelope of the main pass and once per heal round (L-318b); true = stop, commit + ack what was consumed, leave the rest (`deferred`)
 }
 
 export interface ConsumeSummary {
@@ -736,6 +736,9 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
 
   // T4: retry the held frames (desync and local) of every contact whose note was stored this poll. A retried frame that opens is consumed as
   // usual and may itself heal the next one, so go round until a round frees nothing. Bounded: each round only retries what is still held.
+  // L-318b: the time budget (`outOfTime`) is checked once per ROUND, in the loop condition below, not per envelope in the inner `for`. A round
+  // that has started therefore finishes every retry in it unless the owner cycle ends (`'ended'`), so the budget can be overrun by up to one
+  // round's worth of frames.
   for (let round = 0; healed.size > 0 && round <= envelopes.length && !deps.owner.cycle?.ended && !deps.outOfTime?.(); round++) { // `round` cap: termination never rests on `freed` alone
     const retry = heldNow.filter((h) => h.reason !== 'missing-key' /* carries no fp today; the check keeps it out if one ever does */ && h.fp !== undefined && healed.has(h.fp.toLowerCase()));
     if (retry.length === 0) break;
