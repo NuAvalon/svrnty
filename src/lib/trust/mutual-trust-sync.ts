@@ -769,6 +769,10 @@ export async function respondToTrustSync(
   // allowlist (Flint D1/D2).
   const fps = await getLayerFingerprints(deps, layer);
   if (fps.length === 0) return results;
+  // A set over the bucket cannot be padded, and sending it raw (or cut to fit) is not an option: raw tells the peer and the relay exactly how
+  // many contacts we share, and a cut set would be stored by the initiator as the whole result (applyMutualResult replaces it). The initiator
+  // side refuses the same set (gateError in the resync initiate), so the responder does not answer either.
+  if (fps.length > PSI_BLINDED_BUCKET_N) return results;
   const consentSet = new Set(fps);
 
   for (const session of pending) {
@@ -798,8 +802,10 @@ export async function respondToTrustSync(
     // Re-blind initiator's set with our key
     const reblindedInitiator = reblindSet(initiatorBlinded, keypair.privateKey);
 
-    // Blind our own set (responder computes no intersection — no fpOrder needed here).
-    const ourBlinded = blindFingerprints(fps, keypair.privateKey);
+    // Blind our own set and pad it to the fixed bucket, the same way the initiator does, so the peer and the relay see N entries whatever
+    // our contact count is. The responder computes no intersection, so the padded fp order is not kept.
+    const ours = blindFingerprintsWithOrder(fps, keypair.privateKey);
+    const ourBlinded = padBlindedSet(ours.blinded, ours.fpOrder, shuffle, keypair.privateKey).blinded;
 
     // Submit response
     const ok = await psiRespond(
