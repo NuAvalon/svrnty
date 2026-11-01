@@ -1,6 +1,7 @@
 // Thread Field helpers — people rail + clocks. No unread counts (I-3), no presence (I-6).
 
 import type { NoteThread } from '@/lib/messaging';
+import { readLastActivity } from '@/lib/messaging/thread-activity';
 import { NOTES_BOUNDS } from './notes-copy';
 import { boundDisplayText, formatFingerprintShort } from './notes-text';
 
@@ -97,9 +98,12 @@ export function mergeFieldPeople(args: {
   previews: Record<string, string>;
   extraFp?: string;
   extraName?: string;
+  /** The clock the list is read at (tests); defaults to now. */
+  nowMs?: number;
 }): FieldPerson[] {
   const seen = new Set<string>();
   const out: FieldPerson[] = [];
+  const nowMs = args.nowMs ?? Date.now();
 
   for (const thread of args.threads) {
     if (thread.kind !== 'direct') continue;
@@ -112,7 +116,7 @@ export function mergeFieldPeople(args: {
       name: displayNameFor(fp, args.names, fromThread),
       threadId: thread.thread_id,
       preview: args.previews[thread.thread_id] || '',
-      lastAt: thread.last_activity_at,
+      lastAt: readLastActivity(thread.last_activity_at, nowMs), // a value ahead of now + slack never shows as a far-future time
       sendable: args.sendable.has(fp),
     });
   }
@@ -155,7 +159,13 @@ export function sortFieldPeople(people: FieldPerson[]): FieldPerson[] {
     const aActive = a.lastAt ? 1 : 0;
     const bActive = b.lastAt ? 1 : 0;
     if (aActive !== bActive) return bActive - aActive;
-    if (a.lastAt && b.lastAt && a.lastAt !== b.lastAt) return b.lastAt.localeCompare(a.lastAt);
+    if (a.lastAt && b.lastAt && a.lastAt !== b.lastAt) {
+      // As NUMBERS: an older build can have stored an offset (+05:00) or no-millisecond string, which sorts hours out of place as text.
+      const am = Date.parse(a.lastAt);
+      const bm = Date.parse(b.lastAt);
+      if (Number.isFinite(am) && Number.isFinite(bm) && am !== bm) return bm - am;
+      if (am !== bm) return Number.isFinite(bm) ? 1 : Number.isFinite(am) ? -1 : b.lastAt.localeCompare(a.lastAt);
+    }
     return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
   });
 }

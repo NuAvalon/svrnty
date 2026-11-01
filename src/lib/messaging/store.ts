@@ -6,6 +6,7 @@ import type { NoteRecord, NoteThread, RingChannel } from './types';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { isAllowedSettingsPrefix, isAllowedSettingsRowKey } from './settings-row-keys';
+import { needsLastActivityHeal, healedLastActivity, activityMs } from './thread-activity';
 
 const DB_NAME = 'svrnty-notes';
 const DB_VERSION = 2;
@@ -108,6 +109,34 @@ async function txGetAll<T>(store: string): Promise<T[]> {
     const req = tx.objectStore(store).getAll();
     req.onsuccess = () => resolve((req.result as T[]) || []);
     req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * Compare-and-swap on the row's ciphertext, as ONE readwrite transaction: get the row, and put the new one ONLY IF the stored blob is still exactly the
+ * one the caller decrypted (same iv AND same ciphertext). Every encryptJson draws a fresh iv, so ANY write since the caller's read (a delete, an
+ * arriving note writing its own time, a rename) makes the compare fail and nothing is written; a plain "put if present" would still write back the
+ * whole record decrypted before the await and roll such a write back. There is no await between the get and the put (both run inside onsuccess), and
+ * IndexedDB serialises readwrite transactions on a store. Returns whether it wrote. Callers must encrypt BEFORE calling: WebCrypto cannot run inside an
+ * IndexedDB transaction without the transaction auto-committing.
+ */
+async function txPutIfUnchanged(store: string, key: string, expected: EncryptedBlob, value: unknown): Promise<boolean> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    let wrote = false;
+    const existing = os.get(key);
+    existing.onsuccess = () => {
+      const current = existing.result as { enc?: EncryptedBlob } | undefined;
+      if (current?.enc && current.enc.iv === expected.iv && current.enc.ciphertext === expected.ciphertext) {
+        os.put(value);
+        wrote = true;
+      }
+    };
+    tx.oncomplete = () => resolve(wrote);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 
@@ -241,7 +270,46 @@ export async function listThreads(): Promise<NoteThread[]> {
       // corrupt / wrong key — skip
     }
   }
-  return out.sort((a, b) => b.last_activity_at.localeCompare(a.last_activity_at));
+  const now = Date.now();
+  const healed: NoteThread[] = [];
+  for (const thread of out) healed.push(await healPinnedThread(thread, now));
+  return healed.sort((a, b) => activityMs(b.last_activity_at, now) - activityMs(a.last_activity_at, now));
+}
+
+/**
+ * A thread pinned in the future by an older rule gets a fixed, lower last_activity_at written ONCE (thread-activity.ts: healedLastActivity), after which
+ * ordinary activity overtakes it. It only ever lowers a value. The row is re-read first: a note that arrived since this list was read has already
+ * written its own clamped time, and then there is nothing to heal and nothing to overwrite. If a note lands between that re-read and the write, the
+ * stale value can win briefly; the next note in the thread writes its own clamped time and corrects it. Never throws: on any failure the thread comes back
+ * as it was read, and readLastActivity still bounds how it sorts.
+ */
+async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<NoteThread> {
+  if (!needsLastActivityHeal(thread.last_activity_at, nowMs)) return thread;
+  try {
+    const row = await txGet<ThreadRow>('threads', thread.thread_id);
+    // The row is GONE: the conversation was deleted after this list was read (deleteThread removes the notes first and the row last). A missing row is
+    // never written: the thread stays in THIS list as read and is gone on the next load. (A change that lands AFTER this check is caught by the
+    // compare-and-swap below.)
+    if (!row) return thread;
+    const current = await decryptJson<NoteThread>(row.enc);
+    let sentAts: string[] | null = null;
+    try {
+      sentAts = (await listNotesForThread(thread.thread_id)).map((n) => n.sent_at);
+    } catch {
+      sentAts = null; // notes not at hand: healedLastActivity falls back to now + slack
+    }
+    const value = healedLastActivity(current.last_activity_at, sentAts, nowMs);
+    if (value === null) return current;
+    const next: NoteThread = { ...current, last_activity_at: value };
+    // Encrypt first, then compare-and-swap in ONE transaction against the ciphertext we decrypted: the row can change between the re-read above and this
+    // write (a delete, or a note writing its own time), and a plain put would bring a deleted conversation back or roll that write back. If anything
+    // wrote since, the heal is skipped; the next load re-checks, and readLastActivity bounds the sort meanwhile.
+    const enc = await encryptJson(next);
+    const wrote = await txPutIfUnchanged('threads', thread.thread_id, row.enc, { thread_id: thread.thread_id, enc } satisfies ThreadRow);
+    return wrote ? next : thread;
+  } catch {
+    return thread;
+  }
 }
 
 export async function putNote(note: NoteRecord): Promise<void> {

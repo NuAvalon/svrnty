@@ -17,3 +17,56 @@ export function nextLastActivity(prev: string | undefined, sentAt: string, nowMs
   const kept = Number.isFinite(before) ? Math.min(before, ceiling) : -Infinity;
   return new Date(Math.max(kept, candidate)).toISOString();
 }
+
+// ── Healing a thread that is already pinned in the future ────────────────────────────────────────────────────────────────────────────────
+// nextLastActivity clamps at RECEIPT, so a thread pinned by the older overwrite rule (or by a note dated far ahead before the clamp existed) keeps its
+// stored future value until a note arrives IN that thread. A value that is only clamped when READ moves with the clock, so the thread would stay above
+// every thread with real activity forever. Healing writes a fixed, lower value ONCE, after which ordinary activity overtakes it.
+
+/** True when the stored value is parseable and later than now + the allowed slack. An unparseable value is not healed (it sorts last, see readLastActivity). */
+export function needsLastActivityHeal(stored: string, nowMs: number): boolean {
+  const t = Date.parse(stored);
+  return Number.isFinite(t) && t > nowMs + ACTIVITY_FUTURE_SLACK_MS;
+}
+
+/**
+ * The value to store for a pinned thread, or null when it needs no heal. It only ever LOWERS a value.
+ *  - notes at hand with at least one plausible sent_at (not later than now + slack): the newest of those, so the thread lands where its real
+ *    messages put it;
+ *  - notes at hand but none plausible (the pinning note is the only one): no honest anchor exists, so "now", the moment this was noticed;
+ *    a thread's own created_at is NOT used, because it is copied from the first note's sender-chosen sent_at;
+ *  - notes not available: now + slack, the ceiling that every other path already clamps to.
+ */
+export function healedLastActivity(stored: string, noteSentAts: readonly string[] | null, nowMs: number): string | null {
+  if (!needsLastActivityHeal(stored, nowMs)) return null;
+  const ceiling = nowMs + ACTIVITY_FUTURE_SLACK_MS;
+  let value: number;
+  if (noteSentAts === null) {
+    value = ceiling;
+  } else {
+    const plausible = noteSentAts.map((s) => Date.parse(s)).filter((t) => Number.isFinite(t) && t <= ceiling);
+    value = plausible.length > 0 ? Math.max(...plausible) : nowMs;
+  }
+  return new Date(Math.min(value, Date.parse(stored))).toISOString();
+}
+
+/**
+ * The time to SORT and SHOW a thread by: the stored value, held to now + slack, and an unreadable value sorts last. This is the backstop for a heal
+ * that could not be written; it never changes what is stored.
+ */
+export function readLastActivity(stored: string, nowMs: number): string {
+  const t = Date.parse(stored);
+  if (!Number.isFinite(t)) return new Date(0).toISOString();
+  const ceiling = nowMs + ACTIVITY_FUTURE_SLACK_MS;
+  return t <= ceiling ? stored : new Date(ceiling).toISOString();
+}
+
+/**
+ * The sort key for a thread: the bounded time as a NUMBER. Comparing the ISO strings is only right when every stored value is a UTC string with the same
+ * shape; a value written by an older build can carry an offset (+05:00) or no milliseconds, and as text it can sort hours out of place. readLastActivity
+ * always returns a string Date.parse can read (the stored value when it parses, else the epoch or the ceiling), so an unreadable stored value is 0 and
+ * sorts last.
+ */
+export function activityMs(stored: string, nowMs: number): number {
+  return Date.parse(readLastActivity(stored, nowMs));
+}
