@@ -132,6 +132,18 @@ test('poll-json: a CLEAN empty poll says rejected:null and prints no refusal; th
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('poll-json: ALL four receipt counters are printed (Apollo F-RL, Hypatia #3228): receipts_sent alone would hide failures', async () => {
+  const dir = await agentDir();
+  try {
+    await withRelay(() => ({ status: 200, body: '[]' }), async (relay) => {
+      const r = await runCli(['poll-json'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.equal(r.code, 0, r.err);
+      const s = summaryOf(r.out);
+      for (const k of ['receipts_sent', 'receipts_failed', 'receipts_skipped', 'receipts_capped']) assert.equal(s[k], 0, `${k} is printed (0 on an empty poll)`);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('poll-json: an envelope that arrives but cannot be opened shows as polled:1 dropped:1, NOT as a silent "journaled 0"', async () => {
   const dir = await agentDir();
   try {
