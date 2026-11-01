@@ -187,9 +187,21 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
   };
 }
 
+// #712: consume stops between envelopes after this long, commits + acks what it consumed, and leaves the rest for the next pass, so a
+// deep backlog drains across passes instead of dying at the watchdog (the ward's POLL_TIMEOUT_S, 60-600 s; Weft cells run 55 s).
+// Default 40 s fits under the tightest of those with room for start-up. SVRNTY_CONSUME_BUDGET_MS overrides: digits only, 1 s-600 s.
+const CONSUME_BUDGET_MS = (() => {
+  const v = process.env.SVRNTY_CONSUME_BUDGET_MS ?? '';
+  return /^[0-9]{1,6}$/.test(v) ? Math.min(600_000, Math.max(1_000, Number(v))) : 40_000;
+})();
+
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
   // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
-  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY, deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}` });
+  const deps = await buildHeadlessConsumeDeps(owner, store, {
+    relayBase: RELAY,
+    budgetMs: CONSUME_BUDGET_MS,
+    deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
+  });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }
@@ -790,7 +802,9 @@ async function main() {
       // #720 counters (counts only; the ward allowlist in devin_quarantine names exactly these keys). `lost` = per-reason consumed losses
       // (headless has no dead-letter sink, so deadLettered/unrecorded/released stay 0 here); opened_* = which leg of the dual-read opened.
       held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
-      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical }));
+      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical,
+      // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
+      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0 }));
     return;
   }
 
