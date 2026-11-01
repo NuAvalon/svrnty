@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 : "${PTAU:?set PTAU=/path/to/ppot_0080_14.ptau}"
 S=node_modules/.bin/snarkjs
-[ -s build/ptau_prepared.ptau ] || $S powersoftau prepare phase2 "$PTAU" build/ptau_prepared.ptau >/dev/null
+[ -s build/ptau_prepared.ptau ] || { $S powersoftau prepare phase2 "$PTAU" build/ptau_prepared.ptau.tmp >/dev/null && mv build/ptau_prepared.ptau.tmp build/ptau_prepared.ptau; }
 $S groth16 setup build/slotbind.r1cs build/ptau_prepared.ptau build/z0.zkey >/dev/null
 # entropy from the OS via stdin, never on a command line (Flint ceremony hygiene)
 { head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; } | $S zkey contribute build/z0.zkey build/z1.zkey --name=throwaway >/dev/null
