@@ -3446,6 +3446,14 @@ def _psi_sinkhole_commit(db: sqlite3.Connection, blinded_set=None):
     db.commit()
 
 
+def _psi_sinkhole_touch(db: sqlite3.Connection):
+    """One ring-buffer write with no commit: the stand-in for a write that did not happen, so a request that changed
+    nothing still looks like one that did (the caller commits once, as the genuine path does)."""
+    import secrets
+    db.execute("INSERT OR REPLACE INTO psi_sinkhole (slot, blob, created_at) VALUES (?, ?, ?)",
+               (secrets.randbelow(_PSI_SINKHOLE_RING), "{}", now_iso()))
+
+
 # ── PQ-wrap PSI helpers (single-shell seal-TO-satellite; the satellite READS the blinders) ──────
 def _open_psi_sealed(body) -> dict:
     """Open a PQ-wrapped PSI request body (sealed to THIS satellite's key) → inner JSON dict.
@@ -3691,15 +3699,14 @@ async def psi_get_blinded(session_id: str, body: dict):
         if not verify_request_signature(fingerprint, signature, db):
             raise HTTPException(status_code=403, detail="Invalid signature — ownership proof required")
 
+        # Only the responder may fetch the initiator's blinded set. The role check is part of the lookup so that "not
+        # your session" and "no such session" are one answer.
         session = db.execute(
-            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending'",
-            (session_id,)
+            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending' AND responder = ?",
+            (session_id, fingerprint)
         ).fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="PSI session not found or expired")
-
-        if session["responder"] != fingerprint:
-            raise HTTPException(status_code=403, detail="Only the responder can access the initiator's blinded set")
 
         # Register the responder's ephemeral response_pub (first session touch) so this response
         # — and any later responder-facing one — can be sealed back. Idempotent (retry re-sets same).
@@ -3742,15 +3749,13 @@ async def psi_respond(session_id: str, body: dict):
         if not verify_request_signature(req.responder_fingerprint, req.signature, db):
             raise HTTPException(status_code=403, detail="Invalid signature — prove you own this key")
 
+        # The designated-responder check is part of the lookup (see /blinded): not-yours and not-there are one answer.
         session = db.execute(
-            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending'",
-            (session_id,)
+            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending' AND responder = ?",
+            (session_id, req.responder_fingerprint)
         ).fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="PSI session not found or expired")
-
-        if session["responder"] != req.responder_fingerprint:
-            raise HTTPException(status_code=403, detail="Not the designated responder")
 
         # Store responder's data
         db.execute(
@@ -3848,7 +3853,14 @@ async def psi_cancel(
     fingerprint: str,
     x_signature: Optional[str] = Header(None, alias="X-Signature"),
 ):
-    """Cancel a PSI session. Either party can cancel."""
+    """Cancel a PSI session. Either party can cancel.
+
+    Idempotent for any caller who proves who they are: the answer is the same 200 {"status": "cancelled"} whether the
+    session existed, never existed, or belongs to someone else, so the response does not depend on what the id names.
+    The delete is scoped to the caller's own sessions in the one statement, so a non-party deletes nothing.
+    A cancel that deleted nothing still pays the same write profile as one that did (one DELETE, one INSERT, one
+    commit), the same way the sinkhole mirrors a genuine /initiate.
+    """
     init_psi_tables()
     db = get_db()
     try:
@@ -3856,18 +3868,14 @@ async def psi_cancel(
         if not verify_request_signature(fingerprint, x_signature, db):
             raise HTTPException(status_code=403, detail="Invalid signature — X-Signature header required")
 
-        session = db.execute(
-            "SELECT initiator, responder FROM psi_sessions WHERE session_id = ?",
-            (session_id,)
-        ).fetchone()
-        if not session:
-            raise HTTPException(status_code=404, detail="PSI session not found")
-
-        if fingerprint not in (session["initiator"], session["responder"]):
-            raise HTTPException(status_code=403, detail="Not a party to this session")
-
-        db.execute("DELETE FROM psi_sessions WHERE session_id = ?", (session_id,))
-        audit(db, "psi_cancelled", fingerprint, f"session={session_id}")
+        deleted = db.execute(
+            "DELETE FROM psi_sessions WHERE session_id = ? AND (initiator = ? OR responder = ?)",
+            (session_id, fingerprint, fingerprint)
+        ).rowcount
+        if deleted:
+            audit(db, "psi_cancelled", fingerprint, f"session={session_id}")
+        else:
+            _psi_sinkhole_touch(db)
         db.commit()
 
         return {"status": "cancelled", "session_id": session_id}
