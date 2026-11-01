@@ -469,6 +469,9 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
       summary.notes--;
       summary.dropped++;
       if (!n) {
+        // Flint #2829 (a): UNREACHABLE by construction (commit() refuses only keys whose note this pass applied). Loud if it ever fires:
+        // there is nothing to record a row from, so it is counted as before. Counts only: never the key or an envelope id.
+        console.error('[return-channel] UNREACHABLE: a chunk commit refused a key with no note in this pass (counted not-in-book, no row)');
         bump('not-in-book');
         continue;
       }

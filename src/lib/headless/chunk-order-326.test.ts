@@ -300,3 +300,44 @@ test('O4 C2 x #713: the refused note\'s row cannot be staged → THAT envelope i
     book.done();
   }
 });
+
+
+const UNREACHABLE_MARK = 'UNREACHABLE: a chunk commit refused a key with no note';
+function captureErrors<T>(fn: () => Promise<T>): Promise<{ out: T; errors: string[] }> {
+  const real = console.error;
+  const errors: string[] = [];
+  console.error = (...a: unknown[]) => {
+    errors.push(a.map(String).join(' '));
+  };
+  return fn().then((out) => ({ out, errors }), (e) => { throw e; }).finally(() => { console.error = real; });
+}
+
+test('O5 (Flint #2829 a) the refused-key-with-no-note branch is LOUD if it ever fires: one console.error, counts only (no key, no id)', async () => {
+  const [Y, B] = [await mint(), await mint()];
+  const book = tmpBook();
+  try {
+    const relay = mockRelay();
+    const seed = book.open();
+    seed.upsertContact(asContact(Y));
+    await sendN(Y, B, 1, relay.fetchImpl, 'from-y');
+    const deps = await buildHeadlessConsumeDeps(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    const real = deps.chunk!.commit.bind(deps.chunk);
+    deps.chunk!.commit = (live) => ({ refused: [...real(live).refused, 'k-no-such-note-in-this-pass'] }); // forced: cannot happen for real
+    const { errors } = await captureErrors(() => consumeInboundContactUpdates(deps));
+    const hits = errors.filter((e) => e.includes(UNREACHABLE_MARK));
+    assert.equal(hits.length, 1);
+    assert.ok(!hits[0].includes('k-no-such-note-in-this-pass'), 'the key is never logged');
+  } finally {
+    book.done();
+  }
+});
+
+test('O6 (Flint #2829 a) ...and it is UNREACHABLE on the real C2 path: a sender blocked mid-chunk never trips it', async () => {
+  const { out, errors } = await captureErrors(() => blockedMidChunk());
+  try {
+    assert.equal(out.s.lost['not-in-book'], 1, 'the real C2 refusal happened (precondition)');
+    assert.equal(errors.filter((e) => e.includes(UNREACHABLE_MARK)).length, 0);
+  } finally {
+    out.book.done();
+  }
+});
