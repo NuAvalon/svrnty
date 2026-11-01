@@ -540,6 +540,48 @@ test('completion EXPIRE: attempts past MAX → cleared (logical-clock expiry, no
   assert.equal(writes[0].updates.psi_session_id, undefined); // cleared — responder never answered within TTL
 });
 
+// What a user sees of a contact's circle is `disclosed_circle`. A session that is never answered (the peer is offline, or has gone silent
+// on purpose) must run out its attempts and clear the SESSION fields, and must leave the stored result exactly as the last good run left it.
+// This store APPLIES updates (the recording fakeStore above does not), so the assertions are about the record, not just the writes.
+function applyingStore(contacts: ContactRecord[]): { store: KnowOverlayStore; writes: Array<Partial<ContactRecord>> } {
+  const writes: Array<Partial<ContactRecord>> = [];
+  return {
+    writes,
+    store: {
+      getAllContacts: async () => contacts,
+      updateContact: async (id, updates) => {
+        writes.push(updates);
+        const i = contacts.findIndex((c) => c.id === id);
+        contacts[i] = { ...contacts[i], ...updates } as ContactRecord;
+      },
+    } as KnowOverlayStore,
+  };
+}
+
+test('completion EXPIRE keeps the stored result: 14 unanswered passes clear the session and never touch disclosed_circle', async () => {
+  const circle = ['fp-x', 'fp-y'];
+  const contacts = [rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, disclosed_circle: [...circle], psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0 })];
+  const { store, writes } = applyingStore(contacts);
+  for (let i = 0; i < 14; i++) {
+    await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, notReadyFn);
+    assert.deepEqual(contacts[0].disclosed_circle, circle, `pass ${i}: the shown result is unchanged`);
+  }
+  assert.equal(contacts[0].psi_session_id, undefined, 'the session did expire (so this test reaches the expiry branch)');
+  assert.ok(writes.length >= 13, 'every pass up to and including the expiry wrote');
+  assert.ok(writes.every((u) => !('disclosed_circle' in u)), 'no write on the unanswered path mentions disclosed_circle');
+});
+
+test('completion EXPIRE by THROWN completions keeps the stored result too (the catch path has its own clear)', async () => {
+  const circle = ['fp-x', 'fp-y'];
+  const thrower: CompleteTrustSyncFn = async () => { throw new TypeError('boom'); };
+  const contacts = [rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, disclosed_circle: [...circle], psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0 })];
+  const { store, writes } = applyingStore(contacts);
+  for (let i = 0; i < 14; i++) await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
+  assert.equal(contacts[0].psi_session_id, undefined, 'the session did expire');
+  assert.deepEqual(contacts[0].disclosed_circle, circle, 'the shown result is unchanged');
+  assert.ok(writes.every((u) => !('disclosed_circle' in u)), 'no write on the thrown path mentions disclosed_circle');
+});
+
 test('completion FORWARD-RETRACT: de-consented peer → session + disclosed_circle cleared, never completed', async () => {
   const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: false, psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_fp_order: ['a'], disclosed_circle: ['x', 'y'] })]);
   let completeCalled = false;

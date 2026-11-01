@@ -625,3 +625,60 @@ test('#737 NEG (Apollo #3370 survivor 3): an envelope whose id or blob is not a 
   // and two different non-string blobs can never collide into one key that dedupes the second against the first
   assert.equal(envelopeDedupeKey(RELAY, mbx, 'env_1', 1), envelopeDedupeKey(RELAY, mbx, 'env_1', 2), 'both null: neither is a key');
 });
+
+test('#358: one poll derives each envelope\'s dedupe key ONCE — the blob is read exactly 4x, not 5', async () => {
+  // Apollo #3370's whole point: envelopeDedupeKey SHA256s the whole blob (~0.5 ms / 4 KB), so the upfront
+  // pass fills keyByEnv and handle() MUST reuse it (consume-mailbox.ts :633 keyByEnv.get, NOT a second
+  // keyOf(env)). A re-derive reads env.blob again. Pin it by counting blob READS through a getter.
+  //
+  // Exact expected reads per stored note envelope (current dev):
+  //   1. upfront keyOf(e)            :416  — the one sanctioned derivation
+  //   2. consumeOne(env.blob)        :666  — decrypt/open reads the arg once
+  //   3. notesByKey.set({blob: env.blob}) :684 — note outcome carried into the dead-letter mirror
+  //   4. door({blob: env.blob, need:'clear'}) :697 — the ack-door arg
+  // The mutant (handle() always keyOf(env)) adds a 5th — and ONLY that 5th changes the count.
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    const seed = book.open();
+    seed.upsertContact(asContact(A));
+    await sendN(A, B, 3, relay.fetchImpl);
+
+    // Instrument the /queue listing: a duck-typed Response whose json() yields the SAME
+    // envelope objects each poll (identity must hold — keyByEnv maps on object identity).
+    // A real Response would re-serialize and kill the getters.
+    const reads = new Map<string, number>();
+    const instrumented = (async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (!u.includes('/queue')) return relay.fetchImpl(url, init);
+      // consume the real listing once, then hand back getter-wrapped objects
+      const real = await relay.fetchImpl(url, init);
+      const list = (await real.json()) as Array<{ envelope_id: string; blob: string }>;
+      const wrapped = list.map((e) => {
+        const { blob, ...rest } = e;
+        return {
+          ...rest,
+          get blob() {
+            reads.set(e.envelope_id, (reads.get(e.envelope_id) ?? 0) + 1);
+            return blob;
+          },
+        };
+      });
+      return { ok: true, status: 200, json: async () => wrapped } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const store = book.open();
+    const s = await pollHeadlessOnce(owner(B), store, { relayBase: RELAY, fetchImpl: instrumented });
+    assert.equal(s.notes, 3, 'control: the poll still consumes all 3 notes');
+    assert.equal(reads.size, 3, 'every listed envelope was opened once');
+    for (const [id, n] of reads) {
+      assert.equal(
+        n, 4,
+        `${id}: blob read exactly 4x — 1 upfront keyOf + consumeOne + notesByKey + door (mutant: 5)`,
+      );
+    }
+  } finally {
+    book.done();
+  }
+});
