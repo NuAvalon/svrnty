@@ -308,7 +308,7 @@ export interface ConsumeSummary {
   acked: number;
   deduped?: number; // #712 C1: redelivered envelopes a previous commit already holds, acked WITHOUT opening (present when chunk is wired)
   deferred?: number; // #712: envelopes left on the relay because the pass ran out of time (present when outOfTime is wired)
-  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth), or a 2xx whose body was not a list; absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
 
 /**
@@ -367,7 +367,10 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
   // ever compared and handed on, never used to decide whether a blob is consumed.
   const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
-  if (!Array.isArray(envelopes)) return summary;
+  if (!Array.isArray(envelopes)) {
+    summary.rejected = res.status; // an answer that isn't a list is not an empty mailbox (Archie #2401)
+    return summary;
+  }
   summary.polled = envelopes.length;
   const txn = deps.chunk;
   if (txn) summary.deduped = 0;
