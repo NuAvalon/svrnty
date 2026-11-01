@@ -17,6 +17,13 @@
     "2.1.6": "e9f90211859797466368231b5f02afeb84afa497c3ccd04129e0a57a5c5a3eff",
     "2.2.3": "4995a2e6b01432f76182abec6a831fdaf7f840384035072002ccaa43101b14d4"
   },
+  "phase1_ptau": {
+    "source": "PSE perpetual powers of tau ppot_0080_14.ptau (contribution 80 + beacon); snarkjs powersoftau verify OK twice (Flint, Apollo)",
+    "source_sha256": "3ca1149e9349b22b0ee0649399cfb787677129b7b1189d1899fc0d615d9583db",
+    "prepared_by": "snarkjs 0.7.6: powersoftau prepare phase2 <source> <prepared> (deterministic: two runs, same bytes)",
+    "prepared_sha256": "427b5a6c07ba401548c22b87c2640eba7c63a0259b6a81ede87ff99a7088a119",
+    "prepared_vs_source": "sections 2-7 and 13-15 byte-identical; section 12 (Lagrange tauG1) blocks for 2^0..2^14 points identical; the 2^15-point block and the ceremonyPower header byte (28 -> 14) differ. Our circuit needs domain 2^13 (6,574 constraints + 5), so it never reads the differing block."
+  },
   "recorded_not_enforced": {
     "sym_sha256": "2c7a90bc786a2c2a400c5f6630c29407bcab16a5c0687d9bf1e0df081bd2c610"
   },
