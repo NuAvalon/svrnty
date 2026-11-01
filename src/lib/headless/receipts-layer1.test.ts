@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 void createHash;
-import { mintHeadlessAgent } from '@/lib/identity/headless-mint';
+import { mintHeadlessAgent, serializeMintArtifact } from '@/lib/identity/headless-mint';
 import { uint8ToBase64 } from '@/lib/crypto/pq';
 import { consumeInboundContactUpdates } from '@/lib/sync/consume-mailbox';
 import type { DeadLetterRow } from '@/lib/sync/dead-letter';
@@ -24,7 +24,8 @@ import { buildReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { sealReceiptV1To } from '@/lib/messaging/seal';
 import { receiptKeyToHex, newReceiptKey } from '@/lib/crypto/receipt-mac';
 import type { NoteWireV0 } from '@/lib/messaging/types';
-import { HOP_TRAIL_FILE, readHopTrail } from './hop-trail';
+import { HOP_TRAIL_FILE, readHopTrail, recordHop } from './hop-trail';
+import { spawnSync } from 'node:child_process';
 import { statSync, writeFileSync } from 'node:fs';
 
 const RELAY = 'http://relay.test/api/relay';
@@ -677,5 +678,58 @@ test('L3-E8 R2 (Hypatia #3123): "dropped" is written only once the drop is TRUE 
     assert.deepEqual(hopsFor(b.dir, envId).filter((h) => h.startsWith('dropped:')), ['dropped:not-in-book']);
   } finally {
     b.done();
+  }
+});
+
+test('L3-E9 G-RO-1 (Apollo #3155 F-A): 100 polls of a 1,100-envelope backlog keep a STALLED note\'s own rows (polled once per id)', async () => {
+  const [B] = [await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    // the stalled note: sealed + deposited were written first, then the backlog is listed on every poll
+    assert.equal(recordHop(b.dir, 'sealed', { note_id: 'note_stalled' }), true);
+    assert.equal(recordHop(b.dir, 'deposited', { note_id: 'note_stalled' }), true);
+    for (let p = 0; p < 100; p++) {
+      const deps = await buildHeadlessConsumeDeps(owner(B), b.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl, hopTrailDir: b.dir });
+      for (let i = 1; i <= 1100; i++) deps.onHop!('polled', `env_backlog_${i}`);
+    }
+    assert.deepEqual(hopsFor(b.dir, 'note_stalled'), ['sealed', 'deposited'], 'the stalled note keeps its own history');
+    const polled = trailText(b.dir).split('\n').filter((l) => l.includes('"hop":"polled"')).length;
+    assert.equal(polled, 1100, 'one polled row per envelope id, not one per poll');
+  } finally {
+    b.done();
+  }
+});
+
+test('L3-E10 G-RO-1 n-b (Apollo): a redelivered, already-stored note writes "persisted" ONCE', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    bs.upsertContact(asContact(A, { name: 'ay' }));
+    const opts = { relayBase: RELAY, fetchImpl: relay.fetchImpl, hopTrailDir: b.dir };
+    for (let k = 0; k < 2; k++) {
+      await send(A, B, new HeadlessStore(), relay.fetchImpl, 'same body', { noteId: 'note_l3e10', sentAt: '2026-11-01T05:00:00.000Z' });
+      await pollHeadlessOnce(owner(B), b.open(), opts);
+    }
+    assert.equal(hopsFor(b.dir, 'note_l3e10').filter((h) => h === 'persisted').length, 1);
+  } finally {
+    b.done();
+  }
+});
+
+test('L3-E11 Hypatia #3158: `trail <id>` with no rows never reads as "never happened" (the caveat says rows may have been pruned)', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'trail-empty-'));
+  try {
+    writeFileSync(join(d, 'mint.json'), JSON.stringify(serializeMintArtifact(await mintHeadlessAgent({ throwaway: true }))), { mode: 0o600 }); // the CLI needs a mint
+    const r = spawnSync(process.execPath, ['--import', 'tsx', join(__dirname, '../../../scripts/devin-comm.ts'), 'trail', 'note_pruned'], {
+      env: { ...process.env, SVRNTY_AGENT_DIR: d }, encoding: 'utf8', timeout: 120_000,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^no hop rows for that id on this host \(the trail keeps up to 14 days or 5 MB, so older rows may have been pruned\)$/m);
+    assert.doesNotMatch(r.stdout, /^no hop rows for that id on this host$/m, 'never a bare "no rows"');
+  } finally {
+    rmSync(d, { recursive: true, force: true });
   }
 });
