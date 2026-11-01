@@ -42,7 +42,10 @@ export function groupFor(reason: DeadLetterReason): CantOpenGroup | null {
 export interface CantOpenNotice {
   group: CantOpenGroup;
   text: string;
-  /** R only: the contact whose conversation 'Open conversation' opens (NotesInbox shows it only when this device can message them). No resend ask: copy of record 70c7888d. */
+  /**
+   * R only: the contact whose conversation 'Open conversation' opens (NotesInbox shows it only when this device can message them). The
+   * button itself asks nothing; whether the LINE asks for a resend depends on the reason (never for ratchet-local). Copy of record 70c7888d.
+   */
   fingerprint?: string;
 }
 
