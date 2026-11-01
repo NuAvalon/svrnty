@@ -176,11 +176,11 @@ function main(): void {
   for (const h of honored) console.log(`  ${h.file}:${h.line}  [${h.claimId}]  annotation @${h.annotationLine}: "${h.reason}"`);
 
   if (violations.length === 0 && orderFails.length === 0) {
-    console.log(`\n✅ claim-sweep PASS — ${files.length} files, ${enforced.length} enforced claims, ${orderCount} order rows, no dishonest claims.`);
+    console.log(`\n✅ claim-sweep PASS — ${files.length} files, ${enforced.length} enforced claims, ${orderCount} order rows: no registered claim violations.`);
     process.exit(0);
   }
   for (const f of orderFails) console.error(`  ❌ order ${f.id} step ${f.step} at ${f.at}`);
-  console.error(`\n❌ claim-sweep SHIP-BLOCK — ${violations.length} dishonest claim(s), ${orderFails.length} order row failure(s):\n`);
+  console.error(`\n❌ claim-sweep SHIP-BLOCK — ${violations.length} registered claim violation(s), ${orderFails.length} order row failure(s):\n`);
   const claimText = new Map(registryClaims.map((c) => [c.id, c.claim]));
   for (const v of violations) {
     console.error(`  ${v.file}:${v.line}  [${v.claimId} · ${v.kind}]  ${v.evidence.map((e) => `"${e}"`).join(', ')}`);
