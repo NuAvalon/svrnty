@@ -2,6 +2,10 @@
 
 The top unchecked item below is the task. Build UI to spec (render-glass) — the crypto / gate / PSI / trust plumbing lives behind stable hooks maintained by the core team; wire the UI to those hooks, never modify them. Open ONE PR into the canonical branch.
 
+**Claim before you build.** Every open item carries a `Claimed by:` line. Before starting an item, set it to `<builder> · <YYYY-MM-DD> · <issue or PR>` (in your PR's first commit, or on the item's issue). An item that is already claimed is not yours to build: one claimer per item, so two builders never build the same thing twice.
+
+**A queue PR is render-glass only.** Any change to crypto / gate / PSI / trust plumbing, or to an existing join or send path (for example, which component a paste or scan mounts), goes in its own PR on that seam, reviewed by the seam's owner. It never rides in a queue PR, and no queue PR may break a working join path.
+
 ## ✅ 1. Camera QR-scan — receive side  [DONE — shipped in #96, not a task]
 Built + merged. Kept for provenance only.
 
@@ -44,6 +48,7 @@ A new **"Encrypt / Decrypt"** tab in svrnty.is: pick a svrnty contact → encryp
 Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as the recipient, with the sender's card in contacts) → recover the **exact** plaintext with `senderVerified === true`. Round-trips PQ-hybrid; nothing touches the wire.
 
 ## 3. Connect-UX — one-step grow-link (kill the 5-step joiner ceremony)  [render-glass]
+**Claimed by:** Devin · 2026-11-01 · PR #359. The glass half only (ConnectSheet + copy); the in-app paste path keeps mounting JoinerCeremony. The add-logic wiring is its own PR on the seam.
 
 **Priority — queued above Verify-in-Galaxy** (Peter #155748: the 5-step ceremony is the priority; connect precedes verify in the user journey). Archie-spec'd; Hypatia finalizes microcopy; Archie claim-gates the trust-touching framing; **Apollo wires the add-logic + grow-link crypto POST-FLIP.** cursor builds the **UI shell + flow + `/c/{code}` resolve NOW, wired against the add-logic INTERFACE (typed stub) — never implement the crypto / trust / gate plumbing.**
 
@@ -72,6 +77,7 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 **Acceptance:** paste a grow-link → newcomer appears in GATE (not Known) with their card → one tap → promoted to Known, trust-level = user's explicit choice. No-account → create → land-in-GATE works as one flow. All 5 invariants hold. Copy matches Hypatia's ledger. One PR into the canonical branch.
 
 ## 4. Verify in the Galaxy (social graph) + guided fingerprint-compare  [render-glass]
+**Claimed by:** — (none recorded; related earlier work: #166, #258)
 
 **Problem** (Peter, 2026-09-30, from live first-contact): a KNOWN contact shows as a **dashed line** in the Galaxy / social graph, but **Verify is only reachable from the Living Address Book** (`ContactManagement.tsx:1761` wires `onOwnerVerify`; `TrustMapGalaxy.tsx` wires NOTHING) — no way to verify from the graph. And today's verify is a bare provenance tap (`in_person`/`other_channel`); it should be a **guided fingerprint match** so "Verify" means "I actually compared the key," not "I clicked a label."
 
@@ -113,6 +119,7 @@ Encrypt to a contact → copy the armored ciphertext → paste into Decrypt (as 
 From the Galaxy, focus a KNOWN (dashed) contact → **Verify** → guided compare (QR in-person OR code another-channel) → on match, `onOwnerVerify` records `owner_verify{method}` → edge renders **solid** locally + privately (no public badge, nothing on the wire). The SAME sheet is reachable from the address book. A **mismatched QR fails loud** and cannot verify. `ownerHasVerified` returns true after; `canGrantTrust` no longer blocks on need-verify.
 
 ## 5. Peer-chord legend — consent-explicit anti-surveillance clause (#106 fast-follow)  [render-glass]
+**Claimed by:** Cursor · 2026-10-10 · PR #198 (merged: the test half; check off when the copy gate closes)
 
 **STATUS:** the append is already on main in `peerMeshLegend` (PR #170). `src/lib/trust/` is CODEOWNERS-fenced, so this follow-up only adds the missing test assertion on the render-glass side (TrustMap source lock + Galaxy e2e). Please re-green the legend copy and close #106.
 
