@@ -59,7 +59,8 @@ export interface HeadlessOpts {
 }
 
 /**
- * G-RO-9 (b), Archie lane:svrnty #3234: at most this many "delivered" receipts per poll, oldest note first; the rest are counted as
+ * G-RO-9 (b), Archie lane:svrnty #3234: at most this many "delivered" receipts per poll, earliest-DEPOSITED first (the relay's listing
+ * order; never the sender's sent_at, Archie #3241); the rest are counted as
  * receipts_capped and DROPPED (not retried yet: the sender just sees no Delivered, never a false one). Why: receipts share the relay's
  * per-IP deposit bucket (RELAY_RATE_LIMIT_MAX, default 10 per 60 s) with the cells' REAL sends, and our cells share one egress IP, so an
  * uncapped backlog drain could make the next real send fail with 429 (Apollo F-RL #3227). With k=1 and the cron intervals (bare-metal
@@ -215,12 +216,10 @@ export async function sendHeadlessReceipts(store: HeadlessStore, candidates: Rec
     duePeer.push(peer);
   }
   candidates.clear();
-  // G-RO-9 (b): oldest note first (the sender's sent_at; an unparseable one sorts last; ties keep arrival order), then the per-poll cap.
-  const at = (w: NoteWireV0) => {
-    const t = Date.parse(w.sent_at ?? '');
-    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
-  };
-  const order = due.map((_, i) => i).sort((x, y) => at(due[x]) - at(due[y]) || x - y);
+  // G-RO-9 (b): ARRIVAL order, then the per-poll cap. Arrival = the order consume stored the notes = the relay's listing order
+  // (ORDER BY deposited_at, relay-stamped). NEVER the note's sent_at (Archie #3241): that comes from the sender's wire, so a back-dated
+  // or badly clocked sender would win the one slot every poll and starve every other sender's receipts (capped ones are not retried).
+  const order = due.map((_, i) => i);
   const cap = opts.receiptsPerPoll ?? receiptsPerPoll();
   const send = order.slice(0, cap);
   out.capped = order.length - send.length;

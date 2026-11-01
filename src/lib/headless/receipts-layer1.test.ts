@@ -712,9 +712,9 @@ test('L3-E8 R2 (Hypatia #3123): "dropped" is written only once the drop is TRUE 
   }
 });
 
-// G-RO-9 (b), Archie #3234: at most receiptsPerPoll receipts per poll (default 1 via SVRNTY_RECEIPTS_PER_POLL), OLDEST note first; the
+// G-RO-9 (b), Archie #3234: at most receiptsPerPoll receipts per poll (default 1 via SVRNTY_RECEIPTS_PER_POLL), earliest-DEPOSITED first; the
 // rest are counted receipts_capped and dropped (not retried yet), so one poll can never spend the relay's shared per-IP deposit bucket.
-test('G-RO-9 cap: 3 due receipts, the DEFAULT cap (1) → ONE sent, for the OLDEST note; 2 capped; none of the capped ones is sent later', async () => {
+test('G-RO-9 cap: 3 due receipts, the DEFAULT cap (1) → ONE sent, for the earliest-deposited note; 2 capped; none of the capped ones is sent later', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
   const a = agentBook();
@@ -728,7 +728,6 @@ test('G-RO-9 cap: 3 due receipts, the DEFAULT cap (1) → ONE sent, for the OLDE
     const ids: string[] = [];
     for (const body of ['first', 'second', 'third']) {
       ids.push((await send(A, B, a.store, relay.fetchImpl, body)).note_id);
-      await new Promise((r) => setTimeout(r, 5)); // distinct sent_at, so "oldest" is well-defined
     }
     const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(s.notes, 3);
@@ -737,7 +736,7 @@ test('G-RO-9 cap: 3 due receipts, the DEFAULT cap (1) → ONE sent, for the OLDE
     assert.equal(s.receipts_failed + s.receipts_skipped, 0);
     const sa = await pollHeadlessOnce(owner(A), a.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(sa.delivered, 1);
-    assert.deepEqual(ids.map((id) => a.open().findOutboundNote(A.fp, id)!.delivered === true), [true, false, false], 'the OLDEST note got the receipt');
+    assert.deepEqual(ids.map((id) => a.open().findOutboundNote(A.fp, id)!.delivered === true), [true, false, false], 'the earliest-deposited note got the receipt');
     const again = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(again.receipts_sent + again.receipts_capped, 0, 'capped receipts are dropped, not retried (named limit)');
   } finally {
@@ -748,7 +747,7 @@ test('G-RO-9 cap: 3 due receipts, the DEFAULT cap (1) → ONE sent, for the OLDE
   }
 });
 
-test('G-RO-9 cap: receiptsPerPoll 0 sends NONE (all counted capped); 2 sends the two oldest', async () => {
+test('G-RO-9 cap: receiptsPerPoll 0 sends NONE (all counted capped); 2 sends the two earliest-deposited', async () => {
   for (const [k, sent, capped] of [[0, 0, 3], [2, 2, 1]] as const) {
     const [A, B] = [await mint(), await mint()];
     const relay = mockRelay();
@@ -767,6 +766,34 @@ test('G-RO-9 cap: receiptsPerPoll 0 sends NONE (all counted capped); 2 sends the
       a.done();
       b.done();
     }
+  }
+});
+
+test('G-RO-9 order NEG (Archie #3241): a sender who BACK-DATES sent_at (1970) but deposited LAST does not take the slot; the earlier deposit wins', async () => {
+  const [X, Y, B] = [await mint(), await mint(), await mint()];
+  const relay = mockRelay();
+  const xs = agentBook();
+  const ys = agentBook();
+  const b = tmpBook();
+  try {
+    xs.store.upsertContact(asContact(B));
+    ys.store.upsertContact(asContact(B));
+    const bs = b.open();
+    bs.upsertContact(asContact(X));
+    bs.upsertContact(asContact(Y));
+    const fromY = await send(Y, B, ys.store, relay.fetchImpl, 'deposited first');
+    const fromX = await send(X, B, xs.store, relay.fetchImpl, 'back-dated, deposited last', { sentAt: '1970-01-01T00:00:00.000Z' });
+    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, receiptsPerPoll: 1 });
+    assert.equal(s.notes, 2);
+    assert.deepEqual([s.receipts_sent, s.receipts_capped], [1, 1]);
+    await pollHeadlessOnce(owner(Y), ys.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    await pollHeadlessOnce(owner(X), xs.store, { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(ys.open().findOutboundNote(Y.fp, fromY.note_id)!.delivered, true, 'Y deposited first: Y\'s receipt went out');
+    assert.notEqual(xs.open().findOutboundNote(X.fp, fromX.note_id)!.delivered, true, 'X\'s 1970 stamp did not buy the slot');
+  } finally {
+    xs.done();
+    ys.done();
+    b.done();
   }
 });
 
