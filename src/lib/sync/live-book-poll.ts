@@ -242,6 +242,7 @@ export function buildNoteSeam(
                   peerFingerprint: fromFp,
                   sentAt: ctx?.sentAt,
                   storedSentAts: () => listInboundSentAtFrom(fromFp),
+                  adoptedFloorAt: async () => (await import('@/lib/messaging/adopt-floor-store')).getAdoptFloor(fromFp),
                   now: Date.now,
                   onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),
                 }),
@@ -252,6 +253,12 @@ export function buildNoteSeam(
         onSessionReplaced: async (fp) => {
           const { markSessionReset } = await import('@/lib/messaging/dead-letter-store');
           await markSessionReset(fp);
+        },
+        // L-318a: this open started the session (a first frame, or a replacement): its signed sent_at becomes the contact's adopt floor, so deleting the
+        // conversation can no longer lower the replay guard.
+        onSessionStarted: async (fp, signedSentAt) => {
+          const { raiseAdoptFloor } = await import('@/lib/messaging/adopt-floor-store');
+          await raiseAdoptFloor(fp, signedSentAt);
         },
         // R4: a frame from this contact opened, so "this device reset them and has received no frame since" is over.
         onFrameOpened: async (fp) => {
