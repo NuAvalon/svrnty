@@ -30,5 +30,12 @@
   "constraints": 6574,
   "public_wires": 4,
   "snarkjs": "0.7.6",
-  "status": "WORKING DRAFT. Circuit not reviewed (R5 pending). Toolchain RULED (Archie #2931, confirming Flint #2803): circom 2.2.3 --O2 for the ceremony AND the release; the shipped artefacts are the 2.2.3 wasm + witness_calculator.js. The 2.1.6 entries are r1cs-reproduction evidence only (r1cs and .sym are identical across the two compilers; wasm and the witness js files differ per version, so they are pinned per version). Enforced fail-closed before anything runs: binary sha256, r1cs, wasm, witness_calculator.js, generate_witness.js. Recorded only: .sym."
+  "status": "WORKING DRAFT. Circuit not reviewed (R5 pending). Toolchain RULED (Archie #2931, confirming Flint #2803): circom 2.2.3 --O2 for the ceremony AND the release; the shipped artefacts are the 2.2.3 wasm + witness_calculator.js. The 2.1.6 entries are r1cs-reproduction evidence only (r1cs and .sym are identical across the two compilers; wasm and the witness js files differ per version, so they are pinned per version). Enforced fail-closed before anything runs: binary sha256, r1cs, wasm, witness_calculator.js, generate_witness.js. Recorded only: .sym.",
+  "phase2_tooling": {
+    "snarkjs_version": "0.7.6",
+    "snarkjs_cli_cjs_sha256": "6d787e37a4d1a2c6dd6032dadca09c0b3b007d4d4578bb6232a98136555d051a",
+    "snarkjs_main_cjs_sha256": "7380039fd8f9af5b97fbd033ee6c8f7d298268c3a1c96fa894e62515443bf14d",
+    "z0_sha256": "bb25e98c63fb48dfaf30a4bfc4f1e957d57f4a9a16b4eee260d90feb8904aed6",
+    "z0_note": "groth16 setup <pinned r1cs> <prepared ptau> is deterministic (two runs, same bytes); stage 0 of the transcript"
+  }
 }
