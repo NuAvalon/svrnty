@@ -161,3 +161,30 @@ test('F1 NEG9: attempt map: a refused adoption is charged +1, a successful one c
   const loop = src.slice(src.indexOf("if (cmd === 'poll-json')"));
   assert.ok(loop.indexOf('>= MAX_ATTEMPTS') < loop.indexOf('countedOpen(attempts'), 'a tombstoned key is skipped BEFORE any open is tried');
 });
+
+test('F1 NEG6b (R6, confirmed): a CONFIRMED session is replaced by the reset\'s new first frame whichever fingerprint is lower (the tie-break is for UNCONFIRMED sessions only)', async () => {
+  for (const [meFp, aliceFp] of [[LO, HI], [HI, LO]] as const) {
+    const x = await aliceResets(meFp, aliceFp);
+    assert.notEqual(x.sessions[aliceFp].recvCk, null, 'precondition: ME opened a frame from Alice, so the stored session is confirmed');
+    const r = await openTrFrame(x.sessions, aliceFp, x.me, peerOf(x.alice), x.f2, ask({ me: meFp, peer: aliceFp, sentAt: iso(NOW - 60e3), journal: line(aliceFp, 'n_old', iso(NOW - 3600e3)) }));
+    assert.ok(r, `me ${meFp.slice(0, 1)} vs alice ${aliceFp.slice(0, 1)}: adopts (was it refused by the unconfirmed-only tie-break?)`);
+    assert.equal(r.adopted, true);
+    assert.equal(r.plaintext, 'after the reset');
+  }
+});
+
+test('F1 NEG10 (direct-session R3): an UNREADABLE stored row is never overwritten, even by a genuine first frame and a policy that says yes; nothing to save, row bytes unchanged', async () => {
+  const x = await aliceResets();
+  const good = x.sessions[x.aliceFp];
+  // fields as importState reads them (message-ratchet.ts): v, ns/nr/pn counts, pendingSendRatchet, skipped[], and the base64 keys by exact length
+  const corrupt: unknown[] = [{}, { ...good, v: 2 }, { ...good, root: 'AAAA' }, { ...good, ns: -1 }, { ...good, skipped: 'x' }, { ...good, pendingSendRatchet: 'yes' }, 'garbage'];  // not null: a null row is "no session stored", which legitimately takes acceptFirst
+  for (const bad of corrupt) {
+    const sessions = { [x.aliceFp]: bad } as unknown as TrSessions;
+    // precondition: this row really is unreadable to the ratchet (otherwise the case proves nothing)
+    assert.equal(TripleRatchet.importState(bad as never), null, `precondition: ${JSON.stringify(bad)?.slice(0, 60)} is unreadable`);
+    const before = JSON.stringify(sessions);
+    const r = await openTrFrame(sessions, x.aliceFp, x.me, peerOf(x.alice), x.f2, async () => true);
+    assert.equal(r, null, `unreadable row ${JSON.stringify(bad)?.slice(0, 40)} must not be replaced`);
+    assert.equal(JSON.stringify(sessions), before, 'row bytes unchanged');
+  }
+});
