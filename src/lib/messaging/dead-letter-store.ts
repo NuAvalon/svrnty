@@ -77,3 +77,18 @@ export async function pruneDeadLetters(nowMs: number): Promise<number> {
   for (const id of drop) await removeDeadLetter(id);
   return drop.length;
 }
+
+// #731: when the user last dismissed the inbox's "people who aren't in your contacts" line. Only the user's own dismissal time is kept,
+// never anything from a row, so the line can't be turned into a timestamp of when a stranger wrote.
+const S_DISMISSED_KEY = 'notice_seen:cant_open_s';
+
+/** The last dismissal (ISO), or null if never dismissed or unreadable. THROWS while the store is locked, like every settings read. */
+export async function getCantOpenSDismissedAt(): Promise<string | null> {
+  const v = await getEncryptedSetting<unknown>(S_DISMISSED_KEY);
+  return typeof v === 'string' && Number.isFinite(Date.parse(v)) ? v : null;
+}
+
+export async function setCantOpenSDismissedAt(iso: string): Promise<void> {
+  if (!Number.isFinite(Date.parse(iso))) throw new Error('invalid dismissal time');
+  await putEncryptedSetting(S_DISMISSED_KEY, iso);
+}
