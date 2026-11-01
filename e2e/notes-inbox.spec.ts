@@ -4,7 +4,7 @@ test.describe.configure({ mode: 'serial' });
 
 /**
  * Chat inbox — window only + honest send status. Proves the tab mounts,
- * essay masthead is gone, send status is Sent · unconfirmed (never
+ * essay masthead is gone, send status is Sent to the relay (never
  * Delivered/Read/Expired as a live status), and empty-book fails loud.
  */
 test('notes inbox is over-wire glass with honest send status', async ({ page }) => {

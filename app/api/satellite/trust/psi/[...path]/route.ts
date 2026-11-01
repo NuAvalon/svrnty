@@ -2,8 +2,7 @@
 // tags / blocked flags / group labels are never forwarded.
 import { pickPsiBody } from '@/lib/sync/psi-proxy-body';
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
 
 const PATH_RE = /^[A-Za-z0-9_./-]+$/;
 
@@ -12,7 +11,7 @@ async function proxy(request: NextRequest, path: string, method: 'GET' | 'POST')
     return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
   }
   const search = request.nextUrl.search;
-  const url = `${SATELLITE_URL}/trust/psi/${path}${search}`;
+  const url = `${satelliteBaseUrl()}/trust/psi/${path}${search}`;
   const headers: Record<string, string> = {};
   const sig = request.headers.get('X-Signature');
   if (sig) headers['X-Signature'] = sig;

@@ -76,6 +76,8 @@ import {
 } from '@/components/identity/method-history';
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import { ShardGiveDialog } from '@/components/ShardGiveDialog';
+import { REFRESH_NOTE, refreshNoteAfter } from '@/components/trust-map-refresh-note';
+import type { PollOnceStatus } from '@/lib/sync/live-book-poll';
 import {
   ONE_WAY_SPOKE_WIDTH,
   trustLifecycleLegendItems,
@@ -124,8 +126,8 @@ interface TrustMapProps {
   onMethodHistoryChange?: () => void;
   /** Recipient: clear the vivre on this device after you acted in the world. */
   onDistressWent?: (edge: TrustEdge) => void | Promise<void>;
-  /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. */
-  onRefresh?: () => void | Promise<void>;
+  /** Pull / tap to consume mailbox + re-read the local book. Fail-soft. Resolves to what the poll can honestly report. */
+  onRefresh?: () => Promise<PollOnceStatus>;
   /** Open this star's 1:1 conversation (parent switches to the Chat tab). */
   onOpenNote?: (edge: TrustEdge) => void;
   /** Chat name hop — focus this star when Galaxy opens. */
@@ -771,12 +773,9 @@ export function TrustMap({
   const runRefresh = useCallback(async () => {
     if (!onRefresh || refreshing) return;
     setRefreshing(true);
-    setRefreshNote('Checking for updates…');
+    setRefreshNote(REFRESH_NOTE.checking);
     try {
-      await onRefresh();
-      setRefreshNote('Caught up.');
-    } catch {
-      setRefreshNote('Could not check right now.');
+      setRefreshNote(await refreshNoteAfter(onRefresh));
     } finally {
       setRefreshing(false);
       setPullDy(0);
@@ -1320,7 +1319,7 @@ export function TrustMap({
             }}
           >
             {refreshing || refreshNote
-              ? refreshNote || 'Checking for updates…'
+              ? refreshNote || REFRESH_NOTE.checking
               : pullDy > 64
                 ? 'Release to update'
                 : 'Pull for updates'}

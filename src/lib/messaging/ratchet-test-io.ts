@@ -22,6 +22,7 @@ export function memIO(opts: { failPuts?: number } = {}) {
       log.push(`put:${fp}`);
       rows.set(fp, { state: 'ok', snapshot, version: have + 1 });
     },
+    remove: async (fp) => { log.push(`remove:${fp}`); return rows.delete(fp); },
   };
   return { rows, log, io, puts: () => log.filter((l) => l.startsWith('put:')).length };
 }

@@ -20,6 +20,7 @@
 // React — the book just stays static until a later successful tick. All custody/verify/whitelist
 // logic lives inside the caller; nothing here is smart about the social graph.
 
+import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import {
   consumeInboundContactUpdates,
   type ConsumeDeps,
@@ -33,6 +34,7 @@ import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import { clearHeldReport, reportHeld } from '@/lib/notes/held-events';
+import { clearPollStatus, reportPollStatus } from '@/lib/notes/poll-status-events';
 import {
   loadKey,
   loadPQKeys,
@@ -53,20 +55,22 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
+import { holdBackoff } from '@/lib/sync/hold-backoff';
 import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
+import { createAdoptCounter, type AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { ConsumeSummary, JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { receiptKeyFromHex, verifyReceiptTag } from '@/lib/crypto/receipt-mac';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
-import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
+import { getDeadLetter, pruneDeadLetters, putDeadLetter, releasedByReset, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 
@@ -176,6 +180,7 @@ export function buildNoteSeam(
   // tests / legacy callers → exact prior behaviour (no receipt sent).
   sendReceipt?: (wire: NoteWireV0) => Promise<void>,
   legs?: OpenLegCounter, // #720: which leg opened (counts only)
+  adoptCounts?: AdoptCounter, // #720 R5: stored notes the adopt replay guard ignored for being future-dated (counts only)
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
@@ -201,16 +206,21 @@ export function buildNoteSeam(
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
-      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | undefined;
+      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
+      let dropCause: string | undefined;
       const rec = await deps.accept({
-        onDrop: (r) => {
+        onDrop: (r, c) => {
           dropReason = r;
+          dropCause = c;
         },
+        onRewriteRefused: noteRewriteRefused,
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
-        openRatchet: async (fromFp, body) => {
+        openRatchet: async (fromFp, body, ctx) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
           const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
+          const { buildAdoptFirstFrame } = await import('@/lib/messaging/session-adopt-policy');
+          const { listInboundSentAtFrom } = await import('@/lib/messaging/store');
           const { openRatchetClassified } = await import('@/lib/messaging/ratchet-open');
           // v5.3: every failure comes back TYPED (local = this device, verdict = the frame/card), never a bare null. R4 + R2: open WITHOUT
           // persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
@@ -222,15 +232,45 @@ export function buildNoteSeam(
               }),
             contactExists: async () => !!(await getContactByFingerprint(owner.fingerprint, fromFp)),
             loadPeer: () => loadPeerRatchet(owner.fingerprint, fromFp),
-            open: (self, peer) => openDirectNoteStagedTyped(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint)),
+            // R5/R6: a peer's NEW first frame may replace our session, but only if the policy agrees (signed sent_at newer than every stored note from them,
+            // lower-fp tie-break while ours is unconfirmed). The stored notes are read only on a desync.
+            open: (self, peer) =>
+              openDirectNoteStagedTyped(
+                fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint),
+                buildAdoptFirstFrame({
+                  ownFingerprint: owner.fingerprint,
+                  peerFingerprint: fromFp,
+                  sentAt: ctx?.sentAt,
+                  storedSentAts: () => listInboundSentAtFrom(fromFp),
+                  adoptedFloorAt: async () => (await import('@/lib/messaging/adopt-floor-store')).getAdoptFloor(fromFp),
+                  now: Date.now,
+                  onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),
+                }),
+              ),
           });
+        },
+        // R5: after the replacing note is stored and the session committed, that contact's held frames are released as session-reset records.
+        onSessionReplaced: async (fp) => {
+          const { markSessionReset } = await import('@/lib/messaging/dead-letter-store');
+          await markSessionReset(fp);
+        },
+        // L-318a: this open started the session (a first frame, or a replacement): its signed sent_at becomes the contact's adopt floor, so deleting the
+        // conversation can no longer lower the replay guard.
+        onSessionStarted: async (fp, signedSentAt) => {
+          const { raiseAdoptFloor } = await import('@/lib/messaging/adopt-floor-store');
+          await raiseAdoptFloor(fp, signedSentAt);
+        },
+        // R4: a frame from this contact opened, so "this device reset them and has received no frame since" is over.
+        onFrameOpened: async (fp) => {
+          const { clearResetFlagIfSet } = await import('@/lib/messaging/reset-flag-store');
+          await clearResetFlagIfSet(fp);
         },
       });
       if (!rec) {
         // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint
         // travels only for the reasons that come AFTER authentication (wire.from_fingerprint is attacker-controlled until then: F3).
         if (!dropReason) return null;
-        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint };
+        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint, ...(dropCause ? { cause: dropCause } : {}) };
       }
       // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
@@ -398,7 +438,9 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // #720: the "kept because this device can't open it yet" report belongs to ONE identity. Drop it on session lock AND on identity switch
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
+onSessionLock(clearPollStatus); // copy v1 §B: identity A's refused-poll state never shows under identity B
 onSessionLock(() => receiptOutbox.clear()); // queued receipts and the dedupe set belong to the session that was locked
+onSessionLock(() => holdBackoff.clear()); // the retry schedule of held frames belongs to the identity that was unlocked
 
 /**
  * #720: the dead-letter sink bound to THIS owner. Every call first checks that the notes store is open FOR THIS OWNER (the same guard the
@@ -419,6 +461,10 @@ export function buildDeadLetterSink(owner: OwnerIdentity, openOwner: () => strin
     settle: async () => {
       assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
       await pruneDeadLetters(Date.now());
+    },
+    releasedByReset: async () => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      return releasedByReset();
     },
   };
 }
@@ -491,9 +537,11 @@ export async function buildConsumeDeps(
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
   const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
+  const adoptCounts = createAdoptCounter(); // #720 R5: future-dated stored notes the adopt replay guard ignored (counts only)
   return {
     owner,
     openLegs: legs,
+    adoptCounts,
     decrypt: hybrid
       ? dualReadOpener(
           counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire), 'hybrid', legs),
@@ -506,7 +554,7 @@ export async function buildConsumeDeps(
     // the send is QUEUED (receipt-outbox.ts), never awaited, so a failed or slow receipt cannot fail or delay the note.
     note: buildNoteSeam(owner, undefined, hybrid, async (wire) => {
       await emitDeliveredReceipt(wire, { fetchImpl: opts.fetchImpl });
-    }, legs),
+    }, legs, adoptCounts),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
@@ -517,13 +565,15 @@ export async function buildConsumeDeps(
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)
-    emitNote: (e) => emitNoteArrival(e),
+    // kind + to_fingerprint (Athena, notifications spec v1): a listener can tell a NEW inbound note from a receipt, and whose mail it is.
+    emitNote: (e) => emitNoteArrival({ ...e, kind: 'note', to_fingerprint: owner.fingerprint }),
     // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
     // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
-    emitReceipt: (e) => emitNoteArrival(e),
+    emitReceipt: (e) => emitNoteArrival({ ...e, kind: 'receipt', to_fingerprint: owner.fingerprint }),
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
     deadLetter: buildDeadLetterSink(owner),
+    holdBackoff, // T2b: held ratchet-desync frames are retried every poll for an hour, then hourly
     fetchImpl: opts.fetchImpl,
   };
 }
@@ -545,18 +595,47 @@ export interface LiveBookPollHandle {
  * a full interval.
  */
 /**
+ * What one poll can honestly say (copy v4, Hypatia c109fb20; Archie #2401/#2404/#2414):
+ * - 'ok': the relay answered with a list and nothing was left on it (every polled envelope acked; none held, none unrecorded). The ONLY
+ *   status that may be shown as "Caught up."
+ * - 'checked-waiting': the relay answered with a list, but envelopes are still on it (held, unrecorded, retryable, or an ack that failed).
+ * - 'rejected': the poll was refused (non-OK status). NOT an empty mailbox.
+ * - 'unreadable': the relay answered 2xx but the body was not a list. Also NOT an empty mailbox, and not a refusal.
+ * - 'locked': no poll ran (locked / no identity), or the unlock cycle ended mid-poll, so the mailbox state is unknown.
+ */
+export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'unreadable' | 'locked';
+
+export function pollStatusOf(
+  summary: Pick<ConsumeSummary, 'rejected' | 'polled' | 'acked' | 'held' | 'unrecorded'>,
+  cycleEnded = false,
+): PollOnceStatus {
+  if (cycleEnded) return 'locked';
+  if (summary.rejected !== undefined) return summary.rejected >= 200 && summary.rejected < 300 ? 'unreadable' : 'rejected';
+  if (summary.held > 0 || summary.unrecorded > 0 || summary.acked < summary.polled) return 'checked-waiting';
+  return 'ok';
+}
+
+/**
  * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
  * identity is a no-op (the book is still re-read by the caller). Does not invent
- * a living wire; it only consumes what the mailbox already has.
+ * a living wire; it only consumes what the mailbox already has. Returns what the
+ * poll can honestly report, so the caller never says "Caught up." for a poll that
+ * was refused or never ran. A thrown error (network) still propagates.
  */
 export async function pollLiveBookOnce(
   identity: unknown,
-  opts: { fetchImpl?: typeof fetch } = {},
-): Promise<void> {
-  const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-  if (!deps) return;
+  opts: { fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
+): Promise<PollOnceStatus> {
+  const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+  if (!deps) {
+    reportPollStatus('locked');
+    return 'locked';
+  }
   try {
-    await consumeInboundContactUpdates(deps);
+    const summary = await consumeInboundContactUpdates(deps);
+    const status = pollStatusOf(summary, deps.owner.cycle?.ended);
+    reportPollStatus(status);
+    return status;
   } finally {
     deps.owner.cycle?.drop();
   }
@@ -564,7 +643,7 @@ export async function pollLiveBookOnce(
 
 export function startLiveBookPolling(
   identity: unknown,
-  opts: { intervalMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: { intervalMs?: number; fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
 ): LiveBookPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   let stopped = false;
@@ -576,10 +655,14 @@ export function startLiveBookPolling(
     if (stopped || inFlight) return; // never overlap polls
     inFlight = true;
     try {
-      const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-      if (!deps) return; // locked / no identity — stay static, retry next tick
+      const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+      if (!deps) {
+        reportPollStatus('locked');
+        return; // locked / no identity — stay static, retry next tick
+      }
       try {
-        await consumeInboundContactUpdates(deps);
+        const summary = await consumeInboundContactUpdates(deps);
+        reportPollStatus(pollStatusOf(summary, deps.owner.cycle?.ended)); // copy v1 §B: 3 refused in a row → Chat notice
       } finally {
         deps.owner.cycle?.drop();
       }
