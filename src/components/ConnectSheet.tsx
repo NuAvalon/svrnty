@@ -4,7 +4,7 @@
 //
 // Connect-UX — the one-step grow-link flow (CURSOR_QUEUE.md #3).
 // Paste a connect link → resolve → the newcomer lands in your GATE (pending)
-// → ONE tap promotes to Known. Replaces the multi-step ceremony on the
+// → ONE tap adds them to your book. Replaces the multi-step ceremony on the
 // in-app paste/scan path; the /c/ route's JoinerCeremony still owns direct
 // link landings (Apollo rewires post-flip).
 //
@@ -12,8 +12,8 @@
 // implements resolve/gate/trust plumbing itself.
 //
 // INVARIANTS (queue §TRUST-MODEL — render-honored, not restated):
-//   • Gate-not-Known on arrival — the card view's only consent action is the
-//     explicit "Add to Known" tap; nothing promotes implicitly.
+//   • Gate-not-book on arrival — the card view's only consent action is the
+//     explicit "Add to your book" tap; nothing promotes implicitly.
 //   • Adding is LOCAL + one-sided — your disclosure choice, never a mutual
 //     assertion. The copy below says exactly that.
 //   • The link carries the newcomer's consent-to-be-added (invitation, not
@@ -55,15 +55,15 @@ type Props = {
 // Fixed, non-leaky refusal copy. `resolve-failed` may append the relay's own
 // honest message; nothing else ever interpolates card or input data.
 const REFUSAL_COPY: Record<ConnectResolveRefusal, string> = {
-  'bad-link': "That doesn't look like a svrnty connect link. Paste the full link or the code.",
+  'bad-link': "That doesn't look like a svrnty connect link. Paste the whole link: it includes the key after the #.",
   unwired:
-    "That link's format isn't live yet — ask them for their full connect link (it carries the key after the #).",
+    "That's only a code. Ask them for their full connect link: it carries the key after the #.",
   'resolve-failed':
     "This link isn't available. It may have expired, been copied incompletely, or no longer be held by the relay. Ask them for a new one.",
   'unverified-card':
-    'This card could not be verified — its fingerprint does not match its key, so nothing was added. Ask them for a fresh link.',
+    "This card could not be verified. Its fingerprint doesn't match its key, so nothing was added. Ask them for a fresh link.",
   'not-a-card':
-    "That link opens something else — not a connect card. If it's a recovery piece, open it in your browser.",
+    "That link opens something else, not a connect card. If it's a recovery piece, open it in your browser.",
 };
 
 const ENTITY_COPY: Record<ConnectLinkCard['entityType'], string> = {
@@ -163,7 +163,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
         const land = await logicRef.landInGate(ownerFp, r.card);
         if (ticket !== cancelRef.current) return;
         if (land.kind === 'refused') {
-          setError('This card is missing its identity — nothing was added.');
+          setError('This card is missing its identity, so nothing was added.');
           setPhase('error');
           return;
         }
@@ -208,7 +208,8 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
       onAdmitted?.(rec.fingerprint ?? landing.arrival.fingerprint);
       setPhase('done');
     } catch (e) {
-      setError(e instanceof Error && e.message ? e.message : 'Could not add them to Known.');
+      console.error('[connect] promote failed:', e);
+      setError('Couldn\'t add them. Try again, or ask them for a fresh link.');
     } finally {
       setBusy(false);
     }
@@ -221,7 +222,8 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
       await dismissGateArrival(ownerFp, landing.arrival.fingerprint);
       onClose();
     } catch (e) {
-      setError(e instanceof Error && e.message ? e.message : 'Could not dismiss.');
+      console.error('[connect] dismiss failed:', e);
+      setError("Couldn't remove them from your Gate. Try again.");
     } finally {
       setBusy(false);
     }
@@ -239,7 +241,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
           <h2 style={{ margin: '8px 0 0', fontSize: 22, fontWeight: 400, color: E.text }}>Connect by link</h2>
           <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
             Paste their connect link — they land in your Gate, never straight into your book. You decide
-            who becomes Known.
+            who joins it.
           </p>
           <label htmlFor="connect-link-input" style={{ display: 'block', marginTop: 18, fontSize: 13, color: E.muted }}>
             Paste a connect link
@@ -300,8 +302,8 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
           </h2>
           <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
             {landing?.kind === 'already-known'
-              ? "They're already in your book — nothing new was added."
-              : 'They shared their card with you. They wait at your Gate — not a star yet. Adding is your call alone.'}
+              ? "They're already in your book. Nothing new was added."
+              : 'Their card is at your Gate. Nothing has been added yet; adding them is your call alone.'}
           </p>
 
           <div
@@ -355,7 +357,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
                   onClick={() => void promote()}
                   style={btnStyle(true, !busy)}
                 >
-                  {busy ? '…' : 'Add to Known'}
+                  {busy ? '…' : 'Add to your book'}
                 </button>
                 <button type="button" data-testid="connect-leave-gate" disabled={busy} onClick={onClose} style={btnStyle()}>
                   Leave at the Gate
@@ -378,10 +380,10 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
       {phase === 'done' && card && (
         <div style={{ textAlign: 'center', padding: '16px 0' }}>
           <h2 style={{ margin: '8px 0 0', fontSize: 22, fontWeight: 400, color: E.text }}>
-            {card.displayName || 'They'} is a star you Know
+            {card.displayName || 'They'} — added to your book.
           </h2>
           <p style={{ margin: '10px 0 0', fontSize: 13, color: E.muted, lineHeight: 1.5 }}>
-            Verify is a later tap — it stays yours. Trust needs both sides.
+            Verify is a later tap — it stays yours.
           </p>
           <button
             type="button"

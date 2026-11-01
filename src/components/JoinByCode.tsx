@@ -3,37 +3,27 @@
 /**
  * Join by link — Component A of the in-page join.
  *
- * Scan an invite QR (ScanToJoin) or paste a connect link → mount the ONE
- * connect flow inline (<ConnectSheet> — the one-step grow-link flow from
- * CURSOR_QUEUE.md #3: resolve → land in GATE → one tap to Known). No router
- * nav → also sidesteps the /c/ post-join session-lock T2.6. Paste is the
+ * Scan an invite QR (ScanToJoin) or paste an invite link → parse it through the ONE
+ * security boundary (parseInviteUrl, INV-4) → mount the SAME <JoinerCeremony> INLINE
+ * (no router nav → also sidesteps the /c/ post-join session-lock T2.6). Paste is the
  * permanent fallback for when a camera scan isn't available.
  *
  * INVARIANTS:
- *  INV-1  one in-app join path — paste and scan both mount ConnectSheet; zero
- *         parallel join/verify/trust logic. (JoinerCeremony still owns the
- *         /c/[code] ROUTE — direct link landings — until Apollo's post-flip.)
- *  INV-2  perception ≠ trust — resolving confers no trust; the newcomer lands
- *         in the GATE pending and the owner's explicit tap is the sole
- *         trust-conferring act. Nothing promotes implicitly.
- *  INV-4  parseConnectLink is the security boundary — total + host-pinned;
- *         rejects BEFORE mount. (Fragment-optional by design: a bare-code
- *         link parses, then refuses 'unwired' honestly at resolve.)
- *  INV-5  keyFragment is key material — this component NEVER logs / echoes the
- *         raw input or the parsed keyFragment. The error text is a FIXED
- *         string (no interpolation), so a pasted or scanned full URL can
- *         never leak its #fragment into the DOM, a toast, or telemetry.
- *  INV-6  no silent loss — an unparseable paste surfaces an explicit, honest
- *         inline error.
+ *  INV-1  one join path — we ONLY mount JoinerCeremony; zero parallel join/verify/trust logic.
+ *  INV-2  perception ≠ trust — parsing confers no trust; the human COMMIT inside the ceremony
+ *         is the sole trust-conferring act. We never auto-commit.
+ *  INV-4  parseInviteUrl is the security boundary — total + host-pinned; rejects BEFORE mount.
+ *  INV-5  keyFragment is key material — this component NEVER logs / echoes the raw input or the
+ *         parsed keyFragment. The error text is a FIXED string (no interpolation of user input),
+ *         so a pasted or scanned full URL can never leak its #fragment into the DOM, a toast, or telemetry.
+ *  INV-6  no silent loss — an unparseable paste surfaces an explicit, honest inline error.
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { ConnectSheet } from '@/components/ConnectSheet';
+import { createPortal } from 'react-dom';
+import { JoinerCeremony } from '@/components/JoinerCeremony';
 import { ScanToJoin } from '@/components/ScanToJoin';
-import {
-  createConnectAddLogic,
-  type ConnectLinkParse,
-} from '@/lib/connect/add-logic';
+import { parseInviteUrl, type ParsedInvite } from '@/lib/invite/parseInviteUrl';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
 type Props = {
@@ -42,16 +32,13 @@ type Props = {
   onClose: () => void;
   /** Skip overlay chrome — hosted inside GrowSurface tabs. */
   embedded?: boolean;
-  /** Owner fingerprint — needed to land arrivals in the owner's Gate. */
-  ownerFp: string;
 };
 
-export function JoinByCode({ open, onClose, embedded = false, ownerFp }: Props) {
+export function JoinByCode({ open, onClose, embedded = false }: Props) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [invite, setInvite] = useState<ConnectLinkParse | null>(null);
+  const [invite, setInvite] = useState<ParsedInvite | null>(null);
   const [scanning, setScanning] = useState(false);
-  const [logic] = useState(() => createConnectAddLogic());
 
   const reset = () => {
     setInput('');
@@ -65,10 +52,10 @@ export function JoinByCode({ open, onClose, embedded = false, ownerFp }: Props) 
     onClose();
   };
 
-  const handleScannedInvite = useCallback((parsed: ConnectLinkParse) => {
+  const handleScannedInvite = useCallback((parsed: ParsedInvite) => {
     setError(null);
     setScanning(false);
-    setInvite(parsed); // INV-2: this only MOUNTS the connect flow; the owner's tap still confers trust.
+    setInvite(parsed); // INV-2: this only MOUNTS the ceremony; the human still commits inside it.
   }, []);
 
   useEffect(() => {
@@ -81,32 +68,60 @@ export function JoinByCode({ open, onClose, embedded = false, ownerFp }: Props) 
 
   const handleJoin = () => {
     // INV-4: the untrusted paste crosses the trust boundary here and only here.
-    const parsed = logic.parseConnectLink(input);
+    const parsed = parseInviteUrl(input);
     if (!parsed) {
       // INV-5: fixed message — NEVER echo `input` (it carries the #key). Surface no fragment.
       setError(
-        "That doesn't look like a svrnty connect link. Paste the whole link — it includes the key after the # (e.g. svrnty.is/c/…#…) — or the bare code.",
+        "That doesn't look like a svrnty invite link. Paste the whole link — it includes the key after the # (e.g. svrnty.is/c/…#…).",
       );
       return;
     }
     setError(null);
-    setInvite(parsed); // INV-2: this only MOUNTS the connect flow; the owner's tap still confers trust.
+    setInvite(parsed); // INV-2: this only MOUNTS the ceremony; the human still commits inside it.
   };
 
   if (!open) return null;
 
-  // Joining: mount the ONE connect flow, full-screen, no nav (INV-1).
+  // Joining: mount the SAME ceremony the /c/ route uses, full-screen, no nav (INV-1).
+  // Portal so the ceremony escapes GrowSurface tab chrome (fixed overlay would
+  // otherwise be clipped/hidden by the tab panel).
   if (invite) {
-    return (
-      <ConnectSheet
-        open
-        onClose={handleClose}
-        ownerFp={ownerFp}
-        link={invite}
-        logic={logic}
-        onAdmitted={handleClose}
-      />
+    const ceremony = (
+      <div
+        data-testid="joiner-ceremony-overlay"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 90,
+          overflowY: 'auto',
+          background: E.bgCss,
+        }}
+      >
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="Close"
+          style={{
+            position: 'fixed',
+            top: 16,
+            left: 16,
+            zIndex: 91,
+            padding: '6px 12px',
+            borderRadius: 999,
+            border: `1px solid ${E.borderLit}`,
+            background: 'rgba(8,5,3,.72)',
+            color: E.text,
+            cursor: 'pointer',
+            fontFamily: E.fontSans,
+            fontSize: 12,
+          }}
+        >
+          ← Back
+        </button>
+        <JoinerCeremony code={invite.code} keyFragment={invite.keyFragment} />
+      </div>
     );
+    return typeof document === 'undefined' ? ceremony : createPortal(ceremony, document.body);
   }
 
   // Paste view (ScanToJoin replaces the body while the camera is live).

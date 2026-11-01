@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Camera QR-scan receive side (CURSOR_QUEUE item 1).
 // Paste-code join + QR generation are already built — this spec covers Scan only:
-// permission-on-tap, FIXED errors (no fragment interpolation), same connect-sheet path.
+// permission-on-tap, FIXED errors (no fragment interpolation), same JoinerCeremony path.
 
 const SCAN_KEY = 'e2ekeyfrag';
 const SCAN_CODE = 'e2escan';
@@ -62,12 +62,12 @@ test.describe('Scan-to-join — camera QR receive side', () => {
 
     await dialog.getByTestId('scan-invite-cancel').click();
     await expect(dialog.getByLabel(/paste your invite link/i)).toBeVisible();
-    await dialog.getByLabel(/paste your invite link/i).fill('not an invite!!');
+    await dialog.getByLabel(/paste your invite link/i).fill('not-an-invite');
     await dialog.getByRole('button', { name: /^join$/i }).click();
-    await expect(dialog.getByText(/doesn't look like a svrnty connect link/i)).toBeVisible();
+    await expect(dialog.getByText(/doesn't look like a svrnty invite link/i)).toBeVisible();
   });
 
-  test('a decoded invite mounts the connect flow; fragment never renders', async ({
+  test('a decoded invite mounts the existing JoinerCeremony; fragment never renders', async ({
     page,
   }) => {
     test.setTimeout(60_000);

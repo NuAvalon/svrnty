@@ -4,12 +4,12 @@
  * Grow — one surface for give + receive.
  *
  * Tab 1 "Show my code" hosts the existing GrowSheet body (mint + QR + share link).
- * Tab 2 "Scan / paste" hosts the JoinByCode body (ScanToJoin + connect paste),
- * which mounts the ONE connect flow (ConnectSheet — resolve → Gate → one tap
- * to Known). JoinerCeremony still owns the /c/ route's direct landings.
+ * Tab 2 "Scan / paste" hosts the existing JoinByCode body (ScanToJoin + paste).
+ * JoinerCeremony still takes over full-screen when a valid invite is set (Tab 2
+ * already branches this; we do not flatten it into the tab chrome).
  *
- * Consent: joining remains an invitation, never instant — Tab 2 lands arrivals
- * in the GATE pending; the owner's explicit tap is the only promote.
+ * Consent: joining remains an invite, not instant — Tab 2 only CALLS JoinByCode /
+ * ScanToJoin / JoinerCeremony unchanged.
  */
 
 import { useEffect, useState } from 'react';
@@ -116,12 +116,7 @@ export function GrowSurface({ open, onClose, identity }: Props) {
             <GrowSheet open={open} onClose={onClose} identity={identity} embedded />
           </TabsContent>
           <TabsContent value={TAB_SCAN} className="mt-4">
-            <JoinByCode
-              open={open}
-              onClose={onClose}
-              embedded
-              ownerFp={identity?.identity?.fingerprint ?? ''}
-            />
+            <JoinByCode open={open} onClose={onClose} embedded />
           </TabsContent>
         </Tabs>
       </div>
