@@ -325,6 +325,10 @@ async function decryptIntroBlob(
  * suppression keyed on the canonical form would never find. A spelling that is not exactly canonical is refused.
  */
 const CANONICAL_FP = /^[0-9a-f]{64}$/;
+/** The ONLY form a consent time is read in: strict ISO-8601 UTC, exactly what toISOString() writes (seconds, up to three fractional digits, a capital Z). Anything
+ *  else is refused, never interpreted: Date.parse also reads an offset-less time as the device's LOCAL time (shifting both window edges by the recipient's time zone)
+ *  and takes forms such as "Nov 1 2026" that differ between engines. */
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
 
 /** The newcomer's consent is good for 7 days from the time THEY signed it (consent.ts, not the introducer's envelope.ts), and may be at most 5 minutes
  *  ahead of the recipient's clock. A consent signed once must not let an introducer re-present it forever; the newcomer cannot withdraw inside the window. */
@@ -390,7 +394,8 @@ export async function verifyIntroduction(
   if (c.nonce !== envelope.nonce) return null;
   // REPLAY WINDOW: the newcomer's signed time must be readable, not ahead of our clock by more than the skew, and not older than the max age.
   const now = opts.nowMs ?? Date.now();
-  const consentTs = Date.parse(c.ts);
+  // The time must be strict ISO-8601 UTC (ISO_UTC); anything else is NaN and refused below. The honest builder writes toISOString().
+  const consentTs = ISO_UTC.test(c.ts) ? Date.parse(c.ts) : NaN;
   if (!Number.isFinite(consentTs) || consentTs > now + CONSENT_FUTURE_SKEW_MS || consentTs < now - CONSENT_MAX_AGE_MS) return null;
   // S1: the displayed name must be EXACTLY the one the newcomer signed consent for —
   // reject a card that renames them (deadname/survivor-safety). This is NOT a fast-fail duplicate of the signatures: a hostile INTRODUCER
