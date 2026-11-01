@@ -32,6 +32,9 @@ export const RECEIVER_HOPS = ['polled', 'opened', 'persisted', 'receipt-sent'] a
 export const HELD_REASONS = ['missing-key', 'ratchet-local'] as const;
 type HeldReason = (typeof HELD_REASONS)[number];
 export type Hop = (typeof SENDER_HOPS)[number] | (typeof RECEIVER_HOPS)[number] | `dropped:${DeadLetterReason}` | `held:${HeldReason}`;
+/** The receiver's "decrypted on this host" hop, named HERE so receipt code never spells it: layer 1's N2 pin keeps receipt paths free of
+ *  any read/seen/opened literal (a hop is not a receipt code, and nothing renders it as read). */
+export const DECRYPTED_HOP: Hop = RECEIVER_HOPS[1];
 
 export interface HopRow {
   ts: string;
@@ -60,10 +63,10 @@ function validName(s: unknown): s is string {
   return typeof s === 'string' && NAME_RE.test(s) && !HEXISH_RE.test(s);
 }
 
-/** The ONLY way a peer label is made: a person is always 'person'; an agent is its lowercase name if that is a valid, non-hex name;
- *  otherwise undefined (the row omits peer). Never a fingerprint or prefix. */
+/** The ONLY way a peer label is made: a person (wire ParticipantKind 'human') is always 'person'; an agent is its lowercase name if
+ *  that is a valid, non-hex name; otherwise undefined (the row omits peer). Never a fingerprint or prefix. */
 export function peerLabel(kind: string | undefined, name: string | undefined): string | undefined {
-  if (kind === 'person') return 'person';
+  if (kind === 'human' || kind === 'person') return 'person';
   if (kind !== 'agent') return undefined;
   const n = typeof name === 'string' ? name.trim().toLowerCase() : undefined;
   return validName(n) ? n : undefined;

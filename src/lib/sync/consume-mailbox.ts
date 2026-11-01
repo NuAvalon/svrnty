@@ -260,6 +260,9 @@ export interface ConsumeDeps {
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
+  /** Layer 3 hop trail (headless only): told, by the RELAY's envelope id, which envelopes were listed, dropped (recorded + acked) or
+   *  held. Omit = no-op (FE). It can never change what is consumed or acked: a throw from it is swallowed. */
+  onHop?: (hop: 'polled' | 'dropped' | 'held', envelopeId: string, reason?: DeadLetterReason) => void;
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
   emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
@@ -331,6 +334,16 @@ type Outcome =
  * ones for a later poll. Returns a summary. Never throws on a single bad envelope — one poisoned
  * message cannot wedge the channel.
  */
+/** Layer 3: tell the optional hop-trail hook. Fail-open: it can never affect consume. */
+function hop(deps: ConsumeDeps, kind: 'polled' | 'dropped' | 'held', id: unknown, reason?: DeadLetterReason): void {
+  if (!deps.onHop || typeof id !== 'string') return;
+  try {
+    deps.onHop(kind, id, reason);
+  } catch {
+    /* the trail is fail-open */
+  }
+}
+
 export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<ConsumeSummary> {
   try {
     return await consumeOnce(deps);
@@ -372,6 +385,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     return summary;
   }
   summary.polled = envelopes.length;
+  for (const e of envelopes) hop(deps, 'polled', e?.envelope_id);
   const txn = deps.chunk;
   if (txn) summary.deduped = 0;
   if (deps.outOfTime) summary.deferred = 0;
@@ -485,6 +499,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
         summary.deadLettered++;
         if (sink.flush) stagedRecords.add(n.id);
         bump('not-in-book');
+        hop(deps, 'dropped', n.id, 'not-in-book');
       } catch (err) {
         if (i !== -1) ids.splice(i, 1);
         summary.unrecorded++;
@@ -530,6 +545,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
         if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
         bump(item.need.reason);
         toAck.push(item.id);
+        hop(deps, 'dropped', item.id, item.need.reason);
       } catch (err) {
         summary.unrecorded++;
         console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
@@ -631,6 +647,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
       try {
         const saved = await sink.record(row);
         idByKey.set(key, h.id);
+        hop(deps, 'held', h.id, h.reason);
         // #720 r2 (Flint, B1 for holds): an admitted contact's LOCAL frame is bounded only against that contact's own; 'missing-key' holds
         // (outsider-depositable while this device has no kem secret) share their own group. A group may only push out its own.
         const group = h.reason === 'ratchet-local' ? `local:${(h.fp ?? '').toLowerCase()}` : 'missing-key';

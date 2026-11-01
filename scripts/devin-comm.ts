@@ -5,6 +5,7 @@
 //   npx tsx scripts/devin-comm.ts send <fingerprint> "<body>"
 //   npx tsx scripts/devin-comm.ts poll
 //   npx tsx scripts/devin-comm.ts poll-json          — decrypt inbound → durable journal (flint §B cron)
+//   npx tsx scripts/devin-comm.ts trail <note_id>      — this agent's LOCAL hop trail for one note (layer 3; never shipped)
 //   npx tsx scripts/devin-comm.ts loop [intervalMs]
 //   npx tsx scripts/devin-comm.ts grow [uses]          — mint a Grow shortlink (remote, multi-use)
 //   npx tsx scripts/devin-comm.ts join <url> --expect-fp <fp64> --name <petname>  — resolve a Grow link, send joiner-response, THEN admit the giver (refuses on any mismatch)
@@ -22,6 +23,7 @@ import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headles
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, type HeadlessOwner } from '../src/lib/headless/headless-client';
+import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { resolvePeerKemForSend, formatNotSent, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
@@ -179,6 +181,7 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
   const deps = await buildHeadlessConsumeDeps(owner, store, {
     relayBase: RELAY,
     budgetMs: CONSUME_BUDGET_MS,
+    hopTrailDir: DIR, // layer 3: LOCAL hop trail in this agent's own dir
     deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
   });
   deps.joiner = buildLocalJoinerSeam(owner, store);
@@ -384,6 +387,24 @@ async function main() {
     return;
   }
 
+  if (cmd === 'trail') {
+    // Layer 3: LOCAL ONLY. This agent's own hop rows for one note_id / envelope_id: ids, times, hop names, a peer NAME or "person".
+    // Never content, never a fingerprint. A sender's trail shows how far its note got; only "delivered to <x>'s app" means delivered.
+    const id = rest[0] ?? '';
+    if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(id)) {
+      console.error('usage: trail <note_id|envelope_id>');
+      process.exitCode = 2;
+      return;
+    }
+    const rows = readHopTrail(DIR, id);
+    if (!rows.length) {
+      console.log('no hop rows for that id on this host');
+      return;
+    }
+    for (const r of rows) console.log(`${r.ts}  ${renderHop(r)}${r.peer ? `  (${r.peer})` : ''}`);
+    return;
+  }
+
   if (cmd === 'gate') {
     const g = loadGate()[owner.fingerprint] ?? {};
     const arrivals = Object.values(g);
@@ -451,7 +472,7 @@ async function main() {
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl, hopTrailDir: DIR });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT; the chain already advanced
       console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
     }
@@ -469,7 +490,7 @@ async function main() {
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl });
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl, hopTrailDir: DIR });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
       console.error(sendThrowLine(fp, e, tf.stage())); process.exitCode = 1; return;
     }

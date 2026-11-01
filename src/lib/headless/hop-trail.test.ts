@@ -5,7 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  HOP_TRAIL_FILE, HOP_TRAIL_MAX_BYTES, RECEIVER_HOPS, SENDER_HOPS, type Hop, isHop, ownAgentName, peerLabel, readHopTrail, recordHop, renderHop,
+  DECRYPTED_HOP, HOP_TRAIL_FILE, HOP_TRAIL_MAX_BYTES, RECEIVER_HOPS, SENDER_HOPS, type Hop, isHop, ownAgentName, peerLabel, readHopTrail, recordHop, renderHop,
 } from './hop-trail';
 import { DEAD_LETTER_REASONS } from '@/lib/sync/dead-letter';
 
@@ -37,6 +37,7 @@ test('H2 the hop list is fixed: free text, "read"/"seen", an unknown reason, or 
     for (const r of DEAD_LETTER_REASONS) assert.equal(isHop(`dropped:${r}`), true);
     assert.equal(isHop('held:missing-key') && isHop('held:ratchet-local'), true);
     for (const h of [...SENDER_HOPS, ...RECEIVER_HOPS]) assert.equal(isHop(h), true);
+    assert.equal(DECRYPTED_HOP, 'opened', 'the named hop is the receiver\'s decrypted-on-this-host hop (order-pinned)');
     assert.deepEqual(lines(d), []);
   } finally {
     rmSync(d, { recursive: true, force: true });
@@ -65,7 +66,8 @@ test('H4 NEVER a fingerprint: peerLabel refuses hex "names", a person is always 
   assert.equal(peerLabel('agent', 'AB12CD34EF'), undefined, 'case-folded first, then refused');
   assert.equal(peerLabel('agent', 'Peter Alberts'), undefined, 'not a valid agent name');
   assert.equal(peerLabel('agent', undefined), undefined);
-  assert.equal(peerLabel('person', 'Peter'), 'person', 'a person is ALWAYS "person", never their name');
+  assert.equal(peerLabel('human', 'Peter'), 'person', 'the wire kind for a person is "human": ALWAYS labelled "person", never their name');
+  assert.equal(peerLabel('person', 'Peter'), 'person');
   assert.equal(peerLabel(undefined, 'archie'), undefined);
   const d = dir();
   try {
