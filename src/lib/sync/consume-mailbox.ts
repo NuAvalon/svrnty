@@ -493,6 +493,9 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   // the keep bound); a twin deferred by the time budget, held, or kept on the relay by a failed record keeps the id unacked (the finished
   // twin's key is committed, so the next poll dedupes it and finishes the other). Unique ids (our relay refuses a duplicate (mailbox, id)
   // deposit, mailbox-store.ts) behave exactly as before: one listing, one decision, one push.
+  // It counts DECISIONS, not distinct keys, on purpose (Flint #3264): the IDENTICAL envelope listed twice (same id AND blob = same v2 key)
+  // still gets acked, because the second copy dedupes as 'cleared', which is a decision; a distinct-key count would hold that id forever.
+  // It relies on each listed envelope reaching at most ONE terminal decision (the door's structure); the "acked twice" mutant pins that side.
   const listedById = new Map<string, number>();
   for (const e of envelopes) if (typeof e?.envelope_id === 'string') listedById.set(e.envelope_id, (listedById.get(e.envelope_id) ?? 0) + 1);
   const doneById = new Map<string, number>();
