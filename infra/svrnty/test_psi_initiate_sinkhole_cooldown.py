@@ -25,6 +25,7 @@ sleeps.
 import base64
 import hashlib
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -114,6 +115,13 @@ class World:
                 "SELECT COUNT(*) FROM psi_sessions WHERE (initiator = ? AND responder = ?) OR (initiator = ? AND responder = ?)",
                 (who.fp, to.fp, to.fp, who.fp)).fetchone()[0]
 
+    def psi_notice_count(self, responder: Ident) -> int:
+        """Rows the genuine path writes to tell the responder a request is waiting; a sinkholed pair must write none."""
+        with self.db() as db:
+            return db.execute(
+                "SELECT COUNT(*) FROM messages WHERE recipient = ? AND sender_fingerprint = 'satellite:psi'",
+                (responder.fp,)).fetchone()[0]
+
     def sinkhole_count(self) -> int:
         with self.db() as db:
             return db.execute("SELECT COUNT(*) FROM psi_sinkhole").fetchone()[0]
@@ -153,7 +161,8 @@ def w(monkeypatch, tmp_path):
 def _shape(r):
     """The observable answer shape: status code, body status, top-level key set, value types."""
     j = r.json()
-    return r.status_code, j.get("status"), frozenset(j.keys()), frozenset(type(v) for v in j.values())
+    return (r.status_code, j.get("status"), frozenset(j.keys()), frozenset(type(v) for v in j.values()),
+            j.get("message"), bool(re.fullmatch(r"[0-9a-f]{32}", str(j.get("session_id")))))
 
 
 # ── non-completing pairs ────────────────────────────────────────────────────────────────────────
@@ -181,6 +190,8 @@ def test_p1b_noncompleting_initiate_answers_with_the_genuine_shape(w):
 
     genuine = _shape(w.initiate(w.b, w.a))
     assert genuine[0] == 200
+    # positive control: the genuine path DOES write a session row and a notice, so the zeros below mean something
+    assert w.session_count(w.b, w.a) == 1 and w.psi_notice_count(w.a) == 1
 
     # (i) the responder blocked the initiator — the pair is otherwise fully mutual
     w.allow(w.b, d)
@@ -199,14 +210,19 @@ def test_p1b_noncompleting_initiate_answers_with_the_genuine_shape(w):
     never_added = _shape(w.initiate(w.b, f))
 
     for name, got in (("blocked", blocked), ("removed", removed), ("never-added", never_added)):
-        assert got == genuine, f"{name} pair answered with a different shape: {got} vs {genuine}"
+        assert got == genuine, f"{name} pair answered differently (status, keys, types, message text, session_id format): {got} vs {genuine}"
+    # ...and none of them left anything the responder could act on: no session row, no notice
+    for name, other in (("blocked", d), ("removed", e), ("never-added", f)):
+        assert w.session_count(w.b, other) == 0, f"{name}: a non-completing initiate must leave no session row"
+        assert w.psi_notice_count(other) == 0, f"{name}: a non-completing initiate must not notify the responder"
 
 
 # ── per-pair cooldown ───────────────────────────────────────────────────────────────────────────
 
-def test_p2a_recent_completed_session_refuses_a_new_initiate_in_either_direction(w):
+@pytest.mark.parametrize("status", ["responded", "complete"])
+def test_p2a_recent_completed_session_refuses_a_new_initiate_in_either_direction(w, status):
     """One session in a completing status inside the window refuses the next initiate, both ways."""
-    w.seed_session(w.a, w.b, "responded", COOLDOWN_SECONDS - 1)
+    w.seed_session(w.a, w.b, status, COOLDOWN_SECONDS - 1)
     assert w.initiate(w.b, w.a).status_code == 429
     assert w.initiate(w.a, w.b).status_code == 429
 
