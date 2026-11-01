@@ -938,10 +938,13 @@ test('G-RO-9 R-b: pickReceipts terminates (cap == due, cap > due, cap 0, empty, 
     const rng = () => 0.5;
     const s = ['X', 'X', 'Y', 'Z', 'Z', 'Z'];
     const many = Array.from({ length: 1000 }, (_, i) => 'p' + (i % 200));
-    const out = [pickReceipts(s, s.length, rng).length, pickReceipts(s, 50, rng).length, pickReceipts(s, 0, rng).length, pickReceipts([], 3, rng).length, pickReceipts(many, 1000, rng).length];
+    const out = [pickReceipts(s, s.length, rng).length, pickReceipts(s, 50, rng).length, pickReceipts(s, 0, rng).length, pickReceipts([], 3, rng).length, pickReceipts(many, 1000, rng).length,
+      pickReceipts(['X', 'X', 'X'], 3, rng).length, pickReceipts(['X', 'X', 'X', 'Y'], 4, rng).length];
     console.log(JSON.stringify(out));`;
   const r = spawnSync(process.execPath, ['--import', 'tsx', '-e', code], { cwd: join(__dirname, '..', '..', '..'), timeout: 20_000, encoding: 'utf8' });
   assert.equal(r.signal, null, `pickReceipts did not terminate (killed by ${r.signal})`);
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(JSON.parse(r.stdout.trim().split('\n').pop()!), [6, 6, 0, 0, 1000], 'each case picks exactly min(cap, due)');
+  // the last two pin the bound's QUANTITY (Archie #3277/#3278, Flint #3280): ONE sender with 3 due at k=3 sends all 3, and 3 + 1 at k=4 sends
+  // all 4. The bound counts DUE RECEIPTS (senders has one entry per receipt), never unique senders, or k>1 would silently cut a run short.
+  assert.deepEqual(JSON.parse(r.stdout.trim().split('\n').pop()!), [6, 6, 0, 0, 1000, 3, 4], 'each case picks exactly min(cap, due)');
 });
