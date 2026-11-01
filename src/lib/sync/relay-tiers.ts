@@ -6,6 +6,11 @@
 // is the problem: 5xx, 429 (at-cap), 408, or a network failure/timeout. Any other refusal (400 malformed, 413 too big, 401/403) would be the same
 // on the next relay, so it ends the walk. An UNCONFIRMED outcome (5xx/timeout: the relay may have stored it) followed by a success elsewhere can
 // store the note twice by design; receivers dedupe on note_id (the #720 r2 redelivery branch).
+//
+// C9 LIMIT (Archie #3503): "a 4xx means the relay stored nothing" is verified only for OUR relay (app/api/relay/envelope/route.ts: 413/429 return
+// before depositEnvelope, the store's own failures are exactly 400/413/429, the only 500 is the catch-all). For a relay we did not write it is an
+// ASSUMPTION. The walk therefore ends on a non-failover 4xx and the caller words it NOT SENT with the status named; it is not proof that nothing
+// was stored. A relay that stores a note and then answers 4xx would make that line wrong, and a re-send would duplicate it.
 
 import type { ConsumeSummary } from '@/lib/sync/consume-mailbox';
 
@@ -67,8 +72,10 @@ export interface DepositOutcome {
   tier: number | null;
   /** How many relays were contacted. */
   tried: number;
-  /** True if any attempt ended UNCONFIRMED (5xx/timeout/network): that relay may still hold the note, so never say "not sent". */
+  /** True if any attempt ended UNCONFIRMED (5xx/408/timeout/network): that relay may still hold the note, so never say "not sent". */
   unconfirmed: boolean;
+  /** The HTTP status of the LAST relay that answered; absent if none did (every request threw). */
+  status?: number;
 }
 
 /**
@@ -82,6 +89,7 @@ export async function depositWithFailover(
   let tried = 0;
   let unconfirmed = false;
   let threw = 0;
+  let status: number | undefined;
   let firstError: unknown;
   for (let i = 0; i < relays.length; i++) {
     tried++;
@@ -94,12 +102,23 @@ export async function depositWithFailover(
       if (firstError === undefined) firstError = err;
       continue;
     }
-    if (res.ok) return { deposited: true, tier: i, tried, unconfirmed };
-    if (res.status >= 500) unconfirmed = true;
-    if (!failoverWorthy(res.status)) return { deposited: false, tier: null, tried, unconfirmed };
+    status = res.status;
+    if (res.ok) return { deposited: true, tier: i, tried, unconfirmed, status };
+    // 408 is failover-worthy AND unconfirmed (the request may have been read before the relay timed out); same class as a 5xx (peer-kem depositFailureLine)
+    if (res.status >= 500 || res.status === 408) unconfirmed = true;
+    if (!failoverWorthy(res.status)) return { deposited: false, tier: null, tried, unconfirmed, status };
   }
   if (threw === tried && firstError !== undefined) throw firstError;
-  return { deposited: false, tier: null, tried, unconfirmed };
+  return { deposited: false, tier: null, tried, unconfirmed, ...(status !== undefined ? { status } : {}) };
+}
+
+/**
+ * The time budget (ms) for the next relay of a multi-relay poll pass. The pass has ONE budget (#712: sized to fit under the quarantine ward's
+ * watchdog); each relay gets an equal share of what is left when its turn comes, so N relays never add up to N x the budget. A relay reached
+ * with nothing left still gets the 1 s floor (the budget's own lower bound), so the sum can exceed the total by at most one floor per relay.
+ */
+export function relayBudgetShare(totalMs: number, elapsedMs: number, relaysLeft: number): number {
+  return Math.max(1_000, Math.floor((totalMs - elapsedMs) / Math.max(1, relaysLeft)));
 }
 
 /** What one relay's poll came to: its summary, or that it failed outright (threw). Counts and status only: never a URL, never an id. */
@@ -116,14 +135,19 @@ export function mergeRelaySummaries(polls: readonly RelayPoll[]): ConsumeSummary
     lost: {}, opened_hybrid: 0, opened_classical: 0, released: 0, acked: 0,
     relays: polls.length, relaysFailed: 0, relaysRejected: 0,
   };
+  const sums = out as unknown as Record<string, number>;
   for (const p of polls) {
     if ('failed' in p) {
       out.relaysFailed++;
       continue;
     }
     const x = p.summary;
-    for (const k of ['polled', 'applied', 'ignited', 'notes', 'delivered', 'dropped', 'held', 'deadLettered', 'unrecorded', 'opened_hybrid', 'opened_classical', 'released', 'acked'] as const) {
-      out[k] += x[k] ?? 0;
+    // EVERY numeric counter is summed, whatever its name (axis: each number-valued field of the summary), not a hand-kept list: a counter added to
+    // ConsumeSummary later (deferred, deduped, adopt_future_ignored, the receipts_* counts a headless poll adds) must not be dropped by a multi-relay pass,
+    // and a dropped counter reads as zero. `rejected` is an HTTP status, not a count, and `lost` is a map: both handled below.
+    for (const [k, n] of Object.entries(x)) {
+      if (k === 'rejected' || typeof n !== 'number') continue;
+      sums[k] = (sums[k] ?? 0) + n;
     }
     for (const [reason, n] of Object.entries(x.lost ?? {})) {
       const r = reason as keyof ConsumeSummary['lost'];

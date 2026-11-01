@@ -291,6 +291,22 @@ export async function listNotesForThread(threadId: string): Promise<NoteRecord[]
   return out.sort((a, b) => a.sent_at.localeCompare(b.sent_at));
 }
 
+/**
+ * sent_at of every INBOUND note already stored from this contact, across all threads (#720 R5b replay guard: a peer's new first frame may replace our
+ * session only if its signed time is newer than all of these). The fingerprint compare ignores case, so a differently-cased copy still counts (the
+ * stricter direction: it can only make the guard refuse more).
+ */
+export async function listInboundSentAtFrom(peerFingerprint: string): Promise<string[]> {
+  const want = peerFingerprint.toLowerCase();
+  const out: string[] = [];
+  for (const t of await listThreads()) {
+    for (const n of await listNotesForThread(t.thread_id)) {
+      if (n.direction === 'inbound' && n.from_fingerprint.toLowerCase() === want) out.push(n.sent_at);
+    }
+  }
+  return out;
+}
+
 export async function deleteThread(threadId: string): Promise<void> {
   const notes = await listNotesForThread(threadId);
   for (const n of notes) await txDelete('notes', n.note_id);
@@ -458,6 +474,30 @@ export async function readRatchetSession(peerFingerprint: string): Promise<Ratch
   } catch {
     return { state: 'unreadable' };
   }
+}
+
+/**
+ * Delete ONE peer's session row (#720 reset, Flint reset-semantics R1). Returns whether a row existed. Reads and deletes in one readwrite
+ * transaction. UNCONDITIONAL on purpose (no version compare): a reset must also clear an UNREADABLE row, which has no version to compare.
+ * The caller holds the per-peer session lock (R5), which is what keeps this from racing an open or a seal. Touches no other store and no
+ * other peer: notes, threads, trust and dead-letter records are not here.
+ */
+export async function deleteRatchetSession(peerFingerprint: string): Promise<boolean> {
+  const db = await openDb();
+  return new Promise<boolean>((resolve, reject) => {
+    const tx = db.transaction('ratchet_sessions', 'readwrite');
+    const os = tx.objectStore('ratchet_sessions');
+    let existed = false;
+    const cur = os.get(peerFingerprint);
+    cur.onsuccess = () => {
+      existed = cur.result !== undefined;
+      if (existed) os.delete(peerFingerprint);
+    };
+    cur.onerror = () => reject(cur.error);
+    tx.oncomplete = () => resolve(existed);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error('ratchet session delete aborted'));
+  });
 }
 
 /** Back-compat for existing callers/exports: the snapshot, or null for BOTH absent and unreadable. New code uses readRatchetSession. */

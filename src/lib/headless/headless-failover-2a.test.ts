@@ -145,7 +145,7 @@ test('P4 control: one relay in the list behaves exactly like pollHeadlessOnce', 
 });
 
 test('W1 an unconfirmed outcome is never worded "NOT SENT" (a re-send would duplicate); a definite refusal still is', () => {
-  assert.match(formatUnconfirmed('ab'.repeat(32), 'a relay may have stored it; check before resending'), /^UNCONFIRMED to abababab: /);
+  assert.match(formatUnconfirmed('ab'.repeat(32), 'a relay may have stored it; kept locally'), /^UNCONFIRMED to abababab: a relay may have stored it; kept locally\. Resending could deliver it twice\.$/);
   assert.doesNotMatch(formatUnconfirmed('ab'.repeat(32), 'x'), /NOT SENT/);
   assert.match(formatNotSent('ab'.repeat(32), 'x'), /^NOT SENT/);
 });
@@ -157,6 +157,9 @@ test('W2 static: devin-comm reads the list through parseRelayList, sends with re
   assert.equal((src.match(/relayBases: RELAYS/g) ?? []).length, 2, 'both send paths (tr-send and send) fail over');
   assert.doesNotMatch(src, /relayBase: RELAY,/, 'no send path is left on the single relay');
   assert.match(src, /if \(RELAYS\.length === 1\) return pollRelay\(owner, store, RELAY\);/);
+  assert.match(src, /relayBudgetShare\(CONSUME_BUDGET_MS, Date\.now\(\) - start, left--\)/, 'the relays of one pass SHARE the consume budget (#712), they do not each get all of it');
+  assert.doesNotMatch(src, /pollRelay\(owner, store, relayBase\)/, 'no multi-relay poll call is left on the full budget');
   assert.match(src, /const \{ relays, relaysFailed, relaysRejected, \.\.\.summary \} = await pollHeadlessAllRelays/, 'the extra keys are stripped before the summary is printed');
-  assert.equal((src.match(/\(r\.unconfirmed && RELAYS\.length > 1\) \? formatUnconfirmed/g) ?? []).length, 2, 'UNCONFIRMED wording only when failover was in play; one relay keeps the pinned NOT SENT text');
+  assert.equal((src.match(/\(r\.unconfirmed && RELAYS\.length > 1\) \? formatUnconfirmed/g) ?? []).length, 2, 'the failover UNCONFIRMED wording only when failover was in play; one relay keeps the single-relay line');
+  assert.equal((src.match(/: depositFailureLine\(fp, r\.status, /g) ?? []).length, 2, 'every other failed deposit names the relay status (single relay, or a multi-relay walk that ended on a refusal)');
 });

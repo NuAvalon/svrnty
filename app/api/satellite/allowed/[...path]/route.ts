@@ -18,8 +18,7 @@
 // DELETE/GET carry only the X-Signature header. Path is charset-guarded (no traversal). Dark until the
 // client connect/trust flow is rewired to call it (Apollo) + isPSIDiscoveryLive flips.
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
 
 const PATH_RE = /^[A-Za-z0-9_./-]+$/;
 
@@ -68,7 +67,7 @@ export async function POST(
       );
     }
 
-    const res = await fetch(`${SATELLITE_URL}/allowed/${p}`, {
+    const res = await fetch(`${satelliteBaseUrl()}/allowed/${p}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -92,7 +91,7 @@ export async function DELETE(
     const sig = request.headers.get('X-Signature');
     if (sig) headers['X-Signature'] = sig;
 
-    const res = await fetch(`${SATELLITE_URL}/allowed/${p}`, { method: 'DELETE', headers });
+    const res = await fetch(`${satelliteBaseUrl()}/allowed/${p}`, { method: 'DELETE', headers });
     return relay(await res.text(), res.status);
   } catch {
     return NextResponse.json({ error: 'allowed service unavailable' }, { status: 502 });
@@ -112,7 +111,7 @@ export async function GET(
     const sig = request.headers.get('X-Signature');
     if (sig) headers['X-Signature'] = sig;
 
-    const res = await fetch(`${SATELLITE_URL}/allowed/${p}`, { headers });
+    const res = await fetch(`${satelliteBaseUrl()}/allowed/${p}`, { headers });
     return relay(await res.text(), res.status);
   } catch {
     return NextResponse.json({ error: 'allowed service unavailable' }, { status: 502 });
