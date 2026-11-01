@@ -62,7 +62,7 @@ export function formatNotSent(peerFingerprint: string, reason: string): string {
 export function depositFailureLine(peerFingerprint: string, status: number | undefined, tail = ''): string {
   const t = tail ? `; ${tail}` : '';
   if (status !== undefined && (status >= 500 || status === 408)) {
-    return formatUnconfirmed(peerFingerprint, `the relay answered ${status}; it may or may not be in their mailbox${t}`);
+    return formatUnconfirmed(peerFingerprint, `the relay answered HTTP ${status}; it may or may not be in their mailbox${t}`);
   }
   if (status !== undefined) return formatNotSent(peerFingerprint, `the relay refused the deposit (HTTP ${status}); nothing was stored${t}`);
   return formatNotSent(peerFingerprint, `the relay did not accept the deposit${t}`);

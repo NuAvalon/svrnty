@@ -22,10 +22,11 @@ import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact }
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
-import { sendNoteFromHeadless, buildHeadlessConsumeDeps, receiptCounts, type HeadlessOwner, type ReceiptCounts } from '../src/lib/headless/headless-client';
+import { sendNoteFromHeadless, buildHeadlessConsumeDeps, pollHeadlessAllRelays, receiptCounts, type HeadlessOwner, type ReceiptCounts } from '../src/lib/headless/headless-client';
+import { parseRelayList, relayBudgetShare } from '../src/lib/sync/relay-tiers';
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
-import { resolvePeerKemForSend, formatNotSent, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
+import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
 import { consumeInboundContactUpdates, type ConsumeSummary, type JoinerResponseSeam } from '../src/lib/sync/consume-mailbox';
 import { verifyJoinerResponse } from '../src/lib/trust/joiner-response';
 import { deriveOwnerHybridSecrets } from '../src/lib/crypto/living-book-receive';
@@ -65,7 +66,10 @@ const STORE = `${DIR}/store.json`;
 const CODES = `${DIR}/issued-codes.json`;
 const GATE = `${DIR}/gate.json`;
 const RATCHETS = `${DIR}/ratchet-sessions.json`;
-const RELAY = process.env.SVRNTY_RELAY ?? 'https://dev.svrnty.is/api/relay';
+// Failover T2 (Archie #2633): SVRNTY_RELAYS=a,b walks the relays in order (poll: every one; send: the next on a 5xx/429/network failure, same sealed bytes).
+// SVRNTY_RELAY (one) stays valid. RELAY is the FIRST relay: the origin for relative-path fetches (grow links) and the single-relay commands.
+const RELAYS = parseRelayList({ SVRNTY_RELAYS: process.env.SVRNTY_RELAYS, SVRNTY_RELAY: process.env.SVRNTY_RELAY }, 'https://dev.svrnty.is/api/relay');
+const RELAY = RELAYS[0];
 
 // ~7d acceptance window — must mirror R1_ACCEPTANCE_WINDOW_MS in src/lib/identity/client-store.ts
 // (that constant is module-private; the browser persists the map to IndexedDB, we persist JSON).
@@ -173,16 +177,17 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
 // #712: consume stops between envelopes after this long, commits + acks what it consumed, and leaves the rest for the next pass, so a
 // deep backlog drains across passes instead of dying at the watchdog (the ward's POLL_TIMEOUT_S, 60-600 s; Weft cells run 55 s).
 // Default 40 s fits under the tightest of those with room for start-up. SVRNTY_CONSUME_BUDGET_MS overrides: digits only, 1 s-600 s.
+// This is the budget of the WHOLE pass: with several relays (failover) they share it (see pollOnce), they do not each get it.
 const CONSUME_BUDGET_MS = (() => {
   const v = process.env.SVRNTY_CONSUME_BUDGET_MS ?? '';
   return /^[0-9]{1,6}$/.test(v) ? Math.min(600_000, Math.max(1_000, Number(v))) : 40_000;
 })();
 
-async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary & ReceiptCounts> {
+async function pollRelay(owner: HeadlessOwner, store: HeadlessStore, relayBase: string, budgetMs: number = CONSUME_BUDGET_MS): Promise<ConsumeSummary & ReceiptCounts> {
   // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
   const deps = await buildHeadlessConsumeDeps(owner, store, {
-    relayBase: RELAY,
-    budgetMs: CONSUME_BUDGET_MS,
+    relayBase,
+    budgetMs,
     hopTrailDir: DIR, // layer 3: LOCAL hop trail in this agent's own dir
     deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
   });
@@ -192,6 +197,21 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
   // the store now holds from admitted senders (C2/C3). Counts only.
   const r = await deps.sendReceipts();
   return { ...consumed, ...receiptCounts(r) };
+}
+
+async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary & ReceiptCounts> {
+  if (RELAYS.length === 1) return pollRelay(owner, store, RELAY); // exactly the single-relay path: same summary, same keys
+  // ONE time budget for the whole pass (#712): each relay gets an equal share of what is left when its turn comes, so N relays cannot add up to
+  // N x the budget and blow the watchdog (the budget is sized to fit under it). A relay reached with nothing left still gets the 1 s floor.
+  const start = Date.now();
+  let left = RELAYS.length;
+  const { relays, relaysFailed, relaysRejected, ...summary } = await pollHeadlessAllRelays(owner, store, RELAYS, {}, (relayBase) =>
+    pollRelay(owner, store, relayBase, relayBudgetShare(CONSUME_BUDGET_MS, Date.now() - start, left--)));
+  // The printed/journalled summary keeps exactly the single-relay keys (the quarantine ward allowlists them); a relay that failed or refused is said on stderr
+  // and, for a refusal, still surfaces as `rejected`, so it is never read as an empty mailbox. The receipts_* counts are summed by mergeRelaySummaries
+  // (every numeric field is); the defaults only keep the keys present, as on the single-relay path.
+  if (relaysFailed > 0 || relaysRejected > 0) console.error(`[poll] ${relays} relays: ${relaysFailed} did not answer, ${relaysRejected} refused the poll`);
+  return { receipts_sent: 0, receipts_failed: 0, receipts_skipped: 0, receipts_capped: 0, ...summary };
 }
 
 // ── triple-ratchet (tr-v1) headless consume/send — mirrors messaging/direct-session.ts ─────────
@@ -466,12 +486,12 @@ async function main() {
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBase: RELAY, fetchImpl: tf.fetchImpl, hopTrailDir: DIR });
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body: wire, store, relayBases: RELAYS, fetchImpl: tf.fetchImpl, hopTrailDir: DIR });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT; the chain already advanced
       console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
     }
     console.log(JSON.stringify(r));
-    if (!r.deposited) { console.error(depositFailureLine(fp, r.status, 'kept locally; this ratchet index is spent')); process.exitCode = 1; }
+    if (!r.deposited) { console.error((r.unconfirmed && RELAYS.length > 1) ? formatUnconfirmed(fp, 'a relay may have stored it; kept locally; this ratchet index is spent') : depositFailureLine(fp, r.status, 'kept locally; this ratchet index is spent')); process.exitCode = 1; }
     return;
   }
 
@@ -484,14 +504,14 @@ async function main() {
     let r: Awaited<ReturnType<typeof sendNoteFromHeadless>>;
     const tf = trackedFetch(globalThis.fetch);
     try {
-      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBase: RELAY, fetchImpl: tf.fetchImpl, hopTrailDir: DIR });
+      r = await sendNoteFromHeadless({ owner, peerFingerprint: fp, peerPublicKeyArmored: peer.public_key, peerPqKemPublicKey: kem.kem, body, store, relayBases: RELAYS, fetchImpl: tf.fetchImpl, hopTrailDir: DIR });
     } catch (e) {   // a THROW (not deposited:false): worded by how far it got, never a false NOT SENT
       console.error(sendThrowLine(fp, e, tf.stage())); process.exitCode = 1; return;
     }
     console.log(JSON.stringify(r));
     // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
     // ping the webhook below for a reply that never left.
-    if (!r.deposited) { console.error(depositFailureLine(fp, r.status, 'kept locally')); process.exitCode = 1; return; }
+    if (!r.deposited) { console.error((r.unconfirmed && RELAYS.length > 1) ? formatUnconfirmed(fp, 'a relay may have stored it; kept locally') : depositFailureLine(fp, r.status, 'kept locally')); process.exitCode = 1; return; }
     // Peter's rule: replies to devin-cloud must also ping his automation webhook (wakes his session).
     if (fp === 'b0d61d883e39edb9a85ceb3ff3472e0cfd6cc6a4a0007c25eaa9275c9c5bea81') {
       try {
@@ -746,7 +766,7 @@ async function main() {
       }
     };
     setInterval(() => void tick(), intervalMs);
-    console.log(`polling ${RELAY} as ${owner.fingerprint.slice(0, 16)}… (Ctrl-C to stop)`);
+    console.log(`polling ${RELAYS.length} relay${RELAYS.length === 1 ? '' : 's'} (${RELAYS.map((r) => new URL(r).host).join(', ')}) as ${owner.fingerprint.slice(0, 16)}… (Ctrl-C to stop)`);
     void tick();
     return;
   }
