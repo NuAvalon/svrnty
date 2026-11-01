@@ -116,6 +116,24 @@ describe('the body comes from the TypeScript parser (Flint #3130)', () => {
   });
 });
 
+describe('comments are blanked at EVERY token (Archie #3177 L-c)', () => {
+  const row = (): OrderRow => ({
+    id: 'OR-98', kind: 'order', claim: 'fixture', file: 'fixture2.ts', anchor_kind: 'function', function: '^export async function f\\(',
+    event: { pattern: 'await settle\\(\\);', count: 1 }, status: { pattern: "hop\\('held'", count: 1 }, rule: 'status-in-event-block',
+    limit: ORDER_LIMIT, source: ['test'],
+  });
+  const REAL = ['export async function f() {', '  try {', '    await settle();', "    hop('held');", '  } catch {', '    /* nothing */', '  }', '}'].join('\n');
+  // the real status DELETED, and an own-line comment carrying its pattern left just before the closing brace (the `}` token's trivia)
+  const MASKED = ['export async function f() {', '  try {', '    await settle();', "    // hop('held') used to be here", '  } catch {', '    /* nothing */', '  }', '}'].join('\n');
+  const read = (src: string) => (p: string) => (p === 'fixture2.ts' ? src : null);
+  it('the real fixture is GREEN', () => assert.deepEqual(checkOrderRows([row()], read(REAL)), []));
+  it('a deleted status with a matching comment left before `}` is RED at the count step (the comment does not count)', () => {
+    const f = checkOrderRows([row()], read(MASKED));
+    assert.equal(f.length, 1);
+    assert.match(f[0].step, /^3 status count 0/);
+  });
+});
+
 describe('a malformed row is a CONFIG error (exit 2), never a pass', () => {
   const base = () => JSON.parse(JSON.stringify(REG.order_rows[0]));
   it('empty or missing order_rows', () => {

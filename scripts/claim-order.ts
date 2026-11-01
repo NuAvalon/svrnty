@@ -102,10 +102,13 @@ function codeLines(sf: ts.SourceFile): string[] {
       for (let i = c.pos; i < c.end; i++) if (chars[i] !== '\n' && chars[i] !== '\r') chars[i] = ' ';
     }
   };
+  // Every TOKEN, not just every node (Archie #3177 L-c): a comment on its own line before a closing `}` is the `}` TOKEN's leading trivia,
+  // which forEachChild never visits. getChildren() includes the tokens, and it comes from the parser, so a regex literal or a template
+  // can't be mis-scanned as a comment (a standalone scanner can't tell `/` division from a regex).
   const visit = (n: ts.Node) => {
     blank(ts.getLeadingCommentRanges(text, n.pos));
     blank(ts.getTrailingCommentRanges(text, n.end));
-    n.forEachChild(visit);
+    for (const c of n.getChildren(sf)) visit(c);
   };
   visit(sf);
   blank(ts.getLeadingCommentRanges(text, sf.endOfFileToken.pos));
