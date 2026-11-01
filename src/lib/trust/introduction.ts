@@ -25,6 +25,18 @@
 // (relay-opaque, recipient-only decrypt). Two domain tags → an introduction signature can never verify as a
 // joiner-response / contact-update / consent, and vice-versa.
 //
+// BEFORE ANYTHING CALLS THIS. The library holds no state, so these are the CALLER's duties (the seam that wires it), and each one is a survivor-safety
+// requirement, not a nicety:
+//   - REPLAY: record the canonical fingerprint and nonce of every introduction that was accepted AND every one that was dismissed, for at least
+//     CONSENT_MAX_AGE_MS + CONSENT_FUTURE_SKEW_MS, and surface a given pair once. verifyIntroduction refuses a consent outside that window, but inside it
+//     the same blob verifies every time it is presented; a dismissed introduction must not be able to come back. The newcomer cannot withdraw a consent
+//     inside the window.
+//   - BLOCKS: check block and suppression state on the fingerprint this function RETURNS (the full value recomputed from the presented keys), never on a
+//     string taken from the wire.
+//   - EXISTING CONTACTS: an introduction for someone already in the book never overwrites their stored name, key or record.
+//   - `context` is the INTRODUCER's own words; the newcomer consented to the introduction and the name, not to the context. The UI must attribute it to the
+//     introducer.
+//
 // FAIL-CLOSED / SILENT-DROP (I-1/I-2). verifyIntroduction returns PendingIntroduction | null and NEVER throws:
 // the mailbox is an open channel carrying other envelope types and noise, so a non-matching / malformed /
 // wrong-recipient blob drops silently (no reason leak, no crash on garbage). Build-side helpers throw loudly
@@ -40,7 +52,7 @@ import {
   type IntroductionEnvelope,
 } from '../format/envelope';
 import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
-import { fingerprintMatchesKey, KEM_PUB_LEN } from '../identity/fingerprint';
+import { fingerprintMatchesKey, canonicalPubsFromArmoredPublicKey, KEM_PUB_LEN } from '../identity/fingerprint';
 import { base64ToUint8 } from '../crypto/pq';
 import {
   sealLivingBookHybrid,
@@ -307,6 +319,19 @@ async function decryptIntroBlob(
 }
 
 /**
+ * A fingerprint field must ALREADY be the canonical form (lowercase hex, exactly 64 characters). It is never converted: fingerprintMatchesKey is a
+ * PREFIX matcher over a normalised string (right for "does the short fingerprint I typed match", wrong for naming an identity), and normalising would
+ * let one person arrive under several spellings (a prefix, upper case, separators) and be stored as several records, one of which a block or a
+ * suppression keyed on the canonical form would never find. A spelling that is not exactly canonical is refused.
+ */
+const CANONICAL_FP = /^[0-9a-f]{64}$/;
+
+/** The newcomer's consent is good for 7 days from the time THEY signed it (consent.ts, not the introducer's envelope.ts), and may be at most 5 minutes
+ *  ahead of the recipient's clock. A consent signed once must not let an introducer re-present it forever; the newcomer cannot withdraw inside the window. */
+export const CONSENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const CONSENT_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+/**
  * Verify an inbound introduction → the KNOWN newcomer, or null (silent drop). THE ONLY WAY to obtain a
  * {@link PendingIntroduction}. Order is cheap→crypto for DoS resistance (the mailbox is open — garbage must
  * not burn signature CPU):
@@ -332,14 +357,21 @@ export async function verifyIntroduction(
   blob: string,
   recipient: { fingerprint: string; hybrid?: HybridSecretsSource; onOpenLeg?: (leg: 'hybrid') => void },
   introducerLookup: (introducerFp: string) => { publicKeyArmored: string; pqSigningPublicKey?: Uint8Array } | null,
-  opts: { requirePq?: boolean } = {},
+  /** nowMs: the recipient's clock (injectable for tests). */
+  opts: { requirePq?: boolean; nowMs?: number } = {},
 ): Promise<PendingIntroduction | null> {
   const signed = await decryptIntroBlob(blob, recipient.hybrid, recipient.onOpenLeg);
   if (!signed) return null;
   const { envelope, signature, consent_signature } = signed;
 
-  // 3) Recipient-binding — the introduction must be addressed to US.
-  if (envelope.recipient_fingerprint.toUpperCase() !== recipient.fingerprint.toUpperCase()) return null;
+  // 2b) Every fingerprint field must already be canonical (see CANONICAL_FP): refused, never converted. Cheap, so before any crypto. The introduced
+  //     fingerprint is ALSO checked for exact equality with the recomputed value at 6b, and the recipient is checked here on both sides: those pairs overlap on
+  //     purpose (each member alone refuses every spelling), so removing one cannot be seen by a test; removing both can, and the tests do.
+  if (!CANONICAL_FP.test(recipient.fingerprint) || !CANONICAL_FP.test(envelope.recipient_fingerprint)
+    || !CANONICAL_FP.test(envelope.introducer_fingerprint) || !CANONICAL_FP.test(envelope.introduced_fingerprint)) return null;
+
+  // 3) Recipient-binding — the introduction must be addressed to US (exact, both sides canonical).
+  if (envelope.recipient_fingerprint !== recipient.fingerprint) return null;
 
   // 4) Know-set gate — the introducer must currently be in OUR know set; the oracle hands back their held key.
   let introducerKey: { publicKeyArmored: string; pqSigningPublicKey?: Uint8Array } | null = null;
@@ -354,8 +386,12 @@ export async function verifyIntroduction(
   const c = envelope.consent;
   if (c.introduced_fingerprint !== envelope.introduced_fingerprint) return null;
   if (c.introducer_fingerprint !== envelope.introducer_fingerprint) return null;
-  if (c.recipient_fingerprint.toUpperCase() !== recipient.fingerprint.toUpperCase()) return null;
+  if (c.recipient_fingerprint !== recipient.fingerprint) return null;
   if (c.nonce !== envelope.nonce) return null;
+  // REPLAY WINDOW: the newcomer's signed time must be readable, not ahead of our clock by more than the skew, and not older than the max age.
+  const now = opts.nowMs ?? Date.now();
+  const consentTs = Date.parse(c.ts);
+  if (!Number.isFinite(consentTs) || consentTs > now + CONSENT_FUTURE_SKEW_MS || consentTs < now - CONSENT_MAX_AGE_MS) return null;
   // S1: the displayed name must be EXACTLY the one the newcomer signed consent for —
   // reject a card that renames them (deadname/survivor-safety). This is NOT a fast-fail duplicate of the signatures: a hostile INTRODUCER
   // can sign an envelope that says "Deadname" while carrying the newcomer's genuine consent for "Newt". Both signatures then verify, and
@@ -369,6 +405,20 @@ export async function verifyIntroduction(
     kem_public_key: envelope.introduced_pq_kem_public_key,
     sig_public_key: envelope.introduced_pq_sig_public_key,
   }))) return null;
+
+  // 6b) EXACT binding: the introduced fingerprint (envelope AND consent) must EQUAL the full 64-hex value recomputed from the presented keys, and that
+  //     recomputed value is what is returned. fingerprintMatchesKey above accepts any 16-64 hex PREFIX, which is not enough to bind an identity.
+  let canonicalFp: string;
+  try {
+    canonicalFp = (await canonicalPubsFromArmoredPublicKey(
+      envelope.introduced_public_key,
+      envelope.introduced_pq_kem_public_key as string,
+      envelope.introduced_pq_sig_public_key as string,
+    )).fingerprint;
+  } catch {
+    return null;
+  }
+  if (envelope.introduced_fingerprint !== canonicalFp || c.introduced_fingerprint !== canonicalFp) return null;
 
   // SUITE FLOOR, derived from the KEY MATERIAL, not from a caller opt: verifyWithEnvelope accepts a classical-only signature even when a PQ
   // verification key is supplied (acceptClassicalOnly = no pq half present), so without this floor anyone holding only the classical key (the HNDL / quantum
@@ -427,7 +477,7 @@ export async function verifyIntroduction(
   }
 
   return {
-    fingerprint: envelope.introduced_fingerprint,
+    fingerprint: canonicalFp,
     publicKeyArmored: envelope.introduced_public_key,
     ...(pqSigningPublicKey ? { pqSigningPublicKey } : {}),
     ...(pqKemPublicKey ? { pqKemPublicKey } : {}),
