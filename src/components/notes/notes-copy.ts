@@ -13,8 +13,6 @@ export const NOTES_COPY = {
   // 2xx deposit floor (Hypatia message-status v1). The old "Sent · unconfirmed." string covered
   // this case too, which was wrong: a 2xx means the relay accepted it.
   sentToRelay: 'Sent to the relay',
-  // Alias of sentToRelay so leftover call sites stay on the honest 2xx floor.
-  sentUnconfirmed: 'Sent to the relay',
   notSent: 'Not sent. Saved on this device.',
   // Rendered ONLY for a verified-receipt 'delivered' status (recipient DEVICE received+decrypted the
   // note — not relay-only, not "Read"). Plain "Delivered" per Hypatia #172212 (honest-by-construction
