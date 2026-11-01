@@ -47,6 +47,48 @@ export function formatNoteDay(iso: string | null | undefined): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const MS_PER_DAY = 86_400_000;
+
+/** Local calendar day as a UTC-ms key so DST does not split a day. */
+function localDayUtcMs(d: Date): number {
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/**
+ * Contact-list timestamp: same local day → clock; yesterday → relative "yesterday";
+ * 2–6 local days ago → weekday; older → month+day (year if different).
+ * A lastAt up to 5 minutes in the future (clock skew) still renders as a time — never "Tomorrow".
+ * In-thread day headings keep using formatNoteDay.
+ */
+export function formatNoteListWhen(
+  iso: string | null | undefined,
+  now: Date = new Date(),
+): string {
+  if (!iso) return '';
+  const then = new Date(iso);
+  if (Number.isNaN(then.getTime())) return '';
+
+  const aheadMs = then.getTime() - now.getTime();
+  if (aheadMs > 0 && aheadMs <= FIVE_MIN_MS) return formatNoteClock(iso);
+
+  const diffDays = Math.round((localDayUtcMs(now) - localDayUtcMs(then)) / MS_PER_DAY);
+  if (diffDays <= 0) return formatNoteClock(iso);
+  if (diffDays === 1) {
+    return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-1, 'day');
+  }
+  if (diffDays <= 6) {
+    return then.toLocaleDateString(undefined, { weekday: 'short' });
+  }
+  const sameYear = then.getFullYear() === now.getFullYear();
+  return then.toLocaleDateString(
+    undefined,
+    sameYear
+      ? { month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric', year: 'numeric' },
+  );
+}
+
 export function mergeFieldPeople(args: {
   ownerFp: string;
   threads: NoteThread[];
