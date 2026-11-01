@@ -5,9 +5,9 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, sym
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  DECRYPTED_HOP, HOP_TRAIL_FILE, HOP_TRAIL_MAX_BYTES, RECEIVER_HOPS, SENDER_HOPS, type Hop, isHop, ownAgentName, peerLabel, readHopTrail, recordHop, renderHop,
+  DECRYPTED_HOP, HELD_REASONS, HOP_TRAIL_FILE, HOP_TRAIL_MAX_BYTES, RECEIVER_HOPS, SENDER_HOPS, type Hop, isHop, ownAgentName, peerLabel, readHopTrail, recordHop, renderHop,
 } from './hop-trail';
-import { DEAD_LETTER_REASONS } from '@/lib/sync/dead-letter';
+import { DEAD_LETTER_REASONS, HOLDABLE_REASONS } from '@/lib/sync/dead-letter';
 
 function dir() {
   return mkdtempSync(join(tmpdir(), 'hoptrail-'));
@@ -162,7 +162,7 @@ test('H8 the reader keeps KNOWN keys only, skips junk lines, and drops a fingerp
 });
 
 test('H9 rendering (Hypatia): only receipt-verified says "delivered"; opened is "decrypted on this host"; nothing says read / seen / opened by', () => {
-  const all: Hop[] = [...SENDER_HOPS, ...RECEIVER_HOPS, ...DEAD_LETTER_REASONS.map((r) => `dropped:${r}` as Hop), 'held:missing-key', 'held:ratchet-local'];
+  const all: Hop[] = [...SENDER_HOPS, ...RECEIVER_HOPS, ...DEAD_LETTER_REASONS.map((r) => `dropped:${r}` as Hop), 'held:missing-key', 'held:ratchet-local', 'held:ratchet-desync'];
   for (const hop of all) {
     for (const peer of [undefined, 'archie', 'person']) {
       const s = renderHop({ ts: '2026-11-01T00:00:00.000Z', hop, note_id: 'n1', ...(peer ? { peer } : {}) });
@@ -174,4 +174,16 @@ test('H9 rendering (Hypatia): only receipt-verified says "delivered"; opened is 
   assert.equal(renderHop({ ts: 'x', hop: 'relay-accepted', note_id: 'n' }), 'on the relay');
   assert.doesNotMatch(renderHop({ ts: 'x', hop: 'deposited', note_id: 'n' }), /\bsent\b|delivered/i);
   assert.equal(renderHop({ ts: 'x', hop: 'receipt-verified', note_id: 'n', peer: 'archie' }), "delivered to archie's app");
+});
+
+test('H10 every #720 hold cause is a trail hop: HELD_REASONS == dead-letter HOLDABLE_REASONS; a ratchet-desync hold (#318) is recorded', () => {
+  assert.deepEqual([...HELD_REASONS].sort(), [...HOLDABLE_REASONS].sort(), 'a hold cause missing here would be silently left out of the trail (fail-open)');
+  const d = dir();
+  try {
+    assert.equal(recordHop(d, 'held:ratchet-desync', { envelope_id: 'env_9f2a01' }, 'archie', { now: at('2026-11-01T00:00:00.000Z'), agent: 'athena' }), true);
+    assert.equal(JSON.parse(lines(d)[0]).hop, 'held:ratchet-desync');
+    assert.equal(renderHop(readHopTrail(d, 'env_9f2a01')[0]).includes('held on this host (ratchet-desync)'), true);
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
 });

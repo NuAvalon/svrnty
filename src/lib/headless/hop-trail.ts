@@ -29,7 +29,8 @@ const MAX_LINE_BYTES = 512;
 export const SENDER_HOPS = ['sealed', 'deposited', 'relay-accepted', 'receipt-verified'] as const;
 export const RECEIVER_HOPS = ['polled', 'opened', 'persisted', 'receipt-sent'] as const;
 /** held:<reason> = the #720 hold causes (a subset of the dead-letter reasons); dropped:<reason> = DEAD_LETTER_REASONS. Never free text. */
-export const HELD_REASONS = ['missing-key', 'ratchet-local'] as const;
+// = HOLDABLE_REASONS (dead-letter.ts): #318 added 'ratchet-desync'. hop-trail.test.ts H10 pins the two lists equal, so a new hold cause can't vanish from the trail.
+export const HELD_REASONS = ['missing-key', 'ratchet-local', 'ratchet-desync'] as const;
 type HeldReason = (typeof HELD_REASONS)[number];
 export type Hop = (typeof SENDER_HOPS)[number] | (typeof RECEIVER_HOPS)[number] | `dropped:${DeadLetterReason}` | `held:${HeldReason}`;
 /** The receiver's "decrypted on this host" hop, named HERE so receipt code never spells it: layer 1's N2 pin keeps receipt paths free of
