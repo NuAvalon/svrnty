@@ -328,8 +328,18 @@ test('C13 done_when 5 (v5 invariant, static half): toAck is only ever filled ins
   const src = readFileSync(new URL('./consume-mailbox.ts', import.meta.url), 'utf8');
   const door = src.indexOf('THE ACK DOOR');
   assert.ok(door > 0);
-  assert.equal(src.slice(0, door).includes('toAck.push('), false, 'no toAck.push before the door');
-  assert.equal((src.match(/toAck\.push\(/g) ?? []).length, 4, 'exactly four places add to toAck: no-record, cleared, recorded, released');
+  // #737 R1: the four door decisions now go through ONE gate, ackWhenAllTwinsDone (an id is queued only once every listed twin is done).
+  // So: exactly one toAck.push, inside that helper; exactly four calls of it, all at or after the door (no-record, cleared, recorded, released).
+  const pushes = src.match(/toAck\.push\(/g) ?? [];
+  assert.equal(pushes.length, 1, 'exactly ONE toAck.push in the file');
+  const helper = src.indexOf('const ackWhenAllTwinsDone = (id: string) => {');
+  assert.ok(helper > 0, 'the gate exists');
+  const helperEnd = src.indexOf('\n  };', helper);
+  assert.ok(src.indexOf('toAck.push(') > helper && src.indexOf('toAck.push(') < helperEnd, 'the one push is inside the gate');
+  const calls = [...src.matchAll(/ackWhenAllTwinsDone\(/g)].map((m) => m.index!).filter((i) => i !== src.indexOf('ackWhenAllTwinsDone = '));
+  const doorBody = src.indexOf('const door = async (item');
+  assert.equal(calls.length, 4, 'exactly four places queue an ack: no-record, cleared, recorded, released');
+  assert.ok(calls.every((i) => i > doorBody), 'every one of them is in the door or after it (the release), never in the consume loop');
 });
 
 test('C13b done_when 5 (v5 invariant, behavioural half): over a mixed batch every acked id was persisted, benign or recorded first; an id whose record failed is NOT acked', async () => {
@@ -893,4 +903,40 @@ test('C50 cause: a desync frame SKIPPED by the backoff still refreshes its recor
   const rows = recorded(r.w.events);
   assert.equal(rows[rows.length - 1].cause, 'ratchet-receive-failed');
   assert.ok(r.calls.n >= 2);
+});
+
+// #737 R1 (Flint lane:svrnty #3249, Archie #3251): an /ack names IDS only, and a by-id relay deletes every envelope listed under an id.
+// A foreign relay that lists TWO envelopes under one id (#737's reissue case) must not lose the unfinished twin through the ack.
+test('#737 R1 NEG: twins under one id, the second DEFERRED by the time budget → the id is NOT acked; the next full poll acks it once', async () => {
+  const twins = [{ envelope_id: 'X', blob: 'junk-a' }, { envelope_id: 'X', blob: 'junk-b' }];
+  const w = world(twins);
+  let checks = 0;
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, outOfTime: () => checks++ >= 1 }));
+  assert.equal(s.deferred, 1, 'the second twin was left for the next pass');
+  assert.deepEqual(acked(w.events), [], 'X is NOT acked: acking it would delete the unfinished twin too');
+  const w2 = world(twins);
+  await consumeInboundContactUpdates(deps({ deadLetter: w2.sink, fetchImpl: w2.fetchImpl }));
+  assert.deepEqual(acked(w2.events), ['X'], 'both twins terminal → X acked, exactly once');
+});
+
+test('#737 R1 NEG: twins under one id, one stored and one HELD (ratchet-desync) → the id is NOT acked', async () => {
+  const w = world([{ envelope_id: 'X', blob: 'N' }, { envelope_id: 'X', blob: 'D' }]);
+  const note = noteSeam({ N: { note_id: 'n-N', thread_id: 't1', from_fingerprint: 'BOB' } as never, D: { dropped: 'ratchet-desync', fp: 'ab'.repeat(32) } as DroppedNote });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note, fetchImpl: w.fetchImpl }));
+  assert.equal(s.held, 1, 'the desync twin is held for retry');
+  assert.deepEqual(acked(w.events), [], 'X is NOT acked: the held twin would be deleted with it');
+});
+
+test('#737 R1 (Archie #3251): twins where one is a RECORDED dead-letter loss and the other is stored → both terminal → X IS acked, once (no over-hold)', async () => {
+  const w = world([{ envelope_id: 'X', blob: 'junk-a' }, { envelope_id: 'X', blob: 'N' }]);
+  const note = noteSeam({ N: { note_id: 'n-N', thread_id: 't1', from_fingerprint: 'BOB' } as never });
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note, fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events), ['X'], 'acked once, not twice');
+  assert.equal(recorded(w.events).length, 1, 'the loss twin was recorded before the ack');
+});
+
+test('#737 R1 control: unique ids are unchanged (each acked once, in order)', async () => {
+  const w = world([{ envelope_id: 'a', blob: 'junk-1' }, { envelope_id: 'b', blob: 'junk-2' }]);
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events), ['a', 'b']);
 });
