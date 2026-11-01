@@ -6,6 +6,7 @@
 // writer lock. Each spec NEG is one test below (N1-N9), plus the end-to-end round trip (E1).
 
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -903,4 +904,44 @@ test('R8 (Apollo): a note that was NEVER deposited keeps no receipt key (no peer
   assert.equal(store.findOutboundNote(A.fp, noKem.note_id)?.receipt_key, undefined, 'fail-closed copy: no key');
   assert.equal(store.findOutboundNote(A.fp, refused.note_id)?.receipt_key, undefined, 'refused deposit: no key');
   assert.match(store.findOutboundNote(A.fp, ok.note_id)?.receipt_key ?? '', /^[0-9a-f]{64}$/, 'control: a deposited note keeps its key');
+});
+
+// G-RO-9 R-a (Apollo #3268, Flint #3271, Archie #3272): the receipt-sent hop must name the note whose receipt was ACTUALLY sent. A hop on
+// another note would be a false status line ("delivery receipt sent to the relay" for a receipt never sent).
+test('G-RO-9 R-a: cap 1, 3 due from 3 senders, the RNG picks the 2nd → the receipt-sent hop names THAT note; the other two have none', async () => {
+  const [X, Y, Z, B] = [await mint(), await mint(), await mint(), await mint()];
+  const relay = mockRelay();
+  const b = tmpBook();
+  try {
+    const bs = b.open();
+    for (const p of [X, Y, Z]) bs.upsertContact(asContact(p));
+    for (const [p, id] of [[X, 'n_x'], [Y, 'n_y'], [Z, 'n_z']] as const) await send(p, B, new HeadlessStore(), relay.fetchImpl, id, { noteId: id });
+    // Fisher-Yates over [X, Y, Z]: i=2 draws 0.99 (j=2, no swap), i=1 draws 0 (j=0, swap) → [Y, X, Z]: Y (the 2nd arrival) gets the slot
+    const seq = [0.99, 0];
+    let k = 0;
+    const s = await pollHeadlessOnce(owner(B), bs, { relayBase: RELAY, fetchImpl: relay.fetchImpl, hopTrailDir: b.dir, receiptsPerPoll: 1, receiptRng: () => seq[k++ % seq.length] });
+    assert.deepEqual([s.notes, s.receipts_sent, s.receipts_capped], [3, 1, 2]);
+    assert.ok(hopsFor(b.dir, 'n_y').includes('receipt-sent'), 'the picked (2nd) note carries the hop');
+    assert.ok(!hopsFor(b.dir, 'n_x').includes('receipt-sent'), 'the 1st note: no receipt was sent, so no hop');
+    assert.ok(!hopsFor(b.dir, 'n_z').includes('receipt-sent'), 'the 3rd note: no hop');
+    assert.equal((await inbox(relay, Y)).length, 1, 'and the receipt really went to Y');
+  } finally {
+    b.done();
+  }
+});
+
+// G-RO-9 R-b: pickReceipts must TERMINATE. A slip in its loop condition is a synchronous infinite loop, which node:test's own timeout cannot
+// interrupt (it blocks the event loop), so the cases run in a child process with a hard kill: a hang FAILS here instead of hanging a poll.
+test('G-RO-9 R-b: pickReceipts terminates (cap == due, cap > due, cap 0, empty, many rounds), enforced by a hard child-process timeout', () => {
+  const code = `const { pickReceipts } = require('./src/lib/headless/headless-client.ts');
+    if (typeof pickReceipts !== 'function') throw new Error('pickReceipts not loaded');
+    const rng = () => 0.5;
+    const s = ['X', 'X', 'Y', 'Z', 'Z', 'Z'];
+    const many = Array.from({ length: 1000 }, (_, i) => 'p' + (i % 200));
+    const out = [pickReceipts(s, s.length, rng).length, pickReceipts(s, 50, rng).length, pickReceipts(s, 0, rng).length, pickReceipts([], 3, rng).length, pickReceipts(many, 1000, rng).length];
+    console.log(JSON.stringify(out));`;
+  const r = spawnSync(process.execPath, ['--import', 'tsx', '-e', code], { cwd: join(__dirname, '..', '..', '..'), timeout: 20_000, encoding: 'utf8' });
+  assert.equal(r.signal, null, `pickReceipts did not terminate (killed by ${r.signal})`);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout.trim().split('\n').pop()!), [6, 6, 0, 0, 1000], 'each case picks exactly min(cap, due)');
 });

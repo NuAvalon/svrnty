@@ -95,7 +95,10 @@ export function pickReceipts(senders: readonly string[], cap: number, rng: () =>
   }
   const picked: number[] = [];
   let live = [...queues.values()];
-  while (picked.length < cap && live.length > 0) {
+  // Bounded BY CONSTRUCTION (R-b, Flint #3271 / Archie #3272): every round takes one from each live queue unless the cap is reached, so no
+  // queue needs more than senders.length rounds. A slip in the cap/live condition can then only mis-count (the exact-count tests catch it),
+  // never spin forever: a synchronous loop would block the event loop, and no test timeout could stop it hanging a poll.
+  for (let round = 0; round < senders.length && picked.length < cap && live.length > 0; round++) {
     for (let i = live.length - 1; i > 0; i--) {
       const j = Math.min(i, Math.floor(rng() * (i + 1)));
       [live[i], live[j]] = [live[j], live[i]];
