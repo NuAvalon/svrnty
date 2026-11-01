@@ -223,7 +223,7 @@ export function createConnectAddLogic(deps: Partial<ConnectDeps> = {}): ConnectA
           detail: String((err as Error)?.message ?? err).slice(0, 200),
         };
       }
-      let parsed: any;
+      let parsed;
       try {
         parsed = JSON.parse(decrypted);
       } catch {

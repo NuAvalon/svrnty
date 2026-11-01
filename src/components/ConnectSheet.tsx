@@ -33,7 +33,6 @@ import {
   type ConnectResolveRefusal,
   type GateLanding,
 } from '@/lib/connect/add-logic';
-import type { GateArrival } from '@/lib/identity/client-store';
 import { dismissGateArrival } from '@/lib/trust/grow-gate';
 import { formatFingerprintForVerify } from '@/lib/trust/trust-recipe';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
@@ -206,8 +205,8 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
       const rec = await logicRef.promoteToKnown(ownerFp, landing.arrival, {});
       onAdmitted?.(rec.fingerprint ?? landing.arrival.fingerprint);
       setPhase('done');
-    } catch (e: any) {
-      setError(e?.message || 'Could not add them to Known.');
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : 'Could not add them to Known.');
     } finally {
       setBusy(false);
     }
@@ -219,8 +218,8 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
     try {
       await dismissGateArrival(ownerFp, landing.arrival.fingerprint);
       onClose();
-    } catch (e: any) {
-      setError(e?.message || 'Could not dismiss.');
+    } catch (e) {
+      setError(e instanceof Error && e.message ? e.message : 'Could not dismiss.');
     } finally {
       setBusy(false);
     }

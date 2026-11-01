@@ -1,6 +1,7 @@
 // src/lib/connect/add-logic.test.ts
 // Anchors for the Connect-UX add-logic seam (CURSOR_QUEUE.md #3).
 // Every dependency is mocked — these tests pin the CONTRACT, not the plumbing.
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
