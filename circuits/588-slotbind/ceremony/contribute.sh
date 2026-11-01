@@ -10,7 +10,8 @@
 # and AFTER the contribution: the whole-chain `zkey verify` passes AND its contribution list == <expected_chain>, exactly.
 # Entropy: 64 bytes from the OS CSPRNG, hex, ONE line on stdin WITH the trailing newline (snarkjs reads it with readline; without the newline
 # it hangs, hence the timeout). Never on a command line, never logged, never written to disk. snarkjs also mixes 64 more OS CSPRNG bytes.
-# Prints the transcript line "stage sha256 = X": the NEXT contributor must pass X as <expected_in_sha256>.
+# Prints the transcript lines: the sha256 of pins.json actually used + which test seams (PINS/R1CS/PTAU) were set (a real run: none), and
+# "stage sha256 = X": the NEXT contributor must pass X as <expected_in_sha256>. If a run is interrupted (Ctrl-C), delete the partial <out.zkey> and rerun.
 set -euo pipefail
 die() { echo "FAILED: $*" >&2; exit 1; }
 # resolve caller-relative paths BEFORE changing directory (a relative path must not silently point somewhere else)
@@ -18,6 +19,7 @@ die() { echo "FAILED: $*" >&2; exit 1; }
 IN=$(realpath -e -- "$1") || die "input zkey $1 not found"
 OUT=$(realpath -m -- "$2"); NAME=$3; EXP_IN=$4; EXP_CHAIN=$5
 cd "$(dirname "$0")/.."
+SEAMS=""; for v in PINS R1CS PTAU; do [ -z "${!v:-}" ] || SEAMS="$SEAMS $v"; done   # which test seams the caller set (a real run sets none)
 PINS=${PINS:-pins.json}   # test seam for the NEGs only; the real run never sets it
 R1CS=${R1CS:-build/slotbind.r1cs}; PTAU=${PTAU:-build/ptau_prepared.ptau}; LIMIT=${LIMIT:-300}
 S=node_modules/.bin/snarkjs
@@ -25,7 +27,7 @@ pin() { node -p "require('./$PINS').$1"; }
 [[ "$NAME" =~ ^[A-Za-z0-9._\ -]+$ ]] || die "name must be non-empty and use only letters, digits, space . _ -"
 [[ "$EXP_IN" =~ ^[0-9a-f]{64}$ ]] || die "expected_in_sha256 must be 64 lowercase hex"
 [ "${EXP_CHAIN##*|}" = "$NAME" ] || die "expected_chain must end with this contributor's name"
-[ ! -e "$OUT" ] || die "refusing to overwrite $OUT"
+[ ! -e "$OUT" ] || die "refusing to overwrite $OUT (left over from an interrupted run, e.g. Ctrl-C? delete the partial file and rerun)"
 # 1. the tool is the pinned tool
 [ "$(node -p "require('./node_modules/snarkjs/package.json').version")" = "$(pin phase2_tooling.snarkjs_version)" ] || die "snarkjs version is not the pinned one"
 [ "$(sha256sum node_modules/snarkjs/build/cli.cjs | cut -d' ' -f1)" = "$(pin phase2_tooling.snarkjs_cli_cjs_sha256)" ] || die "snarkjs build/cli.cjs differs from the pin"
@@ -46,4 +48,5 @@ fi
 GOT_CHAIN=$(sed -n 's/^\[INFO\]  snarkJS: contribution #\([0-9]*\) \(.*\):$/\1 \2/p' "$LOG" | sort -n | cut -d' ' -f2- | paste -sd'|')
 if [ "$GOT_CHAIN" != "$EXP_CHAIN" ]; then rm -f "$OUT"; die "chain contribution list is [$GOT_CHAIN], expected [$EXP_CHAIN] (output removed)"; fi
 echo "chain: $GOT_CHAIN"
+echo "pins.json sha256 = $(sha256sum "$PINS" | cut -d' ' -f1)   test seams set: ${SEAMS:-none}"
 echo "OK: $NAME contributed. stage sha256 = $(sha256sum "$OUT" | cut -d' ' -f1)   (out=$OUT)"

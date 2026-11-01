@@ -26,7 +26,8 @@ prev=$W/z0.zkey; chain=""; names=(archie weft peter)
 for i in 0 1 2; do
   n=${names[$i]}; chain=${chain:+$chain|}$n; out=$W/z$((i+1)).zkey
   res=$(ceremony/contribute.sh "$prev" "$out" "$n" "$(sha "$prev")" "$chain") || fail "contribution $n refused"
-  echo "$res" | tail -2
+  echo "$res" | tail -3
+  grep -q "pins.json sha256 = $(sha pins.json)   test seams set: none" <<<"$res" || fail "$n: transcript lacks the pins.json sha256 / 'test seams set: none' line"
   [ "$(stage_sha "$res")" = "$(sha "$out")" ] || fail "printed stage sha256 != file sha256 for $n"
   prev=$out
 done
