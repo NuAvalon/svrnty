@@ -6,6 +6,7 @@ import { SoverentityFrontend } from '@/components/SoverentityFrontend';
 import { ContactManagement } from '@/components/ContactManagement';
 import { TrustMap } from '@/components/TrustMap';
 import { GrowSurface } from '@/components/GrowSurface';
+import { ConnectSheet } from '@/components/ConnectSheet';
 import { EncryptDecryptTab } from '@/components/encrypt-decrypt/EncryptDecryptTab';
 import { NotesInbox } from '@/components/notes/NotesInbox';
 import { BetaMessagingTab } from '@/components/beta-messaging/BetaMessagingTab';
@@ -88,6 +89,10 @@ export default function Home() {
   const [biometricUnlockVisible, setBiometricUnlockVisible] = useState(false);
   // Identity card is the first surface; Trust Map via "Your circle".
   const [mainTab, setMainTab] = useState('identity');
+  // Connect-UX #3 no-account leg: a connect link hit with no unlocked identity is stashed
+  // (JoinerCeremony writes svrnty:pending-connect); on the first unlocked session it resumes
+  // — resolve → Gate — with no re-paste, completing the one continuous flow.
+  const [pendingConnect, setPendingConnect] = useState<{ code: string; keyFragment: string } | null>(null);
   const [notesPeerFp, setNotesPeerFp] = useState('');
   const [notesPeerName, setNotesPeerName] = useState('');
   const [galaxyPeerFp, setGalaxyPeerFp] = useState('');
@@ -268,6 +273,22 @@ export default function Home() {
     setPassphrase('');
     setUnlockError('');
   };
+
+  // Resume a stashed connect link exactly once per unlocked session (mint OR unlock path).
+  useEffect(() => {
+    if (appState !== 'unlocked' || pendingConnect) return;
+    try {
+      const raw = sessionStorage.getItem('svrnty:pending-connect');
+      if (!raw) return;
+      sessionStorage.removeItem('svrnty:pending-connect');
+      const p = JSON.parse(raw);
+      if (p && typeof p.code === 'string' && typeof p.keyFragment === 'string' && p.keyFragment) {
+        setPendingConnect({ code: p.code, keyFragment: p.keyFragment });
+      }
+    } catch {
+      /* malformed stash — drop it, non-fatal */
+    }
+  }, [appState, pendingConnect]);
 
   const handleIdentityUpdate = (newIdentity: any) => {
     setIdentity(newIdentity);
@@ -1072,6 +1093,18 @@ export default function Home() {
           }}
           identity={identity}
         />
+        {pendingConnect && (
+          <ConnectSheet
+            open
+            onClose={() => setPendingConnect(null)}
+            ownerFp={identity.identity?.fingerprint ?? ''}
+            link={pendingConnect}
+            onAdmitted={() => {
+              setPendingConnect(null);
+              void refreshContacts();
+            }}
+          />
+        )}
         <RecoverySheet
           open={recoveryOpen}
           onClose={() => setRecoveryOpen(false)}
