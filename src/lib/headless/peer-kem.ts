@@ -53,7 +53,7 @@ export function formatNotSent(peerFingerprint: string, reason: string): string {
 
 /**
  * The stderr line for a send the relay did NOT take with a 2xx. The status class decides the claim:
- *  - 5xx / 408: the relay may have stored it before it failed. UNCONFIRMED, check before resending ("NOT SENT" here would invite a duplicate).
+ *  - 5xx / 408: the relay may have stored it before it failed. UNCONFIRMED, and the line says resending could deliver it twice ("NOT SENT" here would invite a duplicate).
  *  - any other status (4xx incl. 429): the relay looked at it and stored nothing. NOT SENT.
  *  - no status: nothing was posted, so NOT SENT.
  * The status is named, so a person (or the C9 failover rule) can tell a refusal from an outage. `tail` is the caller's local-state note
@@ -62,15 +62,16 @@ export function formatNotSent(peerFingerprint: string, reason: string): string {
 export function depositFailureLine(peerFingerprint: string, status: number | undefined, tail = ''): string {
   const t = tail ? `; ${tail}` : '';
   if (status !== undefined && (status >= 500 || status === 408)) {
-    return formatUnconfirmed(peerFingerprint, `the relay answered ${status}; it may or may not be in their mailbox. Check before resending${t}`);
+    return formatUnconfirmed(peerFingerprint, `the relay answered ${status}; it may or may not be in their mailbox${t}`);
   }
   if (status !== undefined) return formatNotSent(peerFingerprint, `the relay refused the deposit (HTTP ${status}); nothing was stored${t}`);
   return formatNotSent(peerFingerprint, `the relay did not accept the deposit${t}`);
 }
 
-/** A send that did not get a clean answer from the relay but may have been stored: never worded "NOT SENT" (a re-send would duplicate). */
+/** A send that did not get a clean answer from the relay but may have been stored: never worded "NOT SENT" (a re-send would duplicate).
+ *  Every UNCONFIRMED line ends with the same sentence, added HERE so no caller can leave it off; `reason` carries no final full stop. */
 export function formatUnconfirmed(peerFingerprint: string, reason: string): string {
-  return `UNCONFIRMED to ${hex8(peerFingerprint)}: ${reason}`;
+  return `UNCONFIRMED to ${hex8(peerFingerprint)}: ${reason}. Resending could deliver it twice.`;
 }
 
 function hex8(peerFingerprint: string): string {
@@ -118,7 +119,7 @@ export function sendThrowLine(peerFingerprint: string, e: unknown, stage: SendSt
     return `DEPOSITED to ${hex8(peerFingerprint)}, but saving the local copy failed (${msg}); do NOT resend`;
   }
   if (stage === 'unreachable') {
-    return `UNCONFIRMED to ${hex8(peerFingerprint)}: no response from the relay (${msg}); it may or may not be in their mailbox. Check before resending${spent}`;
+    return formatUnconfirmed(peerFingerprint, `no response from the relay (${msg}); it may or may not be in their mailbox${spent}`);
   }
   const why = stage === 'refused' ? 'the relay did not accept the deposit, and saving the local copy failed'
     : 'the send failed before reaching the relay';
