@@ -40,7 +40,9 @@ import {
 import { clampGrowCap } from '../src/lib/trust/trust-recipe';
 import { createRelay, resolveRelay } from '../src/lib/sync/relay';
 import { sendJoinerResponse } from '../src/lib/sync/send-joiner-response';
-import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPacket, type RatchetSnapshot } from '../src/lib/crypto/message-ratchet';
+import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPacket } from '../src/lib/crypto/message-ratchet';
+import { buildAdoptFirstFrame } from '../src/lib/messaging/session-adopt-policy';
+import { journalSentAts, openTrFrame, type AdoptAsk, type TrSessions } from './devin-comm-tr';
 import { strip0x40 } from '../src/lib/identity/raw-sign';
 import { fingerprintMatchesKey } from '../src/lib/identity/fingerprint';
 import { runJoin, parseJoinFlags } from '../src/lib/headless/join-grow-link';
@@ -189,7 +191,6 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
 // Calls the fleet TripleRatchet only; session snapshots persist in ratchet-sessions.json.
 
 const TR_BODY = 'svrnty-tr-v1';
-type TrSessions = Record<string, RatchetSnapshot>;
 const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {}, RATCHET_HINT);
 // backup:false: a restorable stale ratchet = chain-key reuse on the next send (Flint 2026-10-24).
 const saveTr = (m: TrSessions) => writeFileAtomic(RATCHETS, JSON.stringify(m, null, 2), { backup: false });
@@ -219,7 +220,9 @@ function trPacket(body: string): RatchetPacket | null {
   } catch { return null; }
 }
 
-async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string, onLocked?: () => void): Promise<string | null> {
+// `adopt` (poll-json only, F1): may a reset's NEW first frame from this contact replace the stored session? Absent = never (poll / loop).
+async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string, onLocked?: () => void,
+    adopt?: { ask: AdoptAsk; onAdopted: () => void }): Promise<string | null> {
   const packet = trPacket(body);
   const peer = await ratchetPeerOf(contact);
   if (!packet || !peer) return null;
@@ -229,21 +232,12 @@ async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body:
   return withWriterLockAsync(DIR, async () => {
     onLocked?.();                                        // poll-json's attempt charge: only once the lock is HELD (Flint #2366)
     const sessions = loadTr();
-    const snap = sessions[contact.fingerprint];
-    if (snap) {
-      const s = TripleRatchet.importState(snap);
-      if (!s) return null;
-      const pt = await s.receive(packet);
-      if (pt === null) return null;
-      sessions[contact.fingerprint] = s.exportState();
-      saveTr(sessions);
-      return pt;
-    }
-    const first = await TripleRatchet.acceptFirst(self, peer, packet);
-    if (!first) return null;
-    sessions[contact.fingerprint] = first.session.exportState();
+    const r = await openTrFrame(sessions, contact.fingerprint, self, peer, packet, adopt?.ask);
+    if (!r) return null; // nothing saved: a failed open (or a refused / impossible adoption) leaves the stored session as it was
+    sessions[contact.fingerprint] = r.next;
     saveTr(sessions);
-    return first.plaintext;
+    if (r.adopted) adopt?.onAdopted();
+    return r.plaintext;
   });
 }
 
@@ -556,6 +550,21 @@ async function main() {
     const openTasks = new Map<string, { note_id: string; channel: string; sent_at: string }[]>();
     let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
     let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
+    let adopted = 0;         // F1: a contact's reset → its NEW first frame replaced the stored session
+    let futureIgnored = 0;   // F1: journaled notes dated beyond now + 5 min, left out of the replay guard (counts only)
+    // F1 (Flint spec v1 bcade56d): the PWA's R5/R6 policy, asked only here, where the journal guards replays. Stored notes = the journal's
+    // entries from that contact, minus this note; a journal read error throws inside the policy, which then refuses.
+    const adoptFor = (c: HeadlessContact, note: { note_id: string; sent_at: string }) => ({
+      ask: buildAdoptFirstFrame({
+        ownFingerprint: owner.fingerprint,
+        peerFingerprint: c.fingerprint,
+        sentAt: note.sent_at,
+        storedSentAts: async () => journalSentAts(readFileSync(journalPath, 'utf8'), c.fingerprint, note.note_id),
+        now: Date.now,
+        onIgnoredFuture: (n) => { futureIgnored += n; },
+      }),
+      onAdopted: () => { adopted++; },
+    });
     const deadByPeer = new Map<string, { note_id: string; sent_at: string }[]>();   // → one notice per peer
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
       if (journaledIds.has(`${note.from_fingerprint}:${note.note_id}`)) { skipped++; continue; }
@@ -618,7 +627,7 @@ async function main() {
         continue;
       }
       // counted + persisted once trOpen HOLDS the lock (Flint #2361/#2366): a kill inside receive counts, lock contention doesn't
-      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), (charge) => trOpen(artifact, c, note.body, charge));
+      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), (charge) => trOpen(artifact, c, note.body, charge, adoptFor(c, note)));
       if (pt === null) {
         decryptFailed++;
         continue;                                        // failed/consumed — counted, never stored
@@ -668,7 +677,9 @@ async function main() {
       held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
       opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical,
       // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
-      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0 }));
+      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0,
+      // F1: sessions replaced by a contact's post-reset first frame, and journaled notes left out of the replay guard for being future-dated
+      adopted, future_ignored: futureIgnored }));
     return;
   }
 

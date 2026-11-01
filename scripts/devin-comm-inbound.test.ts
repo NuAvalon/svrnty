@@ -265,10 +265,11 @@ test('static guard: poll-json opens tr packets ONLY via countedOpen, and trOpen 
   const end = src.indexOf('writeFileAtomic(attemptsPath, JSON.stringify(attempts));', start);
   assert.ok(start > 0 && end > start, 'poll-json attempt block not found');
   const block = src.slice(start, end);
-  assert.match(block, /await countedOpen\(attempts, key, \(a\) => writeFileAtomic\(attemptsPath, JSON\.stringify\(a\)\), \(charge\) => trOpen\(artifact, c, note\.body, charge\)\)/);
+  // F1 adds the adopt policy as trOpen's 5th argument; the count still wraps the ONLY open (and adoption runs inside that same open)
+  assert.match(block, /await countedOpen\(attempts, key, \(a\) => writeFileAtomic\(attemptsPath, JSON\.stringify\(a\)\), \(charge\) => trOpen\(artifact, c, note\.body, charge, adoptFor\(c, note\)\)\)/);
   assert.doesNotMatch(block.replace(/\(charge\) => trOpen\(/g, ''), /trOpen\(/, 'a direct trOpen in poll-json skips the count');
   const tr = src.slice(src.indexOf('async function trOpen('), src.indexOf('function printNewArrivals('));
-  assert.match(tr, /onLocked\?: \(\) => void\): Promise<string \| null>/);
+  assert.match(tr, /onLocked\?: \(\) => void,\s*adopt\?: \{ ask: AdoptAsk; onAdopted: \(\) => void \}\): Promise<string \| null>/);
   assert.match(tr, /return withWriterLockAsync\(DIR, async \(\) => \{\s*onLocked\?\.\(\);/, 'the charge must be the FIRST step inside the lock');
   assert.equal((tr.match(/onLocked\?\.\(\)/g) ?? []).length, 1);
   assert.ok(tr.indexOf('onLocked?.()') > tr.indexOf('withWriterLockAsync(DIR'), 'never charge before the lock is held');
