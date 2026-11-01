@@ -25,6 +25,7 @@ import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { depositWithFailover, mergeRelaySummaries, type DepositOutcome, type RelayPoll, type UnconfirmedAttempt } from '@/lib/sync/relay-tiers';
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
+import { nextLastActivity } from '@/lib/messaging/thread-activity';
 import { admitContact } from '@/lib/trust/admit-contact';
 import { headlessDeadLetterSink } from './headless-dead-letter';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
@@ -164,7 +165,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
       // The fp is authenticated here (verifyNoteSender above). Throws → retryable (ack-follows-persist).
       const threadFor = (existing: NoteThread | undefined): NoteThread =>
         existing
-          ? { ...existing, last_activity_at: sent_at }
+          ? { ...existing, last_activity_at: nextLastActivity(existing.last_activity_at, sent_at, Date.now()) }
           : {
               thread_id: rec.thread_id,
               kind: wire.ring_channel_id ? 'ring' : 'direct',
@@ -173,7 +174,7 @@ function buildNoteSeam(owner: HeadlessOwner, store: HeadlessStore, now: () => st
               ],
               ring_channel_id: wire.ring_channel_id,
               created_at: sent_at,
-              last_activity_at: sent_at,
+              last_activity_at: nextLastActivity(undefined, sent_at, Date.now()),
               retention: { expires_at: null },
             };
       recordHop(trail, DECRYPTED_HOP, { note_id: wire.note_id }, trailPeer(store, wire.from_fingerprint, rec.participant_kind)); // decrypted on this host
