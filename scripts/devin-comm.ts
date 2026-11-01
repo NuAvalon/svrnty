@@ -23,7 +23,7 @@ import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headles
 import { custodyToHeadlessOwner } from '../src/lib/headless/custody-owner';
 import { withWriterLock, withWriterLockAsync } from '../src/lib/headless/writer-lock';
 import { sendNoteFromHeadless, buildHeadlessConsumeDeps, pollHeadlessAllRelays, receiptCounts, type HeadlessOwner, type ReceiptCounts } from '../src/lib/headless/headless-client';
-import { parseRelayList, relayBudgetShare } from '../src/lib/sync/relay-tiers';
+import { parseRelayList, relayBudgetShare, unconfirmedReason } from '../src/lib/sync/relay-tiers';
 import { readHopTrail, renderHop } from '../src/lib/headless/hop-trail';
 import { DEAD_LETTER_FILE } from '../src/lib/headless/headless-dead-letter';
 import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, trackedFetch, sendThrowLine } from '../src/lib/headless/peer-kem';
@@ -491,7 +491,7 @@ async function main() {
       console.error(sendThrowLine(fp, e, tf.stage(), true)); process.exitCode = 1; return;
     }
     console.log(JSON.stringify(r));
-    if (!r.deposited) { console.error((r.unconfirmed && RELAYS.length > 1) ? formatUnconfirmed(fp, 'a relay may have stored it; kept locally; this ratchet index is spent') : depositFailureLine(fp, r.status, 'kept locally; this ratchet index is spent')); process.exitCode = 1; }
+    if (!r.deposited) { console.error((r.unconfirmed && RELAYS.length > 1) ? formatUnconfirmed(fp, `${unconfirmedReason(r.unconfirmedBy)}; kept locally; this ratchet index is spent`) : depositFailureLine(fp, r.status, 'kept locally; this ratchet index is spent')); process.exitCode = 1; }
     return;
   }
 
@@ -511,7 +511,7 @@ async function main() {
     console.log(JSON.stringify(r));
     // Not deposited = not sent. Say so on stderr and exit non-zero (the wrappers key on both); and do not
     // ping the webhook below for a reply that never left.
-    if (!r.deposited) { console.error((r.unconfirmed && RELAYS.length > 1) ? formatUnconfirmed(fp, 'a relay may have stored it; kept locally') : depositFailureLine(fp, r.status, 'kept locally')); process.exitCode = 1; return; }
+    if (!r.deposited) { console.error((r.unconfirmed && RELAYS.length > 1) ? formatUnconfirmed(fp, `${unconfirmedReason(r.unconfirmedBy)}; kept locally`) : depositFailureLine(fp, r.status, 'kept locally')); process.exitCode = 1; return; }
     // Peter's rule: replies to devin-cloud must also ping his automation webhook (wakes his session).
     if (fp === 'b0d61d883e39edb9a85ceb3ff3472e0cfd6cc6a4a0007c25eaa9275c9c5bea81') {
       try {

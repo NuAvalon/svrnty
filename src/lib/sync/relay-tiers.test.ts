@@ -3,7 +3,7 @@
 // Run: npx tsx --test src/lib/sync/relay-tiers.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_RELAYS, depositWithFailover, failoverWorthy, isPrivateHost, mergeRelaySummaries, parseRelayList, relayBudgetShare } from './relay-tiers';
+import { MAX_RELAYS, depositWithFailover, failoverWorthy, isPrivateHost, mergeRelaySummaries, parseRelayList, relayBudgetShare, relayLabel, unconfirmedReason } from './relay-tiers';
 import type { ConsumeSummary } from './consume-mailbox';
 
 const D = 'https://dev.svrnty.is/api/relay';
@@ -44,8 +44,8 @@ test('F1 T1 ok => T2 is never contacted', async () => {
 });
 test('F2 T1 429 at-cap => T2 carries it; T1 5xx => T2 carries it and the outcome is flagged UNCONFIRMED (T1 may hold it too)', async () => {
   assert.deepEqual((await run([429, 200])).o, { deposited: true, tier: 1, tried: 2, unconfirmed: false, status: 200 });
-  assert.deepEqual((await run([503, 200])).o, { deposited: true, tier: 1, tried: 2, unconfirmed: true, status: 200 });
-  assert.deepEqual((await run([new Error('ECONNRESET'), 200])).o, { deposited: true, tier: 1, tried: 2, unconfirmed: true, status: 200 });
+  assert.deepEqual((await run([503, 200])).o, { deposited: true, tier: 1, tried: 2, unconfirmed: true, status: 200, unconfirmedBy: [{ relay: '#1', status: 503 }] });
+  assert.deepEqual((await run([new Error('ECONNRESET'), 200])).o, { deposited: true, tier: 1, tried: 2, unconfirmed: true, status: 200, unconfirmedBy: [{ relay: '#1' }] });
 });
 test('F3 NEG: a 400/413/401 ends the walk at once (the next relay would refuse the same blob)', async () => {
   for (const s of [400, 413, 401, 403]) {
@@ -58,17 +58,17 @@ test('F4 every relay refused (429 + 429): deposited=false and NOT unconfirmed (d
   assert.deepEqual((await run([429, 429])).o, { deposited: false, tier: null, tried: 2, unconfirmed: false, status: 429 });
 });
 test('F5 NEG: T1 5xx then T2 429 => not deposited but UNCONFIRMED, so the caller must not claim "not sent"', async () => {
-  assert.deepEqual((await run([502, 429])).o, { deposited: false, tier: null, tried: 2, unconfirmed: true, status: 429 });
+  assert.deepEqual((await run([502, 429])).o, { deposited: false, tier: null, tried: 2, unconfirmed: true, status: 429, unconfirmedBy: [{ relay: '#1', status: 502 }] });
 });
 test('F6 every relay THREW => the first error is rethrown (same contract as a single-relay send)', async () => {
   const first = new Error('first');
   await assert.rejects(run([first, new Error('second')]), (e) => e === first);
 });
 test('F7 a throw on T1 and a refusal on T2 is a result, not a throw', async () => {
-  assert.deepEqual((await run([new Error('x'), 413])).o, { deposited: false, tier: null, tried: 2, unconfirmed: true, status: 413 });
+  assert.deepEqual((await run([new Error('x'), 413])).o, { deposited: false, tier: null, tried: 2, unconfirmed: true, status: 413, unconfirmedBy: [{ relay: '#1' }] });
 });
 test('F8 NEG: a 408 is failover-worthy AND unconfirmed, like a 5xx (the relay may have read the request before it timed out): never a definite refusal', async () => {
-  assert.deepEqual((await run([408, 408])).o, { deposited: false, tier: null, tried: 2, unconfirmed: true, status: 408 });
+  assert.deepEqual((await run([408, 408])).o, { deposited: false, tier: null, tried: 2, unconfirmed: true, status: 408, unconfirmedBy: [{ relay: '#1', status: 408 }, { relay: '#2', status: 408 }] });
   assert.equal((await run([408, 200])).o.unconfirmed, true, 'a 408 then a success elsewhere may store the note twice, by design: flagged');
   assert.equal((await run([429, 429])).o.unconfirmed, false, 'a 429 stays a definite refusal');
 });
@@ -78,6 +78,32 @@ test('F9 the outcome carries the status of the LAST relay that answered; none wh
   assert.equal((await run([503, new Error('x')])).o.status, 503, 'a later throw does not erase the status of the last relay that answered');
   assert.equal('status' in (await run([new Error('x'), 413])).o, true);
   assert.equal('status' in (await depositWithFailover([], async () => res(200))), false, 'an empty list posts nothing, so no status');
+});
+test('U1 relayLabel names a relay by HOST (and port) only: never a path, query, fragment or credentials; "#N" when it is not an absolute URL', () => {
+  assert.equal(relayLabel('https://dev.svrnty.is/api/relay', 0), 'dev.svrnty.is');
+  assert.equal(relayLabel('http://127.0.0.1:3000/api/relay', 1), '127.0.0.1:3000');
+  const nasty = relayLabel('https://user:s3cret@a.example:8443/api/relay/envelope?token=abc#frag', 0);
+  assert.equal(nasty, 'a.example:8443');
+  for (const bad of ['s3cret', 'user', 'token', 'abc', 'frag', '/api', '?', '@']) assert.ok(!nasty.includes(bad), `label leaks ${bad}`);
+  assert.equal(relayLabel('/api/relay', 0), '#1');
+  assert.equal(relayLabel('r2', 1), '#2');
+  assert.ok(relayLabel(`https://${'a'.repeat(200)}.example/x`, 0).length <= 64, 'bounded');
+});
+test('U2 unconfirmedReason: WHICH relays and what each said; one relay reads "it", several read "any of them"; no attempts keeps the plain sentence', () => {
+  assert.equal(unconfirmedReason([{ relay: 'a.example', status: 503 }]), 'relay a.example answered HTTP 503; it may have stored it');
+  assert.equal(unconfirmedReason([{ relay: 'a.example' }]), 'relay a.example did not answer; it may have stored it');
+  assert.equal(unconfirmedReason([{ relay: 'a.example', status: 502 }, { relay: 'b.example:8443' }]),
+    'relay a.example answered HTTP 502, relay b.example:8443 did not answer; any of them may have stored it');
+  assert.equal(unconfirmedReason(undefined), 'a relay may have stored it');
+  assert.equal(unconfirmedReason([]), 'a relay may have stored it');
+});
+test('U3 depositWithFailover labels the unconfirmed relays by host, even when the base URL carries a path, a query or credentials', async () => {
+  const bases = ['https://u:pw@a.example/api/relay?k=v', 'https://b.example:8443/api/relay', 'https://c.example/api/relay'];
+  const o = await depositWithFailover(bases, async (b) => { if (b.includes('a.example')) return res(503); if (b.includes('b.example')) throw new Error('x'); return res(200); });
+  assert.deepEqual(o.unconfirmedBy, [{ relay: 'a.example', status: 503 }, { relay: 'b.example:8443' }]);
+  assert.equal(o.tier, 2);
+  assert.doesNotMatch(JSON.stringify(o), /pw|k=v|api\/relay/, 'nothing but hosts leaves the walk');
+  assert.equal('unconfirmedBy' in (await depositWithFailover(bases, async () => res(200))), false, 'a clean first-relay deposit names nobody');
 });
 test('B1 relayBudgetShare: ONE budget for the pass, an equal share of what is left per relay, a 1 s floor', () => {
   assert.equal(relayBudgetShare(40_000, 0, 4), 10_000);
@@ -126,7 +152,9 @@ test('M2 NEG: a refused or failed relay is never hidden by a healthy one', () =>
 
 test('H1 NEG (Flint #2650 a): plain http is refused for a public host, so the owner-auth header and the poll never cross the internet in the clear', () => {
   for (const u of ['http://example.com/api/relay', 'http://8.8.8.8/api/relay', 'http://172.32.0.1/api/relay', 'http://172.15.255.255/api/relay', 'http://192.169.0.1/api/relay',
-    'http://1.2.3.4.nip.io/api/relay', 'http://0.0.0.0/api/relay', 'http://dev.svrnty.is/api/relay', 'http://[2001:db8::1]/api/relay', 'http://127.0.0.1.evil.com/api/relay']) {
+    'http://1.2.3.4.nip.io/api/relay', 'http://0.0.0.0/api/relay', 'http://dev.svrnty.is/api/relay', 'http://[2001:db8::1]/api/relay', 'http://127.0.0.1.evil.com/api/relay',
+    // Flint #361 F1: a bare single-label name can resolve through DNS search domains to a PUBLIC host, so it is NOT private
+    'http://relay/api/relay', 'http://relay-camelot:3000/r', 'http://camelot/api/relay', 'http://dockerhost:8100/x', 'http://a/r']) {
     assert.throws(() => parseRelayList({ SVRNTY_RELAYS: u }, D), /plain http is only for a private host/, u);
     assert.throws(() => parseRelayList({ SVRNTY_RELAY: u }, D), /plain http is only for a private host/, 'single form too: ' + u);
   }
@@ -134,7 +162,7 @@ test('H1 NEG (Flint #2650 a): plain http is refused for a public host, so the ow
 });
 test('H2 plain http IS fine on a private network, and https is fine anywhere', () => {
   for (const u of ['http://127.0.0.1:3000/r', 'http://127.9.9.9/r', 'http://localhost:3000/r', 'http://10.1.2.3/r', 'http://172.16.0.1/r', 'http://172.31.255.254/r', 'http://172.20.1.2/r',
-    'http://192.168.1.5/r', 'http://169.254.7.7/r', 'http://[::1]:3000/r', 'http://[fe80::1]/r', 'http://[fd00::5]/r', 'http://box.local/r', 'http://relay-camelot:3000/r', 'http://2130706433/r']) {
+    'http://192.168.1.5/r', 'http://169.254.7.7/r', 'http://[::1]:3000/r', 'http://[fe80::1]/r', 'http://[fd00::5]/r', 'http://box.local/r', 'http://2130706433/r']) {
     assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: u }, D), [u], u);
   }
   assert.deepEqual(parseRelayList({ SVRNTY_RELAYS: 'https://example.com/r' }, D), ['https://example.com/r']);
@@ -142,6 +170,9 @@ test('H2 plain http IS fine on a private network, and https is fine anywhere', (
 test('H3 isPrivateHost edges', () => {
   assert.equal(isPrivateHost(''), false);
   assert.equal(isPrivateHost('a.b'), false);
+  for (const bare of ['relay', 'relay-camelot', 'camelot', 'a', 'dockerhost']) assert.equal(isPrivateHost(bare), false, `a bare name (${bare}) is not provably private`);
+  assert.equal(isPrivateHost('box.local'), true);
+  assert.equal(isPrivateHost('x.localhost'), true);
   assert.equal(isPrivateHost('LOCALHOST'), true);
   assert.equal(isPrivateHost('::'), false, 'the unspecified address is not a private peer');
 });
