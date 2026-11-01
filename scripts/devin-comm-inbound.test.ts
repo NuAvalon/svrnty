@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, quotedName, gateArrivalLine, gateListLine, countedOpen, TR_BODY } from './devin-comm-inbound';
+import { classifyInbound, routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, safeToken, shortNoteId, displayLine, quotedName, gateArrivalLine, gateListLine, countedOpen, deadSetHash, TR_BODY } from './devin-comm-inbound';
 
 test('triple-ratchet packet → tr (journal decrypted plaintext only)', () => {
   assert.equal(classifyInbound(JSON.stringify({ type: TR_BODY, packet: { h: 'x' } })), 'tr');
@@ -273,4 +273,32 @@ test('static guard: poll-json opens tr packets ONLY via countedOpen, and trOpen 
   assert.match(tr, /return withWriterLockAsync\(DIR, async \(\) => \{\s*onLocked\?\.\(\);/, 'the charge must be the FIRST step inside the lock');
   assert.equal((tr.match(/onLocked\?\.\(\)/g) ?? []).length, 1);
   assert.ok(tr.indexOf('onLocked?.()') > tr.indexOf('withWriterLockAsync(DIR'), 'never charge before the lock is held');
+});
+
+test('deadSetHash (#741): set identity for ward — order-free, swap-sensitive, no ids leak, null when empty', () => {
+  const k = (fp: string, id: string) => `${fp}:${id}`;
+  const a = k('fpA', 'n1'), b = k('fpA', 'n2'), c = k('fpB', 'n3'), d = k('fpB', 'n4');
+  const h = deadSetHash([a, b, c]);
+  assert.match(h ?? '', /^[0-9a-f]{16}$/);
+  assert.equal(deadSetHash([c, a, b]), h);                 // order-free: the same set → the same hash every pass
+  assert.equal(deadSetHash([a, b, c, a]), h);              // a duplicate key never changes identity
+  assert.notEqual(deadSetHash([a, b, d]), h);              // THE SWAP: same count, one pruned + one new → different
+  assert.notEqual(deadSetHash([a, b]), h);                 // a drop → different
+  assert.notEqual(deadSetHash([a, b, c, d]), h);           // a new tombstone → different
+  assert.notEqual(deadSetHash([k('fpB', 'n1'), b, c]), h); // same note_id from another peer is another note
+  assert.equal(deadSetHash([]), null);                     // none → null (ward ignores; devin_quarantine drops non-hex)
+  for (const s of ['fpA', 'n1', 'n2', 'fpB', 'n3']) assert.ok(!(h ?? '').includes(s));
+});
+
+test('deadSetHash is NOT sent_at-based (Athena #3410): its input is keys only, so a backdated new tombstone still changes it', () => {
+  // poll-json passes `${from_fingerprint}:${note_id}`; a new note with an OLD sent_at has a new note_id → a new key
+  assert.notEqual(deadSetHash(['fpA:old1', 'fpA:old2']), deadSetHash(['fpA:old1', 'fpA:backdated-new']));
+  assert.equal(deadSetHash.length, 1);
+});
+
+test('poll-json emits dead_set_hash next to dead, from the tombstone branch only', () => {
+  const src = readFileSync(new URL('./devin-comm.ts', import.meta.url), 'utf8');
+  assert.match(src, /dead\+\+;\n\s*deadKeys\.push\(key\);/);
+  assert.match(src, /dead, dead_set_hash: deadSetHash\(deadKeys\),/);
+  assert.equal((src.match(/deadKeys\.push\(/g) ?? []).length, 1);
 });
