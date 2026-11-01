@@ -224,7 +224,7 @@ test('SATELLITE-SAFE: PQ pubkeys are EXCLUDED from noteSigningInput — a canoni
 // ── #720: acceptInboundNote reports WHY it dropped a note (onDrop), additively ──────────────────────
 
 import { TRIPLE_RATCHET_BODY } from './direct-session';
-type DropReason = 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local';
+type DropReason = 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync';
 const ratchetBody = () => JSON.stringify({ type: TRIPLE_RATCHET_BODY, packet: { n: 1 } });
 async function dropOf(run: (onDrop: (r: DropReason) => void) => Promise<unknown>): Promise<{ result: unknown; reasons: DropReason[] }> {
   const reasons: DropReason[] = [];
@@ -260,6 +260,7 @@ test('#720 v5.3 onDrop: an authenticated, admitted ratchet body that cannot be o
   assert.deepEqual((await run(async () => null)).reasons, ['ratchet-local'], 'a bare null is an unidentified cause => LOCAL');
   assert.deepEqual((await run(async () => ({ failed: true, kind: 'local', cause: 'x' }))).reasons, ['ratchet-local']);
   assert.deepEqual((await run(async () => ({ failed: true, kind: 'verdict', cause: 'malformed-frame' }))).reasons, ['ratchet-unopenable'], 'only a positively typed verdict is the frame\'s fault');
+  assert.deepEqual((await run(async () => ({ failed: true, kind: 'desync', cause: 'ratchet-receive-failed' }))).reasons, ['ratchet-desync'], 'T2: a receive failure on an authenticated contact\'s frame is a DESYNC (held), not a verdict');
 });
 
 test('#720 onDrop: control - an accepted note never reports a drop, and omitting onDrop changes nothing', async () => {

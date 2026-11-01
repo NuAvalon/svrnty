@@ -686,8 +686,8 @@
     },
     {
      "file": "src/lib/sync/receipt-seam.test.ts",
-     "test": "structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptTag",
-     "invariant": "delivered:true on ONE line, only after verifyReceiptTag",
+     "test": "structure: `delivered: true` is written on exactly ONE line per seam (FE + headless), and each is reached only after verifyReceiptTag",
+     "invariant": "delivered:true on exactly two source lines, one per seam (FE live-book-poll.ts; headless headless-store.ts via markDelivered, called once from headless-client.ts), each after its own verifyReceiptTag (line order in the same seam: a structural check, not a dataflow proof)",
      "resolved": true
     },
     {
