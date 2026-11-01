@@ -246,13 +246,20 @@ export function envelopeDedupeScope(relayBase: string, mailboxId: string): strin
 }
 
 /**
- * The C1 dedupe key: which relay, which mailbox, which relay-assigned id (#2312: stable across redelivery). Hashed, so an attacker-chosen
- * id is never stored as-is (E1). null for an id that is not a string: such an envelope is never deduped, it takes the normal path.
- * Trusting the relay's id here adds nothing a relay can't already do: it can withhold or delete any envelope.
+ * The C1 dedupe key: which relay, which mailbox, which relay-assigned id (#2312: stable across redelivery) AND which blob (#737). Hashed,
+ * so an attacker-chosen id is never stored as-is (E1). null for an id or blob that is not a string: such an envelope is never deduped, it
+ * takes the normal path. Trusting the relay's id here adds nothing a relay can't already do: it can withhold or delete any envelope.
+ * #737 (Archie lane:svrnty #3222, Flint #3224): the blob's hash is in the key, so a REUSED id (sequential ids, a wiped DB that reissues,
+ * a buggy satellite or peer relay) with a different blob gets a different key and is OPENED, never acked unopened: id reuse now fails
+ * LOUD (an extra open, logged) instead of SILENT. The new dependency, the mirror image: a relay must return a stored blob byte-identical
+ * until ack or expiry (ours does: INSERT once, SELECT as stored, no UPDATE; mailbox-store.ts), or a true redelivery is opened again.
+ * v2 preimage: entries written under v1 (id only) can't match a v2 key. Under G-RO-5 an own-scope v1 entry is then absent from every
+ * listing's keys, so the next commit prunes it; other scopes' v1 entries age out at APPLIED_TTL_MS.
  */
-export function envelopeDedupeKey(relayBase: string, mailboxId: string, envelopeId: unknown): string | null {
-  if (typeof envelopeId !== 'string') return null;
-  const id = bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope:v1|${relayBase}|${mailboxId}|${envelopeId}`)));
+export function envelopeDedupeKey(relayBase: string, mailboxId: string, envelopeId: unknown, blob: unknown): string | null {
+  if (typeof envelopeId !== 'string' || typeof blob !== 'string') return null;
+  const blobHash = bytesToHex(sha256(utf8ToBytes(blob)));
+  const id = bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope:v2|${relayBase}|${mailboxId}|${envelopeId}|${blobHash}`)));
   return `${envelopeDedupeScope(relayBase, mailboxId)}.${id}`;
 }
 
@@ -402,9 +409,18 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   const txn = deps.chunk;
   if (txn) summary.deduped = 0;
   if (deps.outOfTime) summary.deferred = 0;
-  const keyOf = (id: unknown) => (txn ? envelopeDedupeKey(relayBase, mailboxId, id) : null);
+  const keyOf = (e: { envelope_id?: unknown; blob?: unknown } | null | undefined) => (txn && e ? envelopeDedupeKey(relayBase, mailboxId, e.envelope_id, e.blob) : null);
+  // an /ack names ids only: every listed key behind an id (#737: a reused id with two blobs in one listing has TWO keys; the ack drops both)
+  const keysById = new Map<string, string[]>();
+  for (const e of envelopes) {
+    const k = keyOf(e);
+    if (k === null || typeof e.envelope_id !== 'string') continue;
+    const ks = keysById.get(e.envelope_id);
+    if (ks) ks.push(k);
+    else keysById.set(e.envelope_id, [k]);
+  }
   // reached only with a 2xx array (a refused or unreadable poll returned above): the one listing a commit may prune from
-  const live: ListingScope = { scope: envelopeDedupeScope(relayBase, mailboxId), keys: new Set(envelopes.flatMap((e) => keyOf(e.envelope_id) ?? [])) };
+  const live: ListingScope = { scope: envelopeDedupeScope(relayBase, mailboxId), keys: new Set([...keysById.values()].flat()) };
 
   // 2) Consume each envelope independently; flush acks in 20-id chunks so
   //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
@@ -456,7 +472,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     });
     if (ackRes.ok) {
       summary.acked += chunk.length;
-      txn?.acked(chunk.flatMap((id) => keyOf(id) ?? []));
+      txn?.acked(chunk.flatMap((id) => keysById.get(id) ?? []));
       for (const id of chunk) {
         const r = pendingDrop.get(id);
         if (r === undefined) continue;
@@ -594,7 +610,7 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
     // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
     // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
     if (deps.owner.cycle?.ended) return 'ended';
-    const key = keyOf(env.envelope_id);
+    const key = keyOf(env);
     // C1 (#326): a previous commit already holds this envelope (killed between commit and ack). Ack it WITHOUT opening: a ratchet frame's
     // message key is spent on the first open, so a second open would fail and record a loss for a message that is safely stored.
     // Through THE ACK DOOR as a stored message ('clear'), like any other: a sink clears a stale record of it first (#720 R1/R5).

@@ -81,7 +81,15 @@ function mockRelay(onAck?: (ids: string[]) => void) {
   const polled = new Set<string>();
   const queued = () => [...boxes.entries()].filter(([m]) => polled.size === 0 || polled.has(m)).reduce((n, [, q]) => n + q.length, 0);
   const listIds = () => [...boxes.values()].flat().map((e) => e.envelope_id);
-  return { fetchImpl, acks, queued, listIds, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
+  const blobOf = (id: string) => [...boxes.values()].flat().find((e) => e.envelope_id === id)!.blob; // #737: the key hashes the blob too
+  /** #737: a relay that lost `oldId` (DB wipe) and REISSUES that id for the envelope now stored as `newId`. */
+  const reissue = (oldId: string, newId: string) => {
+    for (const [m, q] of boxes) {
+      const kept = q.filter((e) => e.envelope_id !== oldId).map((e) => (e.envelope_id === newId ? { ...e, envelope_id: oldId } : e));
+      boxes.set(m, kept);
+    }
+  };
+  return { fetchImpl, acks, queued, listIds, blobOf, reissue, failAck: (n: number) => { failAcks = n; }, reply: (r: typeof queueReply) => { queueReply = r; } };
 }
 
 function tmpBook(): { dir: string; path: string; open: () => HeadlessStore; hash: () => string; done: () => void } {
@@ -234,8 +242,8 @@ test('#712 C1 bound (Flint #2417): an entry whose envelope IS in the listing is 
   try {
     book.open().upsertContact(asContact(A));
     await sendN(A, B, 1, relay.fetchImpl, 'already-stored');
-    const listedKey = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0])!;
-    const goneKey = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_long_gone')!;
+    const listedKey = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0], relay.blobOf(relay.listIds()[0]))!;
+    const goneKey = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_long_gone', 'blob-of-env_long_gone')!;
     plant(book.path, [{ key: listedKey }, { key: goneKey }]);
     await sendN(A, B, 1, relay.fetchImpl, 'new');
     relay.failAck(1); // keep the state as the commit wrote it: the ack after it dies
@@ -255,7 +263,7 @@ test('#712 C1 bound (Flint #2417): a REFUSED (401) or UNREADABLE (200, not a lis
   const book = tmpBook();
   try {
     book.open().upsertContact(asContact(A));
-    plant(book.path, [{ key: envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_absent')! }]);
+    plant(book.path, [{ key: envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_absent', 'blob-of-env_absent')! }]);
     for (const r of ['refused', 'unreadable'] as const) {
       relay.reply(r);
       const pre = book.hash();
@@ -273,9 +281,9 @@ test('#712 C1 bound (Flint #2417): a listing prunes only ITS relay + mailbox; an
   const book = tmpBook();
   try {
     book.open().upsertContact(asContact(A));
-    const own = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_absent')!;
-    const otherMailbox = envelopeDedupeKey(RELAY, deriveMailboxId(A.fp), 'env_absent')!;
-    const otherRelay = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_absent')!;
+    const own = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_absent', 'blob-of-env_absent')!;
+    const otherMailbox = envelopeDedupeKey(RELAY, deriveMailboxId(A.fp), 'env_absent', 'blob-of-env_absent')!;
+    const otherRelay = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_absent', 'blob-of-env_absent')!;
     assert.ok(own.startsWith(envelopeDedupeScope(RELAY, deriveMailboxId(B.fp)) + '.'));
     plant(book.path, [{ key: own }, { key: otherMailbox }, { key: otherRelay }]);
     await sendN(A, B, 1, relay.fetchImpl);
@@ -296,8 +304,8 @@ test('#712 C1 bound: an entry older than 7 days in a scope NO listing covers is 
   try {
     book.open().upsertContact(asContact(A));
     const old = new Date(Date.now() - 8 * 864e5).toISOString();
-    const staleElsewhere = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_old')!;
-    const freshElsewhere = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_new')!;
+    const staleElsewhere = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_old', 'blob-of-env_old')!;
+    const freshElsewhere = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_new', 'blob-of-env_new')!;
     plant(book.path, [{ key: staleElsewhere, at: old }, { key: freshElsewhere }]);
     await sendN(A, B, 1, relay.fetchImpl);
     await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
@@ -366,9 +374,9 @@ test('G-RO-5 bound: in the listing\'s OWN scope a 10-day-old entry is KEPT while
     book.open().upsertContact(asContact(A));
     await sendN(A, B, 1, relay.fetchImpl, 'already-stored');
     const old = new Date(Date.now() - 10 * 864e5).toISOString();
-    const listedOld = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0])!;
-    const goneOld = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_long_gone')!;
-    const elsewhereOld = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_old')!;
+    const listedOld = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0], relay.blobOf(relay.listIds()[0]))!;
+    const goneOld = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_long_gone', 'blob-of-env_long_gone')!;
+    const elsewhereOld = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_old', 'blob-of-env_old')!;
     plant(book.path, [{ key: listedOld, at: old }, { key: goneOld, at: old }, { key: elsewhereOld, at: old }]);
     await sendN(A, B, 1, relay.fetchImpl, 'new');
     relay.failAck(1); // keep the state as the commit wrote it: the ack after it dies
@@ -391,7 +399,7 @@ test('#712 C1 control: a FRESH entry for a listed envelope IS acked without open
     book.open().upsertContact(asContact(A));
     await sendN(A, B, 1, relay.fetchImpl);
     const raw = JSON.parse(readFileSync(book.path, 'utf8'));
-    raw.applied_envelopes = [{ key: envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0]), at: new Date().toISOString() }];
+    raw.applied_envelopes = [{ key: envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0], relay.blobOf(relay.listIds()[0])), at: new Date().toISOString() }];
     writeFileSync(book.path, JSON.stringify(raw));
     const s = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
     assert.equal(s.deduped, 1);
@@ -522,6 +530,53 @@ test('#712 time budget: the pass stops between envelopes before the watchdog, co
     const notes = book.open().listNotes();
     assert.equal(notes.length, 25);
     assert.equal(new Set(notes.map((n) => n.body)).size, 25, 'no note lost, none twice');
+  } finally {
+    book.done();
+  }
+});
+
+// #737 (Archie lane:svrnty #3222, Flint #3224): the blob's hash is in the dedupe key.
+test('#737 NEG: a relay that REISSUES a committed id for a NEW message: the new one is OPENED and stored, never acked unopened', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    await sendN(A, B, 1, relay.fetchImpl, 'first');
+    relay.failAck(1);
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed between commit and ack/);
+    assert.equal(book.open().appliedEnvelopeCount(), 1, 'the commit holds "first" under its id');
+    const [oldId] = relay.listIds();
+    await sendN(A, B, 1, relay.fetchImpl, 'second');
+    const newId = relay.listIds().find((id) => id !== oldId)!;
+    relay.reissue(oldId, newId); // the relay lost "first" and hands "second" the SAME id
+    assert.deepEqual(relay.listIds(), [oldId]);
+    const s = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
+    assert.equal(s.deduped, 0, 'a different blob behind a known id is NOT the stored envelope');
+    assert.equal(s.opened_hybrid + s.opened_classical, 1, 'opened (loud), not acked unopened (silent)');
+    assert.equal(s.notes, 1);
+    assert.deepEqual(book.open().listNotes().map((n) => n.body).sort(), ['first 0', 'second 0'], 'both messages are in the book');
+  } finally {
+    book.done();
+  }
+});
+
+test('#737 upgrade window, stated: a v1-format (id-only) own-scope entry does not match, so that envelope is opened once more; the commit prunes the v1 entry', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    await sendN(A, B, 1, relay.fetchImpl, 'pre-upgrade');
+    const [id] = relay.listIds();
+    const mbx = deriveMailboxId(B.fp);
+    const v1 = `${envelopeDedupeScope(RELAY, mbx)}.${createHash('sha256').update(`svrnty:applied-envelope:v1|${RELAY}|${mbx}|${id}`).digest('hex')}`;
+    plant(book.path, [{ key: v1 }]); // what a pre-#737 commit wrote, its ack killed before the upgrade
+    relay.failAck(1); // keep the state the commit writes
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed/);
+    const keys = keysOnDisk(book.path);
+    assert.ok(!keys.includes(v1), 'own scope, absent from the listing\'s (v2) keys: pruned at this commit, not 7 d later');
+    assert.deepEqual(keys, [envelopeDedupeKey(RELAY, mbx, id, relay.blobOf(id))], 'only the v2 key of the envelope opened now');
   } finally {
     book.done();
   }
