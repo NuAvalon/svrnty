@@ -23,6 +23,7 @@ import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from '@/lib/sync/con
 import { noteOpenpgpDecryptor, sealNoteTo, parseNoteWire } from '@/lib/messaging/seal';
 import { verifyNoteSender, signNoteWire } from '@/lib/messaging/note-auth';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
+import { depositWithFailover, mergeRelaySummaries, type DepositOutcome, type RelayPoll, type UnconfirmedAttempt } from '@/lib/sync/relay-tiers';
 import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import { admitContact } from '@/lib/trust/admit-contact';
 import { headlessDeadLetterSink } from './headless-dead-letter';
@@ -391,6 +392,33 @@ export async function pollHeadlessOnce(owner: HeadlessOwner, store: HeadlessStor
   return { ...summary, ...receiptCounts(r) };
 }
 
+/**
+ * Poll every relay in order (T1, then T2...) as ONE pass: the caller holds the single lock around this. A relay that throws never stops the
+ * others; if EVERY relay threw, the first error is rethrown so the tick is reported failed, as a single-relay poll was. Each relay keeps its
+ * own dedupe scope and acks with its own owner-auth (consume-mailbox), so the same note arriving from two relays opens once and the second
+ * copy takes the #720 r2 redelivery branch.
+ */
+export async function pollHeadlessAllRelays(
+  owner: HeadlessOwner,
+  store: HeadlessStore,
+  relayBases: readonly string[],
+  opts: Omit<HeadlessOpts, 'relayBase'> = {},
+  poll: (relayBase: string) => Promise<ConsumeSummary> = (relayBase) => pollHeadlessOnce(owner, store, { ...opts, relayBase }),
+): Promise<ReturnType<typeof mergeRelaySummaries>> {
+  const polls: RelayPoll[] = [];
+  let firstError: unknown;
+  for (const relayBase of relayBases) {
+    try {
+      polls.push({ summary: await poll(relayBase) });
+    } catch (err) {
+      if (firstError === undefined) firstError = err;
+      polls.push({ failed: true });
+    }
+  }
+  if (polls.length > 0 && polls.every((p) => 'failed' in p)) throw firstError;
+  return mergeRelaySummaries(polls);
+}
+
 export interface HeadlessPollHandle {
   stop: () => void;
 }
@@ -456,14 +484,16 @@ export async function sendNoteFromHeadless(args: {
   threadId?: string;
   store: HeadlessStore;
   relayBase?: string;
+  /** Failover (T2): relays in order. The note is sealed ONCE and the same blob is re-POSTed to the next on a 5xx/429/408/network failure. Wins over relayBase. */
+  relayBases?: readonly string[];
   fetchImpl?: typeof fetch;
   /** Layer 3: the agent dir holding hop-trail.jsonl (absent → no trail). */
   hopTrailDir?: string;
   noteId?: string; // inject for determinism in tests
   sentAt?: string; // inject for determinism in tests
-}): Promise<{ note_id: string; thread_id: string; deposited: boolean }> {
+}): Promise<{ note_id: string; thread_id: string; deposited: boolean; /** which relay carried it (index in relayBases), null if none */ tier?: number | null; /** a failed attempt may still hold the note: never claim 'not sent' */ unconfirmed?: boolean; /** the HTTP status of the last relay that answered; absent if none answered (nothing posted, or every request threw) */ status?: number; /** which relays left it unconfirmed (host + status), for the status line */ unconfirmedBy?: UnconfirmedAttempt[] }> {
   const fetchImpl = args.fetchImpl ?? fetch;
-  const relayBase = args.relayBase ?? '/api/relay';
+  const relays = args.relayBases && args.relayBases.length > 0 ? args.relayBases : [args.relayBase ?? '/api/relay'];
   const now = () => new Date().toISOString();
   const thread_id = args.threadId ?? `thr_${args.owner.fingerprint.slice(0, 6)}_${args.peerFingerprint.slice(0, 6)}`;
   const note_id = args.noteId ?? `note_${globalThis.crypto.randomUUID()}`;
@@ -498,18 +528,18 @@ export async function sendNoteFromHeadless(args: {
   // outbound copy is kept either way — sent ⇒ deposited:true; skipped ⇒ kept as "not sent", deposited:false.
   // Identical contract to messaging/transport.sendNoteToPeer so FE + headless sends behave the same.
   let deposited = false;
+  let outcome: DepositOutcome | undefined;
   if (args.peerPqKemPublicKey) {
     const blob = await sealNoteTo(wire, args.peerPublicKeyArmored, args.peerPqKemPublicKey);
     const peer = trailPeer(args.store, args.peerFingerprint); // layer 3 (fail-open; never a fingerprint)
     recordHop(args.hopTrailDir, 'sealed', { note_id }, peer);
     const mailbox_id = deriveMailboxId(args.peerFingerprint);
-    recordHop(args.hopTrailDir, 'deposited', { note_id }, peer); // the REQUEST, about to be sent: proves nothing about the relay
-    const res = await fetchImpl(`${relayBase}/envelope`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mailbox_id, blob }),
-    });
-    deposited = res.ok;
+    const body = JSON.stringify({ mailbox_id, blob }); // sealed ONCE: every relay gets these exact bytes
+    recordHop(args.hopTrailDir, 'deposited', { note_id }, peer); // the REQUEST, about to be sent: proves nothing about any relay
+    outcome = await depositWithFailover(relays, (relayBase) =>
+      fetchImpl(`${relayBase}/envelope`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }),
+    );
+    deposited = outcome.deposited;
     if (deposited) recordHop(args.hopTrailDir, 'relay-accepted', { note_id }, peer); // a 2xx: "on the relay"
   } else {
     console.warn('[headless-notes] fail-closed: recipient has no pq_kem — note NOT deposited (never downgrade, HNDL)');
@@ -531,5 +561,5 @@ export async function sendNoteFromHeadless(args: {
     // only a deposited note can ever be confirmed; a fail-closed (not sent) copy keeps no key
     ...(deposited ? { receipt_key } : {}),
   });
-  return { note_id, thread_id, deposited };
+  return { note_id, thread_id, deposited, ...(outcome ? { tier: outcome.tier, unconfirmed: outcome.unconfirmed, ...(outcome.status !== undefined ? { status: outcome.status } : {}), ...(outcome.unconfirmedBy ? { unconfirmedBy: outcome.unconfirmedBy } : {}) } : {}) };
 }
