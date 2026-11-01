@@ -141,6 +141,15 @@ export function deadNotesNotice(peerFp: string, items: { note_id: string; sent_a
   return { note_id, text: `[svrnty] ${ids.length} note(s) from ${tok(peerFp).slice(0, 8)} could not be opened on this device after ${maxAttempts} tries (sent ${times[0]} to ${times.at(-1)}); ask the sender to send them again` };
 }
 
+/** #741 (Flint): the IDENTITY of the tombstoned set, for ward. `dead` alone is a level: one tombstone pruned + one new
+ *  leaves the same count (the swap, Athena #3406), so ward can't tell "the same old set" from "a new loss". This is
+ *  sha256 over the sorted `<peer_fp>:<note_id>` keys, first 16 hex: no ids, no bodies, no dates. NOT sent_at-based:
+ *  sent_at is the SENDER's clock, so a backdated new tombstone would hide the swap (Athena #3410). null when none. Pure. */
+export function deadSetHash(keys: string[]): string | null {
+  if (keys.length === 0) return null;
+  return createHash('sha256').update([...new Set(keys)].sort().join('\n')).digest('hex').slice(0, 16);
+}
+
 /** One tr-packet open with a crash-safe attempt count (Flint #2361, #2366). open() gets a one-shot charge() and must
  *  call it once it HOLDS the store writer lock, right before the ratchet step: the attempt is counted and PERSISTED
  *  then, so a pass the watchdog kills inside receive still counts it, while a pass that never got the lock (contention,

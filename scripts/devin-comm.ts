@@ -16,7 +16,7 @@
 // Agent-local protocol state (issued Grow codes + Gate arrivals) lives alongside it as JSON.
 
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
-import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, countedOpen, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
+import { routeInbound, loomNotice, openTaskChannel, openTasksNotice, deadNotesNotice, countedOpen, deadSetHash, safeToken, shortNoteId, displayLine, gateArrivalLine, gateListLine } from './devin-comm-inbound';
 import { readJsonStrict, writeFileAtomic, RATCHET_HINT } from '../src/lib/headless/atomic-file';
 import { mintHeadlessAgent, serializeMintArtifact, type SerializedMintArtifact } from '../src/lib/identity/headless-mint';
 import { HeadlessStore, type HeadlessContact } from '../src/lib/headless/headless-store';
@@ -581,6 +581,7 @@ async function main() {
     const openTasks = new Map<string, { note_id: string; channel: string; sent_at: string }[]>();
     let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
     let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
+    const deadKeys: string[] = [];   // #741: the tombstoned set's keys → dead_set_hash (identity for ward; never logged)
     let adopted = 0;         // F1: a contact's reset → its NEW first frame replaced the stored session
     let futureIgnored = 0;   // F1: journaled notes dated beyond now + 5 min, left out of the replay guard (counts only)
     // F1 (Flint spec v1 bcade56d): the PWA's R5/R6 policy, asked only here, where the journal guards replays. Stored notes = the journal's
@@ -650,6 +651,7 @@ async function main() {
       const key = `${note.from_fingerprint}:${note.note_id}`;
       if ((attempts[key] ?? 0) >= MAX_ATTEMPTS) {                       // tombstoned (Mneme FINAL)
         dead++;
+        deadKeys.push(key);
         if (attempts[key] === MAX_ATTEMPTS) {                           // not yet announced (MAX+1 = announced)
           const list = deadByPeer.get(note.from_fingerprint) ?? [];
           list.push({ note_id: note.note_id, sent_at: note.sent_at });
@@ -702,7 +704,7 @@ async function main() {
     // AGGREGATE for THIS poll with no sender in it, and it has two kinds: a terminal drop (undecryptable,
     // bad signature, not-in-book) is counted once and acked away, but a RETRYABLE envelope stays in the mailbox
     // and is counted again on every poll until it resolves. So a steady dropped>0 can be one stuck envelope.
-    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped,
+    console.log(JSON.stringify({ journaled, skipped, skipped_loom: skippedLoom, loom_notices: loomNotices, decrypt_failed: decryptFailed, dead, dead_set_hash: deadSetHash(deadKeys), journal: journalPath, polled: consumed.polled, rejected: consumed.rejected ?? null, dropped: consumed.dropped,
       // #720 counters (counts only; the ward allowlist in devin_quarantine names exactly these keys). `lost` = per-reason consumed losses
       // (headless has no dead-letter sink, so deadLettered/unrecorded/released stay 0 here); opened_* = which leg of the dual-read opened.
       held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
