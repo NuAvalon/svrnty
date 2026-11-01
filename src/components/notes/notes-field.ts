@@ -1,6 +1,7 @@
 // Thread Field helpers — people rail + clocks. No unread counts (I-3), no presence (I-6).
 
 import type { NoteThread } from '@/lib/messaging';
+import { readLastActivity } from '@/lib/messaging/thread-activity';
 import { NOTES_BOUNDS } from './notes-copy';
 import { boundDisplayText, formatFingerprintShort } from './notes-text';
 
@@ -97,9 +98,12 @@ export function mergeFieldPeople(args: {
   previews: Record<string, string>;
   extraFp?: string;
   extraName?: string;
+  /** The clock the list is read at (tests); defaults to now. */
+  nowMs?: number;
 }): FieldPerson[] {
   const seen = new Set<string>();
   const out: FieldPerson[] = [];
+  const nowMs = args.nowMs ?? Date.now();
 
   for (const thread of args.threads) {
     if (thread.kind !== 'direct') continue;
@@ -112,7 +116,7 @@ export function mergeFieldPeople(args: {
       name: displayNameFor(fp, args.names, fromThread),
       threadId: thread.thread_id,
       preview: args.previews[thread.thread_id] || '',
-      lastAt: thread.last_activity_at,
+      lastAt: readLastActivity(thread.last_activity_at, nowMs), // a value ahead of now + slack never shows as a far-future time
       sendable: args.sendable.has(fp),
     });
   }

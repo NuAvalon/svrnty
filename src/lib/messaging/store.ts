@@ -6,6 +6,7 @@ import type { NoteRecord, NoteThread, RingChannel } from './types';
 import type { RatchetSnapshot } from '@/lib/crypto/message-ratchet';
 import { onSessionLock } from '@/lib/identity/client-store';
 import { isAllowedSettingsPrefix, isAllowedSettingsRowKey } from './settings-row-keys';
+import { needsLastActivityHeal, healedLastActivity, readLastActivity } from './thread-activity';
 
 const DB_NAME = 'svrnty-notes';
 const DB_VERSION = 2;
@@ -241,7 +242,38 @@ export async function listThreads(): Promise<NoteThread[]> {
       // corrupt / wrong key — skip
     }
   }
-  return out.sort((a, b) => b.last_activity_at.localeCompare(a.last_activity_at));
+  const now = Date.now();
+  const healed: NoteThread[] = [];
+  for (const thread of out) healed.push(await healPinnedThread(thread, now));
+  return healed.sort((a, b) => readLastActivity(b.last_activity_at, now).localeCompare(readLastActivity(a.last_activity_at, now)));
+}
+
+/**
+ * A thread pinned in the future by an older rule gets a fixed, lower last_activity_at written ONCE (thread-activity.ts: healedLastActivity), after which
+ * ordinary activity overtakes it. It only ever lowers a value. The row is re-read first: a note that arrived since this list was read has already
+ * written its own clamped time, and then there is nothing to heal and nothing to overwrite. If a note lands between that re-read and the write, the
+ * stale value can win briefly; the next note in the thread writes its own clamped time and corrects it. Never throws: on any failure the thread comes back
+ * as it was read, and readLastActivity still bounds how it sorts.
+ */
+async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<NoteThread> {
+  if (!needsLastActivityHeal(thread.last_activity_at, nowMs)) return thread;
+  try {
+    const row = await txGet<ThreadRow>('threads', thread.thread_id);
+    const current = row ? await decryptJson<NoteThread>(row.enc) : thread;
+    let sentAts: string[] | null = null;
+    try {
+      sentAts = (await listNotesForThread(thread.thread_id)).map((n) => n.sent_at);
+    } catch {
+      sentAts = null; // notes not at hand: healedLastActivity falls back to now + slack
+    }
+    const value = healedLastActivity(current.last_activity_at, sentAts, nowMs);
+    if (value === null) return current;
+    const next: NoteThread = { ...current, last_activity_at: value };
+    await putThread(next);
+    return next;
+  } catch {
+    return thread;
+  }
 }
 
 export async function putNote(note: NoteRecord): Promise<void> {
