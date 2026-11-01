@@ -7,8 +7,12 @@
 //   verify <pub_hex> <sig_hex>        stdin msg → exit 0 valid / 1 invalid
 //   fp-check <asc> <kem> <sigk> <fp>  → exit 0 if canonical fp of (sign‖enc‖kem‖sig) matches claimed fp
 //   fp-derive <asc> <kem> <sigk>      → canonical fp of the quad on stdout (fail-path diagnostics only)
-// Env: SVRNTY_MINT (mint.json path) or SVRNTY_AGENT_DIR (dir containing mint.json);
-//      default ~/devin-sandbox/.svrnty-agent/mint.json.
+//   contact-encrypt <card.json>       stdin text → SVRNTY ENCRYPTED MESSAGE armored (reads 5 mint secrets)
+//   contact-decrypt <card.json>       stdin armored → {message,senderVerified,senderFingerprint} JSON;
+//                                     exits 3 when senderVerified=false unless --allow-unverified
+// Env: SVRNTY_MINT (mint.json path) or SVRNTY_AGENT_DIR (dir containing mint.json) —
+//      required for mint-reading verbs (sign, contact-encrypt, contact-decrypt);
+//      no implicit home-dir default (flint PR#339 R3).
 
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
@@ -24,16 +28,26 @@ import { fingerprintMatchesKey, signPubFromOpenPgpPublic, canonicalPubsFromArmor
 import { base64ToUint8 } from '../src/lib/crypto/pq';
 import { encryptToContact, decryptFromContact, type ContactKeys, type SenderKeys, type MyKeys } from '../src/lib/crypto/contact-message';
 
-const MINT = process.env.SVRNTY_MINT
-  ?? (process.env.SVRNTY_AGENT_DIR ? `${process.env.SVRNTY_AGENT_DIR}/mint.json` : undefined)
-  ?? `${process.env.HOME}/devin-sandbox/.svrnty-agent/mint.json`;
+function mintPath(): string {
+  // flint PR#339 R3: no silent ~/devin-sandbox fallback — the mint path
+  // must be declared (same rule as agent-move-fence-001 CR#2 n1).
+  // Lazily resolved so mint-free verbs (pub/verify/fp-check/fp-derive)
+  // stay env-free.
+  const p = process.env.SVRNTY_MINT
+    ?? (process.env.SVRNTY_AGENT_DIR ? `${process.env.SVRNTY_AGENT_DIR}/mint.json` : undefined);
+  if (!p) {
+    console.error('refusing: set SVRNTY_MINT or SVRNTY_AGENT_DIR — no implicit ~/devin-sandbox default');
+    process.exit(2);
+  }
+  return p;
+}
 
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
 
   if (cmd === 'sign') {
     const msg = new Uint8Array(readFileSync(0));   // binary-safe stdin
-    const mint = JSON.parse(readFileSync(MINT, 'utf8'));   // touched, never printed
+    const mint = JSON.parse(readFileSync(mintPath(), 'utf8'));   // touched, never printed
     const seed = base64ToUint8(mint.private.ed25519_seed);
     console.log(bytesToHex(rawSign(msg, seed)));
     return;
@@ -89,7 +103,7 @@ async function main() {
     const [contactCardJsonPath] = rest;
     const msg = readFileSync(0, 'utf8');
     const contact = JSON.parse(readFileSync(contactCardJsonPath, 'utf8')) as ContactKeys;
-    const mint = JSON.parse(readFileSync(MINT, 'utf8'));
+    const mint = JSON.parse(readFileSync(mintPath(), 'utf8'));
     const sender: SenderKeys = {
       signSeed: base64ToUint8(mint.private.ed25519_seed),
       sigSecret: base64ToUint8(mint.private.mldsa87_secret),
@@ -103,9 +117,10 @@ async function main() {
   if (cmd === 'contact-decrypt') {
     // Decrypt stdin '-----BEGIN SVRNTY ENCRYPTED MESSAGE-----' sealed to this
     // cell's identity keys and verify the sender against optional contactCardJsonPath.
-    const [senderCardJsonPath] = rest;
+    const [senderCardJsonPath] = rest.filter((a) => !a.startsWith('--'));
+    const allowUnverified = rest.includes('--allow-unverified');
     const armored = readFileSync(0, 'utf8');
-    const mint = JSON.parse(readFileSync(MINT, 'utf8'));
+    const mint = JSON.parse(readFileSync(mintPath(), 'utf8'));
     const me: MyKeys = {
       x25519Sec: base64ToUint8(mint.private.x25519_sec),
       mlkem1024Sec: base64ToUint8(mint.private.mlkem1024_sec),
@@ -120,6 +135,12 @@ async function main() {
     if (!res) {
       console.error('decrypt failed');
       process.exit(1);
+    }
+    // flint PR#339 R2: an unverified sender is a nonzero exit — silent
+    // exit-0 let callers treat claimed-from as verified-from.
+    if (!res.senderVerified && !allowUnverified) {
+      console.error('sender unverified — pass --allow-unverified to print anyway');
+      process.exit(3);
     }
     console.log(JSON.stringify(res));
     return;
