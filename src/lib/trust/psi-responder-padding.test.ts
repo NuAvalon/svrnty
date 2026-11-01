@@ -12,6 +12,7 @@ import {
   initiateTrustSync,
   respondToTrustSync,
   completeTrustSync,
+  reblindSet,
   type OrchestratorDeps,
   type PSISyncOptions,
 } from './mutual-trust-sync';
@@ -146,6 +147,36 @@ test('padding does not change what is discovered: the shared contacts still come
     assert.deepEqual([...(initiator.disclosed.get(RESP) ?? [])].sort(), ['fp-y', 'fp-z']);
     assert.equal(relay.sessions.get(init.sessionId)!.responder_blinded_set!.length, PSI_BLINDED_BUCKET_N);
   });
+});
+
+// ── Position says nothing ───────────────────────────────────────────────────────────────────────
+// padBlindedSet takes the shuffle as a parameter, so its own contract being right does not show that the responder's CALL passes the real
+// one. With an identity shuffle the real entries sit first and the dummies after, so where a peer's matched entries land would bound the
+// responder's contact count from below, which is exactly what the padding hides.
+test('the responder shuffles its real entries in among the padding: matched entries are not confined to the first fps.length slots', async () => {
+  const RUNS = 8;
+  const SHARED = ['fp-s1', 'fp-s2', 'fp-s3'];
+  let outsidePrefix = 0;
+  for (let run = 0; run < RUNS; run++) {
+    await withRelay(async (relay) => {
+      const initiator = makeClient(INIT, [RESP, ...SHARED]);
+      const responder = makeClient(RESP, [INIT, ...SHARED]);
+      const realCount = 1 + SHARED.length; // what the responder actually holds; an unshuffled set would keep every real entry in [0, realCount)
+      const init = await initiateTrustSync(initiator.deps, RESP, initiator.options, 'know');
+      if ('error' in init) throw new Error(init.error);
+      await respondToTrustSync(responder.deps, responder.options, 'know');
+      const s = relay.sessions.get(init.sessionId)!;
+      // The responder's entry j is a shared contact iff re-blinding it with the initiator's key equals one of the initiator's entries the
+      // responder re-blinded with its own key (H(x)^(r*i) both ways). No dummy can collide.
+      const theirs = new Set(s.reblinded_initiator_set);
+      const matchedAt = reblindSet(s.responder_blinded_set!, init.keypair.privateKey)
+        .map((v, j) => (theirs.has(v) ? j : -1)).filter((j) => j >= 0);
+      assert.equal(matchedAt.length, SHARED.length, 'every shared contact is found in the responder\'s set');
+      if (matchedAt.some((j) => j >= realCount)) outsidePrefix++;
+    });
+  }
+  // Shuffled over 64 slots, all 3 matches landing in the first 4 is ~1e-4 per run, so over 8 runs it is ~1e-32 that none leaves the prefix.
+  assert.ok(outsidePrefix > 0, 'in none of the runs did a matched entry land past the first fps.length slots: the real entries are not shuffled in with the dummies');
 });
 
 // ── Over the bucket ─────────────────────────────────────────────────────────────────────────────
