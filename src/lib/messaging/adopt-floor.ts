@@ -7,7 +7,7 @@
 // an encrypted row in the notes DB's 'settings' store (same pattern as the reset flag), so deleting a conversation does not touch it. The guard's
 // bar becomes max(newest stored note, floor). Pure here: the key and the strict row. Nothing from any message text: a fingerprint and a time.
 import { normalizeResetFp } from './reset-flag';
-import { parseSentAtMs } from './session-adopt-policy';
+import { FUTURE_SLACK_MS, parseSentAtMs } from './session-adopt-policy';
 
 export const ADOPT_FLOOR_PREFIX = 'adopt_floor:';
 
@@ -36,10 +36,16 @@ export function parseAdoptFloorRow(v: unknown): AdoptFloorRow | null {
   return { fp: o.fp, sent_at: o.sent_at as string };
 }
 
-/** The floor to store after a session started from a frame signed `candidateIso`, given what is already stored: it only ever RISES. null = write nothing. */
-export function raisedFloor(existingIso: string | undefined, candidateIso: unknown): string | null {
+/**
+ * The floor to store after a session started from a frame signed `candidateIso`, given what is already stored: it only ever RISES, and a
+ * candidate dated beyond now + the future slack is never stored (Flint #3312 R1). A far-future floor could never be replaced by a later genuine
+ * value (the floor only rises) while the READ side always ignores it (the same future filter), so the protection would be switched off for that
+ * contact for good, invisibly. null = write nothing.
+ */
+export function raisedFloor(existingIso: string | undefined, candidateIso: unknown, nowMs: number): string | null {
   const c = parseSentAtMs(candidateIso);
-  if (!Number.isFinite(c)) return null; // an unusable time is never a floor
+  if (!Number.isFinite(c) || !Number.isFinite(nowMs)) return null; // an unusable time is never a floor
+  if (c > nowMs + FUTURE_SLACK_MS) return null;
   const e = existingIso === undefined ? NaN : parseSentAtMs(existingIso);
   return Number.isFinite(e) && e >= c ? null : (candidateIso as string);
 }

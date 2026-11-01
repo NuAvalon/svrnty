@@ -85,7 +85,7 @@ async function receive(rcv: Party, snd: Party, wire: NoteWireV0, o: Opts = {}) {
       onSessionStarted: async (peer: string, signedSentAt: string) => {
         rcv.floorWrites.push({ peer, at: signedSentAt, stored: rcv.notes.has(wire.note_id) });
         if (o.floorWriterThrows) throw new Error('settings store locked');
-        const next = raisedFloor(rcv.floor.get(peer), signedSentAt);
+        const next = raisedFloor(rcv.floor.get(peer), signedSentAt, NOW);
         if (next !== null) rcv.floor.set(peer, next);
       },
     } : {}),
@@ -190,17 +190,35 @@ test('F5 edges: a far-future floor is ignored (no lockout), an unreadable floor 
   }
 });
 
-test('F6 the pure pieces: the floor only rises, the row is strict, the key is built from validated hex, the prefix is an allowed settings prefix', () => {
+test('F6 the pure pieces: the floor only rises and never beyond now + slack, the row is strict, the key is built from validated hex, the prefix is an allowed settings prefix', () => {
   const a = at(-3_600_000), b = at(-60_000);
-  assert.equal(raisedFloor(undefined, a), a); assert.equal(raisedFloor(a, b), b);
-  assert.equal(raisedFloor(b, a), null, 'never lowered'); assert.equal(raisedFloor(a, a), null, 'equal is no change');
-  assert.equal(raisedFloor(undefined, 'yesterday'), null); assert.equal(raisedFloor(undefined, undefined), null); assert.equal(raisedFloor(a, '2026-11-01 10:00'), null);
-  assert.equal(raisedFloor('garbage', a), a, 'an unusable stored floor is replaced');
+  assert.equal(raisedFloor(undefined, a, NOW), a); assert.equal(raisedFloor(a, b, NOW), b);
+  assert.equal(raisedFloor(b, a, NOW), null, 'never lowered'); assert.equal(raisedFloor(a, a, NOW), null, 'equal is no change');
+  assert.equal(raisedFloor(undefined, 'yesterday', NOW), null); assert.equal(raisedFloor(undefined, undefined, NOW), null); assert.equal(raisedFloor(a, '2026-11-01 10:00', NOW), null);
+  assert.equal(raisedFloor('garbage', a, NOW), a, 'an unusable stored floor is replaced');
+  assert.equal(raisedFloor(undefined, at(FUTURE_SLACK_MS), NOW), at(FUTURE_SLACK_MS), 'now + slack exactly is still storable');
+  assert.equal(raisedFloor(undefined, at(FUTURE_SLACK_MS + 1), NOW), null, 'one ms beyond now + slack is not');
+  assert.equal(raisedFloor(a, at(10 * 365 * 86_400_000), NOW), null, 'a far-future candidate never replaces a real floor'); assert.equal(raisedFloor(undefined, a, NaN), null);
   const fp = 'ab12'.repeat(16);
   assert.deepEqual(parseAdoptFloorRow({ fp, sent_at: a }), { fp, sent_at: a });
   for (const bad of [null, 5, [], {}, { fp, sent_at: a, extra: 1 }, { fp: fp.toUpperCase(), sent_at: a }, { fp: 'xyz', sent_at: a }, { fp, sent_at: 'not a time' }, { fp }, { sent_at: a }]) assert.equal(parseAdoptFloorRow(bad), null, JSON.stringify(bad));
   assert.equal(adoptFloorKey(fp), `${ADOPT_FLOOR_PREFIX}${fp}`); assert.equal(adoptFloorKey('../../notes_encryption_salt'), null); assert.equal(adoptFloorKey(undefined), null);
   assert.equal(isAllowedSettingsRowKey(adoptFloorKey(fp)), true); assert.equal(isAllowedSettingsRowKey('notes_encryption_salt'), false);
+});
+
+test('F8 (Flint #3312 R1) a far-future first frame does not switch the protection off: the floor is not written, the next normal first frame raises it, and its replay after a delete is refused', async () => {
+  const alice = await party(), bob = await party();
+  const farFuture = at(10 * 365 * 86_400_000);
+  const g1 = (await sealFrom(alice, bob, 'first, from a broken clock', memIO()))!;
+  assert.ok((await receive(bob, alice, await wireFrom(alice, 'n1', g1, farFuture))).r, 'the first frame opens (a fresh contact: no session to protect)');
+  assert.equal(bob.floor.has(alice.fp), false, 'a far-future signed time is NOT stored as the floor');
+  const f2 = (await sealFrom(alice, bob, 'a normal reset', memIO()))!;
+  deleteConversation(bob);
+  const adopted = await receive(bob, alice, await wireFrom(alice, 'n2', f2, at(-120_000)));
+  assert.ok(adopted.r, 'the contact can still reset (no far-future floor locks them out)'); assert.equal(bob.floor.get(alice.fp), at(-120_000), 'and the floor now rises to the normal frame');
+  const before = JSON.stringify(bob.sess.rows.get(alice.fp)); deleteConversation(bob);
+  const replay = await receive(bob, alice, await wireFrom(alice, 'rp', f2, at(-120_000)));
+  assert.equal(replay.r, null); assert.deepEqual(replay.reasons, ['ratchet-desync']); assert.equal(JSON.stringify(bob.sess.rows.get(alice.fp)), before, 'the replay is refused, session untouched');
 });
 
 test('F7 STATIC: live-book-poll passes the floor reader to the adopt policy and the floor writer to onSessionStarted; transport fires it only for a started session', () => {

@@ -21,7 +21,7 @@ export async function raiseAdoptFloor(peerFp: string, sentAtIso: string): Promis
   const fp = normalizeResetFp(peerFp);
   const key = adoptFloorKey(peerFp);
   if (!fp || !key) return false;
-  const next = raisedFloor(await getAdoptFloor(fp), sentAtIso);
+  const next = raisedFloor(await getAdoptFloor(fp), sentAtIso, Date.now());
   if (next === null) return false;
   await putEncryptedSetting(key, { fp, sent_at: next } satisfies AdoptFloorRow);
   return true;
