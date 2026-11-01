@@ -319,21 +319,65 @@ test('#712 C1 PIN: the relay lists a mailbox WHOLE (no LIMIT/OFFSET, no slice in
   assert.doesNotMatch(route, /\.slice\(|\.splice\(|\.filter\(|limit|cursor|page/i, 'the route must not page, cap or filter the listing: #712 C1');
 });
 
-test('#712 C1 TTL: an entry older than 7 days never suppresses an open (the envelope is opened and stored normally)', async () => {
+/** Age every dedupe entry on disk by `days` (as if the book had sat that long since the commit that wrote them). */
+function ageEntries(path: string, days: number): void {
+  const raw = JSON.parse(readFileSync(path, 'utf8'));
+  for (const e of raw.applied_envelopes ?? []) e.at = new Date(Date.now() - days * 864e5).toISOString();
+  writeFileSync(path, JSON.stringify(raw));
+}
+
+// G-RO-5 (#326 L1): the relay's envelope TTL is configurable (RELAY_ENVELOPE_TTL_MS), so a committed-but-unacked envelope can still be
+// listed after 7 days. Inside its own listing, membership decides, never age. This fixture is a hybrid note: on the old rule it was simply
+// opened again (counted as a new note). For a ratchet frame, whose key the first open spent, that second open fails and records a loss
+// for a message that is safely stored (consume-mailbox.ts C1 comment). The pin is the mechanism: never opened a second time. (Replaces "#712 C1 TTL: an entry older than 7 days never
+// suppresses an open": that test planted an entry for a note no commit held, a state commitChunk never writes.)
+test('G-RO-5 NEG: kill between commit and ack, the entry 10 DAYS old, the envelope still listed -> acked WITHOUT opening it a second time; stored once', async () => {
   const [A, B] = [await mint(), await mint()];
   const relay = mockRelay();
   const book = tmpBook();
   try {
     book.open().upsertContact(asContact(A));
     await sendN(A, B, 1, relay.fetchImpl);
-    const raw = JSON.parse(readFileSync(book.path, 'utf8'));
-    const id = relay.listIds()[0];
-    raw.applied_envelopes = [{ key: envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), id), at: new Date(Date.now() - 8 * 864e5).toISOString() }];
-    writeFileSync(book.path, JSON.stringify(raw));
+    relay.failAck(1);
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed between commit and ack/);
+    assert.equal(book.open().appliedEnvelopeCount(), 1, 'the commit wrote the entry');
+    ageEntries(book.path, 10);
+    assert.equal(relay.queued(), 1, 'a relay TTL > 7 d still lists it');
+
     const s = await pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl });
-    assert.equal(s.deduped, 0, 'a stale entry is ignored');
-    assert.equal(s.notes, 1);
-    assert.equal(book.open().listNotes().length, 1);
+    assert.equal(s.deduped, 1, 'still listed: trusted, whatever its age');
+    assert.equal(s.opened_hybrid + s.opened_classical, 0, 'never opened a second time');
+    assert.equal(s.acked, 1);
+    assert.equal(s.notes, 0);
+    assert.equal(s.deadLettered, 0);
+    assert.deepEqual(s.lost, {}, 'nothing recorded as lost');
+    assert.equal(relay.queued(), 0);
+    assert.equal(book.open().listNotes().length, 1, 'stored exactly once');
+  } finally {
+    book.done();
+  }
+});
+
+test('G-RO-5 bound: in the listing\'s OWN scope a 10-day-old entry is KEPT while listed and PRUNED once absent; another scope\'s 10-day-old entry is pruned by age', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const book = tmpBook();
+  try {
+    book.open().upsertContact(asContact(A));
+    await sendN(A, B, 1, relay.fetchImpl, 'already-stored');
+    const old = new Date(Date.now() - 10 * 864e5).toISOString();
+    const listedOld = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), relay.listIds()[0])!;
+    const goneOld = envelopeDedupeKey(RELAY, deriveMailboxId(B.fp), 'env_long_gone')!;
+    const elsewhereOld = envelopeDedupeKey('http://other.test/api/relay', deriveMailboxId(B.fp), 'env_old')!;
+    plant(book.path, [{ key: listedOld, at: old }, { key: goneOld, at: old }, { key: elsewhereOld, at: old }]);
+    await sendN(A, B, 1, relay.fetchImpl, 'new');
+    relay.failAck(1); // keep the state as the commit wrote it: the ack after it dies
+    await assert.rejects(pollHeadlessOnce(owner(B), book.open(), { relayBase: RELAY, fetchImpl: relay.fetchImpl }), /killed/);
+    const keys = keysOnDisk(book.path);
+    assert.ok(keys.includes(listedOld), 'own scope, still listed, 10 days old: kept (membership beats age)');
+    assert.ok(!keys.includes(goneOld), 'own scope, absent from the whole listing: pruned');
+    assert.ok(!keys.includes(elsewhereOld), 'another scope, past the age bound: pruned (no listing speaks for it)');
+    assert.equal(keys.length, 2, 'the listed old entry + the note stored now');
   } finally {
     book.done();
   }
