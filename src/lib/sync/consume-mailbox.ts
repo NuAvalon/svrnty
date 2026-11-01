@@ -347,12 +347,6 @@ type Outcome =
   | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
   | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
 
-/**
- * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
- * ones that reached a terminal state (applied or permanently-invalid — silently), and leave retryable
- * ones for a later poll. Returns a summary. Never throws on a single bad envelope — one poisoned
- * message cannot wedge the channel.
- */
 /** Layer 3: tell the optional hop-trail hook. Fail-open: it can never affect consume. */
 function hop(deps: ConsumeDeps, kind: 'polled' | 'dropped' | 'held', id: unknown, reason?: DeadLetterReason): void {
   if (!deps.onHop || typeof id !== 'string') return;
@@ -363,6 +357,12 @@ function hop(deps: ConsumeDeps, kind: 'polled' | 'dropped' | 'held', id: unknown
   }
 }
 
+/**
+ * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
+ * ones that reached a terminal state (applied or permanently-invalid — silently), and leave retryable
+ * ones for a later poll. Returns a summary. Never throws on a single bad envelope — one poisoned
+ * message cannot wedge the channel.
+ */
 export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<ConsumeSummary> {
   try {
     return await consumeOnce(deps);
