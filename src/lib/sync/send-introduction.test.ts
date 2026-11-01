@@ -40,7 +40,7 @@ test('D1 the deposit is a HYBRID package addressed to the recipient mailbox, and
 
 test('D2 ROUND TRIP: Rachel opens it with her mailbox secrets and verifyIntroduction surfaces Newt as KNOWN, introduced by Ivan', async () => {
   const dep = await buildIntroductionDeposit(introducer(), await card(), target(), 'met at the conference');
-  const p = await verifyIntroduction(dep!.blob, { fingerprint: rachel.fingerprint, hybrid: rachel.hybrid }, knowsIvan);
+  const p = await verifyIntroduction(dep!.blob, { fingerprint: rachel.fingerprint, hybrid: rachel.hybrid }, knowsIvan, { nowMs: Date.parse('2026-11-01T00:00:00Z') }); // the fixture consent is dated 2026-10-31
   assert.ok(p);
   assert.equal(p.fingerprint, newt.fingerprint);
   assert.equal(p.introducedByFingerprint, ivan.fingerprint);

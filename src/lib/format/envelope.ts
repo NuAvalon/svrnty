@@ -160,7 +160,7 @@ export interface IntroductionConsent {
   // introducer cannot introduce them under a name they did not consent to (incl. a deadname).
   display_name: string;
   nonce: string;                    // binds this introduction instance; anti-replay (recipient dedups per (nonce, introduced_fp))
-  ts: string;                       // ISO-8601 UTC — audit/display only
+  ts: string;                       // ISO-8601 UTC, signed by the newcomer. verifyIntroduction refuses a consent older than 7 days or more than 5 minutes ahead of the recipient's clock.
 }
 
 /**
