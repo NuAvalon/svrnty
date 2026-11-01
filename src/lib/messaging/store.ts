@@ -112,6 +112,31 @@ async function txGetAll<T>(store: string): Promise<T[]> {
   });
 }
 
+/**
+ * Put a row ONLY IF a row with this key still exists, as ONE readwrite transaction: the existence check and the write have no await between them, so
+ * IndexedDB (which serialises readwrite transactions on a store) lets either a concurrent delete commit first (the check misses and nothing is written)
+ * or this write commit first (and the delete then removes it). Either way a deleted row stays deleted. Returns whether it wrote. Callers must encrypt
+ * BEFORE calling: WebCrypto cannot run inside an IndexedDB transaction without the transaction auto-committing.
+ */
+async function txPutIfPresent(store: string, key: string, value: unknown): Promise<boolean> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    let wrote = false;
+    const existing = os.get(key);
+    existing.onsuccess = () => {
+      if (existing.result !== undefined) {
+        os.put(value);
+        wrote = true;
+      }
+    };
+    tx.oncomplete = () => resolve(wrote);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
 async function txDelete(store: string, key: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -259,8 +284,9 @@ async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<Note
   if (!needsLastActivityHeal(thread.last_activity_at, nowMs)) return thread;
   try {
     const row = await txGet<ThreadRow>('threads', thread.thread_id);
-    // The row is GONE: the conversation was deleted after this list was read (deleteThread removes the notes first and the row last). Writing the
-    // stale copy back would undo a delete, so a missing row is never written: the thread stays in THIS list as read and is gone on the next load.
+    // The row is GONE: the conversation was deleted after this list was read (deleteThread removes the notes first and the row last). A missing row is
+    // never written: the thread stays in THIS list as read and is gone on the next load. (A delete that lands AFTER this check is caught by the
+    // single-transaction write below.)
     if (!row) return thread;
     const current = await decryptJson<NoteThread>(row.enc);
     let sentAts: string[] | null = null;
@@ -272,8 +298,11 @@ async function healPinnedThread(thread: NoteThread, nowMs: number): Promise<Note
     const value = healedLastActivity(current.last_activity_at, sentAts, nowMs);
     if (value === null) return current;
     const next: NoteThread = { ...current, last_activity_at: value };
-    await putThread(next);
-    return next;
+    // Encrypt first, then check-and-write in ONE transaction: the row can still disappear between the re-read above and this write (a delete is its own
+    // series of transactions), and a plain put would bring a deleted conversation back.
+    const enc = await encryptJson(next);
+    const wrote = await txPutIfPresent('threads', thread.thread_id, { thread_id: thread.thread_id, enc } satisfies ThreadRow);
+    return wrote ? next : thread;
   } catch {
     return thread;
   }
