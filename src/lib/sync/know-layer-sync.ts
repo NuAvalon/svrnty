@@ -106,17 +106,21 @@ export function buildKnowOverlayDeps(
       const edges = await ownerEdges(store, ownerFingerprint);
       // #704 (A) due queue: a peer with a live initiator session is `pending` (skipped until it completes or
       // expires), so K-per-tick rotates through the book instead of re-initiating the first peer forever.
+      const contacts = await store.getAllContacts(ownerFingerprint);
       const withSession = new Set(
-        (await store.getAllContacts(ownerFingerprint))
+        contacts
           .filter((c) => typeof c.psi_session_id === 'string' && c.psi_session_id.length > 0)
           .map((c) => c.fingerprint),
       );
+      // Logical order of attempts (markPsiAttempted): the scheduler tries the least recently attempted peer first. A number, never a time.
+      const trySeq = new Map(contacts.map((c) => [c.fingerprint, typeof c.psi_try_seq === 'number' ? c.psi_try_seq : 0] as const));
       return edges
         .filter((e) => e.trusted && !isDecayed(e))
         .map((e) => ({
           fingerprint: e.peer_fingerprint,
           lastSync: lastSyncOf(e),
           pending: withSession.has(e.peer_fingerprint),
+          lastTrySeq: trySeq.get(e.peer_fingerprint) ?? 0,
         }));
     },
 
@@ -301,6 +305,29 @@ export async function savePsiInitiated(
 }
 
 /**
+ * Record that a real request was attempted to these peers this tick, successful or not, as a LOGICAL sequence number on the contact
+ * (psi_try_seq = 1 + the largest on the book, in attempt order). The scheduler sorts the due peers by it, least recently attempted first,
+ * so a peer whose request errors or whose session expires unanswered goes behind the peers not yet tried instead of being first again.
+ * A sequence and not a timestamp: the session lifecycle here deliberately uses no wall-clock. It is NOT part of CLEARED_PSI_SESSION: it
+ * outlives sessions, that is its job. It does not touch last_sync, so an attempt never looks like a sync.
+ */
+export async function markPsiAttempted(
+  store: KnowOverlayStore,
+  ownerFingerprint: string,
+  attempted: readonly string[] | undefined,
+): Promise<void> {
+  if (!attempted || attempted.length === 0) return;
+  const contacts = await store.getAllContacts(ownerFingerprint);
+  let next = contacts.reduce((m, c) => Math.max(m, typeof c.psi_try_seq === 'number' ? c.psi_try_seq : 0), 0);
+  for (const fp of attempted) {
+    const c = contacts.find((x) => x.fingerprint === fp);
+    if (!c) continue;
+    next += 1;
+    await store.updateContact(c.id, { psi_try_seq: next } as Partial<ContactRecord>);
+  }
+}
+
+/**
  * Completion pass — finish any sessions saved on prior ticks (the initiator half that was previously
  * never wired: the tick discarded `initiated` → completeTrustSync had zero callers → no intersection →
  * no trust map). For every contact:
@@ -351,7 +378,11 @@ export async function runPsiCompletionPass(
       }
       const result = await completeFn(deps, c.psi_session_id as string, c.fingerprint, keypair, options, c.psi_fp_order as string[], layer, pqSession ?? undefined);
       if (result && !('error' in result)) {
-        await store.updateContact(c.id, CLEARED_PSI_SESSION); // applied → ephemeral delete
+        // Applied → ephemeral delete, and this IS a mutual sync: stamp last_sync so the staleness scheduler stops re-queuing the peer for 24 h.
+        // Only a completed exchange writes it (an unanswered or errored attempt must not: living-edge-status shows it as the last contact).
+        // Everything else already in `mutual` is kept as it is; a fresh record gets the benign default shape (no trust claim).
+        const mutual = { they_trust_me: null, reciprocal: false, ...(c.mutual ?? {}), last_sync: new Date().toISOString() };
+        await store.updateContact(c.id, { ...CLEARED_PSI_SESSION, mutual } as Partial<ContactRecord>);
       } else {
         const attempts = (typeof c.psi_attempts === 'number' ? c.psi_attempts : 0) + 1;
         await store.updateContact(
@@ -617,6 +648,8 @@ export function startKnowLayerSync(
       const result = await runKnowLayerSyncTick(deps, options, syncFn);
       // 3. Persist the newly-initiated blinders so a later tick can complete them.
       await savePsiInitiated(store, owner, result.initiated);
+      // 4. Rotate the queue: remember who was attempted, so a failing or unanswering peer is not first again next tick.
+      await markPsiAttempted(store, owner, result.attempted);
     } catch (err) {
       // local-only diagnostic; never surfaced to peer/relay. One bad tick must not wedge the loop.
       console.error('[know-layer-sync] tick failed (will retry):', err);

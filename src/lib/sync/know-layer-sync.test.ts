@@ -101,6 +101,24 @@ test('C1: startKnowLayerSync immediate tick passes layer "know" explicitly', asy
   assert.equal(calls.includes(undefined), false);
 });
 
+// The tick's own persistence steps, through the REAL loop. psi-resync-fairness.test.ts replays the steps in the order the loop runs them;
+// this one proves the loop itself records who it attempted (a call removed from the tick leaves every replayed test green).
+test('the real loop records the peers it attempted, in attempt order, as psi_try_seq', async () => {
+  const contacts = [
+    rec({ id: 'p1', fingerprint: 'peer-1' }),
+    rec({ id: 'p2', fingerprint: 'peer-2' }),
+    rec({ id: 'p3', fingerprint: 'peer-3' }),
+  ];
+  const { store, writes } = fakeStore(contacts);
+  const fn = (async () => ({ responded: [], initiated: [], errors: [], attempted: ['peer-3', 'peer-1'] })) as unknown as SyncMutualTrustFn;
+  const handle = startKnowLayerSync({ identity: { fingerprint: OWNER } }, DUMMY_OPTIONS, { store, syncFn: fn, intervalMs: 10_000 });
+  await new Promise((r) => setTimeout(r, 20));
+  handle.stop();
+  const seq = writes.filter((w) => 'psi_try_seq' in w.updates).map((w) => [w.id, w.updates.psi_try_seq]);
+  assert.deepEqual(seq, [['p3', 1], ['p1', 2]]);
+  assert.equal(writes.some((w) => 'mutual' in w.updates), false, 'an attempt alone never writes mutual (no last_sync)');
+});
+
 test('trigger is inert (no sync) when the identity is locked / absent — fail-soft', async () => {
   const { fn, calls } = spySync();
   const { store } = fakeStore([]);
