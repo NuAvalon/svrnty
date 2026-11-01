@@ -50,9 +50,10 @@ test('P1 the real poller: A sends two DIFFERENT notes under one note_id => B kee
   const [A, B] = [await mint(), await mint()];
   const box: Array<{ envelope_id: string; blob: string }> = [];
   let acked = 0;
+  let seq = 0; // a relay never reuses an envelope id; `box.length + 1` did once the box drained, and #712's C1 dedupe then (correctly) acked it unopened
   const fetchImpl = (async (url: unknown, init?: RequestInit) => {
     const u = String(url);
-    if (u.endsWith('/envelope')) { box.push({ envelope_id: `e${box.length + 1}`, blob: JSON.parse(String(init?.body)).blob }); return new Response('{}', { status: 200 }); }
+    if (u.endsWith('/envelope')) { box.push({ envelope_id: `e${++seq}`, blob: JSON.parse(String(init?.body)).blob }); return new Response('{}', { status: 200 }); }
     if (u.includes('/queue')) return new Response(JSON.stringify([...box]), { status: 200, headers: { 'content-type': 'application/json' } });
     if (u.includes('/ack')) { const { envelope_ids } = JSON.parse(String(init?.body)); acked += envelope_ids.length; box.splice(0, box.length, ...box.filter((e) => !envelope_ids.includes(e.envelope_id))); return new Response('{"deleted":1}', { status: 200 }); }
     return new Response('', { status: 404 });

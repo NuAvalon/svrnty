@@ -13,6 +13,7 @@ import { makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
 import { consumeInboundContactUpdates, type ConsumeDeps, type DeadLetterSink, type DroppedNote, type NoteResponseSeam } from './consume-mailbox';
 import { isMessageReason, parseDeadLetterRow, recordKeyFor, type DeadLetterRow } from './dead-letter';
+import { createHoldBackoff } from './hold-backoff';
 
 let OWNER: { fingerprint: string; publicKeyArmored: string; privateKeyArmored: string; passphrase: string };
 before(async () => {
@@ -543,4 +544,353 @@ test('C24 r2-1: ONE contact whose fingerprint arrives in two letter cases is sti
   const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf(byBlob), fetchImpl: w.fetchImpl }));
   assert.deepEqual(acked(w.events).sort(), ['m00', 'm01', 'm02', 'm03', 'm04']);
   assert.equal(s.released, 5); assert.equal(s.held, 50);
+});
+
+// ── T2 (Flint #186298): a RATCHET DESYNC on an authenticated contact's frame is HELD (kept, recorded at first sight, bounded), never acked as a verdict ──
+test('C25 T2: a ratchet-DESYNC frame is HELD: not acked, a NAMED record (ratchet-desync + fp) exists from the first sighting, nothing counted as lost yet', async () => {
+  const w = world([{ envelope_id: 'des1', blob: 'D1', expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ D1: () => ({ dropped: 'ratchet-desync', fp: FPC }) }), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events), []);
+  const row = recorded(w.events)[0];
+  assert.equal(row.reason, 'ratchet-desync'); assert.equal(row.fp, FPC);
+  assert.equal(s.held, 1); assert.deepEqual(s.lost, {});
+});
+
+test('C26 T2: desync and local holds from ONE contact are bounded SEPARATELY (50 each); 55 desync release the 5 oldest as lost[ratchet-desync]; the contact\'s 5 local frames are untouched', async () => {
+  const known = new Map<string, string>();
+  const desync = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `d${String(i).padStart(2, '0')}`, blob: `DS${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  const local = Array.from({ length: 5 }, (_, i) => ({ envelope_id: `l${i}`, blob: `LC${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  desync.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const byBlob = { ...Object.fromEntries(desync.map((_, i) => [`DS${i}`, () => ({ dropped: 'ratchet-desync', fp: FPC })])), ...Object.fromEntries(local.map((_, i) => [`LC${i}`, () => ({ dropped: 'ratchet-local', fp: FPC })])) };
+  const w = world([...desync, ...local], { known });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf(byBlob), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events).sort(), ['d00', 'd01', 'd02', 'd03', 'd04']);
+  assert.deepEqual(s.lost, { 'ratchet-desync': 5 }); assert.equal(s.released, 5); assert.equal(s.held, 55);
+});
+
+test('C27 T2: a malformed ratchet frame (typed VERDICT) is still recorded and acked at once, apart from the held desync class', async () => {
+  const w = world([{ envelope_id: 'v1', blob: 'V1' }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ V1: () => ({ dropped: 'ratchet-unopenable', fp: FPC }) }), fetchImpl: w.fetchImpl }));
+  assert.deepEqual(acked(w.events), ['v1']);
+  assert.deepEqual(s.lost, { 'ratchet-unopenable': 1 }); assert.equal(s.held, 0);
+});
+
+test('C28 T2 B1-for-holds (Flint #2185, M3): outsiders can fill the missing-key group; 60 junk missing-key holds do NOT push an admitted contact\'s OLDER held ratchet-desync frame out (desync is its own per-contact group)', async () => {
+  const known = new Map<string, string>();
+  const exp = new Date(Date.parse(NOW) + 6 * DAY).toISOString();
+  const desync = { envelope_id: 'dsx', blob: 'DSX', expires_at: exp };
+  const junk = Array.from({ length: 60 }, (_, i) => ({ envelope_id: `mk${String(i).padStart(2, '0')}`, blob: HYBRID, expires_at: exp }));
+  known.set(desync.envelope_id, new Date(Date.parse(NOW) - 1000 * 1000).toISOString()); // the desync frame is the OLDEST hold of all
+  junk.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world([desync, ...junk], { known });
+  const s = await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, deadLetter: w.sink, note: seamOf({ DSX: () => ({ dropped: 'ratchet-desync', fp: FPC }) }), fetchImpl: w.fetchImpl }));
+  assert.equal(acked(w.events).includes('dsx'), false, 'the held desync frame is NOT released by an outsider-fillable group');
+  assert.deepEqual(acked(w.events).sort(), Array.from({ length: 10 }, (_, i) => `mk${String(i).padStart(2, '0')}`), 'only the 10 oldest missing-key holds are released (bounded against their own group)');
+  assert.equal(s.released, 10); assert.equal(s.held, 51); assert.deepEqual(s.lost, { 'missing-key': 10 });
+});
+
+// ── T2b (Flint #186298 T2): a held ratchet-DESYNC envelope is retried on every poll for its first hour, then hourly ──
+const MIN = 60_000;
+/** One held desync envelope on a relay that keeps returning it; a clock the test moves; a seam that counts how often the ratchet was actually tried. */
+function backoffRig(opts: { kind?: 'ratchet-desync' | 'ratchet-local' } = {}) {
+  const t0 = Date.parse(NOW);
+  const clock = { ms: t0 };
+  const known = new Map<string, string>();
+  const calls = { n: 0 };
+  const env = { envelope_id: 'bo1', blob: 'BO1', expires_at: new Date(t0 + 6 * DAY).toISOString() };
+  const w = world([env], { known });
+  const hb = createHoldBackoff();
+  const seam = (healed: () => boolean): NoteResponseSeam =>
+    seamOf({ BO1: () => { calls.n++; return healed() ? { note_id: 'n-BO1', thread_id: 't1', from_fingerprint: FPC } : { dropped: opts.kind ?? 'ratchet-desync', fp: FPC }; } });
+  const poll = (at: number, healed = () => false, withBackoff = true) => {
+    clock.ms = t0 + at * MIN;
+    return consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seam(healed), fetchImpl: w.fetchImpl, now: () => new Date(clock.ms).toISOString(), ...(withBackoff ? { holdBackoff: hb } : {}) }));
+  };
+  return { w, hb, calls, poll };
+}
+
+test('C29 T2b: in the first hour a held desync frame is tried on EVERY poll', async () => {
+  const r = backoffRig();
+  for (const at of [0, 1, 20, 59]) await r.poll(at);
+  assert.equal(r.calls.n, 4);
+  assert.deepEqual(acked(r.w.events), [], 'held, never acked');
+});
+
+test('C30 T2b: after the first hour it is tried hourly: skipped in between (the ratchet is not touched), tried again an hour after the last try', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59); // 2 tries, the last at +59m
+  const before = r.calls.n;
+  await r.poll(61); await r.poll(90); await r.poll(118);
+  assert.equal(r.calls.n, before, 'no try at +61, +90, +118 min: not due');
+  await r.poll(119);
+  assert.equal(r.calls.n, before + 1, 'an hour after the last try (+59m) it is tried again');
+  await r.poll(150);
+  assert.equal(r.calls.n, before + 1, 'and the hour restarts from that try');
+});
+
+test('C31 T2b: a SKIPPED poll still counts it as held with its recorded reason + fp: the record is refreshed, the held count is 1, nothing is acked or counted lost', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59);
+  const recordsBefore = recorded(r.w.events).length;
+  const s = await r.poll(90); // skipped
+  assert.equal(s.held, 1); assert.deepEqual(s.lost, {}); assert.equal(s.released, 0);
+  assert.deepEqual(acked(r.w.events), []);
+  const rows = recorded(r.w.events);
+  assert.ok(rows.length > recordsBefore, 'the skipped poll still goes through the record path');
+  const last = rows[rows.length - 1];
+  assert.equal(last.reason, 'ratchet-desync'); assert.equal(last.fp, FPC);
+});
+
+test('C32 T2b: when the frame finally opens it is stored + acked, and the schedule is forgotten', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59);
+  assert.equal(r.hb.size(), 1);
+  const s = await r.poll(119, () => true);
+  assert.equal(s.notes, 1);
+  assert.deepEqual(acked(r.w.events), ['bo1']);
+  assert.equal(r.hb.size(), 0, 'forgotten once it opened');
+});
+
+test('C33 T2b: an envelope that is gone from the relay is pruned from the schedule (the map stays as small as the mailbox)', async () => {
+  const r = backoffRig();
+  await r.poll(0);
+  assert.equal(r.hb.size(), 1);
+  const empty = world([]);
+  await consumeInboundContactUpdates(deps({ deadLetter: empty.sink, note: seamOf({}), fetchImpl: empty.fetchImpl, holdBackoff: r.hb }));
+  assert.equal(r.hb.size(), 0);
+});
+
+test('C34 T2b: only DESYNC is backed off: a ratchet-LOCAL hold is still tried on every poll, even two hours in', async () => {
+  const r = backoffRig({ kind: 'ratchet-local' });
+  for (const at of [0, 61, 90, 125, 126]) await r.poll(at);
+  assert.equal(r.calls.n, 5);
+  assert.equal(r.hb.size(), 0, 'a local hold never enters the schedule');
+});
+
+test('C35 T2b: without a holdBackoff in deps nothing changes: tried on every poll', async () => {
+  const r = backoffRig();
+  for (const at of [0, 61, 90, 125]) await r.poll(at, () => false, false);
+  assert.equal(r.calls.n, 4);
+});
+
+// ── T4 (Flint #186298): a held frame never blocks a newer frame from the same peer that opens; a stored note heals that peer's held frames in the SAME poll ──
+const OTHER = 'ef'.repeat(32);
+const exp6 = () => new Date(Date.parse(NOW) + 6 * DAY).toISOString();
+const okNote = (id: string, fp = FPC) => ({ note_id: id, thread_id: 't1', from_fingerprint: fp });
+const desync = (fp = FPC) => ({ dropped: 'ratchet-desync', fp });
+
+test('C36 T4: a held desync frame does not block a NEWER note from the same peer: the note is stored and acked, the held frame stays held', async () => {
+  const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ D1: () => { calls.d++; return desync(); }, N1: () => okNote('n-N1') }) }));
+  assert.deepEqual(acked(w.events), ['n1']);
+  assert.equal(s.notes, 1); assert.equal(s.held, 1); assert.equal(s.dropped, 1, 'the still-held frame is counted once, not twice');
+  assert.equal(calls.d, 2, 'tried at first sight and again after the peer\'s note was stored (T4), and still held');
+});
+
+test('C37 T4: a frame that only opens AFTER a later note from its peer was stored is healed in the SAME poll (and counted as a note, not as dropped)', async () => {
+  let stored = false;
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => (stored ? okNote('n-D1') : desync()), N1: () => { stored = true; return okNote('n-N1'); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']);
+  assert.equal(s.notes, 2); assert.equal(s.held, 0); assert.equal(s.dropped, 0); assert.deepEqual(s.lost, {});
+});
+
+test('C38 T4 x T2b: the retry is FORCED: a desync frame that is not due yet (backed off) is still tried when its peer\'s note is stored', async () => {
+  const t0 = Date.parse(NOW);
+  const hb = createHoldBackoff();
+  hb.attempted('d1', FPC, t0 - 120 * MIN); hb.attempted('d1', FPC, t0 - 30 * MIN); // past the first hour, last try 30 min ago: NOT due
+  assert.equal(hb.due('d1', t0), false);
+  let stored = false; const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => { calls.d++; return stored ? okNote('n-D1') : desync(); }, N1: () => { stored = true; return okNote('n-N1'); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note, holdBackoff: hb }));
+  assert.equal(calls.d, 1, 'skipped at first (not due), then tried once by the T4 retry');
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
+  assert.equal(hb.size(), 0, 'healed: the schedule is forgotten');
+});
+
+test('C39 T4: only THAT peer\'s held frames are retried: a note from someone else does not touch them', async () => {
+  const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ D1: () => { calls.d++; return desync(FPC); }, N1: () => okNote('n-N1', OTHER) }) }));
+  assert.equal(calls.d, 1, 'not retried');
+  assert.equal(s.held, 1); assert.deepEqual(acked(w.events), ['n1']);
+});
+
+test('C40 T4: a retry that opens can heal the NEXT held frame: rounds run until one frees nothing (D2 needs D1, D1 needs N1)', async () => {
+  const done = new Set<string>();
+  const w = world([{ envelope_id: 'd2', blob: 'D2', expires_at: exp6() }, { envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({
+    D2: () => (done.has('D1') ? (done.add('D2'), okNote('n-D2')) : desync()),
+    D1: () => (done.has('N1') ? (done.add('D1'), okNote('n-D1')) : desync()),
+    N1: () => (done.add('N1'), okNote('n-N1')),
+  });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'd2', 'n1']);
+  assert.equal(s.notes, 3); assert.equal(s.held, 0); assert.equal(s.dropped, 0);
+});
+
+test('C41 T4: the peer match ignores letter case (the same contact\'s fingerprint can arrive in either case)', async () => {
+  let stored = false;
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => (stored ? okNote('n-D1', FPC) : desync(FPC.toUpperCase())), N1: () => { stored = true; return okNote('n-N1', FPC); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
+});
+
+test('C42 T4: a held frame is NOT retried when no note from its peer was stored (no spurious second try, no change in the held count)', async () => {
+  const calls = { d: 0 };
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ D1: () => { calls.d++; return desync(); } }) }));
+  assert.equal(calls.d, 1); assert.equal(s.held, 1); assert.equal(s.dropped, 1);
+});
+
+test('C43 T4: the case-insensitive match holds on BOTH sides: a note whose fingerprint arrives upper-case heals a held frame recorded lower-case', async () => {
+  let stored = false;
+  const w = world([{ envelope_id: 'd1', blob: 'D1', expires_at: exp6() }, { envelope_id: 'n1', blob: 'N1', expires_at: exp6() }]);
+  const note = seamOf({ D1: () => (stored ? okNote('n-D1', FPC) : desync(FPC)), N1: () => { stored = true; return okNote('n-N1', FPC.toUpperCase()); } });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note }));
+  assert.deepEqual(acked(w.events).sort(), ['d1', 'n1']); assert.equal(s.held, 0);
+});
+
+// ── T5 / F5 (behavioural half; the structural half is consume-cells-tripwire.test.ts) ──
+test('C44 T5: a cell-shaped blob (constant size, random pad) on the receive path is never HELD, never raises a held notice, never becomes a note or a receipt, and never gets a ratchet reason', async () => {
+  const bytes = Uint8Array.from({ length: 2048 }, (_, i) => (i * 131 + 17) & 0xff);
+  const cell = Buffer.from(bytes).toString('base64');
+  const w = world([{ envelope_id: 'cell1', blob: cell, expires_at: exp6() }]);
+  const heldReports: number[] = [];
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({}), emitHeld: (n) => heldReports.push(n) }));
+  assert.equal(s.held, 0); assert.equal(s.notes, 0); assert.equal(s.delivered, 0);
+  assert.deepEqual(heldReports.filter((n) => n > 0), [], 'no held notice');
+  assert.equal(recorded(w.events).some((r) => r.reason === 'ratchet-desync' || r.reason === 'ratchet-local' || r.reason === 'session-reset'), false, 'no ratchet reason: it is not an authenticated contact\'s frame');
+  assert.equal(Object.keys(s.lost).some((k) => k.startsWith('ratchet') || k === 'session-reset'), false);
+});
+
+// ── reset step 2(i): the PHASE of a held row ──
+test('C45 phase: a held frame\'s row says HELD from the first sighting (desync, local and missing-key alike)', async () => {
+  const w = world([{ envelope_id: 'p1', blob: 'P1', expires_at: exp6() }, { envelope_id: 'p2', blob: 'P2', expires_at: exp6() }, { envelope_id: 'p3', blob: HYBRID, expires_at: exp6() }]);
+  await consumeInboundContactUpdates(deps({ hybridSecretMissing: true, deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf({ P1: () => desync(), P2: () => ({ dropped: 'ratchet-local', fp: FPC }) }) }));
+  const rows = recorded(w.events);
+  assert.deepEqual(rows.map((r) => `${r.reason}:${r.phase}`).sort(), ['missing-key:held', 'ratchet-desync:held', 'ratchet-local:held']);
+});
+
+test('C46 phase: a frame released past the bound is RE-RECORDED as recorded BEFORE its ack; the 50 that stay are still held', async () => {
+  const known = new Map<string, string>();
+  const envs = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `r${String(i).padStart(2, '0')}`, blob: `R${i}`, expires_at: exp6() }));
+  envs.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world(envs, { known });
+  const byBlob = Object.fromEntries(envs.map((_, i) => [`R${i}`, () => desync()]));
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: w.sink, fetchImpl: w.fetchImpl, note: seamOf(byBlob) }));
+  assert.equal(s.released, 5);
+  const lastPhase = new Map<string, string | undefined>();
+  for (const r of recorded(w.events)) lastPhase.set(r.envelope_id, r.phase);
+  for (const id of ['r00', 'r01', 'r02', 'r03', 'r04']) {
+    assert.equal(lastPhase.get(id), 'recorded', `${id} is recorded now`);
+    const rec = w.events.map((e, i) => (e.t === 'record' && e.id === id && e.row.phase === 'recorded' ? i : -1)).filter((i) => i >= 0)[0];
+    const ack = w.events.findIndex((e) => e.t === 'ack' && e.ids.includes(id));
+    assert.ok(rec >= 0 && rec < ack, `${id}: the recorded row is committed before the ack`);
+  }
+  for (let i = 5; i < 55; i++) assert.equal(lastPhase.get(`r${String(i).padStart(2, '0')}`), 'held');
+});
+
+test('C47 phase: if the RECORDED re-write fails, the frame is NOT acked and stays held (released on a later poll); nothing is lost', async () => {
+  const known = new Map<string, string>();
+  const envs = Array.from({ length: 51 }, (_, i) => ({ envelope_id: `q${String(i).padStart(2, '0')}`, blob: `Q${i}`, expires_at: exp6() }));
+  envs.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world(envs, { known });
+  const sink = { ...w.sink, record: async (row: DeadLetterRow) => { if (row.phase === 'recorded') throw new Error('store locked'); return w.sink.record(row); } };
+  const byBlob = Object.fromEntries(envs.map((_, i) => [`Q${i}`, () => desync()]));
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: sink, fetchImpl: w.fetchImpl, note: seamOf(byBlob) }));
+  assert.deepEqual(acked(w.events), [], 'the oldest was due for release, but its recorded row could not be written: no ack');
+  assert.equal(s.released, 0); assert.equal(s.unrecorded, 1); assert.equal(s.held, 51, 'it is still counted as held');
+});
+
+// ── R2: a frame the user's session reset released is recorded as session-reset and acked WITHOUT being opened ──
+const relSink = (w: ReturnType<typeof world>, released: Map<string, string> | (() => Promise<Map<string, string>>)): DeadLetterSink => ({
+  ...w.sink,
+  releasedByReset: async () => (typeof released === 'function' ? released() : released),
+});
+
+test('C48 R2: a reset-released envelope is acked WITHOUT being opened, recorded as session-reset with the contact\'s fp, and counted as lost[session-reset]', async () => {
+  const calls = { n: 0 };
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => { calls.n++; return desync(); } }) }));
+  assert.equal(calls.n, 0, 'never opened');
+  assert.deepEqual(acked(w.events), ['rs1']);
+  const rows = recorded(w.events);
+  assert.equal(rows.length, 1); assert.equal(rows[0].reason, 'session-reset'); assert.equal(rows[0].fp, FPC); assert.equal(rows[0].phase, undefined);
+  assert.deepEqual(s.lost, { 'session-reset': 1 }); assert.equal(s.held, 0);
+  assert.ok(w.events.findIndex((e) => e.t === 'record') < w.events.findIndex((e) => e.t === 'ack'), 'record before ack');
+});
+
+test('C49 R2: only the LISTED envelopes are released: another held frame from the same contact is still tried and still held', async () => {
+  const calls = { n: 0 };
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }, { envelope_id: 'keep', blob: 'KP', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => desync(), KP: () => { calls.n++; return desync(); } }) }));
+  assert.deepEqual(acked(w.events), ['rs1']);
+  assert.equal(calls.n, 1); assert.equal(s.held, 1);
+});
+
+test('C50 R2: if releasedByReset THROWS the poll carries on: nothing is released, the frame is tried like any held frame and stays held', async () => {
+  const calls = { n: 0 };
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }]);
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, async () => { throw new Error('store locked'); }), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => { calls.n++; return desync(); } }) }));
+  assert.equal(calls.n, 1); assert.deepEqual(acked(w.events), []); assert.equal(s.held, 1);
+});
+
+test('C51 R2: a released envelope whose RECORD cannot be written is NOT acked (record-before-ack holds for resets too)', async () => {
+  const w = world([{ envelope_id: 'rs1', blob: 'RS1', expires_at: exp6() }], { failRecord: () => true });
+  const s = await consumeInboundContactUpdates(deps({ deadLetter: relSink(w, new Map([['rs1', FPC]])), fetchImpl: w.fetchImpl, note: seamOf({ RS1: () => desync() }) }));
+  assert.deepEqual(acked(w.events), []); assert.equal(s.unrecorded, 1); assert.deepEqual(s.lost, {});
+});
+
+// ── #720 cause-on-row: WHY a ratchet frame did not open travels onto the record as a fixed token from a closed list ──
+test('C46 cause: a HELD ratchet-local record carries the cause from the open; a held desync carries its own; both from the FIRST sighting', async () => {
+  const exp = new Date(Date.parse(NOW) + 6 * DAY).toISOString();
+  const w = world([{ envelope_id: 'cl1', blob: 'CL1', expires_at: exp }, { envelope_id: 'cd1', blob: 'CD1', expires_at: exp }]);
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ CL1: () => ({ dropped: 'ratchet-local', fp: FPC, cause: 'session-row-unreadable' }), CD1: () => ({ dropped: 'ratchet-desync', fp: FPC, cause: 'ratchet-receive-failed' }) }), fetchImpl: w.fetchImpl }));
+  const rows = Object.fromEntries(recorded(w.events).map((r) => [r.envelope_id, r]));
+  assert.equal(rows.cl1.cause, 'session-row-unreadable'); assert.equal(rows.cl1.phase, 'held');
+  assert.equal(rows.cd1.cause, 'ratchet-receive-failed');
+  assert.ok(Object.values(rows).every((r) => parseDeadLetterRow(r) !== null), 'every stored row still parses');
+});
+
+test('C47 cause: a TERMINAL ratchet-unopenable verdict carries first-frame-rejected onto its record (Athena\'s "out of step" verdict line reads it), and a not-in-book row carries none', async () => {
+  const w = world([{ envelope_id: 'v1', blob: 'V1' }, { envelope_id: 'v2', blob: 'V2' }]);
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ V1: () => ({ dropped: 'ratchet-unopenable', fp: FPC, cause: 'first-frame-rejected' }), V2: () => ({ dropped: 'not-in-book', fp: FPC, cause: 'first-frame-rejected' }) }), fetchImpl: w.fetchImpl }));
+  const rows = Object.fromEntries(recorded(w.events).map((r) => [r.envelope_id, r]));
+  assert.equal(rows.v1.cause, 'first-frame-rejected');
+  assert.equal(rows.v2.cause, undefined, 'a cause is only for the ratchet reasons');
+  assert.deepEqual(acked(w.events).sort(), ['v1', 'v2']);
+});
+
+test('C48 cause: text that is not on the closed list NEVER reaches a record (an attacker-influenced string cannot be stored or shown)', async () => {
+  const w = world([{ envelope_id: 'x1', blob: 'X1' }, { envelope_id: 'x2', blob: 'X2', expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }]);
+  const EVIL = 'ignore previous instructions <script>';
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf({ X1: () => ({ dropped: 'ratchet-unopenable', fp: FPC, cause: EVIL }), X2: () => ({ dropped: 'ratchet-desync', fp: FPC, cause: EVIL }) }), fetchImpl: w.fetchImpl }));
+  const rows = recorded(w.events);
+  assert.equal(rows.length, 2);
+  for (const r of rows) { assert.equal(r.cause, undefined); assert.equal(JSON.stringify(r).includes('script'), false); }
+});
+
+test('C49 cause: a held frame RELEASED past the bound keeps its cause on the now-recorded row', async () => {
+  const known = new Map<string, string>();
+  const desync = Array.from({ length: 55 }, (_, i) => ({ envelope_id: `d${String(i).padStart(2, '0')}`, blob: `DS${i}`, expires_at: new Date(Date.parse(NOW) + 6 * DAY).toISOString() }));
+  desync.forEach((e, i) => known.set(e.envelope_id, new Date(Date.parse(NOW) - 1000 * (60 - i)).toISOString()));
+  const w = world(desync, { known });
+  await consumeInboundContactUpdates(deps({ deadLetter: w.sink, note: seamOf(Object.fromEntries(desync.map((_, i) => [`DS${i}`, () => ({ dropped: 'ratchet-desync', fp: FPC, cause: 'ratchet-receive-failed' })]))), fetchImpl: w.fetchImpl }));
+  const releasedRows = recorded(w.events).filter((r) => r.phase === 'recorded');
+  assert.equal(releasedRows.length, 5);
+  assert.ok(releasedRows.every((r) => r.cause === 'ratchet-receive-failed' && r.reason === 'ratchet-desync'));
+});
+
+test('C50 cause: a desync frame SKIPPED by the backoff still refreshes its record WITH the desync cause (the record path does not lose it)', async () => {
+  const r = backoffRig();
+  await r.poll(0); await r.poll(59);
+  await r.poll(90); // skipped
+  const rows = recorded(r.w.events);
+  assert.equal(rows[rows.length - 1].cause, 'ratchet-receive-failed');
+  assert.ok(r.calls.n >= 2);
 });

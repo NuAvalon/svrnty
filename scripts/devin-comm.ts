@@ -40,7 +40,9 @@ import {
 import { clampGrowCap } from '../src/lib/trust/trust-recipe';
 import { createRelay, resolveRelay } from '../src/lib/sync/relay';
 import { sendJoinerResponse } from '../src/lib/sync/send-joiner-response';
-import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPacket, type RatchetSnapshot } from '../src/lib/crypto/message-ratchet';
+import { TripleRatchet, type RatchetIdentity, type RatchetPeer, type RatchetPacket } from '../src/lib/crypto/message-ratchet';
+import { buildAdoptFirstFrame } from '../src/lib/messaging/session-adopt-policy';
+import { journalSentAts, openTrFrame, type AdoptAsk, type TrSessions } from './devin-comm-tr';
 import { strip0x40 } from '../src/lib/identity/raw-sign';
 import { fingerprintMatchesKey } from '../src/lib/identity/fingerprint';
 import { runJoin, parseJoinFlags } from '../src/lib/headless/join-grow-link';
@@ -166,9 +168,21 @@ function buildLocalJoinerSeam(owner: HeadlessOwner, store: HeadlessStore): Joine
   };
 }
 
+// #712: consume stops between envelopes after this long, commits + acks what it consumed, and leaves the rest for the next pass, so a
+// deep backlog drains across passes instead of dying at the watchdog (the ward's POLL_TIMEOUT_S, 60-600 s; Weft cells run 55 s).
+// Default 40 s fits under the tightest of those with room for start-up. SVRNTY_CONSUME_BUDGET_MS overrides: digits only, 1 s-600 s.
+const CONSUME_BUDGET_MS = (() => {
+  const v = process.env.SVRNTY_CONSUME_BUDGET_MS ?? '';
+  return /^[0-9]{1,6}$/.test(v) ? Math.min(600_000, Math.max(1_000, Number(v))) : 40_000;
+})();
+
 async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<ConsumeSummary> {
   // #713: record every loss (metadata only) in the agent dir before its envelope is acked (Flint #189046).
-  const deps = await buildHeadlessConsumeDeps(owner, store, { relayBase: RELAY, deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}` });
+  const deps = await buildHeadlessConsumeDeps(owner, store, {
+    relayBase: RELAY,
+    budgetMs: CONSUME_BUDGET_MS,
+    deadLetterPath: `${DIR}/${DEAD_LETTER_FILE}`,
+  });
   deps.joiner = buildLocalJoinerSeam(owner, store);
   return consumeInboundContactUpdates(deps);
 }
@@ -177,7 +191,6 @@ async function pollOnce(owner: HeadlessOwner, store: HeadlessStore): Promise<Con
 // Calls the fleet TripleRatchet only; session snapshots persist in ratchet-sessions.json.
 
 const TR_BODY = 'svrnty-tr-v1';
-type TrSessions = Record<string, RatchetSnapshot>;
 const loadTr = (): TrSessions => loadJson<TrSessions>(RATCHETS, {}, RATCHET_HINT);
 // backup:false: a restorable stale ratchet = chain-key reuse on the next send (Flint 2026-10-24).
 const saveTr = (m: TrSessions) => writeFileAtomic(RATCHETS, JSON.stringify(m, null, 2), { backup: false });
@@ -207,7 +220,9 @@ function trPacket(body: string): RatchetPacket | null {
   } catch { return null; }
 }
 
-async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string, onLocked?: () => void): Promise<string | null> {
+// `adopt` (poll-json only, F1): may a reset's NEW first frame from this contact replace the stored session? Absent = never (poll / loop).
+async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body: string, onLocked?: () => void,
+    adopt?: { ask: AdoptAsk; onAdopted: () => void }): Promise<string | null> {
   const packet = trPacket(body);
   const peer = await ratchetPeerOf(contact);
   if (!packet || !peer) return null;
@@ -217,21 +232,12 @@ async function trOpen(a: SerializedMintArtifact, contact: HeadlessContact, body:
   return withWriterLockAsync(DIR, async () => {
     onLocked?.();                                        // poll-json's attempt charge: only once the lock is HELD (Flint #2366)
     const sessions = loadTr();
-    const snap = sessions[contact.fingerprint];
-    if (snap) {
-      const s = TripleRatchet.importState(snap);
-      if (!s) return null;
-      const pt = await s.receive(packet);
-      if (pt === null) return null;
-      sessions[contact.fingerprint] = s.exportState();
-      saveTr(sessions);
-      return pt;
-    }
-    const first = await TripleRatchet.acceptFirst(self, peer, packet);
-    if (!first) return null;
-    sessions[contact.fingerprint] = first.session.exportState();
+    const r = await openTrFrame(sessions, contact.fingerprint, self, peer, packet, adopt?.ask);
+    if (!r) return null; // nothing saved: a failed open (or a refused / impossible adoption) leaves the stored session as it was
+    sessions[contact.fingerprint] = r.next;
     saveTr(sessions);
-    return first.plaintext;
+    if (r.adopted) adopt?.onAdopted();
+    return r.plaintext;
   });
 }
 
@@ -503,8 +509,14 @@ async function main() {
     // "journaled 0" must not hide WHY (Athena #593, Archie #595): a poll the relay REFUSED looks identical to an
     // empty mailbox in the journal summary. consume reports the refusal as `rejected` (the HTTP status);
     // say it on stderr here and carry it in the stdout JSON below. Exit code is unchanged (0) on purpose.
+    // A 2xx is not a refusal: since the non-list fix, rejected = 200 means the relay ANSWERED, but not with a list
+    // (Hypatia #3019, Archie #3026; the app's "couldn't be read" vs "refused" split). Saying REFUSED there would be false.
     if (consumed.rejected !== undefined) {
-      console.error(`POLL REFUSED by the relay: HTTP ${consumed.rejected} (a refused poll is not an empty mailbox)`);
+      if (consumed.rejected >= 200 && consumed.rejected <= 299) {
+        console.error(`POLL UNREADABLE: the relay answered HTTP ${consumed.rejected} but not with a list (an unreadable answer is not an empty mailbox)`);
+      } else {
+        console.error(`POLL REFUSED by the relay: HTTP ${consumed.rejected} (a refused poll is not an empty mailbox)`);
+      }
     }
     // poll-json-watermark-001: the journal IS the durable consumed-set —
     // a journaled note_id already had its one-shot decrypt spent, so
@@ -544,6 +556,21 @@ async function main() {
     const openTasks = new Map<string, { note_id: string; channel: string; sent_at: string }[]>();
     let decryptFailed = 0;   // tr packet that failed trOpen this pass (e.g. no session: Flint Bug 2)
     let dead = 0;            // tr packet tombstoned after MAX_ATTEMPTS failures (Mneme FINAL)
+    let adopted = 0;         // F1: a contact's reset → its NEW first frame replaced the stored session
+    let futureIgnored = 0;   // F1: journaled notes dated beyond now + 5 min, left out of the replay guard (counts only)
+    // F1 (Flint spec v1 bcade56d): the PWA's R5/R6 policy, asked only here, where the journal guards replays. Stored notes = the journal's
+    // entries from that contact, minus this note; a journal read error throws inside the policy, which then refuses.
+    const adoptFor = (c: HeadlessContact, note: { note_id: string; sent_at: string }) => ({
+      ask: buildAdoptFirstFrame({
+        ownFingerprint: owner.fingerprint,
+        peerFingerprint: c.fingerprint,
+        sentAt: note.sent_at,
+        storedSentAts: async () => journalSentAts(readFileSync(journalPath, 'utf8'), c.fingerprint, note.note_id),
+        now: Date.now,
+        onIgnoredFuture: (n) => { futureIgnored += n; },
+      }),
+      onAdopted: () => { adopted++; },
+    });
     const deadByPeer = new Map<string, { note_id: string; sent_at: string }[]>();   // → one notice per peer
     for (const note of store.listNotes().filter((n) => n.direction === 'inbound')) {
       if (journaledIds.has(`${note.from_fingerprint}:${note.note_id}`)) { skipped++; continue; }
@@ -606,7 +633,7 @@ async function main() {
         continue;
       }
       // counted + persisted once trOpen HOLDS the lock (Flint #2361/#2366): a kill inside receive counts, lock contention doesn't
-      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), (charge) => trOpen(artifact, c, note.body, charge));
+      const pt = await countedOpen(attempts, key, (a) => writeFileAtomic(attemptsPath, JSON.stringify(a)), (charge) => trOpen(artifact, c, note.body, charge, adoptFor(c, note)));
       if (pt === null) {
         decryptFailed++;
         continue;                                        // failed/consumed — counted, never stored
@@ -654,7 +681,11 @@ async function main() {
       // #720 counters (counts only; the ward allowlist in devin_quarantine names exactly these keys). `lost` = per-reason consumed losses
       // (headless has no dead-letter sink, so deadLettered/unrecorded/released stay 0 here); opened_* = which leg of the dual-read opened.
       held: consumed.held, deadLettered: consumed.deadLettered, unrecorded: consumed.unrecorded, released: consumed.released, lost: consumed.lost,
-      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical }));
+      opened_hybrid: consumed.opened_hybrid, opened_classical: consumed.opened_classical,
+      // #712: redelivered envelopes acked without a second open (C1), and envelopes left for the next pass by the time budget
+      deduped: consumed.deduped ?? 0, deferred: consumed.deferred ?? 0,
+      // F1: sessions replaced by a contact's post-reset first frame, and journaled notes left out of the replay guard for being future-dated
+      adopted, future_ignored: futureIgnored }));
     return;
   }
 

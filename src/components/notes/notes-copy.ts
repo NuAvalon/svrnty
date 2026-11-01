@@ -1,21 +1,26 @@
 // Fixed copy for the Chat surface (over-wire SEND / INBOX).
-// The Chat tab is the window — no essay masthead. Status floor is
-// "Sent · unconfirmed." — never Delivered / Read / Expired.
+// The Chat tab is the window — no essay masthead. Status ladder is
+// Sending… → "Sent to the relay" (deposit 2xx) → "Delivered" (verified receipt only).
+// Never Delivered / Read / Expired except that verified-receipt Delivered.
 // Essay claims ("encrypted messages…", "How notes travel") stay off this glass.
-// "Delivered" renders ONLY on a cryptographically VERIFIED delivery receipt (the S62 MAC receipt, live-book-poll.buildReceiptSeam);
-// the floor stays "Sent · unconfirmed." for every unverified path (notes-status.ts statusIsHonest).
+// "Delivered" renders ONLY on a cryptographically VERIFIED delivery receipt (the S62 MAC receipt, live-book-poll.buildReceiptSeam).
+// 5xx / timeout / throw keep sendUnconfirmed (compose error) — that mapping is pinned by
+// src/lib/messaging/send-outcomes.test.ts (CODEOWNERS; not retouched here).
 
 export const NOTES_COPY = {
   tabLabel: 'Chat',
   heading: 'Chat',
-  sentUnconfirmed: 'Sent · unconfirmed.',
+  // 2xx deposit floor (Hypatia message-status v1). The old "Sent · unconfirmed." string covered
+  // this case too, which was wrong: a 2xx means the relay accepted it.
+  sentToRelay: 'Sent to the relay',
   notSent: 'Not sent. Saved on this device.',
   // Rendered ONLY for a verified-receipt 'delivered' status (recipient DEVICE received+decrypted the
   // note — not relay-only, not "Read"). Plain "Delivered" per Hypatia #172212 (honest-by-construction
   // via statusIsHonest; no qualifier).
   delivered: 'Delivered',
-  // Light secondary line under "Sent · unconfirmed." (NOT bare) — reads as in-progress, not failed:
-  // the delivery-receipt flow (S62) is live and will resolve to "Delivered". Hypatia #172212 floor hint.
+  // Light secondary line under "Sent to the relay" (NOT bare) — reads as in-progress, not failed.
+  // Shown ONLY when this contact has already sent a verified receipt (agents/old apps stay on the
+  // bare "Sent to the relay" floor — true; it never upgrades). Hypatia #172212 / #745.
   awaitingDelivery: 'Awaiting delivery confirmation',
   sendAction: 'Send',
   sendingAction: 'Sending…',
@@ -42,6 +47,8 @@ export const NOTES_COPY = {
   sendUnconfirmed: "Couldn't confirm it was sent. The relay may already have it.",
   unsavedTextLabel: 'Your message',
   dismiss: 'Dismiss',
+  // #731: opens the contact's conversation from a "couldn't be opened" line, so the user can ask for a resend. PLACEHOLDER pending Hypatia.
+  cantOpenAsk: 'Open conversation',
   // S14: the recipient has no verified PQ KEM key; sends are skipped, never downgraded. Claim-safe wording (no 'quantum-safe').
   notSentNeedsUpgrade:
     'Not sent. Saved on this device. {name} needs to share an updated contact card (security upgrade). Ask them to re-share, then re-add.',

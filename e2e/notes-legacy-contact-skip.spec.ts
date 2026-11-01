@@ -13,7 +13,7 @@ import { deriveMailboxId } from '../src/lib/relay/mailbox-auth';
  *  • NEGATIVE: contact with the kem leg stripped → status line names the updated-contact-card remedy, and NO
  *    POST to /api/relay/envelope for that contact's mailbox (no classical fallback on the wire).
  *  • POSITIVE CONTROL: the same flow with the kem leg present → exactly one POST, a PQ-hybrid package
- *    (raw JSON {v:1,…}, not armored PGP) → 'Sent · unconfirmed.'. Without it the negative proves nothing.
+ *    (raw JSON {v:1,…}, not armored PGP) → 'Sent to the relay'. Without it the negative proves nothing.
  *
  * Matrix: desktop Chromium + mobile-Chromium (Pixel 7, hardened-mobile center). Other engines: not covered.
  */
@@ -123,7 +123,7 @@ for (const variant of MATRIX) {
       await firstPoll;
       const { panel, bobPosts } = await sendNoteToBob(page, bob.fingerprint, 'hello pq contact');
 
-      await expect(panel.getByTestId('notes-send-status')).toHaveText('Sent · unconfirmed.');
+      await expect(panel.getByTestId('notes-send-status')).toHaveText('Sent to the relay');
       expect(bobPosts()).toHaveLength(1);
       const blob = bobPosts()[0].blob;
       expect(blob).not.toContain('BEGIN PGP MESSAGE');
