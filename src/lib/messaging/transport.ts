@@ -277,6 +277,8 @@ export async function acceptInboundNote(args: {
   onSessionReplaced?: (fromFingerprint: string) => Promise<void>;
   /** #720 R4: told AFTER a ratchet frame from this sender opened, its note was stored and the session committed: any "reset, no frame since" flag for them is over. Best effort: a throw is swallowed (the next opened frame clears it). Not called for a frame that did not open, nor for a note that is not a ratchet frame. */
   onFrameOpened?: (fromFingerprint: string) => Promise<void>;
+  /** L-318a: told AFTER the note is stored and the session committed that this open STARTED the session (a first frame, or a replacement), with that frame's SIGNED sent_at, so the adopt floor can be raised. Best effort: a throw is swallowed and the floor simply stays where it was. */
+  onSessionStarted?: (fromFingerprint: string, signedSentAt: string) => Promise<void>;
   /** Test seam: the stores this flow writes through. Defaults are the real encrypted IndexedDB stores. */
   io?: { putNote?: typeof putNote; putThread?: typeof putThread; listThreads?: typeof listThreads; getNote?: typeof getNote };
   /**
@@ -398,6 +400,9 @@ export async function acceptInboundNote(args: {
   if (staged) await staged.commit();
   if (staged?.replaced) {
     try { await args.onSessionReplaced?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the frames just stay held */ }
+  }
+  if (staged?.startedSession) {
+    try { await args.onSessionStarted?.(args.wire.from_fingerprint, args.wire.sent_at); } catch { /* best effort: the note is stored and the session committed; the floor stays where it was */ }
   }
   if (viaRatchet) {
     try { await args.onFrameOpened?.(args.wire.from_fingerprint); } catch { /* best effort: the note is stored and the session committed; the flag is cleared by the next frame that opens */ }
