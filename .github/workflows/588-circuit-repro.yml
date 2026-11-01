@@ -22,10 +22,10 @@ jobs:
       run:
         working-directory: circuits/588-slotbind
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - run: npm ci --ignore-scripts
@@ -36,5 +36,7 @@ jobs:
           sha256sum "$RUNNER_TEMP/circom"
       - name: build + checks
         run: CIRCOM="$RUNNER_TEMP/circom" ./build.sh
+      - name: build.sh NEGs (a KAT, r1cs, wasm or witness-js mismatch must be refused; ~1 min per case)
+        run: CIRCOM="$RUNNER_TEMP/circom" ./test-build-negs.sh
       - name: print the r1cs sha256 this machine produced
         run: sha256sum build/slotbind.r1cs
