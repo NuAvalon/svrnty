@@ -34,6 +34,7 @@ import {
   type GateLanding,
 } from '@/lib/connect/add-logic';
 import { dismissGateArrival } from '@/lib/trust/grow-gate';
+import { depositJoinerResponse } from '@/lib/connect/joiner-response';
 import { formatFingerprintForVerify } from '@/lib/trust/trust-recipe';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
@@ -205,6 +206,17 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
     setError(null);
     try {
       const rec = await logicRef.promoteToKnown(ownerFp, landing.arrival, {});
+      // R1 return-channel deposit — the same shared helper the ceremony
+      // fires (connect-ux wiring): the edge becomes MUTUAL. Fail-soft by
+      // contract: locked identity or a failed deposit leaves the book
+      // entry standing; copy stays one-sided regardless.
+      if (card?.fingerprint && card.publicKeyArmored) {
+        void depositJoinerResponse(ownerFp, {
+          fingerprint: card.fingerprint,
+          publicKeyArmored: card.publicKeyArmored,
+          pqKemPublicKey: card.pqKemPublicKey,
+        }, card.inviteNonce);
+      }
       onAdmitted?.(rec.fingerprint ?? landing.arrival.fingerprint);
       setPhase('done');
     } catch (e) {
@@ -213,7 +225,7 @@ export function ConnectSheet({ open, onClose, ownerFp, link, logic, onAdmitted }
     } finally {
       setBusy(false);
     }
-  }, [busy, landing, logicRef, ownerFp, onAdmitted]);
+  }, [busy, landing, logicRef, ownerFp, onAdmitted, card]);
 
   const dismiss = useCallback(async () => {
     if (busy || !landing || landing.kind === 'already-known' || landing.kind === 'refused') return;

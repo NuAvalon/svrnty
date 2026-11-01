@@ -4,12 +4,14 @@
  * Join by link — Component A of the in-page join.
  *
  * Scan an invite QR (ScanToJoin) or paste an invite link → parse it through the ONE
- * security boundary (parseInviteUrl, INV-4) → mount the SAME <JoinerCeremony> INLINE
- * (no router nav → also sidesteps the /c/ post-join session-lock T2.6). Paste is the
- * permanent fallback for when a camera scan isn't available.
+ * security boundary (INV-4) → route to the ONE in-app join path (connect-ux wiring,
+ * svrnty#365): <ConnectSheet>. JoinerCeremony keeps the /c/{code} direct-landing route
+ * (re-routed post-flip, separate PR) and the shard shapes its own focused panel owns.
+ * Paste is the permanent fallback for when a camera scan isn't available.
  *
  * INVARIANTS:
- *  INV-1  one join path — we ONLY mount JoinerCeremony; zero parallel join/verify/trust logic.
+ *  INV-1  one join path — we ONLY mount ConnectSheet; zero parallel join/verify/trust logic.
+ *         The route decision is a single point AFTER the parse, never before.
  *  INV-2  perception ≠ trust — parsing confers no trust; the human COMMIT inside the ceremony
  *         is the sole trust-conferring act. We never auto-commit.
  *  INV-4  parseInviteUrl is the security boundary — total + host-pinned; rejects BEFORE mount.
@@ -20,10 +22,10 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { JoinerCeremony } from '@/components/JoinerCeremony';
+import { ConnectSheet } from '@/components/ConnectSheet';
 import { ScanToJoin } from '@/components/ScanToJoin';
-import { parseInviteUrl, type ParsedInvite } from '@/lib/invite/parseInviteUrl';
+import { createConnectAddLogic, type ConnectLinkParse } from '@/lib/connect/add-logic';
+import { getActiveFingerprint } from '@/lib/identity/client-store';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 
 type Props = {
@@ -37,13 +39,15 @@ type Props = {
 export function JoinByCode({ open, onClose, embedded = false }: Props) {
   const [input, setInput] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [invite, setInvite] = useState<ParsedInvite | null>(null);
+  const [link, setLink] = useState<ConnectLinkParse | null>(null);
+  const [ownerFp, setOwnerFp] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [logic] = useState(() => createConnectAddLogic());
 
   const reset = () => {
     setInput('');
     setError(null);
-    setInvite(null);
+    setLink(null);
     setScanning(false);
   };
 
@@ -52,76 +56,69 @@ export function JoinByCode({ open, onClose, embedded = false }: Props) {
     onClose();
   };
 
-  const handleScannedInvite = useCallback((parsed: ParsedInvite) => {
+  // The ONE route decision (INV-1): a parsed connect link mounts ConnectSheet
+  // — always after the parse, never before. No active identity → stash the
+  // link (the ceremony's pending-connect contract) so it resumes post-unlock;
+  // without a fragment there's nothing resumable, so the sheet mounts and
+  // refuses honestly instead.
+  const routeParsed = useCallback(async (parsed: ConnectLinkParse) => {
     setError(null);
-    setScanning(false);
-    setInvite(parsed); // INV-2: this only MOUNTS the ceremony; the human still commits inside it.
+    const fp = await getActiveFingerprint();
+    if (!fp) {
+      try {
+        if (parsed.keyFragment) {
+          sessionStorage.setItem('svrnty:pending-connect', JSON.stringify(parsed));
+        }
+      } catch { /* storage unavailable — mount anyway, the sheet refuses honestly */ }
+    }
+    setOwnerFp(fp ?? '');
+    setLink(parsed); // INV-2: this only MOUNTS the sheet; the human still commits inside it.
   }, []);
+
+  const handleScannedInvite = useCallback((parsed: ConnectLinkParse) => {
+    setScanning(false);
+    void routeParsed(parsed);
+  }, [routeParsed]);
 
   useEffect(() => {
     if (open) return;
     setInput('');
     setError(null);
-    setInvite(null);
+    setLink(null);
     setScanning(false);
   }, [open]);
 
   const handleJoin = () => {
-    // INV-4: the untrusted paste crosses the trust boundary here and only here.
-    const parsed = parseInviteUrl(input);
+    // INV-4: the untrusted paste crosses the trust boundary here and only here —
+    // parseConnectLink is the connect-link parser (fragment optional, so a bare
+    // code reaches the sheet and refuses 'unwired' honestly instead of dying on
+    // the invite's fragment-required parse).
+    const parsed = logic.parseConnectLink(input);
     if (!parsed) {
       // INV-5: fixed message — NEVER echo `input` (it carries the #key). Surface no fragment.
       setError(
-        "That doesn't look like a svrnty invite link. Paste the whole link — it includes the key after the # (e.g. svrnty.is/c/…#…).",
+        "That doesn't look like a svrnty connect link. Paste the whole link: it includes the key after the #.",
       );
       return;
     }
-    setError(null);
-    setInvite(parsed); // INV-2: this only MOUNTS the ceremony; the human still commits inside it.
+    void routeParsed(parsed);
   };
 
   if (!open) return null;
 
-  // Joining: mount the SAME ceremony the /c/ route uses, full-screen, no nav (INV-1).
-  // Portal so the ceremony escapes GrowSurface tab chrome (fixed overlay would
-  // otherwise be clipped/hidden by the tab panel).
-  if (invite) {
-    const ceremony = (
-      <div
-        data-testid="joiner-ceremony-overlay"
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 90,
-          overflowY: 'auto',
-          background: E.bgCss,
-        }}
-      >
-        <button
-          type="button"
-          onClick={handleClose}
-          aria-label="Close"
-          style={{
-            position: 'fixed',
-            top: 16,
-            left: 16,
-            zIndex: 91,
-            padding: '6px 12px',
-            borderRadius: 999,
-            border: `1px solid ${E.borderLit}`,
-            background: 'rgba(8,5,3,.72)',
-            color: E.text,
-            cursor: 'pointer',
-            fontFamily: E.fontSans,
-            fontSize: 12,
-          }}
-        >
-          ← Back
-        </button>
-        <JoinerCeremony code={invite.code} keyFragment={invite.keyFragment} />
-      </div>
+  // Joining: mount the ONE in-app join path (INV-1) — ConnectSheet renders its own
+  // dialog chrome; the parent refreshes the book after a promote.
+  if (link) {
+    return (
+      <ConnectSheet
+        open
+        onClose={handleClose}
+        ownerFp={ownerFp ?? ''}
+        link={link}
+        logic={logic}
+        onAdmitted={onClose}
+      />
     );
-    return typeof document === 'undefined' ? ceremony : createPortal(ceremony, document.body);
   }
 
   // Paste view (ScanToJoin replaces the body while the camera is live).
