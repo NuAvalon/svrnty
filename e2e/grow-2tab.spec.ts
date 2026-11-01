@@ -1,7 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
 // GROW 2-tab: Join collapsed into Grow as "Show my code" | "Scan / paste".
-// Consent: paste/scan still only MOUNTS JoinerCeremony — no auto-connect.
+// Consent: paste/scan still only MOUNTS the join path — no auto-connect.
+// (connect-ux wiring, svrnty#365: the in-app path is ConnectSheet.)
 
 async function genesis(page: Page, name: string) {
   await page.goto('/');
@@ -53,7 +54,7 @@ test.describe('Grow 2-tab — Join merged into Grow', () => {
     );
     await dialog.getByRole('button', { name: /^join$/i }).click();
 
-    const overlay = page.getByTestId('joiner-ceremony-overlay');
+    const overlay = page.getByTestId('connect-sheet');
     await expect(overlay).toBeVisible();
     await expect(page.getByText(/opening the secure channel/i)).toBeVisible({ timeout: 15_000 });
     await expect(page.locator('body')).not.toContainText('e2ekeyfrag');

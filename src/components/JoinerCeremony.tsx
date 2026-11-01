@@ -43,7 +43,7 @@ import {
   lockSession,
   enqueueGateArrival,
 } from '@/lib/identity/client-store';
-import { sendJoinerResponse } from '@/lib/sync/send-joiner-response';
+import { depositJoinerResponse } from '@/lib/connect/joiner-response';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import type { DeviceMailboxPublic } from '@/lib/identity/device-mailbox';
@@ -78,58 +78,8 @@ interface PeerCard {
 
 type Phase = 'loading' | 'card' | 'done';
 
-// R1 return-channel deposit. After the joiner adds the giver, deposit a signed
-// joiner-response to the GIVER's mailbox so the giver learns of us and the edge becomes MUTUAL — closing
-// the one-directional Grow asymmetry (giver polls → verifyJoinerResponse → gates us → the 0.4
-// contact.update wire now flows both ways). Best-effort + FAIL-SOFT: signing requires our unlocked
-// private key; if the identity is locked or the deposit fails, the local gate entry still stands and the
-// flow never blocks — any failure is a local-only diagnostic, NEVER surfaced to a peer/relay (I-1).
-// The giver's mailbox holds the response for ~7d, so a deposit that lands on a later unlocked open still
-// connects. IDENTITY-ONLY: carries our {fp, epoch, key, name}, never contact methods.
-async function depositJoinerResponse(ownerFp: string, peer: PeerCard, code: string): Promise<void> {
-  try {
-    if (!peer.fingerprint || !peer.publicKey || !code) return; // nothing to bind the response to
-    const key = await loadKey(ownerFp);
-    if (!key) {
-      // Locked session — cannot sign. The gate entry is already stored; the return channel simply doesn't
-      // fire this time (a later unlocked open can re-deposit within the giver's ~7d mailbox window).
-      console.warn('[joiner-response] identity locked — return-channel deposit deferred (gate entry stands locally)');
-      return;
-    }
-    const id = await loadIdentity(ownerFp);
-    const ownPub: string = id?.identity?.public_key || '';
-    if (!ownPub) return; // no own key to present — cannot build a verifiable response
-    const displayName: string = id?.identity?.display_name || id?.identity?.name || '';
-    const res = await sendJoinerResponse(
-      {
-        fingerprint: ownerFp,
-        epoch: 0, // no key-rotation yet — the joiner ships contact.updates at epoch 0 (matches giver floor)
-        publicKeyArmored: ownPub,
-        displayName,
-        privateKeyArmored: key.privateKey,
-        passphrase: key.passphrase,
-        // §5 canonical-fp binding: thread our PQ pubkeys so the giver recomputes our 64-hex canonical id.
-        // Only when BOTH are present (a canonical identity); a classical identity omits them.
-        ...(id?.post_quantum?.kem_public_key && id?.post_quantum?.sig_public_key
-          ? { kemPublicKeyB64: id.post_quantum.kem_public_key, sigPublicKeyB64: id.post_quantum.sig_public_key }
-          : {}),
-      },
-      {
-        fingerprint: peer.fingerprint,
-        publicKeyArmored: peer.publicKey,
-        // HNDL: the giver's ML-KEM-1024 pubkey → hybrid seal. Absent (classical giver card) ⇒
-        // buildJoinerResponseDeposit fail-closed-skips (null), never a classical/downgraded deposit.
-        giverPqKemPublicKey: peer.pq?.pq_kem_public_key,
-        inviteNonce: code,
-      },
-    );
-    if (!res.ok) {
-      console.warn('[joiner-response] deposit not delivered (gate entry stands locally):', res.status);
-    }
-  } catch (err) {
-    console.warn('[joiner-response] deposit failed (gate entry stands locally):', err);
-  }
-}
+// R1 return-channel deposit lives in src/lib/connect/joiner-response.ts —
+// shared verbatim with ConnectSheet's promote path (connect-ux wiring).
 
 export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragment: string }) {
   const [phase, setPhase] = useState<Phase>('loading');
@@ -170,6 +120,17 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         if (!fp) {
           // Peter's "the Grow link needs to tell you to open your .svrnty vault." No active identity =
           // nothing to add them to. A dedicated screen, not a scary error.
+          // Connect-UX #3 (continuous flow): the pending link rides sessionStorage through
+          // mint/unlock — app/page.tsx picks it up the moment the session is unlocked and the
+          // card lands in the Gate with no re-paste.
+          try {
+            sessionStorage.setItem(
+              'svrnty:pending-connect',
+              JSON.stringify({ code, keyFragment }),
+            );
+          } catch {
+            /* storage unavailable — the honest "open your vault" screen still stands */
+          }
           setNoIdentity(true);
           return;
         }
@@ -276,7 +237,11 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
       }
       // R1: fire the return-channel deposit to the giver (best-effort, non-blocking) so the connection
       // becomes MUTUAL. Done advances regardless of whether the deposit lands (fail-soft).
-      void depositJoinerResponse(ownerFp, peer, code);
+      void depositJoinerResponse(ownerFp, {
+        fingerprint: peer.fingerprint,
+        publicKeyArmored: peer.publicKey,
+        pqKemPublicKey: peer.pq?.pq_kem_public_key,
+      }, code);
       setPhase('done');
     } catch (err: any) {
       setError(err?.message || 'Could not add them to your Gate.');
@@ -341,8 +306,8 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
         <Badge tone="gold" label="A card is waiting for you" />
         <h2 style={headingStyle}>Open your SVRNTY vault</h2>
         <p style={subStyle}>
-          Someone shared their card with you. To add them, open your own SVRNTY vault first — set up or
-          unlock your identity, then open this link again.
+          Someone shared their card with you. Set up or unlock your identity — the card is kept waiting
+          and lands in your Gate as soon as you&apos;re in. No re-paste.
         </p>
         <a href="/" style={linkBtnStyle}>Open SVRNTY</a>
       </Shell>

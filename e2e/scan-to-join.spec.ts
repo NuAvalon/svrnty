@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 
 // Camera QR-scan receive side (CURSOR_QUEUE item 1).
 // Paste-code join + QR generation are already built — this spec covers Scan only:
-// permission-on-tap, FIXED errors (no fragment interpolation), same JoinerCeremony path.
+// permission-on-tap, FIXED errors (no fragment interpolation), same join path (ConnectSheet since connect-ux wiring).
 
 const SCAN_KEY = 'e2ekeyfrag';
 const SCAN_CODE = 'e2escan';
@@ -64,10 +64,10 @@ test.describe('Scan-to-join — camera QR receive side', () => {
     await expect(dialog.getByLabel(/paste your invite link/i)).toBeVisible();
     await dialog.getByLabel(/paste your invite link/i).fill('not-an-invite');
     await dialog.getByRole('button', { name: /^join$/i }).click();
-    await expect(dialog.getByText(/doesn't look like a svrnty invite link/i)).toBeVisible();
+    await expect(dialog.getByText(/doesn't look like a svrnty connect link/i)).toBeVisible();
   });
 
-  test('a decoded invite mounts the existing JoinerCeremony; fragment never renders', async ({
+  test('a decoded invite mounts the ConnectSheet join path; fragment never renders', async ({
     page,
   }) => {
     test.setTimeout(60_000);
@@ -140,7 +140,7 @@ test.describe('Scan-to-join — camera QR receive side', () => {
     expect(stops).toBeGreaterThanOrEqual(1);
 
     // Release the held answer so nothing dangles at teardown. The OUTCOME (the 404 text) is deliberately NOT asserted here: under `next dev`
-    // (what CI runs) React StrictMode runs the resolve effect's setup -> cleanup -> setup, and JoinerCeremony's `startedRef` guard skips the second
+    // (what CI runs) React StrictMode runs the resolve effect's setup -> cleanup -> setup, and ConnectSheet's `cancelRef` guard skips the second
     // setup while the first was cancelled, so the relay is never even asked (measured: 0 requests to /api/relay/<code> over 10 s, page stays on
     // "Opening the secure channel..."). In a production build the answer does arrive (404 -> "This link isn't available..."). Asserting it would
     // make this test pass in one mode and fail in the other, so it is not asserted here.
