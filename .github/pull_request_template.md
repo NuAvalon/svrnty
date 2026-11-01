@@ -5,9 +5,10 @@
      hop-trail row, a CLI or stderr line, a JSON status field. One line each:
        "<the string>" → <the event that makes it true> → written only AFTER that event succeeds? y / n + why
      Write "none" only if the PR adds or changes no status string.
-     Why: on 2026-10-31 the same bug shipped four times, each caught only by a reviewer: "Caught up." on a failed poll,
-     "POLL REFUSED: HTTP 200" for a relay that answered, "rc 0 = green" from print-only checks, and "dropped on this host"
-     written before the commit. A status word is a claim; it is true only after the event that sets it. -->
+     Why: on 2026-10-31 the same bug appeared four times, each caught only by a reviewer: twice after it shipped ("Caught up."
+     on a failed poll; "POLL REFUSED: HTTP 200" for a relay that answered) and twice before merge ("rc 0 = green" from
+     print-only checks; "dropped on this host" written before the commit). A status word is a claim; it is true only after
+     the event that sets it. -->
 Status strings:
 
 ## Tests
