@@ -406,10 +406,22 @@ export function createdAtSeconds(v: unknown): number {
   if (typeof v === 'string') {
     const t = v.trim();
     if (/^\d+(\.\d+)?$/.test(t)) return Number(t);
-    const ms = Date.parse(t);
+    const ms = Date.parse(normalizeIsoForParse(t));
     if (Number.isFinite(ms)) return ms / 1000;
   }
   return 0;
+}
+
+/**
+ * The satellite writes created_at with Python's isoformat(): SIX fractional digits (microseconds) and "+00:00", or no fraction at all when the
+ * microseconds are 0. Not every JS engine reads more than three fractional digits, and an unreadable value becomes 0 = expired = every pending
+ * session skipped, so the fraction is cut to three digits (truncated, not rounded) before parsing. A date-time with NO offset is local time to
+ * Date.parse; the satellite's clock is UTC, so it is read as UTC.
+ */
+export function normalizeIsoForParse(t: string): string {
+  let iso = t.replace(/(\.\d{3})\d+/, '$1');
+  if (/T\d{2}:\d{2}/.test(iso) && !/(Z|[+-]\d{2}(:?\d{2})?)$/i.test(iso)) iso += 'Z';
+  return iso;
 }
 
 /**

@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createdAtSeconds, respondToTrustSync, type OrchestratorDeps, type PSISyncOptions } from './mutual-trust-sync';
+import { createdAtSeconds, normalizeIsoForParse, respondToTrustSync, type OrchestratorDeps, type PSISyncOptions } from './mutual-trust-sync';
 
 // ── The parser ──────────────────────────────────────────────────────────────────────────────────
 test('createdAtSeconds reads the satellite ISO string, with an offset or Z', () => {
@@ -15,6 +15,39 @@ test('createdAtSeconds reads the satellite ISO string, with an offset or Z', () 
   assert.equal(createdAtSeconds('2026-11-01T18:00:00Z'), Date.UTC(2026, 10, 1, 18, 0, 0) / 1000);
   assert.equal(createdAtSeconds('2026-11-01T18:00:00.250+00:00'), Date.UTC(2026, 10, 1, 18, 0, 0, 250) / 1000);
   assert.equal(createdAtSeconds('2026-11-01T14:00:00-04:00'), Date.UTC(2026, 10, 1, 18, 0, 0) / 1000, 'an offset is honoured');
+});
+
+// The exact shapes the satellite emits (Python isoformat(): microseconds, or no fraction when they are 0) and the one it never emits but a
+// parser must not misread (no offset = local time to Date.parse).
+test('createdAtSeconds reads the satellite\'s six-digit fraction, truncating to milliseconds', () => {
+  assert.equal(createdAtSeconds('2026-11-01T18:00:00.123456+00:00'), Date.UTC(2026, 10, 1, 18, 0, 0, 123) / 1000);
+  assert.equal(createdAtSeconds('2026-11-01T18:00:00.999999+00:00'), Date.UTC(2026, 10, 1, 18, 0, 0, 999) / 1000, 'truncated, never rounded up');
+  assert.equal(createdAtSeconds('2026-11-01T18:00:00+00:00'), Date.UTC(2026, 10, 1, 18, 0, 0) / 1000, 'no fraction at all');
+});
+
+test('normalizeIsoForParse cuts the fraction to three digits and leaves everything else alone (engine-independent)', () => {
+  assert.equal(normalizeIsoForParse('2026-11-01T18:00:00.123456+00:00'), '2026-11-01T18:00:00.123+00:00');
+  assert.equal(normalizeIsoForParse('2026-11-01T18:00:00.1234567890Z'), '2026-11-01T18:00:00.123Z');
+  assert.equal(normalizeIsoForParse('2026-11-01T18:00:00.250+00:00'), '2026-11-01T18:00:00.250+00:00');
+  assert.equal(normalizeIsoForParse('2026-11-01T18:00:00.5Z'), '2026-11-01T18:00:00.5Z');
+  assert.equal(normalizeIsoForParse('2026-11-01T18:00:00+00:00'), '2026-11-01T18:00:00+00:00');
+  assert.equal(normalizeIsoForParse('2026-11-01T14:00:00-04:00'), '2026-11-01T14:00:00-04:00', 'an offset is never overwritten');
+  assert.equal(normalizeIsoForParse('2026-11-01T14:00:00-0400'), '2026-11-01T14:00:00-0400');
+  assert.equal(normalizeIsoForParse('2026-11-01'), '2026-11-01', 'a date with no time is left as is');
+});
+
+test('a date-time with no offset is read as UTC, whatever the device time zone is', () => {
+  const was = process.env.TZ;
+  try {
+    for (const tz of ['America/New_York', 'Asia/Kolkata', 'UTC']) {
+      process.env.TZ = tz;
+      assert.equal(normalizeIsoForParse('2026-11-01T18:00:00.123456'), '2026-11-01T18:00:00.123Z', tz);
+      assert.equal(createdAtSeconds('2026-11-01T18:00:00.123456'), Date.UTC(2026, 10, 1, 18, 0, 0, 123) / 1000, tz);
+      assert.equal(createdAtSeconds('2026-11-01T18:00:00'), Date.UTC(2026, 10, 1, 18, 0, 0) / 1000, tz);
+    }
+  } finally {
+    if (was === undefined) delete process.env.TZ; else process.env.TZ = was;
+  }
 });
 
 test('createdAtSeconds still reads seconds, as a number or a numeric string', () => {
