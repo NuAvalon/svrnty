@@ -561,17 +561,24 @@ async def refresh_proxy_names(now: Optional[float] = None) -> frozenset:
         return c["ips"]
     c["at"] = now  # claim the refresh first: concurrent requests keep the old set (no stampede)
     loop = asyncio.get_running_loop()
-    ips = set()
-    for name in _csv_env("SATELLITE_TRUSTED_PROXY_NAMES"):
+    names = _csv_env("SATELLITE_TRUSTED_PROXY_NAMES")
+
+    async def resolve(name: str) -> frozenset:
+        # ANY failure (gaierror, a timeout, or a malformed name, which raises UnicodeError from IDNA)
+        # trusts that name for nothing: never a 500, never a failed startup.
         try:
             infos = await asyncio.wait_for(loop.getaddrinfo(name, None, proto=socket.IPPROTO_TCP),
                                            _PROXY_RESOLVE_TIMEOUT)
-        except (OSError, asyncio.TimeoutError):
-            continue
+        except Exception:
+            return frozenset()
         addrs = {a for a in (_norm_ip(info[4][0]) for info in infos) if a}
-        if len(addrs) == 1:  # a name that maps to several addresses is trusted for none of them
-            ips |= addrs
-    c["ips"] = frozenset(ips)
+        return frozenset(addrs) if len(addrs) == 1 else frozenset()  # several addresses -> none
+
+    results = await asyncio.gather(*(resolve(n) for n in names))  # concurrent: one timeout bounds the refresh
+    failed = sum(1 for r in results if not r)
+    if failed:
+        print(f"[satellite] trusted proxy names: {failed} of {len(names)} did not resolve to exactly one address")
+    c["ips"] = frozenset().union(*results) if results else frozenset()
     return c["ips"]
 
 

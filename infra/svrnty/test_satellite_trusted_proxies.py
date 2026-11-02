@@ -88,6 +88,37 @@ def test_resolver_failure_trusts_nothing(monkeypatch):
     assert satellite.trusted_proxies() == {"127.0.0.1", "::1"}
 
 
+@pytest.mark.parametrize("bad", ["a..b", "x" * 70, "caddy..", "-"])
+def test_malformed_name_trusts_none_and_never_raises(monkeypatch, bad):
+    # REAL resolver (no fake): IDNA rejects these with UnicodeError, which is a ValueError, not an OSError
+    monkeypatch.setenv("SATELLITE_TRUSTED_PROXY_NAMES", bad)
+    refresh()
+    assert satellite.trusted_proxies() == {"127.0.0.1", "::1"}
+
+
+def test_malformed_name_does_not_stop_startup(monkeypatch, capsys):
+    monkeypatch.setenv("SATELLITE_TRUSTED_PROXY_NAMES", "a..b,caddy")
+    monkeypatch.setenv("SATELLITE_ADMIN_KEY", "test-admin-key-0123456789")
+    monkeypatch.setattr(satellite, "SATELLITE_MODE", "registry")
+    real = socket.getaddrinfo
+    monkeypatch.setattr(socket, "getaddrinfo", lambda n, *a, **k: real(n, *a, **k) if n != "caddy" else [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (EDGE, 0))])
+    with TestClient(satellite.app) as c:                      # lifespan runs the refresh; must not raise
+        assert c.get("/health").status_code == 200
+    out = capsys.readouterr().out
+    fail_line = next(l for l in out.splitlines() if "did not resolve" in l)
+    assert "1 of 2 did not resolve" in fail_line and "a..b" not in fail_line      # the failure line is a count only
+    assert EDGE in out                                                             # the valid name still resolved
+
+
+def test_names_resolve_concurrently(monkeypatch):
+    monkeypatch.setenv("SATELLITE_TRUSTED_PROXY_NAMES", "caddy,svrnty")
+    monkeypatch.setattr(socket, "getaddrinfo", fake_dns({"caddy": [EDGE], "svrnty": [APP]}, delay=0.3))
+    async def timed():
+        t0 = time.monotonic(); await satellite.refresh_proxy_names(now=0.0); return time.monotonic() - t0
+    assert asyncio.run(timed()) < 0.5                                              # two 0.3 s lookups overlap
+    assert {EDGE, APP} <= satellite.trusted_proxies()
+
+
 def test_resolver_timeout_trusts_nothing(monkeypatch):
     monkeypatch.setenv("SATELLITE_TRUSTED_PROXY_NAMES", "caddy")
     monkeypatch.setattr(satellite, "_PROXY_RESOLVE_TIMEOUT", 0.1)
