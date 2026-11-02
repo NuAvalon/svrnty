@@ -11,6 +11,7 @@ Satellite = identity storage + message relay + bouncer list (allowed_senders).
 Part of the svrnty + Cairn ecosystem.
 """
 
+import asyncio
 import hashlib
 import hmac
 import ipaddress
@@ -377,6 +378,7 @@ async def lifespan(app: FastAPI):
     init_db()
     mode_label = "REGISTRY (contacts only)" if SATELLITE_MODE == "registry" else "FULL (contacts + messaging)"
     print(f"[satellite] Mode: {mode_label} | SATELLITE_MODE={SATELLITE_MODE}")
+    await refresh_proxy_names()
     print(f"[satellite] Trusted proxies: {sorted(trusted_proxies())} | "
           f"names={_csv_env('SATELLITE_TRUSTED_PROXY_NAMES') or 'none'}")
 
@@ -512,67 +514,83 @@ def check_identity_send_rate(fingerprint: str) -> bool:
 # ── Trusted proxies: who may set X-Forwarded-For ──────────────────────────
 # EXACT addresses only, never a CIDR: on a shared docker network any container could otherwise
 # claim to be the edge and spoof a client IP. Two sources, unioned with localhost:
-#   SATELLITE_TRUSTED_PROXIES      comma list of exact IPs (a CIDR or junk entry is ignored)
-#   SATELLITE_TRUSTED_PROXY_NAMES  comma list of docker DNS names (e.g. "caddy,svrnty"), resolved to
-#                                  their current addresses, cached for _PROXY_NAME_TTL seconds
-# A name that does not resolve, or resolves to more than one address, contributes nothing
-# (fail-closed: those requests key on the peer address, the pre-fix behaviour). The client IP is the RIGHTMOST X-Forwarded-For entry (the one the
-# trusted hop wrote), and must parse as an IP.
+#   SATELLITE_TRUSTED_PROXIES      comma list of exact IPs (a CIDR or junk entry is ignored); read at import
+#   SATELLITE_TRUSTED_PROXY_NAMES  comma list of docker DNS names (e.g. "caddy,svrnty"), resolved OFF the
+#                                  event loop (loop.getaddrinfo, _PROXY_RESOLVE_TIMEOUT s) and cached for
+#                                  _PROXY_NAME_TTL s; refreshed by the rate-limit middleware when stale
+# A name that does not resolve, times out, or resolves to more than one address contributes nothing
+# (fail-closed: those requests key on the peer address, the pre-fix behaviour). Peer and client
+# addresses are normalised (an IPv4-mapped ::ffff:a.b.c.d is a.b.c.d). The client IP is the RIGHTMOST
+# X-Forwarded-For entry (the one the trusted hop wrote), and must parse as an IP.
 _LOCAL_PROXIES = frozenset({"127.0.0.1", "::1"})
 _PROXY_NAME_TTL = 30.0
+_PROXY_RESOLVE_TIMEOUT = 2.0
 _proxy_name_cache: dict = {"at": float("-inf"), "ips": frozenset()}
+
+
+def _norm_ip(value: str) -> Optional[str]:
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return str(mapped or ip)
 
 
 def _csv_env(name: str) -> list[str]:
     return [p.strip() for p in os.environ.get(name, "").split(",") if p.strip()]
 
 
-def _static_trusted_proxies() -> frozenset:
+def _parse_static_trusted_proxies() -> frozenset:
     out = set(_LOCAL_PROXIES)
     for p in _csv_env("SATELLITE_TRUSTED_PROXIES"):
-        try:
-            out.add(str(ipaddress.ip_address(p)))
-        except ValueError:
-            pass  # exact addresses only
+        ip = _norm_ip(p)
+        if ip:
+            out.add(ip)  # exact addresses only: "a.b.c.d/16" does not parse as an address
     return frozenset(out)
 
 
-def _resolved_proxy_names(now: float) -> frozenset:
+_STATIC_TRUSTED_PROXIES = _parse_static_trusted_proxies()
+
+
+async def refresh_proxy_names(now: Optional[float] = None) -> frozenset:
+    """Re-resolve SATELLITE_TRUSTED_PROXY_NAMES when the cache is stale; return the resolved set."""
+    now = time.monotonic() if now is None else now
     c = _proxy_name_cache
     if now - c["at"] < _PROXY_NAME_TTL:
         return c["ips"]
+    c["at"] = now  # claim the refresh first: concurrent requests keep the old set (no stampede)
+    loop = asyncio.get_running_loop()
     ips = set()
     for name in _csv_env("SATELLITE_TRUSTED_PROXY_NAMES"):
         try:
-            addrs = {str(ipaddress.ip_address(info[4][0]))
-                     for info in socket.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)}
-        except (OSError, ValueError):
+            infos = await asyncio.wait_for(loop.getaddrinfo(name, None, proto=socket.IPPROTO_TCP),
+                                           _PROXY_RESOLVE_TIMEOUT)
+        except (OSError, asyncio.TimeoutError):
             continue
+        addrs = {a for a in (_norm_ip(info[4][0]) for info in infos) if a}
         if len(addrs) == 1:  # a name that maps to several addresses is trusted for none of them
             ips |= addrs
-    c["at"], c["ips"] = now, frozenset(ips)
+    c["ips"] = frozenset(ips)
     return c["ips"]
 
 
-def trusted_proxies(now: Optional[float] = None) -> frozenset:
-    return _static_trusted_proxies() | _resolved_proxy_names(time.monotonic() if now is None else now)
+def trusted_proxies() -> frozenset:
+    return _STATIC_TRUSTED_PROXIES | _proxy_name_cache["ips"]
 
 
-def client_ip_for(peer_ip: str, forwarded: Optional[str], now: Optional[float] = None) -> str:
+def client_ip_for(peer_ip: str, forwarded: Optional[str]) -> str:
     """The rate-limit key: the trusted hop's rightmost X-Forwarded-For entry, else the peer address."""
-    if forwarded and peer_ip in trusted_proxies(now):
-        candidate = forwarded.split(",")[-1].strip()
-        try:
-            return str(ipaddress.ip_address(candidate))
-        except ValueError:
-            return peer_ip
-    return peer_ip
-
+    peer = _norm_ip(peer_ip) or peer_ip
+    if forwarded and peer in trusted_proxies():
+        return _norm_ip(forwarded.split(",")[-1]) or peer
+    return peer
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Extract client IP — only trust X-Forwarded-For from known proxies (M-1)
         peer_ip = request.client.host if request.client else "unknown"
+        await refresh_proxy_names()
         client_ip = client_ip_for(peer_ip, request.headers.get("x-forwarded-for"))
 
         allowed, remaining = _rate_limiter.check(client_ip, request.url.path)
