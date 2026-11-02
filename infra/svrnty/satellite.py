@@ -61,6 +61,23 @@ RETENTION_DAYS = int(os.environ.get("SATELLITE_RETENTION_DAYS", "30"))
 # a route/reversal deposit never GCs before the mailbox it guards.
 UNDELIVERED_MSG_TTL_DAYS = int(os.environ.get("SATELLITE_MSG_TTL_DAYS", "30"))
 UNDELIVERED_MSG_TTL_SECONDS = UNDELIVERED_MSG_TTL_DAYS * 86400
+
+
+def _parse_cleanup_interval(raw: Optional[str]) -> int:
+    """SATELLITE_CLEANUP_INTERVAL_S: seconds between scheduled retention cleanups. DEFAULT 0 = OFF.
+
+    A feature that deletes data ships off: it runs only where an operator sets a positive interval
+    explicitly (self-host compose; prod/dev via the reviewed env apply). Unset, empty, 0, negative or
+    unparseable all mean off."""
+    try:
+        v = int((raw or "").strip() or "0")
+    except ValueError:
+        return 0
+    return v if v > 0 else 0
+
+
+CLEANUP_INTERVAL_S = _parse_cleanup_interval(os.environ.get("SATELLITE_CLEANUP_INTERVAL_S"))
+CLEANUP_STAMP_NAME = "cleanup_last.json"
 PORT = int(os.environ.get("PORT", "8100"))
 SATELLITE_MODE = os.environ.get("SATELLITE_MODE", "registry")  # "registry" (T1) or "full" (T2)
 
@@ -399,8 +416,18 @@ async def lifespan(app: FastAPI):
             _rate_limiter.cleanup()
 
     cleanup_task = asyncio.create_task(_rate_limiter_cleanup_loop())
+    retention_task = None
+    if CLEANUP_INTERVAL_S > 0:
+        import random
+        retention_task = asyncio.create_task(
+            _retention_cleanup_loop(CLEANUP_INTERVAL_S, first_delay_s=random.uniform(0, 600)))
+        print(f"[satellite] Retention cleanup: ON every {CLEANUP_INTERVAL_S}s")
+    else:
+        print("[satellite] Retention cleanup: OFF (set SATELLITE_CLEANUP_INTERVAL_S to enable)")
     yield
     cleanup_task.cancel()
+    if retention_task is not None:
+        retention_task.cancel()
 
 app = FastAPI(
     title="Satellite Relay",
@@ -2407,15 +2434,7 @@ async def message_cleanup(admin_key: str = Header(None, alias="X-Admin-Key")):
 
     db = get_db()
     try:
-        from datetime import timedelta
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=UNDELIVERED_MSG_TTL_SECONDS)).isoformat()
-        result = db.execute(
-            "DELETE FROM messages WHERE retrieved = 0 AND created_at < ?",
-            (cutoff,)
-        )
-        count = result.rowcount
-        if count > 0:
-            audit(db, "ttl_cleanup", None, f"purged {count} expired messages")
+        count = _purge_unacknowledged(db)
         db.commit()
         return {"status": "ok", "purged": count}
     finally:
@@ -4016,33 +4035,101 @@ async def cleanup_old_messages(admin_key: str = Header(None, alias="X-Admin-Key"
 
     db = get_db()
     try:
-        cutoff = datetime.now(timezone.utc).timestamp() - (RETENTION_DAYS * 86400)
-        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-
-        result = db.execute(
-            "DELETE FROM messages WHERE retrieved = 1 AND retrieved_at < ?",
-            (cutoff_iso,)
-        )
-        deleted = result.rowcount
-
-        # Clean up expired/completed PSI sessions
-        psi_cutoff = datetime.now(timezone.utc).timestamp() - PSI_SESSION_TTL
-        psi_cutoff_iso = datetime.fromtimestamp(psi_cutoff, timezone.utc).isoformat()
-        try:
-            psi_result = db.execute(
-                "DELETE FROM psi_sessions WHERE status IN ('complete', 'pending') AND created_at < ?",
-                (psi_cutoff_iso,)
-            )
-            psi_deleted = psi_result.rowcount
-        except sqlite3.OperationalError:
-            psi_deleted = 0  # table may not exist yet
-
-        audit(db, "cleanup", details=f"messages={deleted},psi_sessions={psi_deleted}")
+        deleted, psi_deleted = _purge_retained(db)
         db.commit()
-
         return {"deleted": deleted, "psi_deleted": psi_deleted, "retention_days": RETENTION_DAYS}
     finally:
         db.close()
+
+
+# ── Retention cleanup: shared by the two admin routes and the scheduled task ─────────────
+# The cutoffs are fixed server-side (nothing a caller sends can move them), and the routes and
+# the task call the SAME helpers, so a scheduled run can never delete anything a manual run
+# wouldn't. The task is OFF unless SATELLITE_CLEANUP_INTERVAL_S > 0 (see _parse_cleanup_interval).
+
+def _purge_unacknowledged(db, now: Optional[datetime] = None) -> int:
+    """Delete messages never acknowledged by the recipient's app, older than UNDELIVERED_MSG_TTL."""
+    from datetime import timedelta
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(seconds=UNDELIVERED_MSG_TTL_SECONDS)).isoformat()
+    count = db.execute(
+        "DELETE FROM messages WHERE retrieved = 0 AND created_at < ?",
+        (cutoff,)
+    ).rowcount
+    if count > 0:
+        audit(db, "ttl_cleanup", None, f"purged {count} expired messages")
+    return count
+
+
+def _purge_retained(db, now: Optional[datetime] = None) -> tuple:
+    """Delete collected messages past RETENTION_DAYS and expired PSI sessions. Returns (messages, psi)."""
+    now = now or datetime.now(timezone.utc)
+    cutoff_iso = datetime.fromtimestamp(now.timestamp() - (RETENTION_DAYS * 86400), timezone.utc).isoformat()
+    deleted = db.execute(
+        "DELETE FROM messages WHERE retrieved = 1 AND retrieved_at < ?",
+        (cutoff_iso,)
+    ).rowcount
+    psi_cutoff_iso = datetime.fromtimestamp(now.timestamp() - PSI_SESSION_TTL, timezone.utc).isoformat()
+    try:
+        psi_deleted = db.execute(
+            "DELETE FROM psi_sessions WHERE status IN ('complete', 'pending') AND created_at < ?",
+            (psi_cutoff_iso,)
+        ).rowcount
+    except sqlite3.OperationalError:
+        psi_deleted = 0  # table may not exist yet
+    audit(db, "cleanup", details=f"messages={deleted},psi_sessions={psi_deleted}")
+    return deleted, psi_deleted
+
+
+_cleanup_lock = asyncio.Lock()
+
+
+def _write_cleanup_stamp(stamp: dict) -> None:
+    """Dead-man stamp: {ts, ok, counts}. 0600 on the data volume, written atomically. Not served."""
+    path = DATA_DIR / CLEANUP_STAMP_NAME
+    tmp = DATA_DIR / (CLEANUP_STAMP_NAME + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(stamp, f)
+    os.chmod(str(tmp), 0o600)
+    os.replace(str(tmp), str(path))
+
+
+async def run_retention_cleanup() -> dict:
+    """One scheduled cleanup run. Single-flight: a run that finds another in progress is skipped.
+    Logs counts only; never raises (a failure is logged and stamped ok=false)."""
+    if _cleanup_lock.locked():
+        return {"skipped": True}
+    async with _cleanup_lock:
+        ts = datetime.now(timezone.utc).isoformat()
+        try:
+            db = get_db()
+            try:
+                unacked = _purge_unacknowledged(db)
+                retained, psi = _purge_retained(db)
+                db.commit()
+            finally:
+                db.close()
+            counts = {"unacknowledged": unacked, "retained": retained, "psi_sessions": psi}
+            print(f"[satellite] cleanup: deleted {retained} messages past their retention period; "
+                  f"deleted {unacked} unacknowledged messages older than {UNDELIVERED_MSG_TTL_DAYS} days; "
+                  f"deleted {psi} expired discovery sessions")
+            stamp = {"ts": ts, "ok": True, "counts": counts}
+        except Exception as e:  # never fatal: the stamp carries the failure to the dead-man check
+            print(f"[satellite] cleanup FAILED: {type(e).__name__}")
+            stamp = {"ts": ts, "ok": False, "counts": None}
+        try:
+            _write_cleanup_stamp(stamp)
+        except Exception as e:
+            print(f"[satellite] cleanup stamp write FAILED: {type(e).__name__}")
+        return stamp
+
+
+async def _retention_cleanup_loop(interval_s: int, first_delay_s: float):
+    await asyncio.sleep(first_delay_s)
+    while True:
+        await run_retention_cleanup()
+        await asyncio.sleep(interval_s)
 
 
 if __name__ == "__main__":
