@@ -3882,15 +3882,18 @@ async def psi_respond(session_id: str, body: dict):
         if not session:
             raise HTTPException(status_code=404, detail="PSI session not found or expired")
 
-        # Store responder's data
-        db.execute(
+        # Store responder's data. The first answer wins: the write is conditional on the session still being pending and
+        # the lookup above is not relied on to have kept it so; an answer that lost is refused like one to a closed session.
+        stored = db.execute(
             """UPDATE psi_sessions
                SET responder_blinded = ?, reblinded_initiator = ?,
                    status = 'responded', completed_at = ?
-               WHERE session_id = ?""",
+               WHERE session_id = ? AND status = 'pending'""",
             (json.dumps(req.blinded_set), json.dumps(req.reblinded_initiator_set),
              now_iso(), session_id)
         )
+        if stored.rowcount == 0:
+            raise HTTPException(status_code=404, detail="PSI session not found or expired")
 
         # Notify initiator
         notification = json.dumps({
