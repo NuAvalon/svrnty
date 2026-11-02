@@ -24,7 +24,7 @@ import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
 import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
-import { blockPatch } from '@/lib/contacts/metadata-patches';
+import { blockPatch, ownerVerifyHeldPatch, distressWentHeldPatch, acceptIntroHeldPatch, addLabelHeldPatch, trustMapEditPatch } from '@/lib/contacts/metadata-patches';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
@@ -54,8 +54,7 @@ import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
-import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { distressWentPersistPatch } from '@/lib/trust/distress';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricUnlockButton } from '@/components/biometric/BiometricUnlockButton';
 import {
   getBiometricEnrollment,
@@ -803,6 +802,7 @@ export default function Home() {
                 onAssignGroup={async (fingerprints, groupName) => {
                   const label = groupName.trim();
                   if (!label) return;
+                  // The snapshot is used only to find each contact's id; each write is built from the record held when it runs.
                   const records = await getAllContacts(identity.identity.fingerprint);
                   for (const fp of fingerprints) {
                     const rec = records.find(
@@ -811,27 +811,16 @@ export default function Home() {
                     const edge = contacts.find((c) => c.peer_fingerprint === fp);
                     const id = rec?.id || edge?.id;
                     if (!id) continue;
-                    const prevTags = (rec as any)?.tags || (rec as any)?.metadata?.tags || edge?.tags || [];
-                    const tags = Array.from(new Set([...prevTags, label]));
-                    await updateContact(id, {
-                      tags,
-                      metadata: { ...((rec as any)?.metadata || {}), tags },
-                    } as any);
+                    await updateContact(id, (fresh) => addLabelHeldPatch(fresh, label));
                   }
                   await refreshContacts();
                 }}
                 onOwnerVerify={async (edge, method) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const patch = ownerVerifyPersistPatch((rec as any)?.metadata, method);
-                  await updateContact(edge.id, patch as any);
+                  await updateContact(edge.id, (fresh) => ownerVerifyHeldPatch(fresh, method));
                   await refreshContacts();
                 }}
                 onDistressWent={async (edge) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const patch = distressWentPersistPatch((rec as any)?.metadata);
-                  await updateContact(edge.id, patch as any);
+                  await updateContact(edge.id, (fresh) => distressWentHeldPatch(fresh));
                   await refreshContacts();
                 }}
                 onTrustToggle={async (edge) => {
@@ -919,40 +908,11 @@ export default function Home() {
                   await refreshContacts();
                 }}
                 onAcceptIntro={async (edge) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  await updateContact(edge.id, {
-                    connection_status: 'accepted',
-                    metadata: {
-                      ...((rec as any)?.metadata || {}),
-                      connection_status: 'accepted',
-                      pending_intro: undefined,
-                    },
-                    pending_intro: undefined,
-                  } as any);
+                  await updateContact(edge.id, (fresh) => acceptIntroHeldPatch(fresh));
                   await refreshContacts();
                 }}
                 onUpdateContact={async (edge, patch) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const phones = patch.phones ?? edge.contact_info?.phones;
-                  await updateContact(edge.id, {
-                    name: patch.name ?? edge.peer_name,
-                    email: patch.email ?? edge.peer_email,
-                    notes: patch.notes ?? edge.notes,
-                    contact_info: {
-                      ...(edge.contact_info || {}),
-                      ...(rec as any)?.contact_info,
-                      phones,
-                      emails: patch.email
-                        ? [patch.email]
-                        : edge.contact_info?.emails,
-                    },
-                    metadata: {
-                      ...((rec as any)?.metadata || {}),
-                      notes: patch.notes ?? edge.notes,
-                    },
-                  } as any);
+                  await updateContact(edge.id, (fresh) => trustMapEditPatch(fresh, patch));
                   await refreshContacts();
                 }}
                 onSendMethodUpdate={(edge) => {

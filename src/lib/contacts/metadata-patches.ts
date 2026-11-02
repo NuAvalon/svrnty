@@ -7,6 +7,7 @@
 import type { ContactRecord } from '@/lib/identity/client-store';
 import { linkToSvrntyPatch } from '@/lib/contacts/contact-lane';
 import { ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
+import { distressWentPersistPatch } from '@/lib/trust/distress';
 
 type Patch = Partial<ContactRecord>;
 
@@ -47,4 +48,52 @@ export function blockPatch(fresh: ContactRecord, blocked: boolean): Patch {
 /** Link a classical contact to a bound SVRNTY identity: classical channels are snapshotted from the held record, trust restarts at unverified. */
 export function linkHeldPatch(fresh: ContactRecord, bound: { fingerprint: string; public_key: string }): Patch {
   return { ...linkToSvrntyPatch(fresh as Parameters<typeof linkToSvrntyPatch>[0], bound), trust_level: 'unverified' } as unknown as Patch;
+}
+
+/** Clear the inbound-distress mark on this device, on top of the metadata the held record carries. */
+export function distressWentHeldPatch(fresh: ContactRecord): Patch {
+  return distressWentPersistPatch(fresh.metadata) as unknown as Patch;
+}
+
+/** Accept an introduction: the connection becomes accepted and the pending introduction is cleared, on top of the held metadata. */
+export function acceptIntroHeldPatch(fresh: ContactRecord): Patch {
+  return {
+    connection_status: 'accepted',
+    metadata: { ...fresh.metadata, connection_status: 'accepted', pending_intro: undefined },
+    pending_intro: undefined,
+  } as unknown as Patch;
+}
+
+/**
+ * Add a group label to the tags the held record carries (once). The tags live at the top level and in the metadata; both are set from the
+ * held record, so they stay equal and a tag added elsewhere since a screen was drawn survives.
+ */
+export function addLabelHeldPatch(fresh: ContactRecord, label: string): Patch {
+  const prev = ((fresh as { tags?: string[] }).tags ?? (fresh.metadata?.tags as string[] | undefined) ?? []);
+  const tags = Array.from(new Set([...prev, label]));
+  return { tags, metadata: { ...fresh.metadata, tags } } as unknown as Patch;
+}
+
+/**
+ * The trust-map contact edit. Only what the owner changed is taken from `patch`; every other field keeps what the HELD record has now (the
+ * screen's older copy is never used as a default), and the metadata keys the held record carries are kept.
+ */
+export function trustMapEditPatch(
+  fresh: ContactRecord,
+  patch: { name?: string; email?: string; notes?: string; phones?: string[] },
+): Patch {
+  const heldNotes = (fresh as { notes?: string }).notes ?? (fresh.metadata?.notes as string | undefined) ?? '';
+  const notes = patch.notes ?? heldNotes;
+  const info = (fresh.contact_info ?? {}) as { phones?: string[]; emails?: string[] };
+  return {
+    name: patch.name ?? fresh.name,
+    email: patch.email ?? fresh.email,
+    notes,
+    contact_info: {
+      ...(fresh.contact_info ?? {}),
+      phones: patch.phones ?? info.phones,
+      emails: patch.email ? [patch.email] : info.emails,
+    },
+    metadata: { ...fresh.metadata, notes },
+  } as unknown as Patch;
 }
