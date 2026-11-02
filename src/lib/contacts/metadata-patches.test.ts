@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from './metadata-patches';
+import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch, distressWentHeldPatch, acceptIntroHeldPatch, addLabelHeldPatch, trustMapEditPatch } from './metadata-patches';
 import type { ContactRecord } from '@/lib/identity/client-store';
 
 const rec = (o: Record<string, unknown> = {}): ContactRecord =>
@@ -118,6 +118,66 @@ test('link: does not write contact_info (the held channels stay as stored)', () 
   assert.equal('contact_info' in (linkHeldPatch(rec({ contact_info: { phones: ['1'] } }), bound) as object), false);
 });
 
+// ── the trust-map helpers ───────────────────────────────────────────────────────────────────────────────────
+
+test('distress went: clears the mark at both places and keeps every other metadata key the held record carries', () => {
+  const held = rec({ distress_inbound: true, metadata: { distress_inbound: true, tags: ['a'], share_settings: { open_visibility: false } } });
+  const p = distressWentHeldPatch(held) as Record<string, unknown>;
+  assert.equal(p.distress_inbound, false);
+  assert.deepEqual(p.metadata, { distress_inbound: false, tags: ['a'], share_settings: { open_visibility: false } });
+});
+
+test('accept introduction: the connection is accepted at both places, the pending introduction is cleared, other metadata is kept', () => {
+  const held = rec({ connection_status: 'pending', pending_intro: { from: 'x' }, metadata: { connection_status: 'pending', pending_intro: { from: 'x' }, tags: ['t'], blocked: true } });
+  const p = acceptIntroHeldPatch(held) as Record<string, unknown>;
+  assert.equal(p.connection_status, 'accepted');
+  assert.equal('pending_intro' in p && p.pending_intro === undefined, true);
+  const m = p.metadata as Record<string, unknown>;
+  assert.equal(m.connection_status, 'accepted');
+  assert.equal(m.pending_intro, undefined);
+  assert.deepEqual(m.tags, ['t']);
+  assert.equal(m.blocked, true, 'a flag set elsewhere since the screen was drawn survives');
+});
+
+test('add label: adds once to the tags the held record carries, at the top level AND in the metadata, which stay equal', () => {
+  const held = rec({ tags: ['a', 'added-elsewhere'], metadata: { tags: ['a', 'added-elsewhere'], notes: 'keep' } });
+  const p = addLabelHeldPatch(held, 'new') as Record<string, unknown>;
+  assert.deepEqual(p.tags, ['a', 'added-elsewhere', 'new']);
+  assert.deepEqual((p.metadata as Record<string, unknown>).tags, p.tags);
+  assert.equal((p.metadata as Record<string, unknown>).notes, 'keep');
+  assert.deepEqual((addLabelHeldPatch(held, 'a') as Record<string, unknown>).tags, ['a', 'added-elsewhere'], 'a label already there is not added twice');
+});
+
+test('add label: tags that live only in the metadata, or nowhere, are handled', () => {
+  assert.deepEqual((addLabelHeldPatch(rec({ metadata: { tags: ['m'] } }), 'n') as Record<string, unknown>).tags, ['m', 'n']);
+  assert.deepEqual((addLabelHeldPatch(rec(), 'n') as Record<string, unknown>).tags, ['n']);
+});
+
+test('trust-map edit: only what the owner changed is taken from the patch; every other field keeps what the HELD record has now', () => {
+  const held = rec({ name: 'Held Name', email: 'held@x', notes: 'held note', contact_info: { phones: ['1'], emails: ['held@x'], urls: ['u'] }, metadata: { tags: ['t'], notes: 'held note', blocked: true } });
+  const p = trustMapEditPatch(held, { phones: ['2'] }) as Record<string, unknown>;
+  assert.equal(p.name, 'Held Name', 'the name is not overwritten with an older screen copy');
+  assert.equal(p.email, 'held@x');
+  assert.equal(p.notes, 'held note');
+  assert.deepEqual(p.contact_info, { phones: ['2'], emails: ['held@x'], urls: ['u'] });
+  assert.deepEqual(p.metadata, { tags: ['t'], notes: 'held note', blocked: true });
+});
+
+test('trust-map edit: a changed name, email and notes are taken from the patch, and a new email replaces the email list', () => {
+  const held = rec({ name: 'Old', email: 'old@x', metadata: { notes: 'old' }, contact_info: { phones: ['1'], emails: ['old@x'] } });
+  const p = trustMapEditPatch(held, { name: 'New', email: 'new@x', notes: 'new note' }) as Record<string, unknown>;
+  assert.equal(p.name, 'New');
+  assert.equal(p.email, 'new@x');
+  assert.equal(p.notes, 'new note');
+  assert.deepEqual((p.contact_info as Record<string, unknown>).emails, ['new@x']);
+  assert.equal((p.metadata as Record<string, unknown>).notes, 'new note');
+});
+
+test('trust-map edit: notes default to the metadata notes when the record has no top-level notes, and to empty when there are none', () => {
+  assert.equal((trustMapEditPatch(rec({ metadata: { notes: 'm' } }), {}) as Record<string, unknown>).notes, 'm');
+  assert.equal((trustMapEditPatch(rec(), {}) as Record<string, unknown>).notes, '');
+});
+
 test('no helper mutates the record it is given', () => {
   const held = rec({ trust_level: 'trusted', metadata: { tags: ['a'], share_settings: { open_visibility: true } } });
   const before = JSON.stringify(held);
@@ -125,5 +185,9 @@ test('no helper mutates the record it is given', () => {
   ownerVerifyHeldPatch(held, 'in_person');
   blockPatch(held, true);
   linkHeldPatch(held, bound);
+  distressWentHeldPatch(held);
+  acceptIntroHeldPatch(held);
+  addLabelHeldPatch(held, 'z');
+  trustMapEditPatch(held, { name: 'x', phones: ['9'] });
   assert.equal(JSON.stringify(held), before);
 });

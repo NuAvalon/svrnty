@@ -1055,7 +1055,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   const write = () => deps.store.persist(contact.current.id, changedKeys(contact.current, applied.next));
   if (deps.store.guard) {
     const g = await deps.store.guard(write);
-    if (g.deferred) return { kind: 'retryable' }; // an owner-protecting write holds this contact: leave the envelope for a later poll
+    if (g.deferred) return { kind: 'retryable' }; // an owner-protecting write holds the book: leave the envelope for a later poll
   } else {
     await write();
   }
