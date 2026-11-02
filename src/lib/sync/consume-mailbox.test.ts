@@ -127,6 +127,52 @@ test('happy path — Bob’s signed name change is verified, applied, persisted,
   assert.equal(emitted[0].fingerprint, bob.fingerprint);
 });
 
+test('a guard that defers the contact leaves the update on the relay: nothing is written, nothing is acked, and the next poll applies it', async () => {
+  const env: ContactUpdateEnvelope = {
+    fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',
+    changed_fields: ['display_name'], delta: { display_name: 'Bob (NEW name)' },
+  };
+  const signed = await signUpdate(env, bob);
+  const { store, persisted } = aliceStore(new Map([[bob.fingerprint, bobKnownToAlice(0)]]));
+  let deferNow = true;
+  const guarded = {
+    ...store,
+    guard: async <T,>(_id: string, run: () => Promise<T>) => (deferNow ? { deferred: true as const } : { deferred: false as const, value: await run() }),
+  };
+
+  const ackLog: string[][] = [];
+  const first = await consumeInboundContactUpdates(baseDeps({
+    decrypt: async () => signed, store: guarded, fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(first.applied, 0);
+  assert.equal(first.acked, 0, 'the deferred envelope is NOT acked: it stays on the relay');
+  assert.equal(persisted.length, 0, 'nothing was written while the owner-protecting write held the contact');
+  assert.deepEqual(ackLog, []);
+
+  deferNow = false; // the owner-protecting write is done: the same envelope is delivered again
+  const second = await consumeInboundContactUpdates(baseDeps({
+    decrypt: async () => signed, store: guarded, fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], ackLog),
+  }));
+  assert.equal(second.applied, 1);
+  assert.equal(second.acked, 1);
+  assert.equal(persisted.length, 1, 'the change was applied on the next poll, not lost');
+  assert.equal(persisted[0].next.name, 'Bob (NEW name)');
+  assert.deepEqual(ackLog, [['e1']]);
+});
+
+test('a store with no guard behaves exactly as before (the write always runs)', async () => {
+  const env: ContactUpdateEnvelope = {
+    fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',
+    changed_fields: ['display_name'], delta: { display_name: 'Bob (NEW name)' },
+  };
+  const signed = await signUpdate(env, bob);
+  const { store, persisted } = aliceStore(new Map([[bob.fingerprint, bobKnownToAlice(0)]]));
+  assert.equal('guard' in store, false);
+  const summary = await consumeInboundContactUpdates(baseDeps({ decrypt: async () => signed, store, fetchImpl: recordingFetch([{ envelope_id: 'e1', blob: 'BLOB1' }], []) }));
+  assert.equal(summary.applied, 1);
+  assert.equal(persisted.length, 1);
+});
+
 test('whitelist-on-fetch (I-2) — an update from a stranger not in the book is dropped + acked, never applied', async () => {
   const env: ContactUpdateEnvelope = {
     fingerprint: bob.fingerprint, epoch: 0, version: 1, updated_at: '2026-08-19T00:00:00.000Z',

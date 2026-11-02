@@ -58,6 +58,7 @@ import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { toggleTagPatch, renameTagPatch, removeTagPatch, addTagPatch } from '@/lib/contacts/tag-patches';
 import { shareSettingsPatch, consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
+import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
@@ -567,7 +568,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setError(null);
       // Blocking clears open_visibility so the peer leaves every PSI reveal set (a blocked peer must never keep discovering you via a stale
       // open_vis flag); the read side is fail-closed too (ownerEdges !blocked). See blockPatch.
-      await updateContact(contact.id, (fresh) => blockPatch(fresh, blocked));
+      // A write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+      await withSafetyWrite(contact.id, () => updateContact(contact.id, (fresh) => blockPatch(fresh, blocked)));
       const afterBlock = await getContact(contact.id);
       setShowDetailDialog(false);
       // #572 part 2 (flip-blocker b + #111 satellite-completeness): block → DELETE the allowed_senders
@@ -885,7 +887,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     // Only the settings the owner CHANGED are applied, on top of the settings the record holds NOW, and the clamp is decided on the record
     // held NOW (its trust may have changed since this screen was drawn). See applyShareSettingsChange.
     const seen = readShareSettings(selectedContact);
-    await updateContact(selectedContact.id, (fresh) => shareSettingsPatch(fresh, seen, next));
+    // Go-private is a write that protects the owner, and a share-settings change cannot be told apart in advance: all of them take the contact's lock.
+    await withSafetyWrite(selectedContact.id, () => updateContact(selectedContact.id, (fresh) => shareSettingsPatch(fresh, seen, next)));
     const after = await getContact(selectedContact.id);
     if (!after) {
       // The contact is gone: its allowed-senders row must not outlive it. An all-false consent removes the row (idempotent).

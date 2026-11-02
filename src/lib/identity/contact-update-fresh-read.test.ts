@@ -235,7 +235,7 @@ test('GUARD: block, share-settings and remove reconcile from a record read back 
 test('GUARD: the unlock sweep and break-trust build from the held record', () => {
   const store = src('./client-store.ts');
   assert.match(store, /updateContact\(c\.id, clearOpenVisibilityIfUntrusted\)/, 'the privacy sweep decides again on the record held when it writes');
-  assert.match(store, /const next = mergeContactUpdate\(existing, updates\);/, 'updateContact merges through the pure helper');
+  assert.match(store, /casUpdateWith\(contactCasIO, id, \(existing\) => mergeContactUpdate\(existing, updates\)\)/, 'updateContact merges through the pure helper, on the record each attempt read');
   assert.doesNotMatch(store, /const next = \{ \.\.\.existing, \.\.\.updates, id: existing\.id \};/, 'the inline merge is gone');
   const trust = src('../trust/apply-trust-transition.ts');
   assert.doesNotMatch(trust, /\.\.\.\(peer\.priorTrustHistory/, 'break-trust no longer appends to the history copy `peer` carried');
