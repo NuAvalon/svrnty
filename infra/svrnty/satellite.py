@@ -592,6 +592,47 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 app.add_middleware(RateLimitMiddleware)
 
 
+# ── PSI request-body cap (checked from the headers, BEFORE any byte of the body is read) ──
+# The PSI routes take a sealed JSON body that FastAPI would otherwise read and parse whole, before
+# any auth. Bound it by what the route can legitimately carry today: /respond holds two lists of at
+# most 5000 elements (PSIRespondRequest), ~48 B each in JSON (base64 of 32 B), so the inner JSON is
+# ~481 KB and the sealed body (base64 ct + envelope) ~644 KB. 1 MiB leaves headroom; it grows with
+# the per-tier table when larger tiers land. A body-carrying method must state an exact
+# Content-Length within the cap; chunked/any Transfer-Encoding, a missing, duplicate or non-numeric
+# length are refused with 413. Body-less methods (GET/HEAD/DELETE/OPTIONS) pass unless they
+# declare an oversized or chunked body.
+PSI_MAX_BODY_BYTES = 1024 * 1024
+_PSI_PATH_PREFIX = "/trust/psi/"
+_BODYLESS_METHODS = frozenset({"GET", "HEAD", "DELETE", "OPTIONS"})
+
+
+def psi_body_allowed(method: str, headers: list[tuple[bytes, bytes]]) -> bool:
+    lengths = [v for k, v in headers if k.lower() == b"content-length"]
+    if any(k.lower() == b"transfer-encoding" for k, _ in headers) or len(lengths) > 1:
+        return False
+    if not lengths:
+        return method in _BODYLESS_METHODS
+    raw = lengths[0].strip()
+    return raw.isdigit() and int(raw) <= PSI_MAX_BODY_BYTES
+
+
+class PSIBodyCapMiddleware:
+    """Pure ASGI (not BaseHTTPMiddleware) so a refusal never touches `receive`: the body is not read."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith(_PSI_PATH_PREFIX) \
+                and not psi_body_allowed(scope["method"], scope.get("headers", [])):
+            await JSONResponse(status_code=413, content={"detail": "Request body too large or without a length"})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(PSIBodyCapMiddleware)  # added LAST = outermost: refuses before the rate limiter or any parse
+
+
 # ── Mode Guard ────────────────────────────────────────────
 
 def require_full_mode():
