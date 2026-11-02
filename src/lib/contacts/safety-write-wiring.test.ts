@@ -47,10 +47,20 @@ test('the poll\'s contact store yields: it provides a guard built on the same lo
   assert.match(consume, /const g = await deps\.store\.guard\(write\);\s*if \(g\.deferred\) return \{ kind: 'retryable' \};/);
 });
 
+test('removing a contact takes the contact lock around its write, in both places that remove one', () => {
+  const ui = src('../../components/ContactManagement.tsx');
+  const del = body(ui, 'const handleDeleteContact', 'const handleToggleTrust');
+  assert.match(del, /await withSafetyWrite\(contactId, \(\) => removeContact\(contactId\)\);/);
+  assert.match(del, /setError\(describeSafetyWriteFailure\(err, 'Remove'\) \?\? \(err instanceof Error \? err\.message : 'Failed to delete contact'\)\)/);
+  const page = noComments(src('../../../app/page.tsx'));
+  assert.match(page, /await withSafetyWrite\(edge\.id, \(\) => removeContact\(edge\.id\)\);/);
+  assert.match(page, /const words = describeSafetyWriteFailure\(err, 'Remove'\);\s*throw words \? new Error\(words\) : err;/);
+});
+
 test('no protecting write is nested inside another lock holder (a nested request for the same contact would wait forever)', () => {
   const ui = noComments(src('../../components/ContactManagement.tsx'));
   const calls = ui.match(/withSafetyWrite\(/g) ?? [];
-  assert.equal(calls.length, 2, 'exactly the two handlers in the component');
+  assert.equal(calls.length, 3, 'exactly the three handlers in the component (block, share settings, remove)');
   // neither handler calls the other or applyTrustTransition
   const block = body(src('../../components/ContactManagement.tsx'), 'const handleSetBlocked', 'const confirmTarget');
   const share = body(src('../../components/ContactManagement.tsx'), 'const handleShareSettingsChange', '// --- Render ---');

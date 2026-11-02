@@ -22,6 +22,7 @@ import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
@@ -873,7 +874,14 @@ export default function Home() {
                   // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
                   // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
                   const removedFp = edge.peer_fingerprint;
-                  await removeContact(edge.id);
+                  // A write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+                  // The caller shows a failure's message, so a contention failure is rethrown in plain words.
+                  try {
+                    await withSafetyWrite(edge.id, () => removeContact(edge.id));
+                  } catch (err) {
+                    const words = describeSafetyWriteFailure(err, 'Remove');
+                    throw words ? new Error(words) : err;
+                  }
                   if (removedFp) {
                     void reconcileAllowedOnConsentChange({
                       ownerFp: identity.identity.fingerprint,
