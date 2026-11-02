@@ -851,7 +851,7 @@ export default function Home() {
                   // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
                   // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
                   const removedFp = edge.peer_fingerprint;
-                  // A write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+                  // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
                   // The caller shows a failure's message, so a contention failure is rethrown in plain words.
                   try {
                     await withSafetyWrite(edge.id, () => removeContact(edge.id));

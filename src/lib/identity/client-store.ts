@@ -1383,7 +1383,7 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
         // Honor the severance: a non-trusted contact must not carry open_visibility (two-layer: UI only
         // sets open_vis on trusted; any untrusted-open edge is legacy #111 drift). Preserve other share_settings.
         // Decided again on the record held when the write runs: a change since the snapshot above (now trusted, or already private) wins.
-        // A write that protects the owner: it takes the contact's lock so another tab's poll cannot make it lose its comparison.
+        // A write that protects the owner: it takes the book lock (shared) and the contact's lock so another tab's poll cannot make it lose its comparison.
         await withSafetyWrite(c.id, () => updateContact(c.id, clearOpenVisibilityIfUntrusted));
       }
     } catch (e) {

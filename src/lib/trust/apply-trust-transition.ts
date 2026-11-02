@@ -81,7 +81,7 @@ export async function applyTrustTransition(
     initiated_by: 'self',
   };
   // The history append and the open_visibility clear are built from the record held when the write runs, not from the copy `peer` was read from.
-  // A trust change is a write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+  // A trust change is a write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
   await withSafetyWrite(peer.contactId, () => updateContact(peer.contactId, (existing: Record<string, unknown>) => {
     const md = (existing.metadata ?? {}) as Record<string, unknown>;
     return {
