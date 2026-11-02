@@ -181,9 +181,10 @@ function callsOf(text: string, name: string): string[] {
   return out;
 }
 
-// What a function-form write may contain: ONE call to a pure patch helper whose first argument is `fresh`. A body that reads anything else
+// What a function-form write may contain: ONE call to a pure patch helper whose first argument is exactly the bare identifier `fresh`
+// (not `fresh && x`, not an alias). A body that reads anything else
 // (the screen's copy, the loop's `c`) is a decision made on a record that is not the one being written.
-const FRESH_BODY = /^updateContact\([^,]+,\s*\(fresh\)\s*=>\s*\(?\s*\w+Patch\(\s*fresh\b[^]*\)\s*\)?\s*\)$/;
+const FRESH_BODY = /^updateContact\([^,]+,\s*\(fresh\)\s*=>\s*\(?\s*\w+Patch\(\s*fresh\s*[,)][^]*\)\s*,?\s*\)?\s*,?\s*\)$/;
 
 test('GUARD: every updateContact in ContactManagement writes a helper patch of the HELD record, and nothing else is read in the body', () => {
   const ui = src('../../components/ContactManagement.tsx');
