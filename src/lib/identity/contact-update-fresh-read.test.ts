@@ -158,11 +158,59 @@ test('sweep: it never mutates the record it is given', () => {
 
 const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 
-test('GUARD: ContactManagement spreads no captured metadata into an update (tags, share settings, bulk loops)', () => {
+// The text of every `name(...)` call in `text`, found by balanced parentheses (string and template literals are skipped), so a nested call or a
+// multi-line body cannot cut the match short.
+function callsOf(text: string, name: string): string[] {
+  const out: string[] = [];
+  const open = name + '(';
+  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, at + 1)) {
+    if (at > 0 && /[\w.$]/.test(text[at - 1])) continue; // a longer identifier, or a method of something else
+    let depth = 0;
+    let i = at + name.length;
+    for (; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === "'" || ch === '"' || ch === '`') {
+        for (i++; i < text.length && text[i] !== ch; i++) if (text[i] === '\\') i++;
+        continue;
+      }
+      if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) break;
+    }
+    out.push(text.slice(at, i + 1));
+  }
+  return out;
+}
+
+// What a function-form write may contain: ONE call to a pure patch helper whose first argument is `fresh`. A body that reads anything else
+// (the screen's copy, the loop's `c`) is a decision made on a record that is not the one being written.
+const FRESH_BODY = /^updateContact\([^,]+,\s*\(fresh\)\s*=>\s*\(?\s*\w+Patch\(\s*fresh\b[^]*\)\s*\)?\s*\)$/;
+
+test('GUARD: every updateContact in ContactManagement writes a helper patch of the HELD record, and nothing else is read in the body', () => {
   const ui = src('../../components/ContactManagement.tsx');
   assert.doesNotMatch(ui, /metadata:\s*\{\s*\.\.\.(selectedContact|c|contact)\??\.metadata/, 'a captured metadata is spread into an update');
-  assert.match(ui, /applyShareSettingsChange\(/, 'the share-settings handler merges only what changed');
-  assert.equal((ui.match(/updateContact\([^,]+,\s*\(fresh\)\s*=>/g) ?? []).length >= 5, true, 'toggle group, share settings and the three bulk loops use the function form');
+  const calls = callsOf(ui, 'updateContact');
+  const fn = calls.filter((c) => /\(fresh\)\s*=>/.test(c));
+  assert.equal(fn.length >= 5, true, 'toggle group, share settings and the three bulk loops use the function form');
+  for (const c of fn) {
+    assert.match(c, FRESH_BODY, `a function-form write is not one patch helper called on fresh: ${c.replace(/\s+/g, ' ').slice(0, 140)}`);
+    const body = c.slice(c.indexOf('=>'));
+    assert.doesNotMatch(body, /\bselectedContact\b|\bc\.|\bcontact\b|\bafterContact\b/, `the body reads a captured record: ${body.replace(/\s+/g, ' ').slice(0, 140)}`);
+  }
+});
+
+test('GUARD: the share-settings handler reconciles consent from the record read back after the write, or from NO_CONSENT when it is gone', () => {
+  const ui = src('../../components/ContactManagement.tsx');
+  const handler = ui
+    .slice(ui.indexOf('const handleShareSettingsChange'), ui.indexOf('// --- Render ---'))
+    .replace(/^\s*\/\/.*$/gm, ''); // code only: the comments name the old shapes
+  assert.ok(handler.length > 200, 'the handler was found');
+  const reconciles = callsOf(handler, 'reconcileAllowedOnConsentChange');
+  assert.equal(reconciles.length, 2, 'one reconcile for the written record, one for a contact that is gone');
+  const consents = reconciles.map((r) => /consent:\s*([\w]+(?:\([\w]*\))?)\s*[,}\n]/.exec(r)?.[1]);
+  assert.deepEqual(consents.sort(), ['NO_CONSENT', 'consentFromRecord(afterContact)'].sort());
+  assert.match(handler, /const afterContact = recordToContact\(after\);/, 'the consent record is the one read back');
+  assert.doesNotMatch(handler, /\bisTrusted\(|\bisContactBlocked\(|\bclamped\b/, 'consent is not rebuilt in the handler from screen state');
+  assert.match(handler, /if \(!after\) \{[^]*NO_CONSENT[^]*return;/, 'a record that is gone still reconciles the mirror before returning');
 });
 
 test('GUARD: the unlock sweep and break-trust build from the held record', () => {
