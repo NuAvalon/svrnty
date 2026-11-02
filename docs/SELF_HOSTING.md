@@ -156,8 +156,8 @@ If you don't schedule it, old messages stay on the server.
 - **`registration_data` contains your satellite's private key.** Encrypt its backups and keep
   them as secret as your `.env` file: a copy lets its holder decrypt traffic sealed to your
   satellite and pose as it.
-- Your users' identity keys are never on this server: they live in each user's `.svrnty` vault
-  under their password.
+- Your users' identity keys are never on this server: they stay on each user's own device,
+  encrypted under their password.
 
 ## Build best practices
 
