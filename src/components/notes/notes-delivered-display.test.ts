@@ -1,7 +1,7 @@
 // src/components/notes/notes-delivered-display.test.ts
 //
-// TG-1 anchor, part B (Hypatia #706, Flint #705): "Delivered" renders IFF note.delivered === true; every unverified path
-// renders the floor "Sent · unconfirmed.". Part A (receipt-seam.test.ts) proves note.delivered is only ever set after a
+// TG-1 anchor, part B (Hypatia #706, Flint #705): "Delivered" renders IFF note.delivered === true; every unverified 2xx path
+// renders the floor "Sent to the relay". Part A (receipt-seam.test.ts) proves note.delivered is only ever set after a
 // verified receipt; this proves the glass shows "Delivered" for nothing else. notes-status.test.ts already covers the pure
 // functions; this adds the one link it cannot see: how the inbox turns a stored note into a status.
 import { test } from 'node:test';
@@ -17,7 +17,7 @@ const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(
 
 test('the label is "Delivered" for the delivered status and for NOTHING else (every status, both deposit outcomes)', () => {
   const rows: Array<[boolean, boolean, NoteBubbleStatus, string]> = [
-    [true, false, 'sent-unconfirmed', NOTES_COPY.sentUnconfirmed],   // deposited, no verified receipt: the floor
+    [true, false, 'sent-unconfirmed', NOTES_COPY.sentToRelay],       // deposited 2xx, no verified receipt: on the relay
     [false, false, 'not-sent', NOTES_COPY.notSent],                  // never deposited: not sent
     [true, true, 'delivered', NOTES_COPY.delivered],                 // only a verified receipt graduates it
   ];
@@ -44,7 +44,7 @@ test('the inbox derives the status from note.delivered === true (STRICT), in exa
 });
 
 test('no unverified status string can carry a live-delivery word', () => {
-  for (const s of [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')]) {
+  for (const s of [NOTES_COPY.sentToRelay, NOTES_COPY.notSent, statusLabel('inbound')]) {
     assert.doesNotMatch(s, /\b(Delivered|Read|Expired)\b/);
   }
 });
@@ -62,7 +62,7 @@ test('peerSendsReceipts: true only when an OUTBOUND note already carries a VERIF
 });
 
 test('showAwaitingHint: the promise is made only for a deposited, nonce-stamped note to a peer who has proven it sends receipts', () => {
-  const base = { outbound: true, status: 'sent-unconfirmed' as NoteBubbleStatus, hasReceiptNonce: true, peerSendsReceipts: true };
+  const base = { outbound: true, status: 'sent-unconfirmed' as NoteBubbleStatus, hasReceiptNonce: true, peerSendsReceipts: true }; // 2xx floor; hint only if this peer already receipted
   assert.equal(showAwaitingHint(base), true);
   // an AGENT or classical contact (no receipt ever seen): the bare floor, no promise
   assert.equal(showAwaitingHint({ ...base, peerSendsReceipts: false }), false);

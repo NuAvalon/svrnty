@@ -7,17 +7,17 @@ The glass is the **Thread Field**: a Signal/WhatsApp-style conversation list (on
 ## Files
 - `NotesInbox.tsx` — Thread Field + honest send status
 - `notes-field.ts` — people-rail merge + clocks (no presence)
-- `notes-copy.ts` — queue copy (status floor **Sent · unconfirmed.**)
+- `notes-copy.ts` — queue copy (2xx status floor **Sent to the relay**)
 - `notes-contacts.ts` — sendable = SVRN card with a public key, not blocked
 - `notes-keys.ts` — load unlocked identity args; thread PQ pubs for canonical senders
 - `notes-send.ts` — thin `sendNoteToPeer` call
-- `notes-status.ts` — deposited → Sent · unconfirmed; failed deposit → Not sent
+- `notes-status.ts` — deposited 2xx → Sent to the relay; failed deposit → Not sent; verified receipt → Delivered
 - `note-events.ts` — same-page / cross-tab inbox-repaint bus
 
 ## Wiring (must stay true)
 - Crypto is **call-only**: `sendNoteToPeer` / `listThreads` / `listNotesForThread` / `initNotesStore`.
 - Senders must be **canonical** (64-hex fp + PQ pubs). Classical 40-hex cannot send; the relay rejects them.
-- Outbound status is **Sent · unconfirmed.** Never Delivered / Read / Expired. Never poll `/api/relay/msg/status`.
+- Outbound 2xx status is **Sent to the relay**. **Delivered** only on a verified receipt. Never Read / Expired. Never poll `/api/relay/msg/status`.
 - A failed deposit is **Not sent. Saved on this device.** — not a fake Sent.
 - Dropped inbound (non-contact / unsigned / forged) stays silent. No admit-status oracle.
 - Did not flip `isPQEncapLive()` / `isPQSignLive()`. Did not build the beta redeem screen (queue item 2).
@@ -32,4 +32,4 @@ emitNote: (e) => emitNoteArrival(e),
 in `buildConsumeDeps` (import `emitNoteArrival` from this folder). Until then, arrivals persist (PR #212) and appear on the next store re-read / when the inbox is opened.
 
 ## Copy
-The Chat tab is the window — no essay masthead ("Encrypted messages…", "How notes travel"). Tab label is **Chat**. Outbound status starts at **Sent · unconfirmed.** It becomes **Delivered** only when the recipient's app returns a verified receipt (TG-1); contacts whose app sends no receipts, including agents, stay at **Sent · unconfirmed.** **Read** and **Expired** are never shown. Unlock/redeem stays **off** this surface (gate-ON only).
+The Chat tab is the window — no essay masthead ("Encrypted messages…", "How notes travel"). Tab label is **Chat**. Outbound status starts at **Sent to the relay** (deposit returned 2xx). It becomes **Delivered** only when the recipient's app returns a verified receipt (TG-1); contacts whose app sends no receipts, including agents, stay at **Sent to the relay.** **Read** and **Expired** are never shown. Unlock/redeem stays **off** this surface (gate-ON only).

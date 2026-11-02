@@ -1,6 +1,7 @@
 // Proxy to satellite slug claim API
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 // Slug: lowercase alphanumeric + hyphens/underscores, 3-40 chars
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{2,39}$/;
@@ -29,7 +30,7 @@ export async function POST(
     }
     const res = await fetch(`${satelliteBaseUrl()}/slug/${encodeURIComponent(name)}/claim`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...forwardedClientIp(request) },
       body: JSON.stringify(body),
     });
     const data = await res.json();

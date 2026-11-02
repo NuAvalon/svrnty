@@ -143,7 +143,9 @@ test('D5 sink unit: re-record keeps the EARLIEST first_seen; clear() removes the
 
 test('D6 the CLI wires it: devin-comm\'s poll passes <agent dir>/dead-letters.json', () => {
   const src = readFileSync(join(__dirname, '../../../scripts/devin-comm.ts'), 'utf8');
-  assert.match(src, /buildHeadlessConsumeDeps\(owner, store, \{ relayBase: RELAY, deadLetterPath: `\$\{DIR\}\/\$\{DEAD_LETTER_FILE\}` \}\)/);
+  // #326 merge: the options object also carries budgetMs (#712), so pin the dead-letter path INSIDE the one options object, not its exact text
+  // failover 2a: relayBase is now the per-relay parameter of pollRelay (the single-relay path passes RELAY into it), so the object reads `relayBase,`
+  assert.match(src, /buildHeadlessConsumeDeps\(owner, store, \{[^}]*\brelayBase,[^}]*\bdeadLetterPath: `\$\{DIR\}\/\$\{DEAD_LETTER_FILE\}`,?\s*\}\)/);
 });
 
 test('D7 (Archie #189076) N losses in ONE poll = ONE write of the dead-letter file, and every row lands before its ack', async () => {

@@ -10,6 +10,7 @@
 // is POST-only and self-nonce'd; reconciling runBindCeremony to POST-direct is the paired client fix.)
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 const POST_FIELDS = ['fingerprint', 'sig_pubkey', 'nonce', 'epoch', 'binding_sig'] as const;
 
@@ -21,6 +22,7 @@ export async function GET(request: NextRequest) {
     }
     const res = await fetch(
       `${satelliteBaseUrl()}/bind?fingerprint=${encodeURIComponent(fingerprint)}`,
+      { headers: forwardedClientIp(request) },
     );
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
@@ -46,7 +48,7 @@ export async function POST(request: NextRequest) {
     }
     const res = await fetch(`${satelliteBaseUrl()}/bind`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...forwardedClientIp(request) },
       body: JSON.stringify(body),
     });
     const data = await res.json();

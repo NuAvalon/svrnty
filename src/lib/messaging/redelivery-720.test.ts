@@ -69,7 +69,7 @@ test('R1 a redelivered ratchet note that is already stored is returned as stored
   assert.equal(notes.size, 1);
   // measured fact behind the bug: the same frame now fails to open as a VERDICT
   const reopen = await openRatchet(wire.from_fingerprint, wire.body);
-  assert.deepEqual(reopen, { failed: true, kind: 'verdict', cause: 'ratchet-receive-failed' });
+  assert.deepEqual(reopen, { failed: true, kind: 'desync', cause: 'ratchet-receive-failed' }); // T2: was a verdict before; a desync is HELD, which is why the R2-2 redelivery check matters even more
 
   const reasons: string[] = [];
   const again = await acceptInboundNote({ wire, isAdmitted: async () => true, openRatchet, io: io as never, onDrop: (r) => reasons.push(r) });

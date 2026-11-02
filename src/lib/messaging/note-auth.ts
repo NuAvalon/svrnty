@@ -48,8 +48,9 @@ export async function signNoteWire(
   );
   const signed: NoteWireV0 = { ...wire, public_key: senderPublicKeyArmored, signature };
   // §5: carry the sender's PQ pubkeys so verifyNoteSender can recompute a 64-hex canonical fp. They bind
-  // via the fp-match, NOT the signature. Only when BOTH are present (a canonical identity); a classical
-  // sender omits them → the verifier's 40-hex OpenPGP fallback.
+  // via the fp-match, NOT the signature. Only when BOTH are present (a canonical identity). A sender with no
+  // PQ legs has nothing to carry here, and verifyNoteSender REJECTS its note: fingerprintMatchesKey is
+  // canonical-only, so there is no 40-hex OpenPGP fallback.
   if (senderPqKemPublicKey && senderPqSigPublicKey) {
     signed.pq_kem_public_key = senderPqKemPublicKey;
     signed.pq_sig_public_key = senderPqSigPublicKey;
@@ -70,7 +71,7 @@ export async function verifyNoteSender(wire: NoteWireV0): Promise<boolean> {
   try {
     // (0) §5 defense-in-depth: length-gate the PQ pubkeys at the boundary (fail-loud). A CANONICAL note
     //     carries BOTH kem+sig at FIPS length; a half-present or wrong-length pair is malformed ⇒ refuse
-    //     rather than silently fall back to the 40-hex OpenPGP path. (atob throws on bad base64 → caught.)
+    //     rather than let a malformed pair reach the fp-match. (atob throws on bad base64 → caught.)
     const hasKem = typeof wire.pq_kem_public_key === 'string';
     const hasSig = typeof wire.pq_sig_public_key === 'string';
     if (hasKem !== hasSig) return false; // half-present ⇒ malformed
@@ -81,7 +82,10 @@ export async function verifyNoteSender(wire: NoteWireV0): Promise<boolean> {
     // (1) fp↔key binding (Canon Invariant-1): the carried key MUST hash to the claimed sender
     //     fingerprint — else an attacker pairs a victim's fingerprint with the attacker's own key. §5:
     //     thread the PQ pubkeys so a 64-hex CANONICAL id recomputes SHA256(sign‖enc‖kem‖sig) and matches;
-    //     a classical (40-hex) sender omits them → fingerprintMatchesKey falls back to the OpenPGP path.
+    //     a sender that omits them (e.g. a classical 40-hex id) is REFUSED: fingerprintMatchesKey is
+    //     canonical-only, so no PQ legs → false. There is NO OpenPGP fallback. "Canonical-only" names the key
+    //     BASIS, not an exact-match rule: the claimed fp may still be a 16–64-hex PREFIX of the derived one
+    //     (canonicalClaimMatches), with case and separators ignored.
     //     This binding runs BEFORE the signature (step 2): the PQ pubkeys are self-protected by the fp-match.
     if (!(await fingerprintMatchesKey(wire.from_fingerprint, wire.public_key, {
       kem_public_key: wire.pq_kem_public_key,

@@ -119,11 +119,11 @@ test('W5 C2 (structural): the key name appears only in the files that must handl
     .filter((f) => /receipt_key/.test(readFileSync(f, 'utf8')))
     .map((f) => relative(ROOT, f))
     .sort();
-  assert.deepEqual(hits, ['src/lib/crypto/receipt-mac.ts', 'src/lib/messaging/receipt-emit.ts', 'src/lib/messaging/transport.ts', 'src/lib/messaging/types.ts', 'src/lib/sync/live-book-poll.ts'], 'a new place that touches the key is a deliberate edit of this list (slice 3 added receipt-emit.ts: the recipient reads the key off an ACCEPTED note, only to compute the tag; slice 4 added live-book-poll.ts: the SENDER seam reads its own stored key to verify the tag and then drops it) (and of the C2 review)');
+  assert.deepEqual(hits, ['src/lib/crypto/receipt-mac.ts', 'src/lib/headless/headless-client.ts', 'src/lib/headless/headless-store.ts', 'src/lib/messaging/receipt-emit.ts', 'src/lib/messaging/transport.ts', 'src/lib/messaging/types.ts', 'src/lib/sync/live-book-poll.ts'], 'a new place that touches the key is a deliberate edit of this list (slice 3 added receipt-emit.ts: the recipient reads the key off an ACCEPTED note, only to compute the tag; slice 4 added live-book-poll.ts: the SENDER seam reads its own stored key to verify the tag and then drops it; layer 1 (spec 65bac8aa) added headless-client.ts: a headless send mints it like transport.ts and its receipt seam verifies with it, and headless-store.ts: markDelivered drops it) (and of the C2 review)');
 });
 
 test('W6 C2 (line level): in the files that handle the key, no console/log/journal/JSON-dump line mentions it', () => {
-  for (const f of ['src/lib/messaging/transport.ts', 'src/lib/messaging/types.ts', 'src/lib/crypto/receipt-mac.ts']) {
+  for (const f of ['src/lib/messaging/transport.ts', 'src/lib/messaging/types.ts', 'src/lib/crypto/receipt-mac.ts', 'src/lib/headless/headless-client.ts', 'src/lib/headless/headless-store.ts']) {
     const offenders = readFileSync(join(ROOT, f), 'utf8')
       .split('\n')
       .map((line, i) => ({ line, n: i + 1 }))

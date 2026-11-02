@@ -5,7 +5,7 @@
 // isPQEncapLive() stays false until Flint flips it. Do not market this as Signal-grade.
 
 import { TripleRatchet, type RatchetIdentity, type RatchetPacket, type RatchetPeer, type RatchetSnapshot } from '@/lib/crypto/message-ratchet';
-import { readRatchetSession, putRatchetSession, notesStoreOwner, type RatchetSessionRead } from './store';
+import { readRatchetSession, putRatchetSession, deleteRatchetSession, notesStoreOwner, type RatchetSessionRead } from './store';
 import { assertNotesStoreOpenFor } from './notes-owner-guard';
 import { acquirePeerSessionLock, peerSessionLockName, type LockRelease } from './peer-session-lock';
 
@@ -48,6 +48,8 @@ export interface RatchetIO {
   read: (peerFingerprint: string) => Promise<RatchetSessionRead>;
   /** CAS write (R5): succeeds only if the stored row is still at `expectedVersion` (0 = no row yet); otherwise throws RatchetSessionConflictError. */
   put: (peerFingerprint: string, snapshot: RatchetSnapshot, expectedVersion: number) => Promise<void>;
+  /** Reset (#720 R1): delete this peer's session row, whatever state it is in (readable or not). Returns whether a row existed. The CALLER holds the per-peer lock. */
+  remove: (peerFingerprint: string) => Promise<boolean>;
   /** Who the session store is open for; scopes the per-peer lock name so two identities never block each other. */
   scope?: string;
   /** Test seam: replaces the real per-peer lock. Production leaves it unset and gets navigator.locks (or the in-process queue). */
@@ -59,7 +61,7 @@ function lockSession(io: RatchetIO, peerFingerprint: string): Promise<LockReleas
   return io.acquireLock ? io.acquireLock(peerFingerprint) : acquirePeerSessionLock(peerSessionLockName(io.scope, peerFingerprint));
 }
 /** The raw store handle, with NO owner check. Production code never uses it directly: it goes through {@link ownerBoundRatchetIO}. */
-export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatchetSession };
+export const realRatchetIO: RatchetIO = { read: readRatchetSession, put: putRatchetSession, remove: deleteRatchetSession };
 
 /**
  * R2: the session store is tab-local module state, open for ONE identity. Bind every session read AND write to the owner the
@@ -76,9 +78,25 @@ export function ownerBoundRatchetIO(
   return {
     read: async (peerFp) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.read(peerFp); },
     put: async (peerFp, snapshot, expectedVersion) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.put(peerFp, snapshot, expectedVersion); },
+    remove: async (peerFp) => { assertNotesStoreOpenFor(openOwner(), ownerFingerprint); return inner.remove(peerFp); },
     scope: ownerFingerprint,
     acquireLock: inner.acquireLock,
   };
+}
+
+/**
+ * #720 RESET (Flint reset-semantics R1): drop ONLY this device's session row for ONE contact, under the same per-peer lock as open and
+ * seal, so it cannot race an in-flight open or commit. Kept: identity, the contact, trust, every stored note and thread, every dead-letter
+ * record. The next note sent to that contact finds no row and starts a new session through the existing initiate path (R3): no handshake, no
+ * automatic send. User-initiated only; the caller is the confirm dialog. Returns whether a row existed.
+ */
+export async function resetRatchetSession(ownerFingerprint: string, peerFingerprint: string, io: RatchetIO = ownerBoundRatchetIO(ownerFingerprint)): Promise<boolean> {
+  const release = await lockSession(io, peerFingerprint);
+  try {
+    return await io.remove(peerFingerprint);
+  } finally {
+    release();
+  }
 }
 
 /** A session row exists for this peer but cannot be read. Never treated as "no session" (R3). */
@@ -152,17 +170,30 @@ export interface StagedOpen {
   commit: () => Promise<void>;
   /** Give the lock back without committing (the note was not stored). Safe to call after commit() and more than once. */
   release: () => void;
+  /** R5: this open REPLACED an existing session with the peer's new first frame (the receiving side of a reset). The caller releases that contact's held frames AFTER the note is stored and commit() ran. */
+  replaced?: boolean;
+  /** L-318a: this open STARTED the session we hold with the peer (a first frame opened with no session stored, or a replacement). The caller records the frame's signed sent_at as the adopt floor AFTER commit. */
+  startedSession?: boolean;
 }
+
+/**
+ * R5/R6 (Flint reset-semantics): decides whether a peer's NEW first frame may replace the session we hold. The CALLER knows the signed sent_at, the stored notes and
+ * both fingerprints, so it answers; the opener only reports what it can see (`unconfirmed` = a session WE initiated that has received nothing from the peer yet).
+ * Absent = never adopt (the status quo).
+ */
+export type AdoptFirstFrame = (s: { unconfirmed: boolean }) => boolean | Promise<boolean>;
 
 /**
  * Why a ratchet open did not produce a message, TYPED (#720 v5.3, Flint #2052). 'verdict' = the frame itself is bad (malformed, would not
  * decrypt, rejected as a first frame): the sender's side, nothing on this device will ever change it. 'local' = something on THIS device
  * stopped it (a session row that cannot be read, a corrupt snapshot): a resend would fail the same way, so the frame is HELD, not acked.
+ * 'desync' = the frame is well-formed and came from an authenticated contact, but the two sessions no longer agree (a receive that fails): HELD
+ * with backoff and recorded past the bound (T2); a later frame or a user-initiated reset can heal it, which is why it is never acked as a verdict.
  * `cause` is a fixed token, never any frame text.
  */
 export interface OpenFailure {
   failed: true;
-  kind: 'local' | 'verdict';
+  kind: 'local' | 'verdict' | 'desync';
   cause: string;
 }
 
@@ -173,8 +204,9 @@ export async function openDirectNoteStaged(
   self: RatchetIdentity,
   peer: RatchetPeer,
   io: RatchetIO = realRatchetIO,
+  adopt?: AdoptFirstFrame,
 ): Promise<StagedOpen | null> {
-  const r = await openDirectNoteStagedTyped(peerFingerprint, body, self, peer, io);
+  const r = await openDirectNoteStagedTyped(peerFingerprint, body, self, peer, io, adopt);
   return 'failed' in r ? null : r;
 }
 
@@ -185,6 +217,7 @@ export async function openDirectNoteStagedTyped(
   self: RatchetIdentity,
   peer: RatchetPeer,
   io: RatchetIO = realRatchetIO,
+  adopt?: AdoptFirstFrame,
 ): Promise<StagedOpen | OpenFailure> {
   const packet = decodeBody(body);
   if (!packet) return { failed: true, kind: 'verdict', cause: 'malformed-frame' };
@@ -195,18 +228,34 @@ export async function openDirectNoteStagedTyped(
     if (cur.state === 'unreadable') return { failed: true, kind: 'local', cause: 'session-row-unreadable' }; // R3: never acceptFirst over an unreadable row (it would overwrite the real session)
     let plaintext: string;
     let next: RatchetSnapshot;
+    let replaced = false;
+    let started = false;
     if (cur.state === 'ok') {
       const session = TripleRatchet.importState(cur.snapshot);
       if (!session) return { failed: true, kind: 'local', cause: 'session-snapshot-corrupt' };
       const pt = await session.receive(packet);
-      if (pt === null) return { failed: true, kind: 'verdict', cause: 'ratchet-receive-failed' }; // interim verdict: T1-T5 must revisit (a desync can be OURS)
-      plaintext = pt;
-      next = session.exportState();
+      // T2 (Flint #186298): the frame came inside a note signed by an AUTHENTICATED, ADMITTED contact, so a receive failure is not an attack; it is a
+      // session that no longer agrees (theirs, ours, or a lost frame). 'desync' is HELD and retried, never acked as a verdict: a later frame, or a
+      // user-initiated reset, can heal it.
+      if (pt === null) {
+        // R5: the peer may have RESET and sent a NEW first frame. Only if the caller's policy allows replacing (replay guard + R6 tie-break) do we try
+        // it, and only a genuine FIRST frame can open here (acceptFirst rejects a continuation). Anything else stays the held desync it was.
+        const first = adopt && (await adopt({ unconfirmed: cur.snapshot.recvCk === null })) ? await TripleRatchet.acceptFirst(self, peer, packet) : null;
+        if (!first) return { failed: true, kind: 'desync', cause: 'ratchet-receive-failed' };
+        plaintext = first.plaintext;
+        next = first.session.exportState();
+        replaced = true;
+        started = true;
+      } else {
+        plaintext = pt;
+        next = session.exportState();
+      }
     } else {
       const first = await TripleRatchet.acceptFirst(self, peer, packet);
       if (!first) return { failed: true, kind: 'verdict', cause: 'first-frame-rejected' };
       plaintext = first.plaintext;
       next = first.session.exportState();
+      started = true;
     }
     const expected = cur.state === 'ok' ? cur.version : 0;
     let ended = false;
@@ -215,6 +264,8 @@ export async function openDirectNoteStagedTyped(
     return {
       plaintext,
       release,
+      ...(replaced ? { replaced: true } : {}),
+      ...(started ? { startedSession: true } : {}),
       commit: async () => {
         if (ended) throw new Error('staged ratchet open already ended');
         try { await io.put(peerFingerprint, next, expected); } finally { release(); }

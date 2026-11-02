@@ -7,10 +7,12 @@ import { NOTES_COPY, notSentMessage } from './notes-copy';
 import { statusIsHonestFloor, statusLabel, outboundStatus } from './notes-status';
 
 describe('notes inbox copy — claim-honesty', () => {
-  it('send status is Sent · unconfirmed only', () => {
-    assert.equal(NOTES_COPY.sentUnconfirmed, 'Sent · unconfirmed.');
-    assert.equal(statusLabel(outboundStatus(true)), 'Sent · unconfirmed.');
-    assert.equal(statusIsHonestFloor(NOTES_COPY.sentUnconfirmed), true);
+  it('send status 2xx floor is Sent to the relay — never the old unconfirmed collapse', () => {
+    assert.equal(NOTES_COPY.sentToRelay, 'Sent to the relay');
+    assert.equal(statusLabel(outboundStatus(true)), NOTES_COPY.sentToRelay);
+    assert.equal(statusIsHonestFloor(NOTES_COPY.sentToRelay), true);
+    assert.notEqual(NOTES_COPY.sentToRelay, 'Sent · unconfirmed.');
+    assert.equal(statusIsHonestFloor('Sent · unconfirmed.'), false);
     assert.equal(statusIsHonestFloor('Delivered'), false);
     assert.equal(statusIsHonestFloor('Read'), false);
     assert.equal(statusIsHonestFloor('Expired'), false);
@@ -57,7 +59,8 @@ describe('notes inbox copy — claim-honesty', () => {
     const inbox = readFileSync(join(dir, 'NotesInbox.tsx'), 'utf8');
     const copy = readFileSync(join(dir, 'notes-copy.ts'), 'utf8');
     const status = readFileSync(join(dir, 'notes-status.ts'), 'utf8');
-    assert.match(inbox, /NOTES_COPY\.sentUnconfirmed/);
+    assert.match(inbox, /NOTES_COPY\.sentToRelay/);
+    assert.match(inbox, /formatNoteListWhen\(person\.lastAt\)/);
     assert.doesNotMatch(inbox, /dangerouslySetInnerHTML/);
     assert.doesNotMatch(inbox, /\/api\/relay\/msg\/status/);
     assert.doesNotMatch(inbox, /notes-field-mast/);
@@ -70,7 +73,7 @@ describe('notes inbox copy — claim-honesty', () => {
     // Hypatia's wording (TG-1 repoint); this pins only the invariant: no stale future-tense promise of a delivery confirmation.
     assert.doesNotMatch(copy, /Delivered confirmation is coming/);
     assert.doesNotMatch(status, /Delivered confirmation/);
-    const liveStatus = [NOTES_COPY.sentUnconfirmed, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');
+    const liveStatus = [NOTES_COPY.sentToRelay, NOTES_COPY.notSent, statusLabel('inbound')].join('\n');
     assert.doesNotMatch(liveStatus, /\b(Delivered|Read|Expired)\b/);
   });
 });

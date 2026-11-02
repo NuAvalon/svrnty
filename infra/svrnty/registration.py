@@ -165,17 +165,26 @@ def hash_email(email: str) -> str:
     return hashlib.sha256(email.lower().strip().encode()).hexdigest()
 
 
-# ── gated-A bind preimage + raw Ed25519 verify ───────────────────────
-# Domain-separated ASCII tags so no signature is cross-protocol-confusable.
-# Byte-exact with the reference vectors + the client:
-#   #2 svrnty-bind     : sig_pubkey binding  (IDENTITY key)   [POST /bind, below]
-#   #3 svrnty-psi-auth : per-request auth    (SIG_PUBKEY, satellite side)
-# sig_pubkey + nonce are lowercase hex; epoch is a decimal integer.
-# NOTE: the tag#1 svrnty-own ownership-proof migration (rewrites verify_ownership
-# off the legacy "{fp}:{minute}" proof + updates the add.html/chat.html/landing.html
-# clients) is a SEPARATE, client-coupled follow-up — intentionally NOT in this
-# commit so /slug/{name}/claim, /backup/store and /backup/recover keep working on
-# dev (the deployed clients still send the legacy proof).
+# ── gated-A domain-separated preimages + raw Ed25519 verify ──────────
+# Every distinct signing context gets a unique ASCII tag so no signature is
+# cross-protocol-confusable. Byte-exact with the test vectors + the client:
+#   #1 svrnty-own      : ownership / rotation proof  (IDENTITY key)
+#   #2 svrnty-bind     : sig_pubkey binding          (IDENTITY key)
+#   #3 svrnty-psi-auth : per-request auth            (SIG_PUBKEY, satellite side)
+# fp + sig_pubkey + nonce are lowercase hex; unix + epoch are decimal integers.
+GATED_A_TS_WINDOW = 30  # seconds of clock skew tolerated (matches satellite ±30s)
+
+# Migration lever (operator-gated, default SECURE). False → only the
+# domain-tagged proof is accepted. True → a bounded dual-accept window that ALSO
+# accepts the legacy bare "{fp}:{minute}" proof so already-registered identities
+# are not locked out mid-migration. That bare branch is a live cross-context
+# replay vector and MUST return to False (branch deleted) once all identities
+# have re-bound. Env: GATED_A_ACCEPT_LEGACY_BARE=1.
+GATED_A_ACCEPT_LEGACY_BARE = os.environ.get("GATED_A_ACCEPT_LEGACY_BARE", "0") == "1"
+
+
+def _own_preimage(fingerprint: str, unix_seconds: int) -> bytes:
+    return f"svrnty-own:{fingerprint}:{unix_seconds}".encode()
 
 
 def _bind_preimage(sig_pubkey_hex: str, nonce_hex: str, epoch: int) -> bytes:
@@ -203,10 +212,16 @@ def _identity_pubkey_bytes(pk_str: str) -> bytes:
 
 
 def verify_ownership(fingerprint: str, signature: str, db: sqlite3.Connection) -> bool:
-    """Verify the requester owns the private key for this fingerprint.
+    """Verify the requester owns the identity private key for this fingerprint.
 
-    Signature = Ed25519(sk, fingerprint || timestamp_minute).
-    Allows 1-minute clock skew.
+    gated-A tag#1: proof = Ed25519(identity_sk, "svrnty-own:{fp}:{unix_seconds}"),
+    domain-tagged so it can never be replayed as a per-request PSI auth (tag#3) or
+    a binding (tag#2). Wire = "{unix_seconds}:{base64_sig}" (base64 never contains
+    ':' so this is unambiguous vs the legacy bare form).
+
+    During a migration window (GATED_A_ACCEPT_LEGACY_BARE=1) the legacy untagged
+    "{fp}:{minute}" proof is also accepted; that branch is a cross-context replay
+    vector and is removed once every identity has re-bound.
     """
     if not signature:
         return False
@@ -218,24 +233,24 @@ def verify_ownership(fingerprint: str, signature: str, db: sqlite3.Connection) -
         return False
     try:
         import base64
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-        # Public key is stored as hex from hexFromBytes() in landing.html
-        pk_str = identity["public_key"]
-        try:
-            pubkey_bytes = bytes.fromhex(pk_str)
-        except ValueError:
-            pubkey_bytes = base64.b64decode(pk_str)  # v1 compat fallback
-        pubkey = Ed25519PublicKey.from_public_bytes(pubkey_bytes)
-        sig_clean = signature.replace(" ", "+")
-        sig_bytes = base64.b64decode(sig_clean)
-        ts_minute = int(time.time()) // 60
-        for offset in (0, -1):
-            try:
-                message = f"{fingerprint}:{ts_minute + offset}".encode()
-                pubkey.verify(sig_bytes, message)
-                return True
-            except Exception:
-                continue
+        pubkey_bytes = _identity_pubkey_bytes(identity["public_key"])
+
+        # tag#1 — domain-separated ownership proof: "{unix_seconds}:{b64sig}"
+        if ":" in signature and signature.split(":", 1)[0].isdigit():
+            ts_str, sig_b64 = signature.split(":", 1)
+            client_ts = int(ts_str)
+            if abs(int(time.time()) - client_ts) > GATED_A_TS_WINDOW:
+                return False  # replay / clock drift
+            sig_bytes = base64.b64decode(sig_b64.replace(" ", "+"))
+            return _raw_ed25519_verify(pubkey_bytes, sig_bytes, _own_preimage(fingerprint, client_ts))
+
+        # legacy bare "{fp}:{minute}" — migration-only, default OFF
+        if GATED_A_ACCEPT_LEGACY_BARE:
+            sig_bytes = base64.b64decode(signature.replace(" ", "+"))
+            ts_minute = int(time.time()) // 60
+            for offset in (0, -1):
+                if _raw_ed25519_verify(pubkey_bytes, sig_bytes, f"{fingerprint}:{ts_minute + offset}".encode()):
+                    return True
         return False
     except Exception:
         return False

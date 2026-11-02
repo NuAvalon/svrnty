@@ -161,13 +161,25 @@ test('structure C8a: no non-test source names the v0 receipt API (verifyReceiptW
   assert.deepEqual(hits, [], `v0 receipt API still referenced in: ${hits.join(', ')}`);
 });
 
-test('structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptTag', () => {
-  const lines = nonTestSource().flatMap((f) => f.text.split('\n').map((l, i) => ({ f: f.rel, i, l }))).filter((x) => /delivered:\s*true/.test(x.l) && !/^\s*(\/\/|\*|\/\*)/.test(x.l));
-  assert.equal(lines.length, 1, JSON.stringify(lines));
-  assert.equal(lines[0].f, 'src/lib/sync/live-book-poll.ts');
-  const all = readFileSync(join(process.cwd(), lines[0].f), 'utf8').split('\n');
-  const verifyLine = all.findIndex((l, i) => /verifyReceiptTag\(rk/.test(l) && !/^\s*(\/\/|\*)/.test(l) && i > 0);
-  assert.ok(verifyLine >= 0 && verifyLine < lines[0].i, 'the tag check is on an earlier line than the one write');
+test('structure: `delivered: true` is written on exactly ONE line per seam (FE + headless), and each is reached only after verifyReceiptTag', () => {
+  const code = (l: string) => !/^\s*(\/\/|\*|\/\*)/.test(l);
+  const src = nonTestSource();
+  const lines = src.flatMap((f) => f.text.split('\n').map((l, i) => ({ f: f.rel, i, l }))).filter((x) => /delivered:\s*true/.test(x.l) && code(x.l));
+  // layer 1 (spec 65bac8aa): the headless store's markDelivered is the headless seam's one write (it rides the #712 group commit)
+  assert.deepEqual(lines.map((x) => x.f), ['src/lib/headless/headless-store.ts', 'src/lib/sync/live-book-poll.ts'], JSON.stringify(lines));
+  const fe = lines[1];
+  const all = readFileSync(join(process.cwd(), fe.f), 'utf8').split('\n');
+  const verifyLine = all.findIndex((l, i) => /verifyReceiptTag\(rk/.test(l) && code(l) && i > 0);
+  assert.ok(verifyLine >= 0 && verifyLine < fe.i, 'FE: the tag check is on an earlier line than the one write');
+  // headless: the store write sits inside markDelivered, and markDelivered is CALLED on exactly one line, after the tag check in that seam
+  const hs = readFileSync(join(process.cwd(), lines[0].f), 'utf8').split('\n');
+  const def = hs.findIndex((l) => /^\s*markDelivered\(/.test(l));
+  assert.ok(def >= 0 && def < lines[0].i && hs.slice(def, lines[0].i).every((l) => !/^\s{2}\}\s*$/.test(l)), 'the headless write is inside markDelivered');
+  const calls = src.flatMap((f) => f.text.split('\n').map((l, i) => ({ f: f.rel, i, l }))).filter((x) => /\.markDelivered\(/.test(x.l) && code(x.l));
+  assert.deepEqual(calls.map((x) => x.f), ['src/lib/headless/headless-client.ts'], JSON.stringify(calls));
+  const hc = readFileSync(join(process.cwd(), calls[0].f), 'utf8').split('\n');
+  const hv = hc.findIndex((l) => /verifyReceiptTag\(rk/.test(l) && code(l));
+  assert.ok(hv >= 0 && hv < calls[0].i && calls[0].i - hv < 4, 'headless: markDelivered is called right after the tag check returned true');
 });
 
 test('structure v7: the sender status enum has NO failure / couldn\'t-verify state, and no copy infers failure from a missing receipt', () => {

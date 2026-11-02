@@ -26,7 +26,7 @@ const HYBRID = JSON.stringify({ v: 1, alg: 'X25519+ML-KEM-1024/HKDF-SHA256/AES-2
 const FP40 = 'ab'.repeat(20);
 const FP64 = 'cd'.repeat(32);
 const T0 = '2026-10-30T12:00:00.000Z';
-const ALL_REASONS: DeadLetterReason[] = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'expired'];
+const ALL_REASONS: DeadLetterReason[] = ['unknown-format', 'decrypt-failed', 'missing-key', 'verify-failed', 'unverified-frame', 'not-in-book', 'ratchet-unopenable', 'ratchet-local', 'ratchet-desync', 'session-reset', 'expired'];
 
 test('D1 envelope ids: a UUID passes; anything outside the plain charset, empty, too long, or not a string is refused', () => {
   assert.equal(safeEnvelopeId('3f2b8c1e-5a4d-4e8b-9c1a-0d2e3f4a5b6c'), '3f2b8c1e-5a4d-4e8b-9c1a-0d2e3f4a5b6c');
@@ -74,7 +74,7 @@ test('D4 F3: a fingerprint is stored only for AUTHENTICATED reasons, and only wh
     const row = makeDeadLetterRow({ envelopeId: 'e', firstSeen: T0, reason, blob: 'x', fp: FP64 });
     assert.equal('fp' in row!, AUTHENTICATED_REASONS.has(reason), reason);
   }
-  assert.deepEqual([...AUTHENTICATED_REASONS].sort(), ['not-in-book', 'ratchet-local', 'ratchet-unopenable']);
+  assert.deepEqual([...AUTHENTICATED_REASONS].sort(), ['not-in-book', 'ratchet-desync', 'ratchet-local', 'ratchet-unopenable', 'session-reset']);
   const ok40 = makeDeadLetterRow({ envelopeId: 'e', firstSeen: T0, reason: 'not-in-book', blob: 'x', fp: FP40.toUpperCase() });
   assert.equal(ok40!.fp, FP40, 'lower-cased');
   for (const badFp of ['', 'zz'.repeat(20), 'ab'.repeat(19), 'ab'.repeat(33), 'ab'.repeat(20) + '\n', 7 as unknown as string]) {
@@ -281,4 +281,25 @@ test('D22 v5.3: ratchet-local rows are in the PER-CONTACT protected budget with 
   assert.equal(drop.filter((id) => id.startsWith('j')).length, 50, 'junk holds its own 200');
   const row = makeDeadLetterRow({ envelopeId: 'e1', firstSeen: T0, reason: 'ratchet-local', blob: 'x', fp: FP64 });
   assert.equal(row!.fp, FP64, 'a LOCAL row is named (the sender was authenticated)');
+});
+
+test('D23 T2: ratchet-desync and session-reset rows are in the PER-CONTACT protected budget (50 per fp, with the other ratchet classes), never the junk budget: 250 junk rows cannot evict them', () => {
+  const rows = [
+    rowFp('desync-old', 29 * DAYMS, 'ratchet-desync', FPA),
+    rowFp('reset-old', 29 * DAYMS, 'session-reset', FPA),
+    ...Array.from({ length: 250 }, (_, i) => rowAt(`junk${String(i).padStart(3, '0')}`, 1000 + i * 1000, 'decrypt-failed')),
+  ];
+  const drop = planPrune(rows, NOW);
+  assert.equal(drop.includes('desync-old'), false, 'a desync record survives a junk flood');
+  assert.equal(drop.includes('reset-old'), false, 'and so does a session-reset record');
+  assert.equal(drop.filter((id) => id.startsWith('junk')).length, 50);
+  const many = [
+    ...Array.from({ length: 30 }, (_, i) => rowFp(`d${i}`, 1000 + i * 1000, 'ratchet-desync', FPA)),
+    ...Array.from({ length: 30 }, (_, i) => rowFp(`r${i}`, 31000 + i * 1000, 'session-reset', FPA)),
+  ];
+  assert.equal(planPrune(many, NOW).length, 10, 'one contact\'s desync + session-reset rows share the 50-per-contact budget');
+  for (const reason of ['ratchet-desync', 'session-reset'] as const) {
+    const row = makeDeadLetterRow({ envelopeId: 'e1', firstSeen: T0, reason, blob: 'x', fp: FP64 });
+    assert.equal(row!.fp, FP64, reason + ' rows are named (the sender was authenticated)');
+  }
 });

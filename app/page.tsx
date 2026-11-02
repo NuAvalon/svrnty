@@ -311,7 +311,7 @@ export default function Home() {
 
   // Living book + Gate: poll at the shell so a share-link joiner lands while you're
   // on Galaxy / Grow, not only after opening Contacts. Burst after unlock, Grow, and focus.
-  const livePollRef = useRef<{ burst: (ms?: number) => void } | null>(null);
+  const livePollRef = useRef<{ burst: (ms?: number) => void; keepSteady: (on: boolean) => void } | null>(null);
   useEffect(() => {
     if (!identity?.identity?.fingerprint) return;
     const handle = startLiveBookPolling(identity);
@@ -320,11 +320,18 @@ export default function Home() {
     const onVis = () => {
       if (document.visibilityState === 'visible') handle.burst(8_000);
     };
+    // The idle backoff stretches the cadence to ~15 s; wake it the moment the user comes back (window focus) or
+    // the network returns (online), same as tab-visible.
+    const onWake = () => handle.burst(8_000);
     document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onWake);
+    window.addEventListener('online', onWake);
     return () => {
       livePollRef.current = null;
       handle.stop();
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onWake);
+      window.removeEventListener('online', onWake);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on stable fingerprint; identity
     // object ref is not a dep (public key stable per fp; private key re-loaded each tick).
@@ -334,9 +341,14 @@ export default function Home() {
     if (growOpen) livePollRef.current?.burst(20_000);
   }, [growOpen]);
 
+  // While the Notes tab is open the poll stays at the steady cadence (no idle backoff), so a reply lands within ~1.5 s;
+  // elsewhere it backs off when idle. Re-runs when the poller is (re)created, so a persisted Notes tab is honoured.
   useEffect(() => {
-    if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
-  }, [mainTab]);
+    const poll = livePollRef.current;
+    if (!poll) return;
+    poll.keepSteady(mainTab === 'notes');
+    if (mainTab === 'trust-map' || mainTab === 'notes') poll.burst(8_000);
+  }, [mainTab, identity?.identity?.fingerprint]);
 
   useEffect(() => {
     return subscribeNoteArrivals(() => {

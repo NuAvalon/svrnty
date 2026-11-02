@@ -220,6 +220,9 @@ export function JoinerCeremony({ code, keyFragment }: { code: string; keyFragmen
 
     return () => {
       cancelled = true;
+      // Re-arm: React StrictMode (next dev) runs setup -> cleanup -> setup. Without this the second setup
+      // returns at the guard while the first was cancelled, so nothing ever resolves and the card never loads.
+      startedRef.current = false;
     };
   }, [code, keyFragment]);
 
