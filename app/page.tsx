@@ -17,7 +17,7 @@ import { useAppLock } from '@/components/app-lock/useAppLock';
 import { useMailNotifications } from '@/components/notes/useMailNotifications';
 import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { TrustEdge, TrustEvent } from '@/lib/trust/types';
+import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
@@ -825,12 +825,6 @@ export default function Home() {
                 }}
                 onTrustToggle={async (edge) => {
                   const nextTrusted = !edge.trusted;
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
-                  const priorHistory = ((rec as { trust_history?: TrustEvent[] })?.trust_history
-                    || edge.trust_history
-                    || []) as TrustEvent[];
                   // Route through the single trust-transition chokepoint (the SAME fn as the contact-
                   // LIST toggle) so the trust-MAP surface also blind-satellite-commits AND deposits the
                   // signed affirmation — no fork-drift (Flint floor-verify #173014). EMIT-ONLY: nothing
@@ -846,15 +840,6 @@ export default function Home() {
                       contactId: edge.id,
                       fingerprint: edge.peer_fingerprint,
                       publicKeyArmored: edge.peer_public_key,
-                      blocked: edge.blocked === true,
-                      openVisibility:
-                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
-                          ?.open_visibility === true,
-                      perContactPrivate:
-                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
-                          ?.per_contact_private === true,
-                      metadata: recMeta,
-                      priorTrustHistory: priorHistory,
                     },
                     nextTrusted,
                   );

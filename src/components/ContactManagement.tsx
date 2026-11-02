@@ -63,7 +63,6 @@ import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
-import type { TrustEvent } from '@/lib/trust/types';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
 import {
@@ -522,11 +521,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
           contactId: contact.id,
           fingerprint: contact.fingerprint,
           publicKeyArmored: contact.public_key,
-          blocked: isContactBlocked(contact),
-          openVisibility: contact.metadata?.share_settings?.open_visibility === true,
-          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
-          metadata: contact.metadata as Record<string, unknown> | undefined,
-          priorTrustHistory: (contact as { trust_history?: TrustEvent[] }).trust_history ?? [],
         },
         newLevel === 'trusted',
       );
