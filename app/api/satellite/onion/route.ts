@@ -16,6 +16,7 @@
 //   silently stops forwarding. Folding the two into one shared helper is a #556-time cleanup.
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 // MailboxEnvelopePackage string fields (mailbox-envelope.ts:39). `v` is the numeric literal 1 and is
 // handled explicitly below; everything else is opaque base64/hex.
@@ -62,7 +63,7 @@ export async function POST(request: NextRequest) {
 
     const res = await fetch(`${satelliteBaseUrl()}/onion`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...forwardedClientIp(request) },
       body: JSON.stringify(body),
     });
     const text = await res.text();

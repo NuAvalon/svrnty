@@ -13,8 +13,10 @@ Part of the svrnty + Cairn ecosystem.
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import socket
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -375,6 +377,8 @@ async def lifespan(app: FastAPI):
     init_db()
     mode_label = "REGISTRY (contacts only)" if SATELLITE_MODE == "registry" else "FULL (contacts + messaging)"
     print(f"[satellite] Mode: {mode_label} | SATELLITE_MODE={SATELLITE_MODE}")
+    print(f"[satellite] Trusted proxies: {sorted(trusted_proxies())} | "
+          f"names={_csv_env('SATELLITE_TRUSTED_PROXY_NAMES') or 'none'}")
 
     # Onion blind-router: fail-fast if liboqs ML-KEM-1024 is missing/broken (else every /onion would
     # silently 400 at runtime), then mint the satellite's own routing keypair on first start (idempotent).
@@ -505,19 +509,71 @@ def check_identity_send_rate(fingerprint: str) -> bool:
     return True
 
 
-_TRUSTED_PROXIES = {"127.0.0.1", "::1", "172.17.0.1"}  # localhost + Docker bridge
+# ── Trusted proxies: who may set X-Forwarded-For ──────────────────────────
+# EXACT addresses only, never a CIDR: on a shared docker network any container could otherwise
+# claim to be the edge and spoof a client IP. Two sources, unioned with localhost:
+#   SATELLITE_TRUSTED_PROXIES      comma list of exact IPs (a CIDR or junk entry is ignored)
+#   SATELLITE_TRUSTED_PROXY_NAMES  comma list of docker DNS names (e.g. "caddy,svrnty"), resolved to
+#                                  their current addresses, cached for _PROXY_NAME_TTL seconds
+# A name that does not resolve, or resolves to more than one address, contributes nothing
+# (fail-closed: those requests key on the peer address, the pre-fix behaviour). The client IP is the RIGHTMOST X-Forwarded-For entry (the one the
+# trusted hop wrote), and must parse as an IP.
+_LOCAL_PROXIES = frozenset({"127.0.0.1", "::1"})
+_PROXY_NAME_TTL = 30.0
+_proxy_name_cache: dict = {"at": float("-inf"), "ips": frozenset()}
+
+
+def _csv_env(name: str) -> list[str]:
+    return [p.strip() for p in os.environ.get(name, "").split(",") if p.strip()]
+
+
+def _static_trusted_proxies() -> frozenset:
+    out = set(_LOCAL_PROXIES)
+    for p in _csv_env("SATELLITE_TRUSTED_PROXIES"):
+        try:
+            out.add(str(ipaddress.ip_address(p)))
+        except ValueError:
+            pass  # exact addresses only
+    return frozenset(out)
+
+
+def _resolved_proxy_names(now: float) -> frozenset:
+    c = _proxy_name_cache
+    if now - c["at"] < _PROXY_NAME_TTL:
+        return c["ips"]
+    ips = set()
+    for name in _csv_env("SATELLITE_TRUSTED_PROXY_NAMES"):
+        try:
+            addrs = {str(ipaddress.ip_address(info[4][0]))
+                     for info in socket.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)}
+        except (OSError, ValueError):
+            continue
+        if len(addrs) == 1:  # a name that maps to several addresses is trusted for none of them
+            ips |= addrs
+    c["at"], c["ips"] = now, frozenset(ips)
+    return c["ips"]
+
+
+def trusted_proxies(now: Optional[float] = None) -> frozenset:
+    return _static_trusted_proxies() | _resolved_proxy_names(time.monotonic() if now is None else now)
+
+
+def client_ip_for(peer_ip: str, forwarded: Optional[str], now: Optional[float] = None) -> str:
+    """The rate-limit key: the trusted hop's rightmost X-Forwarded-For entry, else the peer address."""
+    if forwarded and peer_ip in trusted_proxies(now):
+        candidate = forwarded.split(",")[-1].strip()
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            return peer_ip
+    return peer_ip
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Extract client IP — only trust X-Forwarded-For from known proxies (M-1)
-        forwarded = request.headers.get("x-forwarded-for")
         peer_ip = request.client.host if request.client else "unknown"
-        if forwarded and peer_ip in _TRUSTED_PROXIES:
-            # Rightmost entry is set by the trusted proxy (Caddy)
-            client_ip = forwarded.split(",")[-1].strip()
-        else:
-            client_ip = peer_ip
+        client_ip = client_ip_for(peer_ip, request.headers.get("x-forwarded-for"))
 
         allowed, remaining = _rate_limiter.check(client_ip, request.url.path)
         if not allowed:
