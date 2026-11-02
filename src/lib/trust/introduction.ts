@@ -112,6 +112,10 @@ export class IntroductionSignError extends Error {
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0;
 }
+/** A fingerprint exactly as the verifier reads it: lowercase hex, 64 characters (see CANONICAL_FP). */
+function isCanonicalFp(v: unknown): v is string {
+  return typeof v === 'string' && CANONICAL_FP.test(v);
+}
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -178,18 +182,22 @@ export interface BuildIntroductionArgs {
   ts?: string;
 }
 
-/** Build the introduction envelope, enforcing the structural + consent-binding rules the verifier relies on. */
+/**
+ * Build the introduction envelope, enforcing the structural + consent-binding rules the verifier relies on.
+ *
+ * The send side refuses, LOUDLY, whatever verifyIntroduction would drop SILENTLY (a recipient gives a sender no reason and no error), so a sender never deposits an
+ * introduction that cannot arrive: every fingerprint must already be the canonical form (never converted), and the newcomer must carry BOTH post-quantum keys,
+ * because the recipient recomputes the newcomer's full 64-hex fingerprint from the keys and there is no classical fallback.
+ */
 export function buildIntroductionEnvelope(args: BuildIntroductionArgs): IntroductionEnvelope {
-  if (!isNonEmptyString(args.introducerFp)) throw new IntroductionSignError('bad-introducer-fingerprint');
-  if (!isNonEmptyString(args.recipientFp)) throw new IntroductionSignError('bad-recipient-fingerprint');
-  if (!isNonEmptyString(args.introducedFp)) throw new IntroductionSignError('bad-introduced-fingerprint');
+  if (!isCanonicalFp(args.introducerFp)) throw new IntroductionSignError('bad-introducer-fingerprint', 'not canonical (lowercase 64-hex)');
+  if (!isCanonicalFp(args.recipientFp)) throw new IntroductionSignError('bad-recipient-fingerprint', 'not canonical (lowercase 64-hex)');
+  if (!isCanonicalFp(args.introducedFp)) throw new IntroductionSignError('bad-introduced-fingerprint', 'not canonical (lowercase 64-hex)');
   if (!isNonEmptyString(args.introducedPubKeyArmored)) throw new IntroductionSignError('bad-introduced-public-key');
   if (typeof args.introducedName !== 'string') throw new IntroductionSignError('bad-introduced-name');
   if (typeof args.context !== 'string') throw new IntroductionSignError('bad-context');
-  if (args.introducedPqSigPublicKey !== undefined && !isNonEmptyString(args.introducedPqSigPublicKey))
-    throw new IntroductionSignError('bad-pq-key', 'sig present but empty');
-  if (args.introducedPqKemPublicKey !== undefined && !isNonEmptyString(args.introducedPqKemPublicKey))
-    throw new IntroductionSignError('bad-pq-key', 'kem present but empty');
+  if (!isNonEmptyString(args.introducedPqSigPublicKey) || !isNonEmptyString(args.introducedPqKemPublicKey))
+    throw new IntroductionSignError('bad-pq-key', 'the newcomer needs BOTH post-quantum keys: the recipient recomputes the 64-hex fingerprint from them');
 
   // Consent-binding: the token the introducer forwards MUST name this exact (introduced, introducer, recipient)
   // triple, or the introducer is forwarding a consent for a different introduction (refuse loudly).
@@ -227,6 +235,19 @@ export async function buildSignedIntroduction(
   pqSigningSecretKey?: Uint8Array,
 ): Promise<SignedIntroduction> {
   const envelope = buildIntroductionEnvelope(args);
+  // Mirror of verifyIntroduction step 6b: the recipient recomputes the newcomer's full fingerprint from the presented keys and drops the introduction unless it
+  // EQUALS the claimed one. Refuse here, before signing, instead of sending something that can never verify.
+  let recomputed: string;
+  try {
+    recomputed = (await canonicalPubsFromArmoredPublicKey(
+      args.introducedPubKeyArmored,
+      args.introducedPqKemPublicKey as string,
+      args.introducedPqSigPublicKey as string,
+    )).fingerprint;
+  } catch {
+    throw new IntroductionSignError('bad-pq-key', 'the canonical fingerprint cannot be recomputed from the presented keys');
+  }
+  if (recomputed !== args.introducedFp) throw new IntroductionSignError('bad-introduced-fingerprint', 'not the fingerprint recomputed from the presented keys');
   const signature = await signWithEnvelope(
     DOMAIN_INTRODUCTION,
     introductionSigningInput(envelope),
