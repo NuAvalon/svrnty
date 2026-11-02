@@ -23,6 +23,8 @@ import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
 import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
+import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
+import { blockPatch } from '@/lib/contacts/metadata-patches';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
@@ -36,6 +38,7 @@ import {
   getActiveFingerprint,
   loadIdentity,
   getAllContacts,
+  getContact,
   hasEncryptedKeys,
   initSessionKey,
   isSessionUnlocked,
@@ -886,58 +889,29 @@ export default function Home() {
                     void reconcileAllowedOnConsentChange({
                       ownerFp: identity.identity.fingerprint,
                       senderFp: removedFp,
-                      consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
+                      consent: NO_CONSENT,
                     });
                   }
                   await refreshContacts();
                 }}
                 onBlockContact={async (edge, blocked) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
-                  await updateContact(edge.id, {
-                    blocked,
-                    // Block clears local Trust — no trusted+blocked half-state.
-                    ...(blocked
-                      ? {
-                          trusted: false,
-                          trust_level: 'unverified',
-                          trusted_since: null,
-                        }
-                      : {}),
-                    metadata: {
-                      ...recMeta,
-                      blocked,
-                      // #111 (survivor-safety): block clears open_visibility (TrustMap path)
-                      // so the peer leaves every PSI reveal set — mirrors the ContactManagement
-                      // handler; read side is fail-closed too (ownerEdges !blocked).
-                      ...(blocked
-                        ? {
-                            share_settings: {
-                              ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
-                              open_visibility: false,
-                            },
-                          }
-                        : {}),
-                    },
-                  } as any);
-                  // #572 part 2 (flip-blocker b + #111 satellite-completeness, TrustMap path): block →
-                  // DELETE the allowed_senders row (close the stale-row adversary-discovery hole).
-                  // Unblock does NOT re-add — trust + open-vis must be re-granted explicitly.
+                  // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison, and it
+                  // is built from the record held when it runs. Blocking clears trust and open_visibility so the peer leaves every PSI reveal set
+                  // (the read side is fail-closed too: ownerEdges !blocked). See blockPatch. The caller shows a failure's message, so a contention
+                  // failure is rethrown in plain words.
+                  try {
+                    await withSafetyWrite(edge.id, () => updateContact(edge.id, (fresh) => blockPatch(fresh, blocked)));
+                  } catch (err) {
+                    const words = describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock');
+                    throw words ? new Error(words) : err;
+                  }
+                  // TrustMap path: block -> DELETE the allowed_senders row, so a blocked peer cannot keep discovering the owner through a stale row.
+                  // Unblock does NOT re-add: trust + open-vis must be re-granted explicitly. The consent is read back from the stored record.
+                  const afterBlock = await getContact(edge.id);
                   void reconcileAllowedOnConsentChange({
                     ownerFp: identity.identity.fingerprint,
                     senderFp: edge.peer_fingerprint,
-                    consent: {
-                      trusted: blocked ? false : edge.trusted === true,
-                      openVisibility:
-                        !blocked &&
-                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
-                          ?.open_visibility === true,
-                      blocked,
-                      perContactPrivate:
-                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
-                          ?.per_contact_private === true,
-                    },
+                    consent: afterBlock ? consentFromRecord(afterBlock) : NO_CONSENT,
                   });
                   // Piece-2 (#579): block ALSO populates the durable suppression RECORD (load-bearing
                   // emit-side source; the `blocked` flag is defense-in-depth). Fire-and-forget + fail-closed.

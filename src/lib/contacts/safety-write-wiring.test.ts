@@ -74,3 +74,17 @@ test('a protecting write that could not be saved is told in plain words, not as 
   const share = body(ui, 'const handleShareSettingsChange', '// --- Render ---');
   assert.match(share, /const words = describeSafetyWriteFailure\(err, 'Sharing setting'\);\s*if \(!words\) throw err;\s*setError\(words\);\s*return;/);
 });
+
+test('the trust-map block is an owner-protecting write: under the safety lock, on the held record, consent read back, plain words when it cannot be saved', () => {
+  const page = noComments(src('../../../app/page.tsx'));
+  const a = page.indexOf('onBlockContact={async');
+  const b = page.indexOf('onAcceptIntro={async');
+  assert.ok(a > 0 && b > a, 'the block handler was found');
+  const h = page.slice(a, b);
+  assert.match(h, /await withSafetyWrite\(edge\.id, \(\) => updateContact\(edge\.id, \(fresh\) => blockPatch\(fresh, blocked\)\)\);/);
+  assert.match(h, /describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\);\s*throw words \? new Error\(words\) : err;/);
+  assert.match(h, /const afterBlock = await getContact\(edge\.id\);/);
+  assert.match(h, /consent: afterBlock \? consentFromRecord\(afterBlock\) : NO_CONSENT,/);
+  assert.doesNotMatch(h, /getAllContacts|recMeta/, 'the block no longer reads a snapshot of the book');
+  assert.doesNotMatch(page, /consent:\s*\{/, 'no consent object literal in the file');
+});
