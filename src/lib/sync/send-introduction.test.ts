@@ -86,3 +86,31 @@ test('S1 sendIntroduction POSTs {mailbox_id, blob} to <relay>/envelope once and 
   assert.deepEqual((await sendIntroduction(introducer(), await card(), target(), 'x', { fetchImpl: mk('throw') })), { ok: false, status: 'network-error' });
   assert.equal(seen.length, 3);
 });
+
+test('D6 NEG: a newcomer card without BOTH PQ keys yields no deposit and no request (the recipient recomputes the 64-hex id from them and would drop it silently)', async () => {
+  const calls: string[] = [];
+  const fetchImpl = (async (u: unknown) => { calls.push(String(u)); return new Response('{}', { status: 200 }); }) as typeof fetch;
+  for (const drop of [{ pqKemPublicKeyB64: undefined }, { pqSigPublicKeyB64: undefined }, { pqKemPublicKeyB64: undefined, pqSigPublicKeyB64: undefined }]) {
+    const c = { ...(await card()), ...drop };
+    assert.equal(await buildIntroductionDeposit(introducer(), c, target(), 'x'), null, JSON.stringify(Object.keys(drop)));
+    assert.deepEqual(await sendIntroduction(introducer(), c, target(), 'x', { fetchImpl }), { ok: false, status: 'encrypt-failed' });
+  }
+  assert.deepEqual(calls, [], 'nothing was sent');
+});
+
+test('D7 NEG: a recipient or introducer fingerprint that is not exactly canonical yields no deposit, even when the consent names the same spelling (control: the canonical form deposits)', async () => {
+  const upperR = rachel.fingerprint.toUpperCase();
+  assert.notEqual(upperR, rachel.fingerprint);
+  assert.equal(
+    await buildIntroductionDeposit(introducer(), await card({ recipientFp: upperR }), { ...target(), fingerprint: upperR }, 'x'),
+    null,
+    'recipient in upper case: envelope, consent and target all agree, so only the canonical-form check can refuse it',
+  );
+  const upperI = ivan.fingerprint.toUpperCase();
+  assert.equal(
+    await buildIntroductionDeposit({ ...introducer(), fingerprint: upperI }, await card({ introducerFp: upperI }), target(), 'x'),
+    null,
+    'introducer in upper case, same reasoning',
+  );
+  assert.ok(await buildIntroductionDeposit(introducer(), await card(), target(), 'x'), 'control: the canonical form still deposits');
+});

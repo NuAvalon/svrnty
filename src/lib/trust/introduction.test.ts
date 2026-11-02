@@ -18,6 +18,7 @@ import {
   IntroductionSignError,
   type BuildIntroductionArgs,
 } from './introduction';
+import type { IntroductionEnvelope } from '../format/envelope';
 import {
   DOMAIN_INTRODUCTION,
   DOMAIN_INTRODUCTION_CONSENT,
@@ -126,6 +127,27 @@ function ivanArgs(consent: Awaited<ReturnType<typeof newtConsent>>, o: Partial<B
     introducedName: 'Newt', consent: consent.consent, consentSignature: consent.consentSignature,
     context: 'met at the conference', ts: '2026-10-19T00:00:00Z', ...o,
   };
+}
+
+// What buildIntroductionEnvelope assembled BEFORE the send side learned to refuse what the verifier drops: the same envelope with none of the canonical-form or
+// post-quantum checks. The verifier tests that use it need hostile envelopes (a non-canonical spelling, a classical newcomer, a victim's fingerprint) that an honest
+// sender can no longer build. It is pinned to the real builder by a test below, so it cannot drift.
+function hostileEnvelope(args: BuildIntroductionArgs): IntroductionEnvelope {
+  const c = args.consent;
+  const env: IntroductionEnvelope = {
+    introducer_fingerprint: args.introducerFp,
+    recipient_fingerprint: args.recipientFp,
+    introduced_fingerprint: args.introducedFp,
+    introduced_public_key: args.introducedPubKeyArmored,
+    introduced_display_name: args.introducedName,
+    consent: c,
+    context: args.context,
+    nonce: c.nonce,
+    ts: args.ts ?? new Date().toISOString(),
+  };
+  if (args.introducedPqSigPublicKey !== undefined) env.introduced_pq_sig_public_key = args.introducedPqSigPublicKey;
+  if (args.introducedPqKemPublicKey !== undefined) env.introduced_pq_kem_public_key = args.introducedPqKemPublicKey;
+  return env;
 }
 
 // ── Happy path: Ivan introduces Newt to Rachel; Rachel surfaces Newt as KNOWN ─────
@@ -350,7 +372,7 @@ test('build: empty introducer fingerprint refused (bad-introducer-fingerprint)',
 
 test('build: optional pq keys OMITTED (not null) when absent — canonical stays null-free', async () => {
   const c = await newtConsent();
-  const env = buildIntroductionEnvelope(ivanArgs(c, { introducedPqKemPublicKey: undefined, introducedPqSigPublicKey: undefined }));
+  const env = hostileEnvelope(ivanArgs(c, { introducedPqKemPublicKey: undefined, introducedPqSigPublicKey: undefined }));
   assert.equal('introduced_pq_kem_public_key' in env, false);
   assert.equal('introduced_pq_sig_public_key' in env, false);
 });
@@ -419,7 +441,7 @@ test('★ S1 deadname (real attack): the INTRODUCER signs an envelope naming "De
 test('★ Invariant-1 (real attack): the INTRODUCER signs introduced_fingerprint = a VICTIM\'s fp with the ATTACKER\'s key and a consent the attacker signs with that key; both signatures verify, and the fp-hashes-to-key check alone drops it', async () => {
   const consent = buildIntroductionConsent({ introducedFp: carolFp, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Carol', nonce: NONCE, ts: '2026-10-19T00:00:00Z' });
   const consentSignature = await signIntroductionConsent(consent, sybilPriv, pass); // the attacker signs "Carol's" consent with ITS key
-  const env = buildIntroductionEnvelope({
+  const env = hostileEnvelope({
     introducerFp: ivanFp, recipientFp: rachelFp, introducedFp: carolFp, introducedPubKeyArmored: sybilPubKey,
     introducedName: 'Carol', consent, consentSignature, context: 'x', ts: '2026-10-19T00:00:00Z',
   });
@@ -528,7 +550,7 @@ test('guard: a FORGED consent signature (PQ half altered, classical genuine) is 
 test('a classical newcomer (40-hex OpenPGP fingerprint, no PQ keys on the card) is refused even when both signatures are valid: canonical identities only', async () => {
   const consent = buildIntroductionConsent({ introducedFp: carolFp, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Carol', nonce: NONCE, ts: '2026-10-19T00:00:00Z' });
   const consentSignature = await signIntroductionConsent(consent, carolPriv, pass);
-  const env = buildIntroductionEnvelope({ introducerFp: ivanFp, recipientFp: rachelFp, introducedFp: carolFp, introducedPubKeyArmored: carolPub, introducedName: 'Carol', consent, consentSignature, context: 'x', ts: '2026-10-19T00:00:00Z' });
+  const env = hostileEnvelope({ introducerFp: ivanFp, recipientFp: rachelFp, introducedFp: carolFp, introducedPubKeyArmored: carolPub, introducedName: 'Carol', consent, consentSignature, context: 'x', ts: '2026-10-19T00:00:00Z' });
   const signed = await resignAsIvan(env, consentSignature);
   assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION, introductionSigningInput(env), signed.signature, ivanPub), 'precondition: the introducer\'s signature is valid');
   assert.ok(await verifyWithEnvelope(DOMAIN_INTRODUCTION_CONSENT, introductionConsentSigningInput(consent), consentSignature, carolPub), 'precondition: the consent signature is valid');
@@ -544,7 +566,7 @@ test('a classical newcomer (40-hex OpenPGP fingerprint, no PQ keys on the card) 
 async function newcomerAs(spelling: string) {
   const consent = buildIntroductionConsent({ introducedFp: spelling, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Newt', nonce: NONCE, ts: '2026-10-19T00:00:00Z' });
   const consentSignature = await signIntroductionConsent(consent, newt.privateKey, newt.passphrase, newt.sigSecretKey);
-  const env = buildIntroductionEnvelope(ivanArgs({ consent, consentSignature }, { introducedFp: spelling }));
+  const env = hostileEnvelope(ivanArgs({ consent, consentSignature }, { introducedFp: spelling }));
   return verifyAt(await toRachel(await resignAsIvan(env, consentSignature)), rachel(), knowsIvan);
 }
 test('exact fingerprint: the canonical form verifies and the result carries exactly the recomputed 64-hex value (control)', async () => {
@@ -580,7 +602,7 @@ test('precondition for the spelling cases: fingerprintMatchesKey (a prefix match
 const lenientIvan = (fp: string) => (fp.toLowerCase() === ivanFp ? { publicKeyArmored: ivanPub } : null);
 async function introducerAs(spelling: string) {
   const c = await newtConsent({ introducerFp: spelling });
-  const signed = await resignAsIvan(buildIntroductionEnvelope(ivanArgs(c, { introducerFp: spelling })), c.consentSignature);
+  const signed = await resignAsIvan(hostileEnvelope(ivanArgs(c, { introducerFp: spelling })), c.consentSignature);
   return verifyAt(await toRachel(signed), rachel(), lenientIvan);
 }
 test('exact fingerprint: an introducer named in upper case is refused even when the know-set lookup would accept it; lower case verifies (control)', async () => {
@@ -590,7 +612,7 @@ test('exact fingerprint: an introducer named in upper case is refused even when 
 });
 async function recipientAs(spelling: string) {
   const c = await newtConsent({ recipientFp: spelling });
-  const signed = await resignAsIvan(buildIntroductionEnvelope(ivanArgs(c, { recipientFp: spelling })), c.consentSignature);
+  const signed = await resignAsIvan(hostileEnvelope(ivanArgs(c, { recipientFp: spelling })), c.consentSignature);
   return verifyAt(await toRachel(signed), { fingerprint: spelling, hybrid: rachelH.hybrid }, knowsIvan);
 }
 test('exact fingerprint: a recipient named in upper case (envelope, consent AND the verifier\'s own claim all agree) is refused; lower case verifies (control)', async () => {
@@ -656,4 +678,78 @@ test('replay window: the NEWCOMER\'s time decides: a stale envelope time with a 
 test('replay window: with no clock given the real clock is used (a consent from an hour ago verifies, one from 30 days ago does not)', async () => {
   assert.ok(await consentDated(iso(Date.now() - 3_600_000), undefined, null));
   assert.equal(await consentDated(iso(Date.now() - 30 * 24 * 3_600_000), undefined, null), null);
+});
+
+// ── The SEND side refuses, loudly, what the verifier would drop silently ────────────────────────────────────────────────────────────
+// A recipient gives a sender no reason and no error, so a sender that deposits an introduction that cannot verify loses it without knowing. The build now refuses
+// the same inputs the verifier refuses: a fingerprint that is not exactly canonical, a newcomer without both PQ keys, and a newcomer fingerprint that is not the one
+// recomputed from the presented keys. The verifier-side tests above (hostileEnvelope) stay the proof that the verifier itself refuses each of these.
+test('SEND pin: the unguarded test builder equals the real builder on valid input, so the hostile-envelope tests cannot drift from it', async () => {
+  const c = await newtConsent();
+  assert.deepEqual(hostileEnvelope(ivanArgs(c)), buildIntroductionEnvelope(ivanArgs(c)));
+});
+
+const sendFields: Array<[keyof BuildIntroductionArgs, () => string, string]> = [
+  ['introducerFp', () => ivanFp, 'bad-introducer-fingerprint'],
+  ['recipientFp', () => rachelFp, 'bad-recipient-fingerprint'],
+  ['introducedFp', () => newt.fingerprint, 'bad-introduced-fingerprint'],
+];
+for (const [field, valid, reason] of sendFields) {
+  for (const [name, spell] of spellings) {
+    test(`SEND NEG: ${field} spelled as ${name} is refused (${reason}), never converted`, async () => {
+      const c = await newtConsent();
+      const args = ivanArgs(c, { [field]: spell(valid()) } as Partial<BuildIntroductionArgs>);
+      assert.throws(() => buildIntroductionEnvelope(args), (e: unknown) => e instanceof IntroductionSignError && e.reason === reason);
+      await assert.rejects(() => buildSignedIntroduction(args, ivanPriv, pass), (e: unknown) => e instanceof IntroductionSignError && e.reason === reason);
+    });
+  }
+}
+
+test('SEND NEG: a newcomer missing either PQ key, or with an empty one, is refused (bad-pq-key): the recipient recomputes the 64-hex id from them', async () => {
+  const c = await newtConsent();
+  const cases: Array<Partial<BuildIntroductionArgs>> = [
+    { introducedPqKemPublicKey: undefined },
+    { introducedPqSigPublicKey: undefined },
+    { introducedPqKemPublicKey: undefined, introducedPqSigPublicKey: undefined },
+    { introducedPqKemPublicKey: '' },
+    { introducedPqSigPublicKey: '' },
+  ];
+  for (const over of cases) {
+    const args = ivanArgs(c, over);
+    assert.throws(() => buildIntroductionEnvelope(args), (e: unknown) => e instanceof IntroductionSignError && e.reason === 'bad-pq-key', JSON.stringify(Object.keys(over)));
+    await assert.rejects(() => buildSignedIntroduction(args, ivanPriv, pass), (e: unknown) => e instanceof IntroductionSignError && e.reason === 'bad-pq-key');
+  }
+});
+
+test('SEND NEG: the PQ keys swapped (right presence, wrong lengths) cannot be recomputed into a fingerprint: refused before signing (bad-pq-key)', async () => {
+  const c = await newtConsent();
+  const args = ivanArgs(c, { introducedPqKemPublicKey: newt.sigPublicKeyB64, introducedPqSigPublicKey: newt.kemPublicKeyB64 });
+  assert.doesNotThrow(() => buildIntroductionEnvelope(args), 'the structural build cannot see this; the async build does');
+  await assert.rejects(() => buildSignedIntroduction(args, ivanPriv, pass), (e: unknown) => e instanceof IntroductionSignError && e.reason === 'bad-pq-key');
+});
+
+test('SEND NEG: a valid-looking card whose fingerprint is NOT the one recomputed from its keys (a victim\'s fingerprint on the newcomer\'s keys, or another identity\'s KEM key) is refused before signing', async () => {
+  const victimFp = label('victim');
+  const consentForVictim = buildIntroductionConsent({
+    introducedFp: victimFp, introducerFp: ivanFp, recipientFp: rachelFp, displayName: 'Newt', nonce: NONCE, ts: '2026-10-19T00:00:00Z',
+  });
+  const consentSig = await signIntroductionConsent(consentForVictim, newt.privateKey, newt.passphrase, newt.sigSecretKey);
+  const victimArgs = ivanArgs({ consent: consentForVictim, consentSignature: consentSig }, { introducedFp: victimFp });
+  assert.doesNotThrow(() => buildIntroductionEnvelope(victimArgs), 'canonical-looking and consistent: only the recompute can tell');
+  await assert.rejects(() => buildSignedIntroduction(victimArgs, ivanPriv, pass), (e: unknown) => e instanceof IntroductionSignError && e.reason === 'bad-introduced-fingerprint');
+
+  const mallory = await makeCanonicalIdentity('Mallory');
+  const c = await newtConsent();
+  await assert.rejects(
+    () => buildSignedIntroduction(ivanArgs(c, { introducedPqKemPublicKey: mallory.kemPublicKeyB64 }), ivanPriv, pass),
+    (e: unknown) => e instanceof IntroductionSignError && e.reason === 'bad-introduced-fingerprint',
+  );
+});
+
+test('SEND control: an honest build is unchanged: it signs, and the recipient verifies it to the same fingerprint', async () => {
+  const c = await newtConsent();
+  const signed = await buildSignedIntroduction(ivanArgs(c), ivanPriv, pass);
+  const result = await verifyAt(await toRachel(signed), rachel(), knowsIvan);
+  assert.ok(result);
+  assert.equal(result!.fingerprint, newt.fingerprint);
 });
