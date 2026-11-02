@@ -191,7 +191,11 @@ test('GUARD: every updateContact in ContactManagement writes a helper patch of t
   assert.doesNotMatch(ui, /metadata:\s*\{\s*\.\.\.(selectedContact|c|contact)\??\.metadata/, 'a captured metadata is spread into an update');
   const calls = callsOf(ui, 'updateContact');
   const fn = calls.filter((c) => /\(fresh\)\s*=>/.test(c));
-  assert.equal(fn.length >= 5, true, 'toggle group, share settings and the three bulk loops use the function form');
+  assert.equal(fn.length >= 9, true, 'groups, share settings, the three bulk loops, the edit form, owner verification, block and link use the function form');
+  // The only object-form write left is the key-material back-fill: top-level keys, no nested metadata.
+  const objectForm = calls.filter((c) => !/\(fresh\)\s*=>/.test(c));
+  for (const c of objectForm) assert.doesNotMatch(c, /metadata/, `an object-form write carries metadata: ${c.replace(/\s+/g, ' ').slice(0, 140)}`);
+  assert.equal(objectForm.length <= 1, true, 'a new object-form write needs a reason here');
   for (const c of fn) {
     assert.match(c, FRESH_BODY, `a function-form write is not one patch helper called on fresh: ${c.replace(/\s+/g, ' ').slice(0, 140)}`);
     const body = c.slice(c.indexOf('=>'));
@@ -212,6 +216,20 @@ test('GUARD: the share-settings handler reconciles consent from the record read 
   assert.match(handler, /const afterContact = recordToContact\(after\);/, 'the consent record is the one read back');
   assert.doesNotMatch(handler, /\bisTrusted\(|\bisContactBlocked\(|\bclamped\b/, 'consent is not rebuilt in the handler from screen state');
   assert.match(handler, /if \(!after\) \{[^]*NO_CONSENT[^]*return;/, 'a record that is gone still reconciles the mirror before returning');
+});
+
+test('GUARD: block, share-settings and remove reconcile from a record read back after the write, or from NO_CONSENT', () => {
+  const ui = src('../../components/ContactManagement.tsx')
+    .split('\n')
+    .filter((l) => !/^\s*\/\//.test(l))
+    .join('\n');
+  const reconciles = callsOf(ui, 'reconcileAllowedOnConsentChange');
+  assert.equal(reconciles.length >= 4, true, 'share settings (2), block, remove');
+  for (const r of reconciles) {
+    const consent = /consent:\s*([^\n]*)/.exec(r)?.[1] ?? '';
+    assert.match(consent, /^(NO_CONSENT|consentFromRecord\((afterContact|afterBlock)\)|afterBlock \? consentFromRecord\(afterBlock\) : NO_CONSENT),?\s*\}?\)?;?$/, `a consent is built from something else: ${consent}`);
+  }
+  assert.doesNotMatch(ui, /consent:\s*\{/, 'no consent object literal is built in the component');
 });
 
 test('GUARD: the unlock sweep and break-trust build from the held record', () => {

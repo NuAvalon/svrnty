@@ -37,16 +37,17 @@ export interface ConsentFromRecord {
 
 /**
  * The consent the allowed-senders mirror is reconciled to, read from a stored record.
- * `trusted` is the trust_level test the contact screen uses (verified or trusted), as before.
+ * `trusted` is `edgeTrusted`, the same definition the clamp uses (an explicit `trusted: false` wins over `trust_level`).
  */
 export function consentFromRecord(rec: {
+  trusted?: boolean;
   trust_level?: string;
   blocked?: boolean;
   metadata?: { blocked?: boolean; share_settings?: Partial<ContactShareSettings> } | null;
 }): ConsentFromRecord {
   const share = readShareSettings(rec);
   return {
-    trusted: rec.trust_level === 'verified' || rec.trust_level === 'trusted',
+    trusted: edgeTrusted(rec),
     openVisibility: share.open_visibility === true,
     blocked: isContactBlocked(rec as { blocked?: boolean; metadata?: { blocked?: boolean } }),
     perContactPrivate: share.per_contact_private === true,

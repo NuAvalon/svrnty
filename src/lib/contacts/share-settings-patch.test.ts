@@ -60,11 +60,13 @@ test('consent: read from the stored record only', () => {
   assert.deepEqual(consentFromRecord(r), { trusted: true, openVisibility: true, blocked: false, perContactPrivate: true });
 });
 
-test('consent: trusted follows trust_level (verified or trusted), as the contact screen does', () => {
+test('consent: trusted is the clamp\'s definition: trust_level verified or trusted, and an explicit trusted:false WINS', () => {
   assert.equal(consentFromRecord(rec({ trust_level: 'verified' })).trusted, true);
   assert.equal(consentFromRecord(rec({ trust_level: 'trusted' })).trusted, true);
   assert.equal(consentFromRecord(rec({ trust_level: 'unverified' })).trusted, false);
   assert.equal(consentFromRecord(rec({})).trusted, false);
+  assert.equal(consentFromRecord(rec({ trust_level: 'trusted', trusted: false })).trusted, false);
+  assert.equal(consentFromRecord(rec({ trust_level: 'unverified', trusted: true })).trusted, true);
 });
 
 test('consent: blocked from either the record flag or the metadata flag', () => {
