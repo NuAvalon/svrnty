@@ -222,6 +222,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_allowed_owner
             ON allowed_senders(owner_fingerprint);
 
+        -- Orders /allowed changes. A removal records its signed time here; an add whose signed time is not later is refused, so an add that
+        -- arrives after the removal it preceded cannot bring the row back. Rows expire (see ALLOWED_CLOCK_KEEP_SECONDS).
+        CREATE TABLE IF NOT EXISTS allowed_clock (
+            owner_fingerprint TEXT NOT NULL,
+            sender_fingerprint TEXT NOT NULL,
+            last_remove_unix INTEGER NOT NULL,
+            PRIMARY KEY (owner_fingerprint, sender_fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_allowed_clock_unix
+            ON allowed_clock(last_remove_unix);
+
         CREATE TABLE IF NOT EXISTS candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fingerprint TEXT NOT NULL,
@@ -950,6 +961,21 @@ def verify_allowed_change_signature(
         return _verify_with_key(auth_pk, sig_bytes, preimage_fn(owner_fp, sender_fp, client_ts))
     except Exception:
         return False
+
+
+# A clock row only matters while an add could still arrive with a signed time at or before it. An add is accepted only within 30 s of now
+# (verify_allowed_change_signature), so a row older than that window plus the longest clock difference can never refuse a valid add:
+# 120 s > 30 s + 30 s. Rows are dropped after that so the table does not keep a record of who was removed.
+ALLOWED_CLOCK_KEEP_SECONDS = 120
+
+
+def _allowed_signed_unix(signature: str) -> int:
+    """The signed time of an /allowed change. Call only after verify_allowed_change_signature accepted `signature`."""
+    return int(signature.split(":", 1)[0])
+
+
+def _prune_allowed_clock(db: sqlite3.Connection, now_unix: int) -> None:
+    db.execute("DELETE FROM allowed_clock WHERE last_remove_unix < ?", (now_unix - ALLOWED_CLOCK_KEEP_SECONDS,))
 
 
 def _verify_with_key(pubkey_bytes: bytes, sig_bytes: bytes, message: bytes) -> bool:
@@ -1817,6 +1843,17 @@ async def add_allowed_sender(owner_fingerprint: str, req: AllowedSenderRequest):
         if owner_fingerprint == req.sender_fingerprint:
             raise HTTPException(status_code=400, detail="Cannot add yourself to allowed list")
 
+        # Check the order and apply in one transaction: an add signed at or before the last removal of this pair is refused.
+        db.execute("BEGIN IMMEDIATE")
+        _prune_allowed_clock(db, int(time.time()))
+        last = db.execute(
+            "SELECT last_remove_unix FROM allowed_clock WHERE owner_fingerprint = ? AND sender_fingerprint = ?",
+            (owner_fingerprint, req.sender_fingerprint)
+        ).fetchone()
+        if last is not None and _allowed_signed_unix(req.signature) <= last["last_remove_unix"]:
+            db.commit()
+            return JSONResponse(status_code=409, content={"status": "superseded", "sender_fingerprint": req.sender_fingerprint})
+
         now = now_iso()
         try:
             db.execute(
@@ -1824,6 +1861,7 @@ async def add_allowed_sender(owner_fingerprint: str, req: AllowedSenderRequest):
                 (owner_fingerprint, req.sender_fingerprint, now)
             )
         except sqlite3.IntegrityError:
+            db.commit()
             return {"status": "already_allowed", "sender_fingerprint": req.sender_fingerprint}
 
         audit(db, "allowed_added", owner_fingerprint, f"sender={req.sender_fingerprint[:16]}...")
@@ -1881,11 +1919,22 @@ async def remove_allowed_sender(
         if not verify_allowed_change_signature(owner_fingerprint, sender_fingerprint, x_signature, db, _allowed_remove_preimage):
             raise HTTPException(status_code=403, detail="Invalid signature — X-Signature header required")
 
+        # A removal always applies. It records its signed time (the latest one kept) even when there is no row, so an add that was signed
+        # before it and arrives later is refused.
+        db.execute("BEGIN IMMEDIATE")
+        _prune_allowed_clock(db, int(time.time()))
+        db.execute(
+            "INSERT INTO allowed_clock (owner_fingerprint, sender_fingerprint, last_remove_unix) VALUES (?, ?, ?) "
+            "ON CONFLICT(owner_fingerprint, sender_fingerprint) DO UPDATE SET "
+            "last_remove_unix = MAX(last_remove_unix, excluded.last_remove_unix)",
+            (owner_fingerprint, sender_fingerprint, _allowed_signed_unix(x_signature))
+        )
         result = db.execute(
             "DELETE FROM allowed_senders WHERE owner_fingerprint = ? AND sender_fingerprint = ?",
             (owner_fingerprint, sender_fingerprint)
         )
         if result.rowcount == 0:
+            db.commit()
             raise HTTPException(status_code=404, detail="Sender not in allowed list")
 
         audit(db, "allowed_removed", owner_fingerprint, f"sender={sender_fingerprint[:16]}...")
@@ -2804,6 +2853,8 @@ async def delete_identity(fingerprint: str, req: DeleteIdentityRequest):
 
         # Remove from allowed_senders (both as owner and as sender)
         db.execute("DELETE FROM allowed_senders WHERE owner_fingerprint = ? OR sender_fingerprint = ?",
+                   (fingerprint, fingerprint))
+        db.execute("DELETE FROM allowed_clock WHERE owner_fingerprint = ? OR sender_fingerprint = ?",
                    (fingerprint, fingerprint))
         db.execute("DELETE FROM messages WHERE recipient = ?", (fingerprint,))
         db.execute("DELETE FROM identities WHERE fingerprint = ?", (fingerprint,))
