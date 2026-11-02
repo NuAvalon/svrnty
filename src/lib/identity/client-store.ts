@@ -12,6 +12,8 @@ import type { VaultContents } from '../sync/vault';
 import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, blindFingerprint, computeManifestMAC, verifyManifestMAC, type ContactCryptoKeys, type ManifestEntry } from './contact-crypto';
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
+import { withSafetyWrite } from '@/lib/contacts/safety-write';
+import { casUpdateWith, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -1011,6 +1013,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
  * The function form is for any write that builds a value from a nested field (metadata, tags, a history list): it runs on the record read
  * inside this call, so it cannot write back a copy captured earlier (a dialog opened minutes ago, a list loaded before a loop).
  */
+export { ContactConflictError };
 export type ContactUpdate = Partial<ContactRecord> | ((existing: ContactRecord) => Partial<ContactRecord>);
 
 /**
@@ -1026,14 +1029,11 @@ export function mergeContactUpdate(existing: ContactRecord, updates: ContactUpda
   return { ...existing, ...patch, id: existing.id };
 }
 
-export async function updateContact(id: string, updates: ContactUpdate): Promise<void> {
-  // enc-b fail-closed: re-encrypting an update needs the session; refuse when locked.
-  if (!_sessionKey || !_contactKeys) {
-    throw new Error('Session locked — updateContact refuses to store plaintext (enc-b fail-closed)');
-  }
-  const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
-  if (!existing) throw new Error('Contact not found');
-  const next = mergeContactUpdate(existing, updates);
+/**
+ * The gates a finished contact record must pass before it is stored. They run on every attempt of a write, on the record that attempt
+ * decided from. Throws to refuse.
+ */
+async function finalizeContactUpdate(existing: ContactRecord, next: ContactRecord): Promise<ContactRecord> {
   const pk = (next.public_key || '').trim();
   // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
   if (!pk) {
@@ -1052,22 +1052,102 @@ export async function updateContact(id: string, updates: ContactUpdate): Promise
   // owner-verify (ownerHasVerified → owner_verified_at w/ in_person|other_channel), NEVER the top-level
   // trusted-since stamp. Fail-closed. Non-regression: only the TRANSITION is gated (re-saving an already-
   // trusted contact, or un-trusting, passes). This is Peter's pt5 "resistance between known and trusted".
-  {
-    const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
-    const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
-    if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
-      throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
-    }
+  const wasTrusted = existing.trust_level === 'trusted' || existing.trust_level === 'verified' || (existing as { trusted?: boolean }).trusted === true;
+  const nowTrusted = next.trust_level === 'trusted' || next.trust_level === 'verified' || (next as { trusted?: boolean }).trusted === true;
+  if (nowTrusted && !wasTrusted && !ownerHasVerified(next as Parameters<typeof ownerHasVerified>[0])) {
+    throw new Error('verify-before-trust: refusing to promote a contact to trusted without owner verification (in-person / other-channel). Verify first. [pt5 survivor-safety gate]');
   }
-  const stored = await buildStoredContact(next);
-  // enc-b B4: manifest over the post-update set (this id's version replaced) in the SAME tx as the
-  // record. owner_fingerprint is immutable per contact, so the book is `existing.owner_fingerprint`.
-  const owner = existing.owner_fingerprint;
-  const postUpdateEntries = (await getAllContacts(owner)).map((c) =>
-    c.id === id ? { id, version: typeof next.version === 'number' ? next.version : 0 } : toManifestEntry(c),
-  );
-  const updateManifestOp = await buildContactManifestOp(owner, postUpdateEntries);
-  await txPutMany([{ store: 'contacts', value: stored }, updateManifestOp]);
+  return next;
+}
+
+/**
+ * Write `ops` in one transaction, but only if every `expects` row is still exactly what the caller read. The reads happen INSIDE the
+ * transaction and the decision is made in the request callbacks (never across an awaited non-IndexedDB promise), so the transaction cannot
+ * auto-commit between the compare and the writes. Resolves false, having written nothing, when any row differs. Takes the database as a
+ * parameter so it can be tested against a small in-memory fake.
+ */
+export function commitIfUnchanged(db: IDBDatabase, expects: Expect[], ops: TxOp[]): Promise<boolean> {
+  const stores = [...new Set([...expects.map((e) => e.store), ...ops.map((o) => o.store)])];
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(stores, 'readwrite');
+    let firstError: unknown = null;
+    let conflict = false;
+    let waiting = expects.length;
+    const settle = () => {
+      if (conflict) { tx.abort(); return; } // nothing has been written; onabort resolves false
+      for (const op of ops) {
+        const store = tx.objectStore(op.store);
+        const req = 'delete' in op ? store.delete(op.delete) : store.put(op.value);
+        req.onerror = () => { firstError = req.error; };
+      }
+    };
+    for (const e of expects) {
+      const req = tx.objectStore(e.store).get(e.key);
+      req.onsuccess = () => {
+        if (!sameStoredRow((req.result ?? null) as StoredRow, e.expected)) conflict = true;
+        if (--waiting === 0) settle();
+      };
+      req.onerror = () => { firstError = req.error; };
+    }
+    if (expects.length === 0) settle();
+    tx.oncomplete = () => { db.close(); resolve(true); };
+    tx.onabort = () => {
+      db.close();
+      if (conflict && firstError === null) resolve(false);
+      else reject(firstError ?? tx.error ?? new Error('transaction aborted'));
+    };
+    tx.onerror = () => { firstError = firstError ?? tx.error; };
+  });
+}
+
+const contactCasIO: CasIO<ContactRecord> = {
+  readRaw: (id) => txGet<Record<string, unknown>>('contacts', id),
+  manifestKey: contactManifestSettingKey,
+  readManifest: (owner) => txGet<Record<string, unknown>>('settings', contactManifestSettingKey(owner)),
+  decrypt: (raw) => decryptContactIfNeeded(raw),
+  finalize: finalizeContactUpdate,
+  encrypt: (next) => buildStoredContact(next),
+  // enc-b B4: the manifest over the post-update set (this id's version replaced), written in the SAME tx as the record.
+  manifestOp: async (owner, next) => {
+    const entries = (await getAllContacts(owner)).map((c) =>
+      c.id === next.id ? { id: next.id, version: typeof next.version === 'number' ? next.version : 0 } : toManifestEntry(c),
+    );
+    return buildContactManifestOp(owner, entries);
+  },
+  commit: async (expects, ops) => commitIfUnchanged(await openDB(), expects, ops),
+};
+
+function assertUnlockedForContactWrite(what: string): void {
+  // enc-b fail-closed: re-encrypting an update needs the session; refuse when locked.
+  if (!_sessionKey || !_contactKeys) {
+    throw new Error(`Session locked — ${what} refuses to store plaintext (enc-b fail-closed)`);
+  }
+}
+
+/**
+ * Update a contact by compare-and-swap (see contact-cas.ts): the update is decided on the record read at the start of each attempt and is
+ * written only if neither that record nor the book manifest changed meanwhile; otherwise it is decided again on the newer record, up to
+ * CAS_MAX_ATTEMPTS, then ContactConflictError (nothing written). A function update MUST be pure: it can run once per attempt.
+ */
+export async function updateContact(id: string, updates: ContactUpdate): Promise<void> {
+  assertUnlockedForContactWrite('updateContact');
+  await casUpdateWith(contactCasIO, id, (existing) => mergeContactUpdate(existing, updates));
+}
+
+/**
+ * Like updateContact, for a decision that may be "do not write": `decide` returns the patch, or null when the record it was given does
+ * not call for a write (nothing is written and it is not a conflict). `applied` tells which. `decide` is subject to the same purity rule.
+ */
+export async function updateContactIf(
+  id: string,
+  decide: (existing: ContactRecord) => Partial<ContactRecord> | null,
+): Promise<{ applied: boolean }> {
+  assertUnlockedForContactWrite('updateContactIf');
+  const r = await casUpdateWith(contactCasIO, id, (existing) => {
+    const patch = decide(existing);
+    return patch === null ? null : mergeContactUpdate(existing, patch);
+  });
+  return { applied: r.applied };
 }
 
 /**
@@ -1282,7 +1362,8 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
         // Honor the severance: a non-trusted contact must not carry open_visibility (two-layer: UI only
         // sets open_vis on trusted; any untrusted-open edge is legacy #111 drift). Preserve other share_settings.
         // Decided again on the record held when the write runs: a change since the snapshot above (now trusted, or already private) wins.
-        await updateContact(c.id, clearOpenVisibilityIfUntrusted);
+        // A write that protects the owner: it takes the contact's lock so another tab's poll cannot make it lose its comparison.
+        await withSafetyWrite(c.id, () => updateContact(c.id, clearOpenVisibilityIfUntrusted));
       }
     } catch (e) {
       console.warn('[piece-1] #111-legacy privacy sweep skipped a record (retries next unlock)', e);

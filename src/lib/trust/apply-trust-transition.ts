@@ -17,6 +17,7 @@
 
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { updateContact as realUpdateContact } from '@/lib/identity/client-store';
+import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import type { TrustEvent } from '@/lib/trust/types';
 
 export interface TrustTransitionOwner {
@@ -81,7 +82,8 @@ export async function applyTrustTransition(
     initiated_by: 'self',
   };
   // The history append and the open_visibility clear are built from the record held when the write runs, not from the copy `peer` was read from.
-  await updateContact(peer.contactId, (existing: Record<string, unknown>) => {
+  // A trust change is a write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+  await withSafetyWrite(peer.contactId, () => updateContact(peer.contactId, (existing: Record<string, unknown>) => {
     const md = (existing.metadata ?? {}) as Record<string, unknown>;
     return {
       trust_level: nextTrusted ? 'trusted' : 'unverified',
@@ -99,7 +101,7 @@ export async function applyTrustTransition(
         },
       }),
     };
-  });
+  }));
 
   // (2) SATELLITE blind trust commitment — the satellite never sees WHO you trust (sorted-fp hash).
   if (peer.fingerprint) {
