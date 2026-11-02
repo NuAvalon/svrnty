@@ -248,3 +248,11 @@ test('GUARD: updateContact and updateContactIf both go through casUpdateWith, de
   assert.match(store, /assertUnlockedForContactWrite\('updateContact'\)/);
   assert.match(store, /assertUnlockedForContactWrite\('updateContactIf'\)/);
 });
+
+test('GUARD: the manifest value is read BEFORE the manifest is built from the book (read after, a write in between would be missed)', () => {
+  const casSrc = readFileSync(new URL('./contact-cas.ts', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  const loop = casSrc.slice(casSrc.indexOf('export async function casUpdateWith'));
+  const iRead = loop.indexOf('await io.readManifest(owner)');
+  const iBuild = loop.indexOf('await io.manifestOp(owner, next)');
+  assert.ok(iRead > 0 && iBuild > 0 && iRead < iBuild, 'readManifest runs before manifestOp inside the attempt');
+});

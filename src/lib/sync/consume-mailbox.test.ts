@@ -137,7 +137,7 @@ test('a guard that defers the contact leaves the update on the relay: nothing is
   let deferNow = true;
   const guarded = {
     ...store,
-    guard: async <T,>(_id: string, run: () => Promise<T>) => (deferNow ? { deferred: true as const } : { deferred: false as const, value: await run() }),
+    guard: async <T,>(run: () => Promise<T>) => (deferNow ? { deferred: true as const } : { deferred: false as const, value: await run() }),
   };
 
   const ackLog: string[][] = [];

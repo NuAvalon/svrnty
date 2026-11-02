@@ -85,10 +85,10 @@ export interface ContactStore {
    */
   persist(id: string, changes: StoredContact): Promise<void>;
   /**
-   * Optional. Run a write for contact `id` unless a write that protects the owner holds it. `deferred: true` means `run` was NOT run: the update
+   * Optional. Run a write unless a write that protects the owner holds the book. `deferred: true` means `run` was NOT run: the update
    * is left on the relay and applied on a later poll (not dropped). Omit = always write, as before.
    */
-  guard?<T>(id: string, run: () => Promise<T>): Promise<{ deferred: true } | { deferred: false; value: T }>;
+  guard?<T>(run: () => Promise<T>): Promise<{ deferred: true } | { deferred: false; value: T }>;
 }
 
 /** Emitted after a successful apply so the live book repaints (reason:'live-apply' seam). */
@@ -1054,7 +1054,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   if (dead()) return { kind: 'retryable' };
   const write = () => deps.store.persist(contact.current.id, changedKeys(contact.current, applied.next));
   if (deps.store.guard) {
-    const g = await deps.store.guard(contact.current.id, write);
+    const g = await deps.store.guard(write);
     if (g.deferred) return { kind: 'retryable' }; // an owner-protecting write holds this contact: leave the envelope for a later poll
   } else {
     await write();

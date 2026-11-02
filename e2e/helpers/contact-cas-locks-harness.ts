@@ -10,6 +10,8 @@ const settle = async (p: Promise<unknown>): Promise<Outcome> => {
   try { await p; return { ok: true }; } catch (e) { return { ok: false, name: (e as Error).name, message: (e as Error).message }; }
 };
 const tagPatch = (t: string) => (f: { metadata?: Record<string, unknown> }) => ({ metadata: { ...f.metadata, tags: [...((f.metadata?.tags as string[] | undefined) ?? []), t] } });
+// What a contact's update does on the poll path: it also sets the version to a number the contact chose, which changes the book manifest.
+const pollPatch = (t: string) => (f: { metadata?: Record<string, unknown>; version?: number }) => ({ ...tagPatch(t)(f), version: (f.version ?? 0) + 1 });
 
 declare global {
   interface Window {
@@ -18,7 +20,7 @@ declare global {
       add(owner: string, name: string): Promise<string>;
       /** Take the contact's safety lock and hold it for `ms`; resolves once the lock is GRANTED. */
       hold(id: string, ms: number): Promise<void>;
-      /** What the poll does: a write that yields to a safety write. */
+      /** What the poll does: a write (a tag AND a version bump, as an applied contact update does) that yields to a safety write. */
       poll(id: string, tag: string): Promise<{ deferred: boolean } | { error: string }>;
       /** A safety write: the contact's lock, then the write. */
       safety(id: string, tag: string): Promise<Outcome>;
@@ -33,7 +35,7 @@ window.__casl = {
   add: async (owner, name) => (await addContact(owner, { name, email: '', public_key: '', fingerprint: '', trust_level: 'unverified' } as never)).id,
   hold: (id, ms) => new Promise<void>((granted) => { void withSafetyWrite(id, async () => { granted(); await new Promise((r) => setTimeout(r, ms)); }); }),
   poll: async (id, t) => {
-    try { const r = await pollWriteUnlessSafety(id, () => updateContact(id, tagPatch(t))); return { deferred: r.deferred }; }
+    try { const r = await pollWriteUnlessSafety(() => updateContact(id, pollPatch(t))); return { deferred: r.deferred }; }
     catch (e) { return { error: (e as Error).name + ': ' + (e as Error).message }; }
   },
   safety: (id, t) => settle(withSafetyWrite(id, () => updateContact(id, tagPatch(t)))),

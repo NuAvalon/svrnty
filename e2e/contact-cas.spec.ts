@@ -75,7 +75,7 @@ test('with version changes on other contacts and a new contact all at once, the 
   expect(await integrityAfterUnlock(page), 'the manifest matches the book after concurrent version changes and an add').toBe('ok');
 });
 
-test('two tabs: a poll in one tab defers a contact the other tab is protecting, and a protecting write lands against a polling tab', async ({ page, context }) => {
+test('two tabs: a poll in one tab defers while the other tab protects the book, and a protecting write lands against a tab flooding version changes on another contact', async ({ page, context }) => {
   test.skip(CONTROL, 'needs the safety lock, which the tree before the change does not have');
   test.setTimeout(180_000);
   await genesis(page, 'Casey');
@@ -92,39 +92,43 @@ test('two tabs: a poll in one tab defers a contact the other tab is protecting, 
   expect(await page.evaluate(() => window.__casl.lockSupported())).toBe(true);
   expect(await page2.evaluate(() => window.__casl.lockSupported())).toBe(true);
 
-  // 1. tab 1 protects A; tab 2's poll defers A, still writes B, and writes A once tab 1 is done
-  await page.evaluate(([id]) => window.__casl.hold(id, 2500), [a]); // resolves once the lock is granted
+  // 1. tab 1 protects A. The conflict domain is the whole book (every write also compares the book manifest), so tab 2's poll defers for
+  //    A AND for B while tab 1 holds the lock, and writes both once tab 1 is done.
+  await page.evaluate(([id]) => window.__casl.hold(id, 2500), [a]); // resolves once the lock is GRANTED
   expect(await page2.evaluate(([id]) => window.__casl.poll(id, 'poll-during'), [a])).toEqual({ deferred: true });
-  expect(await page2.evaluate(([id]) => window.__casl.poll(id, 'poll-other'), [b])).toEqual({ deferred: false });
+  expect(await page2.evaluate(([id]) => window.__casl.poll(id, 'poll-other'), [b]), 'a different contact is deferred too: the book is the conflict domain').toEqual({ deferred: true });
   expect(await page.evaluate(([id]) => window.__casl.tags(id), [a])).not.toContain('poll-during');
-  expect(await page.evaluate(([id]) => window.__casl.tags(id), [b])).toContain('poll-other');
+  expect(await page.evaluate(([id]) => window.__casl.tags(id), [b])).not.toContain('poll-other');
   await expect.poll(async () => (await page2.evaluate(([id]) => window.__casl.poll(id, 'poll-after'), [a]) as { deferred: boolean }).deferred, { timeout: 10_000, intervals: [250] }).toBe(false);
-  const afterHold = await page.evaluate(([id]) => window.__casl.tags(id), [a]);
-  expect(afterHold).toContain('poll-after');
-  expect(afterHold, "the deferred poll's change was not applied while the contact was protected").not.toContain('poll-during');
+  expect(await page.evaluate(([id]) => window.__casl.tags(id), [a])).toContain('poll-after');
+  expect(await page2.evaluate(([id]) => window.__casl.poll(id, 'poll-b-after'), [b])).toEqual({ deferred: false });
+  expect(await page.evaluate(([id]) => window.__casl.tags(id), [b])).toContain('poll-b-after');
+  expect(await page.evaluate(([id]) => window.__casl.tags(id), [a]), "the deferred poll's change was not applied while the book was protected").not.toContain('poll-during');
 
-  // 2. tab 2 polls A in a tight loop; tab 1 makes a series of protecting writes to A. Each must land. The run must also show the lock was
-  //    really contended (some poll writes deferred), or it proved nothing.
+  // 2. ANOTHER CONTACT: tab 2 polls contact B in a tight loop, every write bumping B's version (which changes the book manifest, so it could make a
+  //    protecting write on A lose its comparison). Tab 1 makes a series of protecting writes to A. Each must land. The run must also show the
+  //    lock was really contended (some poll writes deferred), or it proved nothing.
   await page2.evaluate(([id]) => {
     (window as unknown as { __loop: Promise<unknown[]> }).__loop = (async () => {
       const out: unknown[] = [];
       for (let i = 0; i < 400; i++) { out.push(await window.__casl.poll(id, `p${i}`)); await new Promise((r) => setTimeout(r, 0)); }
       return out;
     })();
-  }, [a]);
+  }, [b]);
   const results: unknown[] = [];
   for (let i = 0; i < 12; i++) {
     results.push(await page.evaluate(([id, n]) => window.__casl.safety(id, `SAFETY${n}`), [a, i] as const));
     await page.waitForTimeout(15);
   }
-  expect(results.filter((r) => !(r as { ok: boolean }).ok), 'every protecting write landed (none failed with a conflict)').toEqual([]);
+  expect(results.filter((r) => !(r as { ok: boolean }).ok), 'every protecting write on A landed while a different contact flooded version changes').toEqual([]);
   const outs = (await page2.evaluate(() => (window as unknown as { __loop: Promise<Array<{ deferred?: boolean; error?: string }>> }).__loop));
   expect(outs.filter((o) => o.error), 'no poll write failed').toEqual([]);
-  const final = await page.evaluate(([id]) => window.__casl.tags(id), [a]);
-  for (let i = 0; i < 12; i++) expect(final).toContain(`SAFETY${i}`);
+  const finalA = await page.evaluate(([id]) => window.__casl.tags(id), [a]);
+  for (let i = 0; i < 12; i++) expect(finalA).toContain(`SAFETY${i}`);
+  const finalB = await page.evaluate(([id]) => window.__casl.tags(id), [b]);
   const applied = outs.map((o, i) => (o.deferred === false ? `p${i}` : null)).filter(Boolean) as string[];
   const deferred = outs.filter((o) => o.deferred === true).length;
-  expect(deferred, 'the lock was really contended: some poll writes were deferred while a protecting write held the contact').toBeGreaterThan(0);
-  for (const t of applied) expect(final, `poll write ${t} that ran was kept`).toContain(t);
-  console.log(`two-tab loop: ${applied.length} poll writes applied, ${deferred} deferred while the contact was protected, 12 protecting writes landed`);
+  expect(deferred, 'the lock was really contended: some poll writes were deferred while a protecting write held the book').toBeGreaterThan(0);
+  for (const t of applied) expect(finalB, `poll write ${t} that ran was kept`).toContain(t);
+  console.log(`two-tab loop: ${applied.length} poll writes applied, ${deferred} deferred while the book was protected, 12 protecting writes landed`);
 });

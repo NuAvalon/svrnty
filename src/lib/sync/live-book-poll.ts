@@ -121,7 +121,7 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
       await updateContact(id, next as Partial<ContactRecord>);
     },
     // A contact can make this write happen as often as they like, so it yields to a write that protects the owner (block, trust, go-private).
-    guard: (id, run) => pollWriteUnlessSafety(id, run),
+    guard: (run) => pollWriteUnlessSafety(run),
   };
 }
 

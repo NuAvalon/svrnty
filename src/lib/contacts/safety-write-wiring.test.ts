@@ -42,9 +42,9 @@ test('the unlock privacy sweep takes the contact lock per contact it rewrites', 
 
 test('the poll\'s contact store yields: it provides a guard built on the same lock, and the consumer returns retryable when it defers', () => {
   const poll = noComments(src('../sync/live-book-poll.ts'));
-  assert.match(poll, /guard: \(id, run\) => pollWriteUnlessSafety\(id, run\)/);
+  assert.match(poll, /guard: \(run\) => pollWriteUnlessSafety\(run\)/);
   const consume = noComments(src('../sync/consume-mailbox.ts'));
-  assert.match(consume, /const g = await deps\.store\.guard\(contact\.current\.id, write\);\s*if \(g\.deferred\) return \{ kind: 'retryable' \};/);
+  assert.match(consume, /const g = await deps\.store\.guard\(write\);\s*if \(g\.deferred\) return \{ kind: 'retryable' \};/);
 });
 
 test('no protecting write is nested inside another lock holder (a nested request for the same contact would wait forever)', () => {
@@ -55,4 +55,12 @@ test('no protecting write is nested inside another lock holder (a nested request
   const block = body(src('../../components/ContactManagement.tsx'), 'const handleSetBlocked', 'const confirmTarget');
   const share = body(src('../../components/ContactManagement.tsx'), 'const handleShareSettingsChange', '// --- Render ---');
   for (const h of [block, share]) assert.doesNotMatch(h, /applyTrustTransition|handleSetBlocked\(|handleShareSettingsChange\(/);
+});
+
+test('a protecting write that could not be saved is told in plain words, not as a raw error', () => {
+  const ui = src('../../components/ContactManagement.tsx');
+  const block = body(ui, 'const handleSetBlocked', 'const confirmTarget');
+  assert.match(block, /setError\(describeSafetyWriteFailure\(err, blocked \? 'Block' : 'Unblock'\) \?\? \(err instanceof Error \? err\.message : 'Failed to update block'\)\)/);
+  const share = body(ui, 'const handleShareSettingsChange', '// --- Render ---');
+  assert.match(share, /const words = describeSafetyWriteFailure\(err, 'Sharing setting'\);\s*if \(!words\) throw err;\s*setError\(words\);\s*return;/);
 });
