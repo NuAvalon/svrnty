@@ -79,6 +79,12 @@ export const DEFAULT_POLL_INTERVAL_MS = 1_500;
 /** After Grow mint / unlock / tab-focus — catch a joiner in ~a second, not a minute. */
 export const BURST_POLL_INTERVAL_MS = 350;
 export const DEFAULT_BURST_MS = 12_000;
+/** Idle backoff: after this many consecutive empty polls the steady cadence doubles each poll, up to the ceiling. */
+export const IDLE_TICKS_BEFORE_BACKOFF = 4;
+export const MAX_IDLE_POLL_INTERVAL_MS = 15_000;
+/** Relay-visible timing is metadata: idle delays get ±25% random jitter, and the first poll after a wake waits 0-1 s. Timing depends ONLY on local UI state. */
+export const IDLE_JITTER_FRACTION = 0.25;
+export const BURST_START_JITTER_MS = 1_000;
 
 /**
  * Project a stored contact record into the verify seam's KnownContactIdentity.
@@ -580,8 +586,10 @@ export async function buildConsumeDeps(
 
 export interface LiveBookPollHandle {
   stop: () => void;
-  /** Temporarily poll at BURST_POLL_INTERVAL_MS, then settle back. Immediate tick. */
+  /** Temporarily poll at BURST_POLL_INTERVAL_MS, then settle back. The first poll waits 0-1 s (BURST_START_JITTER_MS). Resets the idle backoff. */
   burst: (durationMs?: number) => void;
+  /** While on, the idle backoff is disabled and the cadence stays at the steady interval (used while the Notes tab is open). */
+  keepSteady: (on: boolean) => void;
 }
 
 /**
@@ -641,28 +649,91 @@ export async function pollLiveBookOnce(
   }
 }
 
+/**
+ * Poll delay policy (pure). The steady cadence doubles after IDLE_TICKS_BEFORE_BACKOFF consecutive empty polls, capped at
+ * maxIdleMs. A burst always polls at BURST_POLL_INTERVAL_MS; `steady` (the Notes tab is open) switches the backoff off.
+ */
+export function nextPollDelayMs(a: { idleTicks: number; bursting: boolean; steady?: boolean; intervalMs: number; maxIdleMs: number }): number {
+  if (a.bursting) return BURST_POLL_INTERVAL_MS;
+  const over = a.idleTicks - IDLE_TICKS_BEFORE_BACKOFF;
+  if (a.steady || over <= 0) return a.intervalMs;
+  return Math.max(a.intervalMs, Math.min(a.maxIdleMs, a.intervalMs * 2 ** Math.min(over, 10)));
+}
+
+/** base ± IDLE_JITTER_FRACTION, uniformly. `random` is injectable for tests. Never keyed on content. */
+export function jitterDelayMs(baseMs: number, random: () => number = Math.random): number {
+  return Math.round(baseMs * (1 + (random() * 2 - 1) * IDLE_JITTER_FRACTION));
+}
+
+/** 0..BURST_START_JITTER_MS random wait before the first poll of a burst. */
+export function burstStartDelayMs(random: () => number = Math.random): number {
+  return Math.floor(random() * BURST_START_JITTER_MS);
+}
+
+/** Timer functions, injectable so the scheduler can be driven deterministically in tests. Defaults to the real ones. */
+export interface PollTimers {
+  set: (fn: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
+}
+const REAL_TIMERS: PollTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 export function startLiveBookPolling(
   identity: unknown,
-  opts: { intervalMs?: number; fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
+  opts: {
+    intervalMs?: number;
+    maxIdleIntervalMs?: number;
+    fetchImpl?: typeof fetch;
+    buildDeps?: typeof buildConsumeDeps;
+    random?: () => number;
+    timers?: PollTimers;
+  } = {},
 ): LiveBookPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const maxIdleMs = opts.maxIdleIntervalMs ?? MAX_IDLE_POLL_INTERVAL_MS;
+  const random = opts.random ?? Math.random;
+  const T = opts.timers ?? REAL_TIMERS;
   let stopped = false;
   let inFlight = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let burstTimer: ReturnType<typeof setTimeout> | null = null;
+  let timer: unknown = null;
+  let burstTimer: unknown = null;
+  let bursting = false;
+  let steady = false;
+  let idleTicks = 0; // consecutive polls that found nothing; reset by any non-empty poll, a burst, or a keepSteady change
+
+  // The burst cadence stays exact; every other delay is jittered.
+  const nextDelay = () => {
+    const base = nextPollDelayMs({ idleTicks, bursting, steady, intervalMs, maxIdleMs });
+    return bursting ? base : jitterDelayMs(base, random);
+  };
+
+  const schedule = () => {
+    if (timer) T.clear(timer);
+    timer = null;
+    if (stopped) return;
+    timer = T.set(() => void tick(), nextDelay());
+  };
 
   const tick = async () => {
     if (stopped || inFlight) return; // never overlap polls
     inFlight = true;
+    let counts = true; // a poll that never reached the relay (locked / cycle ended) says nothing about idleness
+    let active = false;
     try {
       const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
       if (!deps) {
         reportPollStatus('locked');
-        return; // locked / no identity — stay static, retry next tick
+        counts = false;
+        return; // locked / no identity — stay static, retry at the current cadence
       }
       try {
         const summary = await consumeInboundContactUpdates(deps);
-        reportPollStatus(pollStatusOf(summary, deps.owner.cycle?.ended)); // copy v1 §B: 3 refused in a row → Chat notice
+        const status = pollStatusOf(summary, deps.owner.cycle?.ended);
+        reportPollStatus(status); // copy v1 §B: 3 refused in a row → Chat notice
+        if (status === 'locked') counts = false;
+        active = summary.polled > 0;
       } finally {
         deps.owner.cycle?.drop();
       }
@@ -671,37 +742,47 @@ export function startLiveBookPolling(
       console.error('[live-book-poll] poll tick failed (will retry):', err);
     } finally {
       inFlight = false;
+      if (counts) idleTicks = active ? 0 : idleTicks + 1;
+      schedule();
     }
-  };
-
-  const setCadence = (ms: number) => {
-    if (timer) clearInterval(timer);
-    if (stopped) return;
-    timer = setInterval(() => void tick(), ms);
   };
 
   const burst = (durationMs = DEFAULT_BURST_MS) => {
     if (stopped) return;
-    void tick();
-    setCadence(BURST_POLL_INTERVAL_MS);
-    if (burstTimer) clearTimeout(burstTimer);
-    burstTimer = setTimeout(() => {
+    idleTicks = 0;
+    bursting = true;
+    if (burstTimer) T.clear(burstTimer);
+    burstTimer = T.set(() => {
       burstTimer = null;
-      if (!stopped) setCadence(intervalMs);
+      bursting = false;
+      idleTicks = 0;
     }, durationMs);
+    // The first poll after a wake waits 0-1 s (not an exact focus timestamp). If a poll is already in flight, its
+    // finally{} reschedules at the burst cadence instead.
+    if (!inFlight) {
+      if (timer) T.clear(timer);
+      timer = T.set(() => void tick(), burstStartDelayMs(random));
+    }
   };
 
-  void tick(); // immediate first poll
-  setCadence(intervalMs);
+  const keepSteady = (on: boolean) => {
+    if (stopped || steady === on) return;
+    steady = on;
+    idleTicks = 0;
+    if (!inFlight && !bursting) schedule(); // take the new cadence now, not after a pending long wait
+  };
+
+  void tick(); // immediate first poll; each poll schedules the next
 
   return {
     stop: () => {
       stopped = true;
-      if (timer) clearInterval(timer);
+      if (timer) T.clear(timer);
       timer = null;
-      if (burstTimer) clearTimeout(burstTimer);
+      if (burstTimer) T.clear(burstTimer);
       burstTimer = null;
     },
     burst,
+    keepSteady,
   };
 }
