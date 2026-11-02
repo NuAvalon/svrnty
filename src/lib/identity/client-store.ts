@@ -1006,14 +1006,34 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   return record;
 }
 
-export async function updateContact(id: string, updates: Partial<ContactRecord>): Promise<void> {
+/**
+ * An update to a contact: a patch, or a SYNCHRONOUS function from the record updateContact holds NOW to a patch.
+ * The function form is for any write that builds a value from a nested field (metadata, tags, a history list): it runs on the record read
+ * inside this call, so it cannot write back a copy captured earlier (a dialog opened minutes ago, a list loaded before a loop).
+ */
+export type ContactUpdate = Partial<ContactRecord> | ((existing: ContactRecord) => Partial<ContactRecord>);
+
+/**
+ * The merge updateContact performs, pure so it can be tested without IndexedDB: `{ ...existing, ...patch, id: existing.id }`. A function
+ * updater is called once with `existing`. It must be synchronous: if it returns a Promise (or anything that is not a plain object) this
+ * throws, because an `await` inside would reopen the window between the read and the write that the function form exists to close.
+ */
+export function mergeContactUpdate(existing: ContactRecord, updates: ContactUpdate): ContactRecord {
+  const patch = typeof updates === 'function' ? updates(existing) : updates;
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch) || typeof (patch as { then?: unknown }).then === 'function') {
+    throw new Error('updateContact: the updater must synchronously return a plain patch object (not a Promise)');
+  }
+  return { ...existing, ...patch, id: existing.id };
+}
+
+export async function updateContact(id: string, updates: ContactUpdate): Promise<void> {
   // enc-b fail-closed: re-encrypting an update needs the session; refuse when locked.
   if (!_sessionKey || !_contactKeys) {
     throw new Error('Session locked — updateContact refuses to store plaintext (enc-b fail-closed)');
   }
   const existing = await getContact(id); // decrypts to the full logical record (or legacy plaintext)
   if (!existing) throw new Error('Contact not found');
-  const next = { ...existing, ...updates, id: existing.id };
+  const next = mergeContactUpdate(existing, updates);
   const pk = (next.public_key || '').trim();
   // Invariant-1 back-stop: no key ⇒ no fingerprint (impossible to construct keyless fp).
   if (!pk) {
@@ -1223,6 +1243,18 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
 }
 
 /**
+ * The unlock privacy sweep's decision, pure: for the record held NOW, the patch that clears open_visibility on a contact that is not trusted
+ * (a non-trusted contact must not carry it), or an empty patch when there is nothing to do (it is trusted, or it is already private). Other
+ * share settings and every other metadata key are kept. `edgeTrusted` is the reveal derivation: an explicit `trusted: false` wins over trust_level.
+ */
+export function clearOpenVisibilityIfUntrusted(fresh: ContactRecord): Partial<ContactRecord> {
+  const md = (fresh.metadata as Record<string, unknown> | undefined) ?? {};
+  const ss = (md.share_settings as { open_visibility?: boolean } | undefined) ?? {};
+  if (edgeTrusted(fresh as { trusted?: boolean; trust_level?: string }) || ss.open_visibility !== true) return {};
+  return { metadata: { ...md, share_settings: { ...ss, open_visibility: false } } } as Partial<ContactRecord>;
+}
+
+/**
  * piece-1 / #111-LEGACY sweep (survivor-safety, Archie do-no-harm ruling #158835). The two-layer reveal
  * drops `&& e.trusted` from getKnownPeers — FIX B's read-side mask over legacy untrusted-open edges
  * (#111 FIX A was handler-only, no migration → pre-FIX-A untrust left open_visibility SET). Without this,
@@ -1249,9 +1281,8 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
       if (!trusted && ss.open_visibility === true) {
         // Honor the severance: a non-trusted contact must not carry open_visibility (two-layer: UI only
         // sets open_vis on trusted; any untrusted-open edge is legacy #111 drift). Preserve other share_settings.
-        await updateContact(c.id, {
-          metadata: { ...md, share_settings: { ...ss, open_visibility: false } },
-        } as Partial<ContactRecord>);
+        // Decided again on the record held when the write runs: a change since the snapshot above (now trusted, or already private) wins.
+        await updateContact(c.id, clearOpenVisibilityIfUntrusted);
       }
     } catch (e) {
       console.warn('[piece-1] #111-legacy privacy sweep skipped a record (retries next unlock)', e);
