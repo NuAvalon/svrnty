@@ -61,8 +61,9 @@ export interface NewcomerCard {
   publicKeyArmored: string;
   /** The name N consented to be introduced UNDER (may be empty = KNOWN/unverified). Bound by N's consent-sig. */
   displayName: string;
-  /** §5 canonical-fp: N's ML-KEM-1024 public (base64, 1568B). Thread with sigPublicKeyB64 so R recomputes
-   *  N's 64-hex canonical id; a classical newcomer omits both (R's OpenPGP-fp path). */
+  /** §5 canonical-fp: N's ML-KEM-1024 public (base64, 1568B). REQUIRED together with pqSigPublicKeyB64: R recomputes
+   *  N's 64-hex canonical id from them and there is no classical fallback, so a newcomer without both cannot be introduced
+   *  (the build refuses and buildIntroductionDeposit returns null). */
   pqKemPublicKeyB64?: string;
   /** §5 canonical-fp: N's ML-DSA-87 public (base64) — the other half. */
   pqSigPublicKeyB64?: string;
@@ -89,7 +90,9 @@ export interface IntroductionSendResult {
 
 /**
  * Pure: build + dual-sign + encrypt the introduction → one ready-to-POST deposit {mailbox_id, blob}, or
- * null if the recipient has no usable public key or the build/encrypt fails (never sent downgraded).
+ * null if the recipient has no usable public key or the build/encrypt fails (never sent downgraded). The build also
+ * refuses (→ null) what the recipient would silently drop: a fingerprint that is not exactly canonical, a newcomer
+ * without both PQ keys, or a newcomer fingerprint that is not the one recomputed from the presented keys.
  * fetch-free so it is unit-testable; the caller POSTs it. The consent cross-binding + display_name bind
  * are enforced inside buildSignedIntroduction (it THROWS on mismatch) → caught here as no-deposit.
  */
@@ -118,8 +121,8 @@ export async function buildIntroductionDeposit(
       consent: newcomer.consent,
       consentSignature: newcomer.consentSignature,
       context,
-      // §5: carry N's PQ pubkeys so R recomputes N's 64-hex canonical id. Only when BOTH are present
-      // (a canonical identity); a classical newcomer omits them → R's OpenPGP-fp path.
+      // §5: carry N's PQ pubkeys so R recomputes N's 64-hex canonical id. Both are required: if either is missing the
+      // build below refuses (IntroductionSignError) and this returns null, because R would silently drop the introduction.
       ...(newcomer.pqKemPublicKeyB64 && newcomer.pqSigPublicKeyB64
         ? { introducedPqKemPublicKey: newcomer.pqKemPublicKeyB64, introducedPqSigPublicKey: newcomer.pqSigPublicKeyB64 }
         : {}),
