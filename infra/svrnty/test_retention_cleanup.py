@@ -59,7 +59,7 @@ def _left():
     return m, p
 
 
-@pytest.mark.parametrize("raw,want", [(None, 0), ("", 0), ("0", 0), ("-5", 0), ("abc", 0), (" 86400 ", 86400), ("3600", 3600)])
+@pytest.mark.parametrize("raw,want", [(None, 0), ("", 0), ("0", 0), ("-5", 0), ("abc", 0), (" 86400 ", 86400), ("3600", 3600), ("1", 3600), ("59", 3600)])
 def test_interval_parse_defaults_off(raw, want):
     assert satellite._parse_cleanup_interval(raw) == want
 
@@ -148,3 +148,55 @@ def test_routes_still_require_the_key_and_use_the_helpers():
         assert r["deleted"] == 1 and r["psi_deleted"] == 1
     m, _ = _left()
     assert m == {ids["unacked_new"], ids["collected_new"]}
+
+
+def test_stamp_write_refuses_a_planted_symlink_and_leaves_no_temp(tmp_path, monkeypatch):
+    monkeypatch.setattr(satellite, "DATA_DIR", tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / (satellite.CLEANUP_STAMP_NAME + ".tmp")).symlink_to(victim)  # the old fixed temp name
+    satellite._write_cleanup_stamp({"ts": "2026-11-02T00:00:00+00:00", "ok": True, "counts": {}})
+    assert json.loads((tmp_path / satellite.CLEANUP_STAMP_NAME).read_text())["ok"] is True
+    assert victim.read_text() == "keep"
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp") and not p.is_symlink()] == []
+
+
+def test_stamp_carries_no_error_text(monkeypatch):
+    class Boom(Exception):
+        pass
+    def boom():
+        raise Boom("mailbox_fp=deadbeef secret detail")
+    monkeypatch.setattr(satellite, "get_db", boom)
+    stamp = asyncio.run(satellite.run_retention_cleanup())
+    assert set(stamp) == {"ts", "ok", "counts"} and "deadbeef" not in json.dumps(stamp)
+
+
+def test_live_writer_is_not_locked_out_during_a_big_purge():
+    import threading
+    now = datetime.now(timezone.utc)
+    db = satellite.get_db()
+    db.execute("PRAGMA foreign_keys=OFF")
+    db.execute("DELETE FROM messages")
+    old = (now - timedelta(seconds=TTL + 3600)).isoformat()
+    db.executemany("INSERT INTO messages (recipient, sender_fingerprint, encrypted_blob, created_at) VALUES ('r','s',?,?)",
+                   [("x" * 512, old) for _ in range(20000)])
+    db.commit(); db.close()
+    errors, written = [], []
+    def writer():
+        for i in range(200):
+            try:
+                w = satellite.get_db(); w.execute("PRAGMA foreign_keys=OFF")
+                w.execute("INSERT INTO messages (recipient, sender_fingerprint, encrypted_blob, created_at) VALUES ('live','s','b',?)",
+                          (datetime.now(timezone.utc).isoformat(),))
+                w.commit(); w.close(); written.append(i)
+            except Exception as e:
+                errors.append(type(e).__name__)
+    th = threading.Thread(target=writer)
+    th.start()
+    stamp = asyncio.run(satellite.run_retention_cleanup())
+    th.join()
+    assert errors == [] and len(written) == 200
+    assert stamp["ok"] is True and stamp["counts"]["unacknowledged"] == 20000
+    db = satellite.get_db()
+    assert db.execute("SELECT count(*) FROM messages WHERE recipient='live'").fetchone()[0] == 200
+    db.close()
