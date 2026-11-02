@@ -19,6 +19,7 @@
 // client connect/trust flow is rewired to call it (Apollo) + isPSIDiscoveryLive flips.
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 const PATH_RE = /^[A-Za-z0-9_./-]+$/;
 
@@ -69,7 +70,7 @@ export async function POST(
 
     const res = await fetch(`${satelliteBaseUrl()}/allowed/${p}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...forwardedClientIp(request) },
       body: JSON.stringify(body),
     });
     return relay(await res.text(), res.status);
@@ -87,7 +88,7 @@ export async function DELETE(
     const p = joinPath(path);
     if (!p) return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
 
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...forwardedClientIp(request) };
     const sig = request.headers.get('X-Signature');
     if (sig) headers['X-Signature'] = sig;
 
@@ -107,7 +108,7 @@ export async function GET(
     const p = joinPath(path);
     if (!p) return NextResponse.json({ error: 'Invalid path' }, { status: 400 });
 
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...forwardedClientIp(request) };
     const sig = request.headers.get('X-Signature');
     if (sig) headers['X-Signature'] = sig;
 

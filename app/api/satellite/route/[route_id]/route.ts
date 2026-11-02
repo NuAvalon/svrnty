@@ -13,6 +13,7 @@
 // HORIZON_WINDOWS); each route_id is independently blinded, so the proxy learns no linkage.
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 const ROUTE_ID_RE = /^[0-9a-fA-F]{32}$/;
 
@@ -26,7 +27,7 @@ export async function GET(
       return NextResponse.json({ error: 'Invalid route_id' }, { status: 400 });
     }
 
-    const res = await fetch(`${satelliteBaseUrl()}/route/${route_id}`);
+    const res = await fetch(`${satelliteBaseUrl()}/route/${route_id}`, { headers: forwardedClientIp(request) });
     const text = await res.text();
     try {
       return NextResponse.json(JSON.parse(text), { status: res.status });
