@@ -68,12 +68,18 @@ def _parse_cleanup_interval(raw: Optional[str]) -> int:
 
     A feature that deletes data ships off: it runs only where an operator sets a positive interval
     explicitly (self-host compose; prod/dev via the reviewed env apply). Unset, empty, 0, negative or
-    unparseable all mean off."""
+    unparseable all mean off. A positive value below CLEANUP_MIN_INTERVAL_S is raised to it, so a typo
+    can't turn the satellite into a delete loop.
+    With N uvicorn workers each runs its own loop: N runs per interval. Harmless (the deletes are
+    idempotent and the stamp is replaced atomically); prod and self-host run one worker."""
     try:
         v = int((raw or "").strip() or "0")
     except ValueError:
         return 0
-    return v if v > 0 else 0
+    return max(v, CLEANUP_MIN_INTERVAL_S) if v > 0 else 0
+
+
+CLEANUP_MIN_INTERVAL_S = 3600
 
 
 CLEANUP_INTERVAL_S = _parse_cleanup_interval(os.environ.get("SATELLITE_CLEANUP_INTERVAL_S"))
@@ -4085,14 +4091,36 @@ _cleanup_lock = asyncio.Lock()
 
 
 def _write_cleanup_stamp(stamp: dict) -> None:
-    """Dead-man stamp: {ts, ok, counts}. 0600 on the data volume, written atomically. Not served."""
+    """Dead-man stamp: {ts, ok, counts}. 0600 on the data volume, written atomically. Not served.
+    The temp file has a random name and is opened O_EXCL|O_NOFOLLOW, so a planted file or symlink
+    can't be followed or reused."""
+    import secrets as _secrets
     path = DATA_DIR / CLEANUP_STAMP_NAME
-    tmp = DATA_DIR / (CLEANUP_STAMP_NAME + ".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(stamp, f)
-    os.chmod(str(tmp), 0o600)
-    os.replace(str(tmp), str(path))
+    tmp = DATA_DIR / f".{CLEANUP_STAMP_NAME}.{_secrets.token_hex(8)}.tmp"
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(stamp, f)
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
+
+
+def _run_cleanup_db() -> dict:
+    """The DB half of a run, executed in a worker thread (sync sqlite must not block the event loop).
+    get_db() is the routes' own connection (same busy timeout), so live writers wait, not fail."""
+    db = get_db()
+    try:
+        unacked = _purge_unacknowledged(db)
+        retained, psi = _purge_retained(db)
+        db.commit()
+    finally:
+        db.close()
+    return {"unacknowledged": unacked, "retained": retained, "psi_sessions": psi}
 
 
 async def run_retention_cleanup() -> dict:
@@ -4103,14 +4131,8 @@ async def run_retention_cleanup() -> dict:
     async with _cleanup_lock:
         ts = datetime.now(timezone.utc).isoformat()
         try:
-            db = get_db()
-            try:
-                unacked = _purge_unacknowledged(db)
-                retained, psi = _purge_retained(db)
-                db.commit()
-            finally:
-                db.close()
-            counts = {"unacknowledged": unacked, "retained": retained, "psi_sessions": psi}
+            counts = await asyncio.to_thread(_run_cleanup_db)
+            unacked, retained, psi = counts["unacknowledged"], counts["retained"], counts["psi_sessions"]
             print(f"[satellite] cleanup: deleted {retained} messages past their retention period; "
                   f"deleted {unacked} unacknowledged messages older than {UNDELIVERED_MSG_TTL_DAYS} days; "
                   f"deleted {psi} expired discovery sessions")
@@ -4119,7 +4141,7 @@ async def run_retention_cleanup() -> dict:
             print(f"[satellite] cleanup FAILED: {type(e).__name__}")
             stamp = {"ts": ts, "ok": False, "counts": None}
         try:
-            _write_cleanup_stamp(stamp)
+            await asyncio.to_thread(_write_cleanup_stamp, stamp)
         except Exception as e:
             print(f"[satellite] cleanup stamp write FAILED: {type(e).__name__}")
         return stamp
