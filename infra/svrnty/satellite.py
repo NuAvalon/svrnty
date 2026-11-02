@@ -1599,8 +1599,8 @@ async def export_satellite(fingerprint: str, x_signature: Optional[str] = Header
             # Relay source — EVERY module satellite.py imports at module scope MUST be bundled:
             # mailbox_envelope + satellite_keys are REQUIRED (omitting them = ModuleNotFound on
             # startup — the pre-existing break that made self-host never run) + crypto_utils
-            # (client kit) + registration + the served UI (dashboard/chat, COPY'd by the keystone
-            # Dockerfile). Read the REAL tracked files — no heredoc copies that silently drift.
+            # (client kit) + registration. The satellite serves no HTML pages, so none are bundled.
+            # Read the REAL tracked files — no heredoc copies that silently drift.
             zf.writestr('satellite.py', satellite_src)
             zf.writestr('mailbox_envelope.py', (src_dir / "mailbox_envelope.py").read_text())
             zf.writestr('satellite_keys.py', (src_dir / "satellite_keys.py").read_text())
