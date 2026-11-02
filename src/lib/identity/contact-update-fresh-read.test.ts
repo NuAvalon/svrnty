@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mergeContactUpdate, clearOpenVisibilityIfUntrusted, type ContactRecord } from './client-store';
 import { applyShareSettingsChange, defaultShareSettings, SHARE_SETTING_KEYS, type ContactShareSettings } from '@/lib/contacts/contact-lane';
+import { callsOf } from './static-guard-kit';
 
 const rec = (o: Record<string, unknown> = {}): ContactRecord =>
   ({ id: 'c1', owner_fingerprint: 'o', fingerprint: 'f', name: 'n', email: 'e', public_key: 'k', added_at: 'a', ...o }) as unknown as ContactRecord;
@@ -157,29 +158,6 @@ test('sweep: it never mutates the record it is given', () => {
 // ── static guards: the converted write sites build from the held record ─────────────────────────────────────
 
 const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
-
-// The text of every `name(...)` call in `text`, found by balanced parentheses (string and template literals are skipped), so a nested call or a
-// multi-line body cannot cut the match short.
-function callsOf(text: string, name: string): string[] {
-  const out: string[] = [];
-  const open = name + '(';
-  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, at + 1)) {
-    if (at > 0 && /[\w.$]/.test(text[at - 1])) continue; // a longer identifier, or a method of something else
-    let depth = 0;
-    let i = at + name.length;
-    for (; i < text.length; i++) {
-      const ch = text[i];
-      if (ch === "'" || ch === '"' || ch === '`') {
-        for (i++; i < text.length && text[i] !== ch; i++) if (text[i] === '\\') i++;
-        continue;
-      }
-      if (ch === '(') depth++;
-      else if (ch === ')' && --depth === 0) break;
-    }
-    out.push(text.slice(at, i + 1));
-  }
-  return out;
-}
 
 // What a function-form write may contain: ONE call to a pure patch helper whose first argument is exactly the bare identifier `fresh`
 // (not `fresh && x`, not an alias). A body that reads anything else
