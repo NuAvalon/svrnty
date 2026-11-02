@@ -83,7 +83,9 @@ export async function verifyNoteSender(wire: NoteWireV0): Promise<boolean> {
     //     fingerprint — else an attacker pairs a victim's fingerprint with the attacker's own key. §5:
     //     thread the PQ pubkeys so a 64-hex CANONICAL id recomputes SHA256(sign‖enc‖kem‖sig) and matches;
     //     a sender that omits them (e.g. a classical 40-hex id) is REFUSED: fingerprintMatchesKey is
-    //     canonical-only, so no PQ legs → false. There is NO OpenPGP fallback.
+    //     canonical-only, so no PQ legs → false. There is NO OpenPGP fallback. "Canonical-only" names the key
+    //     BASIS, not an exact-match rule: the claimed fp may still be a 16–64-hex PREFIX of the derived one
+    //     (canonicalClaimMatches), with case and separators ignored.
     //     This binding runs BEFORE the signature (step 2): the PQ pubkeys are self-protected by the fp-match.
     if (!(await fingerprintMatchesKey(wire.from_fingerprint, wire.public_key, {
       kem_public_key: wire.pq_kem_public_key,
