@@ -62,6 +62,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { encapsulate, decapsulate, generateKEMKeypair, uint8ToBase64, base64ToUint8 } from './pq.js';
 import { aesGcmEncrypt, aesGcmDecrypt, randomBytes } from './kdf.js';
+import { ctEqual } from './ct-equal';
 
 /** Header version. Bump when the canonical header or the KDF labels change. */
 export const TRIPLE_RATCHET_VERSION = 1;
@@ -159,13 +160,6 @@ function wipe(b: Uint8Array | null | undefined): void {
 
 function copyBytes(b: Uint8Array): Uint8Array {
   return new Uint8Array(b);
-}
-
-function bytesEq(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d |= a[i]! ^ b[i]!;
-  return d === 0;
 }
 
 function isCount(n: unknown): n is number {
@@ -638,7 +632,7 @@ export class TripleRatchet {
       return pt;
     }
 
-    if (bytesEq(parsed.dh, this.theirDh)) {
+    if (ctEqual(parsed.dh, this.theirDh)) {
       return this.receiveSameEpoch(parsed);
     }
     return this.receiveNewEpoch(parsed);

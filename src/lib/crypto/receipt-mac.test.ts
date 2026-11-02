@@ -124,15 +124,21 @@ test('R11 NO SIGNATURE, NO PUBLIC KEY (A5-d): the verify API takes rk and nothin
   assert.equal(verifyReceiptTag.length, 4, '(rk, noteId, code, tag): no card, no public key, no signature parameter');
   const src = readFileSync(new URL('./receipt-mac.ts', import.meta.url), 'utf8');
   const imports = [...src.matchAll(/^import .* from '([^']+)';/gm)].map((m) => m[1]).sort();
-  assert.deepEqual(imports, ['@noble/hashes/hkdf.js', '@noble/hashes/hmac.js', '@noble/hashes/sha2.js']);
+  // The constant-time compare is the shared local helper; it must itself import nothing.
+  assert.deepEqual(imports, ['./ct-equal', '@noble/hashes/hkdf.js', '@noble/hashes/hmac.js', '@noble/hashes/sha2.js']);
+  const ctSrc = readFileSync(new URL('./ct-equal.ts', import.meta.url), 'utf8');
+  assert.deepEqual([...ctSrc.matchAll(/^import .*$/gm)], [], 'the shared compare imports nothing');
   assert.doesNotMatch(src.replace(/\/\/.*$/gm, ''), /ed25519|ml-?dsa|openpgp|signWithEnvelope|verifyWithEnvelope|fingerprint|public_?key/i);
 });
 
 test('R12 static: the tag comparison is the constant-time helper (no early return in its loop, no === / equals on tag bytes)', () => {
   const src = readFileSync(new URL('./receipt-mac.ts', import.meta.url), 'utf8');
-  const ct = src.slice(src.indexOf('function ctEqual'));
+  assert.match(src, /^import \{ ctEqual \} from '\.\/ct-equal';$/m, 'the comparison is the shared helper');
+  assert.doesNotMatch(src, /function ctEqual/, 'no private copy of the comparison');
+  const shared = readFileSync(new URL('./ct-equal.ts', import.meta.url), 'utf8');
+  const ct = shared.slice(shared.indexOf('export function ctEqual'));
   const loop = ct.slice(ct.indexOf('for ('), ct.indexOf(';', ct.indexOf('diff |=')) + 1);
-  assert.match(loop, /^for \(let i = 0; i < a\.length; i\+\+\) diff \|= a\[i\] \^ b\[i\];$/, 'the loop accumulates the difference over every byte');
+  assert.match(loop, /^for \(let i = 0; i < a\.length; i\+\+\) diff \|= a\[i\]! \^ b\[i\]!;$/, 'the loop accumulates the difference over every byte');
   assert.doesNotMatch(loop, /return|break|throw|continue/, 'no early exit inside the comparison loop');
   const verify = src.slice(src.indexOf('export function verifyReceiptTag'));
   assert.match(verify, /ctEqual\(receiptTag\(/);
