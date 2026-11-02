@@ -34,11 +34,11 @@ import { safeEmailLink, safePhoneLink } from '@/lib/contacts/safe-contact-link';
 import { VerifySheet } from '@/components/verify/VerifySheet';
 import { isSvrnNetworkContact } from '@/lib/contacts/is-svrn-contact';
 import { contactRecordToEdge, edgeTrusted } from '@/lib/trust/contact-edge';
-import { ownerHasVerified, ownerVerifyPersistPatch } from '@/lib/trust/trust-recipe';
+import { ownerHasVerified } from '@/lib/trust/trust-recipe';
 import { livingEdgeStatus } from '@/lib/trust/living-edge-status';
 import { visualForEdge } from '@/components/trust/trust-phase-visual';
 import {
-  buildLinkToSvrntyUpdate,
+  bindLinkTarget,
   defaultShareSettings,
   isPendingSvrntyContact,
   readShareSettings,
@@ -50,12 +50,15 @@ import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact, removeContact,
-  getContactByFingerprint, loadKey,
+  getContact, getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startPsiDiscovery } from '@/lib/sync/psi-discovery-start';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
+import { toggleTagPatch, renameTagPatch, removeTagPatch, addTagPatch } from '@/lib/contacts/tag-patches';
+import { shareSettingsPatch, consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
+import { editFormPatch, ownerVerifyHeldPatch, blockPatch, linkHeldPatch } from '@/lib/contacts/metadata-patches';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
 import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/identity-card-sign';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
@@ -452,19 +455,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       if (selectedContact && isSvrnNetworkContact(selectedContact)) {
         throw new Error('SVRNTY contacts are key-bound — edit is locked. Change trust, groups, or share settings instead.');
       }
-      await updateContact(editContactForm.id, {
-        name: editContactForm.name,
-        email: editContactForm.email || '',
-        contact_info: info,
-        metadata: {
-          notes: editContactForm.notes,
-          ...(selectedContact?.metadata ? {
-            tags: selectedContact.metadata.tags,
-            connection_method: selectedContact.metadata.connection_method,
-            mutual_contacts: selectedContact.metadata.mutual_contacts,
-          } : {}),
-        },
-      });
+      // Built from the record held when the write runs: tags, connection method and the rest of the metadata are whatever the store has now.
+      await updateContact(editContactForm.id, (fresh) =>
+        editFormPatch(fresh, { name: editContactForm.name, email: editContactForm.email || '', contact_info: info, notes: editContactForm.notes }),
+      );
       setShowEditDialog(false);
       await loadContacts();
       onContactsChange?.();
@@ -491,7 +485,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         void reconcileAllowedOnConsentChange({
           ownerFp: fingerprint,
           senderFp: removedFp,
-          consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
+          consent: NO_CONSENT,
         });
       }
       setShowDetailDialog(false);
@@ -557,7 +551,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // Owner-local verify (trust prereq): persist owner_verified_at via the REAL recipe patch
       // (in-person / other-channel) — NOT a flag-flip/force-true. This is the missing card leg:
       // once verified, confirmTarget.ownerVerified flips true → card-Trust (PR#149) applies.
-      await updateContact(contact.id, ownerVerifyPersistPatch((contact as any).metadata, method) as any);
+      await updateContact(contact.id, (fresh) => ownerVerifyHeldPatch(fresh, method));
       await loadContacts();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to record verification');
@@ -571,27 +565,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setLoading(true);
       setError(null);
-      await updateContact(contact.id, {
-        blocked,
-        ...(blocked
-          ? {
-              trusted: false,
-              trust_level: 'unverified',
-              trusted_since: null,
-            }
-          : {}),
-        metadata: {
-          ...(contact.metadata || {}),
-          blocked,
-          // #111 (survivor-safety): blocking clears open_visibility so the peer leaves
-          // every PSI reveal set — a blocked peer must never keep discovering you via a
-          // stale open_vis flag. The read side is fail-closed too (ownerEdges !blocked);
-          // this keeps the STORED state honest so the re-assert fires on local read.
-          ...(blocked
-            ? { share_settings: { ...(contact.metadata?.share_settings || {}), open_visibility: false } }
-            : {}),
-        },
-      } as any);
+      // Blocking clears open_visibility so the peer leaves every PSI reveal set (a blocked peer must never keep discovering you via a stale
+      // open_vis flag); the read side is fail-closed too (ownerEdges !blocked). See blockPatch.
+      await updateContact(contact.id, (fresh) => blockPatch(fresh, blocked));
+      const afterBlock = await getContact(contact.id);
       setShowDetailDialog(false);
       // #572 part 2 (flip-blocker b + #111 satellite-completeness): block → DELETE the allowed_senders
       // row so a blocked adversary's stale row can't keep the mutual-gate open (their client would still
@@ -599,12 +576,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       void reconcileAllowedOnConsentChange({
         ownerFp: fingerprint,
         senderFp: contact.fingerprint,
-        consent: {
-          trusted: blocked ? false : isTrusted(contact),
-          openVisibility: !blocked && contact.metadata?.share_settings?.open_visibility === true,
-          blocked,
-          perContactPrivate: contact.metadata?.share_settings?.per_contact_private === true,
-        },
+        consent: afterBlock ? consentFromRecord(afterBlock) : NO_CONSENT,
       });
       // Piece-2 (#579): block ALSO populates the durable owner-local suppression RECORD (the load-bearing
       // emit-side source; the `blocked` flag set above is defense-in-depth). Fire-and-forget + fail-closed —
@@ -874,25 +846,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       if (!fp || !pk) {
         throw new Error('Paste their SVRNTY fingerprint and public key.');
       }
-      const patch = await buildLinkToSvrntyUpdate({
-        fingerprint: fp,
-        public_key: pk,
-        existing: {
-          name: selectedContact.name,
-          email: selectedContact.email,
-          contact_info: selectedContact.contact_info,
-          metadata: selectedContact.metadata as Record<string, unknown> | null,
-        },
-      });
-      await updateContact(selectedContact.id, {
-        fingerprint: patch.fingerprint,
-        public_key: patch.public_key,
-        connection_status: patch.connection_status,
-        metadata: patch.metadata,
-        // Keep classical channels on the living card as contact_info + classical_extras.
-        contact_info: selectedContact.contact_info,
-        trust_level: 'unverified',
-      } as any);
+      // The async step is only the key binding; the write itself is a synchronous function of the held record, which keeps the classical
+      // channels on the living card as contact_info + classical_extras.
+      const bound = await bindLinkTarget(fp, pk);
+      await updateContact(selectedContact.id, (fresh) => linkHeldPatch(fresh, bound));
       setLinkDialogOpen(false);
       setLinkFingerprint('');
       setLinkPublicKey('');
@@ -908,13 +865,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
 
   const handleToggleGroup = async (tag: string) => {
     if (!selectedContact || !fingerprint) return;
-    const prev = selectedContact.metadata?.tags || [];
-    const tags = prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag];
-    await updateContact(selectedContact.id, {
-      metadata: { ...selectedContact.metadata, tags },
-    } as any);
-    const next = { ...selectedContact, metadata: { ...selectedContact.metadata, tags } };
-    setSelectedContact(next);
+    // The tag list is recomputed from the record held when the write runs, not from the copy this dialog opened with.
+    await updateContact(selectedContact.id, (fresh) => toggleTagPatch(fresh, tag));
+    const after = await getContact(selectedContact.id);
+    if (after) setSelectedContact(recordToContact(after));
     await loadContacts();
     onContactsChange?.();
   };
@@ -928,27 +882,26 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     // non-trusted edge at the WRITE so no untrusted-open edge is ever created — regardless of the toggle
     // UI. (pcp is NOT clamped: it's a privacy control valid on any edge.) piece-2 removes this to go live.
     // ★★ trusted via edgeTrusted (reveal derivation), NOT isTrusted(@112 trust_level-only) — #158853.
-    const clamped = edgeTrusted(selectedContact) ? next : { ...next, open_visibility: false };
-    await updateContact(selectedContact.id, {
-      metadata: { ...selectedContact.metadata, share_settings: clamped },
-    } as any);
-    setSelectedContact({
-      ...selectedContact,
-      metadata: { ...selectedContact.metadata, share_settings: clamped },
-    });
+    // Only the settings the owner CHANGED are applied, on top of the settings the record holds NOW, and the clamp is decided on the record
+    // held NOW (its trust may have changed since this screen was drawn). See applyShareSettingsChange.
+    const seen = readShareSettings(selectedContact);
+    await updateContact(selectedContact.id, (fresh) => shareSettingsPatch(fresh, seen, next));
+    const after = await getContact(selectedContact.id);
+    if (!after) {
+      // The contact is gone: its allowed-senders row must not outlive it. An all-false consent removes the row (idempotent).
+      void reconcileAllowedOnConsentChange({ ownerFp: fingerprint, senderFp: selectedContact.fingerprint, consent: NO_CONSENT });
+      return;
+    }
+    const afterContact = recordToContact(after);
+    setSelectedContact(afterContact);
     // #572 part 2 (flip-blocker b): go-private (open_visibility→false) → DELETE; go-open (→true, while
     // trusted ∩ !blocked) → ADD. Reconcile mirrors whichever way the open-visibility axis just moved.
-    // Consent is built from `clamped` (NOT `next`) so the allowed_senders mirror matches the record (H1
-    // supersedes the D1 edit that used `next`). pcp is unclamped, so clamped.per_contact_private === next's.
+    // Consent is built from the record read back after the write (NOT `next`, NOT the screen's copy) so the allowed_senders mirror matches
+    // what was stored (H1 supersedes the D1 edit that used `next`). pcp is unclamped, so it equals next's.
     void reconcileAllowedOnConsentChange({
       ownerFp: fingerprint,
-      senderFp: selectedContact.fingerprint,
-      consent: {
-        trusted: isTrusted(selectedContact),
-        openVisibility: clamped.open_visibility === true,
-        blocked: isContactBlocked(selectedContact),
-        perContactPrivate: clamped.per_contact_private === true,
-      },
+      senderFp: afterContact.fingerprint,
+      consent: consentFromRecord(afterContact),
     });
     await loadContacts();
   };
@@ -1323,10 +1276,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                               if (!next || next === tag) return;
                               try {
                                 for (const c of contacts) {
-                                  const prev = c.metadata?.tags || [];
-                                  if (!prev.includes(tag)) continue;
-                                  const tags = Array.from(new Set(prev.map((t) => (t === tag ? next : t))));
-                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                  if (!(c.metadata?.tags || []).includes(tag)) continue; // a cheap filter on the loaded list; the write re-checks on the record it holds
+                                  await updateContact(c.id, (fresh) => renameTagPatch(fresh, tag, next));
                                 }
                                 if (groupFilterTag === tag) setGroupFilterTag(next);
                                 setEditingGroupTag(null);
@@ -1408,10 +1359,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                               if (!window.confirm(`Remove group “${tag}” from all contacts? Tags are local-only.`)) return;
                               try {
                                 for (const c of contacts) {
-                                  const prev = c.metadata?.tags || [];
-                                  if (!prev.includes(tag)) continue;
-                                  const tags = prev.filter((t) => t !== tag);
-                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                  if (!(c.metadata?.tags || []).includes(tag)) continue; // a cheap filter on the loaded list; the write re-checks on the record it holds
+                                  await updateContact(c.id, (fresh) => removeTagPatch(fresh, tag));
                                 }
                                 if (groupFilterTag === tag) setGroupFilterTag(null);
                                 setBulkGroupNote(`Removed group “${tag}”.`);
@@ -1519,8 +1468,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       for (const id of selectedIds) {
                         const c = contacts.find((x) => x.id === id);
                         if (!c) continue;
-                        const tags = Array.from(new Set([...(c.metadata?.tags || []), name]));
-                        await updateContact(id, { metadata: { ...c.metadata, tags } } as any);
+                        await updateContact(id, (fresh) => addTagPatch(fresh, name));
                       }
                       await loadContacts();
                       onContactsChange?.();
