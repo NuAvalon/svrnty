@@ -27,8 +27,6 @@ Most people want **Minimal**. Add the nursery later if you want human-readable n
 - **DNS**: an `A` record (and `AAAA` if you have IPv6) for that domain pointing at the server.
 - **Ports 80 and 443** open to the internet — Caddy uses them to obtain a Let's Encrypt
   certificate automatically.
-- (Optional, for email verification) a [Resend](https://resend.com) API key and a sender
-  address verified for your domain.
 
 ---
 
@@ -53,8 +51,6 @@ your first identity.
 |----------|----------|-------|
 | `NEXT_PUBLIC_SVRNTY_DOMAIN` | **yes** | Your bare domain, no scheme (e.g. `id.example.com`). Drives every share link, slug URL, and display string. |
 | `NEXT_PUBLIC_SVRNTY_BASE_URL` | no | Override the full scheme+host. Defaults to `https://<your domain>`. Set this only for `http`/localhost during local testing. |
-| `EMAIL_FROM` | for email verify | The "from" address for verification emails — must be a sender your provider has verified for your domain. |
-| `RESEND_API_KEY` | for email verify | Server-side secret. **Never** prefix it with `NEXT_PUBLIC_` — that would ship it to the browser. |
 | `SATELLITE_URL` | nursery only | Address of the registration backend. Compose sets this for you. |
 | `REGISTRATION_IMAGE` | nursery only | Image for the registration backend. |
 
@@ -67,7 +63,7 @@ includes `--build`.
 
 The practical consequence: **if you change your domain, you must rebuild** —
 `docker compose up -d --build`. Restarting alone will leave the old domain in the
-client-side links. (Server-side values like `RESEND_API_KEY` *are* read at runtime and take
+client-side links. (Server-side values *are* read at runtime and take
 effect on a plain restart.)
 
 ---
@@ -115,7 +111,7 @@ unaffected — identities still work end-to-end via self-certifying ids and the 
 - **Run behind Caddy as shipped.** The image already runs as a non-root `nextjs` user on an
   internal port; only Caddy publishes 80/443. Don't expose the app's port 3000 publicly —
   the TLS + header discipline lives at the Caddy edge.
-- **Secrets stay server-side.** `RESEND_API_KEY` and any future operator secrets must never
+- **Secrets stay server-side.** Any operator secret must never
   be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
   secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
 - **The relay learns nothing by design — keep it that way.** Don't add logging of drop
@@ -185,7 +181,5 @@ Conceptually, for each identity you host:
 - **Share links show `svrnty.is` instead of your domain.** The image was built without your
   domain. Rebuild: `docker compose up -d --build`, and confirm `NEXT_PUBLIC_SVRNTY_DOMAIN` is
   set in `.env`.
-- **Verification emails don't send.** Check `RESEND_API_KEY` and that `EMAIL_FROM` is a
-  sender verified for your domain with your provider.
 - **Slug claims fail.** Vanity slugs need the nursery profile
   (`docker compose --profile nursery up -d --build`). Without it, this is expected.
