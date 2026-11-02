@@ -1,5 +1,5 @@
-"""/allowed add and remove are ordered by their signed times: a removal always applies, and an add that is not later than the last removal of
-the same pair is refused (409), whatever order the requests arrive in.
+"""/allowed add and remove are ordered: a removal always applies and records the SERVER's time plus the 30 s signature window for the pair; an
+add signed at or before that value is refused (409), whatever order the requests arrive in and whatever the owner's device clocks say.
 
 Run (from infra/svrnty, with the packages pinned in the Dockerfile plus pytest and httpx installed):
     python -m pytest test_allowed_clock.py -q
@@ -43,7 +43,17 @@ class World:
     def __init__(self, client: TestClient):
         self.client = client
         self.owner, self.s1, self.s2, self.other = Ident("owner"), Ident("s1"), Ident("s2"), Ident("other")
-        self.now = int(time.time())
+        self.clock = {"t": 1_800_000_000}   # the satellite's clock in these tests; moved with advance() / set_clock()
+
+    @property
+    def now(self) -> int:
+        return self.clock["t"]
+
+    def advance(self, seconds: int):
+        self.clock["t"] += seconds
+
+    def set_clock(self, t: int):
+        self.clock["t"] = t
 
     def add(self, sender: Ident, unix: int, signer: Ident = None):
         signer = signer or self.owner
@@ -74,11 +84,12 @@ class World:
         finally:
             db.close()
 
-    def clock(self, sender: Ident):
+    def clock_of(self, sender: Ident):
         r = self.rows("allowed_clock", "owner_fingerprint = ? AND sender_fingerprint = ?", (self.owner.fp, sender.fp))
         return r[0][2] if r else None
 
     def put_clock(self, sender: Ident, unix: int):
+        """Plant a clock row directly (the test chooses its value)."""
         db = sqlite3.connect(str(satellite.DB_PATH))
         db.execute("INSERT OR REPLACE INTO allowed_clock (owner_fingerprint, sender_fingerprint, last_remove_unix) VALUES (?,?,?)",
                    (self.owner.fp, sender.fp, unix))
@@ -92,6 +103,7 @@ def w(monkeypatch, tmp_path):
     monkeypatch.setattr(satellite, "RATE_LIMITS", {})
     satellite.init_db()
     world = World(TestClient(satellite.app))
+    monkeypatch.setattr(satellite.time, "time", lambda: world.clock["t"])
     db = sqlite3.connect(str(satellite.DB_PATH))
     for i in (world.owner, world.s1, world.s2, world.other):
         db.execute("INSERT INTO identities (fingerprint, public_key, registered_at, sig_pubkey) VALUES (?,?,?,?)",
@@ -130,18 +142,29 @@ def test_an_add_signed_before_a_removal_cannot_bring_the_row_back(w):
     assert w.rows("allowed_senders", "sender_fingerprint = ?", (w.s1.fp,)) == []
 
 
+def test_a_removal_records_the_server_time_plus_the_window_not_its_own_signed_time(w):
+    assert w.remove(w.s1, w.now - 25).status_code == 404
+    assert w.clock_of(w.s1) == w.now + 30
+    assert w.remove(w.s2, w.now + 25).status_code == 404
+    assert w.clock_of(w.s2) == w.now + 30
+
+
 def test_a_removal_that_arrives_before_the_add_it_follows_still_wins(w):
     assert w.remove(w.s1, w.now + 1).status_code == 404  # no row yet
-    assert w.clock(w.s1) == w.now + 1                      # but the removal is recorded
+    assert w.clock_of(w.s1) == w.now + 30                # but the removal is recorded
     late = w.add(w.s1, w.now)
     assert late.status_code == 409
     assert w.listed() == []
 
 
-def test_a_later_add_after_a_removal_is_accepted(w):
+def test_a_re_open_after_a_removal_is_refused_until_the_window_has_passed(w):
     assert w.add(w.s1, w.now).status_code == 200
-    assert w.remove(w.s1, w.now + 1).status_code == 200
-    assert w.add(w.s1, w.now + 2).status_code == 200
+    assert w.remove(w.s1, w.now + 1).status_code == 200      # row = S + 30
+    assert w.add(w.s1, w.now + 2).status_code == 409         # inside the window right after
+    w.advance(30)
+    assert w.add(w.s1, w.now).status_code == 409             # signed S + 30: the tie goes to the removal
+    w.advance(1)
+    assert w.add(w.s1, w.now).status_code == 200             # signed S + 31: applied
     assert w.listed() == [w.s1.fp]
 
 
@@ -155,11 +178,15 @@ def test_a_tie_goes_to_the_removal_in_either_arrival_order(w):
     assert w.listed() == []
 
 
-def test_the_clock_keeps_the_latest_removal_time_even_if_an_older_removal_arrives_later(w):
-    assert w.remove(w.s1, w.now + 5).status_code == 404
-    assert w.remove(w.s1, w.now + 1).status_code == 404
-    assert w.clock(w.s1) == w.now + 5
-    assert w.add(w.s1, w.now + 3).status_code == 409
+def test_the_clock_keeps_the_latest_value_even_if_the_server_clock_steps_back(w):
+    w.advance(10)
+    assert w.remove(w.s1, w.now).status_code == 404
+    kept = w.clock_of(w.s1)
+    assert kept == w.now + 30
+    w.advance(-10)                                            # the satellite's clock is stepped back
+    assert w.remove(w.s1, w.now).status_code == 404
+    assert w.clock_of(w.s1) == kept
+    assert w.add(w.s1, w.now + 20).status_code == 409
 
 
 def test_a_removal_from_a_slow_clock_is_not_lost(w):
@@ -169,19 +196,29 @@ def test_a_removal_from_a_slow_clock_is_not_lost(w):
     assert w.listed() == []
 
 
-def test_RESIDUAL_a_captured_add_from_a_fast_clock_can_return_after_a_slow_clock_removal(w):
-    """Named, not fixed here: when the removal's signed time is EARLIER than an add's, a copy of that add still inside its 30 s
-    window is not refused. The window is the only bound; the ordering rule cannot see which request was really first."""
+def test_an_add_from_a_fast_clock_signed_before_a_slow_clock_removal_is_refused(w):
+    """The case an ordering by signed time loses: the add carries the LATER signed time, but it was signed before the removal."""
+    add_wire = w.signed_add(w.s1, w.now + 20)               # fast-clock device, signed first
+    assert w.remove(w.s1, w.now - 25).status_code == 404     # slow-clock device removes (signed 25 s behind)
+    late = w.add_wire(w.s1, add_wire)                        # the in-flight add lands after the removal
+    assert late.status_code == 409
+    assert w.listed() == []
+
+
+def test_a_copy_of_an_accepted_add_is_refused_after_a_slow_clock_removal(w):
     add_wire = w.signed_add(w.s1, w.now + 20)
     assert w.add_wire(w.s1, add_wire).status_code == 200
     assert w.remove(w.s1, w.now - 20).status_code == 200
-    assert w.add_wire(w.s1, add_wire).status_code == 200
+    assert w.add_wire(w.s1, add_wire).status_code == 409
+    assert w.listed() == []
 
 
-def test_an_add_inside_the_30s_window_is_refused_while_its_removal_row_is_live(w):
+def test_an_add_inside_the_window_is_refused_while_its_removal_row_is_live(w):
     assert w.remove(w.s1, w.now - 25).status_code == 404
     assert w.add(w.s1, w.now - 26).status_code == 409
     assert w.add(w.s1, w.now - 25).status_code == 409
+    assert w.add(w.s1, w.now + 29).status_code == 409
+    assert w.add(w.s1, w.now + 30).status_code == 409
 
 
 def test_pairs_are_independent(w):
@@ -196,7 +233,7 @@ def test_a_removal_with_the_wrong_key_changes_neither_table(w):
     assert w.add(w.s1, w.now).status_code == 200
     r = w.remove(w.s1, w.now + 1, signer=w.other)
     assert r.status_code == 403
-    assert w.clock(w.s1) is None
+    assert w.clock_of(w.s1) is None
     assert w.listed() == [w.s1.fp]
 
 
@@ -216,36 +253,53 @@ def test_adding_yourself_is_still_refused(w):
 # ── expiry: the table does not keep a record of who was removed ──────────────────────────────────────────────
 
 def test_clock_rows_older_than_120s_are_gone_after_the_next_allowed_operation(w):
-    w.put_clock(w.s1, int(time.time()) - 200)
-    assert w.clock(w.s1) is not None
+    w.put_clock(w.s1, w.now - 200)
+    assert w.clock_of(w.s1) is not None
     assert w.add(w.s2, w.now).status_code == 200      # any allowed operation prunes
-    assert w.clock(w.s1) is None
+    assert w.clock_of(w.s1) is None
 
 
 def test_the_prune_boundary_keeps_a_row_younger_than_120s_and_drops_one_older(w):
-    w.put_clock(w.s1, int(time.time()) - 100)
-    w.put_clock(w.s2, int(time.time()) - 140)
+    w.put_clock(w.s1, w.now - 100)
+    w.put_clock(w.s2, w.now - 140)
     assert w.add(w.other, w.now).status_code == 200
-    assert w.clock(w.s1) is not None
-    assert w.clock(w.s2) is None
+    assert w.clock_of(w.s1) is not None
+    assert w.clock_of(w.s2) is None
+
+
+def test_a_fresh_removal_row_lives_until_150s_after_the_removal_then_goes(w):
+    assert w.remove(w.s1, w.now).status_code == 404          # row = S + 30
+    w.advance(150)                                           # cutoff = S + 30: the row is not older than it
+    assert w.add(w.s2, w.now).status_code == 200
+    assert w.clock_of(w.s1) is not None
+    w.advance(1)                                             # cutoff = S + 31: now it is older
+    assert w.remove(w.s2, w.now).status_code == 200
+    assert w.clock_of(w.s1) is None
+
+
+def test_the_prune_never_drops_a_row_that_could_still_refuse_a_valid_add(w):
+    assert w.remove(w.s1, w.now).status_code == 404          # row = S + 30
+    w.advance(60)                                            # the latest an add signed at or before S + 30 can still arrive
+    assert w.clock_of(w.s1) is not None
+    assert w.add(w.s1, w.now - 30).status_code == 409        # signed S + 30, the oldest allowed by the window: still refused
 
 
 def test_a_removal_prunes_too(w):
-    w.put_clock(w.s2, int(time.time()) - 500)
+    w.put_clock(w.s2, w.now - 500)
     assert w.remove(w.s1, w.now).status_code == 404
-    assert w.clock(w.s2) is None
-    assert w.clock(w.s1) == w.now
+    assert w.clock_of(w.s2) is None
+    assert w.clock_of(w.s1) == w.now + 30
 
 
 def test_a_refused_add_still_commits_the_prune(w):
     assert w.remove(w.s1, w.now + 5).status_code == 404
-    w.put_clock(w.s2, int(time.time()) - 500)          # planted AFTER the removal, so only the refused add can prune it
+    w.put_clock(w.s2, w.now - 500)          # planted AFTER the removal, so only the refused add can prune it
     assert w.add(w.s1, w.now).status_code == 409
-    assert w.clock(w.s2) is None
+    assert w.clock_of(w.s2) is None
 
 
 def test_a_pruned_pair_can_be_added_again(w):
-    w.put_clock(w.s1, int(time.time()) - 500)
+    w.put_clock(w.s1, w.now - 500)
     assert w.add(w.s1, w.now - 29).status_code == 200
 
 
@@ -273,7 +327,7 @@ def test_deleting_an_identity_drops_its_clock_rows_as_owner_and_as_sender(w):
         "fingerprint": w.s1.fp, "signature": w.s1.auth(), "confirm": "DELETE_MY_IDENTITY"})
     assert r.status_code == 200, r.text
     assert w.rows("allowed_clock", "owner_fingerprint = ? OR sender_fingerprint = ?", (w.s1.fp, w.s1.fp)) == []
-    assert w.clock(w.other) is not None                     # an unrelated pair is kept
+    assert w.clock_of(w.other) is not None                     # an unrelated pair is kept
 
 
 # ── one transaction: the order check and the write cannot be separated by another writer ─────────────────────

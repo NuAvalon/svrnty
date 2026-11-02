@@ -222,7 +222,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_allowed_owner
             ON allowed_senders(owner_fingerprint);
 
-        -- Orders /allowed changes. A removal records its signed time here; an add whose signed time is not later is refused, so an add that
+        -- Orders /allowed changes. A removal records the server time plus the signature window here; an add signed at or before it is refused, so an add that
         -- arrives after the removal it preceded cannot bring the row back. Rows expire (see ALLOWED_CLOCK_KEEP_SECONDS).
         CREATE TABLE IF NOT EXISTS allowed_clock (
             owner_fingerprint TEXT NOT NULL,
@@ -951,7 +951,7 @@ def verify_allowed_change_signature(
             return False
         ts_str, sig_b64 = signature.split(":", 1)
         client_ts = int(ts_str)
-        if abs(int(time.time()) - client_ts) > 30:
+        if abs(int(time.time()) - client_ts) > ALLOWED_SIG_WINDOW_SECONDS:
             return False  # replay / clock drift > 30s
         sig_bytes = base64.b64decode(sig_b64.replace(" ", "+"))
         try:
@@ -963,9 +963,15 @@ def verify_allowed_change_signature(
         return False
 
 
-# A clock row only matters while an add could still arrive with a signed time at or before it. An add is accepted only within 30 s of now
-# (verify_allowed_change_signature), so a row older than that window plus the longest clock difference can never refuse a valid add:
-# 120 s > 30 s + 30 s. Rows are dropped after that so the table does not keep a record of who was removed.
+# A removal records the SERVER's time plus the signature window, not its own signed time. An accepted request's signed time is never more
+# than the window ahead of the server's clock at arrival, so an add that was signed before the removal (by a device whose clock runs ahead of
+# the one that removed) is still at or before the recorded value and is refused. The cost is that a re-open right after a removal is refused
+# for up to the window.
+ALLOWED_SIG_WINDOW_SECONDS = 30
+
+# A clock row only matters while an add could still arrive with a signed time at or before it. A row holds at most server time + the window,
+# and an add that it could refuse arrives within the window after that, so a row is dropped once it is older than the keep time below:
+# 120 s > 30 s + 30 s + the clock difference the window allows. Rows go so the table does not keep a record of who was removed.
 ALLOWED_CLOCK_KEEP_SECONDS = 120
 
 
@@ -1919,15 +1925,16 @@ async def remove_allowed_sender(
         if not verify_allowed_change_signature(owner_fingerprint, sender_fingerprint, x_signature, db, _allowed_remove_preimage):
             raise HTTPException(status_code=403, detail="Invalid signature — X-Signature header required")
 
-        # A removal always applies. It records its signed time (the latest one kept) even when there is no row, so an add that was signed
-        # before it and arrives later is refused.
+        # A removal always applies. It records the server time plus the signature window (the latest one kept) even when there is no row, so an
+        # add that was signed before it and arrives later is refused, whatever the clocks of the owner's devices say.
         db.execute("BEGIN IMMEDIATE")
-        _prune_allowed_clock(db, int(time.time()))
+        now_unix = int(time.time())
+        _prune_allowed_clock(db, now_unix)
         db.execute(
             "INSERT INTO allowed_clock (owner_fingerprint, sender_fingerprint, last_remove_unix) VALUES (?, ?, ?) "
             "ON CONFLICT(owner_fingerprint, sender_fingerprint) DO UPDATE SET "
             "last_remove_unix = MAX(last_remove_unix, excluded.last_remove_unix)",
-            (owner_fingerprint, sender_fingerprint, _allowed_signed_unix(x_signature))
+            (owner_fingerprint, sender_fingerprint, now_unix + ALLOWED_SIG_WINDOW_SECONDS)
         )
         result = db.execute(
             "DELETE FROM allowed_senders WHERE owner_fingerprint = ? AND sender_fingerprint = ?",
