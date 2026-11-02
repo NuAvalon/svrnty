@@ -16,6 +16,7 @@
 #   4. the app reaches the satellite (/api/satellite/trust/psi/satellite-key = 200, not 502)
 #   5. a relay deposit lands in the mailbox database on the relay_data volume
 #   6. the deposit survives `restart app` AND a recreate (the `up --build` update path)
+#   7. the documented housekeeping command runs; a wrong admin key is refused
 set -euo pipefail
 
 PROJECT="svrnty-smoke"
@@ -107,5 +108,14 @@ dc up -d --force-recreate --no-deps app >/dev/null
 for _ in $(seq 1 60); do [[ "$(count)" == "1" ]] && break; sleep 2; done
 [[ "$(count)" == "1" ]] || fail "deposit lost after recreating the app container"
 pass "deposit survives recreate (the 'up --build' update path)"
+
+# 7. The documented housekeeping command runs (both cleanup routes accept the key from inside the stack).
+dc exec -T registration python3 -c "import os,urllib.request as u; [u.urlopen(u.Request('http://localhost:8101'+p, method='POST', headers={'X-Admin-Key': os.environ['SATELLITE_ADMIN_KEY']})) for p in ('/msg/cleanup','/admin/cleanup')]" \
+  || fail "the documented cleanup command failed"
+code="$(dc exec -T registration python3 -c "import urllib.request as u,urllib.error as e
+try: u.urlopen(u.Request('http://localhost:8101/msg/cleanup', method='POST', headers={'X-Admin-Key': 'wrong-key-0123456789abcdef'})); print(200)
+except e.HTTPError as x: print(x.code)")"
+[[ "$code" == "403" ]] || fail "cleanup accepted a wrong admin key (got $code)"
+pass "documented cleanup runs with the key; a wrong key gets 403"
 
 echo "ALL PASS"

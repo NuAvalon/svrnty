@@ -65,7 +65,7 @@ your first identity.
 | `NEXT_PUBLIC_SVRNTY_BASE_URL` | no | Override the full scheme+host. Defaults to `https://<your domain>`. Set this only for `http`/localhost during local testing. |
 | `EMAIL_FROM` | for email verify | The "from" address for verification emails — must be a sender your provider has verified for your domain. |
 | `RESEND_API_KEY` | for email verify | Server-side secret. **Never** prefix it with `NEXT_PUBLIC_` — that would ship it to the browser. |
-| `SATELLITE_ADMIN_KEY` | **yes** | The satellite refuses to start without it (20+ characters), and `docker compose up` stops with an error until it's set. A server-side bearer secret for the satellite's maintenance routes. Generate: `openssl rand -hex 32`. Never a `NEXT_PUBLIC_` var. |
+| `SATELLITE_ADMIN_KEY` | **yes** | `SATELLITE_ADMIN_KEY` lets you run the satellite's housekeeping, which deletes messages that are past their retention period. It cannot read anyone's messages. The satellite won't start without it (20+ characters; `openssl rand -hex 32`), and `docker compose up` stops with an error until it's set. Server-side only: never a `NEXT_PUBLIC_` var, never logged. (The satellite's `/export` self-host kit generates its own key the same way.) |
 | `SATELLITE_TRUSTED_PROXY_NAMES` | no | Who may pass the real client address to the satellite. Default `app` (the only hop in front of it). Leave it unless you change the topology. |
 | `SATELLITE_URL` | no | The app's address for the satellite. Compose sets `http://registration:8101`. |
 | `REGISTRATION_IMAGE` | no | Use a prebuilt satellite image instead of building `infra/svrnty`. |
@@ -96,6 +96,18 @@ default; there is no profile to enable. Two rules:
 Check it's healthy: `docker compose ps` shows `registration` as `healthy`, and
 `docker compose logs registration` prints `[satellite] Mode: FULL`.
 
+### Housekeeping: old messages are not deleted automatically
+
+Nothing deletes old messages unless you run the satellite's cleanup. It removes undelivered
+messages older than 30 days (the default) and delivered messages past the retention period. Run it from
+inside the stack (the key never leaves the container), for example daily from cron:
+
+```bash
+docker compose exec -T registration python3 -c "import os,urllib.request as u; [u.urlopen(u.Request('http://localhost:8101'+p, method='POST', headers={'X-Admin-Key': os.environ['SATELLITE_ADMIN_KEY']})) for p in ('/msg/cleanup','/admin/cleanup')]"
+```
+
+If you don't schedule it, old messages stay on the server.
+
 > Not yet: your app does not pin your satellite's key, so a client can't detect a swapped
 > satellite. A signed satellite identity that clients pin is planned; until it ships, don't
 > describe a self-hosted satellite as pinned or verifiable.
@@ -119,6 +131,9 @@ Check it's healthy: `docker compose ps` shows `registration` as `healthy`, and
 - **Run behind Caddy as shipped.** The image already runs as a non-root `nextjs` user on an
   internal port; only Caddy publishes 80/443. Don't expose the app's port 3000 publicly —
   the TLS + header discipline lives at the Caddy edge.
+- **If you replace Caddy with your own proxy,** it must replace any `X-Forwarded-For` header a
+  client sends; otherwise clients can choose their own rate-limit bucket. (Caddy as shipped
+  already does this.)
 - **Secrets stay server-side.** `RESEND_API_KEY` and any future operator secrets must never
   be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
   secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
@@ -132,14 +147,17 @@ Check it's healthy: `docker compose ps` shows `registration` as `healthy`, and
 
 ## Backups
 
-- **What must survive:** `registration_data` (the satellite's database and its mailbox key:
+- **What must survive:** `registration_data` (the satellite's database and its private key:
   not reconstructible) and `relay_data` (encrypted envelopes still waiting for pickup; losing
   it loses undelivered messages). `caddy_data` holds TLS certificates; losing it just
   re-issues them.
 - **What you do NOT need to back up:** the app's code/config (rebuild from git + `.env`). Keep
   `.env` itself somewhere safe: it holds `SATELLITE_ADMIN_KEY`.
-- A self-hoster's *identity* is never on this server — it lives in the user's `.svrnty`
-  vault under their password. Server backup is about *service continuity*, not key custody.
+- **`registration_data` contains your satellite's private key.** Encrypt its backups and keep
+  them as secret as your `.env` file: a copy lets its holder decrypt traffic sealed to your
+  satellite and pose as it.
+- Your users' identity keys are never on this server: they live in each user's `.svrnty` vault
+  under their password.
 
 ## Build best practices
 
