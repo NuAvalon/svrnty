@@ -9,9 +9,9 @@ Flow (2026-09-12 — spec §Identity: "no email, no magic link, no account"):
 2. GET  /identity/{fingerprint} — lookup public identity info.
 
 There is no email path. The legacy POST /register (email → 6-digit code via Resend) is
-retired: no client used it, and it let anyone make the service email any address. Email is
-never collected, sent, or stored by the mint (I-7). The old pending_verifications table is
-left in place (no schema or data deletion); nothing writes it.
+retired: no client used it, and it let anyone make the service email any address.
+The mint does not collect or send email (I-7). The old pending_verifications table is left
+in place (no schema change); nothing writes it.
 
 The Ed25519 (+ PQ) key proves the user is them. Auth is key-only — no passwords,
 no sessions, no server-side recovery.
@@ -454,7 +454,7 @@ async def verify(req: VerifyRequest):
                 raise HTTPException(status_code=409, detail=f"svrnty.is/{req.slug} is already claimed")
 
         # Create verified identity. email_hash is a vestigial NOT NULL column —
-        # open mint stores "" (no email is ever collected or persisted; I-7).
+        # open mint stores "" (it does not collect email; I-7).
         db.execute(
             "INSERT INTO verified_identities (fingerprint, email_hash, public_key, encryption_pk, x25519_pk, mldsa65_pk, mlkem768_pk, key_version, display_name, slug, identity_type, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (req.fingerprint, "", req.public_key, req.encryption_pk or req.x25519_pk, req.x25519_pk, req.mldsa65_pk, req.mlkem768_pk, req.key_version, req.display_name, req.slug.lower() if req.slug else None, req.identity_type, now_iso())
