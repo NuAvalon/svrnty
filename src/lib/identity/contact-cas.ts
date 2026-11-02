@@ -63,6 +63,19 @@ export interface CasIO<R extends { id: string }> {
 export interface CasResult { applied: boolean; attempts: number }
 
 /**
+ * The retry rule for a book write that is not an update of one contact (add, remove): run `attempt` until it reports that it committed (or
+ * had nothing left to do) by returning true; false means its compare was lost and it runs again from fresh reads. Returns the number of
+ * attempts used; throws ContactConflictError after `maxAttempts` lost comparisons, with nothing written. Errors thrown by `attempt` propagate
+ * at once.
+ */
+export async function casRetry(subject: string, attempt: () => Promise<boolean>, maxAttempts: number = CAS_MAX_ATTEMPTS): Promise<number> {
+  for (let n = 1; n <= maxAttempts; n++) {
+    if (await attempt()) return n;
+  }
+  throw new ContactConflictError(subject, maxAttempts);
+}
+
+/**
  * Update one contact by compare-and-swap. `build` returns the next record, or null for "decided not to write" (nothing is written and it is
  * NOT a conflict). Throws 'Contact not found' if the contact is absent, ContactConflictError after CAS_MAX_ATTEMPTS lost comparisons, and
  * whatever finalize throws.
