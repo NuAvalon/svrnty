@@ -3,6 +3,7 @@
 import { pickPsiBody } from '@/lib/sync/psi-proxy-body';
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 const PATH_RE = /^[A-Za-z0-9_./-]+$/;
 
@@ -12,7 +13,7 @@ async function proxy(request: NextRequest, path: string, method: 'GET' | 'POST')
   }
   const search = request.nextUrl.search;
   const url = `${satelliteBaseUrl()}/trust/psi/${path}${search}`;
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...forwardedClientIp(request) };
   const sig = request.headers.get('X-Signature');
   if (sig) headers['X-Signature'] = sig;
 

@@ -2,6 +2,7 @@
 // re-hashes into the identity fingerprint. Never forwards email.
 import { NextRequest, NextResponse } from 'next/server';
 import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 const SHORT_MAX = 4096;
 const KEY_HEX_MAX = 16384; // ML-DSA-87 pubkey hex is 5184 chars
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
     }
     const res = await fetch(`${satelliteBaseUrl()}/register`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...forwardedClientIp(request) },
       body: JSON.stringify(body),
     });
     const data = await res.json();
