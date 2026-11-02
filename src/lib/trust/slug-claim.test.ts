@@ -170,3 +170,13 @@ test('SATELLITE-SAFE: the §5 PQ pubkeys are EXCLUDED from slugClaimSigningInput
     base, 'slugClaimSigningInput must not depend on the pq pubkey values',
   );
 });
+
+test('#717: a canonical slug claim with pq_signature "" (or null) is refused, not verified as classical', async () => {
+  const cid = await makeCanonicalIdentity('canon717');
+  const claim: SlugClaim = { slug: 'canon717', fingerprint: cid.fingerprint, public_key: cid.publicKey, timestamp: NOW };
+  const signed = await signSlugClaim(claim, cid.privateKey, cid.passphrase, undefined, cid.kemPublicKeyB64, cid.sigPublicKeyB64);
+  assert.equal(await verifySignedSlugClaim(signed), true); // control (classical suite)
+  for (const bad of ['', null] as unknown[]) {
+    assert.equal(await verifySignedSlugClaim({ ...signed, pq_signature: bad } as typeof signed), false, `pq=${JSON.stringify(bad)}`);
+  }
+});

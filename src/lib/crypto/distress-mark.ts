@@ -6,7 +6,8 @@
  * AUTHENTICATED "I am in distress" mark that (1) only the guardian's DEVICE can read, (2) a hosted relay
  * routing it cannot classify as distress (vs a consent-delta vs a message vs cover), and (3) carries NO
  * proof back to C's phone. It is the crypto body that the `src/lib/trust/distress.ts` stub was holding a
- * place for (`sendDistress`: *"Fleet replaces the body with outer-mailbox encrypt + fan-out"*).
+ * place for (`sendDistress`). Transport = design (A), #704: the cell rides the PSI resync slot
+ * (psi-resync-slot.ts), not a separate outer-mailbox fan-out.
  *
  * THE CRYPTO HERE = a detached Ed25519 signature over a length-prefixed preimage, exactly the shape of the
  * K2 consent-delta (consent-delta.ts) — NO new crypto core. It reuses raw-sign.ts `rawSign` (the same

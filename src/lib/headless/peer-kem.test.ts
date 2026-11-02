@@ -1,0 +1,560 @@
+// src/lib/headless/peer-kem.test.ts
+//
+// #456 (Flint #180833): where a headless sender gets the recipient's ML-KEM key.
+//   Tier 1: the resolver, in isolation (admitted record only, fingerprint-bound, named refusals).
+//   Tier 2: the REAL scripts/devin-comm.ts CLI, spawned against a local mock relay, for `send` and
+//           `send-tr`: a bound kem deposits (exit 0); an absent / swapped / incomplete kem prints
+//           `NOT SENT to <8hex>: <reason>` on stderr, exits non-zero and deposits NOTHING; a kem offered
+//           through argv or the environment is ignored; and a refused send-tr leaves
+//           ratchet-sessions.json byte-identical (no chain index burned for a message that never left).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import { createServer as createTcp } from 'node:net';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { mintHeadlessAgent, serializeMintArtifact } from '../identity/headless-mint';
+import { HeadlessStore, type HeadlessContact } from './headless-store';
+import { resolvePeerKemForSend, formatNotSent, formatUnconfirmed, depositFailureLine, errorLine, trackedFetch, sendThrowLine } from './peer-kem';
+
+type Minted = Awaited<ReturnType<typeof mintHeadlessAgent>>;
+const idOf = (a: Minted) => a.introduction.card.identity as unknown as {
+  fingerprint: string; public_key: string; pq_kem_public_key: string; pq_sig_public_key: string;
+};
+function contactOf(a: Minted, over: Partial<HeadlessContact> = {}): HeadlessContact {
+  const id = idOf(a);
+  return {
+    id: 'c_' + id.fingerprint.slice(0, 8), fingerprint: id.fingerprint, public_key: id.public_key,
+    pq_kem_public_key: id.pq_kem_public_key, pq_sig_public_key: id.pq_sig_public_key, ...over,
+  };
+}
+
+// ── Tier 1: the resolver ─────────────────────────────────────────────────────────────────────────
+
+test('resolver: a contact whose kem+sig legs hash to its fingerprint yields exactly the kem on file', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const r = await resolvePeerKemForSend(contactOf(peer));
+  assert.deepEqual(r, { ok: true, kem: idOf(peer).pq_kem_public_key });
+});
+
+test('resolver: no contact, no kem, no sig leg → each a NAMED refusal (never ok)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const none = await resolvePeerKemForSend(null);
+  assert.equal(none.ok, false);
+  const noKem = await resolvePeerKemForSend(contactOf(peer, { pq_kem_public_key: undefined }));
+  assert.equal(noKem.ok, false);
+  assert.match((noKem as { reason: string }).reason, /no PQ key on file: ask them to re-share their card/);
+  const noSig = await resolvePeerKemForSend(contactOf(peer, { pq_sig_public_key: undefined }));
+  assert.equal(noSig.ok, false);
+  assert.match((noSig as { reason: string }).reason, /no PQ signing key on file/);   // its OWN reason, not the mismatch one
+});
+
+test('resolver: a kem that is not the one the fingerprint commits to is REFUSED (swap beside a valid fp)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const other = await mintHeadlessAgent({ throwaway: true });
+  // attacker/edit swaps in another identity's (perfectly well-formed) kem, keeping the victim's fp + keys
+  const r = await resolvePeerKemForSend(contactOf(peer, { pq_kem_public_key: idOf(other).pq_kem_public_key }));
+  assert.equal(r.ok, false);
+  assert.match((r as { reason: string }).reason, /does not match their fingerprint/);
+  // same for a swapped sig leg and a swapped classical key
+  const sigSwap = await resolvePeerKemForSend(contactOf(peer, { pq_sig_public_key: idOf(other).pq_sig_public_key }));
+  assert.equal(sigSwap.ok, false);
+  const pubSwap = await resolvePeerKemForSend(contactOf(peer, { public_key: idOf(other).public_key }));
+  assert.equal(pubSwap.ok, false);
+});
+
+test('resolver: the ONLY input is the stored record — a kem sitting in argv/env cannot rescue a kem-less contact', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const kem = idOf(peer).pq_kem_public_key;
+  const savedArgv = process.argv.slice();
+  process.env.SVRNTY_PEER_KEM = kem; process.env.PEER_KEM = kem; process.env.PEER_PQ_KEM_PUBLIC_KEY = kem;
+  process.argv.push('--kem', kem, kem);
+  try {
+    const r = await resolvePeerKemForSend(contactOf(peer, { pq_kem_public_key: undefined }));
+    assert.equal(r.ok, false);
+  } finally {
+    process.argv.length = 0; process.argv.push(...savedArgv);
+    delete process.env.SVRNTY_PEER_KEM; delete process.env.PEER_KEM; delete process.env.PEER_PQ_KEM_PUBLIC_KEY;
+  }
+});
+
+test('formatNotSent: echoes only a hex prefix of the fingerprint (an operator-typed arg cannot inject text)', () => {
+  assert.equal(formatNotSent('ABCDEF0123456789', 'because'), 'NOT SENT to abcdef01: because');
+  assert.equal(formatNotSent('abc\nNOT SENT to forged: ok', 'r'), 'NOT SENT to abc: r');
+  assert.equal(formatNotSent('zzzz', 'r'), 'NOT SENT to ?: r');
+});
+
+// ── Tier 2: the real CLI against a mock relay ─────────────────────────────────────────────────────
+
+const REPO = resolve(__dirname, '../../..');
+const CLI = join(REPO, 'scripts', 'devin-comm.ts');
+
+type Deposit = { url: string; body: string };
+async function withRelay<T>(fn: (relayBase: string, deposits: Deposit[]) => Promise<T>): Promise<T> {
+  const deposits: Deposit[] = [];
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      deposits.push({ url: req.url ?? '', body: Buffer.concat(chunks).toString('utf8') });
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try { return await fn(`http://127.0.0.1:${port}/api/relay`, deposits); }
+  finally { await new Promise<void>((r) => server.close(() => r())); }
+}
+
+function runCli(args: string[], env: Record<string, string>): Promise<{ code: number | null; out: string; err: string }> {
+  return new Promise((done, fail) => {
+    const p = spawn(process.execPath, ['--import', 'tsx', CLI, ...args], { cwd: REPO, env: { ...process.env, ...env } });
+    let out = '', err = '';
+    p.stdout.on('data', (d) => (out += d)); p.stderr.on('data', (d) => (err += d));
+    const t = setTimeout(() => { p.kill('SIGKILL'); fail(new Error(`CLI timed out: ${args.join(' ')}\n${err}`)); }, 150_000);
+    p.on('exit', (code) => { clearTimeout(t); done({ code, out, err }); });
+  });
+}
+
+/** A sender agent dir (mint.json + store.json holding exactly the given contacts). */
+async function senderDir(contacts: HeadlessContact[]): Promise<{ dir: string; fp: string }> {
+  const dir = mkdtempSync(join(tmpdir(), 'peerkem-'));
+  const sender = await mintHeadlessAgent({ throwaway: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(dir, 'mint.json'), JSON.stringify(serializeMintArtifact(sender)), { mode: 0o600 });
+  const store = new HeadlessStore({ path: join(dir, 'store.json'), lockDir: dir });
+  for (const c of contacts) store.upsertContact(c);
+  return { dir, fp: idOf(sender).fingerprint };
+}
+
+test('CLI send: a bound kem on the admitted record → hybrid deposit, exit 0, nothing on stderr', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.equal(r.code, 0, r.err);
+      assert.equal(JSON.parse(r.out.trim().split('\n').pop()!).deposited, true);
+      assert.equal(deposits.length, 1);
+      assert.match(deposits[0].url, /\/api\/relay\/envelope$/);
+      assert.doesNotMatch(r.err, /NOT SENT/);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: kem absent → NOT SENT on stderr, non-zero exit, ZERO deposits; a kem in argv/env does not rescue it', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer, { pq_kem_public_key: undefined })]);
+  const kem = idOf(peer).pq_kem_public_key;
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send', idOf(peer).fingerprint, 'hello', kem], {
+        SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay, SVRNTY_PEER_KEM: kem, PEER_KEM: kem,
+      });
+      assert.notEqual(r.code, 0);
+      assert.match(r.err, new RegExp(`NOT SENT to ${idOf(peer).fingerprint.slice(0, 8)}: no PQ key on file: ask them to re-share their card`));
+      assert.equal(deposits.length, 0);
+      assert.doesNotMatch(r.out, /"deposited":\s*true/);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: a swapped kem (does not match the fingerprint) → refused loudly, ZERO deposits', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const other = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer, { pq_kem_public_key: idOf(other).pq_kem_public_key })]);
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.notEqual(r.code, 0);
+      assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the PQ key on file does not match their fingerprint/);
+      assert.equal(deposits.length, 0);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: a relay 503 is NOT silent and is UNCONFIRMED, not "NOT SENT" (a 5xx can come back after the relay stored it; pin changed on purpose, Archie #2649 b)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const server = createServer((_q, res) => { res.writeHead(503); res.end('no'); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /UNCONFIRMED to [0-9a-f]{8}: the relay answered HTTP 503; it may or may not be in their mailbox; kept locally\. Resending could deliver it twice\.$/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+    assert.match(r.out, /"deposited":\s*false/);
+    assert.match(r.out, /"status":\s*503/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: a relay 429 (a definite refusal) stays "NOT SENT" and names the status, so the failover rule can tell a refusal from an outage', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const server = createServer((_q, res) => { res.writeHead(429); res.end('full'); });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the relay refused the deposit \(HTTP 429\); nothing was stored/);
+    assert.doesNotMatch(r.err, /UNCONFIRMED/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── failover (SVRNTY_RELAYS): the wording follows what the WALK saw, not just the last relay ─────────────────────
+async function cliSendOverRelays(statuses: number[], cmd: 'send' | 'send-tr' = 'send'): Promise<{ code: number | null; err: string; hits: number[]; hosts: string[] }> {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const hits: number[] = [];
+  const servers = statuses.map((st, i) => createServer((_q, res) => { hits.push(i); res.writeHead(st); res.end('x'); }));
+  try {
+    const ports = await Promise.all(servers.map((sv) => new Promise<number>((r) => sv.listen(0, '127.0.0.1', () => r((sv.address() as { port: number }).port)))));
+    const relays = ports.map((p) => `http://127.0.0.1:${p}/api/relay`).join(',');
+    const r = await runCli([cmd, idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: relays });
+    return { code: r.code, err: r.err, hits, hosts: ports.map((p) => `127.0.0.1:${p}`) };
+  } finally { await Promise.all(servers.map((sv) => new Promise<void>((r) => sv.close(() => r())))); rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('CLI send over 2 relays: 503 then 503 → UNCONFIRMED naming BOTH relays (host:port) and what each said, ending with the resend sentence; both were tried', async () => {
+  const r = await cliSendOverRelays([503, 503]);
+  assert.notEqual(r.code, 0);
+  assert.deepEqual(r.hits, [0, 1]);
+  assert.equal(r.err.trim().split('\n').pop(), `UNCONFIRMED to ${r.err.match(/UNCONFIRMED to ([0-9a-f]{8})/)![1]}: relay ${r.hosts[0]} answered HTTP 503, relay ${r.hosts[1]} answered HTTP 503; any of them may have stored it; kept locally. Resending could deliver it twice.`);
+  assert.doesNotMatch(r.err, /\/api\/relay|envelope/, 'hosts only: no path in the line');
+  assert.doesNotMatch(r.err, /NOT SENT/);
+});
+
+test('CLI send over 2 relays: 503 then a 400 that ends the walk → still UNCONFIRMED (the first relay may hold it), never NOT SENT', async () => {
+  const r = await cliSendOverRelays([503, 400]);
+  assert.deepEqual(r.hits, [0, 1]);
+  assert.match(r.err, new RegExp(`^UNCONFIRMED to [0-9a-f]{8}: relay ${r.hosts[0].replace('.', '\\.')} answered HTTP 503; it may have stored it; kept locally\\. Resending could deliver it twice\\.$`, 'm'));
+  assert.doesNotMatch(r.err, new RegExp(r.hosts[1].replace('.', '\\.')), 'the relay that refused cleanly (400) is not named as unconfirmed');
+  assert.doesNotMatch(r.err, /NOT SENT/);
+});
+
+test('CLI send over 2 relays: 408 then 408 → UNCONFIRMED (a 408 is an outage, same class as a 5xx), not a definite refusal', async () => {
+  const r = await cliSendOverRelays([408, 408]);
+  assert.match(r.err, new RegExp(`^UNCONFIRMED to [0-9a-f]{8}: relay ${r.hosts[0].replace('.', '\\.')} answered HTTP 408, relay ${r.hosts[1].replace('.', '\\.')} answered HTTP 408; any of them may have stored it; kept locally\\.`, 'm'));
+  assert.doesNotMatch(r.err, /NOT SENT/);
+});
+
+test('CLI send over 2 relays: 429 then 429 → a definite refusal: NOT SENT naming the status; a 400 on the first ends the walk at once (second never contacted)', async () => {
+  const a = await cliSendOverRelays([429, 429]);
+  assert.deepEqual(a.hits, [0, 1]);
+  assert.match(a.err, /^NOT SENT to [0-9a-f]{8}: the relay refused the deposit \(HTTP 429\); nothing was stored; kept locally$/m);
+  assert.doesNotMatch(a.err, /UNCONFIRMED/);
+  const b = await cliSendOverRelays([400, 200]);
+  assert.deepEqual(b.hits, [0]);
+  assert.match(b.err, /^NOT SENT to [0-9a-f]{8}: the relay refused the deposit \(HTTP 400\); nothing was stored; kept locally$/m);
+});
+
+test('CLI send-tr over 2 relays: 503 then 503 → UNCONFIRMED that says the ratchet index is spent, ending with the resend sentence', async () => {
+  const r = await cliSendOverRelays([503, 503], 'send-tr');
+  assert.match(r.err, new RegExp(`^UNCONFIRMED to [0-9a-f]{8}: relay ${r.hosts[0].replace('.', '\\.')} answered HTTP 503, relay ${r.hosts[1].replace('.', '\\.')} answered HTTP 503; any of them may have stored it; kept locally; this ratchet index is spent\\. Resending could deliver it twice\\.$`, 'm'));
+  assert.doesNotMatch(r.err, /NOT SENT/);
+});
+
+test('depositFailureLine: 5xx and 408 are UNCONFIRMED; every other status is a definite NOT SENT that names it; no status keeps the old NOT SENT text; the local tail is kept', () => {
+  const fp = 'ab'.repeat(32);
+  for (const st of [500, 502, 503, 504, 408]) {
+    assert.match(depositFailureLine(fp, st), new RegExp(`^UNCONFIRMED to abababab: the relay answered HTTP ${st}; `), String(st));
+    assert.doesNotMatch(depositFailureLine(fp, st), /NOT SENT/);
+  }
+  for (const st of [400, 401, 403, 404, 413, 429]) {
+    assert.match(depositFailureLine(fp, st), new RegExp(`^NOT SENT to abababab: the relay refused the deposit \\(HTTP ${st}\\)`), String(st));
+    assert.doesNotMatch(depositFailureLine(fp, st), /UNCONFIRMED/);
+  }
+  assert.equal(depositFailureLine(fp, undefined), 'NOT SENT to abababab: the relay did not accept the deposit');
+  assert.match(depositFailureLine(fp, 503, 'kept locally; this ratchet index is spent'), /; kept locally; this ratchet index is spent\. Resending could deliver it twice\.$/);
+  assert.match(depositFailureLine(fp, 429, 'kept locally'), /; kept locally$/);
+});
+
+test('static: both send paths in devin-comm word a failed deposit through depositFailureLine with the relay status (no inline "did not accept the deposit" claim left)', () => {
+  const src = readFileSync(resolve(REPO, 'scripts/devin-comm.ts'), 'utf8');
+  assert.equal((src.match(/depositFailureLine\(fp, r\.status,/g) ?? []).length, 2);
+  assert.doesNotMatch(src, /formatNotSent\(fp, 'the relay did not accept the deposit/);
+});
+
+test('CLI send-tr: a bound kem → ratchet packet inside the hybrid outer, ONE deposit, session persisted', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.equal(r.code, 0, r.err);
+      assert.equal(deposits.length, 1);
+      assert.equal(existsSync(join(dir, 'ratchet-sessions.json')), true);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send-tr: kem absent → refused BEFORE the chain moves: ratchet-sessions.json byte-identical, ZERO deposits', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer, { pq_kem_public_key: undefined })]);
+  const ratchetFile = join(dir, 'ratchet-sessions.json');
+  const sentinel = '{"keep":"me"}';
+  writeFileSync(ratchetFile, sentinel, { mode: 0o600 });
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.notEqual(r.code, 0);
+      assert.match(r.err, /NOT SENT to [0-9a-f]{8}: no PQ key on file: ask them to re-share their card/);
+      assert.equal(deposits.length, 0);
+      assert.equal(readFileSync(ratchetFile, 'utf8'), sentinel, 'a refused send-tr must not touch the ratchet state');
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send-tr: a swapped kem → refused, ratchet file byte-identical, ZERO deposits', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const other = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer, { pq_kem_public_key: idOf(other).pq_kem_public_key })]);
+  const ratchetFile = join(dir, 'ratchet-sessions.json');
+  writeFileSync(ratchetFile, '{}', { mode: 0o600 });
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send-tr', idOf(peer).fingerprint, 'x'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.notEqual(r.code, 0);
+      assert.match(r.err, /does not match their fingerprint/);
+      assert.equal(deposits.length, 0);
+      assert.equal(readFileSync(ratchetFile, 'utf8'), '{}');
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('errorLine: one bounded line (newlines collapsed, long messages cut, non-Errors stringified)', () => {
+  assert.equal(errorLine(new Error('fetch\nfailed  twice')), 'fetch failed twice');
+  assert.equal(errorLine(new Error('x'.repeat(500))).length, 120);
+  assert.equal(errorLine('plain'), 'plain');
+  // control bytes never survive (a relay-supplied message must not smuggle an escape sequence to a pane)
+  const evil = errorLine(new Error('bad\x1b[31m red\x07 bell\x00 nul\x7f del\r\nnext'));
+  assert.equal(evil, 'bad [31m red bell nul del next');
+  assert.doesNotMatch(evil, /[\x00-\x1f\x7f]/);
+  assert.doesNotMatch(sendThrowLine('abcdef01', new Error('x\x1b]0;pwned\x07y'), 'unreachable'), /[\x00-\x1f\x7f]/);
+  assert.equal(errorLine(new Error('')), 'unknown error');
+});
+
+/** A port nothing listens on (bind, read the port, close) — connecting is refused, so fetch THROWS. */
+async function deadRelay(): Promise<string> {
+  const s = createTcp();
+  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+  const port = (s.address() as { port: number }).port;
+  await new Promise<void>((r) => s.close(() => r()));
+  return `http://127.0.0.1:${port}/api/relay`;
+}
+
+test('CLI send: relay UNREACHABLE (fetch throws, not deposited:false) → UNCONFIRMED (never NOT SENT), non-zero exit', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, new RegExp(`^UNCONFIRMED to ${idOf(peer).fingerprint.slice(0, 8)}: no response from the relay \\(.+\\); it may or may not be in their mailbox\\. Resending could deliver it twice\\.$`, 'm'));
+    assert.doesNotMatch(r.err, /NOT SENT/);
+    assert.doesNotMatch(r.out, /"deposited":\s*true/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send-tr: relay UNREACHABLE → UNCONFIRMED line that says the ratchet index is spent, non-zero exit', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    const r = await runCli(['send-tr', idOf(peer).fingerprint, 'tr hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: await deadRelay() });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay \(.+\); it may or may not be in their mailbox; this ratchet index is spent\. Resending could deliver it twice\.$/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── a THROW is worded by how far the send got (Hypatia #477): never a false NOT SENT ───────────────
+
+test('trackedFetch: stage follows the request — before-post / unreachable / refused / deposited', async () => {
+  const mk = (impl: () => Promise<{ ok: boolean }>) => trackedFetch((async () => impl()) as unknown as typeof fetch);
+  const never = mk(async () => ({ ok: true }));
+  assert.equal(never.stage(), 'before-post');                                   // no request made (sign/seal threw first)
+  const down = mk(async () => { throw new Error('fetch failed'); });
+  await assert.rejects(() => down.fetchImpl('http://x'));
+  assert.equal(down.stage(), 'unreachable');
+  const refused = mk(async () => ({ ok: false }));
+  await refused.fetchImpl('http://x');
+  assert.equal(refused.stage(), 'refused');
+  const ok = mk(async () => ({ ok: true }));
+  await ok.fetchImpl('http://x');
+  assert.equal(ok.stage(), 'deposited');
+});
+
+test('sendThrowLine: NOT SENT only where PROVEN undelivered; DEPOSITED after a 2xx; UNCONFIRMED when the request threw', () => {
+  const fp = 'abcdef0123456789', e = new Error('boom');
+  assert.match(sendThrowLine(fp, e, 'before-post'), /^NOT SENT to abcdef01: the send failed before reaching the relay \(boom\)$/);
+  const unc = sendThrowLine(fp, e, 'unreachable');
+  assert.match(unc, /^UNCONFIRMED to abcdef01: no response from the relay \(boom\); it may or may not be in their mailbox\. Resending could deliver it twice\.$/);
+  assert.doesNotMatch(unc, /NOT SENT/);                                         // not PROVEN undelivered, so never NOT SENT
+  assert.match(sendThrowLine(fp, e, 'refused'), /^NOT SENT to abcdef01: the relay did not accept the deposit, and saving the local copy failed \(boom\)$/);
+  const dep = sendThrowLine(fp, e, 'deposited');
+  assert.match(dep, /^DEPOSITED to abcdef01, but saving the local copy failed \(boom\); do NOT resend$/);
+  assert.doesNotMatch(dep, /NOT SENT/);
+  assert.match(sendThrowLine(fp, e, 'unreachable', true), /ratchet index is spent\. Resending could deliver it twice\.$/);
+  assert.doesNotMatch(sendThrowLine(fp, e, 'unreachable', false), /spent/);
+});
+
+// ── the UNCONFIRMED sentence (owed with failover, Hypatia copy): every route ends with it, none says "Check before" ──
+test('every UNCONFIRMED line ends with "Resending could deliver it twice." exactly once; no line says "Check before"; NOT SENT / DEPOSITED never carry it', () => {
+  const fp = 'abcdef0123456789', e = new Error('boom'), END = 'Resending could deliver it twice.';
+  const unconfirmed = [
+    formatUnconfirmed(fp, 'x'),
+    ...[500, 502, 503, 504, 599, 408].flatMap((st) => [depositFailureLine(fp, st), depositFailureLine(fp, st, 'this ratchet index is spent')]),
+    sendThrowLine(fp, e, 'unreachable'),
+    sendThrowLine(fp, e, 'unreachable', true),
+  ];
+  for (const line of unconfirmed) {
+    assert.match(line, /^UNCONFIRMED to abcdef01: /, line);
+    assert.ok(line.endsWith(` ${END}`), `ends with the sentence: ${line}`);
+    assert.equal(line.split(END).length - 1, 1, `the sentence appears once: ${line}`);
+    assert.doesNotMatch(line, /check before/i, line);
+    assert.doesNotMatch(line, /NOT SENT/, line);
+  }
+  const others = [
+    depositFailureLine(fp, 429), depositFailureLine(fp, 400), depositFailureLine(fp, undefined), depositFailureLine(fp, 429, 'this ratchet index is spent'),
+    formatNotSent(fp, 'because'), sendThrowLine(fp, e, 'before-post'), sendThrowLine(fp, e, 'refused'), sendThrowLine(fp, e, 'deposited'),
+  ];
+  for (const line of others) {
+    assert.doesNotMatch(line, /Resending could deliver it twice/, line);
+    assert.doesNotMatch(line, /check before/i, line);
+  }
+});
+
+test('CLI send: a throw BEFORE the POST (signing fails) is NOT blamed on the network', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const mintPath = join(dir, 'mint.json');
+  const m = JSON.parse(readFileSync(mintPath, 'utf8'));
+  m.private.classical_kpass = 'not-the-passphrase';           // the key no longer unlocks: signNoteWire throws before any request
+  writeFileSync(mintPath, JSON.stringify(m), { mode: 0o600 });
+  try {
+    await withRelay(async (relay, deposits) => {
+      const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: relay });
+      assert.notEqual(r.code, 0);
+      assert.match(r.err, /NOT SENT to [0-9a-f]{8}: the send failed before reaching the relay \(.+\)/);
+      assert.doesNotMatch(r.err, /could not be reached/);
+      assert.equal(deposits.length, 0);
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: the relay ACCEPTS the note but saving the local copy then fails → DEPOSITED, never NOT SENT', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const storePath = join(dir, 'store.json');
+  const deposits: string[] = [];
+  // the relay swaps store.json for a DIRECTORY before it answers 200, so the CLI's later atomic save fails
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      deposits.push(req.url ?? '');
+      rmSync(storePath, { force: true }); mkdirSync(storePath);
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}');
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.equal(deposits.length, 1, 'the relay did receive the note');
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^DEPOSITED to [0-9a-f]{8}, but saving the local copy failed \(.+\); do NOT resend$/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send: the relay STORES the note then DROPS the connection → UNCONFIRMED, never NOT SENT (a retrying wrapper must not re-send)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const stored: string[] = [];
+  // the note reaches the relay and is recorded, then the socket is killed before any response is written
+  const server = createServer((req) => {
+    req.resume();
+    req.on('end', () => { stored.push(req.url ?? ''); req.socket.destroy(); });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: `http://127.0.0.1:${port}/api/relay` });
+    assert.equal(stored.length, 1, 'the relay really did receive and record the note');
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /^UNCONFIRMED to [0-9a-f]{8}: no response from the relay/m);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+    assert.doesNotMatch(r.out, /"deposited":\s*true/);
+  } finally { await new Promise<void>((r) => server.close(() => r())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── failover T2 phase 2a (Archie #2633): the REAL CLI against two local relays ─────────────────────────────────────
+async function relayWith(status: number | 'ok'): Promise<{ base: string; deposits: Deposit[]; close: () => Promise<void> }> {
+  const deposits: Deposit[] = [];
+  const server: Server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      deposits.push({ url: req.url ?? '', body: Buffer.concat(chunks).toString('utf8') });
+      if (status === 'ok') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); } else { res.writeHead(status); res.end('no'); }
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  return { base: `http://127.0.0.1:${port}/api/relay`, deposits, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+test('CLI send, SVRNTY_RELAYS=T1,T2: T1 answers 429 (at-cap) => the SAME sealed bytes land on T2, exit 0, tier 1 in the result', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const [t1, t2] = [await relayWith(429), await relayWith('ok')];
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello over t2'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: `${t1.base},${t2.base}` });
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /"deposited":\s*true/);
+    assert.match(r.out, /"tier":\s*1/);
+    assert.equal(t1.deposits.length, 1);
+    assert.equal(t2.deposits.length, 1);
+    assert.equal(t1.deposits[0].body, t2.deposits[0].body, 'byte-equal: sealed once, never re-sealed');
+  } finally { await t1.close(); await t2.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send, T1 ok: T2 is never contacted; and SVRNTY_RELAY (one relay) still works exactly as before', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const [t1, t2] = [await relayWith('ok'), await relayWith('ok')];
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: `${t1.base},${t2.base}` });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(t1.deposits.length, 1);
+    assert.equal(t2.deposits.length, 0, 'T2 untouched');
+    const r2 = await runCli(['send', idOf(peer).fingerprint, 'again'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAY: t2.base });
+    assert.equal(r2.code, 0, r2.err);
+    assert.equal(t2.deposits.length, 1, 'the one-relay form targets that relay');
+  } finally { await t1.close(); await t2.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI send, T1 503 then T2 429: not deposited, exit non-zero, worded UNCONFIRMED (T1 may hold it), never "NOT SENT"', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  const [t1, t2] = [await relayWith(503), await relayWith(429)];
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'hello'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: `${t1.base},${t2.base}` });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /UNCONFIRMED to [0-9a-f]{8}: /);
+    assert.doesNotMatch(r.err, /NOT SENT/);
+  } finally { await t1.close(); await t2.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('CLI NEG: a malformed relay list fails loud at startup (never silently single-relay)', async () => {
+  const peer = await mintHeadlessAgent({ throwaway: true });
+  const { dir } = await senderDir([contactOf(peer)]);
+  try {
+    const r = await runCli(['send', idOf(peer).fingerprint, 'x'], { SVRNTY_AGENT_DIR: dir, SVRNTY_RELAYS: 'http://127.0.0.1:1/api/relay,not a url' });
+    assert.notEqual(r.code, 0);
+    assert.match(r.err, /relay list: not a URL/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

@@ -98,7 +98,7 @@ We don't print protections we haven't wired.
 A trust protocol is infrastructure that should measure in decades, and harvest-now-decrypt-later is a real attack. So every identity carries a post-quantum signing key (ML-DSA-87, FIPS 204) and a post-quantum encryption key (ML-KEM-1024, FIPS 203) from the very first keypair, bound into the identity. We advertise exactly what's wired and what isn't, because a trust protocol is something people stake real safety on:
 
 - **Signatures.** ED25519 is live. ML-DSA-87 hybrid-signing (FIPS 204, Cat 5) is live for contact-update trust-signals — hybrid ED25519+ML-DSA-87 when the identity carries its post-quantum signing key, with a classical-only fallback — and on messages sealed with the encrypt-to-a-contact tool (both schemes are checked, so if one breaks the other holds). Identity cards advertise a post-quantum signing key, fingerprint-bound, with post-quantum card-signing being wired in (cards are classical-signed today).
-- **Encryption.** X25519 (Curve25519) is live today; ML-KEM-1024 (FIPS 203, Cat 5) is on the way. Each identity advertises a post-quantum encryption key, and the hybrid X25519 + ML-KEM-1024 primitives are built and tested — but the message envelope is currently classical. Wiring the hybrid-KEM into the envelope is the next step, not yet on the wire.
+- **Encryption.** Messages are sealed with hybrid X25519 + ML-KEM-1024 (FIPS 203, Cat 5), and the app refuses to send a message to a contact whose card has no post-quantum encryption key. Contact updates, and the reply your app sends when someone joins with your card, are sealed the same way. Receiving still accepts classical envelopes for compatibility.
 
 ## Status
 
@@ -123,7 +123,7 @@ npm install
 npm run dev
 ```
 
-Needs Node 18.18+ (or 20+). Open `localhost:3000`, create your identity, share it with someone, exchange signed updates, and build trust over time. Your keys are generated locally and stored encrypted in your browser (IndexedDB). No server can read your data. No terms of service.
+Needs Node 18.18+ (or 20+). Open `localhost:3000`, create your identity, share it with someone, exchange signed updates, and build trust over time. Your keys are generated locally and stored encrypted in your browser (IndexedDB). No server can read your messages. No terms of service.
 
 To run your own relay for yourself or others:
 

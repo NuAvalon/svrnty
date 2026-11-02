@@ -14,33 +14,64 @@
 // decryptor, then swap the injection. Not a one-line flag-flip; that's the artifact for the separate
 // "PQ on the wire" claim graduation.
 
-import { createMessage, encrypt, readKey, readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
+import { readPrivateKey, decryptKey, readMessage, decrypt } from 'openpgp';
 import type { SignedContactUpdate } from '@/lib/trust/contact-update';
 import type { EnvelopeDecryptor } from './consume-mailbox';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { sealLivingBookHybrid } from '@/lib/crypto/living-book-sleeve';
 
-/** Sender side: encrypt a signed contact.update to the recipient's public key → opaque armored blob. */
+/**
+ * The contact-update inner-wire type-gate, exported as a `WireParser` for the SINGLE dual-read chokepoint
+ * (src/lib/sync/hybrid-dual-read.ts: makeHybridOpener(openEnv, parseContactUpdateWire)). The contact-update
+ * path is the consume CATCH-ALL, so there is NO inner type-tag to check here — shape (envelope.fingerprint)
+ * is checked downstream by consumeOne; this returns the parsed object as-is (null only on non-JSON),
+ * reproducing the EXACT current opener behaviour so no-cross-swallow is byte-identical.
+ */
+export function parseContactUpdateWire(innerUtf8: string): SignedContactUpdate | null {
+  try {
+    return JSON.parse(innerUtf8) as SignedContactUpdate;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sender side: encrypt a signed contact.update to the recipient → opaque blob. HYBRID ONLY (HNDL): the ALREADY-SIGNED SignedContactUpdate is
+ * wrapped with the reject-classical mailbox envelope using the recipient's ML-KEM-1024 pubkey. Without that key this THROWS (like sealNoteTo):
+ * the send composer buildContactUpdateDeposits already skips such a recipient, so this is the loud backstop for a caller bug, never a silent
+ * classical send. Tests that need a classical blob use seal-classical-fixture.ts, which no app code may import.
+ */
 export async function encryptContactUpdateTo(
   signed: SignedContactUpdate,
   recipientPublicKeyArmored: string,
+  recipientPqKemB64?: string,
 ): Promise<string> {
-  const encryptionKeys = await readKey({ armoredKey: recipientPublicKeyArmored });
-  const message = await createMessage({ text: JSON.stringify(signed) });
-  return (await encrypt({ message, encryptionKeys })) as string;
+  if (!recipientPqKemB64) {
+    throw new Error('encryptContactUpdateTo: refusing to seal without a recipient ML-KEM key (no classical downgrade)');
+  }
+  return sealLivingBookHybrid(new TextEncoder().encode(JSON.stringify(signed)), recipientPublicKeyArmored, recipientPqKemB64);
 }
 
 /**
  * Recipient side: an {@link EnvelopeDecryptor} bound to the owner's private key. Returns null on ANY
  * failure (not-for-us / corrupt / wrong key / not-JSON) so the caller drops it silently (I-1/I-2).
+ * Classical-ONLY: the PQ-hybrid dual-read now lives in the SINGLE chokepoint (dualReadOpener over
+ * makeHybridOpener(openEnv, parseContactUpdateWire)) composed by the consume deps builders — this opener
+ * is its classical fallback. The contact-update path is the consume catch-all, so shape
+ * (envelope.fingerprint) is checked by consumeOne — mirrored here by returning the parsed object as-is.
  */
-export function openpgpEnvelopeDecryptor(recipientPrivateKeyArmored: string, passphrase: string): EnvelopeDecryptor {
+export function openpgpEnvelopeDecryptor(
+  recipientPrivateKeyArmored: string,
+  passphrase: string,
+  cycle?: UnlockCycle,
+): EnvelopeDecryptor {
   return async (blob: string): Promise<SignedContactUpdate | null> => {
     try {
-      const locked = await readPrivateKey({ armoredKey: recipientPrivateKeyArmored });
-      const decryptionKeys = await decryptKey({ privateKey: locked, passphrase });
+      const decryptionKeys = cycle ? await cycle.key() : await decryptKey({ privateKey: await readPrivateKey({ armoredKey: recipientPrivateKeyArmored }), passphrase });
       const message = await readMessage({ armoredMessage: blob });
       const { data } = await decrypt({ message, decryptionKeys });
       const text = typeof data === 'string' ? data : await streamToText(data);
-      return JSON.parse(text) as SignedContactUpdate;
+      return parseContactUpdateWire(text);
     } catch {
       return null;
     }

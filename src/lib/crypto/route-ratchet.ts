@@ -67,6 +67,13 @@ const LABEL_ROOT = 'svrnty-route-root-v1';
 const LABEL_RATCHET = 'svrnty-route-ratchet-v1';
 const LABEL_ID = 'svrnty-route-id-v1';
 const LABEL_PCS = 'svrnty-route-pcs-v1';
+const LABEL_SUB_ID = 'svrnty-route-sub-v1';
+
+/** Per-tick sub-routes (#704 DW10): a window is split into ticks of SUB_ROUTE_SECONDS, each with its own id, so a
+ *  sender that deposits on consecutive ticks (a distress cry riding 3 PSI resyncs) shows a fresh id every time,
+ *  exactly like cover. The recipient polls the window's SUB_ROUTES_PER_WINDOW ids (+ the previous window's). */
+export const SUB_ROUTE_SECONDS = 300;
+export const SUB_ROUTES_PER_WINDOW = ROUTE_WINDOW_SECONDS / SUB_ROUTE_SECONDS; // 12
 
 /** Canonical per-pair direction tag. `lh` = message from the lexicographically-lower fp to the higher;
  *  `hl` = the reverse. Both parties compute the SAME tag for a given (sender→recipient) ordering, so the two
@@ -104,6 +111,36 @@ export function advanceRatchetKey(prevRk: Uint8Array, window: number): Uint8Arra
 /** route_id(W) = HKDF(rk_W, "svrnty-route-id-v1")[:16] as hex. The public routing tag; one-way from rk_W. */
 export function deriveRouteId(rk: Uint8Array): string {
   return bytesToHex(hkdf(sha256, rk, undefined, utf8ToBytes(LABEL_ID), ROUTE_ID_LEN));
+}
+
+/** route_sub(W,i) = HKDF(rk_W, "svrnty-route-sub-v1" ‖ u8(i))[:16] as hex. A SEPARATE label from route_id(W)
+ *  (never reuse a label), and i is one fixed-width byte, so the info string is injective in i. Same 32-hex shape
+ *  as route_id and as a random cover route. */
+export function deriveSubRouteId(rk: Uint8Array, tickIndex: number): string {
+  if (!Number.isInteger(tickIndex) || tickIndex < 0 || tickIndex >= SUB_ROUTES_PER_WINDOW) {
+    throw new Error('route-ratchet: sub-route index out of range');
+  }
+  const label = utf8ToBytes(LABEL_SUB_ID);
+  const info = new Uint8Array(label.length + 1);
+  info.set(label);
+  info[label.length] = tickIndex;
+  return bytesToHex(hkdf(sha256, rk, undefined, info, ROUTE_ID_LEN));
+}
+
+/** i(t) = ⌊(t mod WINDOW) / SUB_ROUTE⌋, in [0, SUB_ROUTES_PER_WINDOW). Wall-clock, so both sides agree; ticks that
+ *  are >= SUB_ROUTE_SECONDS apart always land on different indices (or different windows). */
+export function currentSubRouteIndex(nowMs: number = Date.now()): number {
+  const secondsIntoWindow = Math.floor(nowMs / 1000) % ROUTE_WINDOW_SECONDS;
+  return Math.floor(secondsIntoWindow / SUB_ROUTE_SECONDS);
+}
+
+/** The recipient's poll set: every sub-route of the current window and of the previous one (edge window). */
+export function subRoutePollSet(rkCurrent: Uint8Array, rkPrevious?: Uint8Array): string[] {
+  const ids: string[] = [];
+  for (const rk of rkPrevious ? [rkPrevious, rkCurrent] : [rkCurrent]) {
+    for (let i = 0; i < SUB_ROUTES_PER_WINDOW; i++) ids.push(deriveSubRouteId(rk, i));
+  }
+  return ids;
 }
 
 /** PCS re-key: fold fresh handshake DH entropy into a new root. newRoot = HKDF(fresh_DH, salt=oldRoot, "pcs").

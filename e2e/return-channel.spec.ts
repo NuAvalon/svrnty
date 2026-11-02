@@ -31,6 +31,15 @@ function mailboxIdFor(seed: string): string {
 async function deposit(request: APIRequestContext, mailboxId: string, blob = OPAQUE_BLOB) {
   return request.post(DEPOSIT, { data: { mailbox_id: mailboxId, blob } });
 }
+// #630 (Flint condition 1): SETUP deposits must succeed, and say so loudly when they don't. A silent
+// non-2xx (e.g. a 429 from the per-IP limiter) used to surface only as a count mismatch later
+// ("expected 2, got 1"). The raw deposit() stays for the probe and the C1 shape comparison, which
+// must observe non-2xx statuses rather than fail on them.
+async function depositOk(request: APIRequestContext, mailboxId: string, blob = OPAQUE_BLOB) {
+  const r = await deposit(request, mailboxId, blob);
+  expect(r.ok(), `setup deposit to ${mailboxId.slice(0, 12)}… failed: HTTP ${r.status()} ${(await r.text()).slice(0, 200)}`).toBe(true);
+  return r;
+}
 async function pollAsNonOwner(request: APIRequestContext, mailboxId: string) {
   return request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mailboxId)}`);
 }
@@ -63,7 +72,7 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
   }) => {
     const neverExisted = mailboxIdFor('b1-absent');
     const hasMail = mailboxIdFor('b1-hasmail');
-    await deposit(request, hasMail); // lazily creates + fills hasMail; neverExisted is never touched
+    await depositOk(request, hasMail); // lazily creates + fills hasMail; neverExisted is never touched
 
     const absent = await shapeOf(await pollAsNonOwner(request, neverExisted));
     const full = await shapeOf(await pollAsNonOwner(request, hasMail));
@@ -79,7 +88,7 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
   test('C1: deposit ack is shape-identical across {never-existed, has-mail} mailboxes', async ({ request }) => {
     const fresh = mailboxIdFor('c1-fresh');
     const warm = mailboxIdFor('c1-warm');
-    await deposit(request, warm); // warm now has mail
+    await depositOk(request, warm); // warm now has mail
 
     const toFresh = await shapeOf(await deposit(request, fresh));
     const toWarm = await shapeOf(await deposit(request, warm));
@@ -95,7 +104,7 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
     request,
   }) => {
     const mbx = mailboxIdFor('e1');
-    await deposit(request, mbx);
+    await depositOk(request, mbx);
     const asNonOwner = await shapeOf(await pollAsNonOwner(request, mbx));
     const asAbsent = await shapeOf(await pollAsNonOwner(request, mailboxIdFor('e1-absent')));
     expect(asNonOwner.body, 'non-owner must get the uniform response, not the blob').toBe(asAbsent.body);
@@ -107,8 +116,8 @@ test.describe('return-channel custody gate (I-1/I-4 + functional)', () => {
     const mbx = await ownerMailboxId(); // the owner's REAL derived mailbox (not the arbitrary mailboxIdFor)
 
     // Deposit two envelopes.
-    await deposit(request, mbx, 'AAAA');
-    await deposit(request, mbx, 'BBBB');
+    await depositOk(request, mbx, 'AAAA');
+    await depositOk(request, mbx, 'BBBB');
 
     // A1 deposit→poll (owner sees them); A2 non-destructive (poll twice, same set, no ack between).
     const poll1 = await request.get(`${QUEUE}?mailbox_id=${encodeURIComponent(mbx)}`, { headers: await pollHeaders() });
@@ -142,7 +151,7 @@ test.describe('return-channel timing distribution (I-4, on-demand)', () => {
     const N = 300;
     const absentId = mailboxIdFor('b2-absent');
     const fullId = mailboxIdFor('b2-full');
-    await deposit(request, fullId);
+    await depositOk(request, fullId);
 
     const sample = async (id: string): Promise<number[]> => {
       const xs: number[] = [];

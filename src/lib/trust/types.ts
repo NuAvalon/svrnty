@@ -89,6 +89,23 @@ export interface TrustEdge {
    * reveal set + allowed_senders projection. NEVER publish / PSI-sync (like open_visibility/blocked).
    */
   per_contact_private?: boolean;
+  /**
+   * TRUST-layer PSI opt-in (piece-2, trust tier). Owner-local intent: "I consent to reveal that I
+   * trust this peer in mutual-trust discovery." Mirrors `open_visibility` (the KNOW-tier opt-in) but
+   * for the TRUST tier. Default/absent ⇒ FALSE = fail-closed (trusting someone ≠ consenting to
+   * disclose that trust — the silent-enrollment leak this subset exists to prevent, Flint #172393).
+   * Stored in metadata.share_settings alongside open_visibility. NEVER publish / PSI-sync.
+   */
+  trust_visibility?: boolean;
+  /**
+   * PEER-PUBLISHED: the revealed-party's OWN "discoverable as trusted" consent (Carol's setting:
+   * "anyone who trusts me may reveal it in mutual-trust discovery"), as synced onto THIS edge.
+   * Default/absent ⇒ FALSE = fail-closed. Enforces the THIRD consent of true-3-way (Peter #172418,
+   * Flint #172452): the trust-PSI reveal of a shared contact fires ONLY when that contact themselves
+   * opted in. Population path (publish by the peer + sync to the truster's edge) is a separate
+   * increment — until wired, this stays false ⇒ no trust-PSI reveal (correct gated-dark state).
+   */
+  peer_discoverable_as_trusted?: boolean;
   // Cairn bridge
   agent_fingerprint?: string;           // their cairn agent's key (if they use cairn)
   // Post-quantum public keys

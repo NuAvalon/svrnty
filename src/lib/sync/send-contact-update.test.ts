@@ -4,47 +4,38 @@
 // Run: npx tsx --test src/lib/sync/send-contact-update.test.ts
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKey, readKey } from 'openpgp';
 import {
   buildContactUpdateDeposits,
   sendContactUpdate,
   type ContactUpdateOwner,
   type ContactUpdateRecipient,
 } from './send-contact-update';
-import { openpgpEnvelopeDecryptor } from './contact-update-envelope';
+import { openpgpEnvelopeDecryptor, parseContactUpdateWire } from './contact-update-envelope';
+import { mintHybridRecipient, openerFor, type HybridRecipient } from './hybrid-test-fixture';
 import { verifyIncomingContactUpdate, type KnownContactIdentity } from '../trust/contact-update';
 import { deriveMailboxId } from '../relay/mailbox-auth';
 
-const ownerPass = 'owner-pass-0';
-const bobPass = 'bob-pass-1';
-const carolPass = 'carol-pass-2';
 
 let owner: ContactUpdateOwner;
-let bob: ContactUpdateRecipient, bobPriv: string;
-let carol: ContactUpdateRecipient, carolPriv: string;
+let bob: ContactUpdateRecipient, bobId: HybridRecipient;
+let carol: ContactUpdateRecipient, carolId: HybridRecipient;
 let ownerPub: string;
 
-async function mkIdentity(name: string, pass: string) {
-  const { privateKey, publicKey } = await generateKey({
-    type: 'curve25519',
-    userIDs: [{ name, email: `${name}@example.test` }],
-    passphrase: pass,
-    format: 'armored',
-  });
-  const fingerprint = (await readKey({ armoredKey: publicKey })).getFingerprint();
-  return { privateKey, publicKey, fingerprint };
-}
+const asRecipient = (r: HybridRecipient): ContactUpdateRecipient => ({
+  fingerprint: r.fingerprint, publicKeyArmored: r.publicKeyArmored, pqKemPublicKey: r.pqKemPublicKey,
+});
+// The recipient's consume-side opener (S14: hybrid first, classical fallback) for contact-updates.
+const openFor = (r: HybridRecipient) =>
+  openerFor(r, parseContactUpdateWire, openpgpEnvelopeDecryptor(r.privateKeyArmored, r.passphrase));
 
 before(async () => {
-  const o = await mkIdentity('Alice', ownerPass);
-  ownerPub = o.publicKey;
-  owner = { fingerprint: o.fingerprint, epoch: 1, privateKeyArmored: o.privateKey, passphrase: ownerPass };
-  const b = await mkIdentity('Bob', bobPass);
-  bob = { fingerprint: b.fingerprint, publicKeyArmored: b.publicKey };
-  bobPriv = b.privateKey;
-  const c = await mkIdentity('Carol', carolPass);
-  carol = { fingerprint: c.fingerprint, publicKeyArmored: c.publicKey };
-  carolPriv = c.privateKey;
+  const o = await mintHybridRecipient();
+  ownerPub = o.publicKeyArmored;
+  owner = { fingerprint: o.fingerprint, epoch: 1, privateKeyArmored: o.privateKeyArmored, passphrase: o.passphrase };
+  bobId = await mintHybridRecipient();
+  bob = asRecipient(bobId);
+  carolId = await mintHybridRecipient();
+  carol = asRecipient(carolId);
 });
 
 // The recipient's stored view of the owner (their card): fingerprint + owner pubkey, last-seen v0.
@@ -62,7 +53,7 @@ test('E2E: a deposit decrypts + verifies to the exact delta at the recipient', a
   assert.equal(deposits.length, 1);
   assert.equal(deposits[0].mailbox_id, deriveMailboxId(bob.fingerprint), 'addressed to bob’s mailbox');
 
-  const decrypt = openpgpEnvelopeDecryptor(bobPriv, bobPass);
+  const decrypt = openFor(bobId);
   const signed = await decrypt(deposits[0].blob);
   assert.ok(signed, 'bob can decrypt the blob addressed to him');
   const v = await verifyIncomingContactUpdate(signed!, ownerAsKnown());
@@ -82,8 +73,8 @@ test('sign-once, encrypt-per-recipient: two recipients get the SAME signature, D
   assert.notEqual(deposits[0].mailbox_id, deposits[1].mailbox_id);
   assert.notEqual(deposits[0].blob, deposits[1].blob);
 
-  const forBob = await openpgpEnvelopeDecryptor(bobPriv, bobPass)(deposits[0].blob);
-  const forCarol = await openpgpEnvelopeDecryptor(carolPriv, carolPass)(deposits[1].blob);
+  const forBob = await openFor(bobId)(deposits[0].blob);
+  const forCarol = await openFor(carolId)(deposits[1].blob);
   assert.ok(forBob && forCarol);
   // ONE signature over the envelope — identical for both recipients.
   assert.deepEqual(forBob!.signature, forCarol!.signature);
@@ -96,7 +87,7 @@ test('confidentiality: Carol CANNOT decrypt the blob addressed to Bob', async ()
     owner,
     [bob],
   );
-  const wrong = await openpgpEnvelopeDecryptor(carolPriv, carolPass)(deposits[0].blob);
+  const wrong = await openFor(carolId)(deposits[0].blob);
   assert.equal(wrong, null, 'a non-recipient private key returns null (never the plaintext)');
 });
 
@@ -113,8 +104,26 @@ test('fail-closed: a recipient with no public key is SKIPPED (reported), others 
   assert.deepEqual(skipped[0], { fingerprint: 'FPNOKEY', reason: 'no-public-key' });
 });
 
+test('fail-closed (S14, HNDL): a recipient with NO pq_kem is SKIPPED as no-pq-kem — never sealed classically', async () => {
+  const classicalOnly: ContactUpdateRecipient = { fingerprint: carol.fingerprint, publicKeyArmored: carol.publicKeyArmored };
+  const { deposits, skipped } = await buildContactUpdateDeposits(
+    { version: 1, delta: { display_name: 'Alice' } },
+    owner,
+    [bob, classicalOnly],
+  );
+  assert.equal(deposits.length, 1, 'only the pq_kem-bearing recipient gets a deposit');
+  assert.equal(deposits[0].mailbox_id, deriveMailboxId(bob.fingerprint));
+  assert.deepEqual(skipped, [{ fingerprint: carol.fingerprint, reason: 'no-pq-kem' }]);
+});
+
+test('S14: the deposit is a hybrid MailboxEnvelopePackage, not armored OpenPGP', async () => {
+  const { deposits } = await buildContactUpdateDeposits({ version: 1, delta: { display_name: 'Alice' } }, owner, [bob]);
+  assert.ok(!deposits[0].blob.includes('BEGIN PGP MESSAGE'), 'no classical armor on the wire');
+  assert.equal(JSON.parse(deposits[0].blob).v, 1, 'raw-JSON hybrid package');
+});
+
 test('fail-closed: a malformed recipient key is SKIPPED (encrypt-failed), never aborts the batch', async () => {
-  const badKey: ContactUpdateRecipient = { fingerprint: 'FPBAD', publicKeyArmored: 'not-a-pgp-key' };
+  const badKey: ContactUpdateRecipient = { fingerprint: 'FPBAD', publicKeyArmored: 'not-a-pgp-key', pqKemPublicKey: bob.pqKemPublicKey };
   const { deposits, skipped } = await buildContactUpdateDeposits(
     { version: 1, delta: { display_name: 'Alice' } },
     owner,

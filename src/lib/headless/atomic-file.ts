@@ -38,7 +38,16 @@ function unlinkQuiet(path: string): void {
   try { unlinkSync(path); } catch { /* absent */ }
 }
 
-export function writeFileAtomic(path: string, data: string, opts: { mode?: number; backup?: boolean } = {}): void {
+/**
+ * backupTransform: rewrite the PREVIOUS file's text before it is kept as <path>.bak (e.g. seal it). Without it the
+ * backup is a byte copy, so a store that just switched from plaintext to encrypted would leave its old plaintext
+ * book sitting in <path>.bak (Flint R3 on #275).
+ */
+export function writeFileAtomic(
+  path: string,
+  data: string,
+  opts: { mode?: number; backup?: boolean; backupTransform?: (previousText: string) => string } = {},
+): void {
   const mode = opts.mode ?? 0o600;
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
@@ -55,8 +64,12 @@ export function writeFileAtomic(path: string, data: string, opts: { mode?: numbe
     if ((opts.backup ?? true) && existsSync(path) && isValidJson(path)) {
       const bakTmp = `${path}.bak.tmp.${process.pid}`;
       unlinkQuiet(bakTmp);
-      copyFileSync(path, bakTmp);
-      chmodSync(bakTmp, 0o600);                           // copyFileSync's mode isn't guaranteed under every umask/fs
+      if (opts.backupTransform) {
+        writeFileSync(bakTmp, opts.backupTransform(readFileSync(path, 'utf8')), { mode: 0o600 });
+      } else {
+        copyFileSync(path, bakTmp);
+      }
+      chmodSync(bakTmp, 0o600);                           // neither call's mode is guaranteed under every umask/fs
       renameSync(bakTmp, `${path}.bak`);
     }
     renameSync(tmp, path);

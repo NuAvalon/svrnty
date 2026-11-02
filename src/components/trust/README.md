@@ -9,10 +9,12 @@ Render-glass for CURSOR_QUEUE item 1: pending (one-way) trust must be unmistakab
 | `livingEdgeStatus.trust` | bond-state | paint | label |
 |---|---|---|---|
 | `none` | `known` | dim outline, no fill | Known |
-| `outbound` | `trust-sent` | dashed hollow, muted, **never white** | Awaiting mutual |
-| `inbound` | `trust-received` | gold, actionable, not white | Trusts you · trust back? |
+| `outbound` | `trust-sent` | dashed hollow, muted, **never white** | Trusted (your own trust, one-way) |
+| `inbound` | `trust-received` | never produced: `bondStateOf` folds it into `known` | Known (one-way trust is never shown; I-F, Peter #172742) |
 | `mutual` | `mutual` | solid fill + **white core** (the only lit bond) | Mutual |
 | blocked | `blocked` | muted / struck | Blocked |
+
+**Since #593 (affirm wire removed) the `inbound` and `mutual` rows are not producible in-app:** `livingEdgeStatus` never returns `inbound` (pinned by `src/lib/trust/living-edge-no-inbound.test.ts`, Flint #888) and no longer returns `mutual` from a device bit (`trust-phase-visual.ts`, PSI #588 re-grounds it). So the sample galaxy has no white light and no "Mutual" label; every trusted contact reads **Trusted**. Do not write a spec from the `inbound` / `mutual` rows until #588 lands.
 
 Verify (`ownerHasVerified`) is an ember **on** the bond — orthogonal, never a promotion to mutual/white.
 
@@ -28,5 +30,5 @@ Wired consumers: `TrustMap.tsx` (live SVG Galaxy), `TrustMapGalaxy.tsx` (canvas,
 `livingEdgeStatus`, `trust-recipe`, layout radii, seal generator, CODEOWNERS paths.
 
 ## Ask
-1. Peter-sees-it gate: Alan (sample, trusted not reciprocal) must read **Awaiting mutual** at a glance; Ada must read **Mutual** + white light.
+1. Peter-sees-it gate (post-#593): Alan and Ada (samples) must both read **Trusted** at a glance, with **no white light** anywhere in the sample galaxy. Pinned by `e2e/trust-visual-one-way-honest.spec.ts`.
 2. Fleet: optional CI step `tsx --test src/components/trust/trust-phase-visual.test.ts` (workflows are CODEOWNERS — not edited here).

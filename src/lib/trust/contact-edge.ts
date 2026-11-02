@@ -85,6 +85,16 @@ export function contactRecordToEdge(c: any): TrustEdge {
     per_contact_private: !!(
       c.per_contact_private ?? c.metadata?.share_settings?.per_contact_private
     ),
+    // piece-2 trust tier: owner-local trust-PSI opt-in (mirrors open_visibility's share_settings storage).
+    // Default false = fail-closed (trusting ≠ consenting to disclose that trust).
+    trust_visibility: !!(
+      c.trust_visibility ?? c.metadata?.share_settings?.trust_visibility
+    ),
+    // piece-2 trust tier: the PEER's OWN published discoverable-as-trusted consent, synced to this edge
+    // (like they_trust/disclosed_circle — fleet-filled). Default false = fail-closed (true-3-way C3).
+    peer_discoverable_as_trusted: !!(
+      c.peer_discoverable_as_trusted ?? c.metadata?.peer_discoverable_as_trusted
+    ),
     // Living-book glass phases (local / demo metadata — fleet fills receipts later).
     metadata: c.metadata
       ? {

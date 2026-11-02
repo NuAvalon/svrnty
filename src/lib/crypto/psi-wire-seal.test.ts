@@ -85,7 +85,9 @@ test('(fail-closed) a tampered or malformed envelope opens to null, never throws
   const pkg = await sealPsiToSatellite(SAMPLE_PSI_BODY, toPublicKeys(satellite));
 
   // Flip a byte in the ciphertext → AEAD tag fails → null.
-  const tampered = { ...pkg, ct: pkg.ct.slice(0, -4) + (pkg.ct.endsWith('A') ? 'B' : 'A') + pkg.ct.slice(-3) };
+  // Pick the replacement from the char being replaced: keying it off the LAST char left ct unchanged ~1 run in 64.
+  const tampered = { ...pkg, ct: pkg.ct.slice(0, -4) + (pkg.ct.at(-4) === 'A' ? 'B' : 'A') + pkg.ct.slice(-3) };
+  assert.notEqual(tampered.ct, pkg.ct, 'the tamper must change the ciphertext');
   assert.equal(await openPsiFromSatellite(tampered, toSecretKeys(satellite), mailboxFpOf(satellite)), null);
 
   // Structurally malformed packages → null, no throw.

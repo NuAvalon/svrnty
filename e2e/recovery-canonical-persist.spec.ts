@@ -126,6 +126,7 @@ async function mint(page: Page): Promise<{ fp: string; recoveryCode: string; nac
 // Exports an encrypted v4 .svrnty vault (Argon2id/AES-256-GCM) and returns the saved file path.
 async function exportVault(page: Page, dest: string): Promise<string> {
   await page.getByRole('tab', { name: 'Identity' }).click();
+  await page.getByTestId('card-actions-toggle').click();
   await page.getByTestId('full-backup-open').click();
   // Export-behind-auth: re-enter the unlock passphrase.
   await page.getByPlaceholder('Your everyday unlock passphrase').fill(UNLOCK_PW);

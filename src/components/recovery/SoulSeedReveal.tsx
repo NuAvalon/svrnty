@@ -111,6 +111,8 @@ export function SoulSeedReveal({
 
         <button
           type="button"
+          className="ember-act"
+          data-flash={copied ? 'ok' : undefined}
           onClick={copy}
           style={{
             width: '100%',
@@ -118,8 +120,8 @@ export function SoulSeedReveal({
             padding: '10px 12px',
             borderRadius: 10,
             border: `1px solid ${E.border}`,
-            background: 'transparent',
-            color: E.muted,
+            background: copied ? 'color-mix(in srgb, var(--se-ok) 18%, transparent)' : 'transparent',
+            color: copied ? E.ok : E.muted,
             fontFamily: E.fontSans,
             fontSize: 12,
             letterSpacing: '0.08em',
@@ -152,6 +154,7 @@ export function SoulSeedReveal({
 
         <button
           type="button"
+          className="ember-act"
           onClick={onContinue}
           disabled={!acked}
           style={{

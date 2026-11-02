@@ -16,6 +16,11 @@ ARG NEXT_PUBLIC_SVRNTY_DOMAIN=svrnty.is
 ARG NEXT_PUBLIC_SVRNTY_BASE_URL=
 ENV NEXT_PUBLIC_SVRNTY_DOMAIN=${NEXT_PUBLIC_SVRNTY_DOMAIN}
 ENV NEXT_PUBLIC_SVRNTY_BASE_URL=${NEXT_PUBLIC_SVRNTY_BASE_URL}
+# Biometric device-unlock seam: default OFF (honest "coming soon"). A build passes 'true' ONLY
+# after Flint crypto co-verify + Athena real-device test (e.g. the dev-test build). Unset /
+# anything but 'true' → isBiometricSeamLive() is false, so prod stays honest even post-merge.
+ARG NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE=
+ENV NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE=${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE}
 # Build provenance (git commit / branch / build time). Unlike the NEXT_PUBLIC_* vars
 # above, these are NOT inlined into the bundle — /api/version reads them from
 # process.env at runtime (that route is force-dynamic). NuAvalon/svrnty is a PUBLIC
@@ -37,6 +42,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
+# The relay mailbox store (RELAY_DB_PATH=/data/relay/mailbox.sqlite, durable since b327b2f, no in-memory
+# fallback) lives on a named volume. Docker seeds an EMPTY named volume from this directory, ownership
+# included, so it must exist here owned by nextjs; otherwise a fresh volume is root:root 0755 and the
+# relay can't create its database (task #661).
+RUN mkdir -p /data/relay && chown nextjs:nodejs /data/relay && chmod 0700 /data/relay
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules

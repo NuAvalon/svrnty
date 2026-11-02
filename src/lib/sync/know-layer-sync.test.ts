@@ -9,13 +9,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import type { OrchestratorDeps, PSISyncOptions } from '@/lib/trust/mutual-trust-sync';
+import { getLayerFingerprints } from '@/lib/trust/mutual-trust-sync';
 import { edgeTrusted } from '@/lib/trust/contact-edge';
+import { newPsiSessionKey, sealPsiToSatellite, openPsiSessionResponse } from '@/lib/crypto/psi-wire-seal';
+import { generateMailboxKeypair, toPublicKeys } from '@/lib/crypto/mailbox-keys';
+import type { MailboxPublicKeys } from '@/lib/crypto/mailbox-envelope';
 import {
   buildKnowOverlayDeps,
   runKnowLayerSyncTick,
   startKnowLayerSync,
   runPsiCompletionPass,
   savePsiInitiated,
+  serializePsiSession,
+  restorePsiSession,
   type KnowOverlayStore,
   type SyncMutualTrustFn,
   type CompleteTrustSyncFn,
@@ -93,6 +99,24 @@ test('C1: startKnowLayerSync immediate tick passes layer "know" explicitly', asy
   assert.equal(calls[0], 'know');
   assert.equal(calls.includes('trust'), false);
   assert.equal(calls.includes(undefined), false);
+});
+
+// The tick's own persistence steps, through the REAL loop. psi-resync-fairness.test.ts replays the steps in the order the loop runs them;
+// this one proves the loop itself records who it attempted (a call removed from the tick leaves every replayed test green).
+test('the real loop records the peers it attempted, in attempt order, as psi_try_seq', async () => {
+  const contacts = [
+    rec({ id: 'p1', fingerprint: 'peer-1' }),
+    rec({ id: 'p2', fingerprint: 'peer-2' }),
+    rec({ id: 'p3', fingerprint: 'peer-3' }),
+  ];
+  const { store, writes } = fakeStore(contacts);
+  const fn = (async () => ({ responded: [], initiated: [], errors: [], attempted: ['peer-3', 'peer-1'] })) as unknown as SyncMutualTrustFn;
+  const handle = startKnowLayerSync({ identity: { fingerprint: OWNER } }, DUMMY_OPTIONS, { store, syncFn: fn, intervalMs: 10_000 });
+  await new Promise((r) => setTimeout(r, 20));
+  handle.stop();
+  const seq = writes.filter((w) => 'psi_try_seq' in w.updates).map((w) => [w.id, w.updates.psi_try_seq]);
+  assert.deepEqual(seq, [['p3', 1], ['p1', 2]]);
+  assert.equal(writes.some((w) => 'mutual' in w.updates), false, 'an attempt alone never writes mutual (no last_sync)');
 });
 
 test('trigger is inert (no sync) when the identity is locked / absent — fail-soft', async () => {
@@ -337,6 +361,71 @@ test('piece-1 getKnownPeers: per_contact_private is the SOLE reason an open-visi
   assert.deepEqual((await depsWithout.getKnownPeers()).map((p) => p.fingerprint), ['peer-x']); // not-private reveals
 });
 
+// ── piece-2 getTrustVisiblePeers: the trust-PSI reveal source — BLIND-UNTIL-MUTUAL ─────────────────────
+// Peter #172746 / Archie confirmed-model-delta #172822. The reveal gates on the MUTUAL bond (reciprocal),
+// NEVER one-way `trusted` — a one-way/PENDING trust is invisible to everyone (anti-coercion). A peer enters
+// the trust-visible set ONLY when: the bond is MUTUAL (reciprocal) ∧ non-decayed ∧ owner opted trust_visibility
+// ∧ the peer's own peer_discoverable_as_trusted ∧ !per_contact_private. Truthy-exclusion = fail-closed.
+const MUTUAL = { reciprocal: true, they_trust_me: true, last_sync: null };
+const ONE_WAY = { reciprocal: false, they_trust_me: false, last_sync: null };
+
+test('piece-2 getTrustVisiblePeers: reveals ONLY a MUTUAL bond with both viz-opt-ins; one-way/pending or any missing consent ⇒ fail-closed drop', async () => {
+  const contacts = [
+    // honest path — MUTUAL + my trust_visibility + peer's own discoverable + not private ⇒ REVEALED
+    rec({ id: 'ok', fingerprint: 'carol-allyes', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // ★ ONE-WAY / PENDING trust (I trust them, NOT reciprocated) + all opt-ins ⇒ EXCLUDED — the blind-until-mutual floor (anti-coercion, Peter #172746)
+    rec({ id: 'ow', fingerprint: 'one-way', trusted: true, mutual: ONE_WAY, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // my viz off: mutual + peer-discoverable but I did NOT opt in ⇒ excluded
+    rec({ id: 'c1', fingerprint: 'no-my-optin', trusted: true, mutual: MUTUAL, trust_visibility: false, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+    // peer viz off: mutual + I opted in but the PEER did not ⇒ excluded
+    rec({ id: 'c3', fingerprint: 'no-peer-consent', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: false } as Partial<ContactRecord>),
+    // go-private overrides all: mutual + both opt-ins but per_contact_private ⇒ excluded
+    rec({ id: 'pp', fingerprint: 'private', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: true, per_contact_private: true } as Partial<ContactRecord>),
+  ];
+  const { store } = fakeStore(contacts);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  const fps = (await deps.getTrustVisiblePeers()).map((p) => p.fingerprint).sort();
+  assert.deepEqual(fps, ['carol-allyes']); // ONLY the mutual, both-opted, not-private bond reveals
+});
+
+test('piece-2 getTrustVisiblePeers: a ONE-WAY trusted contact is NOT trust-visible (blind-until-mutual) but IS in the whole-trusted scheduler source', async () => {
+  // Trusting someone (one-way) ≠ a visible bond. getTrustVisiblePeers gates on MUTUAL (reciprocal) + opt-ins;
+  // getTrustedPeers (scheduler) stays the whole one-way-trusted set. Proves the floor + the subset separation.
+  const { store } = fakeStore([rec({ id: 't', fingerprint: 'just-trusted', trusted: true })]); // one-way, no mutual, no opt-ins
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  assert.deepEqual((await deps.getTrustVisiblePeers()).map((p) => p.fingerprint), []); // blind-until-mutual + fail-closed
+  assert.deepEqual((await deps.getTrustedPeers()).map((p) => p.fingerprint), ['just-trusted']); // scheduler whole-set
+});
+
+test('piece-2 getTrustVisiblePeers: reversible — breaking mutuality OR flipping OFF any viz drops the peer next tick', async () => {
+  const allYes = { id: 'r', fingerprint: 'rev', trusted: true, mutual: MUTUAL, trust_visibility: true, peer_discoverable_as_trusted: true };
+  const reveals = async (patch: Partial<ContactRecord>) => {
+    const { store } = fakeStore([rec({ ...allYes, ...patch } as Partial<ContactRecord>)]);
+    return (await buildKnowOverlayDeps(OWNER, store).getTrustVisiblePeers()).map((p) => p.fingerprint);
+  };
+  assert.deepEqual(await reveals({}), ['rev']);                                                        // mutual + all-yes reveals
+  assert.deepEqual(await reveals({ mutual: ONE_WAY } as Partial<ContactRecord>), []);                  // ★ mutuality broken (un-reciprocated) → blind
+  assert.deepEqual(await reveals({ trust_visibility: false } as Partial<ContactRecord>), []);          // I revoke my viz
+  assert.deepEqual(await reveals({ peer_discoverable_as_trusted: false } as Partial<ContactRecord>), []); // peer revokes theirs
+  assert.deepEqual(await reveals({ per_contact_private: true } as Partial<ContactRecord>), []);         // go-private
+});
+
+// ── piece-2 fail-closed-by-DEFAULT: an unknown/future layer reveals NOTHING (Flint regression-lock #172551) ──
+// The whole point of the gate inversion: a layer wired without its reveal-source CANNOT silently skip the
+// gate. getLayerFingerprints returns ∅ for any layer that isn't know/trust → empty blinded set → nothing is
+// ever synced/revealed for it. Regression-proofs the "a future layer can't skip consent" property.
+test('piece-2 getLayerFingerprints: known layers resolve to their opt-in subsets; an unknown/future layer fails CLOSED (∅)', async () => {
+  const { store } = fakeStore([
+    rec({ id: 'a', fingerprint: 'all-yes', trusted: true, mutual: MUTUAL, open_visibility: true, trust_visibility: true, peer_discoverable_as_trusted: true } as Partial<ContactRecord>),
+  ]);
+  const deps = buildKnowOverlayDeps(OWNER, store);
+  assert.deepEqual(await getLayerFingerprints(deps, 'know'), ['all-yes']);   // know → open_visibility subset
+  assert.deepEqual(await getLayerFingerprints(deps, 'trust'), ['all-yes']);  // trust → trust_visibility opt-in subset
+  // ANY other layer string ⇒ ∅ (no reveal-source) — fail-closed, never a default/whole-set fallthrough.
+  assert.deepEqual(await getLayerFingerprints(deps, 'future-layer' as unknown as 'know' | 'trust'), []);
+  assert.deepEqual(await getLayerFingerprints(deps, '' as unknown as 'know' | 'trust'), []);
+});
+
 // ── piece-1 §G: #111-LEGACY SWEEP (migratePerContactPrivacyOnUnlock, client-store.ts) ─────────────────
 // The sweep fn itself is IndexedDB + session-key gated (txGetAll / updateContact / decryptContactIfNeeded,
 // not exported) → not directly runnable under node:test. We test (a) its exact per-record decision
@@ -420,6 +509,7 @@ test('piece-1 §G sweep predicate: explicit c.trusted===false WINS over trust_le
 const STUB_DEPS: OrchestratorDeps = {
   getTrustedPeers: async () => [],
   getKnownPeers: async () => [],
+  getTrustVisiblePeers: async () => [],
   applyMutualResult: async () => {},
 };
 const readyFn: CompleteTrustSyncFn = async () => ({ mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' });
@@ -468,6 +558,48 @@ test('completion EXPIRE: attempts past MAX → cleared (logical-clock expiry, no
   assert.equal(writes[0].updates.psi_session_id, undefined); // cleared — responder never answered within TTL
 });
 
+// What a user sees of a contact's circle is `disclosed_circle`. A session that is never answered (the peer is offline, or has gone silent
+// on purpose) must run out its attempts and clear the SESSION fields, and must leave the stored result exactly as the last good run left it.
+// This store APPLIES updates (the recording fakeStore above does not), so the assertions are about the record, not just the writes.
+function applyingStore(contacts: ContactRecord[]): { store: KnowOverlayStore; writes: Array<Partial<ContactRecord>> } {
+  const writes: Array<Partial<ContactRecord>> = [];
+  return {
+    writes,
+    store: {
+      getAllContacts: async () => contacts,
+      updateContact: async (id, updates) => {
+        writes.push(updates);
+        const i = contacts.findIndex((c) => c.id === id);
+        contacts[i] = { ...contacts[i], ...updates } as ContactRecord;
+      },
+    } as KnowOverlayStore,
+  };
+}
+
+test('completion EXPIRE keeps the stored result: 14 unanswered passes clear the session and never touch disclosed_circle', async () => {
+  const circle = ['fp-x', 'fp-y'];
+  const contacts = [rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, disclosed_circle: [...circle], psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0 })];
+  const { store, writes } = applyingStore(contacts);
+  for (let i = 0; i < 14; i++) {
+    await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, notReadyFn);
+    assert.deepEqual(contacts[0].disclosed_circle, circle, `pass ${i}: the shown result is unchanged`);
+  }
+  assert.equal(contacts[0].psi_session_id, undefined, 'the session did expire (so this test reaches the expiry branch)');
+  assert.ok(writes.length >= 13, 'every pass up to and including the expiry wrote');
+  assert.ok(writes.every((u) => !('disclosed_circle' in u)), 'no write on the unanswered path mentions disclosed_circle');
+});
+
+test('completion EXPIRE by THROWN completions keeps the stored result too (the catch path has its own clear)', async () => {
+  const circle = ['fp-x', 'fp-y'];
+  const thrower: CompleteTrustSyncFn = async () => { throw new TypeError('boom'); };
+  const contacts = [rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true, disclosed_circle: [...circle], psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0 })];
+  const { store, writes } = applyingStore(contacts);
+  for (let i = 0; i < 14; i++) await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
+  assert.equal(contacts[0].psi_session_id, undefined, 'the session did expire');
+  assert.deepEqual(contacts[0].disclosed_circle, circle, 'the shown result is unchanged');
+  assert.ok(writes.every((u) => !('disclosed_circle' in u)), 'no write on the thrown path mentions disclosed_circle');
+});
+
 test('completion FORWARD-RETRACT: de-consented peer → session + disclosed_circle cleared, never completed', async () => {
   const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: false, psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_fp_order: ['a'], disclosed_circle: ['x', 'y'] })]);
   let completeCalled = false;
@@ -487,4 +619,109 @@ test('completion FAIL-CLOSED: session missing its scalar → dropped, never comp
   assert.equal(completeCalled, false); // never proceeds without the persisted scalar
   assert.equal(writes.length, 1);
   assert.equal(writes[0].updates.psi_session_id, undefined); // dropped
+});
+
+// ── Chaos #183: the initiator's PQ response key must survive between ticks ──────────────────────────
+// Under pqWrap the satellite seals the result to the response key minted at initiate and delivers it ONCE. Before this fix
+// savePsiInitiated dropped that key and the completion pass never passed one, so the result could never be opened.
+
+const PQ_OPTIONS = (): PSISyncOptions => ({ ...DUMMY_OPTIONS, pqWrap: { satelliteKeys: toPublicKeys(generateMailboxKeypair()) as MailboxPublicKeys } });
+const SESSION_FIELDS = { psi_session_id: 'sess-1', psi_sk_A: 'sk', psi_pub: 'pub', psi_fp_order: ['a'], psi_layer: 'know', psi_attempts: 0, open_visibility: true, fingerprint: 'peer-fp', id: 'c1' } as const;
+
+test('#183 savePsiInitiated persists the PQ response key, and the restored key can OPEN what is sealed to the original responsePub', async () => {
+  const pq = newPsiSessionKey();
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true })]);
+  await savePsiInitiated(store, OWNER, [{ peerFingerprint: 'peer-fp', sessionId: 'sess-1', keypair: { privateKey: 'sk', publicKey: 'pub' }, fpOrder: ['a'], pqSession: pq }]);
+  const stored = writes[0].updates.psi_pq_session;
+  assert.equal(typeof stored, 'string', 'the response key is persisted next to psi_sk_A');
+  const restored = restorePsiSession(stored);
+  assert.ok(restored, 'and restores');
+  assert.equal(restored!.responsePub.mailbox_fp, pq.responsePub.mailbox_fp, 'same mailbox fp');
+  // the decisive property: something the satellite sealed to the ORIGINAL responsePub opens with the RESTORED key
+  const sealed = await sealPsiToSatellite({ hello: 'result' }, { x25519Pub: pq.keypair.x25519Pub, mlkem1024Pub: pq.keypair.mlkem1024Pub });
+  assert.deepEqual(await openPsiSessionResponse(sealed, restored!), { hello: 'result' });
+});
+
+test('#183 a classical session (no pqSession) persists NO response key', async () => {
+  const { store, writes } = fakeStore([rec({ id: 'c1', fingerprint: 'peer-fp', open_visibility: true })]);
+  await savePsiInitiated(store, OWNER, [{ peerFingerprint: 'peer-fp', sessionId: 's', keypair: { privateKey: 'sk', publicKey: 'pub' }, fpOrder: [] }]);
+  assert.equal(writes[0].updates.psi_pq_session, undefined);
+});
+
+test('#183 restorePsiSession fails CLOSED on every malformation', () => {
+  const good = JSON.parse(serializePsiSession(newPsiSessionKey()));
+  const bad: unknown[] = [undefined, null, '', 'not json', JSON.stringify({ ...good, v: 2 }), JSON.stringify({ ...good, x25519_sec: 'AAAA' }),
+    JSON.stringify({ ...good, mlkem1024_sec: good.mlkem1024_pub }), JSON.stringify({ ...good, x25519_pub: 5 }), JSON.stringify({ v: 1 }), 42, {}];
+  for (const b of bad) assert.equal(restorePsiSession(b), null, `must reject ${String(b).slice(0, 30)}`);
+  assert.ok(restorePsiSession(JSON.stringify(good)), 'control: the well-formed one restores');
+});
+
+test('#183 completion PASSES the restored pqSession to completeTrustSync (it used to pass none)', async () => {
+  const pq = newPsiSessionKey();
+  const { store } = fakeStore([rec({ ...SESSION_FIELDS, psi_pq_session: serializePsiSession(pq) })]);
+  let seen: unknown = 'unset';
+  const spy: CompleteTrustSyncFn = async (...args) => { seen = args[7]; return { mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, PQ_OPTIONS(), spy);
+  assert.equal((seen as { responsePub: { mailbox_fp: string } }).responsePub.mailbox_fp, pq.responsePub.mailbox_fp);
+});
+
+test('#183 pqWrap on + NO stored response key => do NOT read (the one-shot result would be destroyed); drop the session', async () => {
+  const { store, writes } = fakeStore([rec({ ...SESSION_FIELDS })]); // a session saved before the fix
+  let called = false;
+  const spy: CompleteTrustSyncFn = async () => { called = true; return { error: 'x' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, PQ_OPTIONS(), spy);
+  assert.equal(called, false, 'never reads the sealed result without the key');
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].updates.psi_session_id, undefined);
+  assert.equal(writes[0].updates.psi_pq_session, undefined);
+});
+
+test('#183 CONTROL: no pqWrap + no stored key still completes (classical sessions unchanged)', async () => {
+  const { store, writes } = fakeStore([rec({ ...SESSION_FIELDS })]);
+  let seen: unknown = 'unset';
+  const spy: CompleteTrustSyncFn = async (...args) => { seen = args[7]; return { mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' }; };
+  await runPsiCompletionPass(store, OWNER, STUB_DEPS, DUMMY_OPTIONS, spy);
+  assert.equal(seen, undefined, 'classical: no pqSession');
+  assert.equal(writes[0].updates.psi_session_id, undefined, 'applied -> cleared');
+});
+
+test('#183 a THROWN completion counts as an attempt, and expires at MAX (it used to retry forever with psi_attempts untouched)', async () => {
+  const thrower: CompleteTrustSyncFn = async () => { throw new TypeError('boom'); };
+  const a = fakeStore([rec({ ...SESSION_FIELDS, psi_attempts: 2 })]);
+  await runPsiCompletionPass(a.store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
+  assert.equal(a.writes.length, 1);
+  assert.equal(a.writes[0].updates.psi_attempts, 3);
+  assert.equal('psi_session_id' in a.writes[0].updates, false, 'not cleared yet');
+  const b = fakeStore([rec({ ...SESSION_FIELDS, psi_attempts: 12 })]);
+  await runPsiCompletionPass(b.store, OWNER, STUB_DEPS, DUMMY_OPTIONS, thrower);
+  assert.equal(b.writes[0].updates.psi_session_id, undefined, 'expired at MAX');
+});
+
+// Flint S54 cond.1: the response key has EXACTLY psi_sk_A's lifetime — cleared on completion, expiry AND de-consent.
+// A key left behind is a standing decrypt oracle for any future envelope sealed to that response_pub. `in` (not just
+// === undefined) so an update that simply OMITS the field — leaving the stored secret untouched — cannot pass.
+test('#183 / S54 cond.1: psi_pq_session is cleared with psi_sk_A on completion, expiry (not-ready AND thrown) and de-consent', async () => {
+  const stored = serializePsiSession(newPsiSessionKey());
+  const withKey = (extra: Record<string, unknown> = {}) => rec({ ...SESSION_FIELDS, psi_pq_session: stored, ...extra });
+  const cleared = (w: { updates: Partial<ContactRecord> }[], why: string) => {
+    assert.equal(w.length, 1, why);
+    assert.ok('psi_pq_session' in w[0].updates, `${why}: the update must NAME psi_pq_session`);
+    assert.equal(w[0].updates.psi_pq_session, undefined, why);
+    assert.ok('psi_sk_A' in w[0].updates && w[0].updates.psi_sk_A === undefined, `${why}: cleared together with psi_sk_A`);
+  };
+  const ok: CompleteTrustSyncFn = async () => ({ mutualFingerprints: [], totalChecked: 0, sessionId: 's', role: 'initiator' });
+  const notReady: CompleteTrustSyncFn = async () => ({ error: 'not ready' });
+  const thrower: CompleteTrustSyncFn = async () => { throw new TypeError('boom'); };
+
+  const a = fakeStore([withKey()]); await runPsiCompletionPass(a.store, OWNER, STUB_DEPS, PQ_OPTIONS(), ok);
+  cleared(a.writes, 'completion');
+  const b = fakeStore([withKey({ psi_attempts: 12 })]); await runPsiCompletionPass(b.store, OWNER, STUB_DEPS, PQ_OPTIONS(), notReady);
+  cleared(b.writes, 'expiry (not-ready past MAX)');
+  const c = fakeStore([withKey({ psi_attempts: 12 })]); await runPsiCompletionPass(c.store, OWNER, STUB_DEPS, PQ_OPTIONS(), thrower);
+  cleared(c.writes, 'expiry (thrown past MAX)');
+  const d = fakeStore([withKey({ open_visibility: false })]); await runPsiCompletionPass(d.store, OWNER, STUB_DEPS, PQ_OPTIONS(), ok);
+  cleared(d.writes, 'de-consent');
+  // control: an in-flight not-ready tick must KEEP the key (the next tick needs it)
+  const e = fakeStore([withKey({ psi_attempts: 2 })]); await runPsiCompletionPass(e.store, OWNER, STUB_DEPS, PQ_OPTIONS(), notReady);
+  assert.equal('psi_pq_session' in e.writes[0].updates, false, 'control: a still-in-flight session keeps its key');
 });

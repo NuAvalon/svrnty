@@ -85,7 +85,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // ACTIVATION SATISFIED: extractJoinPath confirmed in CI (the key rides the URL fragment; read off the
   // Copy-link clipboard).
   test('beat 3: a card given by hand blooms an edge across two devices', async ({ browser }) => {
-    test.skip(!process.env.E2E_PROD, 'beat-3 needs a prod build — StrictMode breaks the joiner under next dev (gap#1)');
+    test.setTimeout(90_000); // two genesis flows + the handshake + the admit take 30-40 s under `next dev`; the config default is 30 s
     const aliceCtx = await browser.newContext();
     const bobCtx = await browser.newContext();
     const alice = await aliceCtx.newPage();
@@ -112,8 +112,19 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
     await bob.goto('/');
     await bob.getByPlaceholder('Enter passphrase').fill('e2e-passphrase-1234');
     await bob.getByRole('button', { name: /unlock/i }).click();
-    await bob.getByRole('tab', { name: 'Galaxy', exact: true }).click();
-    await bob.getByTestId('galaxy-gate').click();
+    // The Galaxy tab carries an activity dot once something arrives (its accessible name then reads "Galaxy, new activity"), so
+    // match the name by prefix instead of exactly.
+    await bob.getByRole('tab', { name: /^Galaxy\b/ }).click();
+    // Galaxy elements animate (tm-ignite entrance + infinite tm-pulse/breathe/spoke-live + the gate's
+    // own spark SVG), so Playwright's click actionability wait for a "stable" element flakes under
+    // e2e-prod CI load — test-geometry, NOT a render regression (the galaxy renders fast; only the
+    // geometric click on a moving target times out). Same root + fix as the trust-visual flaky-fix
+    // (#254): freeze animations for the interaction, then dispatchEvent the gate's own onClick handler
+    // (GalaxyGateMembrane: <button onClick={…onOpen()}> → dispatchEvent fires the REAL handler).
+    await bob.addStyleTag({
+      content: '*, *::before, *::after { animation: none !important; transition: none !important; }',
+    });
+    await bob.getByTestId('galaxy-gate').dispatchEvent('click');
     await bob.getByTestId('grow-gate-arrival').click();
     await bob.getByTestId('grow-gate-admit-confirm').click();
     await bob.getByRole('tab', { name: 'Contacts', exact: true }).click();
@@ -179,7 +190,10 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   test('beat 5 (vault export): the candle — the whole encrypted vault survives the fire', async ({ page }) => {
     await genesis(page, 'Alice E2E', 'alice-e2e@example.test');
     await page.getByRole('tab', { name: 'Identity' }).click();
-    await page.getByRole('button', { name: /full backup/i }).click();
+    // Full Backup lives in the identity-card overflow (CardMenuItem testId=full-backup-open).
+    // Open the menu first — the old direct button is gone. Do not bypass VaultExportDialog's re-auth gate.
+    await page.getByTestId('card-actions-toggle').click();
+    await page.getByTestId('full-backup-open').click();
 
     // CUR-4 export-behind-auth: re-enter unlock passphrase before the vault packer.
     await expect(page.getByRole('heading', { name: /confirm it/i })).toBeVisible();

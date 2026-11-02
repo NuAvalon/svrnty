@@ -294,3 +294,17 @@ test('CANONICAL bundle with a WRONG-LENGTH PQ pubkey → rejected at the boundar
   });
   assert.equal(await verifyMailboxPollAuth(reqWith(tampered), mid, NOW), false);
 });
+
+test('#717: a canonical poll bundle with pq_signature "" (or null) is refused, not verified as classical', async () => {
+  const cid = await makeCanonicalIdentity('canon717');
+  const mid = deriveMailboxId(cid.fingerprint);
+  const h = await signMailboxPollRequest({
+    mailboxId: mid, fingerprint: cid.fingerprint, publicKeyArmored: cid.publicKey, privateKeyArmored: cid.privateKey,
+    passphrase: cid.passphrase, kemPublicKey: cid.kemPublicKeyB64, sigPublicKey: cid.sigPublicKeyB64, now: NOW,
+  });
+  assert.equal(await verifyMailboxPollAuth(reqWith(h), mid, NOW), true); // control
+  for (const bad of ['', null] as unknown[]) {
+    const forged = mutateHeader(h, (b) => { b.pq_signature = bad; });
+    assert.equal(await verifyMailboxPollAuth(reqWith(forged), mid, NOW), false, `pq=${JSON.stringify(bad)}`);
+  }
+});

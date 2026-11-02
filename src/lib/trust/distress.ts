@@ -43,7 +43,8 @@ export function distressWentPersistPatch(
 
 /**
  * Fire-and-forget. Must not return copy that says the cry was sent.
- * Fleet replaces the body with outer-mailbox encrypt + fan-out.
+ * STILL A STUB (nothing is emitted). Design (A), #704: the body will seal the cry into the next PSI resync
+ * slot (ResyncSlotSource.enqueueCry in psi-resync-slot.ts), never send on its own (R6), and ride 3 ticks.
  */
 export async function sendDistress(_req: {
   recipientFingerprints: string[];

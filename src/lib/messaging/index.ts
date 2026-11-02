@@ -20,11 +20,17 @@ export {
   newNoteId,
   newThreadId,
 } from './store';
+// Only the POLICY surface. The raw session primitives (sealDirectNote / openDirectNote / put/getRatchetSession) are deliberately NOT
+// exported: they skip the deposit gate, the observed-capability rule, the owner binding and commit-after-store (R1/D1/R2/R4).
+export { isTripleRatchetBody, chooseWireBody, openDirectNoteStaged, peerRatchetStatus, TRIPLE_RATCHET_BODY } from './direct-session';
+export type { PeerRatchetStatus } from './direct-session';
 export {
   sendNoteToPeer,
+  NoteSendError,
   acceptInboundNote,
   tryParseNoteWire,
 } from './transport';
+export type { NoteSendFailureKind } from './transport';
 export type {
   ParticipantKind,
   ThreadKind,

@@ -18,10 +18,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { mailboxConfig } from './mailbox-config';
+import { safeEnvelopeId } from '@/lib/sync/dead-letter';
 
 export interface Envelope {
-  /** Relay-assigned (or client-supplied, Apollo retry-dedup contract) unique id — the handle for
-   *  ack-delete + client-side dedup. Unique within a mailbox. */
+  /** Relay-assigned unique id — the handle for ack-delete + client-side dedup. Unique within a mailbox. Over HTTP the relay
+   *  ALWAYS assigns it (see depositEnvelope's clientEnvelopeId note). */
   envelope_id: string;
   /** Opaque payload (≤ maxPayloadBytes). The relay never reads or interprets this. */
   blob: string;
@@ -105,9 +106,14 @@ export type DepositResult = { ok: true } | { ok: false; status: 400 | 413 | 429 
  *
  * (400/413 are request-shape errors — about the deposit itself, NOT R's mailbox state.)
  *
- * `clientEnvelopeId` (optional, Apollo retry-dedup contract): when the client supplies a STABLE id,
+ * NOT REACHABLE OVER HTTP (lane:svrnty #2310-#2315): the deposit route (app/api/relay/envelope/route.ts) never passes
+ * `clientEnvelopeId`, so every envelope that arrives over the network gets a relay-assigned random id, and a depositor cannot
+ * choose or reuse one. #720 v5.2's malformed-id rule and #318's held-frame schedule rely on that. The parameter below is
+ * internal/test-only; wiring it into the route trips envelope-id-relay-assigned.test.ts on purpose (re-check v5.2 first).
+ *
+ * `clientEnvelopeId` (optional, the designed-but-unwired retry-dedup contract): when a caller supplies a STABLE id,
  * a retry with the same (mailbox, id) is IDEMPOTENT — returns ok:true without a second row and
- * without re-counting against cap. Absent → the relay assigns a random id (legacy callers). The
+ * without re-counting against cap. Absent → the relay assigns a random id (every HTTP deposit today). The
  * idempotent-OK is uniform with a fresh OK (no read-state leak). [Flint co-verified GREEN: the only
  * residual is AT-CAP + OWN-MESSAGE — sweepExpired runs before the dedup SELECT, so re-depositing a
  * still-PENDING X returns ok (dedup, pre-cap) while a consumed/expired X returns 429, letting a
@@ -139,10 +145,10 @@ export function depositEnvelope(
   const d = db();
   sweepExpired(now); // lazy GC on write
 
-  const envId =
-    typeof clientEnvelopeId === 'string' && clientEnvelopeId.length > 0
-      ? clientEnvelopeId
-      : crypto.randomUUID();
+  // A client-chosen id must pass the SAME rule the consumer applies (#720 v5.2 E1: hardening; the consume side's check is the
+  // real guard, since any relay can hand back any id). No route passes one today; whoever wires it inherits this. Absent → ours.
+  if (clientEnvelopeId !== undefined && safeEnvelopeId(clientEnvelopeId) === null) return { ok: false, status: 400 };
+  const envId = clientEnvelopeId ?? crypto.randomUUID();
 
   // Retry-dedup (Apollo): a re-deposit of the same (mailbox, envelope_id) is idempotent — already
   // stored + already counted, so return OK without a duplicate row (uniform with a fresh OK).
@@ -165,22 +171,23 @@ export function depositEnvelope(
 
 /**
  * Non-destructive poll (owner-only — the route enforces owner-auth BEFORE calling this).
- * Returns the pending envelopes as `{envelope_id, blob}` (oldest first). A never-used mailbox reads
- * as empty (`[]`), indistinguishable to the owner from a drained one — and never reachable by a
- * non-owner at all.
+ * Returns the pending envelopes as `{envelope_id, blob, expires_at}` (oldest first). `expires_at` (ms) is the stored column the
+ * sweep deletes on, so it IS the moment the relay drops the envelope; a client must show this, never its own first-poll time + TTL
+ * (the TTL runs from deposit). A never-used mailbox reads as empty (`[]`), indistinguishable to the owner from a drained one —
+ * and never reachable by a non-owner at all.
  */
 export function pollMailbox(
   mailboxId: string,
   now: number,
-): Array<{ envelope_id: string; blob: string }> {
+): Array<{ envelope_id: string; blob: string; expires_at: number }> {
   const d = db();
   sweepExpired(now);
   const rows = d
     .prepare(
-      'SELECT envelope_id, blob FROM envelopes WHERE mailbox_id = ? AND expires_at > ? ORDER BY deposited_at ASC, rowid ASC',
+      'SELECT envelope_id, blob, expires_at FROM envelopes WHERE mailbox_id = ? AND expires_at > ? ORDER BY deposited_at ASC, rowid ASC',
     )
-    .all(mailboxId, now) as Array<{ envelope_id: string; blob: string }>;
-  return rows.map((r) => ({ envelope_id: r.envelope_id, blob: r.blob }));
+    .all(mailboxId, now) as Array<{ envelope_id: string; blob: string; expires_at: number }>;
+  return rows.map((r) => ({ envelope_id: r.envelope_id, blob: r.blob, expires_at: r.expires_at }));
 }
 
 /** Ack-delete (owner-only). Removes the listed ids from the mailbox. Returns the count removed. */

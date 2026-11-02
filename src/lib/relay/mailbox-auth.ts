@@ -19,7 +19,8 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { canonicalize } from '@/lib/format/canonical';
-import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
 
@@ -148,6 +149,7 @@ export async function signMailboxPollRequest(args: {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  cycle?: UnlockCycle; // per-poll-cycle unlock shared by poll + ack signing (N10/N12)
   now: number;
   kemPublicKey?: string; // §5: identity's ML-KEM-1024 public (base64) — canonical-fp binding
   sigPublicKey?: string; // §5: identity's ML-DSA-87 public (base64) — canonical-fp binding
@@ -158,6 +160,8 @@ export async function signMailboxPollRequest(args: {
     pollSigningInput({ mailbox_id: args.mailboxId, nonce, ts: args.now }),
     args.privateKeyArmored,
     args.passphrase,
+    undefined,
+    args.cycle,
   );
   return { [OWNER_AUTH_HEADER]: encodeBundle(bundleFrom(args, nonce, sig)) };
 }
@@ -170,6 +174,7 @@ export async function signMailboxAckRequest(args: {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  cycle?: UnlockCycle; // per-poll-cycle unlock shared by poll + ack signing (N10/N12)
   now: number;
   kemPublicKey?: string; // §5: identity's ML-KEM-1024 public (base64) — canonical-fp binding
   sigPublicKey?: string; // §5: identity's ML-DSA-87 public (base64) — canonical-fp binding
@@ -180,6 +185,8 @@ export async function signMailboxAckRequest(args: {
     ackSigningInput({ mailbox_id: args.mailboxId, envelope_ids: args.envelopeIds, nonce, ts: args.now }),
     args.privateKeyArmored,
     args.passphrase,
+    undefined,
+    args.cycle,
   );
   return { [OWNER_AUTH_HEADER]: encodeBundle(bundleFrom(args, nonce, sig)) };
 }
@@ -219,6 +226,7 @@ export async function signMailboxClaimRequest(args: {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  cycle?: UnlockCycle; // per-poll-cycle unlock shared by poll + ack signing (N10/N12)
   now: number;
   kemPublicKey?: string;
   sigPublicKey?: string;
@@ -229,6 +237,8 @@ export async function signMailboxClaimRequest(args: {
     pollSigningInput({ mailbox_id: args.mailboxId, nonce, ts: args.now }),
     args.privateKeyArmored,
     args.passphrase,
+    undefined,
+    args.cycle,
   );
   return { [OWNER_AUTH_HEADER]: encodeBundle(bundleFrom(args, nonce, sig)) };
 }
@@ -289,9 +299,7 @@ async function verifyOwner(
       sig_public_key: bundle.sig_public_key,
     }))) return false;
     // (4) private-key possession over EXACTLY this request, under the op-specific domain.
-    const envSig: EnvelopeSignature = bundle.pq_signature
-      ? { classical: bundle.signature, pq_signature: bundle.pq_signature }
-      : { classical: bundle.signature };
+    const envSig = envelopeSignatureOf(bundle.signature, bundle.pq_signature); // raw: '' / null refuse (#717)
     return await verifyWithEnvelope(domain, signingInput, envSig, bundle.public_key);
   } catch {
     return false;

@@ -17,6 +17,7 @@ import { ownerHasVerified } from '../trust/trust-recipe';
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
 import { edgeTrusted } from '../trust/contact-edge';
+import { scrubAffirmWireMutual } from '../trust/affirm-wire-purge';
 // piece-2 device-mailbox lifecycle: the card-borne receiver keypair (generated once at genesis,
 // vault-persisted, secrets never leave the device). mailbox-keys is a leaf crypto util (like the
 // fingerprint import above). device-mailbox is PURE helpers (no back-import of this file → no cycle);
@@ -151,6 +152,9 @@ export async function initSessionKey(passphrase: string): Promise<void> {
   // piece-1 #111-legacy sweep (Archie do-no-harm #158835): clear open_visibility on every NON-trusted
   // contact so B1's `&& e.trusted` drop has zero transitional-reveal. Must run WITH the mask-drop. Best-effort.
   await migratePerContactPrivacyOnUnlock();
+  // #593 affirm-wire removal: one-time idempotent PURGE of the device-held mutual-trust taint written by
+  // the removed affirm-wire (mutual.{they_trust_me,reciprocal,last_affirm_at}). Best-effort, logged.
+  await purgeAffirmWireMutualTaintOnUnlock();
   // enc-b Blocker-C (eager half): proactively heal plaintext-fallback identity-store records (keys/
   // pq_keys/vaults/shards) so never-read-post-unlock stragglers (esp. shards) don't sit plaintext.
   await eagerMigrateIdentityStoresOnUnlock();
@@ -602,6 +606,43 @@ export async function loadKey(fingerprint: string): Promise<{ privateKey: string
   return { privateKey: record.privateKey, passphrase: record.passphrase };
 }
 
+/**
+ * Non-destructively verify a passphrase against the at-rest key record — WITHOUT touching the
+ * live session key. Derives a candidate key from `passphrase` + the record's stored salt and
+ * attempts to AES-GCM-decrypt the record; a successful GCM auth proves `passphrase` is the real
+ * vault passphrase (the one whose PBKDF2 output encrypted this record).
+ *
+ * Use this to confirm a re-typed passphrase before acting on it (e.g. biometric device-unlock
+ * wraps the typed passphrase for later replay). Do NOT validate by comparing against
+ * loadKey().passphrase: that plaintext field can diverge from the live unlock passphrase
+ * (restore/import paths store '', and a passphrase change re-keys the record without rewriting
+ * the field). Fail-closed: returns false for a missing, legacy-unencrypted, or malformed record,
+ * or on any decrypt failure. Non-destructive: never mutates _sessionKey/_sessionSalt.
+ */
+export async function verifyPassphrase(fingerprint: string, passphrase: string): Promise<boolean> {
+  const record = await txGet<any>('keys', fingerprint);
+  if (
+    !record ||
+    record.enc_version !== ENC_VERSION ||
+    typeof record.salt !== 'string' ||
+    typeof record.iv !== 'string' ||
+    typeof record.ciphertext !== 'string'
+  ) {
+    return false; // no encrypted-at-rest record to verify against (fail-closed)
+  }
+  try {
+    const candidateKey = await deriveSessionKey(passphrase, fromBase64(record.salt));
+    await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: fromBase64(record.iv) },
+      candidateKey,
+      fromBase64(record.ciphertext),
+    );
+    return true; // GCM auth passed → passphrase is the vault passphrase
+  } catch {
+    return false; // wrong passphrase (GCM auth fail) or any error
+  }
+}
+
 // ── PQ key operations ────────────────────────────────────────────
 
 export async function storePQKeys(fingerprint: string, bundle: any): Promise<void> {
@@ -1018,6 +1059,35 @@ export async function hasEncryptedKeys(fingerprint: string): Promise<boolean> {
   return !!(record && record.enc_version === ENC_VERSION);
 }
 
+/**
+ * Read-only, PRE-UNLOCK-SAFE passphrase-epoch for the biometric device-unlock seam
+ * (biometric-seam.ts). ADD-ONLY: touches no passphrase/recovery control flow — it is a
+ * pure read of the at-rest key envelope (mirrors hasEncryptedKeys: raw txGet, no session
+ * required, never returns plaintext).
+ *
+ * Returns a SHA-256 fingerprint of the ENCRYPTED key envelope (enc_version|salt|iv|
+ * ciphertext) for `fingerprint`. This value changes IFF the key material is re-encrypted —
+ * i.e. on passphrase-change / recovery-restore / vault re-key, all of which re-write the
+ * `keys` record via storeKey — and is STABLE across ordinary lock/unlock cycles (a plain
+ * unlock never rewrites the record). The biometric seam stamps it into the wrapped blob at
+ * enroll and compares at unlock; a mismatch (or null) means the wrapped passphrase is STALE
+ * and the blob MUST be invalidated (force re-enroll). Never leaves the device.
+ *
+ * Returns null when no key record exists OR the record is not encrypted-at-rest (legacy
+ * plaintext): both are treated by the caller as "invalidate / cannot back a device-unlock".
+ * The digest reveals nothing beyond what already sits in IndexedDB (it hashes ciphertext,
+ * not the passphrase) — it is NOT a passphrase oracle.
+ */
+export async function getKeyEnvelopeFingerprint(fingerprint: string): Promise<string | null> {
+  const record = await txGet<any>('keys', fingerprint);
+  if (!record || record.enc_version !== ENC_VERSION) return null;
+  const canonical = `v${record.enc_version}|${record.salt}|${record.iv}|${record.ciphertext}`;
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical)),
+  );
+  return toBase64(digest);
+}
+
 export async function removeContact(id: string): Promise<void> {
   // enc-b B4: delete the record AND rewrite the book manifest over the post-remove set in ONE tx, so a
   // removal can't leave a stale manifest that would false-alarm as corruption on the next unlock.
@@ -1187,6 +1257,43 @@ async function migratePerContactPrivacyOnUnlock(): Promise<void> {
       console.warn('[piece-1] #111-legacy privacy sweep skipped a record (retries next unlock)', e);
     }
   }
+}
+
+/**
+ * #593 affirm-wire removal — one-time, idempotent, logged PURGE of the device-held mutual-trust taint.
+ *
+ * The removed affirm-wire (deposit→consume→applyMutual) persisted `mutual.{they_trust_me,reciprocal,
+ * last_affirm_at}` onto contact records — a device-held "they trust me" bit that is FALSE SECURITY
+ * (defeated by inspecting the device). The wire is code-ripped; this scrubs the values it ALREADY WROTE
+ * on existing stores (dev users + any two-seat that consumed an affirmation) so the taint doesn't linger.
+ *
+ * DO-NO-HARM SCOPE (what Flint co-verifies, all-bearers): touches ONLY the three affirm-wire bits — it
+ * NEVER touches the owner's own sovereign trust (trusted / trust_level / trusted_since / trust_history) or
+ * the rest of the book. `mutual.last_sync` (a benign interaction timestamp, not taint) is PRESERVED;
+ * `last_affirm_at` is dropped. Idempotent: a record already at the benign default is skipped (no write),
+ * so re-running every unlock is a no-op. Best-effort: a per-record hiccup leaves it for the next unlock
+ * and never throws into the unlock path. Mutual is re-grounded on the blind PSI intersection (#588).
+ *
+ * Runs over txGetAll('contacts') = EVERY contact across ALL owner books in the store (all bearers).
+ */
+async function purgeAffirmWireMutualTaintOnUnlock(): Promise<void> {
+  if (!_sessionKey || !_contactKeys) return;
+  let stored: Array<Record<string, unknown>>;
+  try { stored = await txGetAll<Record<string, unknown>>('contacts'); } catch { return; }
+  let scrubbed = 0;
+  for (const rec of stored) {
+    try {
+      const c = await decryptContactIfNeeded(rec);
+      const res = scrubAffirmWireMutual(c.mutual);
+      if (!res.changed) continue; // idempotent: already at the benign default → no write
+      // Write ONLY the scrubbed `mutual` — nothing else on the record is touched.
+      await updateContact((c as { id: string }).id, { mutual: res.mutual } as Partial<ContactRecord>);
+      scrubbed++;
+    } catch (e) {
+      console.warn('[#593] affirm-wire mutual-taint purge skipped a record (retries next unlock)', e);
+    }
+  }
+  if (scrubbed > 0) console.info(`[#593] purged device-held mutual-trust taint from ${scrubbed} contact record(s)`);
 }
 
 /**

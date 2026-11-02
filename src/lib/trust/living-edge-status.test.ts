@@ -51,7 +51,7 @@ test('pending living cannot communicate', () => {
   assert.equal(s.canCommunicate, false);
 });
 
-test('linked known can communicate; trust outbound distinct from mutual', () => {
+test('linked known can communicate; own-trust reads outbound — a device-bit reciprocal no longer renders mutual (#593)', () => {
   const outbound = livingEdgeStatus(
     edge({
       peer_fingerprint: 'a1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -64,9 +64,12 @@ test('linked known can communicate; trust outbound distinct from mutual', () => 
   assert.equal(outbound.connection, 'linked');
   assert.equal(outbound.canCommunicate, true);
   assert.equal(outbound.trust, 'outbound');
-  assert.equal(livingStatusChip(outbound), 'Trusted'); // pre-wire (gated); "Trust sent" once the wire is live
+  assert.equal(livingStatusChip(outbound), 'Trusted');
 
-  const mutual = livingEdgeStatus(
+  // #593 REMOVAL PROOF: a device-held mutual.{reciprocal,they_trust_me} is NO LONGER trusted as a mutual
+  // signal (affirm-wire removed — a device bit is false security). Even with reciprocal:true on the device,
+  // the edge reads 'outbound' (the owner's own sovereign trust), NOT 'mutual'. Mutual is PSI-discovered (#588).
+  const deviceReciprocal = livingEdgeStatus(
     edge({
       peer_fingerprint: 'a2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       peer_public_key: 'PK',
@@ -75,15 +78,15 @@ test('linked known can communicate; trust outbound distinct from mutual', () => 
       connection_status: 'accepted',
     } as TrustEdge),
   );
-  assert.equal(mutual.trust, 'mutual');
-  assert.equal(livingStatusChip(mutual), 'Mutual');
+  assert.equal(deviceReciprocal.trust, 'outbound', 'device-bit reciprocal does NOT produce mutual (#593)');
+  assert.notEqual(deviceReciprocal.trust, 'mutual', 'mutual is PSI-only now (#588)');
+  assert.equal(livingStatusChip(deviceReciprocal), 'Trusted');
 });
 
-test('PRE-WIRE (isMutualTrustWireLive false): a one-way edge reads the roadmap copy, NEVER "awaiting mutual"', () => {
-  // The mutual-trust wire is not yet live end-to-end (deposit-hook + two-seat e2e). While the gate is
-  // false, a trusted one-way edge must NOT imply a transient "awaiting mutual" wait for a state that
-  // cannot arrive (built≠wired). It reads the honest roadmap copy instead (Hypatia v1). The phase stays
-  // 'outbound' (the dashed/muted PR#215 affordance is unchanged); only the copy is gated.
+test('#593: a one-way (own-trust) edge reads "Trusted", NEVER "awaiting mutual" (no affirm-wire in flight)', () => {
+  // The affirm-wire is removed, so a trusted one-way edge reads the honest "Trusted" (its own device
+  // trust) + the device-local reciprocity detail — never "awaiting mutual" (there is no affirm wire that
+  // could land). Mutual is discovered via the blind PSI intersection (#588), not an affirm wait.
   const outbound = livingEdgeStatus(
     edge({
       peer_fingerprint: 'a3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -93,10 +96,10 @@ test('PRE-WIRE (isMutualTrustWireLive false): a one-way edge reads the roadmap c
       connection_status: 'accepted',
     } as TrustEdge),
   );
-  assert.equal(outbound.trust, 'outbound', 'phase unchanged — affordance still one-way');
-  assert.equal(outbound.statusLine, 'Trusted', 'pre-wire status is "Trusted", NOT "Trusted · awaiting mutual"');
-  assert.equal(outbound.detailLine, 'Mutual confirmation coming', 'pre-wire detail is the roadmap line');
-  assert.ok(!/awaiting mutual/i.test(outbound.statusLine), 'never implies a transient mutual wait pre-wire');
+  assert.equal(outbound.trust, 'outbound', 'phase is the owner own-trust outbound');
+  assert.equal(outbound.statusLine, 'Trusted', 'status is "Trusted", NOT "Trusted · awaiting mutual"');
+  assert.equal(outbound.detailLine, 'Trust is on your device · reciprocity probe is fleet-owned');
+  assert.ok(!/awaiting mutual/i.test(outbound.statusLine), 'never implies a transient mutual wait');
 });
 
 test('undelivered method update surfaces on detail', () => {

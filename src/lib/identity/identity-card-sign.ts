@@ -19,7 +19,7 @@
 
 import type { IdentityCard } from '../format/envelope';
 import { DOMAIN_IDENTITY_CARD, identityCardSigningInput } from '../format/envelope';
-import { signWithEnvelope, verifyWithEnvelope, type EnvelopeSignature } from '../crypto/sign-envelope';
+import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf } from '../crypto/sign-envelope';
 import { fingerprintMatchesKey } from './fingerprint';
 // piece-2 device-mailbox: validate the seal-target the card carries. extractValidMailboxFromCard is the
 // shape/content-fp gate ON TOP of the card signature (the mailbox fields live under identity.* so the
@@ -124,9 +124,7 @@ export async function verifySignedIdentityCard(
   // (2) envelope signature over the canonical card. Strip BOTH signature fields before recomputing
   // the signing input — the signer signed the card without them (identityCardSigningInput excludes them).
   const { signature, pq_signature, ...cardFields } = card;
-  const envSig: EnvelopeSignature = pq_signature
-    ? { classical: signature, pq_signature }
-    : { classical: signature };
+  const envSig = envelopeSignatureOf(signature, pq_signature); // raw: '' / null refuse (#717)
   return verifyWithEnvelope(
     DOMAIN_IDENTITY_CARD,
     identityCardSigningInput(cardFields),

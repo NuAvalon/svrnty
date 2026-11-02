@@ -20,6 +20,7 @@
 // DROPPED unread. REJECTIONS ARE SILENT (I-1/I-2): reject reasons are local diagnostics, NEVER echoed
 // to the sender or relay — so the return channel can't be turned into a "are you my contact?" oracle.
 
+import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { deriveMailboxId, signMailboxPollRequest, signMailboxAckRequest } from '@/lib/relay/mailbox-auth';
 import {
   verifyIncomingContactUpdate,
@@ -34,7 +35,14 @@ import {
 } from '@/lib/contacts/apply-contact-update';
 import type { PendingJoiner } from '@/lib/trust/joiner-response';
 import type { NoteWireV0 } from '@/lib/messaging/types';
-import type { TrustAffirmWireV0 } from '@/lib/trust/trust-affirm';
+import { asMailboxEnvelopePackage } from './hybrid-dual-read';
+import type { ReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
+import type { OpenLegCounter } from './open-leg-counter';
+import type { AdoptCounter } from '@/lib/messaging/session-adopt-policy';
+import type { HoldBackoff } from './hold-backoff';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -42,10 +50,20 @@ export interface OwnerIdentity {
   publicKeyArmored: string;
   privateKeyArmored: string;
   passphrase: string;
+  /** One unlock per poll cycle, shared by the decryptors and the poll/ack signers; the caller drops it at cycle end. */
+  cycle?: UnlockCycle;
   // §5 canonical-id: the identity's PQ public keys, threaded into the owner-auth bundle so the relay
   // can recompute the 64-hex canonical fingerprint. Absent for a classical identity (40-hex fp).
   kemPublicKey?: string;
   sigPublicKey?: string;
+  // HNDL receive (custody ①, Peter #168173): the owner's ML-KEM-1024 SECRET (base64). The FE path
+  // (buildConsumeDeps) instead sources this from loadPQKeys(fp) because the browser vault holds it;
+  // a HEADLESS agent has no IndexedDB, so its custody→HeadlessOwner adapter MUST carry the secret
+  // HERE (from MintSecret.mlkem1024Sec, uint8ToBase64) so buildHeadlessConsumeDeps can derive the
+  // hybrid open-material (deriveOwnerHybridSecrets) and open inbound PQ-hybrid mail. Absent for a
+  // classical identity → classical-only openers (per the loud-not-silent invariant: advertising a
+  // kem PUB while this is absent must error LOUD, never silently ack+drop a hybrid blob).
+  kemSecretKey?: string;
 }
 
 /** Decrypt an opaque relay blob to a SignedContactUpdate, or null if it isn't for us / is corrupt. */
@@ -117,7 +135,20 @@ export interface JoinerResponseSeam {
  */
 export interface NoteResponseSeam {
   verify: (blob: string) => Promise<NoteWireV0 | null>;
-  accept: (wire: NoteWireV0) => Promise<AcceptedNote | null>;
+  /** null = dropped for an unspecified reason (legacy; recorded as verify-failed). A DroppedNote says WHY, so the record is honest. */
+  accept: (wire: NoteWireV0) => Promise<AcceptedNote | DroppedNote | null>;
+}
+
+/**
+ * Why an opened note was not stored (#720 R1/R9). 'unverified' = the sender could not be authenticated (so no fingerprint is carried: F3);
+ * 'not-in-book', 'ratchet-unopenable' (the frame's fault) and 'ratchet-local' (this device's fault: HELD, not acked) happen only AFTER
+ * authentication, so `fp` is trustworthy there.
+ */
+export interface DroppedNote {
+  dropped: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync';
+  fp?: string;
+  /** Why a ratchet frame did not open (a fixed token from DEAD_LETTER_CAUSES; the record keeps it only if it is on that list). */
+  cause?: string;
 }
 
 /** The persisted note's handles, returned by the note seam's accept for the inbox live-repaint. */
@@ -135,44 +166,101 @@ export interface NoteLiveEvent {
 }
 
 /**
- * MUTUAL-TRUST AFFIRMATION routing seam (svrnty-trust-affirm-v0) — the mailbox's FOURTH inbound type.
- * An affirmation is sealed to the owner with the SAME openpgp envelope as contact.updates / joiner-
- * responses / notes, so — exactly like them — it DECRYPTS NON-NULL via the contact-update decryptor and
- * would then be dropped on its missing `envelope.fingerprint` → silently ack-DELETED (the silent-loss).
- * This seam routes affirmations FIRST, by their own type-checked decryptor, so the mutual-trust flip
- * actually lands. It is the WIRE that makes "Trusted · awaiting mutual" a TRANSIENT state (it resolves
- * when the peer's affirmation arrives) rather than a PERMANENT one (updateMutualState had zero callers —
- * the built-not-wired over-claim this closes; Apollo ☀8178, Hypatia #167478).
- *   • verify — decrypt + type-check the blob as an affirmation (trustAffirmOpenpgpDecryptor returns null
- *     for a non-affirmation, incl. a note / joiner / contact-update → fall through). Does NOT authenticate
- *     — that's accept's job (the affirmation can be forged until verifyTrustAffirmSender runs).
- *   • accept — authenticate (verifyTrustAffirmSender: public_key↔from_fingerprint + sig + direction) THEN
- *     bind-to-me (to_fingerprint === owner) THEN admit (in-book — the FALSE-MUTUAL gate) THEN apply the
- *     flip (they_trust_me / reciprocal). Returns the applied event for the trust-repaint, or null if
- *     DROPPED (unsigned / forged / misaddressed / stranger — silent I-1/I-2, terminal + acked, never
- *     echoed). THROWS only on a store I/O failure → retryable (the apply is idempotent on redelivery).
- * Optional: a caller that omits it keeps the exact prior behaviour (an affirmation, if any, falls to the
- * contact-update path = the silent-loss; so the runtime binding MUST wire this once trust-affirm ships).
+ * DELIVERY-RECEIPT routing seam (svrnty-receipt-v1, the designated-verifier MAC receipt) — the mailbox's FOURTH inbound type, the SENDER
+ * half of S62 (receipt-emit.ts is the recipient half). A receipt is a hybrid-sealed envelope like the others, so it would otherwise decrypt
+ * NON-NULL via the contact-update decryptor and be dropped on its missing `envelope.fingerprint` → silently ack-DELETED. This seam routes a
+ * receipt FIRST, by its own type-checked opener, so "Sent · unconfirmed." can actually resolve to "Delivered".
+ *   • verify — open + type-check the blob as a v1 receipt (null for a non-receipt → fall through). Does NOT authenticate: the receipt names
+ *     no sender and carries no signature, so nothing in it means anything until accept checks the MAC against the stored outbound note.
+ *   • accept — recover the OUTBOUND note (getNote), take the per-note receipt key we stored, and verifyReceiptTag(rk, note_id, code, tag).
+ *     ★ delivered=true is written ON EXACTLY ONE LINE (inside accept, only after the tag verified) — NEVER from a bare ack, a relay flag, or
+ *     a signature. The key is deleted from the row in the same write. Returns the note's ids for the inbox repaint, or null if DROPPED
+ *     (unknown note, inbound note, no stored key, wrong code, bad tag: silent, floor 'Sent' holds, NO false Delivered). THROWS only on store
+ *     I/O → retryable (putNote is idempotent, so a redelivered receipt re-sets delivered harmlessly).
+ * Optional: a caller that omits it keeps the exact prior behaviour (a receipt, if any, falls to the contact-update path).
  */
-export interface TrustAffirmResponseSeam {
-  verify: (blob: string) => Promise<TrustAffirmWireV0 | null>;
-  accept: (wire: TrustAffirmWireV0) => Promise<AcceptedTrustAffirmEvent | null>;
+export interface ReceiptResponseSeam {
+  verify: (blob: string) => Promise<ReceiptWireV1 | null>;
+  accept: (wire: ReceiptWireV1) => Promise<AcceptedReceipt | null>;
 }
 
-/** The applied affirmation's handles, returned by the affirm seam's accept for the trust live-repaint. */
-export interface AcceptedTrustAffirmEvent {
-  id: string; // the local contact record id (for the repaint — reuses the contact-book beat)
-  from_fingerprint: string;
-  trusts: boolean;
-  reciprocal: boolean;
+/** The confirmed note's handles, returned by the receipt seam's accept for the inbox delivered-repaint. */
+export interface AcceptedReceipt {
+  note_id: string;
+  thread_id: string;
+  from_fingerprint: string; // the delivering recipient's fingerprint (for the repaint)
 }
 
-/** Emitted after a mutual-trust flip is persisted so the trust map / book repaints live. */
-export interface TrustLiveEvent {
-  id: string;
+/** Emitted after a receipt is verified + the note marked delivered, so the inbox repaints the status. */
+export interface ReceiptLiveEvent {
+  note_id: string;
+  thread_id: string;
   from_fingerprint: string;
-  trusts: boolean;
-  reciprocal: boolean;
+}
+
+/**
+ * THE ONE ACK DOOR (#720 R1). consume never asks the relay to delete an envelope that did not become a stored message unless a
+ * metadata-only record of it was committed FIRST. `record` THROWS if it cannot commit (store locked, write failed): the envelope then
+ * stays on the relay. `clear` removes the record of an envelope that has since opened (R5), and also throws on failure.
+ * Omit the sink and consume behaves as before (no records): the headless agent path, which has no IndexedDB.
+ */
+export interface DeadLetterSink {
+  record(row: DeadLetterRow): Promise<DeadLetterRow>;
+  clear(envelopeId: string): Promise<void>;
+  /** Once per poll, after records were written (retention pruning). Best effort: a failure here never affects what is acked. */
+  settle?(): Promise<void>;
+  /** R2: envelopes a user's session reset released (record key -> contact fp). Read once per poll; each is recorded as session-reset and acked WITHOUT being opened. Best effort: if it throws, the frames just stay held. */
+  releasedByReset?(): Promise<ReadonlyMap<string, string>>;
+  /** Optional STAGING: when present, record()/clear() may only buffer, and flush() commits them. consume-mailbox calls it before every
+   *  ack chunk and acks the chunk only if it resolved. */
+  flush?(): Promise<void>;
+}
+
+/**
+ * #712: one store write per ack chunk (headless). Mutations the seams make after enter(key) belong to that envelope; commit() writes
+ * everything since the last commit in ONE write and only then may that chunk be acked. commit() THROWS when the write fails: none of
+ * the chunk is acked. A commit returns the keys whose note a re-apply refused (sender blocked meanwhile, C2). isStored is the C1
+ * dedupe: an envelope a previous commit already holds is acked without being opened again. Omit it and consume is unchanged (FE).
+ */
+export interface ChunkTxn {
+  enter(key: string | null): void;
+  isStored(key: string): boolean;
+  stored(key: string): void;
+  acked(keys: string[]): void;
+  commit(live?: ListingScope): { refused: string[] };
+  abort(): void;
+}
+
+/**
+ * A clean poll's WHOLE listing (#712 C1 bound, Flint #2417): the keys of every envelope it returned, and the relay + mailbox they belong
+ * to. Only built from a 2xx array reply, so a refused or unreadable poll can never prune.
+ */
+export interface ListingScope {
+  scope: string;
+  keys: ReadonlySet<string>;
+}
+
+/** Which relay + mailbox a dedupe key belongs to: a dedupe key is `<scope>.<id hash>`, so a listing prunes only its own scope. */
+export function envelopeDedupeScope(relayBase: string, mailboxId: string): string {
+  return bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope-scope:v1|${relayBase}|${mailboxId}`)));
+}
+
+/**
+ * The C1 dedupe key: which relay, which mailbox, which relay-assigned id (#2312: stable across redelivery) AND which blob (#737). Hashed,
+ * so an attacker-chosen id is never stored as-is (E1). null for an id or blob that is not a string: such an envelope is never deduped, it
+ * takes the normal path. Trusting the relay's id here adds nothing a relay can't already do: it can withhold or delete any envelope.
+ * #737 (Archie lane:svrnty #3222, Flint #3224): the blob's hash is in the key, so a REUSED id (sequential ids, a wiped DB that reissues,
+ * a buggy satellite or peer relay) with a different blob gets a different key and is OPENED, never acked unopened: id reuse now fails
+ * LOUD (an extra open, logged) instead of SILENT. The new dependency, the mirror image: a relay must return a stored blob byte-identical
+ * until ack or expiry (ours does: INSERT once, SELECT as stored, no UPDATE; mailbox-store.ts), or a true redelivery is opened again.
+ * v2 preimage: entries written under v1 (id only) can't match a v2 key. Under G-RO-5 an own-scope v1 entry is then absent from every
+ * listing's keys, so the next commit prunes it; other scopes' v1 entries age out at APPLIED_TTL_MS.
+ */
+export function envelopeDedupeKey(relayBase: string, mailboxId: string, envelopeId: unknown, blob: unknown): string | null {
+  if (typeof envelopeId !== 'string' || typeof blob !== 'string') return null;
+  const blobHash = bytesToHex(sha256(utf8ToBytes(blob)));
+  const id = bytesToHex(sha256(utf8ToBytes(`svrnty:applied-envelope:v2|${relayBase}|${mailboxId}|${envelopeId}|${blobHash}`)));
+  return `${envelopeDedupeScope(relayBase, mailboxId)}.${id}`;
 }
 
 export interface ConsumeDeps {
@@ -181,13 +269,36 @@ export interface ConsumeDeps {
   store: ContactStore;
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
-  affirm?: TrustAffirmResponseSeam; // mutual-trust affirmation routing; omit → affirms fall to contact-update path (silent-loss)
+  receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
+  openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
+  /** Layer 3 hop trail (headless only): told, by the RELAY's envelope id, which envelopes were listed, dropped (recorded + acked: told only
+   *  after that envelope's ack returned 2xx) or held (told once its held row is durable). Omit = no-op (FE). It can never change what is
+   *  consumed or acked: a throw from it is swallowed. */
+  onHop?: (hop: 'polled' | 'dropped' | 'held', envelopeId: string, reason?: DeadLetterReason) => void;
+  adoptCounts?: AdoptCounter; // #720 R5: stored notes the session-adopt replay guard ignored for being future-dated (omit = adopt_future_ignored is absent)
   emit?: (event: LiveApplyEvent) => void; // live-beat seam (contact book)
   emitNote?: (event: NoteLiveEvent) => void; // inbox-repaint seam (over-wire notes)
-  emitTrust?: (event: TrustLiveEvent) => void; // trust-repaint seam (mutual-trust flip)
+  emitReceipt?: (event: ReceiptLiveEvent) => void; // inbox delivered-repaint seam (delivery receipts)
   now?: () => string; // ISO timestamp source (inject for determinism)
+  // ③ HNDL receive gate (Flint): true iff the owner ADVERTISES a kem pub but NO ML-KEM secret could be
+  // derived (OwnerIdentity.kemPublicKey present && deriveOwnerHybridSecrets → undefined). Set by the deps
+  // builders (buildConsumeDeps / buildHeadlessConsumeDeps). When true, consumeOne treats a hybrid-package
+  // blob it cannot open as RETRYABLE (loud), never terminal — so inbound hybrid is never silently lost
+  // while the secret is transiently missing (locked session / Athena-① pending). Undefined ⇒ status quo.
+  // May be a lazy check (FE: the secret is only derived once a hybrid blob arrives); consumeOne awaits it per hybrid blob.
+  hybridSecretMissing?: boolean | (() => Promise<boolean>);
+  // #720: called once per CLEAN poll with the number of blobs kept because this device cannot open them yet (0 clears the notice).
+  // Counts only that case; a terminal drop is not "held". Never called for a refused poll or an ended unlock cycle.
+  // `expiresAt` (ISO) is the EARLIEST relay deadline among the held envelopes, present only when EVERY held envelope carried a valid one:
+  // one "kept until" date has to be true for every message the count includes, and a missing or malformed date proves nothing.
+  emitHeld?: (count: number, info?: { expiresAt?: string }) => void;
+  deadLetter?: DeadLetterSink; // #720: record-before-ack for everything that did not become a stored message
+  // #720 T2b: when a held ratchet-DESYNC envelope is retried (every poll for its first hour, then hourly). Omit = retried every poll.
+  holdBackoff?: HoldBackoff;
+  chunk?: ChunkTxn; // #712: one store write per ack chunk, written before the chunk is acked; omit = a write per mutation (as before)
+  outOfTime?: () => boolean; // #712: checked before each envelope of the main pass and once per heal round (L-318b); true = stop, commit + ack what was consumed, leave the rest (`deferred`)
 }
 
 export interface ConsumeSummary {
@@ -195,18 +306,56 @@ export interface ConsumeSummary {
   applied: number;
   ignited: number;
   notes: number; // over-wire notes persisted to the inbox (distinct from contact-book applies)
-  affirmed: number; // mutual-trust affirmations applied (they_trust_me / reciprocal flipped)
+  delivered: number; // delivery receipts verified → outbound notes marked delivered (the "Delivered" graduation)
   dropped: number; // rejected/undecryptable/not-in-book — silently
+  held: number; // #720: hybrid packages KEPT on the relay because no kem secret is derivable yet (also counted in `dropped`, as before)
+  deadLettered: number; // #720: terminal envelopes whose metadata record was committed, then acked
+  unrecorded: number; // #720: terminal/opened envelopes NOT acked because their record could not be committed (or cleared): left on the relay
+  /**
+   * #720 ruling (c): how many envelopes THIS poll consumed as a LOSS (not a message, not benign), per reason. Counted when the envelope enters
+   * the ack list, so it is exactly once per envelope even if its record failed on an earlier poll, and it counts WITHOUT a sink: headless
+   * pollers (no IndexedDB, no records) still see their losses. Counts only, never an id. Held envelopes count as 'missing-key' only when released.
+   */
+  lost: Partial<Record<DeadLetterReason, number>>;
+  /**
+   * #720 (Archie #2032, Flint #2031): how many opens this poll succeeded on each LEG of the dual-read opener. The classical leg is a
+   * compatibility fallback that may only be removed once every active sender shows 0 here over 7 days. Counts only, snake_case on purpose
+   * (the ward allowlist in devin_quarantine names exactly these keys). Always present; 0 when no counter was wired.
+   */
+  opened_hybrid: number;
+  opened_classical: number;
+  /** #720 R5: stored notes the session-adopt replay guard ignored this poll because they were dated beyond now + 5 min. Counts only; absent when no counter was wired. */
+  adopt_future_ignored?: number;
+  released: number; // #720: held envelopes past the keep bound (50 / 7 days): their record was committed, then they were acked
   acked: number;
-  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth); absent on a clean poll — a rejected poll is NOT an empty mailbox
+  deduped?: number; // #712 C1: redelivered envelopes a previous commit already holds, acked WITHOUT opening (present when chunk is wired)
+  deferred?: number; // #712: envelopes left on the relay because the pass ran out of time (present when outOfTime is wired)
+  rejected?: number; // HTTP status when the poll request itself was refused (e.g. 401 owner-auth), or a 2xx whose body was not a list; absent on a clean poll — a rejected poll is NOT an empty mailbox
 }
+
+/**
+ * What a terminal outcome IS. `benign` = the content is already stored or it was never a message (named, test-pinned list in
+ * dead-letter.ts): acked with no record. Anything else is a LOSS and gets a record committed before the ack.
+ */
+export type TerminalClass = { benign: BenignTerminal } | { reason: DeadLetterReason; fp?: string; cause?: string };
 
 type Outcome =
   | { kind: 'applied'; event: LiveApplyEvent }
   | { kind: 'note'; event: NoteLiveEvent } // over-wire note persisted → ack + inbox repaint (NOT a book beat)
-  | { kind: 'affirm'; event: TrustLiveEvent } // mutual-trust flip persisted → ack + trust repaint (NOT a book beat)
-  | { kind: 'terminal' } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack to clean up
-  | { kind: 'retryable' }; // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
+  | { kind: 'receipt'; event: ReceiptLiveEvent } // delivery receipt verified → note marked delivered → ack + inbox repaint
+  | { kind: 'terminal'; cls: TerminalClass } // permanently invalid (bad sig, stale, not-for-me, not-in-book) → ack, after its record if it is a loss
+  | { kind: 'retryable' } // e.g. epoch-ahead-needs-lineage → leave for a later poll after lineage catch-up
+  | { kind: 'held'; reason?: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }; // #720: a hybrid package this owner cannot open YET (no derivable kem secret): retryable AND counted, so the UI can say so
+
+/** Layer 3: tell the optional hop-trail hook. Fail-open: it can never affect consume. */
+function hop(deps: ConsumeDeps, kind: 'polled' | 'dropped' | 'held', id: unknown, reason?: DeadLetterReason): void {
+  if (!deps.onHop || typeof id !== 'string') return;
+  try {
+    deps.onHop(kind, id, reason);
+  } catch {
+    /* the trail is fail-open */
+  }
+}
 
 /**
  * Poll the owner's mailbox once, consume every pending envelope through verify→apply→persist, ack the
@@ -215,11 +364,21 @@ type Outcome =
  * message cannot wedge the channel.
  */
 export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<ConsumeSummary> {
+  try {
+    return await consumeOnce(deps);
+  } finally {
+    deps.chunk?.abort(); // #712: an exit mid-chunk (a throw) writes nothing of it; after the last commit nothing is open (no-op)
+  }
+}
+
+async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
   const relayBase = deps.relayBase ?? '/api/relay';
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => new Date().toISOString());
   const mailboxId = deriveMailboxId(deps.owner.fingerprint);
-  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, affirmed: 0, dropped: 0, acked: 0 };
+  const summary: ConsumeSummary = { polled: 0, applied: 0, ignited: 0, notes: 0, delivered: 0, dropped: 0, held: 0, deadLettered: 0, unrecorded: 0, released: 0, lost: {}, opened_hybrid: 0, opened_classical: 0, acked: 0 };
+  deps.openLegs?.take(); // discard anything counted outside a poll: a poll reports only its own opens
+  deps.adoptCounts?.take();
 
   // 1) Poll as owner (signed request — the bare GET occupancy oracle is closed server-side).
   const pollHeaders = await signMailboxPollRequest({
@@ -228,6 +387,7 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     publicKeyArmored: deps.owner.publicKeyArmored,
     privateKeyArmored: deps.owner.privateKeyArmored,
     passphrase: deps.owner.passphrase,
+    cycle: deps.owner.cycle,
     kemPublicKey: deps.owner.kemPublicKey,
     sigPublicKey: deps.owner.sigPublicKey,
     now: Date.now(),
@@ -237,13 +397,270 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
     summary.rejected = res.status;
     return summary;
   }
-  const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string }>;
-  if (!Array.isArray(envelopes)) return summary;
+  // expires_at is the relay's own deletion time for the envelope (additive on the poll; absent from an older relay). Untrusted: only
+  // ever compared and handed on, never used to decide whether a blob is consumed.
+  const envelopes = (await res.json()) as Array<{ envelope_id: string; blob: string; expires_at?: unknown }>;
+  if (!Array.isArray(envelopes)) {
+    summary.rejected = res.status; // an answer that isn't a list is not an empty mailbox (Archie #2401)
+    return summary;
+  }
   summary.polled = envelopes.length;
+  for (const e of envelopes) hop(deps, 'polled', e?.envelope_id);
+  const txn = deps.chunk;
+  if (txn) summary.deduped = 0;
+  if (deps.outOfTime) summary.deferred = 0;
+  const keyOf = (e: { envelope_id?: unknown; blob?: unknown } | null | undefined) => (txn && e ? envelopeDedupeKey(relayBase, mailboxId, e.envelope_id, e.blob) : null);
+  // an /ack names ids only: every listed key behind an id (#737: a reused id with two blobs in one listing has TWO keys; the ack drops both)
+  // Each envelope's key is derived ONCE, here, and handle() reuses it (Apollo #3370): the key hashes the whole blob (noble sha256, ~0.5 ms per
+  // 4 KB) and this pass runs BEFORE the time budget applies, so a second derivation per envelope doubled an unbudgeted cost on a full mailbox.
+  const keyByEnv = new Map<unknown, string | null>();
+  const keysById = new Map<string, string[]>();
+  for (const e of envelopes) {
+    const k = keyOf(e);
+    keyByEnv.set(e, k);
+    if (k === null || typeof e.envelope_id !== 'string') continue;
+    const ks = keysById.get(e.envelope_id);
+    if (ks) ks.push(k);
+    else keysById.set(e.envelope_id, [k]);
+  }
+  // reached only with a 2xx array (a refused or unreadable poll returned above): the one listing a commit may prune from
+  const live: ListingScope = { scope: envelopeDedupeScope(relayBase, mailboxId), keys: new Set([...keysById.values()].flat()) };
 
-  // 2) Consume each envelope independently; collect the terminal ones to ack.
+  // 2) Consume each envelope independently; flush acks in 20-id chunks so
+  //    (a) no /ack header ever crosses the ~16KB HTTP 431 edge cap, and
+  //    (b) a deep backlog drains incrementally even under a 55s poll timeout.
+  const ACK_CHUNK = 20;
+  // A STAGING sink (one with flush(), e.g. the headless file sink) buffers record()/clear() and commits them in ONE write before each ack
+  // chunk, so a backlog of N losses costs at most ceil(N/20) writes, not N (Archie #189076, Flint C1). Record-before-ack still holds: a
+  // chunk is acked only after flush() succeeded. If flush() throws, NOTHING in that chunk is acked (it stays on the relay for a later poll)
+  // and every staged record in it is re-counted from deadLettered to unrecorded. A sink without flush() (the FE) writes in record() as before.
+  const stagedRecords = new Set<string>();
+  // Layer 3 R2 (Hypatia #3123, Flint #3124): a trail hop states an event, so it is written only once that event is TRUE. 'dropped' =
+  // recorded AND acked: queued when the row is staged, told only after ITS envelope's ack chunk returns 2xx (after the flush, so the row is
+  // durable). A failed store save / flush / ack leaves the envelope on the relay and writes no 'dropped'. 'held' is told after settle().
+  const pendingDrop = new Map<string, DeadLetterReason>();
+  const flushAckChunk = async (chunk: string[]) => {
+    if (chunk.length === 0 || deps.owner.cycle?.ended) return;
+    const staging = deps.deadLetter?.flush;
+    if (staging) {
+      try {
+        await staging.call(deps.deadLetter);
+      } catch (err) {
+        for (const id of chunk) {
+          if (stagedRecords.delete(id)) {
+            summary.deadLettered--;
+            summary.unrecorded++;
+          }
+        }
+        console.error('[return-channel] could not commit dead-letter records (chunk left on the relay):', err instanceof Error ? err.message : 'error');
+        return;
+      }
+      for (const id of chunk) stagedRecords.delete(id);
+    }
+    const ackHeaders = await signMailboxAckRequest({
+      mailboxId,
+      envelopeIds: chunk,
+      fingerprint: deps.owner.fingerprint,
+      publicKeyArmored: deps.owner.publicKeyArmored,
+      privateKeyArmored: deps.owner.privateKeyArmored,
+      passphrase: deps.owner.passphrase,
+      cycle: deps.owner.cycle,
+      kemPublicKey: deps.owner.kemPublicKey,
+      sigPublicKey: deps.owner.sigPublicKey,
+      now: Date.now(),
+    });
+    const ackRes = await doFetch(`${relayBase}/ack`, {
+      method: 'POST',
+      headers: { ...ackHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: chunk }),
+    });
+    if (ackRes.ok) {
+      summary.acked += chunk.length;
+      txn?.acked(chunk.flatMap((id) => keysById.get(id) ?? []));
+      for (const id of chunk) {
+        const r = pendingDrop.get(id);
+        if (r === undefined) continue;
+        pendingDrop.delete(id);
+        hop(deps, 'dropped', id, r); // R2: recorded (flushed above) and acked: now it is true
+      }
+    }
+  };
+
+  // Nothing is added to `toAck` in the consume loop itself: each envelope that may be acked goes through THE ACK DOOR below, which decides
+  // WHAT must happen first (#720 R1: no ack of an envelope that did not become a stored message without a committed record of it).
+  type Need = 'none' | 'clear' | { reason: DeadLetterReason; fp?: string; cause?: string };
+  const heldNow: Array<{ id: string; blob: string; expiresAt: unknown; reason: 'missing-key' | 'ratchet-local' | 'ratchet-desync'; fp?: string; cause?: string }> = [];
+  const sink = deps.deadLetter;
   const toAck: string[] = [];
-  for (const env of envelopes) {
+  // #737 R1 (Flint lane:svrnty #3249): an /ack names IDS only, and a relay that acks by id deletes EVERY envelope listed under that id. So
+  // an id is queued for ack only once EVERY listed envelope behind it reached a terminal ack decision this pass (the door, or a release past
+  // the keep bound); a twin deferred by the time budget, held, or kept on the relay by a failed record keeps the id unacked (the finished
+  // twin's key is committed, so the next poll dedupes it and finishes the other). Unique ids (our relay refuses a duplicate (mailbox, id)
+  // deposit, mailbox-store.ts) behave exactly as before: one listing, one decision, one push.
+  // It counts DECISIONS, not distinct keys, on purpose (Flint #3264): the IDENTICAL envelope listed twice (same id AND blob = same v2 key)
+  // still gets acked, because the second copy dedupes as 'cleared', which is a decision; a distinct-key count would hold that id forever.
+  // It relies on each listed envelope reaching at most ONE terminal decision (the door's structure); the "acked twice" mutant pins that side.
+  const listedById = new Map<string, number>();
+  for (const e of envelopes) if (typeof e?.envelope_id === 'string') listedById.set(e.envelope_id, (listedById.get(e.envelope_id) ?? 0) + 1);
+  const doneById = new Map<string, number>();
+  const ackWhenAllTwinsDone = (id: string) => {
+    const n = (doneById.get(id) ?? 0) + 1;
+    doneById.set(id, n);
+    if (n === (listedById.get(id) ?? 1)) toAck.push(id);
+  };
+  const bump = (r: DeadLetterReason) => {
+    summary.lost[r] = (summary.lost[r] ?? 0) + 1;
+  };
+  // #712 S1: a chunk is written BEFORE it is acked. false = the write failed: ack none of these `pending` (left on the relay, `unrecorded`).
+  // The consumed-counters of a chunk that was never written go back to the last commit (Apollo #2429): it counts as `unrecorded` only.
+  // PINNED ORDER per ack chunk (Flint #189113/#189122): store save (txn.commit) → dead-letter flush (flushAckChunk) → ack. No ack if either
+  // write fails. A failed store save leaves the chunk's dead-letter ops STAGED (the sink keeps them for its next flush) and the chunk UNACKED.
+  type Committed = Pick<ConsumeSummary, 'applied' | 'ignited' | 'notes' | 'delivered' | 'dropped' | 'deduped' | 'lost'>;
+  const snapshot = (): Committed => ({ applied: summary.applied, ignited: summary.ignited, notes: summary.notes, delivered: summary.delivered, dropped: summary.dropped, deduped: summary.deduped, lost: { ...summary.lost } });
+  let committed = snapshot();
+  // The envelopes whose note a re-apply may refuse at commit (C2), by dedupe key: what a loss row for it needs (the fp is authenticated).
+  const notesByKey = new Map<string, { id: string; blob: string; fp: string }>();
+  // `ids` = the envelopes this commit covers that are about to be acked. An id dropped from it here is NOT acked (stays on the relay).
+  const commitChunk = async (ids: string[]): Promise<boolean> => {
+    if (!txn) return true;
+    let refused: string[];
+    try {
+      refused = txn.commit(live).refused;
+    } catch (err) {
+      Object.assign(summary, committed, { lost: { ...committed.lost } });
+      summary.unrecorded += ids.length;
+      // their dead-letter rows stay staged in the sink (written at its next flush, harmless for an envelope still on the relay), but none
+      // of these is acked now, so none counts as dead-lettered (= recorded, then acked)
+      for (const id of ids) if (stagedRecords.delete(id)) summary.deadLettered--;
+      console.error('[return-channel] could not write a chunk of consumed envelopes (left on the relay):', err instanceof Error ? err.message : 'error');
+      return false;
+    }
+    // C2: the sender was blocked (or removed) by a concurrent writer after the note opened. Consumed exactly like a blocked sender's note
+    // on its first apply: an honest 'not-in-book' loss (#332), and with a sink its ROW is staged before the ack (#713), never acked unrecorded.
+    for (const k of refused) {
+      const n = notesByKey.get(k);
+      summary.notes--;
+      summary.dropped++;
+      if (!n) {
+        // Flint #2829 (a): UNREACHABLE by construction (commit() refuses only keys whose note this pass applied). Loud if it ever fires:
+        // there is nothing to record a row from, so it is counted as before. Counts only: never the key or an envelope id.
+        console.error('[return-channel] UNREACHABLE: a chunk commit refused a key with no note in this pass (counted not-in-book, no row)');
+        bump('not-in-book');
+        continue;
+      }
+      const i = ids.indexOf(n.id);
+      if (!sink) {
+        bump('not-in-book');
+        continue;
+      }
+      const key = recordKeyFor(n.id);
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: 'not-in-book', blob: n.blob, fp: n.fp }) : null;
+      try {
+        if (!row) throw new Error('unrecordable envelope id');
+        await sink.record(row);
+        summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(n.id);
+        bump('not-in-book');
+        pendingDrop.set(n.id, 'not-in-book'); // R2: told after its ack
+      } catch (err) {
+        if (i !== -1) ids.splice(i, 1);
+        summary.unrecorded++;
+        console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
+      }
+    }
+    for (const k of refused) notesByKey.delete(k);
+    committed = snapshot();
+    return true;
+  };
+  const commitThenAck = async (chunk: string[]) => {
+    if (await commitChunk(chunk)) await flushAckChunk(chunk);
+  };
+
+  // THE ACK DOOR. Run inline, one envelope at a time, so #307's incremental chunked drain keeps working. Without a sink (headless) behaviour
+  // is as before: every consumed envelope is acked. With one, an envelope is acked only after its record is committed (a loss) or its stale
+  // record is cleared (it opened). A failure keeps the envelope on the relay.
+  const door = async (item: { id: string; blob: string; need: Need }): Promise<void> => {
+    if (deps.owner.cycle?.ended) return; // the key may already be dropped: decide nothing, leave everything on the relay
+    if (!sink || item.need === 'none') {
+      if (item.need !== 'none' && item.need !== 'clear') bump(item.need.reason); // consumed as a loss with no record (headless)
+      ackWhenAllTwinsDone(item.id);
+    } else if (item.need === 'clear') {
+      try {
+        await sink.clear(recordKeyFor(item.id) ?? item.id); // R5: the message replaces its flag; an envelope that is stored but whose old record cannot be cleared retries
+        ackWhenAllTwinsDone(item.id);
+      } catch (err) {
+        summary.unrecorded++;
+        console.error('[return-channel] could not clear a dead-letter record (envelope left for retry):', err instanceof Error ? err.message : 'error');
+      }
+    } else {
+      // E1: an unsafe (attacker-chosen) id is recorded under a DERIVED safe key and the ORIGINAL id is acked, so it can neither be lost
+      // unrecorded nor sit on the relay filling the mailbox. A row that cannot be built at all (not a string, an unreadable time) stays on the relay.
+      const key = recordKeyFor(item.id);
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: item.need.reason, blob: item.blob, fp: item.need.fp, cause: item.need.cause }) : null;
+      if (!row) {
+        summary.unrecorded++;
+        return;
+      }
+      try {
+        await sink.record(row);
+        summary.deadLettered++;
+        if (sink.flush) stagedRecords.add(item.id); // committed by the flush before its ack chunk
+        bump(item.need.reason);
+        ackWhenAllTwinsDone(item.id);
+        pendingDrop.set(item.id, item.need.reason); // R2: told after its ack
+      } catch (err) {
+        summary.unrecorded++;
+        console.error('[return-channel] could not commit a dead-letter record (envelope left on the relay):', err instanceof Error ? err.message : 'error');
+      }
+    }
+  };
+
+  // T4 (Flint #186298): a held frame never blocks a NEWER frame from the same peer that DOES open (each envelope is decided on its own), and a
+  // later frame can heal a gap: once a NOTE from contact X is stored this poll, X's held frames are tried again in the same poll (below).
+  const healed = new Set<string>(); // lower-cased fingerprints of the contacts a note from whom was stored this poll
+  let resetReleased: ReadonlyMap<string, string> = new Map();
+  if (sink?.releasedByReset) {
+    try {
+      resetReleased = await sink.releasedByReset();
+    } catch {
+      /* best effort: the frames stay held and are released on a later poll */
+    }
+  }
+  const handle = async (env: (typeof envelopes)[number], forced: boolean): Promise<'ended' | 'skipped' | Outcome['kind']> => {
+    // N10: the poll-cycle unlock ended (identity locked/switched mid-tick). Everything left is UNDECIDED, not
+    // undecryptable: stop and leave it in the mailbox; never decrypt/persist the rest under another identity.
+    if (deps.owner.cycle?.ended) return 'ended';
+    const key = keyByEnv.has(env) ? (keyByEnv.get(env) ?? null) : keyOf(env); // derived once in the upfront pass
+    // C1 (#326): a previous commit already holds this envelope (killed between commit and ack). Ack it WITHOUT opening: a ratchet frame's
+    // message key is spent on the first open, so a second open would fail and record a loss for a message that is safely stored.
+    // Through THE ACK DOOR as a stored message ('clear'), like any other: a sink clears a stale record of it first (#720 R1/R5).
+    if (txn && key && txn.isStored(key)) {
+      summary.deduped!++;
+      await door({ id: env.envelope_id, blob: env.blob, need: 'clear' });
+      if (toAck.length >= ACK_CHUNK) await commitThenAck(toAck.splice(0, ACK_CHUNK));
+      return 'terminal';
+    }
+    // R2: a frame the user's session reset released is recorded as session-reset and acked WITHOUT being opened (opening it again would only
+    // fail and flip its record back to a hold).
+    const relFp = resetReleased.get(recordKeyFor(env.envelope_id) ?? '');
+    if (relFp !== undefined) {
+      deps.holdBackoff?.forget(env.envelope_id);
+      summary.dropped++;
+      await door({ id: env.envelope_id, blob: env.blob, need: { reason: 'session-reset', fp: relFp } });
+      if (toAck.length >= ACK_CHUNK) await commitThenAck(toAck.splice(0, ACK_CHUNK));
+      return 'terminal';
+    }
+    // T2b: a held desync envelope that is not due yet is NOT tried (no ratchet open, no side effect). It still counts as held with its
+    // recorded reason + fingerprint, so the record and the keep bound behave as if it had been tried and failed again.
+    // A T4 retry (forced) is the one reason to try it before it is due: its peer just proved the session works.
+    const backoff = deps.holdBackoff;
+    const nowMs = Date.parse(now());
+    if (!forced && backoff && Number.isFinite(nowMs) && !backoff.due(env.envelope_id, nowMs)) {
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: 'ratchet-desync', fp: backoff.fpOf(env.envelope_id), cause: 'ratchet-receive-failed' });
+      summary.dropped++;
+      return 'skipped';
+    }
+    txn?.enter(key); // only an envelope that is actually opened this pass belongs to the chunk (a not-yet-due hold returned above)
     let outcome: Outcome;
     try {
       outcome = await consumeOne(env.blob, deps, now);
@@ -256,10 +673,19 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       console.error('[return-channel] unexpected error consuming an envelope (left for retry):', err);
       outcome = { kind: 'retryable' };
     }
+    // A cycle that died DURING this blob makes it look undecryptable (decryptors throw → terminal → ack-delete).
+    // That is a lock/switch artefact, not a verdict on the blob: downgrade so it is never ack-deleted.
+    if (outcome.kind === 'terminal' && deps.owner.cycle?.ended) outcome = { kind: 'retryable' };
+    if (backoff && Number.isFinite(nowMs)) {
+      if (outcome.kind === 'held' && outcome.reason === 'ratchet-desync') backoff.attempted(env.envelope_id, outcome.fp, nowMs);
+      else backoff.forget(env.envelope_id); // opened, consumed, or no longer a desync hold: no schedule to keep
+    }
+    if (txn && key && (outcome.kind === 'applied' || outcome.kind === 'note' || outcome.kind === 'receipt')) txn.stored(key);
+    if (txn && key && outcome.kind === 'note') notesByKey.set(key, { id: env.envelope_id, blob: env.blob, fp: outcome.event.from_fingerprint });
     if (outcome.kind === 'applied') {
       summary.applied++;
       if (outcome.event.ignited) summary.ignited++;
-      toAck.push(env.envelope_id);
+      await door({ id: env.envelope_id, blob: env.blob, need: 'clear' });
       try {
         deps.emit?.(outcome.event);
       } catch {
@@ -267,54 +693,200 @@ export async function consumeInboundContactUpdates(deps: ConsumeDeps): Promise<C
       }
     } else if (outcome.kind === 'note') {
       summary.notes++;
-      toAck.push(env.envelope_id); // persisted to the inbox → consumed, ack-delete
+      healed.add(String(outcome.event.from_fingerprint).toLowerCase());
+      await door({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // persisted to the inbox → consumed; a record from an earlier poll is cleared
       try {
         deps.emitNote?.(outcome.event);
       } catch {
         /* inbox repaint is best-effort; a repaint failure must not block consume/ack */
       }
-    } else if (outcome.kind === 'affirm') {
-      summary.affirmed++;
-      toAck.push(env.envelope_id); // flip persisted → consumed, ack-delete
+    } else if (outcome.kind === 'receipt') {
+      summary.delivered++;
+      await door({ id: env.envelope_id, blob: env.blob, need: 'clear' }); // note marked delivered → consumed
       try {
-        deps.emitTrust?.(outcome.event);
+        deps.emitReceipt?.(outcome.event);
       } catch {
-        /* trust repaint is best-effort; a repaint failure must not block consume/ack */
+        /* inbox delivered-repaint is best-effort; a repaint failure must not block consume/ack */
       }
     } else if (outcome.kind === 'terminal') {
       summary.dropped++;
-      toAck.push(env.envelope_id); // clean up permanently-invalid mail (silently)
+      // A benign terminal is consumed with no record; anything else is a LOSS and needs its record first.
+      await door({ id: env.envelope_id, blob: env.blob, need: 'benign' in outcome.cls ? 'none' : outcome.cls });
+    } else if (outcome.kind === 'held') {
+      heldNow.push({ id: env.envelope_id, blob: env.blob, expiresAt: env.expires_at, reason: outcome.reason ?? 'missing-key', fp: outcome.fp, cause: outcome.cause });
+      summary.dropped++; // unchanged accounting: a held blob has always counted as not-consumed this poll
     } else {
       summary.dropped++; // retryable — leave in the mailbox for a later poll
     }
+    if (toAck.length >= ACK_CHUNK) {
+      const batch = toAck.splice(0, ACK_CHUNK);
+      await commitThenAck(batch);
+    }
+    return outcome.kind;
+  };
+
+  for (let n = 0; n < envelopes.length; n++) {
+    // #712: out of time. Stop BETWEEN envelopes, before the watchdog; what was consumed is committed + acked below.
+    if (deps.outOfTime?.()) {
+      summary.deferred = envelopes.length - n;
+      break;
+    }
+    if ((await handle(envelopes[n], false)) === 'ended') break;
   }
 
-  // 3) Ack-delete the terminal envelopes (owner-signed). apply is idempotent, so a crash before ack
-  //    just redelivers and re-applies harmlessly (at-least-once).
-  if (toAck.length > 0) {
-    const ackHeaders = await signMailboxAckRequest({
-      mailboxId,
-      envelopeIds: toAck,
-      fingerprint: deps.owner.fingerprint,
-      publicKeyArmored: deps.owner.publicKeyArmored,
-      privateKeyArmored: deps.owner.privateKeyArmored,
-      passphrase: deps.owner.passphrase,
-      kemPublicKey: deps.owner.kemPublicKey,
-      sigPublicKey: deps.owner.sigPublicKey,
-      now: Date.now(),
-    });
-    const ackRes = await doFetch(`${relayBase}/ack`, {
-      method: 'POST',
-      headers: { ...ackHeaders, 'content-type': 'application/json' },
-      body: JSON.stringify({ mailbox_id: mailboxId, envelope_ids: toAck }),
-    });
-    if (ackRes.ok) summary.acked = toAck.length;
+  // T4: retry the held frames (desync and local) of every contact whose note was stored this poll. A retried frame that opens is consumed as
+  // usual and may itself heal the next one, so go round until a round frees nothing. Bounded: each round only retries what is still held.
+  // L-318b: the time budget (`outOfTime`) is checked once per ROUND, in the loop condition below, not per envelope in the inner `for`. A round
+  // that has started therefore finishes every retry in it unless the owner cycle ends (`'ended'`), so the budget can be overrun by up to one
+  // round's worth of frames.
+  for (let round = 0; healed.size > 0 && round <= envelopes.length && !deps.owner.cycle?.ended && !deps.outOfTime?.(); round++) { // `round` cap: termination never rests on `freed` alone
+    const retry = heldNow.filter((h) => h.reason !== 'missing-key' /* carries no fp today; the check keeps it out if one ever does */ && h.fp !== undefined && healed.has(h.fp.toLowerCase()));
+    if (retry.length === 0) break;
+    let freed = 0;
+    for (const h of retry) {
+      const env = envelopes.find((e) => e.envelope_id === h.id);
+      if (!env) continue; // cannot happen (heldNow only holds envelopes of this poll); nothing is touched, and the round ends by `freed`
+      heldNow.splice(heldNow.indexOf(h), 1);
+      summary.dropped--; // it was counted as not-consumed when first held; handle() counts it again if it is still held
+      const kind = await handle(env, true);
+      if (kind === 'ended') break;
+      if (kind === 'applied' || kind === 'note' || kind === 'receipt' || kind === 'terminal') freed++; // consumed: it may have healed the next one
+    }
+    if (freed === 0) break;
   }
 
+  // T2b: forget the schedule of every envelope the relay no longer holds (acked, expired, released), so the map stays as small as the mailbox.
+  if (deps.holdBackoff && !deps.owner.cycle?.ended) deps.holdBackoff.keepOnly(new Set(envelopes.map((e) => e.envelope_id)));
+
+  // Held envelopes (kept on the relay for retry): each gets a record so its FIRST-SEEN time survives across polls, then the keep bound
+  // applies (<= 50 and <= 7 days; the OLDEST are released). A released envelope's record is already committed, so it is acked now.
+  const stillHeld: typeof heldNow = [];
+  const pendingHeld: typeof heldNow = [];
+  if (sink && !deps.owner.cycle?.ended) {
+    const seen: Array<{ envelope_id: string; first_seen: string; group: string }> = [];
+    const byId = new Map(heldNow.map((h) => [h.id, h]));
+    const idByKey = new Map<string, string>(); // record key -> the id the relay knows (they differ only for an unsafe id, E1)
+    for (const h of heldNow) {
+      const key = recordKeyFor(h.id);
+      const row = key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, cause: h.cause, phase: 'held' }) : null;
+      if (!row || !key) continue; // not a string: cannot be recorded or bounded; it stays on the relay
+      try {
+        const saved = await sink.record(row);
+        idByKey.set(key, h.id);
+        if (sink.flush) pendingHeld.push(h); // R2: a STAGED held row is durable only after settle(); told then
+        else hop(deps, 'held', h.id, h.reason); // a sink without staging wrote it in record()
+        // #720 r2 (Flint, B1 for holds): an admitted contact's LOCAL frame is bounded only against that contact's own; 'missing-key' holds
+        // (outsider-depositable while this device has no kem secret) share their own group. A group may only push out its own.
+        const group = h.reason === 'missing-key' ? 'missing-key' : `${h.reason}:${(h.fp ?? '').toLowerCase()}`; // each ratchet class is bounded per contact, apart from the others
+        seen.push({ envelope_id: saved.envelope_id, first_seen: saved.first_seen, group });
+      } catch {
+        /* cannot record this poll: it stays on the relay, unbounded for now; retried next poll */
+      }
+    }
+    const groups = new Map<string, typeof seen>();
+    for (const r of seen) groups.set(r.group, [...(groups.get(r.group) ?? []), r]);
+    const release = [...groups.values()].flatMap((g) => planBound(g, Date.parse(now())).release);
+    const released = new Set(release.flatMap((r) => idByKey.get(r.envelope_id) ?? []));
+    for (const id of released) {
+      const h = byId.get(id);
+      // Released: the row now says RECORDED (this app no longer keeps the message), committed BEFORE the ack like every other record. If that
+      // write fails the envelope stays held (not acked) and is released on a later poll.
+      const key = h ? recordKeyFor(h.id) : null;
+      const row = h && key ? makeDeadLetterRow({ envelopeId: key, firstSeen: now(), reason: h.reason, blob: h.blob, fp: h.fp, cause: h.cause, phase: 'recorded' }) : null;
+      if (h && row) {
+        try {
+          await sink.record(row);
+        } catch {
+          summary.unrecorded++;
+          stillHeld.push(h);
+          continue;
+        }
+      }
+      ackWhenAllTwinsDone(id);
+      if (h) pendingDrop.set(id, h.reason); // R2: a release past the keep bound is recorded + acked, so its trail says dropped (after its ack)
+      summary.released++;
+      bump(h?.reason ?? 'missing-key'); // a released LOCAL ratchet frame counts as 'ratchet-local', apart from the sender-side 'ratchet-unopenable'
+    }
+    for (const h of byId.values()) if (!released.has(h.id)) stillHeld.push(h);
+  } else {
+    stillHeld.push(...heldNow);
+  }
+  summary.held = stillHeld.length;
+
+  // #720: report how many blobs are being KEPT because this device cannot open them yet. Reported on every CLEAN poll, including 0, so a
+  // notice clears once they open or expire. NOT reported when the poll was refused (returned above) or the unlock cycle ended mid-tick:
+  // in both the state of the mailbox is unknown, and an unknown state must neither raise nor clear the notice.
+  if (!deps.owner.cycle?.ended) {
+    try {
+      deps.emitHeld?.(summary.held, { expiresAt: earliestExpiry(stillHeld.map((h) => h.expiresAt)) });
+    } catch {
+      /* the notice is best-effort; a repaint failure must not block consume/ack */
+    }
+  }
+
+  // 3) Ack-delete any remaining terminal envelopes (owner-signed), in chunks. apply is idempotent, so a crash before ack
+  //    just redelivers and re-applies harmlessly (at-least-once). Cycle ended mid-tick: flushAckChunk skips (it can't be signed).
+  //    #712: the last partial chunk is written first (the cycle-ended case too: its ops passed the per-write dead() checks).
+  // PINNED ORDER for the last chunk too: store save FIRST, then any dead-letter write (settle commits staged rows + prunes), then the acks.
+  // A failed store save skips settle, so its dead-letter ops stay STAGED (not written ahead of the store) and nothing is acked.
+  if (!(await commitChunk(toAck))) toAck.length = 0;
+  else if (sink?.settle && (summary.deadLettered > 0 || heldNow.length > 0)) {
+    try {
+      await sink.settle();
+      for (const h of pendingHeld) hop(deps, 'held', h.id, h.reason); // R2: the held rows are written now
+    } catch {
+      /* retention is housekeeping; it must not affect consume or ack (a staged row it could not write is flushed before its ack below) */
+    }
+  }
+  while (toAck.length > 0 && !deps.owner.cycle?.ended) {
+    const batch = toAck.splice(0, ACK_CHUNK);
+    await flushAckChunk(batch);
+  }
+
+  if (deps.openLegs) {
+    const legs = deps.openLegs.take();
+    summary.opened_hybrid = legs.hybrid;
+    summary.opened_classical = legs.classical;
+  }
+  if (deps.adoptCounts) summary.adopt_future_ignored = deps.adoptCounts.take().future_ignored;
   return summary;
 }
 
+/** The earliest valid expiry among `raw`, as ISO; undefined if there are none, or if ANY entry is missing or not a valid date. */
+function earliestExpiry(raw: readonly unknown[]): string | undefined {
+  if (raw.length === 0) return undefined;
+  let min = Number.POSITIVE_INFINITY;
+  for (const r of raw) {
+    const t = typeof r === 'string' ? Date.parse(r) : Number.NaN;
+    if (!Number.isFinite(t)) return undefined;
+    if (t < min) min = t;
+  }
+  return new Date(min).toISOString();
+}
+
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
+  // N10 (Flint #178422 blocking 1): a lock can land AFTER key() handed the key out and BEFORE we persist. Re-check the
+  // cycle immediately before EVERY write below, not just at blob boundaries: a dead cycle means the identity is
+  // locked/switched, so the decided-looking result must not be applied — leave the envelope in the mailbox (retryable).
+  const dead = () => deps.owner.cycle?.ended === true;
+  // ③ LOUD-not-silent (Flint, HNDL receive gate): a hybrid deposit we SHOULD be able to open — the owner
+  // ADVERTISES a kem pub but we currently have NO derived ML-KEM secret (Athena-① pending / a transiently
+  // locked session) — must NEVER be acked+DELETED (= silent-loss). Leave it for RETRY, loudly. KEYED ON
+  // secret-DERIVABILITY, not open-success: when we HAVE the secret, a hybrid pkg that fails to open is
+  // genuinely terminal (corrupt / wrong-recipient) and is handled by the normal decrypt path below.
+  if (
+    deps.hybridSecretMissing &&
+    asMailboxEnvelopePackage(blob) != null &&
+    (typeof deps.hybridSecretMissing === 'function' ? await deps.hybridSecretMissing() : true)
+  ) {
+    console.error(
+      `[consume] LOUD: hybrid deposit for kem-advertising owner ${deps.owner.fingerprint.slice(0, 8)} ` +
+      `with no derivable ML-KEM secret — leaving for RETRY, not acking (acking would be silent-loss). ` +
+      `Needs the owner's kem secret (OwnerIdentity.kemSecretKey / vault PQ bundle) or a session unlock.`,
+    );
+    return { kind: 'held' };
+  }
+
   // R1 RETURN-CHANNEL ROUTING (pinned by joiner-response.e2e.test.ts SEAM): try the
   // joiner-response VERIFY FIRST. It is the correct discriminator — a contact-update blob returns null
   // here (its decrypted shape lacks joiner_fingerprint → isWellFormed fails) and falls through unharmed;
@@ -330,13 +902,14 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       pj = null; // a throwing joiner-verify is treated as not-a-joiner → fall through (fail-safe)
     }
     if (pj) {
+      if (dead()) return { kind: 'retryable' };
       try {
         const res = await deps.joiner.accept(pj);
         // accepted a fresh joiner → surface as an apply so the open book repaints (ignited); already in
         // the book → terminal (still ack + record, no repaint). Either way the envelope is consumed.
         return res
           ? { kind: 'applied', event: { id: pj.fingerprint, fingerprint: pj.fingerprint, ignited: res.ignited } }
-          : { kind: 'terminal' };
+          : { kind: 'terminal', cls: { benign: 'joiner-already-known' } };
       } catch (err) {
         // A store failure while accepting a VERIFIED joiner → leave for retry (at-least-once). The accept
         // is idempotent (fingerprint-dedup), so a redelivered blob re-adds harmlessly on a later poll.
@@ -361,12 +934,21 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     }
     if (wire) {
       try {
+        if (dead()) return { kind: 'retryable' };
         const accepted = await deps.note.accept(wire);
         // persisted (signed + admitted) → note (ack + inbox repaint); dropped (unsigned / forged /
         // stranger) → terminal (silent ack — I-1/I-2, the same custody as a stranger contact-update).
+        if (accepted && 'dropped' in accepted) {
+          // 'unverified' = the sender was never authenticated: no fingerprint travels with it (F3). The other two come after authentication.
+          if (accepted.dropped === 'unverified') return { kind: 'terminal', cls: { reason: 'verify-failed' } };
+          // v5.3 (Flint #2052): a ratchet frame this DEVICE could not open is HELD (kept on the relay, recorded at first sight, bounded), never acked as the sender's fault.
+          if (accepted.dropped === 'ratchet-local' || accepted.dropped === 'ratchet-desync') return { kind: 'held', reason: accepted.dropped, fp: accepted.fp, cause: accepted.cause };
+          return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp, cause: accepted.cause } };
+        }
+        // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).
         return accepted
           ? { kind: 'note', event: { note_id: accepted.note_id, thread_id: accepted.thread_id, from_fingerprint: accepted.from_fingerprint } }
-          : { kind: 'terminal' };
+          : { kind: 'terminal', cls: { reason: 'verify-failed' } };
       } catch (err) {
         // A store I/O failure while persisting a VERIFIED note → leave for retry (at-least-once).
         // acceptInboundNote's putNote is idempotent on note_id, so a redelivered note re-persists harmlessly.
@@ -377,36 +959,37 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     // wire null → not a note → fall through to the contact-update consume path.
   }
 
-  // MUTUAL-TRUST AFFIRMATION ROUTING (svrnty-trust-affirm-v0) — same discipline as the joiner + note
-  // seams above, same reason: an affirmation decrypts NON-NULL via the contact-update decryptor, then
-  // drops on its missing `envelope.fingerprint` → silently ack-DELETED. Route it by its own type-checked
-  // decryptor. affirm.verify returns null for a non-affirmation (note / joiner / contact-update → fall
-  // through unharmed), so this can never eat another type (4-way no-cross-swallow — affirm-type ≠ the
-  // other three shapes). accept authenticates → binds-to-me → admits (in-book) → applies the flip.
-  if (deps.affirm) {
-    let wire: TrustAffirmWireV0 | null;
+  // DELIVERY-RECEIPT ROUTING (svrnty-receipt-v1) — same discipline as the joiner + note seams
+  // above, same reason: a receipt decrypts NON-NULL via the contact-update decryptor, then drops on its
+  // missing `envelope.fingerprint` → silently ack-DELETED. Route it by its own type-checked decryptor.
+  // receipt.verify returns null for a non-receipt (note / joiner / contact-update → fall through
+  // unharmed), so this can never eat another type (4-way no-cross-swallow — receipt-type ≠ the others).
+  // accept recovers the outbound note + verifies the recipient's signature → marks it delivered.
+  if (deps.receipt) {
+    let wire: ReceiptWireV1 | null;
     try {
-      wire = await deps.affirm.verify(blob);
+      wire = await deps.receipt.verify(blob);
     } catch {
-      wire = null; // a throwing affirm-verify is treated as not-an-affirmation → fall through (fail-safe)
+      wire = null; // a throwing receipt-verify is treated as not-a-receipt → fall through (fail-safe)
     }
     if (wire) {
       try {
-        const applied = await deps.affirm.accept(wire);
-        // applied (signed + bound + admitted) → affirm (ack + trust repaint); dropped (unsigned / forged /
-        // misaddressed / stranger) → terminal (silent ack — I-1/I-2, the FALSE-MUTUAL gate: no flip, no echo).
-        return applied
-          ? { kind: 'affirm', event: { id: applied.id, from_fingerprint: applied.from_fingerprint, trusts: applied.trusts, reciprocal: applied.reciprocal } }
-          : { kind: 'terminal' };
+        if (dead()) return { kind: 'retryable' };
+        const confirmed = await deps.receipt.accept(wire);
+        // verified (matches a stored outbound note + recipient sig checks) → receipt (ack + delivered-repaint);
+        // dropped (no matching note / forged / unverifiable recipient) → terminal (silent ack — I-1, the
+        // floor 'Sent · unconfirmed.' holds, NO false Delivered).
+        return confirmed
+          ? { kind: 'receipt', event: { note_id: confirmed.note_id, thread_id: confirmed.thread_id, from_fingerprint: confirmed.from_fingerprint } }
+          : { kind: 'terminal', cls: { benign: 'receipt-no-match' } };
       } catch (err) {
-        // A store I/O failure while applying a VERIFIED+ADMITTED flip → leave for retry (at-least-once).
-        // The apply is idempotent on (from_fingerprint, trusts), so a redelivered affirmation re-applies
-        // harmlessly. ACK-FOLLOWS-PERSIST: the envelope is NOT acked until the flip is durable.
-        console.error('[return-channel] trust-affirm accept failed (left for retry):', err);
+        // A store I/O failure while marking a VERIFIED note delivered → leave for retry (at-least-once).
+        // putNote is idempotent on note_id, so a redelivered receipt re-sets delivered harmlessly.
+        console.error('[return-channel] receipt accept failed (left for retry):', err);
         return { kind: 'retryable' };
       }
     }
-    // wire null → not an affirmation → fall through to the contact-update consume path.
+    // wire null → not a receipt → fall through to the contact-update consume path.
   }
 
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
@@ -414,13 +997,18 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   try {
     signed = await deps.decrypt(blob);
   } catch {
-    return { kind: 'terminal' };
+    return { kind: 'terminal', cls: { reason: classifyBlob(blob) === 'other' ? 'unknown-format' : 'decrypt-failed' } };
   }
-  if (!signed || typeof signed.envelope?.fingerprint !== 'string') return { kind: 'terminal' };
+  if (!signed || typeof signed.envelope?.fingerprint !== 'string') {
+    return { kind: 'terminal', cls: { reason: classifyBlob(blob) === 'other' ? 'unknown-format' : 'decrypt-failed' } };
+  }
 
   // whitelist-on-fetch (I-2): an update from a fingerprint not in the book is dropped unread.
+  // The sender is NOT authenticated here (verify has not run), so the record carries no fingerprint (F3).
   const contact = await deps.store.lookup(signed.envelope.fingerprint);
-  if (!contact) return { kind: 'terminal' };
+  // Flint ruling (a): this is a NON-MESSAGE frame from a stranger. It is RECORDED (never a silent loss) but under its own reason, so it can
+  // never raise an "N messages couldn't be verified" count and never lands in a message budget.
+  if (!contact) return { kind: 'terminal', cls: { reason: 'unverified-frame' } };
 
   // verify — the one gate. epoch-ahead needs lineage catch-up first → retryable; all else terminal.
   let verified;
@@ -428,7 +1016,7 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     verified = await verifyIncomingContactUpdate(signed, contact.known);
   } catch (e) {
     const retryable = e instanceof ContactUpdateRejected && e.reason === 'epoch-ahead-needs-lineage';
-    return { kind: retryable ? 'retryable' : 'terminal' };
+    return retryable ? { kind: 'retryable' } : { kind: 'terminal', cls: { reason: 'unverified-frame' } }; // same class as a stranger frame (ruling a)
   }
 
   // apply — pure living-wins over the current record. stale-version = already applied → terminal.
@@ -436,11 +1024,12 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   try {
     applied = applyVerifiedContactUpdate(contact.current, verified, now());
   } catch (e) {
-    if (e instanceof ContactUpdateApplyRejected) return { kind: 'terminal' };
+    if (e instanceof ContactUpdateApplyRejected) return { kind: 'terminal', cls: { benign: 'contact-update-stale' } };
     throw e; // an unexpected (non-ApplyRejected) error → propagates to the guarded consume loop (wedge-immune)
   }
 
   // persist may throw on a store I/O failure — that too propagates to the guarded loop (retryable).
+  if (dead()) return { kind: 'retryable' };
   await deps.store.persist(contact.current.id, applied.next);
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
 }
