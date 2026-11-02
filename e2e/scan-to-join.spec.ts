@@ -139,11 +139,10 @@ test.describe('Scan-to-join — camera QR receive side', () => {
     );
     expect(stops).toBeGreaterThanOrEqual(1);
 
-    // Release the held answer so nothing dangles at teardown. The OUTCOME (the 404 text) is deliberately NOT asserted here: under `next dev`
-    // (what CI runs) React StrictMode runs the resolve effect's setup -> cleanup -> setup, and JoinerCeremony's `startedRef` guard skips the second
-    // setup while the first was cancelled, so the relay is never even asked (measured: 0 requests to /api/relay/<code> over 10 s, page stays on
-    // "Opening the secure channel..."). In a production build the answer does arrive (404 -> "This link isn't available..."). Asserting it would
-    // make this test pass in one mode and fail in the other, so it is not asserted here.
+    // Release the held answer so nothing dangles at teardown. The OUTCOME (the 404 text) is deliberately NOT asserted in this test, which is about
+    // the scan flow. (It used to be unassertable: under `next dev` React StrictMode ran the resolve effect's setup -> cleanup -> setup and
+    // JoinerCeremony's `startedRef` guard skipped the second setup, so the relay was never asked. The cleanup now re-arms the guard, so the
+    // answer arrives in dev and in a production build alike; demo-arc beat 3 covers the loaded card under `next dev`.)
     release();
     // What does not depend on the mode: the key fragment never renders, whether the answer is held, arrives (prod: the 404 text renders a moment after
     // release) or is never asked for (dev). Give the answer time to land first, otherwise a negative check right after release() would pass trivially.

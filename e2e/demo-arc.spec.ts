@@ -85,7 +85,7 @@ test.describe('svrnty 9/10 demo arc (§9.7)', () => {
   // ACTIVATION SATISFIED: extractJoinPath confirmed in CI (the key rides the URL fragment; read off the
   // Copy-link clipboard).
   test('beat 3: a card given by hand blooms an edge across two devices', async ({ browser }) => {
-    test.skip(!process.env.E2E_PROD, 'beat-3 needs a prod build — StrictMode breaks the joiner under next dev (gap#1)');
+    test.setTimeout(90_000); // two genesis flows + the handshake + the admit take 30-40 s under `next dev`; the config default is 30 s
     const aliceCtx = await browser.newContext();
     const bobCtx = await browser.newContext();
     const alice = await aliceCtx.newPage();
