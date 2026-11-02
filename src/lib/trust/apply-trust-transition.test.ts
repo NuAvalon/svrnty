@@ -79,10 +79,11 @@ function mockRelay() {
 }
 
 /** Drive A's trust/break toggle through the CHOKEPOINT, capturing A's own local write patch(es). */
-async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: ReturnType<typeof mockRelay>) {
+async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: ReturnType<typeof mockRelay>, held: Record<string, unknown> = {}, peerExtra: Record<string, unknown> = {}) {
   const patches: Array<Record<string, unknown>> = [];
   const deps: TrustTransitionDeps = {
-    updateContact: async (_id, patch) => { patches.push(patch); },
+    // `held` stands for the record the store holds when the write runs: a function updater is applied to it, as updateContact does.
+    updateContact: async (_id, patch) => { patches.push(typeof patch === 'function' ? patch(held) : patch); },
     reconcile: async () => {}, // reveal-set reconcile is a separate fire-and-forget seam; no-op in this unit
     fetchImpl: relay.fetchImpl,
     satelliteBase: '',
@@ -90,7 +91,7 @@ async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: Re
   };
   await applyTrustTransition(
     { fingerprint: A.fp, publicKeyArmored: A.pub, pqKemPublicKey: A.kem, pqSigPublicKey: A.sig },
-    { contactId: 'c_' + B.fp.slice(0, 8), fingerprint: B.fp, publicKeyArmored: B.pub },
+    { contactId: 'c_' + B.fp.slice(0, 8), fingerprint: B.fp, publicKeyArmored: B.pub, ...peerExtra },
     nextTrusted,
     deps,
   );
@@ -141,4 +142,35 @@ test('CHOKEPOINT: break direction — A breaks trust → local unverified write 
 
   // ★ REMOVAL PROOF (#593): break also deposits no affirmation.
   assert.equal(relay.boxes.get(deriveMailboxId(B.fp))?.length ?? 0, 0, 'no break-affirmation deposited to the peer');
+});
+
+test('the history append and the open_visibility clear are built from the record held when the write runs, not from the copy `peer` carried', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const staleEvent = { timestamp: 't0', action: 'trust', reason: 'older', initiated_by: 'self' };
+  const heldEvents = [staleEvent, { timestamp: 't1', action: 'break', reason: 'a write since', initiated_by: 'self' }];
+  const held = {
+    trust_history: heldEvents,
+    metadata: { notes: 'kept', share_settings: { open_visibility: true, per_contact_private: true, share_card: false } },
+  };
+  // `peer` carries an OLDER copy: one history event and metadata without the setting changed since.
+  const { patches } = await toggleViaChokepoint(A, B, false, relay, held, {
+    priorTrustHistory: [staleEvent],
+    metadata: { notes: 'old copy', share_settings: { open_visibility: true } },
+  });
+  const history = patches[0].trust_history as unknown[];
+  assert.equal(history.length, heldEvents.length + 1, 'the held history plus the new event, not the stale copy plus one');
+  const md = patches[0].metadata as { notes: string; share_settings: Record<string, unknown> };
+  assert.equal(md.notes, 'kept', 'metadata comes from the held record');
+  assert.equal(md.share_settings.open_visibility, false, 'untrust still clears open_visibility');
+  assert.equal(md.share_settings.per_contact_private, true, 'a setting changed since the copy was read survives');
+  assert.equal(md.share_settings.share_card, false);
+});
+
+test('trusting does not touch metadata, and still appends to the held history', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const relay = mockRelay();
+  const { patches } = await toggleViaChokepoint(A, B, true, relay, { trust_history: [{ timestamp: 't0', action: 'break', reason: 'x', initiated_by: 'self' }], metadata: { x: 1 } });
+  assert.equal('metadata' in patches[0], false);
+  assert.equal((patches[0].trust_history as unknown[]).length, 2);
 });

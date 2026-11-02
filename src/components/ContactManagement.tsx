@@ -42,6 +42,7 @@ import {
   defaultShareSettings,
   isPendingSvrntyContact,
   readShareSettings,
+  applyShareSettingsChange,
   type ContactShareSettings,
 } from '@/lib/contacts/contact-lane';
 import { createRelay } from '@/lib/sync/relay';
@@ -50,7 +51,7 @@ import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import {
   getAllContacts, addContact, updateContact, removeContact,
-  getContactByFingerprint, loadKey,
+  getContact, getContactByFingerprint, loadKey,
   type ContactRecord,
 } from '@/lib/identity/client-store';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
@@ -908,13 +909,14 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
 
   const handleToggleGroup = async (tag: string) => {
     if (!selectedContact || !fingerprint) return;
-    const prev = selectedContact.metadata?.tags || [];
-    const tags = prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag];
-    await updateContact(selectedContact.id, {
-      metadata: { ...selectedContact.metadata, tags },
-    } as any);
-    const next = { ...selectedContact, metadata: { ...selectedContact.metadata, tags } };
-    setSelectedContact(next);
+    // The tag list is recomputed from the record held when the write runs, not from the copy this dialog opened with.
+    await updateContact(selectedContact.id, (fresh) => {
+      const prev: string[] = fresh.metadata?.tags || [];
+      const tags = prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag];
+      return { metadata: { ...fresh.metadata, tags } };
+    });
+    const after = await getContact(selectedContact.id);
+    if (after) setSelectedContact(recordToContact(after));
     await loadContacts();
     onContactsChange?.();
   };
@@ -928,25 +930,31 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     // non-trusted edge at the WRITE so no untrusted-open edge is ever created — regardless of the toggle
     // UI. (pcp is NOT clamped: it's a privacy control valid on any edge.) piece-2 removes this to go live.
     // ★★ trusted via edgeTrusted (reveal derivation), NOT isTrusted(@112 trust_level-only) — #158853.
-    const clamped = edgeTrusted(selectedContact) ? next : { ...next, open_visibility: false };
-    await updateContact(selectedContact.id, {
-      metadata: { ...selectedContact.metadata, share_settings: clamped },
-    } as any);
-    setSelectedContact({
-      ...selectedContact,
-      metadata: { ...selectedContact.metadata, share_settings: clamped },
-    });
+    // Only the settings the owner CHANGED are applied, on top of the settings the record holds NOW, and the clamp is decided on the record
+    // held NOW (its trust may have changed since this screen was drawn). See applyShareSettingsChange.
+    const seen = readShareSettings(selectedContact);
+    await updateContact(selectedContact.id, (fresh) => ({
+      metadata: {
+        ...fresh.metadata,
+        share_settings: applyShareSettingsChange(fresh.metadata?.share_settings, seen, next, edgeTrusted(fresh)),
+      },
+    }));
+    const after = await getContact(selectedContact.id);
+    if (!after) return;
+    const afterContact = recordToContact(after);
+    const clamped = readShareSettings(afterContact);
+    setSelectedContact(afterContact);
     // #572 part 2 (flip-blocker b): go-private (open_visibility→false) → DELETE; go-open (→true, while
     // trusted ∩ !blocked) → ADD. Reconcile mirrors whichever way the open-visibility axis just moved.
     // Consent is built from `clamped` (NOT `next`) so the allowed_senders mirror matches the record (H1
     // supersedes the D1 edit that used `next`). pcp is unclamped, so clamped.per_contact_private === next's.
     void reconcileAllowedOnConsentChange({
       ownerFp: fingerprint,
-      senderFp: selectedContact.fingerprint,
+      senderFp: afterContact.fingerprint,
       consent: {
-        trusted: isTrusted(selectedContact),
+        trusted: isTrusted(afterContact),
         openVisibility: clamped.open_visibility === true,
-        blocked: isContactBlocked(selectedContact),
+        blocked: isContactBlocked(afterContact),
         perContactPrivate: clamped.per_contact_private === true,
       },
     });
@@ -1323,10 +1331,12 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                               if (!next || next === tag) return;
                               try {
                                 for (const c of contacts) {
-                                  const prev = c.metadata?.tags || [];
-                                  if (!prev.includes(tag)) continue;
-                                  const tags = Array.from(new Set(prev.map((t) => (t === tag ? next : t))));
-                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                  if (!(c.metadata?.tags || []).includes(tag)) continue; // a cheap filter on the loaded list; the write re-checks on the record it holds
+                                  await updateContact(c.id, (fresh) => {
+                                    const cur: string[] = fresh.metadata?.tags || [];
+                                    if (!cur.includes(tag)) return {};
+                                    return { metadata: { ...fresh.metadata, tags: Array.from(new Set(cur.map((t) => (t === tag ? next : t)))) } };
+                                  });
                                 }
                                 if (groupFilterTag === tag) setGroupFilterTag(next);
                                 setEditingGroupTag(null);
@@ -1408,10 +1418,11 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                               if (!window.confirm(`Remove group “${tag}” from all contacts? Tags are local-only.`)) return;
                               try {
                                 for (const c of contacts) {
-                                  const prev = c.metadata?.tags || [];
-                                  if (!prev.includes(tag)) continue;
-                                  const tags = prev.filter((t) => t !== tag);
-                                  await updateContact(c.id, { metadata: { ...c.metadata, tags } } as any);
+                                  if (!(c.metadata?.tags || []).includes(tag)) continue; // a cheap filter on the loaded list; the write re-checks on the record it holds
+                                  await updateContact(c.id, (fresh) => {
+                                    const cur: string[] = fresh.metadata?.tags || [];
+                                    return cur.includes(tag) ? { metadata: { ...fresh.metadata, tags: cur.filter((t) => t !== tag) } } : {};
+                                  });
                                 }
                                 if (groupFilterTag === tag) setGroupFilterTag(null);
                                 setBulkGroupNote(`Removed group “${tag}”.`);
@@ -1519,8 +1530,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       for (const id of selectedIds) {
                         const c = contacts.find((x) => x.id === id);
                         if (!c) continue;
-                        const tags = Array.from(new Set([...(c.metadata?.tags || []), name]));
-                        await updateContact(id, { metadata: { ...c.metadata, tags } } as any);
+                        await updateContact(id, (fresh) => ({
+                          metadata: { ...fresh.metadata, tags: Array.from(new Set([...((fresh.metadata?.tags as string[] | undefined) || []), name])) },
+                        }));
                       }
                       await loadContacts();
                       onContactsChange?.();

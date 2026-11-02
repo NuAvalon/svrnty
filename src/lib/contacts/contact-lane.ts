@@ -77,6 +77,26 @@ export function defaultShareSettings(
   };
 }
 
+/** The keys of ContactShareSettings, in one place so a merge cannot miss a new setting. */
+export const SHARE_SETTING_KEYS = Object.keys(defaultShareSettings()) as Array<keyof ContactShareSettings>;
+
+/**
+ * The settings to store after the owner changes some of them. `held` is what the record holds NOW, `seen` is what the owner saw when
+ * they made the change, `next` is what they chose. Only the keys they CHANGED (next differs from seen) are applied on top of `held`, so a
+ * setting changed elsewhere in the meantime (a second tab) is not written back to the value the owner's screen showed.
+ * `trusted` is the clamp: open_visibility is a trusted-only reveal gate, so on an edge that is not trusted it is stored as false.
+ */
+export function applyShareSettingsChange(
+  held: Partial<ContactShareSettings> | null | undefined,
+  seen: ContactShareSettings,
+  next: ContactShareSettings,
+  trusted: boolean,
+): ContactShareSettings {
+  const out = defaultShareSettings(held);
+  for (const k of SHARE_SETTING_KEYS) if (next[k] !== seen[k]) out[k] = next[k];
+  return trusted ? out : { ...out, open_visibility: false };
+}
+
 export function readShareSettings(c: {
   metadata?: { share_settings?: Partial<ContactShareSettings> } | null;
 }): ContactShareSettings {
