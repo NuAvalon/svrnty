@@ -837,8 +837,10 @@ def verify_request_signature(fingerprint: str, signature: str, db: sqlite3.Conne
     (tag#1) can never be replayed here (the live pre-gated-A bug).
 
     During a migration window (GATED_A_ACCEPT_LEGACY_BARE=1) the legacy untagged proof
-    signed by the IDENTITY key is also accepted so un-bound identities keep working; that
-    branch is removed once every identity has bound.
+    signed by the IDENTITY key is also accepted, but ONLY for an identity that has NOT bound
+    a sig_pubkey, so un-bound identities keep working while a bound identity can never be
+    authenticated by a replayable bare proof. That branch is removed once every identity
+    has bound.
     """
     if not signature:
         return False
@@ -874,14 +876,15 @@ def verify_request_signature(fingerprint: str, signature: str, db: sqlite3.Conne
                 if auth_pk and _verify_with_key(auth_pk, sig_bytes,
                                                 _psi_auth_preimage(fingerprint, client_ts)):
                     return True
-            # migration-only fallback: legacy bare "{fp}:{unix}" signed by the identity key
-            if GATED_A_ACCEPT_LEGACY_BARE:
+            # migration-only fallback: legacy bare "{fp}:{unix}" signed by the identity key,
+            # for UN-BOUND identities only (a bound identity authenticates with tag#3 or not at all)
+            if GATED_A_ACCEPT_LEGACY_BARE and not sig_pubkey_hex:
                 return _verify_with_key(base64.b64decode(identity["public_key"]),
                                         sig_bytes, f"{fingerprint}:{client_ts}".encode())
             return False
 
-        # legacy bare base64 (minute window) — migration-only, default OFF
-        if GATED_A_ACCEPT_LEGACY_BARE:
+        # legacy bare base64 (minute window) — migration-only, default OFF, UN-BOUND identities only
+        if GATED_A_ACCEPT_LEGACY_BARE and not sig_pubkey_hex:
             idpk = base64.b64decode(identity["public_key"])
             sig_bytes = base64.b64decode(signature.replace(" ", "+"))
             ts_minute = int(time.time()) // 60

@@ -44,7 +44,8 @@ export interface TrustTransitionPeer {
 
 export interface TrustTransitionDeps {
   /** injectable for tests; defaults to the real client-store ops. */
-  updateContact?: (id: string, patch: Record<string, unknown>) => Promise<unknown>;
+  /** A patch, or a SYNCHRONOUS function from the record held when the write runs to a patch (see client-store ContactUpdate). */
+  updateContact?: (id: string, patch: Record<string, unknown> | ((existing: Record<string, unknown>) => Record<string, unknown>)) => Promise<unknown>;
   /** injectable for tests; defaults to reconcileAllowedOnConsentChange. Fire-and-forget (return
    *  ignored) — the arg shape is pinned to the real hook, the result is not. */
   reconcile?: (args: Parameters<typeof reconcileAllowedOnConsentChange>[0]) => unknown;
@@ -79,21 +80,25 @@ export async function applyTrustTransition(
     reason: nextTrusted ? 'owner trusted' : 'owner broke trust',
     initiated_by: 'self',
   };
-  await updateContact(peer.contactId, {
-    trust_level: nextTrusted ? 'trusted' : 'unverified',
-    trusted: nextTrusted,
-    trusted_since: nextTrusted ? now : null,
-    ...(nextTrusted ? { verified_at: now } : {}),
-    trust_history: [...(peer.priorTrustHistory ?? []), historyEvent],
-    ...(!nextTrusted && {
-      metadata: {
-        ...(peer.metadata ?? {}),
-        share_settings: {
-          ...((peer.metadata?.share_settings as Record<string, unknown>) ?? {}),
-          open_visibility: false,
+  // The history append and the open_visibility clear are built from the record held when the write runs, not from the copy `peer` was read from.
+  await updateContact(peer.contactId, (existing: Record<string, unknown>) => {
+    const md = (existing.metadata ?? {}) as Record<string, unknown>;
+    return {
+      trust_level: nextTrusted ? 'trusted' : 'unverified',
+      trusted: nextTrusted,
+      trusted_since: nextTrusted ? now : null,
+      ...(nextTrusted ? { verified_at: now } : {}),
+      trust_history: [...(((existing.trust_history as TrustEvent[] | undefined) ?? [])), historyEvent],
+      ...(!nextTrusted && {
+        metadata: {
+          ...md,
+          share_settings: {
+            ...((md.share_settings as Record<string, unknown>) ?? {}),
+            open_visibility: false,
+          },
         },
-      },
-    }),
+      }),
+    };
   });
 
   // (2) SATELLITE blind trust commitment — the satellite never sees WHO you trust (sorted-fp hash).
