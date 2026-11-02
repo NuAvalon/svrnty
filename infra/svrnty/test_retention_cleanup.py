@@ -200,3 +200,25 @@ def test_live_writer_is_not_locked_out_during_a_big_purge():
     db = satellite.get_db()
     assert db.execute("SELECT count(*) FROM messages WHERE recipient='live'").fetchone()[0] == 200
     db.close()
+
+
+@pytest.mark.parametrize("ttl,ret", [(0, 30), (-1, 30), (30, -1)])
+def test_bad_cutoffs_refuse_to_start_and_delete_nothing(monkeypatch, ttl, ret):
+    ids = _seed(datetime.now(timezone.utc), margin=60)
+    started = []
+    async def fake_loop(*a, **k):
+        started.append(a)
+    monkeypatch.setattr(satellite, "_retention_cleanup_loop", fake_loop)
+    monkeypatch.setattr(satellite, "CLEANUP_INTERVAL_S", 86400)
+    monkeypatch.setattr(satellite, "UNDELIVERED_MSG_TTL_DAYS", ttl)
+    monkeypatch.setattr(satellite, "RETENTION_DAYS", ret)
+    assert satellite._cleanup_start_refusal() is not None
+    with TestClient(satellite.app):
+        pass
+    assert started == []
+    m, _ = _left()
+    assert m == set(ids.values())
+
+
+def test_sane_cutoffs_allow_start():
+    assert satellite._cleanup_start_refusal() is None

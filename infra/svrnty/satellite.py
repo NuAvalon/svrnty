@@ -82,6 +82,17 @@ CLEANUP_MIN_INTERVAL_S = 3600
 
 
 CLEANUP_INTERVAL_S = _parse_cleanup_interval(os.environ.get("SATELLITE_CLEANUP_INTERVAL_S"))
+
+
+def _cleanup_start_refusal() -> Optional[str]:
+    """Why the scheduled cleanup must NOT start, or None. A schedule turns a cutoff typo into recurring
+    silent data loss: SATELLITE_MSG_TTL_DAYS=0 would delete every unacknowledged message on each run,
+    and a negative value puts the cutoff in the future. Fail safe = no task, said in the startup line."""
+    if UNDELIVERED_MSG_TTL_DAYS < 1:
+        return f"SATELLITE_MSG_TTL_DAYS must be >= 1 (is {UNDELIVERED_MSG_TTL_DAYS})"
+    if RETENTION_DAYS < 0:
+        return f"SATELLITE_RETENTION_DAYS must be >= 0 (is {RETENTION_DAYS})"
+    return None
 CLEANUP_STAMP_NAME = "cleanup_last.json"
 PORT = int(os.environ.get("PORT", "8100"))
 SATELLITE_MODE = os.environ.get("SATELLITE_MODE", "registry")  # "registry" (T1) or "full" (T2)
@@ -422,7 +433,10 @@ async def lifespan(app: FastAPI):
 
     cleanup_task = asyncio.create_task(_rate_limiter_cleanup_loop())
     retention_task = None
-    if CLEANUP_INTERVAL_S > 0:
+    refusal = _cleanup_start_refusal() if CLEANUP_INTERVAL_S > 0 else None
+    if refusal:
+        print(f"[satellite] Retention cleanup: OFF — {refusal}")
+    elif CLEANUP_INTERVAL_S > 0:
         import random
         retention_task = asyncio.create_task(
             _retention_cleanup_loop(CLEANUP_INTERVAL_S, first_delay_s=random.uniform(0, 600)))
