@@ -9,14 +9,23 @@ This guide uses Docker Compose + Caddy (for automatic HTTPS). Total setup is a f
 
 ---
 
-## Two ways to run it
+## What runs
 
-| Tier | What runs | What you get | What you give up |
-|------|-----------|--------------|------------------|
-| **Minimal** (default) | the app + Caddy | Full identity, encrypted contact exchange (the relay dead-drop), the vault, import/export — everything client-side and self-contained | Vanity slugs (`id.example.com/alice`). Slug routes return "unavailable"; nothing else is affected. |
-| **Full nursery** | the above **+** the registration backend | Also: vanity slugs on your own domain | You run one more service + its datastore |
+`docker compose up` starts three services:
 
-Most people want **Minimal**. Add the nursery later if you want human-readable names.
+| Service | What it is | Data it keeps |
+|---------|------------|---------------|
+| `app` | the svrnty web app, including its relay (the encrypted mailbox peers drop messages into) | `relay_data` volume: the relay's SQLite mailbox of encrypted envelopes waiting for pickup |
+| `registration` | the **satellite**: the crypto backend behind the app's `/api/satellite/*` routes (register, bind, contacts/allowed sync, PSI discovery, onion routing, trust sync) | `registration_data` volume: its SQLite database and its own mailbox key |
+| `caddy` | HTTPS for your domain (automatic Let's Encrypt) | `caddy_data` / `caddy_config` volumes: certificates |
+
+Only Caddy is published (ports 80/443). The app and the satellite are reachable only inside the
+compose network. The one thing that stays on `svrnty.is` is the **global** username registry
+(`/slug/{name}/claim`); on your instance that lookup degrades gracefully.
+
+Dropping the `registration` service leaves a blind relay only: the `/api/satellite/*` routes
+return 502, so identities can't register or bind and discovery doesn't work. Most self-hosters
+want all three.
 
 ---
 
@@ -30,13 +39,14 @@ Most people want **Minimal**. Add the nursery later if you want human-readable n
 
 ---
 
-## Quick start (minimal)
+## Quick start
 
 ```bash
 git clone https://github.com/NuAvalon/svrnty.git
 cd svrnty
 cp .env.example .env
-# edit .env — at minimum set NEXT_PUBLIC_SVRNTY_DOMAIN to your domain
+# edit .env: set NEXT_PUBLIC_SVRNTY_DOMAIN to your domain, and
+# SATELLITE_ADMIN_KEY to a random secret:  openssl rand -hex 32
 docker compose up -d --build
 ```
 
@@ -51,8 +61,10 @@ your first identity.
 |----------|----------|-------|
 | `NEXT_PUBLIC_SVRNTY_DOMAIN` | **yes** | Your bare domain, no scheme (e.g. `id.example.com`). Drives every share link, slug URL, and display string. |
 | `NEXT_PUBLIC_SVRNTY_BASE_URL` | no | Override the full scheme+host. Defaults to `https://<your domain>`. Set this only for `http`/localhost during local testing. |
-| `SATELLITE_URL` | nursery only | Address of the registration backend. Compose sets this for you. |
-| `REGISTRATION_IMAGE` | nursery only | Image for the registration backend. |
+| `SATELLITE_ADMIN_KEY` | **yes** | `SATELLITE_ADMIN_KEY` lets you run the satellite's housekeeping, which deletes messages that are past their retention period. It cannot read anyone's messages. The satellite won't start without it (20+ characters; `openssl rand -hex 32`), and `docker compose up` stops with an error until it's set. Server-side only: never a `NEXT_PUBLIC_` var, never logged. (The satellite's `/export` self-host kit generates its own key the same way.) |
+| `SATELLITE_TRUSTED_PROXY_NAMES` | no | Who may pass the real client address to the satellite. Default `app` (the only hop in front of it). Leave it unless you change the topology. |
+| `SATELLITE_URL` | no | The app's address for the satellite. Compose sets `http://registration:8101`. |
+| `REGISTRATION_IMAGE` | no | Use a prebuilt satellite image instead of building `infra/svrnty`. |
 
 ### ⚠ Your domain is baked in at *build* time — rebuild if you change it
 
@@ -68,41 +80,45 @@ effect on a plain restart.)
 
 ---
 
-## Full nursery (vanity slugs)
+## The satellite service (`registration`)
 
-Vanity slugs (`id.example.com/alice`) require the registration backend — the anti-squat
-registry that maps a claimed name to an identity. It lives in `infra/svrnty`.
+The satellite is built from `infra/svrnty` (the open-source satellite source) and runs by
+default; there is no profile to enable. Two rules:
 
-1. Build the registration image from `infra/svrnty` and set `REGISTRATION_IMAGE` in `.env`
-   (packaging of a prebuilt image is tracked separately).
-2. Bring the stack up with the nursery profile:
+- **Keep the service name `registration`.** One slug route resolves the satellite at the
+  in-network host `registration:8101`, so renaming the service breaks it.
+- **Set `SATELLITE_ADMIN_KEY`** (see the table above) before the first `up`.
 
-   ```bash
-   docker compose --profile nursery up -d --build
-   ```
+Check it's healthy: `docker compose ps` shows `registration` as `healthy`, and
+`docker compose logs registration` prints `[satellite] Mode: FULL`.
 
-**Keep the service name `registration`.** The slug-resolution route resolves the backend at
-the in-network host `registration:8101`, so renaming the service breaks slug lookups even if
-registration itself succeeds. The compose file is already set up correctly — just don't
-rename it.
+### Housekeeping: old messages are not deleted automatically
 
-Without the nursery, slug routes return an "unavailable" response and the rest of the app is
-unaffected — identities still work end-to-end via self-certifying ids and the relay.
+Nothing deletes old messages unless you run the satellite's cleanup. It removes undelivered
+messages older than 30 days (the default) and delivered messages past the retention period. Run it from
+inside the stack (the key never leaves the container), for example daily from cron:
+
+```bash
+docker compose exec -T registration python3 -c "import os,urllib.request as u; [u.urlopen(u.Request('http://localhost:8101'+p, method='POST', headers={'X-Admin-Key': os.environ['SATELLITE_ADMIN_KEY']})) for p in ('/msg/cleanup','/admin/cleanup')]"
+```
+
+If you don't schedule it, old messages stay on the server.
+
+> Not yet: your app does not pin your satellite's key, so a client can't detect a swapped
+> satellite. A signed satellite identity that clients pin is planned; until it ships, don't
+> describe a self-hosted satellite as pinned or verifiable.
 
 ---
 
 ## Operating notes
 
-- **The relay is in-memory and single-instance.** The encrypted dead-drop used for contact
-  exchange lives in the app process (single-use blobs, 15-minute TTL). This is ideal for a
-  single-container instance. Do **not** run multiple `app` replicas behind a load balancer
-  without first moving the relay to a shared store (e.g. Redis) — replicas would not see each
-  other's drops. Restarting the app clears any in-flight (unclaimed) drops; since drops are
-  single-use and short-lived, this is normally harmless.
+- **The relay is durable and single-instance.** The relay's mailbox (encrypted envelopes
+  waiting for pickup) is a SQLite file on the `relay_data` volume, so pending messages
+  survive restarts and rebuilds. It's one file for one `app` container: do **not** run
+  multiple `app` replicas behind a load balancer; they would each have their own mailbox.
 - **Updating:** `git pull && docker compose up -d --build`.
-- **Backups:** the `caddy_data` volume holds your TLS certificates; the `registration_data`
-  volume (nursery only) holds your slug registry. Back these up.
-- **Logs:** `docker compose logs -f app` (or `caddy`).
+- **Backups:** see [Backups](#backups) below.
+- **Logs:** `docker compose logs -f app` (or `registration`, `caddy`).
 
 ---
 
@@ -111,6 +127,9 @@ unaffected — identities still work end-to-end via self-certifying ids and the 
 - **Run behind Caddy as shipped.** The image already runs as a non-root `nextjs` user on an
   internal port; only Caddy publishes 80/443. Don't expose the app's port 3000 publicly —
   the TLS + header discipline lives at the Caddy edge.
+- **If you replace Caddy with your own proxy,** it must replace any `X-Forwarded-For` header a
+  client sends; otherwise clients can choose their own rate-limit bucket. (Caddy as shipped
+  already does this.)
 - **Secrets stay server-side.** Any operator secret must never
   be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
   secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
@@ -124,14 +143,17 @@ unaffected — identities still work end-to-end via self-certifying ids and the 
 
 ## Backups
 
-- **What must survive:** `caddy_data` (TLS certs — losing it just re-issues), and on the
-  nursery profile `registration_data` (the slug registry — losing it loses every claimed
-  slug's binding). Back up both volumes; `registration_data` is the only one that isn't
-  reconstructible.
-- **What you do NOT need to back up:** the app's code/config (rebuild from git + `.env`),
-  and the in-memory relay (drops are single-use, 15-minute TTL — transient by design).
-- A self-hoster's *identity* is never on this server — it lives in the user's `.svrnty`
-  vault under their password. Server backup is about *service continuity*, not key custody.
+- **What must survive:** `registration_data` (the satellite's database and its private key:
+  not reconstructible) and `relay_data` (encrypted envelopes still waiting for pickup; losing
+  it loses undelivered messages). `caddy_data` holds TLS certificates; losing it just
+  re-issues them.
+- **What you do NOT need to back up:** the app's code/config (rebuild from git + `.env`). Keep
+  `.env` itself somewhere safe: it holds `SATELLITE_ADMIN_KEY`.
+- **`registration_data` contains your satellite's private key.** Encrypt its backups and keep
+  them as secret as your `.env` file: a copy lets its holder decrypt traffic sealed to your
+  satellite and pose as it.
+- Your users' identity keys are never on this server: they stay on each user's own device,
+  encrypted under their password.
 
 ## Build best practices
 
@@ -181,5 +203,8 @@ Conceptually, for each identity you host:
 - **Share links show `svrnty.is` instead of your domain.** The image was built without your
   domain. Rebuild: `docker compose up -d --build`, and confirm `NEXT_PUBLIC_SVRNTY_DOMAIN` is
   set in `.env`.
-- **Slug claims fail.** Vanity slugs need the nursery profile
-  (`docker compose --profile nursery up -d --build`). Without it, this is expected.
+- **`docker compose up` stops with "set SATELLITE_ADMIN_KEY".** Add it to `.env`
+  (`openssl rand -hex 32`) and run `up` again.
+- **Contacts, registration or discovery fail (502 from `/api/satellite/*`).** The satellite
+  isn't running: `docker compose ps registration` and `docker compose logs registration`.
+  The most common cause is a missing or short `SATELLITE_ADMIN_KEY`.
