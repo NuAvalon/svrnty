@@ -10,6 +10,8 @@ import {
   epochElementsFor,
   serializeEpochRecord,
   restoreEpochRecord,
+  maxEpochFor,
+  PSI_EPOCH_SKEW_MINUTES,
   PSI_PREV_TICKS,
   PSI_EPOCH_RECORD_V,
   type PsiEpochRecord,
@@ -267,4 +269,96 @@ test('restore refuses every malformed stored form (fail closed)', () => {
   ];
   for (const [name, raw] of bad) assert.equal(restoreEpochRecord(raw), null, name);
   assert.deepEqual(restoreEpochRecord(JSON.stringify(good)), good, 'the control (unmutated) restores');
+});
+
+// ── the upper bound on a note's epoch (the burn bound) ──────────────────────
+
+const MIN_NOW = 29_000_000; // a minute count of the size the real clock has now (about 2025)
+const epochAt = (minutes: number, seq = 0) => minutes * 2 ** 20 + seq;
+
+test('the skew is 24 hours, and maxEpochFor is the last slot of the minute that far ahead, built without a 32-bit shift', () => {
+  assert.equal(PSI_EPOCH_SKEW_MINUTES, 1440);
+  assert.equal(maxEpochFor(100), (100 + 1440) * 2 ** 20 + (2 ** 20 - 1));
+  const big = maxEpochFor(MIN_NOW);
+  assert.equal(String(big), String((MIN_NOW + 1440) * 1048576 + 1048575), 'agrees with exact integer arithmetic at a real minute count (every value here is far below 2^53)');
+  assert.ok(big > 2 ** 31, 'above the range a 32-bit shift would have wrapped');
+  assert.equal(maxEpochFor(MIN_NOW, 0), epochAt(MIN_NOW, 2 ** 20 - 1), 'no skew: the last slot of this minute');
+});
+
+test('maxEpochFor and the bound refuse inputs that are not non-negative safe integers (a programming error, never "no bound")', () => {
+  for (const bad of [-1, 1.5, NaN, Infinity, 2 ** 53, '5' as unknown as number]) {
+    assert.throws(() => maxEpochFor(bad), TypeError, `now=${String(bad)}`);
+    assert.throws(() => maxEpochFor(100, bad), TypeError, `skew=${String(bad)}`);
+    assert.throws(() => applyEpochNote(null, note(5), 1, bad), TypeError, `maxEpoch=${String(bad)}`);
+  }
+  assert.throws(() => maxEpochFor(2 ** 52), TypeError, 'a bound that would not be a safe integer');
+});
+
+test('a note at 2^53 - 1 is invalid under the bound: the record and the adoption tick are unchanged (and with no record, none is made)', () => {
+  const max = maxEpochFor(MIN_NOW);
+  const rec = adopt(null, note(epochAt(MIN_NOW, 5)), 5);
+  const before = clone(rec);
+  const r = applyEpochNote(rec, note(Number.MAX_SAFE_INTEGER, 7, 8), 9, max);
+  assert.equal(r.outcome, 'invalid');
+  assert.equal(r.record, rec);
+  assert.deepEqual(rec, before);
+  assert.equal(rec.adoptedTick, 5, 'the adoption tick did not move');
+  const first = applyEpochNote(null, note(Number.MAX_SAFE_INTEGER), 1, max);
+  assert.equal(first.outcome, 'invalid');
+  assert.equal(first.record, null);
+  // the sender's real later note is still taken in: nothing was burned
+  assert.equal(applyEpochNote(rec, note(epochAt(MIN_NOW, 6), 3, 4), 10, max).outcome, 'adopted');
+});
+
+test('a note at exactly maxEpoch is adopted and one slot above it is invalid, record unchanged', () => {
+  const max = maxEpochFor(MIN_NOW);
+  assert.equal(applyEpochNote(null, note(max), 1, max).outcome, 'adopted');
+  const rec = adopt(null, note(epochAt(MIN_NOW)), 1);
+  const r = applyEpochNote(rec, note(max + 1), 2, max);
+  assert.equal(r.outcome, 'invalid');
+  assert.equal(r.record, rec);
+});
+
+test('24 hours ahead is accepted and 7 days ahead (the earlier proposal) is invalid', () => {
+  const max = maxEpochFor(MIN_NOW);
+  assert.equal(applyEpochNote(null, note(epochAt(MIN_NOW + 1440, 2 ** 20 - 1)), 1, max).outcome, 'adopted');
+  assert.equal(applyEpochNote(null, note(epochAt(MIN_NOW + 1441)), 1, max).outcome, 'invalid', 'one minute past the allowance');
+  assert.equal(applyEpochNote(null, note(epochAt(MIN_NOW + 10080)), 1, max).outcome, 'invalid');
+});
+
+test('the allowance is shared: a holder whose clock lags 23 h takes a sender whose clock is right and drops one whose clock leads by 2 h', () => {
+  const real = MIN_NOW;
+  const holderMax = maxEpochFor(real - 23 * 60);
+  assert.equal(applyEpochNote(null, note(epochAt(real, 1)), 1, holderMax).outcome, 'adopted', 'sender lead 0, holder lag 23 h');
+  assert.equal(applyEpochNote(null, note(epochAt(real + 120, 1)), 1, holderMax).outcome, 'invalid', 'sender lead 2 h, holder lag 23 h');
+  assert.equal(applyEpochNote(null, note(epochAt(real + 60, 1)), 1, holderMax).outcome, 'adopted', 'lead 1 h + lag 23 h = exactly the allowance');
+});
+
+test('with maxEpoch omitted the behaviour is the unbounded one (a note at 2^53 - 1 is adopted)', () => {
+  const r = applyEpochNote(null, note(Number.MAX_SAFE_INTEGER), 1);
+  assert.equal(r.outcome, 'adopted');
+});
+
+test('inside the bound nothing else changes: stale, duplicate, conflict and adopted come out exactly as without it', () => {
+  const max = maxEpochFor(MIN_NOW);
+  const rec = adopt(null, note(epochAt(MIN_NOW, 10)), 3);
+  for (const n of [note(epochAt(MIN_NOW, 9), 7, 8), note(epochAt(MIN_NOW, 10)), note(epochAt(MIN_NOW, 10), 9, 10), note(epochAt(MIN_NOW, 11), 5, 6)]) {
+    assert.deepEqual(applyEpochNote(rec, n, 4, max), applyEpochNote(rec, n, 4));
+  }
+});
+
+test('an over-bound note neither extends nor shortens the prev window', () => {
+  const max = maxEpochFor(MIN_NOW);
+  let rec = adopt(null, note(epochAt(MIN_NOW, 1)), 5);
+  rec = adopt(rec, note(epochAt(MIN_NOW, 2), 3, 4), 6);
+  const r = applyEpochNote(rec, note(Number.MAX_SAFE_INTEGER, 5, 6), 6 + PSI_PREV_TICKS - 1, max);
+  assert.equal(r.record, rec);
+  assert.notEqual(expirePrev(r.record as PsiEpochRecord, 6 + PSI_PREV_TICKS - 1).prev, null, 'prev is still held one tick before the window ends');
+  assert.equal(expirePrev(r.record as PsiEpochRecord, 6 + PSI_PREV_TICKS).prev, null, 'and ends on schedule');
+});
+
+test('the bound is checked before the comparison with what is held: a held epoch above a lowered bound (the holder\'s clock went back) makes even its own duplicate invalid', () => {
+  const held = adopt(null, note(epochAt(MIN_NOW + 1000)), 1);
+  const lowered = maxEpochFor(MIN_NOW - 5000);
+  assert.equal(applyEpochNote(held, note(epochAt(MIN_NOW + 1000)), 2, lowered).outcome, 'invalid');
 });
