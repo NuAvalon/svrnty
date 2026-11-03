@@ -11,21 +11,23 @@
  *   4. in the book, MAC does not verify -> 'bad-mac'. A record WITHOUT the fingerprint.
  *   5. in the book, MAC verifies        -> 'adopt'. The note goes to the epoch book.
  *
- * `inBook`, `blocked` and `macOk` are thunks so that a step that is not reached never runs: the pairwise-secret derivation and the MAC are only
- * paid for, and only exposed, at step 4.
+ * `inBook`, `blocked` and `macOk` are thunks (they may be async: a book lookup and a key derivation are) so that a step that is not reached never
+ * runs: the pairwise-secret derivation and the MAC are only paid for, and only exposed, at step 4.
  */
 export type EpochDeliveryOutcome = 'benign-ack' | 'unverified' | 'blocked-drop' | 'bad-mac' | 'adopt';
 
+type MaybeAsync<T> = T | Promise<T>;
+
 export interface EpochDeliveryInputs {
   receiveOn: boolean;
-  inBook: () => boolean;
-  blocked: () => boolean;
-  macOk: () => boolean;
+  inBook: () => MaybeAsync<boolean>;
+  blocked: () => MaybeAsync<boolean>;
+  macOk: () => MaybeAsync<boolean>;
 }
 
-export function epochDeliveryOutcome(i: EpochDeliveryInputs): EpochDeliveryOutcome {
+export async function epochDeliveryOutcome(i: EpochDeliveryInputs): Promise<EpochDeliveryOutcome> {
   if (i.receiveOn !== true) return 'benign-ack';
-  if (!i.inBook()) return 'unverified';
-  if (i.blocked()) return 'blocked-drop';
-  return i.macOk() ? 'adopt' : 'bad-mac';
+  if (!(await i.inBook())) return 'unverified';
+  if (await i.blocked()) return 'blocked-drop';
+  return (await i.macOk()) ? 'adopt' : 'bad-mac';
 }
