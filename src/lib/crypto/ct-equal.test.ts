@@ -53,16 +53,20 @@ test('inputs are never modified', () => {
   assert.deepEqual([...b], [1, 2, 4]);
 });
 
-test('GUARD: the two callers import the shared helper and keep no private copy of the loop', () => {
+test('GUARD: the three callers import the shared helper and keep no private copy of the loop', () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
   const receipt = read('./receipt-mac.ts');
   const ratchet = read('./message-ratchet.ts');
+  const epochNote = read('../trust/psi-epoch-note.ts');
   assert.match(receipt, /import \{ ctEqual \} from '\.\/ct-equal'/);
   assert.match(ratchet, /import \{ ctEqual \} from '\.\/ct-equal'/);
-  for (const [name, src] of [['receipt-mac', receipt], ['message-ratchet', ratchet]] as const) {
+  assert.match(epochNote, /import \{ ctEqual \} from '\.\.\/crypto\/ct-equal'/);
+  for (const [name, src] of [['receipt-mac', receipt], ['message-ratchet', ratchet], ['psi-epoch-note', epochNote]] as const) {
     assert.doesNotMatch(src, /\^ b\[i\]/, `${name} still has an inline byte-compare loop`);
     assert.doesNotMatch(src, /function (ctEqual|bytesEq)\(/, `${name} still defines a private compare`);
   }
   assert.match(receipt, /ctEqual\(receiptTag\(rk, noteId, code\), got\)/, 'the receipt tag is compared with the shared helper');
   assert.match(ratchet, /ctEqual\(parsed\.dh, this\.theirDh\)/, 'the ratchet DH is compared with the shared helper');
+  assert.match(epochNote, /ctEqual\(tagOf\(ctx, epoch, know, trust\), got\)/, 'the epoch-note tag is compared with the shared helper');
+  assert.match(epochNote, /function sameBytes\(a: Uint8Array, b: Uint8Array\): boolean \{\s*return ctEqual\(a, b\);/, 'sameBytes is the shared helper');
 });
