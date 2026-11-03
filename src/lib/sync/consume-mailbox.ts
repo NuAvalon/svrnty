@@ -546,8 +546,8 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
       console.error('[return-channel] could not write a chunk of consumed envelopes (left on the relay):', err instanceof Error ? err.message : 'error');
       return false;
     }
-    // C2: the sender was blocked (or removed) by a concurrent writer after the note opened. Consumed exactly like a blocked sender's note
-    // on its first apply: an honest 'not-in-book' loss (#332), and with a sink its ROW is staged before the ack (#713), never acked unrecorded.
+    // C2: the sender was blocked (or removed) by a concurrent writer after the note opened. Removed: consumed like a stranger's note, an honest
+    // 'not-in-book' loss, and with a sink its ROW is staged before the ack, never acked unrecorded. Blocked: dropped with no record (below).
     for (const k of refused) {
       const n = notesByKey.get(k);
       summary.notes--;
@@ -559,6 +559,9 @@ async function consumeOnce(deps: ConsumeDeps): Promise<ConsumeSummary> {
         bump('not-in-book');
         continue;
       }
+      // Blocked (not removed) meanwhile: the benign drop, as on the first pass. No count of a loss, no row, no pending notice; its id stays in
+      // `ids` and is acked with the chunk.
+      if (await isBlockedInBook(deps.store, n.fp)) continue;
       const i = ids.indexOf(n.id);
       if (!sink) {
         bump('not-in-book');
@@ -889,6 +892,17 @@ export function changedKeys(before: StoredContact, after: StoredContact): Stored
   return out as StoredContact;
 }
 
+/** True when `fp` is a contact in the book that the owner has blocked. A store that cannot answer is "not known blocked": the caller keeps its loss record. */
+async function isBlockedInBook(store: ContactStore, fp: string | undefined): Promise<boolean> {
+  if (!fp) return false;
+  try {
+    const c = await store.lookup(fp);
+    return !!c && !admitContact(c.current);
+  } catch {
+    return false;
+  }
+}
+
 async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): Promise<Outcome> {
   // N10 (Flint #178422 blocking 1): a lock can land AFTER key() handed the key out and BEFORE we persist. Re-check the
   // cycle immediately before EVERY write below, not just at blob boundaries: a dead cycle means the identity is
@@ -968,6 +982,9 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
           if (accepted.dropped === 'unverified') return { kind: 'terminal', cls: { reason: 'verify-failed' } };
           // v5.3 (Flint #2052): a ratchet frame this DEVICE could not open is HELD (kept on the relay, recorded at first sight, bounded), never acked as the sender's fault.
           if (accepted.dropped === 'ratchet-local' || accepted.dropped === 'ratchet-desync') return { kind: 'held', reason: accepted.dropped, fp: accepted.fp, cause: accepted.cause };
+          // A sender the owner BLOCKED is in the book: nothing they sent is kept, noticed or recorded (no row, no fingerprint or blob at rest), so
+          // a blocked contact has no channel into the owner's device. A real stranger keeps the loss record below.
+          if (accepted.dropped === 'not-in-book' && (await isBlockedInBook(deps.store, accepted.fp))) return { kind: 'terminal', cls: { benign: 'note-blocked-sender' } };
           return { kind: 'terminal', cls: { reason: accepted.dropped === 'not-in-book' ? 'not-in-book' : 'ratchet-unopenable', fp: accepted.fp, cause: accepted.cause } };
         }
         // A plain null is a legacy drop with no reason: recorded as the conservative 'verify-failed' (never silent, never a named sender).

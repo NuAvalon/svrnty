@@ -12,7 +12,9 @@ import { DOMAIN_CONTACT_UPDATE, contactUpdateSigningInput, type ContactUpdateEnv
 import type { SignedContactUpdate, KnownContactIdentity } from '@/lib/trust/contact-update';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
-import { consumeInboundContactUpdates, type ConsumeDeps, type ContactStore, type KnownContact } from './consume-mailbox';
+import { consumeInboundContactUpdates, type ConsumeDeps, type ContactStore, type KnownContact, type NoteResponseSeam, type ChunkTxn } from './consume-mailbox';
+import { NOTE_WIRE_TYPE } from '@/lib/messaging/domains';
+import type { NoteWireV0 } from '@/lib/messaging/types';
 
 interface Identity { fingerprint: string; publicKey: string; privateKey: string; passphrase: string }
 
@@ -276,4 +278,110 @@ test('NEG b through a guard (the shape the browser store has): the not-applied a
   assert.equal(emitted.length, 0);
   assert.deepEqual(acks, [['e1']]);
   assert.equal(book.held.name, 'Bob (old name)');
+});
+
+// ── notes from a blocked sender: the same policy, a different channel ──────────────────────────────────────────────────
+
+function noteWire(from: string): NoteWireV0 {
+  return { type: NOTE_WIRE_TYPE, note_id: 'n1', thread_id: 't1', from_fingerprint: from, sent_at: '2026-10-09T00:00:00.000Z', body: 'hello', participant_kind: 'human' };
+}
+// A note seam whose accept refuses the sender as "not in book" (what admit says for a stranger AND for a blocked contact).
+const refusingNotes = (from: string): NoteResponseSeam => ({
+  verify: async (blob) => (blob === 'NOTE' ? noteWire(from) : null),
+  accept: async () => ({ dropped: 'not-in-book', fp: from }),
+});
+const noteStore = (lookup: ContactStore['lookup']): ContactStore => ({ lookup, persist: async () => {} });
+
+test('NOTE: a blocked sender’s note is dropped and acked with NO row and no counted loss; a real stranger’s note still gets its row', async () => {
+  const blocked = heldBook({ blocked: true });
+  const a = recordingSink();
+  const acksA: string[][] = [];
+  const sA = await consumeInboundContactUpdates(deps({ note: refusingNotes(bob.fingerprint), store: noteStore(blocked.store.lookup), deadLetter: a.sink, fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], acksA).fetchImpl }));
+  assert.equal(a.rows.length, 0, 'no row: nothing at rest about the blocked contact');
+  assert.equal(sA.acked, 1);
+  assert.deepEqual(acksA, [['e1']]);
+  assert.equal(sA.lost['not-in-book'], undefined, 'not counted as a lost message');
+  assert.equal(sA.notes, 0);
+
+  const b = recordingSink();
+  const sB = await consumeInboundContactUpdates(deps({ note: refusingNotes('STRANGERFP'), store: noteStore(async () => null), deadLetter: b.sink, fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], []).fetchImpl }));
+  assert.equal(b.rows.length, 1, 'control: a stranger’s note keeps its record (and with it the stranger notice)');
+  assert.equal(b.rows[0].reason, 'not-in-book');
+  assert.equal(sB.lost['not-in-book'], 1);
+});
+
+test('NOTE: a contact blocked only in metadata is dropped the same way', async () => {
+  const blocked = heldBook({ metadata: { blocked: true } });
+  const a = recordingSink();
+  const s = await consumeInboundContactUpdates(deps({ note: refusingNotes(bob.fingerprint), store: noteStore(blocked.store.lookup), deadLetter: a.sink, fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], []).fetchImpl }));
+  assert.equal(a.rows.length, 0);
+  assert.equal(s.acked, 1);
+});
+
+test('NOTE: a store that cannot answer the lookup keeps the loss record (never silently drops a note it cannot classify)', async () => {
+  const a = recordingSink();
+  const s = await consumeInboundContactUpdates(deps({
+    note: refusingNotes(bob.fingerprint), deadLetter: a.sink, fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], []).fetchImpl,
+    store: noteStore(async () => { throw new Error('book unreadable'); }),
+  }));
+  assert.equal(a.rows.length, 1);
+  assert.equal(s.lost['not-in-book'], 1);
+});
+
+test('NOTE: unblocking replays nothing that was sent during the block', async () => {
+  const blocked = heldBook({ blocked: true });
+  const r = relay([{ envelope_id: 'e1', blob: 'NOTE' }], []);
+  const accepted: string[] = [];
+  const note: NoteResponseSeam = {
+    verify: async (blob) => (blob === 'NOTE' ? noteWire(bob.fingerprint) : null),
+    accept: async (w) => (blocked.held.blocked ? { dropped: 'not-in-book', fp: bob.fingerprint } : (accepted.push(w.note_id), { note_id: w.note_id, thread_id: w.thread_id, from_fingerprint: w.from_fingerprint })),
+  };
+  const d = deps({ note, store: noteStore(blocked.store.lookup), fetchImpl: r.fetchImpl });
+  await consumeInboundContactUpdates(d);
+  delete blocked.held.blocked;
+  const s2 = await consumeInboundContactUpdates(d);
+  assert.equal(s2.notes, 0);
+  assert.deepEqual(accepted, []);
+  assert.deepEqual(r.left(), []);
+});
+
+// C2: a note accepted in memory, then refused at the chunk commit because the sender was blocked (or removed) meanwhile.
+function refusingChunk(): ChunkTxn {
+  const stored: string[] = [];
+  return {
+    enter: () => {}, isStored: () => false, stored: (k) => { stored.push(k); }, acked: () => {}, abort: () => {},
+    commit: () => ({ refused: [...stored] }),
+  };
+}
+const acceptingNotes = (from: string): NoteResponseSeam => ({
+  verify: async (blob) => (blob === 'NOTE' ? noteWire(from) : null),
+  accept: async (w) => ({ note_id: w.note_id, thread_id: w.thread_id, from_fingerprint: w.from_fingerprint }),
+});
+
+test('NOTE C2: refused at the commit because the sender is BLOCKED → acked, no row, no counted loss', async () => {
+  const blocked = heldBook({ blocked: true });
+  const a = recordingSink();
+  const acks: string[][] = [];
+  const s = await consumeInboundContactUpdates(deps({
+    note: acceptingNotes(bob.fingerprint), chunk: refusingChunk(), deadLetter: a.sink, store: noteStore(blocked.store.lookup),
+    fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], acks).fetchImpl,
+  }));
+  assert.equal(a.rows.length, 0);
+  assert.equal(s.lost['not-in-book'], undefined);
+  assert.equal(s.deadLettered, 0);
+  assert.equal(s.notes, 0, 'the note was not kept');
+  assert.deepEqual(acks, [['e1']], 'consumed');
+});
+
+test('NOTE C2: refused at the commit because the sender was REMOVED (not blocked) keeps the honest not-in-book loss row', async () => {
+  const a = recordingSink();
+  const acks: string[][] = [];
+  const s = await consumeInboundContactUpdates(deps({
+    note: acceptingNotes(bob.fingerprint), chunk: refusingChunk(), deadLetter: a.sink, store: noteStore(async () => null),
+    fetchImpl: relay([{ envelope_id: 'e1', blob: 'NOTE' }], acks).fetchImpl,
+  }));
+  assert.equal(a.rows.length, 1);
+  assert.equal(a.rows[0].reason, 'not-in-book');
+  assert.equal(s.lost['not-in-book'], 1);
+  assert.deepEqual(acks, [['e1']]);
 });
