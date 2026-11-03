@@ -5,9 +5,9 @@
 //   store save → dead-letter flush → ack. No ack if either write fails.
 // O1 the order NEG: it FAILS if an ack precedes either write (checked by event order AND by what is on disk at the moment of each ack).
 // O2 a failing store save leaves the dead-letter ops STAGED (still in the sink, flushed later) and the chunk UNACKED.
-// O3 #712 C2 x #713: a note refused at the commit re-apply (sender blocked meanwhile) is an honest 'not-in-book' LOSS whose row (with the
-//    authenticated fp) is on disk before its ack, never acked unrecorded and never mislabelled 'verify-failed' (#332).
-// O4 that row cannot be staged → that envelope is NOT acked (stays on the relay, unrecorded++); the rest of the chunk is.
+// O3 C2: a note refused at the commit re-apply because the sender was BLOCKED meanwhile is dropped and acked with no row. (A sender REMOVED
+//    meanwhile still gets the honest 'not-in-book' loss row before its ack: pinned in consume-mailbox-blocked.test.ts.)
+// O4 that blocked drop needs no sink: a sink that refuses every row still lets the envelope be acked.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -264,43 +264,41 @@ async function blockedMidChunk(sinkWrap?: (real: NonNullable<Awaited<ReturnType<
   return { X, Y, s, relay, atAck, xId, dl, book };
 }
 
-test('O3 C2 x #713: a note refused at the commit re-apply is an honest not-in-book LOSS, its row (authenticated fp) on disk BEFORE its ack', async () => {
+test('O3 C2: a note refused at the commit re-apply because the sender was BLOCKED meanwhile is dropped and acked with NO row (a block leaves the blocked contact nothing to write)', async () => {
   const { X, Y, s, atAck, xId, dl, book } = await blockedMidChunk();
   try {
     assert.deepEqual(book.open().listNotes().map((n) => n.from_fingerprint), [Y.fp]);
     assert.equal(s.notes, 1);
-    assert.equal(s.lost['not-in-book'], 1);
-    assert.equal(s.lost['verify-failed'], undefined, '#332: never mislabelled as forged crypto');
-    assert.equal(s.deadLettered, 1);
+    assert.equal(s.lost['not-in-book'], undefined, 'not a loss: the sender is a blocked contact, not a stranger');
+    assert.equal(s.deadLettered, 0);
     assert.equal(s.acked, 2);
     const ackOfX = atAck.find((a) => a.ids.includes(xId));
     assert.ok(ackOfX, 'X is consumed (acked), like a sender blocked before the poll');
-    assert.deepEqual(ackOfX!.rows.filter((r) => r.envelope_id === xId).map((r) => [r.reason, r.fp]), [['not-in-book', X.fp]], 'its row was durable at the moment of its ack');
-    assert.equal(rows(dl).length, 1);
+    assert.equal(ackOfX!.rows.filter((r) => r.envelope_id === xId).length, 0, 'no row, so no fingerprint or blob of the blocked contact at rest');
+    assert.equal(rows(dl).filter((r) => r.fp === X.fp).length, 0);
+    assert.equal(rows(dl).length, 0);
   } finally {
     book.done();
   }
 });
 
-test('O4 C2 x #713: the refused note\'s row cannot be staged → THAT envelope is NOT acked (stays on the relay); the rest of the chunk is', async () => {
-  const { Y, s, relay, xId, book } = await blockedMidChunk((real) => ({
+test('O4 C2: the dead-letter sink is not needed for a blocked contact: a sink that refuses every row still lets X be acked, and Y is stored', async () => {
+  const { Y, s, relay, book } = await blockedMidChunk((real) => ({
     ...real,
-    record: async (row) => {
-      if (row.reason === 'not-in-book') throw new Error('sink full');
-      return real.record(row);
+    record: async () => {
+      throw new Error('sink full');
     },
   }));
   try {
     assert.deepEqual(book.open().listNotes().map((n) => n.from_fingerprint), [Y.fp]);
-    assert.equal(s.acked, 1, 'only Y is acked');
-    assert.deepEqual(relay.listIds(), [xId], 'X stays on the relay for a later poll, never acked unrecorded');
-    assert.equal(s.unrecorded, 1);
+    assert.equal(s.acked, 2, 'both acked: X needs no row');
+    assert.deepEqual(relay.listIds(), []);
+    assert.equal(s.unrecorded, 0);
     assert.equal(s.deadLettered, 0);
   } finally {
     book.done();
   }
 });
-
 
 const UNREACHABLE_MARK = 'UNREACHABLE: a chunk commit refused a key with no note';
 function captureErrors<T>(fn: () => Promise<T>): Promise<{ out: T; errors: string[] }> {
@@ -335,7 +333,8 @@ test('O5 (Flint #2829 a) the refused-key-with-no-note branch is LOUD if it ever 
 test('O6 (Flint #2829 a) ...and it is UNREACHABLE on the real C2 path: a sender blocked mid-chunk never trips it', async () => {
   const { out, errors } = await captureErrors(() => blockedMidChunk());
   try {
-    assert.equal(out.s.lost['not-in-book'], 1, 'the real C2 refusal happened (precondition)');
+    assert.equal(out.s.notes, 1, 'the real C2 refusal happened (precondition: X was stored in memory, then refused at the commit; Y stored)');
+    assert.equal(out.s.acked, 2);
     assert.equal(errors.filter((e) => e.includes(UNREACHABLE_MARK)).length, 0);
   } finally {
     out.book.done();

@@ -12,6 +12,7 @@ import { readJsonStrict, writeFileAtomic } from './atomic-file';
 import { withWriterLock } from './writer-lock';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
+import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import type { KnownContact, ContactStore, ChunkTxn, ListingScope } from '@/lib/sync/consume-mailbox';
 import type { NoteRecord, NoteThread } from '@/lib/messaging/types';
@@ -419,8 +420,11 @@ export class HeadlessStore {
         if (!rec) return null; // whitelist-on-fetch (I-2): not in book → dropped unread
         return { known: toKnownContact(rec), current: rec as unknown as StoredContact };
       },
-      persist: async (id: string, next: StoredContact): Promise<void> => {
+      persist: async (id: string, next: StoredContact): Promise<{ applied: boolean }> => {
+        const held = this.data.contacts.find((x) => x.id === id);
+        if (held && !admitContact(held)) return { applied: false }; // blocked since the lookup: not written
         this.updateContact(id, next as Partial<HeadlessContact>);
+        return { applied: true };
       },
     };
   }
