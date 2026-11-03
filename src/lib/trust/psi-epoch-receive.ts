@@ -4,7 +4,7 @@
  * outside world (the book, the pairwise secret, the clock, the store write) is injected, so this is testable with fakes and imports nothing from
  * the store at runtime. The decisions are the ruled table in psi-epoch-delivery, and the layout is psi-epoch-sealed.
  *
- * It never names the epoch field: the held epoch record arrives as an argument of the adoption's decision (adoptPsiEpoch), and the contact book
+ * It never names the epoch field: the held epoch record arrives as an argument of the adoption's decision, and the contact book
  * lookup returns only what this needs (id, fingerprint, blocked).
  */
 import type { ContactRecord } from '../identity/client-store';
