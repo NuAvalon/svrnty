@@ -29,6 +29,7 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, hexToBytes, randomBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { lpStr, u64be } from '../crypto/lp-tlv';
+import { ctEqual } from '../crypto/ct-equal';
 import { EPOCH_SECRET_LEN } from './psi-epoch-element';
 
 /** Wire type 0x45 ('E') and version 1. The numbering of the type in the sealed-note dispatcher is decided where it is wired. */
@@ -85,14 +86,6 @@ function checkField(f: unknown): Uint8Array {
     throw new EpochNoteError('bad-secret', `must be exactly ${EPOCH_SECRET_LEN} bytes`);
   }
   return f;
-}
-
-/** Constant time over equal-length inputs; a length mismatch is rejected up front (lengths are public). */
-function ctEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
 }
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
