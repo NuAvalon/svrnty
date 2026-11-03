@@ -57,6 +57,7 @@ import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
 import { holdBackoff } from '@/lib/sync/hold-backoff';
 import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
+import { pollWriteUnlessSafety } from '@/lib/contacts/safety-write';
 import { createAdoptCounter, type AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
@@ -119,6 +120,8 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
       // fingerprint immutable and only rotates public_key to a validly-bound key, so the binding holds.
       await updateContact(id, next as Partial<ContactRecord>);
     },
+    // A contact can make this write happen as often as they like, so it yields to a write that protects the owner (block, trust, go-private).
+    guard: (run) => pollWriteUnlessSafety(run),
   };
 }
 
