@@ -8,9 +8,10 @@ Flow (2026-09-12 — spec §Identity: "no email, no magic link, no account"):
    are isolated + undiscoverable), not an account gate.
 2. GET  /identity/{fingerprint} — lookup public identity info.
 
-Legacy: POST /register (email → 6-digit OTP via Resend) remains for backward-compat
-with older clients (landing.html) but is NO LONGER REQUIRED and NOT the canonical
-path — /verify checks no OTP. Email is never collected or stored by the mint (I-7).
+There is no email path. The legacy POST /register (email → 6-digit code via Resend) is
+retired: no client used it, and it let anyone make the service email any address.
+The mint does not collect or send email (I-7). The old pending_verifications table is left
+in place (no schema change); nothing writes it.
 
 The Ed25519 (+ PQ) key proves the user is them. Auth is key-only — no passwords,
 no sessions, no server-side recovery.
@@ -20,7 +21,6 @@ import hashlib
 import hmac
 import json
 import os
-import secrets
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -36,12 +36,7 @@ from pydantic import BaseModel, Field
 
 DATA_DIR = Path(os.environ.get("REGISTRATION_DATA", "/data"))
 DB_PATH = DATA_DIR / "registration.db"
-RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
-RESEND_FROM = os.environ.get("RESEND_FROM", "verify@svrnty.is")
-OTP_EXPIRY_SECONDS = 600  # 10 minutes
-OTP_MAX_ATTEMPTS = 5
 SATELLITE_URL = os.environ.get("SATELLITE_URL", "http://satellite:8100")
-RATE_LIMIT_SECONDS = 60  # 1 email per minute per address
 
 
 # ── Database ──────────────────────────────────────────────
@@ -123,10 +118,6 @@ def init_db():
 
 # ── Models ────────────────────────────────────────────────
 
-class RegisterRequest(BaseModel):
-    email: str = Field(..., min_length=5, max_length=254)
-
-
 class VerifyRequest(BaseModel):
     # Open mint (2026-09-12, spec §Identity "no email, no magic link, no
     # account"): the identity IS the keypair. email/otp are OPTIONAL + IGNORED —
@@ -153,16 +144,6 @@ class VerifyRequest(BaseModel):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def hash_otp(otp: str) -> str:
-    """Hash OTP so we never store plaintext codes."""
-    return hashlib.sha256(otp.encode()).hexdigest()
-
-
-def hash_email(email: str) -> str:
-    """Hash email for storage — we don't need to read it back."""
-    return hashlib.sha256(email.lower().strip().encode()).hexdigest()
 
 
 # ── gated-A domain-separated preimages + raw Ed25519 verify ──────────
@@ -253,68 +234,6 @@ def verify_ownership(fingerprint: str, signature: str, db: sqlite3.Connection) -
                     return True
         return False
     except Exception:
-        return False
-
-
-def _dev_mode() -> bool:
-    """DEV_MODE (local-mirror email/OTP bypass) is active ONLY when no real email
-    backend is configured — fail-closed so a prod-keyed env can never half-fire it
-    (review condition, 2026-08-10)."""
-    return bool(os.environ.get("DEV_MODE")) and not RESEND_API_KEY
-
-
-def send_otp_email(email: str, otp: str) -> bool:
-    """Send OTP via Resend API. Returns True on success."""
-    if not RESEND_API_KEY:
-        if _dev_mode():
-            print(f"[DEV_MODE] OTP for {email}: {otp}  (email sending bypassed)", flush=True)
-            return True
-        print("[ERROR] RESEND_API_KEY not configured — cannot send OTP")
-        return False
-
-    import urllib.request
-    import urllib.error
-
-    payload = json.dumps({
-        "from": RESEND_FROM,
-        "to": [email],
-        "subject": "svrnty — verify your identity",
-        "html": f"""
-        <div style="font-family: monospace; max-width: 400px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #c9a227;">svrnty</h2>
-            <p>Your verification code:</p>
-            <div style="font-size: 32px; letter-spacing: 8px; font-weight: bold; padding: 20px; background: #1a1a2e; color: #c9a227; text-align: center; border-radius: 8px;">
-                {otp}
-            </div>
-            <p style="color: #666; margin-top: 20px;">This code expires in 10 minutes.</p>
-            <p style="color: #666;">If you didn't request this, ignore this email.</p>
-        </div>
-        """,
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {RESEND_API_KEY}",
-            "Content-Type": "application/json",
-            "User-Agent": "svrnty-registration/0.1",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode()
-            if resp.status in (200, 202):
-                return True
-            print(f"[ERROR] Resend API unexpected status {resp.status}: {body}")
-            return False
-    except urllib.error.HTTPError as e:
-        body = e.read().decode() if hasattr(e, 'read') else str(e)
-        print(f"[ERROR] Resend API HTTP {e.code}: {body}")
-        return False
-    except urllib.error.URLError as e:
-        print(f"[ERROR] Resend API connection failed: {e}")
         return False
 
 
@@ -420,7 +339,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="svrnty Registration",
-    description="Email verification + Ed25519 identity creation for svrnty.",
+    description="Open-mint Ed25519 (+ PQ) identity creation for svrnty. No email.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -435,58 +354,6 @@ app.add_middleware(
 
 
 # ── Routes ────────────────────────────────────────────────
-
-@app.post("/register")
-async def register(req: RegisterRequest):
-    """Step 1: Submit email → receive OTP.
-
-    Sends a 6-digit code to the email address. The user must
-    prove they control this inbox before claiming an identity.
-    """
-    email = req.email.lower().strip()
-    email_h = hash_email(email)
-    db = get_db()
-    try:
-        # Rate limit — 1 email per minute per address
-        existing = db.execute(
-            "SELECT created_at FROM pending_verifications WHERE email = ?",
-            (email_h,)
-        ).fetchone()
-
-        if existing and (time.time() - existing["created_at"]) < RATE_LIMIT_SECONDS:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Please wait {RATE_LIMIT_SECONDS}s between verification requests"
-            )
-
-        # Note: same email can register multiple identities (design decision).
-        # Email ≠ identity. Each registration creates a new keypair + fingerprint.
-
-        # Generate OTP (DEV_MODE: fixed code so local mirror needs no live email)
-        if _dev_mode():
-            otp = "000000"
-        else:
-            otp = "".join(secrets.choice("0123456789") for _ in range(6))
-
-        # Send email
-        if not send_otp_email(email, otp):
-            raise HTTPException(status_code=502, detail="Failed to send verification email")
-
-        # Store hashed OTP (upsert) — email hashed too, never stored plaintext
-        db.execute(
-            "INSERT OR REPLACE INTO pending_verifications (email, otp_hash, created_at, attempts, verified) VALUES (?, ?, ?, 0, 0)",
-            (email_h, hash_otp(otp), time.time())
-        )
-        db.commit()
-
-        resp = {"status": "otp_sent", "message": "Check your email for the verification code"}
-        if _dev_mode():
-            resp["dev_otp"] = otp
-            resp["message"] = "DEV_MODE: use verification code 000000 (email bypassed)"
-        return resp
-    finally:
-        db.close()
-
 
 @app.post("/verify")
 async def verify(req: VerifyRequest):
@@ -587,7 +454,7 @@ async def verify(req: VerifyRequest):
                 raise HTTPException(status_code=409, detail=f"svrnty.is/{req.slug} is already claimed")
 
         # Create verified identity. email_hash is a vestigial NOT NULL column —
-        # open mint stores "" (no email is ever collected or persisted; I-7).
+        # open mint stores "" (it does not collect email; I-7).
         db.execute(
             "INSERT INTO verified_identities (fingerprint, email_hash, public_key, encryption_pk, x25519_pk, mldsa65_pk, mlkem768_pk, key_version, display_name, slug, identity_type, registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (req.fingerprint, "", req.public_key, req.encryption_pk or req.x25519_pk, req.x25519_pk, req.mldsa65_pk, req.mlkem768_pk, req.key_version, req.display_name, req.slug.lower() if req.slug else None, req.identity_type, now_iso())
@@ -1012,7 +879,7 @@ async def claim_slug(name: str, req: SlugClaimRequest):
             (req.fingerprint,)
         ).fetchone()
         if not identity:
-            raise HTTPException(status_code=404, detail="Identity not found — verify email first")
+            raise HTTPException(status_code=404, detail="Identity not found")
 
         # Check if already claimed by someone else
         existing = db.execute(
@@ -1245,7 +1112,6 @@ async def health():
             "status": "online",
             "service": "registration",
             "identities": count,
-            "email_configured": bool(RESEND_API_KEY),
         }
     finally:
         db.close()
