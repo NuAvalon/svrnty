@@ -16,8 +16,9 @@
 // blind satellite commit; it writes NOTHING to reciprocal / they_trust_me.
 
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
-import { updateContact as realUpdateContact } from '@/lib/identity/client-store';
+import { updateContact as realUpdateContact, getContact as realGetContact } from '@/lib/identity/client-store';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
+import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
 import type { TrustEvent } from '@/lib/trust/types';
 
 export interface TrustTransitionOwner {
@@ -36,17 +37,14 @@ export interface TrustTransitionPeer {
   fingerprint?: string;
   /** peer's armored pub (contact.public_key / edge.peer_public_key) — the seal target. */
   publicKeyArmored?: string;
-  blocked?: boolean;
-  openVisibility?: boolean;
-  perContactPrivate?: boolean;
-  metadata?: Record<string, unknown>;
-  priorTrustHistory?: TrustEvent[];
 }
 
 export interface TrustTransitionDeps {
   /** injectable for tests; defaults to the real client-store ops. */
   /** A patch, or a SYNCHRONOUS function from the record held when the write runs to a patch (see client-store ContactUpdate). */
   updateContact?: (id: string, patch: Record<string, unknown> | ((existing: Record<string, unknown>) => Record<string, unknown>)) => Promise<unknown>;
+  /** injectable for tests; defaults to the real store read. The satellite consent is built from the record read back with this AFTER the write. */
+  getContact?: (id: string) => Promise<Parameters<typeof consentFromRecord>[0] | null>;
   /** injectable for tests; defaults to reconcileAllowedOnConsentChange. Fire-and-forget (return
    *  ignored) — the arg shape is pinned to the real hook, the result is not. */
   reconcile?: (args: Parameters<typeof reconcileAllowedOnConsentChange>[0]) => unknown;
@@ -70,6 +68,7 @@ export async function applyTrustTransition(
 ): Promise<void> {
   const updateContact = deps.updateContact ?? realUpdateContact;
   const reconcile = deps.reconcile ?? reconcileAllowedOnConsentChange;
+  const getContact = deps.getContact ?? realGetContact;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ? deps.now() : new Date().toISOString();
 
@@ -82,7 +81,7 @@ export async function applyTrustTransition(
     initiated_by: 'self',
   };
   // The history append and the open_visibility clear are built from the record held when the write runs, not from the copy `peer` was read from.
-  // A trust change is a write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+  // A trust change is a write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
   await withSafetyWrite(peer.contactId, () => updateContact(peer.contactId, (existing: Record<string, unknown>) => {
     const md = (existing.metadata ?? {}) as Record<string, unknown>;
     return {
@@ -118,15 +117,20 @@ export async function applyTrustTransition(
   }
 
   // (3) PSI reveal-set reconcile (#572) — fire-and-forget, fail-soft (gated dark pre-flip).
+  // The consent is read back from the STORED record after the write, not taken from fields the caller carried (a screen or snapshot copy): a
+  // contact blocked since the caller's copy was taken reconciles as blocked, and an untrust reconciles from the cleared open_visibility. If the
+  // contact is gone, or the read fails, the consent is none (the row is removed): the privacy-safe direction, never an add.
+  let consent = NO_CONSENT;
+  try {
+    const stored = await getContact(peer.contactId);
+    if (stored) consent = consentFromRecord(stored);
+  } catch {
+    consent = NO_CONSENT;
+  }
   void reconcile({
     ownerFp: owner.fingerprint,
     senderFp: peer.fingerprint,
-    consent: {
-      trusted: nextTrusted,
-      openVisibility: nextTrusted && peer.openVisibility === true,
-      blocked: peer.blocked === true,
-      perContactPrivate: peer.perContactPrivate === true,
-    },
+    consent,
   });
 
   // (4) [REMOVED #593] The EMIT-ONLY affirm deposit (sendTrustAffirmToPeer) is gone — mutual is no longer

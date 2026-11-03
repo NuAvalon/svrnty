@@ -19,6 +19,8 @@ import { deriveMailboxId } from '@/lib/relay/mailbox-auth';
 import { HeadlessStore, type HeadlessContact } from '@/lib/headless/headless-store';
 import { type HeadlessOwner, pollHeadlessOnce } from '@/lib/headless/headless-client';
 import { applyTrustTransition, type TrustTransitionDeps } from './apply-trust-transition';
+import { allowedRowShouldExist, type PeerConsent } from '@/lib/sync/allowed-sync';
+import { readFileSync } from 'node:fs';
 
 const RELAY = 'http://relay.test/api/relay';
 const FIXED_NOW = '2026-10-18T03:20:00.000Z';
@@ -79,12 +81,15 @@ function mockRelay() {
 }
 
 /** Drive A's trust/break toggle through the CHOKEPOINT, capturing A's own local write patch(es). */
-async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: ReturnType<typeof mockRelay>, held: Record<string, unknown> = {}, peerExtra: Record<string, unknown> = {}) {
+async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: ReturnType<typeof mockRelay>, held: Record<string, unknown> = {}, peerExtra: Record<string, unknown> = {}, stored: Record<string, unknown> | null | 'throws' = null) {
   const patches: Array<Record<string, unknown>> = [];
+  const consents: PeerConsent[] = [];
   const deps: TrustTransitionDeps = {
     // `held` stands for the record the store holds when the write runs: a function updater is applied to it, as updateContact does.
     updateContact: async (_id, patch) => { patches.push(typeof patch === 'function' ? patch(held) : patch); },
-    reconcile: async () => {}, // reveal-set reconcile is a separate fire-and-forget seam; no-op in this unit
+    // `stored` stands for the record the store holds AFTER the write: the satellite consent is read back from it.
+    getContact: async () => { if (stored === 'throws') throw new Error('store unavailable'); return stored; },
+    reconcile: async (a) => { consents.push(a.consent as PeerConsent); }, // the reveal-set reconcile seam: captured here
     fetchImpl: relay.fetchImpl,
     satelliteBase: '',
     now: () => FIXED_NOW,
@@ -95,7 +100,7 @@ async function toggleViaChokepoint(A: Id, B: Id, nextTrusted: boolean, relay: Re
     nextTrusted,
     deps,
   );
-  return { patches };
+  return { patches, consents };
 }
 
 test('CHOKEPOINT: A trusts B → local EMIT-ONLY write + blind satellite COMMIT; ★ NO affirm deposited (removed #593), peer seat untouched', async () => {
@@ -173,4 +178,56 @@ test('trusting does not touch metadata, and still appends to the held history', 
   const { patches } = await toggleViaChokepoint(A, B, true, relay, { trust_history: [{ timestamp: 't0', action: 'break', reason: 'x', initiated_by: 'self' }], metadata: { x: 1 } });
   assert.equal('metadata' in patches[0], false);
   assert.equal((patches[0].trust_history as unknown[]).length, 2);
+});
+
+// ── the satellite consent is read back from the stored record, not carried by the caller ───────────────────
+
+test('the satellite consent comes from the stored record read back after the write, not from fields the caller carried', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const stored = { trust_level: 'trusted', blocked: true, metadata: { share_settings: { open_visibility: true, per_contact_private: false } } };
+  // the caller's copy says: not blocked, open, not private (older than the stored record)
+  const { consents } = await toggleViaChokepoint(A, B, true, mockRelay(), {}, { blocked: false, openVisibility: true, perContactPrivate: false }, stored);
+  assert.equal(consents.length, 1);
+  assert.equal(consents[0].blocked, true, 'blocked is the stored value');
+  assert.equal(allowedRowShouldExist(consents[0]), false, 'a blocked contact is never added');
+});
+
+test('NEG: a trust toggle on a contact blocked AFTER the caller took its copy reconciles as blocked and never adds the row', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const afterBlock = { trust_level: 'unverified', blocked: true, trusted: false, metadata: { blocked: true, share_settings: { open_visibility: false } } };
+  const { consents } = await toggleViaChokepoint(A, B, true, mockRelay(), {}, { blocked: false, openVisibility: true }, afterBlock);
+  assert.equal(consents[0].blocked, true);
+  assert.equal(allowedRowShouldExist(consents[0]), false);
+});
+
+test('an untrust reconciles from the stored, cleared open_visibility, whatever the caller carried', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const stored = { trust_level: 'unverified', trusted: false, metadata: { share_settings: { open_visibility: false } } };
+  const { consents } = await toggleViaChokepoint(A, B, false, mockRelay(), {}, { openVisibility: true }, stored);
+  assert.deepEqual(consents[0], { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false });
+});
+
+test('a promotion reads the stored open_visibility and per-contact-private setting', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const stored = { trust_level: 'trusted', metadata: { share_settings: { open_visibility: true, per_contact_private: false } } };
+  const { consents } = await toggleViaChokepoint(A, B, true, mockRelay(), {}, {}, stored);
+  assert.deepEqual(consents[0], { trusted: true, openVisibility: true, blocked: false, perContactPrivate: false });
+  assert.equal(allowedRowShouldExist(consents[0]), true);
+});
+
+test('a contact that is gone, or a store that cannot be read, reconciles as NO consent (the row is removed) and does not throw', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const none = { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false };
+  assert.deepEqual((await toggleViaChokepoint(A, B, true, mockRelay(), {}, {}, null)).consents[0], none);
+  assert.deepEqual((await toggleViaChokepoint(A, B, true, mockRelay(), {}, {}, 'throws')).consents[0], none);
+});
+
+test('GUARD: the transition no longer reads blocked / openVisibility / perContactPrivate from its caller', () => {
+  const src = readFileSync(new URL('./apply-trust-transition.ts', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(src, /peer\.(blocked|openVisibility|perContactPrivate|metadata|priorTrustHistory)/);
+  assert.match(src, /const stored = await getContact\(peer\.contactId\);\s*if \(stored\) consent = consentFromRecord\(stored\);/);
+  // the read-back comes AFTER the local write and the satellite commit, never before (a read before would see the pre-write record)
+  const iWrite = src.indexOf('await withSafetyWrite(peer.contactId');
+  const iRead = src.indexOf('await getContact(peer.contactId)');
+  assert.ok(iWrite > 0 && iRead > iWrite, 'the consent is read back after the write');
 });
