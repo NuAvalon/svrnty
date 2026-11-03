@@ -40,7 +40,7 @@ import {
   loadPQKeys,
   onSessionLock,
   getContactByFingerprint,
-  updateContact,
+  updateContactIf,
   loadIssuedCodeMap,
   isCodeOutstanding,
   codeUnderCap,
@@ -115,10 +115,11 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
       const current = rec as unknown as StoredContact; // ContactRecord ⊇ StoredContact (structural superset)
       return { known: recordToKnownContact(rec), current };
     },
-    async persist(id: string, next: StoredContact): Promise<void> {
-      // updateContact re-checks the fail-closed fingerprint↔key binding. A verified apply keeps the
-      // fingerprint immutable and only rotates public_key to a validly-bound key, so the binding holds.
-      await updateContact(id, next as Partial<ContactRecord>);
+    async persist(id: string, next: StoredContact): Promise<{ applied: boolean }> {
+      // The write re-checks the fail-closed fingerprint↔key binding. A verified apply keeps the fingerprint immutable and only rotates
+      // public_key to a validly-bound key, so the binding holds. Decided on the record held when the write commits (compare-and-swap), so a
+      // block that lands after the poll's read still stops it: blocked → no write.
+      return updateContactIf(id, (existing) => (admitContact(existing) ? (next as Partial<ContactRecord>) : null));
     },
     // A contact can make this write happen as often as they like, so it yields to a write that protects the owner (block, trust, go-private).
     guard: (run) => pollWriteUnlessSafety(run),

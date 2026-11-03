@@ -43,6 +43,7 @@ import type { HoldBackoff } from './hold-backoff';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
+import { admitContact } from '@/lib/trust/admit-contact';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -82,8 +83,10 @@ export interface ContactStore {
   /**
    * Persist an applied update. `changes` holds ONLY the keys the update changed (a removed key is present as undefined); the store merges it into
    * the record it holds NOW. It is not a replacement record: a full copy read at lookup would write back anything that changed since.
+   * A store that decides on the record it holds when the write runs returns `{ applied: false }` when that record is blocked: nothing was
+   * written and the update is dropped for good (see consumeOne). A store that returns nothing is taken to have written.
    */
-  persist(id: string, changes: StoredContact): Promise<void>;
+  persist(id: string, changes: StoredContact): Promise<void | { applied: boolean }>;
   /**
    * Optional. Run a write unless a write that protects the owner holds the book. `deferred: true` means `run` was NOT run: the update
    * is left on the relay and applied on a later poll (not dropped). Omit = always write, as before.
@@ -1031,6 +1034,9 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   // Flint ruling (a): this is a NON-MESSAGE frame from a stranger. It is RECORDED (never a silent loss) but under its own reason, so it can
   // never raise an "N messages couldn't be verified" count and never lands in a message budget.
   if (!contact) return { kind: 'terminal', cls: { reason: 'unverified-frame' } };
+  // A contact the owner blocked sends nothing that changes their record: dropped and acked, nothing replayed on unblock. persist decides this
+  // again on the record it holds when the write runs, for a block that lands after this read.
+  if (!admitContact(contact.current)) return { kind: 'terminal', cls: { benign: 'contact-update-blocked' } };
 
   // verify — the one gate. epoch-ahead needs lineage catch-up first → retryable; all else terminal.
   let verified;
@@ -1053,11 +1059,14 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
   // persist may throw on a store I/O failure — that too propagates to the guarded loop (retryable).
   if (dead()) return { kind: 'retryable' };
   const write = () => deps.store.persist(contact.current.id, changedKeys(contact.current, applied.next));
+  let wrote: void | { applied: boolean };
   if (deps.store.guard) {
     const g = await deps.store.guard(write);
     if (g.deferred) return { kind: 'retryable' }; // an owner-protecting write holds the book: leave the envelope for a later poll
+    wrote = g.value;
   } else {
-    await write();
+    wrote = await write();
   }
+  if (wrote && wrote.applied === false) return { kind: 'terminal', cls: { benign: 'contact-update-blocked' } }; // blocked since the read above: not written, not retried
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
 }
