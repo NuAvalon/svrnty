@@ -84,6 +84,11 @@ export interface ContactStore {
    * the record it holds NOW. It is not a replacement record: a full copy read at lookup would write back anything that changed since.
    */
   persist(id: string, changes: StoredContact): Promise<void>;
+  /**
+   * Optional. Run a write unless a write that protects the owner holds the book. `deferred: true` means `run` was NOT run: the update
+   * is left on the relay and applied on a later poll (not dropped). Omit = always write, as before.
+   */
+  guard?<T>(run: () => Promise<T>): Promise<{ deferred: true } | { deferred: false; value: T }>;
 }
 
 /** Emitted after a successful apply so the live book repaints (reason:'live-apply' seam). */
@@ -1047,6 +1052,12 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
 
   // persist may throw on a store I/O failure — that too propagates to the guarded loop (retryable).
   if (dead()) return { kind: 'retryable' };
-  await deps.store.persist(contact.current.id, changedKeys(contact.current, applied.next));
+  const write = () => deps.store.persist(contact.current.id, changedKeys(contact.current, applied.next));
+  if (deps.store.guard) {
+    const g = await deps.store.guard(write);
+    if (g.deferred) return { kind: 'retryable' }; // an owner-protecting write holds the book: leave the envelope for a later poll
+  } else {
+    await write();
+  }
   return { kind: 'applied', event: { id: contact.current.id, fingerprint: signed.envelope.fingerprint, ignited: applied.ignited } };
 }
