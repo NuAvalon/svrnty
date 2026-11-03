@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { generateKey, readKey } from 'openpgp';
 import {
+  bindLinkTarget,
   buildLinkToSvrntyUpdate,
+  linkToSvrntyPatch,
   contactLane,
   isPendingSvrntyContact,
   readClassicalExtras,
@@ -112,10 +114,38 @@ describe('buildLinkToSvrntyUpdate + bindPastedFingerprintToKey', () => {
     const bound = await bindPastedFingerprintToKey(suffix, publicKey);
     assert.equal(bound, derived);
 
+    // bindLinkTarget: the derived fingerprint with the key trimmed; a mismatch is refused.
+    const target = await bindLinkTarget(derived, `\n  ${publicKey}\n\n`);
+    assert.equal(target.fingerprint, derived);
+    assert.equal(target.public_key, publicKey.trim());
+    await assert.rejects(() => bindLinkTarget('deadbeef'.repeat(5), publicKey), /does not match/i);
+
     // 16-char suffix is too short — refuse.
     await assert.rejects(
       () => bindPastedFingerprintToKey(derived.slice(-16), publicKey),
       /does not match/i,
     );
+  });
+});
+
+describe('linkToSvrntyPatch (synchronous, from the record it is given)', () => {
+  const bound = { fingerprint: 'ab'.repeat(32), public_key: 'PK' };
+
+  it('builds the pending link with a fixed clock and keeps the metadata it is given', () => {
+    const now = new Date('2026-01-02T03:04:05.000Z');
+    const p = linkToSvrntyPatch({ name: 'Ada', email: 'a@x', metadata: { tags: ['t'], notes: 'N' } }, bound, now);
+    assert.equal(p.fingerprint, bound.fingerprint);
+    assert.equal(p.public_key, 'PK');
+    assert.equal(p.connection_status, 'pending');
+    assert.equal(p.metadata.linked_from_classical_at, '2026-01-02T03:04:05.000Z');
+    assert.deepEqual(p.metadata.tags, ['t']);
+    assert.equal((p.metadata.classical_extras as { notes?: string }).notes, 'N');
+  });
+
+  it('does not mutate the record it is given', () => {
+    const existing = { name: 'Ada', metadata: { tags: ['t'] } };
+    const before = JSON.stringify(existing);
+    linkToSvrntyPatch(existing, bound);
+    assert.equal(JSON.stringify(existing), before);
   });
 });

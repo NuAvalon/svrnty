@@ -30,9 +30,6 @@ services:
         NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE: ${NEXT_PUBLIC_BIOMETRIC_SEAM_LIVE:-}
     image: svrnty:selfhost
     environment:
-      # Server-side only (read at runtime — safe as env, never shipped to the browser):
-      EMAIL_FROM: ${EMAIL_FROM:-}
-      RESEND_API_KEY: ${RESEND_API_KEY:-}
       # The Python crypto backend (the "registration" service). ALL /api/satellite/*
       # routes proxy here — register / bind / onion / route / allowed / trust-psi — so
       # it's REQUIRED for a full sovereign relay (without it

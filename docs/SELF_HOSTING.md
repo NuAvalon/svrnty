@@ -36,8 +36,6 @@ want all three.
 - **DNS**: an `A` record (and `AAAA` if you have IPv6) for that domain pointing at the server.
 - **Ports 80 and 443** open to the internet — Caddy uses them to obtain a Let's Encrypt
   certificate automatically.
-- (Optional, for email verification) a [Resend](https://resend.com) API key and a sender
-  address verified for your domain.
 
 ---
 
@@ -63,8 +61,6 @@ your first identity.
 |----------|----------|-------|
 | `NEXT_PUBLIC_SVRNTY_DOMAIN` | **yes** | Your bare domain, no scheme (e.g. `id.example.com`). Drives every share link, slug URL, and display string. |
 | `NEXT_PUBLIC_SVRNTY_BASE_URL` | no | Override the full scheme+host. Defaults to `https://<your domain>`. Set this only for `http`/localhost during local testing. |
-| `EMAIL_FROM` | for email verify | The "from" address for verification emails — must be a sender your provider has verified for your domain. |
-| `RESEND_API_KEY` | for email verify | Server-side secret. **Never** prefix it with `NEXT_PUBLIC_` — that would ship it to the browser. |
 | `SATELLITE_ADMIN_KEY` | **yes** | `SATELLITE_ADMIN_KEY` lets you run the satellite's housekeeping, which deletes messages that are past their retention period. It cannot read anyone's messages. The satellite won't start without it (20+ characters; `openssl rand -hex 32`), and `docker compose up` stops with an error until it's set. Server-side only: never a `NEXT_PUBLIC_` var, never logged. (The satellite's `/export` self-host kit generates its own key the same way.) |
 | `SATELLITE_TRUSTED_PROXY_NAMES` | no | Who may pass the real client address to the satellite. Default `app` (the only hop in front of it). Leave it unless you change the topology. |
 | `SATELLITE_URL` | no | The app's address for the satellite. Compose sets `http://registration:8101`. |
@@ -79,7 +75,7 @@ includes `--build`.
 
 The practical consequence: **if you change your domain, you must rebuild** —
 `docker compose up -d --build`. Restarting alone will leave the old domain in the
-client-side links. (Server-side values like `RESEND_API_KEY` *are* read at runtime and take
+client-side links. (Server-side values *are* read at runtime and take
 effect on a plain restart.)
 
 ---
@@ -134,7 +130,7 @@ If you don't schedule it, old messages stay on the server.
 - **If you replace Caddy with your own proxy,** it must replace any `X-Forwarded-For` header a
   client sends; otherwise clients can choose their own rate-limit bucket. (Caddy as shipped
   already does this.)
-- **Secrets stay server-side.** `RESEND_API_KEY` and any future operator secrets must never
+- **Secrets stay server-side.** Any operator secret must never
   be named `NEXT_PUBLIC_*` — that prefix ships the value into the browser bundle. Keep real
   secrets out of the repo (`.env` is gitignored; `.env.example` holds placeholders only).
 - **The relay learns nothing by design — keep it that way.** Don't add logging of drop
@@ -207,8 +203,6 @@ Conceptually, for each identity you host:
 - **Share links show `svrnty.is` instead of your domain.** The image was built without your
   domain. Rebuild: `docker compose up -d --build`, and confirm `NEXT_PUBLIC_SVRNTY_DOMAIN` is
   set in `.env`.
-- **Verification emails don't send.** Check `RESEND_API_KEY` and that `EMAIL_FROM` is a
-  sender verified for your domain with your provider.
 - **`docker compose up` stops with "set SATELLITE_ADMIN_KEY".** Add it to `.env`
   (`openssl rand -hex 32`) and run `up` again.
 - **Contacts, registration or discovery fail (502 from `/api/satellite/*`).** The satellite
