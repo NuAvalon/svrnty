@@ -84,6 +84,8 @@ interface Run {
   afterPersist?: (db: Db) => void;
   update?: UpdateSpec;
   seen?: StoredContact[];
+  /** how many updates the consume pass should report applied (default 1) */
+  applied?: number;
 }
 
 /** Consume one genuinely signed update for Bob; returns the book's record afterwards. */
@@ -115,7 +117,7 @@ async function consume(start: StoredContact, run: Run = {}): Promise<StoredConta
     fetchImpl: recordingFetch(),
   };
   const summary = await consumeInboundContactUpdates(deps);
-  assert.equal(summary.applied, 1, 'the signed update must have been applied');
+  assert.equal(summary.applied, run.applied ?? 1, 'the signed update must have been applied');
   return db.get('contact-bob') as StoredContact;
 }
 
@@ -139,9 +141,9 @@ test('a flag and trust level set on the contact while its update is being verifi
   assert.equal(after.trusted, false);
 });
 
-test('the same flag set BEFORE the lookup (the snapshot already has it) is kept, and the update is still applied', async () => {
-  const after = await consume(bobAtLookup(), { beforeLookup: setFlag });
-  assert.equal(after.name, 'Bob (NEW name)');
+test('the same flag set BEFORE the lookup (the snapshot already has it) is kept, and the update is NOT applied: a blocked contact’s update changes nothing', async () => {
+  const after = await consume(bobAtLookup(), { beforeLookup: setFlag, applied: 0 });
+  assert.equal(after.name, 'Bob (old name)', 'the blocked contact’s update is dropped');
   assert.equal(after.blocked, true);
   assert.equal(after.trust_level, 'unverified');
 });
