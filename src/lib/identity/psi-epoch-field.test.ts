@@ -9,6 +9,7 @@ import {
   mergeContactUpdate,
   withoutPsiEpoch,
   buildPsiEpochAdoption,
+  buildContactUpdateIf,
   PSI_EPOCH_FIELD,
   type ContactRecord,
 } from './client-store';
@@ -64,13 +65,23 @@ test('withoutPsiEpoch drops the field, never mutates its input, and returns the 
 
 // ── the one writer ──────────────────────────────────────────────────────────
 
-test('adoption: stores the decided string, keeps every other field, and sees the HELD record', () => {
-  const held = rec({ metadata: { note: 'keep' } });
-  let seen: ContactRecord | null = null;
-  const next = buildPsiEpochAdoption(held, (e) => { seen = e; return 'new-form'; });
-  assert.equal(seen, held);
+test('adoption: stores the decided string and keeps every other field; the decision gets the HELD epoch record and the contact without that field', () => {
+  const held = rec({ metadata: { note: 'keep' }, psi_epoch: 'held-form' });
+  let seenEpoch: string | null | undefined;
+  let seenContact: ContactRecord | undefined;
+  const next = buildPsiEpochAdoption(held, (e, c) => { seenEpoch = e; seenContact = c; return 'new-form'; });
+  assert.equal(seenEpoch, 'held-form');
+  assert.equal(PSI_EPOCH_FIELD in (seenContact as ContactRecord), false, 'the contact view carries no epoch record');
+  assert.equal((seenContact as ContactRecord).metadata.note, 'keep');
   assert.deepEqual(next, { ...held, psi_epoch: 'new-form' });
-  assert.equal(PSI_EPOCH_FIELD in held, false, 'the input is not mutated');
+  assert.equal(held.psi_epoch, 'held-form', 'the input is not mutated');
+});
+
+test('adoption: with nothing held the decision is given null; an empty held string counts as nothing', () => {
+  const seen: Array<string | null> = [];
+  buildPsiEpochAdoption(rec(), (e) => { seen.push(e); return null; });
+  buildPsiEpochAdoption(rec({ psi_epoch: '' }), (e) => { seen.push(e); return null; });
+  assert.deepEqual(seen, [null, null]);
 });
 
 test('adoption: a decision of null writes nothing', () => {
@@ -89,6 +100,34 @@ test('adoption: a stored form that is not a non-empty string is a programming er
   for (const bad of ['', 5, {}, undefined]) {
     assert.throws(() => buildPsiEpochAdoption(rec(), () => bad as unknown as string), TypeError);
   }
+});
+
+// ── nobody outside the store can obtain it ──────────────────────────────────
+
+test('R1: an updater (function form) is given the record WITHOUT psi_epoch, and the held value is still kept', () => {
+  const existing = rec({ psi_epoch: 'held-form' });
+  let seen: ContactRecord | undefined;
+  const merged = mergeContactUpdate(existing, (fresh) => { seen = fresh; return { name: 'X' }; });
+  assert.equal(PSI_EPOCH_FIELD in (seen as ContactRecord), false);
+  assert.equal(merged.psi_epoch, 'held-form');
+  assert.equal(merged.name, 'X');
+});
+
+test('R1: a read -> write round trip keeps the stored value: a reader\'s record (no psi_epoch) used as a patch changes nothing about it', () => {
+  const stored = rec({ psi_epoch: 'held-form' });
+  const asRead = withoutPsiEpoch(stored);
+  const merged = mergeContactUpdate(stored, { ...asRead, name: 'Renamed' });
+  assert.equal(merged.psi_epoch, 'held-form');
+  assert.equal(merged.name, 'Renamed');
+});
+
+test('R1: the conditional update gives its decision the record without psi_epoch and keeps the held value; a null decision writes nothing', () => {
+  const existing = rec({ psi_epoch: 'held-form' });
+  let seen: ContactRecord | undefined;
+  const next = buildContactUpdateIf(existing, (e) => { seen = e; return { name: 'Y' }; });
+  assert.equal(PSI_EPOCH_FIELD in (seen as ContactRecord), false);
+  assert.equal((next as ContactRecord).psi_epoch, 'held-form');
+  assert.equal(buildContactUpdateIf(existing, () => null), null);
 });
 
 // ── at rest ─────────────────────────────────────────────────────────────────
@@ -130,6 +169,21 @@ test('GUARD: exportAll (the vault and every backup) strips psi_epoch from each c
   assert.ok(dropAt > 0 && buildAt > dropAt, 'the drop runs before the record is encrypted and stored');
   assert.match(cs, /buildStoredContact\(withoutPsiEpoch\(rec\) as unknown as ContactRecord\)/);
   assert.match(fnBody(cs, 'export function mergeContactUpdate('), /PSI_EPOCH_FIELD in existing/);
+});
+
+test('GUARD: every public reader of decrypted contacts strips psi_epoch (the CAS keeps its own full decrypt)', () => {
+  const cs = read('./client-store.ts');
+  assert.match(fnBody(cs, 'export async function getContact('), /return rec \? withoutPsiEpoch\(await decryptContactIfNeeded\(rec\)\) : null;/);
+  assert.match(fnBody(cs, 'export async function getContactByFingerprint('), /return found \? withoutPsiEpoch\(await decryptContactIfNeeded\(found\)\) : null;/);
+  assert.match(fnBody(cs, 'export async function getAllContacts('), /withoutPsiEpoch\(await decryptContactIfNeeded\(r\)\)/);
+  assert.match(cs, /decrypt: \(raw\) => decryptContactIfNeeded\(raw\),/, 'the compare-and-swap decrypts in full, so the held value survives a write');
+  assert.match(fnBody(cs, 'export function mergeContactUpdate('), /updates\(withoutPsiEpoch\(existing\)\)/);
+  assert.match(fnBody(cs, 'export function buildContactUpdateIf('), /decide\(withoutPsiEpoch\(existing\)\)/);
+  assert.match(fnBody(cs, 'export async function updateContactIf('), /buildContactUpdateIf\(existing, decide\)/);
+  // Every other exported function in the store that returns decrypted contacts goes through one of the readers above.
+  const exportsReturningContacts = [...cs.matchAll(/export async function (\w+)\([^)]*\): Promise<(?:ContactRecord(?:\[\])?|ContactRecord \| null)>/g)].map((m) => m[1]).sort();
+  assert.deepEqual(exportsReturningContacts, ['addContact', 'getAllContacts', 'getContact', 'getContactByFingerprint', 'searchContacts'], 'a new exported reader of contacts must strip psi_epoch and be added here');
+  assert.match(fnBody(cs, 'export async function searchContacts('), /await getAllContacts\(ownerFingerprint\)/);
 });
 
 test('GUARD: the vault export builds its contacts from exportAll, nothing else', () => {

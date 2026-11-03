@@ -1034,7 +1034,7 @@ export type ContactUpdate = Partial<ContactRecord> | ((existing: ContactRecord) 
  * throws, because an `await` inside would reopen the window between the read and the write that the function form exists to close.
  */
 export function mergeContactUpdate(existing: ContactRecord, updates: ContactUpdate): ContactRecord {
-  const patch = typeof updates === 'function' ? updates(existing) : updates;
+  const patch = typeof updates === 'function' ? updates(withoutPsiEpoch(existing)) : updates;
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch) || typeof (patch as { then?: unknown }).then === 'function') {
     throw new Error('updateContact: the updater must synchronously return a plain patch object (not a Promise)');
   }
@@ -1064,14 +1064,16 @@ export function withoutPsiEpoch<T extends Record<string, unknown>>(record: T): T
 
 /**
  * The pure part of adoptPsiEpoch: the record to store, or null for "do not write". A contact the owner has blocked is never written (the same
- * predicate as every other contact-driven write), and a decision of null from the caller is "nothing to store". `decide` sees the HELD record.
+ * predicate as every other contact-driven write), and a decision of null from the caller is "nothing to store". `decide` is given the HELD epoch
+ * record (the only place outside the store that sees it) and the contact without that field.
  */
 export function buildPsiEpochAdoption(
   existing: ContactRecord,
-  decide: (existing: ContactRecord) => string | null,
+  decide: (heldEpoch: string | null, contact: ContactRecord) => string | null,
 ): ContactRecord | null {
   if (!admitContact(existing)) return null;
-  const value = decide(existing);
+  const held = existing[PSI_EPOCH_FIELD];
+  const value = decide(typeof held === 'string' && held.length > 0 ? held : null, withoutPsiEpoch(existing));
   if (value === null) return null;
   if (typeof value !== 'string' || value.length === 0) throw new TypeError('adoptPsiEpoch: the stored form must be a non-empty string');
   return { ...existing, [PSI_EPOCH_FIELD]: value };
@@ -1084,7 +1086,7 @@ export function buildPsiEpochAdoption(
  */
 export async function adoptPsiEpoch(
   id: string,
-  decide: (existing: ContactRecord) => string | null,
+  decide: (heldEpoch: string | null, contact: ContactRecord) => string | null,
 ): Promise<{ applied: boolean }> {
   assertUnlockedForContactWrite('adoptPsiEpoch');
   const r = await casUpdateWith(contactCasIO, id, (existing) => buildPsiEpochAdoption(existing, decide));
@@ -1205,11 +1207,17 @@ export async function updateContactIf(
   decide: (existing: ContactRecord) => Partial<ContactRecord> | null,
 ): Promise<{ applied: boolean }> {
   assertUnlockedForContactWrite('updateContactIf');
-  const r = await casUpdateWith(contactCasIO, id, (existing) => {
-    const patch = decide(existing);
-    return patch === null ? null : mergeContactUpdate(existing, patch);
-  });
+  const r = await casUpdateWith(contactCasIO, id, (existing) => buildContactUpdateIf(existing, decide));
   return { applied: r.applied };
+}
+
+/** The pure part of updateContactIf: the record to store, or null for "do not write". `decide` sees the record without psi_epoch. */
+export function buildContactUpdateIf(
+  existing: ContactRecord,
+  decide: (existing: ContactRecord) => Partial<ContactRecord> | null,
+): ContactRecord | null {
+  const patch = decide(withoutPsiEpoch(existing));
+  return patch === null ? null : mergeContactUpdate(existing, patch);
 }
 
 /**
@@ -1299,7 +1307,7 @@ async function decryptContactIfNeeded(rec: any): Promise<ContactRecord> {
 
 export async function getContact(id: string): Promise<ContactRecord | null> {
   const rec = await txGet<any>('contacts', id);
-  return rec ? decryptContactIfNeeded(rec) : null;
+  return rec ? withoutPsiEpoch(await decryptContactIfNeeded(rec)) : null; // a friend's epoch secret is not handed to callers (see PSI_EPOCH_FIELD)
 }
 
 export async function getContactByFingerprint(ownerFingerprint: string, fingerprint: string): Promise<ContactRecord | null> {
@@ -1309,12 +1317,12 @@ export async function getContactByFingerprint(ownerFingerprint: string, fingerpr
   const idx = _contactKeys ? await blindFingerprint(_contactKeys.indexKey, fingerprint) : null;
   const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
   const found = recs.find(c => (idx !== null && c.fingerprint === idx) || c.fingerprint === fingerprint);
-  return found ? decryptContactIfNeeded(found) : null;
+  return found ? withoutPsiEpoch(await decryptContactIfNeeded(found)) : null;
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
   const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
-  return Promise.all(recs.map(decryptContactIfNeeded));
+  return Promise.all(recs.map(async (r) => withoutPsiEpoch(await decryptContactIfNeeded(r))));
 }
 
 // ── enc-b B5: on-unlock heal + book-integrity establish/verify ────
