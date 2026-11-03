@@ -36,10 +36,16 @@ services:
       # those 7 endpoints 502; only the native in-proc /api/relay/* dead-drop survives).
       # Keep the host as "registration" — one slug route hardcodes it (see SELF_HOSTING.md).
       SATELLITE_URL: http://registration:8101
+      # The relay mailbox (encrypted envelopes waiting for pickup) is a SQLite file on the
+      # relay_data volume, so pending messages survive restarts AND rebuilds. Without the
+      # volume it would live in the container and be lost on every `up --build`.
+      RELAY_DB_PATH: /data/relay/mailbox.sqlite
     depends_on:
       - registration
     expose:
       - "3000"
+    volumes:
+      - relay_data:/data/relay
     restart: unless-stopped
 
   caddy:
@@ -77,6 +83,13 @@ services:
     image: ${REGISTRATION_IMAGE:-svrnty-registration:latest}
     environment:
       SATELLITE_MODE: ${SATELLITE_MODE:-full}
+      # REQUIRED: the satellite refuses to start without it (20+ chars). A server-side bearer
+      # secret for its maintenance routes; never a NEXT_PUBLIC_ var. Generate: openssl rand -hex 32
+      SATELLITE_ADMIN_KEY: ${SATELLITE_ADMIN_KEY:?set SATELLITE_ADMIN_KEY in .env (20+ random chars, e.g. openssl rand -hex 32)}
+      # Every request reaches the satellite through the app, which forwards the real client
+      # address in X-Forwarded-For. Trust that header ONLY from the app container (resolved by
+      # name inside the compose network), so rate limits apply per client, not to the app's IP.
+      SATELLITE_TRUSTED_PROXY_NAMES: ${SATELLITE_TRUSTED_PROXY_NAMES:-app}
     expose:
       - "8101"
     volumes:
@@ -87,3 +100,4 @@ volumes:
   caddy_data:
   caddy_config:
   registration_data:
+  relay_data:
