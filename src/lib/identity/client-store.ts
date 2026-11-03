@@ -13,7 +13,7 @@ import { deriveContactCryptoKeys, encryptContactRecord, decryptContactRecord, bl
 import { isSuppressionRecord, type SuppressionRecord } from '../trust/suppression';
 import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirmatives';
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
-import { casUpdateWith, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
+import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
@@ -986,13 +986,23 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
   // enc-b B4: recompute the book manifest over the POST-insert set (existing owner contacts + this new
   // record) and write it in the SAME tx as the record. Decrypt-all + MAC happen BEFORE the tx (the
   // auto-commit footgun). A ConstraintError aborts BOTH puts → the book and manifest stay consistent.
-  const postAddEntries = [
-    ...(await getAllContacts(ownerFingerprint)).map(toManifestEntry),
-    { id: record.id, version: typeof record.version === 'number' ? record.version : 0 },
-  ];
-  const addManifestOp = await buildContactManifestOp(ownerFingerprint, postAddEntries);
+  // The manifest is built from a read of the whole book, so it is compared at commit time like an update's: it is read BEFORE the book, and the
+  // write goes through only if it is still what was read (and the new id is still absent); otherwise the book is read again (up to the cap).
+  const manifestKey = contactManifestSettingKey(ownerFingerprint);
   try {
-    await txPutMany([{ store: 'contacts', value: stored }, addManifestOp]);
+    await casRetry(record.id, async () => {
+      const manifestBefore = await txGet<Record<string, unknown>>('settings', manifestKey);
+      const postAddEntries = [
+        ...(await getAllContacts(ownerFingerprint)).map(toManifestEntry),
+        { id: record.id, version: typeof record.version === 'number' ? record.version : 0 },
+      ];
+      const addManifestOp = await buildContactManifestOp(ownerFingerprint, postAddEntries);
+      return commitIfUnchanged(
+        await openDB(),
+        [{ store: 'contacts', key: record.id, expected: null }, { store: 'settings', key: manifestKey, expected: manifestBefore }],
+        [{ store: 'contacts', value: stored }, addManifestOp],
+      );
+    });
   } catch (e) {
     // Idempotent-by-fingerprint (fix at the source, not per-caller): two concurrent add-paths for the
     // same joiner (interval poll vs Galaxy pull-to-refresh; a future websocket live-add) can each pass
@@ -1199,9 +1209,20 @@ export async function removeContact(id: string): Promise<void> {
     throw new Error('Session locked — removeContact needs the session to update the book manifest (enc-b fail-closed)');
   }
   const owner = rec.owner_fingerprint ?? '';
-  const postRemoveEntries = (await getAllContacts(owner)).filter((c) => c.id !== id).map(toManifestEntry);
-  const removeManifestOp = await buildContactManifestOp(owner, postRemoveEntries);
-  await txPutMany([{ store: 'contacts', delete: id }, removeManifestOp]);
+  const manifestKey = contactManifestSettingKey(owner);
+  // Compared at commit time like an update: the manifest and the record are read first, and the delete goes through only if both are unchanged.
+  await casRetry(id, async () => {
+    const raw = await txGet<Record<string, unknown>>('contacts', id);
+    if (!raw) return true; // already gone: removing is idempotent
+    const manifestBefore = await txGet<Record<string, unknown>>('settings', manifestKey);
+    const postRemoveEntries = (await getAllContacts(owner)).filter((c) => c.id !== id).map(toManifestEntry);
+    const removeManifestOp = await buildContactManifestOp(owner, postRemoveEntries);
+    return commitIfUnchanged(
+      await openDB(),
+      [{ store: 'contacts', key: id, expected: raw }, { store: 'settings', key: manifestKey, expected: manifestBefore }],
+      [{ store: 'contacts', delete: id }, removeManifestOp],
+    );
+  });
 }
 
 /**

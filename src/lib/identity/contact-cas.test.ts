@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  casUpdateWith, sameStoredRow, ContactConflictError, CAS_MAX_ATTEMPTS,
+  casUpdateWith, casRetry, sameStoredRow, ContactConflictError, CAS_MAX_ATTEMPTS,
 } from './contact-cas';
 import { readFileSync } from 'node:fs';
 import { World, rec, addTag, world } from './contact-cas-testkit';
@@ -247,6 +247,62 @@ test('GUARD: updateContact and updateContactIf both go through casUpdateWith, de
   assert.match(store, /const r = await casUpdateWith\(contactCasIO, id, \(existing\) => \{\s*const patch = decide\(existing\);\s*return patch === null \? null : mergeContactUpdate\(existing, patch\);\s*\}\);\s*return \{ applied: r\.applied \};/);
   assert.match(store, /assertUnlockedForContactWrite\('updateContact'\)/);
   assert.match(store, /assertUnlockedForContactWrite\('updateContactIf'\)/);
+});
+
+// ── casRetry: the retry rule for add and remove ─────────────────────────────────────────────────────────────
+
+test('casRetry: returns the number of attempts used, and stops at the first that commits', async () => {
+  let calls = 0;
+  assert.equal(await casRetry('s', async () => { calls++; return true; }), 1);
+  assert.equal(calls, 1);
+  calls = 0;
+  assert.equal(await casRetry('s', async () => ++calls === 3), 3);
+  assert.equal(calls, 3);
+});
+
+test('casRetry: a compare that is lost on every attempt throws ContactConflictError after exactly the cap, naming the subject', async () => {
+  let calls = 0;
+  await assert.rejects(
+    () => casRetry('contact-9', async () => { calls++; return false; }),
+    (e: unknown) => e instanceof ContactConflictError && e.contactId === 'contact-9' && e.attempts === CAS_MAX_ATTEMPTS,
+  );
+  assert.equal(calls, CAS_MAX_ATTEMPTS);
+});
+
+test('casRetry: the cap is configurable, and an error from an attempt propagates at once without retrying', async () => {
+  let calls = 0;
+  await assert.rejects(() => casRetry('s', async () => { calls++; return false; }, 2), ContactConflictError);
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(() => casRetry('s', async () => { calls++; throw new Error('ConstraintError'); }), /ConstraintError/);
+  assert.equal(calls, 1);
+});
+
+test('GUARD: addContact and removeContact write the record and the manifest only through the compare-and-put transaction', () => {
+  const store = readFileSync(new URL('./client-store.ts', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  const fn = (name: string) => {
+    const a = store.indexOf(`export async function ${name}(`);
+    assert.notEqual(a, -1, `${name} not found`);
+    return store.slice(a, store.indexOf('\nexport ', a + 1));
+  };
+  for (const name of ['addContact', 'removeContact']) {
+    const body = fn(name);
+    assert.match(body, /casRetry\(/, `${name} retries a lost comparison`);
+    assert.match(body, /commitIfUnchanged\(/, `${name} commits through the compare-and-put transaction`);
+    assert.match(body, /expected: manifestBefore/, `${name} compares the manifest it read first`);
+    assert.doesNotMatch(body, /txPutMany\(/, `${name} no longer writes the book with an unconditional transaction`);
+  }
+  // The manifest value must be read BEFORE the book it summarises: read after, a write landing in between would be missed (the book read is stale
+  // but the manifest compared is fresh), and a stale manifest would be committed.
+  for (const name of ['addContact', 'removeContact']) {
+    const body = fn(name);
+    const iManifest = body.indexOf('const manifestBefore = await txGet');
+    const iBook = body.indexOf('await getAllContacts(');
+    assert.ok(iManifest > 0 && iBook > 0 && iManifest < iBook, `${name} reads the manifest value before it reads the book`);
+  }
+  assert.match(fn('addContact'), /expected: null/, 'an add expects its new id to be absent');
+  assert.match(fn('removeContact'), /expected: raw/, 'a remove expects the record it read');
+  assert.match(fn('removeContact'), /if \(!raw\) return true;/, 'removing a contact that is already gone is idempotent, not a conflict');
 });
 
 test('GUARD: the manifest value is read BEFORE the manifest is built from the book (read after, a write in between would be missed)', () => {

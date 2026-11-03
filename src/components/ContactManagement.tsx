@@ -481,7 +481,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       // "gone" (all-false consent → unconditional DELETE), closing the same stale-row discovery hole as
       // block. Fire-and-forget + fail-soft (gated dark pre-flip). removeContact does NO satellite call.
       const removedFp = contacts.find((c) => c.id === contactId)?.fingerprint;
-      await removeContact(contactId);
+      // A write that protects the owner: it takes the contact's lock so a poll-driven write cannot make it lose its comparison.
+      await withSafetyWrite(contactId, () => removeContact(contactId));
       if (removedFp) {
         void reconcileAllowedOnConsentChange({
           ownerFp: fingerprint,
@@ -494,7 +495,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       await loadContacts();
       onContactsChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete contact');
+      setError(describeSafetyWriteFailure(err, 'Remove') ?? (err instanceof Error ? err.message : 'Failed to delete contact'));
     } finally {
       setLoading(false);
     }

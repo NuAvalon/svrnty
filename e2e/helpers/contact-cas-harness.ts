@@ -2,7 +2,7 @@
 // Bundled by esbuild and injected into the page by e2e/contact-cas.spec.ts. It runs the app's REAL contact store (IndexedDB, the encrypted
 // contact rows and the book manifest) from inside the page, so concurrent writes race on a real database. Nothing here is a stand-in for the
 // thing under test: every write goes through updateContact / addContact exactly as the app calls them.
-import { initSessionKey, addContact, updateContact, getContact, getAllContacts, getContactBookIntegrity } from '@/lib/identity/client-store';
+import { initSessionKey, addContact, removeContact, updateContact, getContact, getAllContacts, getContactBookIntegrity } from '@/lib/identity/client-store';
 
 type Outcome = { ok: true } | { ok: false; name: string; message: string };
 const settle = async (p: Promise<unknown>): Promise<Outcome> => {
@@ -21,7 +21,7 @@ declare global {
       count(owner: string): Promise<number>;
       integrity(owner: string): Promise<'ok' | 'corrupt'>;
       /** Run several operations at the same time, in this page. */
-      together(ops: Array<{ kind: 'tag' | 'bump' | 'add'; id?: string; tag?: string; owner?: string; name?: string }>): Promise<Outcome[]>;
+      together(ops: Array<{ kind: 'tag' | 'bump' | 'add' | 'remove'; id?: string; tag?: string; owner?: string; name?: string }>): Promise<Outcome[]>;
     };
   }
 }
@@ -41,5 +41,5 @@ window.__cas = {
   version: async (id) => (await getContact(id))?.version ?? 0,
   count: async (owner) => (await getAllContacts(owner)).length,
   integrity: (owner) => getContactBookIntegrity(owner),
-  together: (ops) => Promise.all(ops.map((o) => settle(o.kind === 'tag' ? tag(o.id!, o.tag!) : o.kind === 'bump' ? bump(o.id!) : add(o.owner!, o.name!)))),
+  together: (ops) => Promise.all(ops.map((o) => settle(o.kind === 'tag' ? tag(o.id!, o.tag!) : o.kind === 'bump' ? bump(o.id!) : o.kind === 'remove' ? removeContact(o.id!) : add(o.owner!, o.name!)))),
 };

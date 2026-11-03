@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
  * the unlock verification); nothing is stubbed. The integrity check is the app's own: the manifest is verified when the vault unlocks, and a
  * mismatch sets the book to 'corrupt' (which prompts a restore).
  *
- * CAS_CONTROL=1 runs only the first two tests (they need nothing from the change), so the same spec can be pointed at the tree BEFORE the change.
+ * CAS_CONTROL=1 runs only the first four tests (they need nothing from the change), so the same spec can be pointed at the tree BEFORE the change.
  */
 
 const PASS = 'e2e-passphrase-1234';
@@ -73,6 +73,33 @@ test('with version changes on other contacts and a new contact all at once, the 
   expect(await page.evaluate((o) => window.__cas.count(o), OWNER)).toBe(4);
   // the app's own check: unlock again and let it verify the manifest against the book
   expect(await integrityAfterUnlock(page), 'the manifest matches the book after concurrent version changes and an add').toBe('ok');
+});
+
+test('four contacts added at once: all are added and the book manifest still verifies on the next unlock', async ({ page }) => {
+  test.setTimeout(150_000);
+  await setup(page);
+  const out = await page.evaluate((o) => window.__cas.together([1, 2, 3, 4].map((i) => ({ kind: 'add' as const, owner: o, name: `N${i}` }))), OWNER);
+  expect(out.filter((x) => !x.ok), 'none of the four adds failed').toEqual([]);
+  expect(await page.evaluate((o) => window.__cas.count(o), OWNER), 'all four are in the book').toBe(4);
+  expect(await integrityAfterUnlock(page), 'the manifest matches the book after concurrent adds').toBe('ok');
+});
+
+test('a contact removed while another is added and a third is changed: the book manifest still verifies on the next unlock', async ({ page }) => {
+  test.setTimeout(150_000);
+  await setup(page);
+  const [a, b, c] = [
+    await page.evaluate((o) => window.__cas.add(o, 'A'), OWNER),
+    await page.evaluate((o) => window.__cas.add(o, 'B'), OWNER),
+    await page.evaluate((o) => window.__cas.add(o, 'C'), OWNER),
+  ];
+  const out = await page.evaluate(([x, y, z, o]) => window.__cas.together([
+    { kind: 'remove', id: x }, { kind: 'add', owner: o, name: 'D' }, { kind: 'bump', id: y }, { kind: 'bump', id: z },
+  ]), [a, b, c, OWNER]);
+  expect(out.filter((x) => !x.ok), 'none of the four failed').toEqual([]);
+  expect(await page.evaluate((o) => window.__cas.count(o), OWNER), 'A is gone and D is added: three left').toBe(3);
+  expect(await page.evaluate(([id]) => window.__cas.version(id), [b])).toBe(1);
+  expect(await page.evaluate(([id]) => window.__cas.version(id), [c])).toBe(1);
+  expect(await integrityAfterUnlock(page), 'the manifest matches the book after a concurrent remove, add and version changes').toBe('ok');
 });
 
 test('two tabs: a poll in one tab defers while the other tab protects the book, and a protecting write lands against a tab flooding version changes on another contact', async ({ page, context }) => {
