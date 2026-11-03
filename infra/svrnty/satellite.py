@@ -29,7 +29,6 @@ from collections import defaultdict
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -984,22 +983,9 @@ def _verify_with_key(pubkey_bytes: bytes, sig_bytes: bytes, message: bytes) -> b
 
 # ── Routes ────────────────────────────────────────────────
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    """Trust Network Dashboard — visual overview of satellite status."""
-    dashboard_path = Path(__file__).parent / "dashboard.html"
-    if dashboard_path.exists():
-        return HTMLResponse(content=dashboard_path.read_text())
-    return HTMLResponse(content="<h1>Satellite Online</h1><p>Dashboard not found.</p>")
-
-
-@app.get("/chat")
-async def chat_client():
-    """Serve the E2E encrypted chat client."""
-    chat_path = Path(__file__).parent / "chat.html"
-    if chat_path.exists():
-        return HTMLResponse(content=chat_path.read_text())
-    return HTMLResponse(content="<h1>Chat client not found</h1>", status_code=404)
+# The satellite serves no HTML pages. The legacy dashboard ("/") and chat page ("/chat") were
+# removed: the chat page stored private keys in localStorage on whatever origin served it, and
+# every proxy door that reached the satellite re-exposed both. Its API is JSON only.
 
 
 @app.get("/identities")
@@ -1616,15 +1602,13 @@ async def export_satellite(fingerprint: str, x_signature: Optional[str] = Header
             # Relay source — EVERY module satellite.py imports at module scope MUST be bundled:
             # mailbox_envelope + satellite_keys are REQUIRED (omitting them = ModuleNotFound on
             # startup — the pre-existing break that made self-host never run) + crypto_utils
-            # (client kit) + registration + the served UI (dashboard/chat, COPY'd by the keystone
-            # Dockerfile). Read the REAL tracked files — no heredoc copies that silently drift.
+            # (client kit) + registration. The satellite serves no HTML pages, so none are bundled.
+            # Read the REAL tracked files — no heredoc copies that silently drift.
             zf.writestr('satellite.py', satellite_src)
             zf.writestr('mailbox_envelope.py', (src_dir / "mailbox_envelope.py").read_text())
             zf.writestr('satellite_keys.py', (src_dir / "satellite_keys.py").read_text())
             zf.writestr('crypto_utils.py', crypto_src)
             zf.writestr('registration.py', registration_src)
-            zf.writestr('dashboard.html', (src_dir / "dashboard.html").read_text())
-            zf.writestr('chat.html', (src_dir / "chat.html").read_text())
             # registration UI (COPY'd by Dockerfile.registration)
             zf.writestr('landing.html', (src_dir / "landing.html").read_text())
             zf.writestr('profile.html', (src_dir / "profile.html").read_text())
