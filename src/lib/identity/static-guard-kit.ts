@@ -4,6 +4,8 @@
 // The text of every `name(...)` call in `text`, found by balanced parentheses (string and template literals are skipped, and so are // and /* */
 // comments inside the call, so an apostrophe or a parenthesis in a comment cannot start a string or end the call early), so a nested call or a
 // multi-line body cannot cut the match short.
+// Known limit: a regular-expression literal that contains `//` or a quote character is not understood, and could still end a call early; keep such
+// a literal out of a guarded call body, or add a case here and to the tests.
 export function callsOf(text: string, name: string): string[] {
   const out: string[] = [];
   const open = name + '(';
