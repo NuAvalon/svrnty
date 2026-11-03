@@ -34,7 +34,7 @@ export interface EpochReceiveDeps {
   pairSecretFor: (contactId: string) => Promise<Uint8Array | null>;
   /** The holder's clock in whole minutes, read once per accepted note. */
   nowMinutes: () => number;
-  /** adoptPsiEpoch: the only writer of the epoch record. */
+  /** The store's writer of the epoch record: the only one there is. It runs the decision on the HELD record and never on a blocked contact. */
   adopt: (
     contactId: string,
     decide: (heldEpoch: string | null, contact: ContactRecord) => string | null,
