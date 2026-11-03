@@ -31,6 +31,15 @@ export const PSI_PREV_TICKS = 12;
 
 const HEX_SECRET = /^[0-9a-f]{64}$/;
 
+/** The epoch carries the sender's clock in minutes above this many low bits: e = (minutes * 2^20) + sequence. */
+const EPOCH_SEQ_BITS = 20;
+const EPOCH_SEQ_RANGE = 2 ** EPOCH_SEQ_BITS;
+/**
+ * How far ahead of the holder's own clock a note's epoch may be and still be taken in: 24 hours. It is SHARED between the sender's clock lead and
+ * the holder's clock lag (an honest note is taken in when the sender's lead plus the holder's lag is at most this), not added to it.
+ */
+export const PSI_EPOCH_SKEW_MINUTES = 24 * 60;
+
 export interface EpochSlot {
   e: number;
   /** lowercase hex, 32 bytes */
@@ -44,6 +53,17 @@ export interface PsiEpochRecord {
   prev: EpochSlot | null;
   /** the holder's tick at which `cur` was adopted */
   adoptedTick: number;
+}
+
+/**
+ * The highest epoch a holder whose clock reads `nowMinutes` (whole minutes since the Unix epoch) takes in: the last slot of the minute
+ * `skewMinutes` ahead. Built with multiplication, NOT `<<`: a minute count of this size shifted by 20 overflows a 32-bit shift.
+ */
+export function maxEpochFor(nowMinutes: number, skewMinutes: number = PSI_EPOCH_SKEW_MINUTES): number {
+  if (!isSafeNonNeg(nowMinutes) || !isSafeNonNeg(skewMinutes)) throw new TypeError('psi-epoch-book: minutes must be non-negative safe integers');
+  const max = (nowMinutes + skewMinutes) * EPOCH_SEQ_RANGE + (EPOCH_SEQ_RANGE - 1);
+  if (!Number.isSafeInteger(max)) throw new TypeError('psi-epoch-book: the bound does not fit a safe integer');
+  return max;
 }
 
 export type ApplyOutcome = 'adopted' | 'duplicate' | 'conflict' | 'stale' | 'invalid';
@@ -73,15 +93,22 @@ function slotFromNote(n: OpenedNote): EpochSlot | null {
 /**
  * Take a note's epoch in, or say why not. Never mutates its arguments. `record` is null when nothing is held yet for
  * this friend (any epoch >= 0 is then adopted).
+ *
+ * `maxEpoch` (optional) is the highest epoch the caller will take in, computed by the caller from the holder's clock (see maxEpochFor); this
+ * module reads no clock. A note above it is `invalid`: dropped, the record and the adoption tick unchanged. Omitted, there is no upper bound.
+ * It is a number the caller computed, so a value that is not a non-negative safe integer is a programming error, never "no bound".
  */
 export function applyEpochNote(
   record: PsiEpochRecord | null,
   note: OpenedNote,
   tick: number,
+  maxEpoch?: number,
 ): { outcome: ApplyOutcome; record: PsiEpochRecord | null } {
   const t = checkTick(tick);
+  if (maxEpoch !== undefined && !isSafeNonNeg(maxEpoch)) throw new TypeError('psi-epoch-book: maxEpoch must be a non-negative safe integer');
   const slot = slotFromNote(note);
   if (slot === null) return { outcome: 'invalid', record };
+  if (maxEpoch !== undefined && slot.e > maxEpoch) return { outcome: 'invalid', record };
   if (record === null) return { outcome: 'adopted', record: { v: PSI_EPOCH_RECORD_V, cur: slot, prev: null, adoptedTick: t } };
   if (slot.e < record.cur.e) return { outcome: 'stale', record };
   if (slot.e === record.cur.e) {
