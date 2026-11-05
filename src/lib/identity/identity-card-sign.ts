@@ -114,8 +114,10 @@ export async function verifySignedIdentityCard(
   if (!id || typeof id.public_key !== 'string' || typeof id.fingerprint !== 'string') return false;
   if (typeof card.signature !== 'string' || card.signature.length === 0) return false;
 
-  // (1) fingerprint↔key binding — cheap, checked first. Pass PQ pubs when present so a
-  // four-key identity id matches; placeholder/short PQ falls through to the OpenPGP 40-hex check.
+  // (1) fingerprint↔key binding — cheap, checked first. Pass the PQ pubs so the four-key canonical
+  // id matches. fingerprintMatchesKey is CANONICAL-ONLY (Res#1, greenfield): placeholder/short/absent
+  // PQ → REJECT (no OpenPGP 40-hex fallthrough; the legacy SHA-1 basis was removed — a SHA-1
+  // chosen-prefix collision would allow mint-time equivocation).
   if (!(await fingerprintMatchesKey(id.fingerprint, id.public_key, {
     kem_public_key: id.pq_kem_public_key,
     sig_public_key: id.pq_sig_public_key,
