@@ -1,0 +1,44 @@
+# DRAFT, NOT RUN (author: apollo, #588 T3). Second-machine check for circuits/588-slotbind:
+# a clean GitHub runner builds the r1cs with a pinned circom binary and must reproduce
+# the pinned r1cs sha256 AND the per-compiler-version witness-generator wasm sha256 (pins.json);
+# build.sh fails closed on a mismatch, an unpinned binary, an unconstrained public wire, or a KAT difference.
+# Review area: Athena/Flint (workflow file). No secrets, no write permissions.
+name: 588-circuit-repro
+on:
+  pull_request:
+    paths: ['circuits/588-slotbind/**', '.github/workflows/588-circuit-repro.yml']
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        circom: ['2.1.6', '2.2.3']
+    defaults:
+      run:
+        working-directory: circuits/588-slotbind
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+      - run: npm ci --ignore-scripts
+      - name: fetch circom ${{ matrix.circom }} (sha256 is checked against pins.json by build.sh)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/circom" "https://github.com/iden3/circom/releases/download/v${{ matrix.circom }}/circom-linux-amd64"
+          chmod +x "$RUNNER_TEMP/circom"
+          sha256sum "$RUNNER_TEMP/circom"
+      - name: build + checks
+        run: CIRCOM="$RUNNER_TEMP/circom" ./build.sh
+      - name: build.sh NEGs (a KAT, r1cs, wasm or witness-js mismatch must be refused; ~1 min per case)
+        run: CIRCOM="$RUNNER_TEMP/circom" ./test-build-negs.sh
+      - name: harness NEGs (r2c, kat and cmp_test must exit nonzero on their own failure)
+        run: CIRCOM="$RUNNER_TEMP/circom" ./test-harness-negs.sh
+      - name: print the r1cs sha256 this machine produced
+        run: sha256sum build/slotbind.r1cs
