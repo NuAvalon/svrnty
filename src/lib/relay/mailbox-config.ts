@@ -41,6 +41,8 @@ export interface MailboxConfig {
    * Default false = door-open lazy-create-on-deposit (demo/family profile).
    */
   inviteRequired: boolean;
+  /** L4: refuse NEW deposits (429) once the relay's data filesystem is at least this % used. Polls/acks never refused. */
+  diskWatermarkPct: number;
 }
 
 export function mailboxConfig(): MailboxConfig {
@@ -52,5 +54,6 @@ export function mailboxConfig(): MailboxConfig {
     rateLimitWindowMs: intEnv('RELAY_RATE_LIMIT_WINDOW_MS', 60_000),
     ownerAuthWindowMs: intEnv('RELAY_OWNER_AUTH_WINDOW_MS', 60_000),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
+    diskWatermarkPct: Math.min(intEnv('RELAY_DISK_WATERMARK_PCT', 80), 100),
   };
 }

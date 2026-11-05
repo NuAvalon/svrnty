@@ -22,11 +22,8 @@ function buckets(): Map<string, Bucket> {
   return globalThis.__mailboxRateLimits;
 }
 
-export function getClientIP(request: Request): string {
-  const fwd = request.headers.get('x-forwarded-for');
-  if (fwd) return fwd.split(',')[0].trim();
-  return request.headers.get('x-real-ip') ?? 'unknown';
-}
+// #707: the client IP comes ONLY from the header Caddy sets (client-ip.ts); kept exported here for the existing import path.
+export { getClientIP } from './client-ip';
 
 /** True if the deposit is allowed; false if the IP is over its per-window ceiling. */
 export function checkMailboxRateLimit(ip: string, now: number): boolean {

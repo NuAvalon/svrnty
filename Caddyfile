@@ -27,5 +27,9 @@
 		-Server
 	}
 
-	reverse_proxy app:3000
+	# #707: the app keys its per-client rate limits on this header ONLY (src/lib/relay/client-ip.ts). Caddy is the edge
+	# here, so {remote_host} is the real peer; header_up OVERWRITES anything the client sent.
+	reverse_proxy app:3000 {
+		header_up X-Svrnty-Client-IP {remote_host}
+	}
 }
