@@ -89,7 +89,6 @@
 import {
   type Argon2Params,
   defaultArgon2Params,
-  deriveKeyArgon2id,
   aesGcmEncrypt,
   aesGcmDecrypt,
   assertParamsWithinLimits,
@@ -100,6 +99,9 @@ import {
   SALT_LENGTH,
   IV_LENGTH,
 } from '../crypto/kdf';
+// task #542: derive the Argon2id key OFF the main thread so a 64 MiB pure-JS KDF never freezes the tab
+// during vault export/restore. Byte-identical to the sync path → existing .svrnty files still restore.
+import { deriveKeyArgon2idAsync } from '../crypto/argon2-async';
 import type { TrustGraph } from '../trust/types';
 import type { KeyVault } from '../crypto/recovery';
 
@@ -362,7 +364,7 @@ export async function packVault(contents: VaultContents, passphrase: string): Pr
 
   // Derive + encrypt body (contents holds the identity, keys, safe word, and a
   // copy of the recovery KeyVault — the daily-unlock path is unchanged).
-  const key = deriveKeyArgon2id(passphrase, salt, kdf);
+  const key = await deriveKeyArgon2idAsync(passphrase, salt, kdf);
   const bodyBytes = await aesGcmEncrypt(
     key,
     iv,
@@ -485,7 +487,7 @@ export async function unpackVault(
   // AAD must be byte-identical to pack time: MAGIC ‖ the exact header bytes.
   const aad = buildAad(magic, headerBytes);
 
-  const key = deriveKeyArgon2id(passphrase, salt, header.kdf);
+  const key = await deriveKeyArgon2idAsync(passphrase, salt, header.kdf);
   try {
     const plaintext = await aesGcmDecrypt(key, iv, bodyBytes, aad);
     const contents = JSON.parse(new TextDecoder().decode(plaintext)) as VaultContents;
