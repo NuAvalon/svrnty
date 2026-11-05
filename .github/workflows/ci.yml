@@ -89,6 +89,20 @@ jobs:
       # undetectability claim ships.
       - name: Keystone crypto guards — K2/K3 §8 silence invariant (distress + cover cadence, uniform frame, blinded consent-delta) — BLOCKING
         run: npx --no-install tsx --test src/lib/crypto/distress-mark.test.ts src/lib/crypto/distress-cadence.test.ts src/lib/crypto/uniform-frame.test.ts src/lib/crypto/consent-delta.test.ts
+      # Over-wire receive no-silent-loss: the note-aware consume must route notes to acceptInboundNote,
+      # never classify them terminal + ack-delete (the silent-loss closed in PR#212). BLOCKING so the
+      # living-book poll can't silently eat over-wire notes again.
+      - name: Contract guards — over-wire receive note-aware consume (no silent-loss) — BLOCKING
+        run: npx --no-install tsx --test src/lib/sync/consume-mailbox-note.test.ts
+      # Layer (A) beta-access claim-gate (PR#213): issuer-pinned token verify + non-transferability +
+      # STATUS-only registry (bearer-not-registry) + retroactive-delivery-on-claim (no-silent-loss).
+      - name: Contract guards — beta-access (A) claim-gate — BLOCKING
+        run: npx --no-install tsx --test src/lib/relay/beta-access.test.ts src/lib/relay/claim-registry.test.ts src/lib/relay/claim-flow.test.ts
+      # Vault backup DOWNLOADS: the .svrnty anchor must be in the DOM before click (the detached-anchor
+      # no-op that shipped broken on FF/Safari/mobile — PR#214). STRUCTURAL so it catches the regression
+      # regardless of which browser the e2e runs (the restore e2e is chromium-only = browser-blind here).
+      - name: Contract guards — vault backup downloads from an in-DOM anchor (no detached no-op) — BLOCKING
+        run: npx --no-install tsx --test src/lib/sync/vault-download.test.ts
 
   # Playwright e2e against `next dev` — the standing verification path for the demo-critical
   # React flows (contact import, the trust ceremony) that can't be checked in-container otherwise
