@@ -148,7 +148,8 @@ def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: 
 class Centurion:
     def __init__(self, db_path: str, *, vkey_path: str | None = None, node: str = "node", verify_cmd: list[str] | None = None,
                  verifier=None, clock=time.time, timeout_s: float = 10.0, per_epoch_cap: int = 100_000,
-                 ip_per_minute: int = 30, auth_cmd: list[str] | None = None):
+                 ip_per_minute: int = 30, auth_cmd: list[str] | None = None, max_inflight: int | None = None,
+                 max_ip_keys: int = 100_000):
         self.db_path, self.clock, self.timeout_s = db_path, clock, timeout_s
         self.per_epoch_cap, self.ip_per_minute = per_epoch_cap, ip_per_minute
         self.verifier = verifier                      # test seam: callable(raw: bytes, now: int) -> dict
@@ -353,3 +354,10 @@ class Centurion:
     def withdraw(self, raw: bytes, ip: str) -> bytes:
         """Same auth as poll. Lone deposit -> marked withdrawn (kept, can no longer match) -> WITHDRAWN; matched -> inert, MATCH."""
         return self._authenticated_call("withdraw", raw, ip)
+
+    # STUB (tests first): hardening.
+    def alarm_count(self) -> int:
+        return -1
+
+    def handle(self, op: str, raw: bytes, ip: str) -> bytes:
+        return refused("usage")
