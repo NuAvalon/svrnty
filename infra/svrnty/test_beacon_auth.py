@@ -168,7 +168,41 @@ def test_a_refused_call_does_not_burn_the_nonce_the_owner_can_still_use_it(cen, 
     nn = get_nonce(cen, "poll", SLOT, N_A)
     assert call(cen, "poll", SEED_X, SLOT, N_A, nonce=nn) == AUTH_REFUSED
     assert call(cen, "poll", SEED_A, SLOT, N_A, nonce=nn) == bc.NONE
-    assert len(rows(cen, "SELECT * FROM beacon_used_nonces")) == 1
+    assert len(cen._used_nonces) == 1
+
+
+def test_used_nonces_live_in_memory_only_and_are_swept_after_the_ttl(cen, keys):
+    """No table that only grows: a nonce is void after the TTL and its MAC key dies with the process, so the used set only
+    has to cover this process's last TTL seconds."""
+    assert rows(cen, "SELECT name FROM sqlite_master WHERE name = 'beacon_used_nonces'") == []
+    dep(cen, SLOT, N_A, keys["A"])
+    nn = get_nonce(cen, "poll", SLOT, N_A)
+    assert call(cen, "poll", SEED_A, SLOT, N_A, nonce=nn) == bc.NONE
+    assert call(cen, "poll", SEED_A, SLOT, N_A, nonce=nn) == AUTH_REFUSED      # replay inside the TTL
+    assert nn in cen._used_nonces
+    cen.clk.t += bc.NONCE_TTL_SECONDS + 1
+    assert call(cen, "poll", SEED_A, SLOT, N_A) == bc.NONE                       # a fresh call sweeps the expired one
+    assert nn not in cen._used_nonces and len(cen._used_nonces) == 1
+    assert call(cen, "poll", SEED_A, SLOT, N_A, nonce=nn) == AUTH_REFUSED      # swept, yet still refused (expired)
+
+
+def test_a_concurrent_replay_of_one_nonce_acts_once(cen, keys, monkeypatch):
+    """Check-then-act under one lock: two requests carrying the same nonce, both past the authenticator, act ONCE."""
+    import threading
+    dep(cen, SLOT, N_A, keys["A"])
+    nn = get_nonce(cen, "withdraw", SLOT, N_A)
+    s = client(SEED_A, "withdraw", SLOT, N_A, nn)
+    raw = json.dumps({"H_e": SLOT, "N": N_A, "pk": s["pk"], "sig": s["sig"], "nonce": nn}).encode()
+    gate = threading.Barrier(2)
+    real = cen._authenticate
+    monkeypatch.setattr(cen, "_authenticate", lambda req: (gate.wait(30), real(req))[1])   # both pass auth together
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(cen.withdraw(raw, f"10.0.0.{len(out) + 7}"))) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(60)
+    assert sorted(out) == sorted([bc.WITHDRAWN, AUTH_REFUSED])
 
 
 def test_withdraw_a_lone_deposit_marks_it_without_deleting_and_it_can_no_longer_match(cen, keys):
