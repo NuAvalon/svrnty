@@ -65,6 +65,7 @@ import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/id
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
+import { contactBookEntries, importContactBook, importMessage } from '@/lib/contacts/book-import';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -251,6 +252,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   // Share state
   const [importData, setImportData] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [importNote, setImportNote] = useState<string | null>(null);
   const [exchangePackage, setExchangePackage] = useState('');
   const [exchangeImportData, setExchangeImportData] = useState('');
   const [exchangeResult, setExchangeResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -783,23 +785,30 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setLoading(true);
       setImportError(null);
-      const parsed = JSON.parse(importData);
-      const contactList = Array.isArray(parsed) ? parsed : (parsed.contacts || []);
-      for (const c of contactList) {
-        if (c.fingerprint && c.public_key) {
-          await addContact(fingerprint, {
-            name: c.name || c.display_name || 'Unknown',
-            email: c.email || '',
-            fingerprint: c.fingerprint,
-            public_key: c.public_key,
-            trust_level: c.trust_level || 'unverified',
-            metadata: c.metadata,
-          });
-        }
+      setImportNote(null);
+      const entries = contactBookEntries(importData);
+      // A file carries identity only: book-import builds each contact field by field, always 'unverified', and the store still checks every binding.
+      const summary = await importContactBook(entries, async (contact) => {
+        const before = await getContactByFingerprint(fingerprint, contact.fingerprint);
+        await addContact(fingerprint, contact); // checks the binding first, so a mismatch still throws; an existing fingerprint returns the existing record
+        return before ? 'existing' : 'added';
+      });
+      await loadContacts();
+      const message = importMessage(summary);
+      if (summary.refused || summary.failed.length > 0) {
+        setImportError(message);
+        return;
+      }
+      if (summary.total === 0) {
+        setImportError('No contacts found in that file.');
+        return;
+      }
+      if (message) {
+        setImportNote(message);
+        return;
       }
       setImportData('');
       setShowImportDialog(false);
-      await loadContacts();
     } catch (err) {
       if (err instanceof SyntaxError) {
         setImportError('Invalid JSON format');
@@ -1978,13 +1987,14 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         />
 
         {/* Import */}
-        <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+        <Dialog open={showImportDialog} onOpenChange={(open) => { setShowImportDialog(open); if (!open) setImportNote(null); }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Import Contacts</DialogTitle>
               <DialogDescription>Paste exported JSON to import.</DialogDescription>
             </DialogHeader>
             {importError && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{importError}</AlertDescription></Alert>}
+            {importNote && <Alert><AlertDescription>{importNote}</AlertDescription></Alert>}
             <div className="py-4">
               <Textarea value={importData} onChange={e => setImportData(e.target.value)} placeholder="Paste contacts JSON here..." className="font-mono text-xs" rows={8} />
             </div>
