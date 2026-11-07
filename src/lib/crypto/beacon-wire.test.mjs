@@ -49,6 +49,18 @@ test('a 78-digit string is refused BEFORE any BigInt parse (cheap checks first)'
   assert.equal(calls, 0, 'no BigInt work on an over-long input');
 });
 
+test('an over-long proof coordinate is refused BEFORE any BigInt parse too', () => {
+  const orig = globalThis.BigInt;
+  let calls = 0;
+  globalThis.BigInt = (x) => { calls += 1; return orig(x); };
+  try {
+    refused(() => parseProof({ ...PROOF, pi_a: ['9'.repeat(5000), '2', '1'] }));
+  } finally {
+    globalThis.BigInt = orig;
+  }
+  assert.equal(calls, 0, 'no BigInt work on an over-long coordinate');
+});
+
 for (const [i, name] of ['e', 'H_e', 'N', 'K'].entries()) {
   test(`aliasing: ${name} = value + r refused (and r itself)`, () => {
     const plus = [...SIG];
