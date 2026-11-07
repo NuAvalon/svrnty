@@ -74,6 +74,7 @@ import {
 } from '@/components/contacts/ClassicalFieldsEditor';
 import type { TrustEdge } from '@/lib/trust/types';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
+import { PASSPHRASE_LOSS_NOTICE_CONTACTS } from '@/lib/identity/passphrase-loss-notice';
 import {
   applyTrustAction,
   isContactBlocked,
@@ -1647,6 +1648,14 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       ? 'Blocked stays out of the main book — exit via ⋯'
                       : 'Import a VCF or add someone to start your master book'}
                 </p>
+                {!searchQuery && !showBlocked && (
+                  <p
+                    data-testid="passphrase-loss-notice"
+                    style={{ fontFamily: E.fontSans, fontSize: 12, fontWeight: 300, color: E.dim, marginTop: 16, maxWidth: 380, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5 }}
+                  >
+                    {PASSPHRASE_LOSS_NOTICE_CONTACTS}
+                  </p>
+                )}
               </div>
             ) : (
               <div
