@@ -13,7 +13,7 @@ import { generatePQKeypairBundle, uint8ToBase64 } from '@/lib/crypto/pq';
 import { ownerHasVerified } from '@/lib/trust/trust-recipe';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import { toContactBookJson } from './book-export';
-import { contactBookEntries, importContactBook, importMessage, toImportedContact } from './book-import';
+import { ContactBookTooLarge, MAX_FILE_CHARS, contactBookEntries, importContactBook, importMessage, toImportedContact } from './book-import';
 
 async function identity(name: string): Promise<ContactRecord> {
   const passphrase = `pw-${name}`;
@@ -254,4 +254,26 @@ test('COUNTS: a book that already has some of the contacts says so, and says it 
   assert.equal(importMessage(summary), 'Added 1, already in your contacts 1.');
   const clean = await importContactBook([mallory], store().addLikeDialog);
   assert.equal(importMessage(clean), null, 'every contact new and nothing failed: no message, the dialog closes');
+});
+
+// ── file size: refused before the parse ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('SIZE (text): text over 20,000,000 characters is refused BEFORE it is parsed, with the plain message; exactly 20,000,000 reaches the parser', () => {
+  const over = 'x'.repeat(MAX_FILE_CHARS + 1); // not JSON: if the parser ran first this would be a SyntaxError
+  assert.throws(() => contactBookEntries(over), (e) => e instanceof ContactBookTooLarge && !(e instanceof SyntaxError) && e.message === 'That file is too large to import.');
+  assert.throws(() => contactBookEntries('x'.repeat(MAX_FILE_CHARS)), SyntaxError, 'at the cap the text is parsed (and is not JSON)');
+  assert.equal(MAX_FILE_CHARS, 20_000_000);
+});
+
+test('SIZE (text): a normal book is unaffected, and the refusal does not look at the content', () => {
+  assert.equal(contactBookEntries(toContactBookJson([ann, bob], '2026-01-02T03:04:05.000Z')).length, 2);
+  assert.throws(() => contactBookEntries(`[${' '.repeat(MAX_FILE_CHARS)}]`), ContactBookTooLarge);
+});
+
+test('PIN: the import handler shows the too-large message itself, before the SyntaxError branch', () => {
+  const start = ui.indexOf('const handleImportContacts = async');
+  const body = ui.slice(start, ui.indexOf('const openEditDialog', start));
+  const iLarge = body.indexOf('err instanceof ContactBookTooLarge');
+  const iSyntax = body.indexOf('err instanceof SyntaxError');
+  assert.ok(iLarge > 0 && iLarge < iSyntax, 'the too-large branch comes first');
+  assert.match(body, /setImportError\(err\.message\);/);
 });

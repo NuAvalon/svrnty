@@ -65,7 +65,7 @@ import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/id
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
-import { contactBookEntries, importContactBook, importMessage } from '@/lib/contacts/book-import';
+import { ContactBookTooLarge, contactBookEntries, importContactBook, importMessage } from '@/lib/contacts/book-import';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -810,7 +810,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
       setImportData('');
       setShowImportDialog(false);
     } catch (err) {
-      if (err instanceof SyntaxError) {
+      if (err instanceof ContactBookTooLarge) {
+        setImportError(err.message);
+      } else if (err instanceof SyntaxError) {
         setImportError('Invalid JSON format');
       } else {
         setImportError(err instanceof Error ? err.message : 'Failed to import');
