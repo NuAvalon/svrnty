@@ -17,9 +17,11 @@ new deposits; disk growth is the remaining bound (health check).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import signal
 import sqlite3
 import subprocess
@@ -33,6 +35,10 @@ EPOCH_SECONDS = 604800          # must equal verify.mjs EPOCH_SECONDS (weekly; o
 GRACE_SECONDS = 600
 MAX_BODY_BYTES = 16 * 1024
 VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"
+AUTH_JS = Path(__file__).resolve().parent / "beacon-verifier" / "auth.mjs"
+MAX_AUTH_BYTES = 1024
+_NONCE_TAG = b"svrnty:588:nonce:v1"
+_HEX = {"pk": re.compile(r"^[0-9a-f]{64}$"), "sig": re.compile(r"^[0-9a-f]{128}$"), "nonce": re.compile(r"^[0-9a-f]{64}$")}
 
 _CANON = re.compile(r"^(0|[1-9][0-9]{0,76})$")
 ACCEPTED = b'{"status":"accepted"}'
@@ -48,11 +54,13 @@ _REASONS = {"wire", "epoch", "point:pi_a:identity", "point:pi_a:off-curve", "poi
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS beacon_deposits (
     epoch INTEGER NOT NULL, slot TEXT NOT NULL, n TEXT NOT NULL, k TEXT NOT NULL, accepted_at TEXT NOT NULL,
-    PRIMARY KEY (slot, n));
+    withdrawn_at TEXT, PRIMARY KEY (slot, n));
 CREATE INDEX IF NOT EXISTS beacon_deposits_epoch ON beacon_deposits (epoch);
 CREATE TABLE IF NOT EXISTS beacon_matches (
     epoch INTEGER NOT NULL, slot TEXT PRIMARY KEY, n1 TEXT NOT NULL, n2 TEXT NOT NULL, formed_at TEXT NOT NULL,
     released_at TEXT, polled_n1 INTEGER NOT NULL DEFAULT 0, polled_n2 INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS beacon_used_nonces (
+    nonce TEXT PRIMARY KEY, op TEXT NOT NULL, slot TEXT NOT NULL, n TEXT NOT NULL, used_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS beacon_security_alarms (
     at TEXT NOT NULL, epoch INTEGER, slot TEXT, n TEXT, raw TEXT NOT NULL);
 """
@@ -109,7 +117,26 @@ def parse_verifier_output(code: int, out: bytes) -> dict:
 
 
 def parse_auth_output(code: int, out: bytes) -> bool:
-    return False   # STUB (tests first)
+    """FAIL CLOSED: authenticated ONLY on exit 0 with exactly the bytes {"ok":true} and one newline. Anything else = refused."""
+    return code == 0 and out == b'{"ok":true}\n'
+
+
+def _field(v) -> int | None:
+    """A canonical decimal that fits 32 bytes (auth.mjs re-checks < r), or None."""
+    if not isinstance(v, str) or not _CANON.match(v):
+        return None
+    x = int(v)
+    return x if x < 2 ** 256 else None
+
+
+def _strict_obj(raw: bytes, keys: set[str]) -> dict | None:
+    if len(raw) > MAX_AUTH_BYTES:
+        return None
+    try:
+        o = json.loads(raw.decode("utf-8", "strict"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return o if isinstance(o, dict) and set(o) == keys else None
 
 
 def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: str, at: str) -> None:
@@ -121,7 +148,7 @@ def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: 
 class Centurion:
     def __init__(self, db_path: str, *, vkey_path: str | None = None, node: str = "node", verify_cmd: list[str] | None = None,
                  verifier=None, clock=time.time, timeout_s: float = 10.0, per_epoch_cap: int = 100_000,
-                 ip_per_minute: int = 30):
+                 ip_per_minute: int = 30, auth_cmd: list[str] | None = None):
         self.db_path, self.clock, self.timeout_s = db_path, clock, timeout_s
         self.per_epoch_cap, self.ip_per_minute = per_epoch_cap, ip_per_minute
         self.verifier = verifier                      # test seam: callable(raw: bytes, now: int) -> dict
@@ -129,6 +156,10 @@ class Centurion:
         # The vkey is pinned ONCE, here; verify.mjs re-hashes the file every run and refuses if it changed since.
         self.vkey_sha = hashlib.sha256(Path(vkey_path).read_bytes()).hexdigest() if vkey_path else None
         self.verify_cmd = verify_cmd or [node, str(VERIFY_JS)]
+        self.auth_cmd = auth_cmd or [node, str(AUTH_JS)]
+        # Nonces are MACed, not stored at issue: an unauthenticated endpoint must not write a row per call. The key lives in
+        # memory only, so a restart voids every outstanding nonce (TTL 60 s). Only USED nonces are stored, in the action's txn.
+        self._nonce_key = os.urandom(32)
         self._ip_hits: dict[str, list[float]] = {}
         self._lock = threading.Lock()
         with closing(self._db()) as db:
@@ -196,14 +227,16 @@ class Centurion:
             if db.execute("SELECT 1 FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone():
                 db.execute("ROLLBACK")
                 return ALREADY
-            if db.execute("SELECT 1 FROM beacon_matches WHERE slot = ?", (slot,)).fetchone():
+            # Two rows at a slot (a match, or one side withdrawn) is all two honest owners can ever make: a third N is an alarm.
+            if db.execute("SELECT count(*) FROM beacon_deposits WHERE slot = ?", (slot,)).fetchone()[0] >= 2:
                 db.execute("INSERT INTO beacon_security_alarms (at, epoch, slot, n, raw) VALUES (?, ?, ?, ?, ?)",
                            (at, epoch, slot, n, raw.decode("utf-8", "replace")))
                 db.execute("COMMIT")
                 return ACCEPTED
             db.execute("INSERT INTO beacon_deposits (epoch, slot, n, k, accepted_at) VALUES (?, ?, ?, ?, ?)",
                        (epoch, slot, n, k, at))
-            others = [r[0] for r in db.execute("SELECT n FROM beacon_deposits WHERE slot = ? AND n != ?", (slot, n))]
+            others = [r[0] for r in db.execute(
+                "SELECT n FROM beacon_deposits WHERE slot = ? AND n != ? AND withdrawn_at IS NULL", (slot, n))]
             if len(others) == 1:
                 _insert_match(db, epoch, slot, others[0], n, at)
             db.execute("COMMIT")
@@ -215,15 +248,108 @@ class Centurion:
         finally:
             db.close()
 
-    # STUB (tests first): poll / withdraw / nonce refuse everything until the implementation commit.
+    # ---- poll / withdraw (authenticated under K) and their nonces ----
+    def _nonce_mac(self, op: str, slot: int, n: int, head: bytes) -> bytes:
+        msg = _NONCE_TAG + op.encode() + b"|" + slot.to_bytes(32, "big") + n.to_bytes(32, "big") + head
+        return hmac.new(self._nonce_key, msg, hashlib.sha256).digest()[:16]
+
     def nonce(self, raw: bytes, ip: str) -> bytes:
-        return refused("internal")
+        """{op, H_e, N} -> {"nonce": 64 hex} = issued-at (8 B) || random (8 B) || MAC over (op, H_e, N, those 16 B) (16 B).
+        Issued for ANY well-formed (H_e, N): whether a deposit exists is never answered here."""
+        o = _strict_obj(raw, {"op", "H_e", "N"})
+        if o is None or o["op"] not in ("poll", "withdraw"):
+            return refused("wire")
+        slot, n = _field(o["H_e"]), _field(o["N"])
+        if slot is None or n is None:
+            return refused("wire")
+        now = self.clock()
+        if not self._rate_ok(ip, now):
+            return refused("rate")
+        head = int(now).to_bytes(8, "big") + os.urandom(8)
+        return json.dumps({"nonce": (head + self._nonce_mac(o["op"], slot, n, head)).hex()}, separators=(",", ":")).encode()
+
+    def _nonce_ok(self, op: str, slot: int, n: int, nonce: bytes, now: float) -> bool:
+        head, mac = nonce[:16], nonce[16:]
+        issued = int.from_bytes(nonce[:8], "big")
+        fresh = 0 <= int(now) - issued <= NONCE_TTL_SECONDS
+        return hmac.compare_digest(mac, self._nonce_mac(op, slot, n, head)) and fresh
 
     def _authenticate(self, req: dict) -> bool:
-        return False
+        """One auth.mjs subprocess (own session; killpg + reap on timeout), fail closed on anything but the exact accept line."""
+        proc = subprocess.Popen(self.auth_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        try:
+            out, _ = proc.communicate(input=json.dumps(req, separators=(",", ":")).encode(), timeout=self.timeout_s)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
+            return False
+        return parse_auth_output(proc.returncode, out)
+
+    def _authenticated_call(self, op: str, raw: bytes, ip: str) -> bytes:
+        o = _strict_obj(raw, {"H_e", "N", "pk", "sig", "nonce"})
+        if o is None or not all(isinstance(o[k], str) and _HEX[k].match(o[k]) for k in _HEX):
+            return refused("wire")
+        slot_i, n_i = _field(o["H_e"]), _field(o["N"])
+        if slot_i is None or n_i is None:
+            return refused("wire")
+        slot, n, now = o["H_e"], o["N"], self.clock()
+        if not self._rate_ok(ip, now):
+            return refused("rate")
+        # The nonce check needs no stored state about (H_e, N), so refusing a bad or used nonce before spawning tells nothing
+        # about whether a deposit exists.
+        if not self._nonce_ok(op, slot_i, n_i, bytes.fromhex(o["nonce"]), now):
+            return refused("auth")
+        with closing(self._db()) as db:
+            if db.execute("SELECT 1 FROM beacon_used_nonces WHERE nonce = ?", (o["nonce"],)).fetchone():
+                return refused("auth")
+            row = db.execute("SELECT k FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone()
+        # No deposit -> a random K that no key hashes to: the authenticator still runs in full (no fast path, no N-exists oracle).
+        k = row[0] if row else str(secrets.randbelow(10 ** 76))
+        if not self._authenticate({"op": op, "H_e": slot, "N": n, "K": k, "pk": o["pk"], "sig": o["sig"], "nonce": o["nonce"]}):
+            return refused("auth")
+        at = _now_iso(now)
+        db = self._db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            try:      # the nonce is consumed in the SAME transaction as the action
+                db.execute("INSERT INTO beacon_used_nonces (nonce, op, slot, n, used_at) VALUES (?, ?, ?, ?, ?)",
+                           (o["nonce"], op, slot, n, at))
+            except sqlite3.IntegrityError:
+                db.execute("ROLLBACK")
+                return refused("auth")
+            cur = db.execute("SELECT k, withdrawn_at FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone()
+            if cur is None or cur[0] != k:
+                db.execute("ROLLBACK")
+                return refused("auth")
+            m = db.execute("SELECT n1, n2 FROM beacon_matches WHERE slot = ?", (slot,)).fetchone()
+            matched = m is not None and n in m
+            if op == "poll":
+                if matched:
+                    db.execute(f"UPDATE beacon_matches SET {'polled_n1' if n == m[0] else 'polled_n2'} = 1 WHERE slot = ?",
+                               (slot,))
+                out = MATCH if matched else NONE
+            else:     # withdraw: inert after a match; otherwise mark (never delete); idempotent
+                if not matched and cur[1] is None:
+                    db.execute("UPDATE beacon_deposits SET withdrawn_at = ? WHERE slot = ? AND n = ?", (at, slot, n))
+                out = MATCH if matched else WITHDRAWN
+            db.execute("COMMIT")
+            return out
+        except BaseException:
+            if db.in_transaction:
+                db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
 
     def poll(self, raw: bytes, ip: str) -> bytes:
-        return refused("internal")
+        """{H_e, N, pk, sig, nonce} signed under the deposit's K -> MATCH / NONE (or refused). A poll before the completing
+        deposit is byte-identical to no match, whatever else is stored (13b, 12)."""
+        return self._authenticated_call("poll", raw, ip)
 
     def withdraw(self, raw: bytes, ip: str) -> bytes:
-        return refused("internal")
+        """Same auth as poll. Lone deposit -> marked withdrawn (kept, can no longer match) -> WITHDRAWN; matched -> inert, MATCH."""
+        return self._authenticated_call("withdraw", raw, ip)

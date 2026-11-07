@@ -146,13 +146,60 @@ export function serializeDeposit(d) {
   return JSON.stringify({ proof: serializeProof(d.proof), publicSignals: serializeSignals(d.signals) });
 }
 
-// ---- Poll / withdraw authentication (K = Poseidon(DS_K, pk_lo, pk_hi); Ed25519 over a domain-separated message) ----
-// STUB (tests first): every export below throws until the implementation commit.
+// ---- Poll / withdraw authentication (the client and the satellite's auth.mjs both import THESE, so the bytes can't drift) ----
+// K = Poseidon(DS_K, pk_lo, pk_hi) with circomlibjs 0.1.7 on both sides; this module stays dependency-free and only builds the
+// INPUTS. The signed message names its op, so a poll signature can never be replayed as a withdraw.
+
+/** Domain tag for K. */
 export const K_TAG = 'svrnty:588:k:v1';
+/** The signed message's prefix per op. */
 export const AUTH_OPS = Object.freeze({ poll: 'svrnty:588:poll:v1', withdraw: 'svrnty:588:withdraw:v1' });
-export function asciiTag(_s) { throw new Error('not implemented'); }
-export const DS_K = 0n;
-export function be32(_v) { throw new Error('not implemented'); }
-export function pkSplit(_pk) { throw new Error('not implemented'); }
-export function kInputs(_pk) { throw new Error('not implemented'); }
-export function authMessage(_op, _H_e, _N, _nonce) { throw new Error('not implemented'); }
+
+/** An ASCII tag read as ONE big-endian integer (Apollo's kat.cjs `ascii()`); < 31 bytes so it is one field element. */
+export function asciiTag(s) {
+  if (typeof s !== 'string' || s.length === 0 || s.length >= 31 || !/^[\x21-\x7e]+$/.test(s)) throw new WireError('tag');
+  return BigInt('0x' + [...s].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
+}
+export const DS_K = asciiTag(K_TAG);
+
+/** A field element as 32 big-endian bytes. */
+export function be32(v) {
+  if (typeof v !== 'bigint' || v < 0n || v >= R) throw new WireError('be32: out of range');
+  const out = new Uint8Array(32);
+  let x = v;
+  for (let i = 31; i >= 0; i--) { out[i] = Number(x & 0xffn); x >>= 8n; }
+  return out;
+}
+
+/** The 32 Ed25519 public-key bytes read as ONE big-endian 256-bit integer, split NUMERICALLY: lo = low 128 bits, hi = high.
+ * (Ed25519 encodings are little-endian by convention; do NOT reuse a little-endian reader here.) */
+export function pkSplit(pk) {
+  if (!(pk instanceof Uint8Array) || pk.length !== 32) throw new WireError('pk: need 32 bytes');
+  let n = 0n;
+  for (const b of pk) n = (n << 8n) | BigInt(b);
+  return { lo: n & ((1n << 128n) - 1n), hi: n >> 128n };
+}
+
+/** The Poseidon inputs for K. */
+export function kInputs(pk) {
+  const { lo, hi } = pkSplit(pk);
+  return [DS_K, lo, hi];
+}
+
+/** The bytes a poll / withdraw signs: the op's ASCII tag || H_e || N || nonce, each 32-byte big-endian. */
+export function authMessage(op, H_e, N, nonce) {
+  if (!Object.hasOwn(AUTH_OPS, op)) throw new WireError('op');
+  if (!(nonce instanceof Uint8Array) || nonce.length !== 32) throw new WireError('nonce: need 32 bytes');
+  const tag = new TextEncoder().encode(AUTH_OPS[op]);
+  const out = new Uint8Array(tag.length + 96);
+  out.set(tag, 0);
+  out.set(be32(H_e), tag.length);
+  out.set(be32(N), tag.length + 32);
+  out.set(nonce, tag.length + 64);
+  return out;
+}
+
+/** One canonical decimal field element (< r), for the auth request; same rule as the public signals. */
+export function parseFieldElement(s, what) {
+  return canon(s, R, what);
+}
