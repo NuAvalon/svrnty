@@ -32,7 +32,7 @@ echo "generate_witness.js sha256 OK ($ggot)"
 echo "recorded, not enforced: sym $(sha256sum build/slotbind.sym | cut -d' ' -f1)"
 node r2c.cjs build/slotbind.r1cs
 node kat.cjs
-for s in A B; do node build/slotbind_js/generate_witness.js build/slotbind_js/slotbind.wasm build/input_$s.json build/w_$s.wtns; echo "KAT witness $s accepted"; done
+for s in A B Bk; do node build/slotbind_js/generate_witness.js build/slotbind_js/slotbind.wasm build/input_$s.json build/w_$s.wtns; echo "KAT witness $s accepted"; done
 # NOT `cmp ... && echo ...`: under set -e a failing command in the non-final position of an && list does NOT abort the script (it would print BUILD_OK on a KAT mismatch).
 cmp <(node -e "const k=require('./kat.json');console.log(JSON.stringify(k))") <(node -e "const k=require('./build/kat.json');console.log(JSON.stringify(k))") >/dev/null || { echo "REFUSED: built KAT differs from the pinned kat.json"; exit 1; }
 echo "KAT matches pinned kat.json"
