@@ -43,6 +43,12 @@ interface SoverentityFrontendProps {
   existingIdentity?: any;
   onIdentityUpdate?: (identity: any) => void;
   onVaultRestore?: (contents: any) => void;
+  /**
+   * The report note after a backup import or restore, held by the PAGE. The page mounts this component in two places (the gate, and the Identity
+   * tab once an identity exists), so a restore that ends by setting the identity replaces the instance that holds local state: the note must survive that swap.
+   */
+  importNote?: string | null;
+  onImportNoteChange?: (note: string | null) => void;
   /** CUR-7 — Signal-model app-lock prefs (shell owns timers + lockSession). */
   appLockPrefs?: AppLockPrefs;
   onAppLockPrefsChange?: (prefs: AppLockPrefs) => void;
@@ -245,6 +251,8 @@ export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
   onVaultRestore,
+  importNote,
+  onImportNoteChange,
   appLockPrefs,
   onAppLockPrefsChange,
   onLockNow,
@@ -275,7 +283,13 @@ export function SoverentityFrontend({
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
   /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
-  const [plaintextImportNote, setPlaintextImportNote] = useState<string | null>(null);
+  // The gate instance starts empty (a lock must not bring back an old note); the Identity-tab instance starts from the page's note, which the gate instance set
+  // just before it was replaced.
+  const [plaintextImportNote, setPlaintextImportNoteLocal] = useState<string | null>(existingIdentity ? (importNote ?? null) : null);
+  const setPlaintextImportNote = (note: string | null) => {
+    setPlaintextImportNoteLocal(note);
+    onImportNoteChange?.(note);
+  };
   /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */
   const [showV3MigrationNudge, setShowV3MigrationNudge] = useState(false);
   /** After successful seed-only restore — unmissable contacts-honesty interstitial (no CTA). */

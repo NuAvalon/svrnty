@@ -77,6 +77,8 @@ const shellBg: CSSProperties = {
 export default function Home() {
   const [appState, setAppState] = useState<AppState>('checking');
   const [identity, setIdentity] = useState<any>(null);
+  // The report note a backup import/restore leaves for the owner. Held here because the gate and the Identity tab each mount their own SoverentityFrontend.
+  const [importNote, setImportNote] = useState<string | null>(null);
   const [contacts, setContacts] = useState<TrustEdge[]>([]);
   const [lockedIdentity, setLockedIdentity] = useState<{ name: string; fingerprint: string } | null>(null);
   const [passphrase, setPassphrase] = useState('');
@@ -675,7 +677,7 @@ export default function Home() {
 
       <main className="max-w-6xl mx-auto">
         {!identity ? (
-          <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} />
+          <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} importNote={importNote} onImportNoteChange={setImportNote} />
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
@@ -745,6 +747,8 @@ export default function Home() {
               <SoverentityFrontend
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
+                importNote={importNote}
+                onImportNoteChange={setImportNote}
                 appLockPrefs={canLock ? appLockPrefs : undefined}
                 onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
                 onLockNow={canLock ? handleLockNow : undefined}

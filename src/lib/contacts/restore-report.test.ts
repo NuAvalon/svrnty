@@ -94,3 +94,19 @@ test('PIN: the module projects nothing (no spread of the contact) and still logs
   assert.match(mod, /console\.warn\('\[restore\] skipped a contact that failed to persist:'/);
   assert.match(mod, /await add\(contact as never\);/);
 });
+
+test('PIN: the PAGE holds the note and gives it to BOTH mounts of the component (the gate, and the Identity tab that replaces it); the gate starts empty, the tab starts from the page, and every change is reported up', () => {
+  const page = strip(readFileSync(new URL('../../../app/page.tsx', import.meta.url), 'utf8'));
+  assert.match(page, /const \[importNote, setImportNote\] = useState<string \| null>\(null\);/);
+  assert.equal((page.match(/importNote=\{importNote\}/g) ?? []).length, 2, 'both mounts');
+  assert.equal((page.match(/onImportNoteChange=\{setImportNote\}/g) ?? []).length, 2, 'both mounts');
+  assert.match(frontend, /useState<string \| null>\(existingIdentity \? \(importNote \?\? null\) : null\)/);
+  assert.match(frontend, /setPlaintextImportNoteLocal\(note\);\s*onImportNoteChange\?\.\(note\);/);
+});
+
+test('PIN: a real-browser spec drives the whole restore and asserts the note on the screen (the source pins above cannot see a remount)', () => {
+  const spec = readFileSync(new URL('../../../e2e/vault-restore-report.spec.ts', import.meta.url), 'utf8');
+  assert.match(spec, /getByTestId\('plaintext-import-note'\)/);
+  assert.match(spec, /toBeVisible\(\{ timeout: 10_000 \}\)/);
+  assert.match(spec, /1 of 3 contacts from the backup are on this device\./);
+});
