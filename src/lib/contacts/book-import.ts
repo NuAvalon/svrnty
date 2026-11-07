@@ -5,9 +5,14 @@
 //   - Every imported contact lands 'unverified', whatever the file says. Moving trust to a new device is the encrypted vault's job, not this file's.
 //   - Nothing about trust, verification, blocking, notes, tags or sync state is read from the file: no `metadata`, no `trusted`, no `verification`, no
 //     `epoch` / `version` / `psi_epoch`. The object handed to the store is built field by field (NO spread), so a key the file adds cannot ride along.
+//   - The fingerprint must be in the one standard form (64 lowercase hex). The store's binding check accepts respelled forms (upper case, punctuation,
+//     a shorter prefix) and stores the raw string it was given, so a respelled fingerprint of someone already in the book would miss the store's
+//     one-record-per-fingerprint index and create a SECOND, unblocked record for them. Our own export only ever writes the standard form.
 //   - The store's own checks stay exactly as strict: addContact refuses any contact whose fingerprint does not match its keys (the post-quantum
 //     keys are part of that match, so they are passed through for the check to use), and refuses to create a trusted contact without a real
 //     owner verification. This module adds no way around either.
+//   - Size is bounded before any work is done: a file with too many contacts is refused whole, and a contact with an oversized key is refused
+//     before the store's (expensive) binding check runs on it. Text fields are cleaned and capped.
 //
 // One contact at a time: a contact that fails is counted and named, and the rest are still imported.
 // Run: npx tsx --test src/lib/contacts/book-import.test.ts
@@ -29,20 +34,35 @@ export interface ImportFailure {
   reason: string;
 }
 
+/** What the store did with a contact: made a new record, or already had one under that fingerprint. A store that says nothing is counted as added. */
+export type AddOutcome = 'added' | 'existing';
+
 export interface ImportSummary {
   total: number;
-  /** Contacts the store now holds (newly added, or already there under the same fingerprint). */
-  imported: number;
+  added: number;
+  /** Contacts the book already had under the same fingerprint (nothing was written for them). */
+  existing: number;
   failed: ImportFailure[];
+  /** Set when the whole file was refused before any contact was tried. */
+  refused?: string;
 }
 
+export const MAX_CONTACTS_PER_FILE = 5000;
+const MAX_KEY_CHARS = 16384;
+const MAX_NAME = 120;
+const MAX_EMAIL = 254;
 const MAX_LABEL = 60;
 const SHOWN = 5;
+const CANONICAL_FP = /^[0-9a-f]{64}$/;
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
 
+function cleanText(v: unknown, max: number): string {
+  return asString(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
 function safeLabel(v: unknown): string {
-  const s = asString(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const s = cleanText(v, 100000);
   if (!s) return 'Unnamed contact';
   return s.length > MAX_LABEL ? `${s.slice(0, MAX_LABEL)}…` : s;
 }
@@ -66,18 +86,29 @@ export function contactBookEntries(text: string): unknown[] {
   return Array.isArray(list) ? list : [];
 }
 
-/** Project one file entry onto what an import may hand the store, or null when it names no fingerprint and key. */
-export function toImportedContact(entry: unknown): ImportedContact | null {
-  if (!entry || typeof entry !== 'object') return null;
+/** Why an entry cannot be imported, in plain words, or null when it can. */
+export function entryProblem(entry: unknown): string | null {
+  if (!entry || typeof entry !== 'object') return 'it has no fingerprint and key';
   const c = entry as Record<string, unknown>;
   const fingerprint = asString(c.fingerprint);
-  const public_key = asString(c.public_key);
-  if (!fingerprint || !public_key) return null;
+  const publicKey = asString(c.public_key);
+  if (!fingerprint || !publicKey) return 'it has no fingerprint and key';
+  if (!CANONICAL_FP.test(fingerprint)) return 'its fingerprint is not in the standard form';
+  if (publicKey.length > MAX_KEY_CHARS || asString(c.pq_kem_public_key).length > MAX_KEY_CHARS || asString(c.pq_sig_public_key).length > MAX_KEY_CHARS) {
+    return 'it has a key that is too long';
+  }
+  return null;
+}
+
+/** Project one file entry onto what an import may hand the store, or null when the entry cannot be imported. */
+export function toImportedContact(entry: unknown): ImportedContact | null {
+  if (entryProblem(entry) !== null) return null;
+  const c = entry as Record<string, unknown>;
   const out: ImportedContact = {
-    name: asString(c.name) || asString(c.display_name) || 'Unknown',
-    email: asString(c.email),
-    fingerprint,
-    public_key,
+    name: cleanText(c.name, MAX_NAME) || cleanText(c.display_name, MAX_NAME) || 'Unknown',
+    email: cleanText(c.email, MAX_EMAIL),
+    fingerprint: asString(c.fingerprint),
+    public_key: asString(c.public_key),
     trust_level: 'unverified',
   };
   const kem = asString(c.pq_kem_public_key);
@@ -87,18 +118,24 @@ export function toImportedContact(entry: unknown): ImportedContact | null {
   return out;
 }
 
-export async function importContactBook(entries: unknown[], add: (contact: ImportedContact) => Promise<unknown>): Promise<ImportSummary> {
-  const summary: ImportSummary = { total: entries.length, imported: 0, failed: [] };
+export async function importContactBook(entries: unknown[], add: (contact: ImportedContact) => Promise<AddOutcome | void>): Promise<ImportSummary> {
+  const summary: ImportSummary = { total: entries.length, added: 0, existing: 0, failed: [] };
+  if (entries.length > MAX_CONTACTS_PER_FILE) {
+    summary.refused = `That file has more than ${MAX_CONTACTS_PER_FILE.toLocaleString('en-US')} contacts, so nothing was imported.`;
+    return summary;
+  }
   for (const entry of entries) {
-    const contact = toImportedContact(entry);
     const label = safeLabel((entry as { name?: unknown } | null)?.name ?? (entry as { display_name?: unknown } | null)?.display_name);
+    const problem = entryProblem(entry);
+    const contact = problem === null ? toImportedContact(entry) : null;
     if (!contact) {
-      summary.failed.push({ label, reason: 'it has no fingerprint and key' });
+      summary.failed.push({ label, reason: problem ?? 'it cannot be imported' });
       continue;
     }
     try {
-      await add(contact);
-      summary.imported++;
+      const outcome = await add(contact);
+      if (outcome === 'existing') summary.existing++;
+      else summary.added++;
     } catch (err) {
       summary.failed.push({ label, reason: reasonFor(err) });
     }
@@ -106,10 +143,12 @@ export async function importContactBook(entries: unknown[], add: (contact: Impor
   return summary;
 }
 
-/** One line for the dialog, or null when everything imported. */
+/** The line for the dialog when something did not go cleanly (a refusal, a failure, or contacts that were already there), or null when every contact was new. */
 export function importMessage(s: ImportSummary): string | null {
-  if (s.failed.length === 0) return null;
+  if (s.refused) return s.refused;
+  const counts = `Added ${s.added}, already in your contacts ${s.existing}`;
+  if (s.failed.length === 0) return s.existing > 0 ? `${counts}.` : null;
   const shown = s.failed.slice(0, SHOWN).map((f) => `${f.label} (${f.reason})`).join('; ');
   const more = s.failed.length > SHOWN ? `; and ${s.failed.length - SHOWN} more` : '';
-  return `Imported ${s.imported} of ${s.total}. Not imported: ${shown}${more}.`;
+  return `${counts}, not imported ${s.failed.length} of ${s.total}. Not imported: ${shown}${more}.`;
 }

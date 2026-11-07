@@ -44,9 +44,16 @@ function store() {
     }
     const trusted = r.trust_level === 'trusted' || r.trust_level === 'verified' || r.trusted === true;
     if (trusted && !ownerHasVerified(r as Parameters<typeof ownerHasVerified>[0])) throw new Error('verify-before-trust: refusing to create a trusted contact without owner verification');
+    if (rows.some((x) => x.fingerprint === r.fingerprint)) return; // the unique index over the raw string: the existing record wins
     rows.push({ ...r });
   };
-  return { rows, add };
+  /** What the dialog does: look first, then add (which checks the binding), and say whether the book already had it. */
+  const addLikeDialog = async (c: unknown): Promise<'added' | 'existing'> => {
+    const before = rows.some((x) => x.fingerprint === (c as { fingerprint: string }).fingerprint);
+    await add(c);
+    return before ? 'existing' : 'added';
+  };
+  return { rows, add, addLikeDialog };
 }
 
 const ALLOWED = ['name', 'email', 'fingerprint', 'public_key', 'pq_kem_public_key', 'pq_sig_public_key', 'trust_level'].sort();
@@ -55,7 +62,7 @@ test('ROUND TRIP: an export of two canonical contacts imports whole, binding int
   const text = toContactBookJson([ann, bob], '2026-01-02T03:04:05.000Z');
   const s = store();
   const summary = await importContactBook(contactBookEntries(text), s.add);
-  assert.deepEqual({ total: summary.total, imported: summary.imported, failed: summary.failed.length }, { total: 2, imported: 2, failed: 0 });
+  assert.deepEqual({ total: summary.total, added: summary.added, existing: summary.existing, failed: summary.failed.length }, { total: 2, added: 2, existing: 0, failed: 0 });
   assert.equal(importMessage(summary), null);
   assert.deepEqual(s.rows.map((r) => r.fingerprint), [ann.fingerprint, bob.fingerprint]);
   assert.deepEqual(s.rows.map((r) => r.pq_kem_public_key), [ann.pq_kem_public_key, bob.pq_kem_public_key]);
@@ -72,10 +79,10 @@ test('NEG (c)+(d): one corrupted contact is refused and NAMED, the others are st
   const text = JSON.stringify({ contacts: [ann, corrupted, mallory] });
   const s = store();
   const summary = await importContactBook(contactBookEntries(text), s.add);
-  assert.equal(summary.imported, 2);
+  assert.equal(summary.added, 2);
   assert.deepEqual(summary.failed, [{ label: 'bob', reason: 'its key does not match its fingerprint' }]);
   assert.deepEqual(s.rows.map((r) => r.fingerprint), [ann.fingerprint, mallory.fingerprint]);
-  assert.equal(importMessage(summary), 'Imported 2 of 3. Not imported: bob (its key does not match its fingerprint).');
+  assert.equal(importMessage(summary), 'Added 2, already in your contacts 0, not imported 1 of 3. Not imported: bob (its key does not match its fingerprint).');
 });
 
 test('NEG (a): a crafted file that says trusted, with an owner_verify stamp and a VALID binding, imports as UNVERIFIED with no stamp', async () => {
@@ -87,7 +94,7 @@ test('NEG (a): a crafted file that says trusted, with an owner_verify stamp and 
 
   const s = store();
   const summary = await importContactBook(contactBookEntries(JSON.stringify([crafted])), s.add);
-  assert.equal(summary.imported, 1);
+  assert.equal(summary.added, 1);
   assert.equal(s.rows[0].trust_level, 'unverified');
   assert.equal(s.rows[0].name, 'Mom');
   assert.equal('metadata' in s.rows[0], false);
@@ -112,7 +119,7 @@ test('NEG (b): trust_level "verified", a top-level verification block, owner_ver
 test('an entry without a fingerprint and a key, or that is not an object, is counted and named, not silently skipped', async () => {
   const s = store();
   const summary = await importContactBook([{ name: 'No key', fingerprint: 'abc' }, null, 5, { display_name: 'Legacy name only' }], s.add);
-  assert.equal(summary.imported, 0);
+  assert.equal(summary.added, 0);
   assert.equal(summary.failed.length, 4);
   assert.equal(summary.failed[0].label, 'No key');
   assert.equal(summary.failed[3].label, 'Legacy name only');
@@ -154,11 +161,97 @@ test('PIN: the module builds the contact field by field (no spread of the file e
   assert.match(mod, /trust_level: 'unverified',/);
 });
 
-test('PIN: the import handler goes through importContactBook and never hands the file\'s fields to addContact itself', () => {
+test('PIN: the import handler goes through importContactBook, hands addContact only the contact it was given, and never reads the file\'s fields itself', () => {
   const start = ui.indexOf('const handleImportContacts = async');
   assert.ok(start > 0);
   const body = ui.slice(start, ui.indexOf('const openEditDialog', start));
-  assert.match(body, /importContactBook\(entries, \(contact\) => addContact\(fingerprint, contact\)\)/);
+  assert.match(body, /importContactBook\(entries, async \(contact\) => \{/);
+  assert.match(body, /await addContact\(fingerprint, contact\);/);
+  assert.match(body, /getContactByFingerprint\(fingerprint, contact\.fingerprint\)/);
+  assert.match(body, /return before \? 'existing' : 'added';/);
   assert.doesNotMatch(body, /\bc\.(trust_level|metadata)\b/);
   assert.doesNotMatch(body, /JSON\.parse/);
+  assert.doesNotMatch(body, /addContact\(fingerprint, \{/);
+});
+
+// ── R1: a respelled fingerprint must not mint a second record for someone already in the book ───────────────────────────────────────────────────────
+const colons = (fp: string) => fp.match(/.{2}/g)!.join(':');
+
+test('R1 control: the store\'s binding check accepts a respelled fingerprint and its unique index is over the raw string, so handed verbatim it mints a SECOND record', async () => {
+  for (const spelled of [bob.fingerprint.toUpperCase(), bob.fingerprint.slice(0, 40), colons(bob.fingerprint)]) {
+    const s = store();
+    await s.add({ ...toImportedContact(bob)!, blocked: true }); // the person is already in the book, blocked
+    await s.add({ ...toImportedContact(bob)!, fingerprint: spelled });
+    assert.equal(s.rows.length, 2, `control: ${spelled.length}-char respelling creates a second record`);
+  }
+});
+
+test('R1 NEG: a blocked contact\'s real keys under an UPPERCASED, shortened or punctuated fingerprint are refused and named; still exactly ONE record, still blocked', async () => {
+  const fp = bob.fingerprint;
+  for (const spelled of [fp.toUpperCase(), fp.slice(0, 40), fp.slice(0, 16), colons(fp), `${fp} `, `${fp}:`, `${fp}\n`, ` ${fp}`, `${fp}00`, `0${fp}`]) {
+    const s = store();
+    await s.add({ ...toImportedContact(bob)!, blocked: true });
+    const entry = { ...bob, fingerprint: spelled };
+    const summary = await importContactBook([entry], s.addLikeDialog);
+    assert.deepEqual(summary.failed, [{ label: 'bob', reason: 'its fingerprint is not in the standard form' }]);
+    assert.equal(summary.added + summary.existing, 0);
+    assert.equal(s.rows.length, 1, 'no second record');
+    assert.equal(s.rows[0].blocked, true, 'still blocked');
+  }
+});
+
+test('R1 NEG: a canonical re-import of a blocked contact returns the existing record (counted as already there), unchanged and still blocked', async () => {
+  const s = store();
+  await s.add({ ...toImportedContact(bob)!, blocked: true });
+  const summary = await importContactBook([bob], s.addLikeDialog);
+  assert.deepEqual({ added: summary.added, existing: summary.existing, failed: summary.failed.length }, { added: 0, existing: 1, failed: 0 });
+  assert.equal(s.rows.length, 1);
+  assert.equal(s.rows[0].blocked, true);
+  assert.equal(importMessage(summary), 'Added 0, already in your contacts 1.');
+});
+
+test('the standard form is what our own export writes: lowercase 64-hex', () => {
+  for (const c of [ann, bob, mallory]) assert.match(c.fingerprint, /^[0-9a-f]{64}$/);
+});
+
+// ── size and text bounds ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+test('SIZE: a file with more than 5,000 contacts is refused whole, with nothing tried; exactly 5,000 is not refused', async () => {
+  let tried = 0;
+  const add = async () => { tried++; };
+  const over = await importContactBook(Array.from({ length: 5001 }, () => ({})), add);
+  assert.equal(over.refused, 'That file has more than 5,000 contacts, so nothing was imported.');
+  assert.equal(importMessage(over), over.refused);
+  assert.equal(tried, 0);
+  assert.deepEqual({ added: over.added, existing: over.existing, failed: over.failed.length }, { added: 0, existing: 0, failed: 0 });
+  const exact = await importContactBook(Array.from({ length: 5000 }, () => ({})), add);
+  assert.equal(exact.refused, undefined);
+  assert.equal(exact.failed.length, 5000);
+});
+
+test('SIZE: a contact with an oversized key is refused before the store is asked (the binding check is the expensive part)', async () => {
+  let tried = 0;
+  for (const field of ['public_key', 'pq_kem_public_key', 'pq_sig_public_key']) {
+    const summary = await importContactBook([{ ...toImportedContact(ann)!, [field]: 'A'.repeat(16385) }], async () => { tried++; });
+    assert.deepEqual(summary.failed, [{ label: 'ann', reason: 'it has a key that is too long' }], field);
+  }
+  assert.equal(tried, 0);
+});
+
+test('TEXT: the STORED name and email are cleaned and capped like the shown label: no control characters, name at most 120, email at most 254', async () => {
+  const s = store();
+  await importContactBook([{ ...toImportedContact(ann)!, name: `A\u0007\u0000b\n${'x'.repeat(1_000_000)}`, email: `e\u0007${'y'.repeat(5000)}@t.test` }], s.add);
+  const row = s.rows[0] as { name: string; email: string };
+  assert.ok(row.name.length <= 120 && row.name.startsWith('A b x'));
+  assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(row.name + row.email));
+  assert.ok(row.email.length <= 254);
+});
+
+test('COUNTS: a book that already has some of the contacts says so, and says it even when nothing failed', async () => {
+  const s = store();
+  await s.add({ ...toImportedContact(ann)! });
+  const summary = await importContactBook([ann, bob], s.addLikeDialog);
+  assert.deepEqual({ added: summary.added, existing: summary.existing }, { added: 1, existing: 1 });
+  assert.equal(importMessage(summary), 'Added 1, already in your contacts 1.');
+  const clean = await importContactBook([mallory], store().addLikeDialog);
+  assert.equal(importMessage(clean), null, 'every contact new and nothing failed: no message, the dialog closes');
 });

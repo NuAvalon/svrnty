@@ -252,6 +252,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   // Share state
   const [importData, setImportData] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
+  const [importNote, setImportNote] = useState<string | null>(null);
   const [exchangePackage, setExchangePackage] = useState('');
   const [exchangeImportData, setExchangeImportData] = useState('');
   const [exchangeResult, setExchangeResult] = useState<{ success: boolean; message: string } | null>(null);
@@ -784,17 +785,26 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setLoading(true);
       setImportError(null);
+      setImportNote(null);
       const entries = contactBookEntries(importData);
       // A file carries identity only: book-import builds each contact field by field, always 'unverified', and the store still checks every binding.
-      const summary = await importContactBook(entries, (contact) => addContact(fingerprint, contact));
+      const summary = await importContactBook(entries, async (contact) => {
+        const before = await getContactByFingerprint(fingerprint, contact.fingerprint);
+        await addContact(fingerprint, contact); // checks the binding first, so a mismatch still throws; an existing fingerprint returns the existing record
+        return before ? 'existing' : 'added';
+      });
       await loadContacts();
       const message = importMessage(summary);
-      if (message) {
+      if (summary.refused || summary.failed.length > 0) {
         setImportError(message);
         return;
       }
       if (summary.total === 0) {
         setImportError('No contacts found in that file.');
+        return;
+      }
+      if (message) {
+        setImportNote(message);
         return;
       }
       setImportData('');
@@ -1977,13 +1987,14 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
         />
 
         {/* Import */}
-        <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+        <Dialog open={showImportDialog} onOpenChange={(open) => { setShowImportDialog(open); if (!open) setImportNote(null); }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>Import Contacts</DialogTitle>
               <DialogDescription>Paste exported JSON to import.</DialogDescription>
             </DialogHeader>
             {importError && <Alert variant="destructive"><AlertTitle>Error</AlertTitle><AlertDescription>{importError}</AlertDescription></Alert>}
+            {importNote && <Alert><AlertDescription>{importNote}</AlertDescription></Alert>}
             <div className="py-4">
               <Textarea value={importData} onChange={e => setImportData(e.target.value)} placeholder="Paste contacts JSON here..." className="font-mono text-xs" rows={8} />
             </div>
