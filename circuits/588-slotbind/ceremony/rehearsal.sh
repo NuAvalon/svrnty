@@ -43,7 +43,7 @@ got=$(sed -n 's/^\[INFO\]  snarkJS: contribution #\([0-9]*\) \(.*\):$/\1 \2/p' <
 [ "$got" = "archie|weft|peter|rehearsal beacon" ] || fail "final chain list is [$got]"
 echo "ASSERT final chain verifies, contributions == [$got]"
 $S zkey export verificationkey $W/final.zkey $W/vkey.json >/dev/null
-for k in A B Bk; do
+for k in A B Ae Be; do
   $S groth16 prove $W/final.zkey build/w_$k.wtns $W/proof_$k.json $W/public_$k.json >/dev/null
   r=$($S groth16 verify $W/vkey.json $W/public_$k.json $W/proof_$k.json 2>&1 | strip) || fail "KAT $k verify exited nonzero"
   [[ "$r" == *"OK!"* ]] || fail "KAT $k did not verify: $r"
