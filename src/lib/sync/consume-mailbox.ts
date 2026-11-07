@@ -44,6 +44,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { classifyBlob, makeDeadLetterRow, planBound, recordKeyFor, type BenignTerminal, type DeadLetterReason, type DeadLetterRow } from './dead-letter';
 import { admitContact } from '@/lib/trust/admit-contact';
+import type { EpochReceiveResult } from '@/lib/trust/psi-epoch-receive';
 
 /** The mailbox owner's identity — needed to sign poll/ack requests (owner-auth). */
 export interface OwnerIdentity {
@@ -195,6 +196,21 @@ export interface ReceiptResponseSeam {
   accept: (wire: ReceiptWireV1) => Promise<AcceptedReceipt | null>;
 }
 
+/**
+ * EPOCH-NOTE ROUTING (N132 / P1): the fourth inbound type. An epoch note rides in the same sealed package as everything else, so without its own
+ * seam the contact-update path would eat it (the documented silent loss). Optional: a caller that omits it keeps the exact prior behaviour.
+ *   • open    - open the sealed package and hand back its plaintext, or null if it cannot be opened here. Reviewed opener code, nothing new.
+ *   • receive - decide what the plaintext is and what to do with it (psi-epoch-receive: the ruled table). 'not-epoch' means it is not this
+ *               seam's, and the blob falls through to the contact-update path unharmed.
+ * Every outcome other than adoption and a retry is acknowledged and recorded as little as possible: F1 off, a blocked sender and an epoch the book
+ * did not take write NO record; a sender that cannot be verified is the existing unverified-frame record (no fingerprint); a bad MAC is a record
+ * WITHOUT the fingerprint.
+ */
+export interface EpochNoteSeam {
+  open: (blob: string) => Promise<Uint8Array | null>;
+  receive: (plain: Uint8Array) => Promise<EpochReceiveResult>;
+}
+
 /** The confirmed note's handles, returned by the receipt seam's accept for the inbox delivered-repaint. */
 export interface AcceptedReceipt {
   note_id: string;
@@ -281,6 +297,7 @@ export interface ConsumeDeps {
   joiner?: JoinerResponseSeam; // R1 return-channel (KNOWN tier); omit to disable joiner routing
   note?: NoteResponseSeam; // over-wire note routing; omit → notes fall to contact-update path (silent-loss)
   receipt?: ReceiptResponseSeam; // delivery-receipt routing; omit → receipts fall to contact-update path (silent-loss)
+  epoch?: EpochNoteSeam; // epoch-note routing; omit → an epoch package falls to the contact-update path (decrypt-failed), as before
   relayBase?: string; // default '/api/relay'
   fetchImpl?: typeof fetch; // default global fetch (inject for tests)
   openLegs?: OpenLegCounter; // #720: the counter the openers bump; consume reads it per poll (omit = opened_* stay 0)
@@ -1032,6 +1049,48 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
       }
     }
     // wire null → not a receipt → fall through to the contact-update consume path.
+  }
+
+  // EPOCH-NOTE ROUTING. Same discipline as the seams above: its own type check first, so the contact-update path cannot eat it. A package this seam
+  // cannot open, or one that is not an epoch note, falls through unharmed.
+  if (deps.epoch) {
+    let plain: Uint8Array | null;
+    try {
+      plain = await deps.epoch.open(blob);
+    } catch {
+      plain = null; // a throwing open is treated as not-an-epoch-note → fall through (fail-safe)
+    }
+    if (plain) {
+      if (dead()) return { kind: 'retryable' };
+      let r: EpochReceiveResult;
+      try {
+        r = await deps.epoch.receive(plain);
+      } catch (err) {
+        console.error('[return-channel] epoch note receive failed (left for retry):', err instanceof Error ? err.message : 'error');
+        return { kind: 'retryable' };
+      }
+      switch (r.kind) {
+        case 'not-epoch':
+          break; // not this seam's → fall through
+        case 'benign-ack':
+          return { kind: 'terminal', cls: { benign: 'epoch-note-flag-off' } };
+        case 'blocked-drop':
+          return { kind: 'terminal', cls: { benign: 'note-blocked-sender' } };
+        case 'adopted':
+          return { kind: 'terminal', cls: { benign: 'epoch-note-adopted' } };
+        case 'already-held':
+        case 'conflict':
+        case 'out-of-range':
+          return { kind: 'terminal', cls: { benign: 'epoch-note-not-taken' } };
+        case 'unverified':
+          return { kind: 'terminal', cls: { reason: 'unverified-frame' } }; // no fingerprint: the claimed one is not authenticated
+        case 'bad-mac':
+          return { kind: 'terminal', cls: { reason: 'verify-failed' } }; // a record WITHOUT the fingerprint
+        case 'retry':
+          return { kind: 'retryable' };
+      }
+    }
+    // not an epoch note → fall through to the contact-update consume path.
   }
 
   // decrypt — an undecryptable blob is not-for-us / corrupt: terminal (drop + ack), silently.
