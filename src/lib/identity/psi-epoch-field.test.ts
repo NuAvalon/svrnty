@@ -202,7 +202,8 @@ test('GUARD: the restore and import paths put contacts through addContact, which
 
 // The only source file that may name the field is the store itself. Adding a reader (the receive path) is a deliberate edit of this list; an
 // outbound builder (an introduction, a signed card, a deposit, any export) appearing here is a failure.
-const ALLOWED_TO_NAME_THE_FIELD = new Set(['src/lib/identity/client-store.ts']);
+// live-book-poll.ts names the store's WRITER (adoptPsiEpoch) once, to hand it to the epoch seam; it never names the field itself.
+const ALLOWED_TO_NAME_THE_FIELD = new Set(['src/lib/identity/client-store.ts', 'src/lib/sync/live-book-poll.ts']);
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
@@ -227,5 +228,7 @@ test('GUARD: only the store names psi_epoch or PSI_EPOCH_FIELD in non-test sourc
     }
   }
   assert.deepEqual(hits.filter((h) => !ALLOWED_TO_NAME_THE_FIELD.has(h)), [], 'a file other than the store names the epoch field');
+  const lbp = readFileSync(join(root, 'src/lib/sync/live-book-poll.ts'), 'utf8').replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
+  assert.doesNotMatch(lbp, /psi_epoch|PSI_EPOCH_FIELD/, 'the poll hands over the writer but never names the field');
   assert.ok(hits.includes('src/lib/identity/client-store.ts'), 'the scan found the store (a scan that finds nothing proves nothing)');
 });
