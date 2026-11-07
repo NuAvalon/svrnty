@@ -60,8 +60,6 @@ CREATE INDEX IF NOT EXISTS beacon_deposits_epoch ON beacon_deposits (epoch);
 CREATE TABLE IF NOT EXISTS beacon_matches (
     epoch INTEGER NOT NULL, slot TEXT PRIMARY KEY, n1 TEXT NOT NULL, n2 TEXT NOT NULL, formed_at TEXT NOT NULL,
     released_at TEXT, polled_n1 INTEGER NOT NULL DEFAULT 0, polled_n2 INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS beacon_used_nonces (
-    nonce TEXT PRIMARY KEY, op TEXT NOT NULL, slot TEXT NOT NULL, n TEXT NOT NULL, used_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS beacon_security_alarms (
     at TEXT NOT NULL, epoch INTEGER, slot TEXT, n TEXT, raw TEXT NOT NULL);
 """
@@ -159,9 +157,13 @@ class Centurion:
         self.vkey_sha = hashlib.sha256(Path(vkey_path).read_bytes()).hexdigest() if vkey_path else None
         self.verify_cmd = verify_cmd or [node, str(VERIFY_JS)]
         self.auth_cmd = auth_cmd or [node, str(AUTH_JS)]
-        # Nonces are MACed, not stored at issue: an unauthenticated endpoint must not write a row per call. The key lives in
-        # memory only, so a restart voids every outstanding nonce (TTL 60 s). Only USED nonces are stored, in the action's txn.
+        # Nonces are MACed, not stored at issue: an unauthenticated endpoint must not write a row per call. The key and the
+        # used set live in THIS process's memory only: a nonce is void after the TTL and a restart voids the key, so the set
+        # only covers the last TTL seconds and no replay survives a crash (key and set die together). ONE PROCESS: several
+        # satellite workers would each need the same key and one shared used set.
         self._nonce_key = os.urandom(32)
+        self._used_nonces: dict[str, float] = {}
+        self._nonce_lock = threading.Lock()
         self._ip_hits: dict[str, list[float]] = {}
         self.max_ip_keys = max_ip_keys
         # ONE bound on node processes in flight, shared by the verifier and the authenticator; over it = refused("rate")
@@ -334,9 +336,10 @@ class Centurion:
         # about whether a deposit exists.
         if not self._nonce_ok(op, slot_i, n_i, bytes.fromhex(o["nonce"]), now):
             return refused("auth")
-        with closing(self._db()) as db:
-            if db.execute("SELECT 1 FROM beacon_used_nonces WHERE nonce = ?", (o["nonce"],)).fetchone():
+        with self._nonce_lock:
+            if o["nonce"] in self._used_nonces:
                 return refused("auth")
+        with closing(self._db()) as db:
             row = db.execute("SELECT k FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone()
         # No deposit -> a random K that no key hashes to: the authenticator still runs in full (no fast path, no N-exists oracle).
         k = row[0] if row else str(secrets.randbelow(10 ** 76))
@@ -349,19 +352,26 @@ class Centurion:
         if not ok:
             return refused("auth")
         at = _now_iso(now)
+        # Check, act, mark: all under ONE lock, so two requests carrying one nonce act once. Marked only after COMMIT.
+        with self._nonce_lock:
+            for old in [x for x, t in self._used_nonces.items() if now - t > NONCE_TTL_SECONDS]:
+                del self._used_nonces[old]
+            if o["nonce"] in self._used_nonces:
+                return refused("auth")
+            out = self._act(op, slot, n, k, at)
+            if out is not None:
+                self._used_nonces[o["nonce"]] = now
+            return out if out is not None else refused("auth")
+
+    def _act(self, op: str, slot: str, n: str, k: str, at: str) -> bytes | None:
+        """The action, in one transaction. None = the deposit is gone or its K changed since the check (refused)."""
         db = self._db()
         try:
             db.execute("BEGIN IMMEDIATE")
-            try:      # the nonce is consumed in the SAME transaction as the action
-                db.execute("INSERT INTO beacon_used_nonces (nonce, op, slot, n, used_at) VALUES (?, ?, ?, ?, ?)",
-                           (o["nonce"], op, slot, n, at))
-            except sqlite3.IntegrityError:
-                db.execute("ROLLBACK")
-                return refused("auth")
             cur = db.execute("SELECT k, withdrawn_at FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone()
             if cur is None or cur[0] != k:
                 db.execute("ROLLBACK")
-                return refused("auth")
+                return None
             m = db.execute("SELECT n1, n2 FROM beacon_matches WHERE slot = ?", (slot,)).fetchone()
             matched = m is not None and n in m
             if op == "poll":
