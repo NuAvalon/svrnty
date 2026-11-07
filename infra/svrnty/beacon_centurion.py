@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -162,6 +163,10 @@ class Centurion:
         # memory only, so a restart voids every outstanding nonce (TTL 60 s). Only USED nonces are stored, in the action's txn.
         self._nonce_key = os.urandom(32)
         self._ip_hits: dict[str, list[float]] = {}
+        self.max_ip_keys = max_ip_keys
+        # ONE bound on node processes in flight, shared by the verifier and the authenticator; over it = refused("rate")
+        # before anything is spawned (per-IP limits alone allow an unbounded number across many IPs).
+        self._inflight = threading.BoundedSemaphore(max_inflight or os.cpu_count() or 2)
         self._lock = threading.Lock()
         with closing(self._db()) as db:
             db.executescript(SCHEMA)
@@ -172,14 +177,34 @@ class Centurion:
         db.execute("PRAGMA synchronous=FULL")
         return db
 
+    @staticmethod
+    def _ip_key(ip: str) -> str:
+        """IPv4 as is; IPv6 by its /64 (one host usually holds a whole /64); IPv4-mapped IPv6 = the IPv4. Unparseable -> one
+        shared bucket. The caller must pass the TRUSTED client address (satellite.client_ip_for), never a raw header."""
+        try:
+            a = ipaddress.ip_address(ip.strip())
+        except ValueError:
+            return "unparseable"
+        if a.version == 6:
+            if a.ipv4_mapped is not None:
+                return str(a.ipv4_mapped)
+            return str(ipaddress.ip_network(f"{a}/64", strict=False))
+        return str(a)
+
     def _rate_ok(self, ip: str, now: float) -> bool:
+        key = self._ip_key(ip)
         with self._lock:
-            hits = [t for t in self._ip_hits.get(ip, []) if now - t < 60]
+            if key not in self._ip_hits and len(self._ip_hits) >= self.max_ip_keys:
+                for k in [k for k, v in self._ip_hits.items() if not v or now - v[-1] >= 60]:
+                    del self._ip_hits[k]                    # in-memory rate state only; no stored data is touched
+                if len(self._ip_hits) >= self.max_ip_keys:
+                    return False                           # every key active: fail closed, evict no one
+            hits = [t for t in self._ip_hits.get(key, []) if now - t < 60]
             if len(hits) >= self.ip_per_minute:
-                self._ip_hits[ip] = hits
+                self._ip_hits[key] = hits
                 return False
             hits.append(now)
-            self._ip_hits[ip] = hits
+            self._ip_hits[key] = hits
             return True
 
     def _open_count(self, db: sqlite3.Connection, now: float) -> int:
@@ -214,7 +239,12 @@ class Centurion:
         with closing(self._db()) as db:
             if self._open_count(db, now) >= self.per_epoch_cap:
                 return refused("full")
-        res = self._verify(raw, now)
+        if not self._inflight.acquire(blocking=False):
+            return refused("rate")
+        try:
+            res = self._verify(raw, now)
+        finally:
+            self._inflight.release()
         if res.get("ok") is not True:
             return refused(str(res.get("reason", "internal")))
         epoch, slot, n, k = int(res["e"]), res["H_e"], res["N"], res["K"]
@@ -310,7 +340,13 @@ class Centurion:
             row = db.execute("SELECT k FROM beacon_deposits WHERE slot = ? AND n = ?", (slot, n)).fetchone()
         # No deposit -> a random K that no key hashes to: the authenticator still runs in full (no fast path, no N-exists oracle).
         k = row[0] if row else str(secrets.randbelow(10 ** 76))
-        if not self._authenticate({"op": op, "H_e": slot, "N": n, "K": k, "pk": o["pk"], "sig": o["sig"], "nonce": o["nonce"]}):
+        if not self._inflight.acquire(blocking=False):
+            return refused("rate")
+        try:
+            ok = self._authenticate({"op": op, "H_e": slot, "N": n, "K": k, "pk": o["pk"], "sig": o["sig"], "nonce": o["nonce"]})
+        finally:
+            self._inflight.release()
+        if not ok:
             return refused("auth")
         at = _now_iso(now)
         db = self._db()
@@ -355,9 +391,19 @@ class Centurion:
         """Same auth as poll. Lone deposit -> marked withdrawn (kept, can no longer match) -> WITHDRAWN; matched -> inert, MATCH."""
         return self._authenticated_call("withdraw", raw, ip)
 
-    # STUB (tests first): hardening.
+    # ---- for the route and the health check ----
     def alarm_count(self) -> int:
-        return -1
+        """Rows in beacon_security_alarms. The health check reports > 0 as ALARM, counts only, never the raw rows."""
+        with closing(self._db()) as db:
+            return db.execute("SELECT count(*) FROM beacon_security_alarms").fetchone()[0]
 
     def handle(self, op: str, raw: bytes, ip: str) -> bytes:
-        return refused("usage")
+        """The ONE entry point a route calls. Any internal exception -> the fixed refused("internal") bytes: never a
+        traceback, never a 500 with a body. `ip` = satellite.client_ip_for(peer, X-Forwarded-For), never the raw header."""
+        fn = {"deposit": self.deposit, "nonce": self.nonce, "poll": self.poll, "withdraw": self.withdraw}.get(op)
+        if fn is None:
+            return refused("usage")
+        try:
+            return fn(raw, ip)
+        except Exception:
+            return refused("internal")
