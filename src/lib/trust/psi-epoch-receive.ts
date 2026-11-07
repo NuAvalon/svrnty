@@ -16,22 +16,32 @@ import { claimedFpOf, dispatchSealed, epochWireOf } from './psi-epoch-sealed';
 /** The holder's tick is its own clock in 5-minute units (the know-sync period). A clock that goes back makes it go back, which drops `prev`. */
 export const PSI_TICK_MINUTES = 5;
 
-export interface EpochContact {
+/**
+ * What the book lookup returns for a claimed sender. `ref` is whatever the caller needs to carry from the lookup to the pairwise-secret step (the book
+ * record the lookup returned): it travels WITH the contact this decision saw, so the secret is derived from that record and never from a later read, a
+ * second lookup, or state shared with another note handled at the same time.
+ */
+export interface EpochContact<R = unknown> {
   id: string;
   /** The contact's stored fingerprint. It must equal the claimed one exactly, or the contact is not the sender. */
   fingerprint: string;
+  /**
+   * True when the contact is not admitted for inbound traffic (a blocked contact, by either flag). It is the book's admit check, so it also fails closed
+   * for any other state that check refuses: read it as "not admitted", not literally as "blocked".
+   */
   blocked: boolean;
+  ref: R;
 }
 
-export interface EpochReceiveDeps {
+export interface EpochReceiveDeps<R = unknown> {
   /** F1. Only exactly true switches the path on. */
   receiveOn: boolean;
   /** Our own canonical 64-hex fingerprint. */
   ownerFp: string;
   /** The local book, by the claimed fingerprint. Not a network fetch. */
-  findContact: (fp: string) => Promise<EpochContact | null>;
-  /** The pairwise secret with that contact (cached in memory by the caller), or null if it cannot be derived (no usable key). */
-  pairSecretFor: (contactId: string) => Promise<Uint8Array | null>;
+  findContact: (fp: string) => Promise<EpochContact<R> | null>;
+  /** The pairwise secret with THAT contact (the object findContact returned for this note), or null if it cannot be derived (no usable key). */
+  pairSecretFor: (contact: EpochContact<R>) => Promise<Uint8Array | null>;
   /** The holder's clock in whole minutes, read once per accepted note. */
   nowMinutes: () => number;
   /** The store's writer of the epoch record: the only one there is. It runs the decision on the HELD record and never on a blocked contact. */
@@ -53,7 +63,7 @@ export type EpochReceiveResult =
   | { kind: 'out-of-range' } //   malformed fields, or an epoch above what this clock allows: dropped
   | { kind: 'retry' }; //         the store could not take the write now: leave it for a later poll
 
-export async function receiveEpochNote(plain: Uint8Array, deps: EpochReceiveDeps): Promise<EpochReceiveResult> {
+export async function receiveEpochNote<R>(plain: Uint8Array, deps: EpochReceiveDeps<R>): Promise<EpochReceiveResult> {
   const dispatch = dispatchSealed(plain);
   if (dispatch === 'other') return { kind: 'not-epoch' };
   // F1 off reads the length and two bytes, and nothing more: no parse, no MAC, no lookup. This covers a malformed one too.
@@ -62,7 +72,7 @@ export async function receiveEpochNote(plain: Uint8Array, deps: EpochReceiveDeps
 
   const fp = claimedFpOf(plain);
   const wire = epochWireOf(plain);
-  let contact: EpochContact | null = null;
+  let contact: EpochContact<R> | null = null;
   let opened: Extract<OpenedEpochNote, { ok: true }> | null = null;
   let cannotVerify = false;
 
@@ -74,9 +84,9 @@ export async function receiveEpochNote(plain: Uint8Array, deps: EpochReceiveDeps
       contact = c !== null && c.fingerprint === fp ? c : null;
       return contact !== null;
     },
-    blocked: () => (contact as EpochContact | null)?.blocked === true,
+    blocked: () => (contact as EpochContact<R> | null)?.blocked === true,
     macOk: async () => {
-      const sPair = await deps.pairSecretFor((contact as unknown as EpochContact).id);
+      const sPair = await deps.pairSecretFor(contact as unknown as EpochContact<R>);
       if (sPair === null) {
         cannotVerify = true;
         return false;
@@ -106,7 +116,7 @@ export async function receiveEpochNote(plain: Uint8Array, deps: EpochReceiveDeps
   const state: { decided: boolean; outcome: ApplyOutcome } = { decided: false, outcome: 'invalid' };
   let result: { applied: boolean };
   try {
-    result = await deps.adopt((contact as EpochContact).id, (held) => {
+    result = await deps.adopt((contact as EpochContact<R>).id, (held) => {
       state.decided = true; // the decision can run more than once (a retry on a newer record): the last run is the one that counts
       const record = held === null ? null : restoreEpochRecord(held);
       const r = applyEpochNote(record, { epoch: note.epoch, know: note.know, trust: note.trust }, tick, bound);

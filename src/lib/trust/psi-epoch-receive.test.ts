@@ -34,13 +34,13 @@ function world(opts: { blocked?: boolean; storeBlocked?: boolean; held?: string;
   const records = new Map<string, ContactRecord>();
   records.set('cx', { id: 'cx', owner_fingerprint: OWNER, fingerprint: X, name: 'X', email: '', public_key: 'k', trust_level: 'unverified', added_at: 't',
     ...(opts.storeBlocked ? { blocked: true } : {}), ...(opts.held !== undefined ? { psi_epoch: opts.held } : {}) } as ContactRecord);
-  const book = new Map<string, EpochContact>([[X, { id: 'cx', fingerprint: X, blocked: opts.blocked === true }], [Y, { id: 'cy', fingerprint: Y, blocked: false }]]);
+  const book = new Map<string, EpochContact>([[X, { id: 'cx', fingerprint: X, blocked: opts.blocked === true, ref: null }], [Y, { id: 'cy', fingerprint: Y, blocked: false, ref: null }]]);
   let clock = 0;
   const deps: EpochReceiveDeps = {
     receiveOn: opts.on !== false,
     ownerFp: OWNER,
     findContact: async (fp) => { calls.push('find'); return opts.findOverride !== undefined ? opts.findOverride : book.get(fp) ?? null; },
-    pairSecretFor: async (id) => { calls.push('secret'); return opts.secret !== undefined ? opts.secret : id === 'cx' ? S_X : id === 'cy' ? S_Y : null; },
+    pairSecretFor: async (c) => { calls.push('secret'); return opts.secret !== undefined ? opts.secret : c.id === 'cx' ? S_X : c.id === 'cy' ? S_Y : null; },
     nowMinutes: () => { clock++; calls.push('now'); return NOW; },
     adopt: async (id, decide) => {
       calls.push('adopt');
@@ -84,7 +84,7 @@ test('a claimed sender not in the book: UNVERIFIED, the pairwise secret is never
 });
 
 test('EXACT lookup: a store that answers with a contact whose fingerprint is only a prefix or a respelling of the claim does not make a sender', async () => {
-  for (const loose of [{ id: 'cx', fingerprint: X.slice(0, 40), blocked: false }, { id: 'cx', fingerprint: X.toUpperCase(), blocked: false }, { id: 'cx', fingerprint: X + '0', blocked: false }]) {
+  for (const loose of [{ id: 'cx', fingerprint: X.slice(0, 40), blocked: false, ref: null }, { id: 'cx', fingerprint: X.toUpperCase(), blocked: false, ref: null }, { id: 'cx', fingerprint: X + '0', blocked: false, ref: null }]) {
     const w = world({ findOverride: loose });
     assert.deepEqual(await receiveEpochNote(note({}), w.deps), { kind: 'unverified' }, loose.fingerprint.length + '/' + loose.fingerprint.slice(0, 3));
     assert.deepEqual(w.calls, ['find']);
@@ -188,6 +188,25 @@ test('a stored form that no longer restores counts as no record: the note is ado
   const w = world({ held: 'not-json' });
   assert.deepEqual(await receiveEpochNote(note({}), w.deps), { kind: 'adopted' });
   assert.notEqual(restoreEpochRecord(w.held()), null);
+});
+
+test('SAME CONTACT, TWO NOTES AT ONCE, the store answers differently each time: each note\'s secret step gets the contact object ITS OWN lookup returned', async () => {
+  const w = world();
+  let lookups = 0;
+  const handed: string[] = [];
+  const deps: EpochReceiveDeps<string> = {
+    receiveOn: true,
+    ownerFp: OWNER,
+    findContact: async (fp) => { const n = ++lookups; await Promise.resolve(); return fp === X ? { id: 'cx', fingerprint: X, blocked: false, ref: `lookup-${n}` } : null; },
+    pairSecretFor: async (c) => { handed.push(c.ref); return S_X; },
+    nowMinutes: () => NOW,
+    adopt: w.deps.adopt,
+  };
+  const [n1, n2] = [note({ epoch: E(NOW, 1) }), note({ epoch: E(NOW, 2), know: 3, trust: 4 })];
+  const [r1, r2] = await Promise.all([receiveEpochNote(n1, deps), receiveEpochNote(n2, deps)]);
+  assert.equal(r1.kind === 'adopted' || r1.kind === 'already-held', true);
+  assert.equal(r2.kind === 'adopted' || r2.kind === 'already-held', true);
+  assert.deepEqual([...handed].sort(), ['lookup-1', 'lookup-2'], 'each note got its own lookup\'s object, not the latest one twice');
 });
 
 test('GUARD: the receive path never names the epoch field', () => {

@@ -1057,8 +1057,11 @@ async function consumeOne(blob: string, deps: ConsumeDeps, now: () => string): P
     let plain: Uint8Array | null;
     try {
       plain = await deps.epoch.open(blob);
-    } catch {
-      plain = null; // a throwing open is treated as not-an-epoch-note → fall through (fail-safe)
+    } catch (err) {
+      // A throwing open means the seam cannot tell (a locked or ended cycle): leave the envelope for a later poll. It must NEVER fall through to the
+      // contact-update path, which is exactly what an epoch package must be kept away from. A package that merely does not open is null, not a throw.
+      console.error('[return-channel] epoch note open failed (left for retry):', err instanceof Error ? err.message : 'error');
+      return { kind: 'retryable' };
     }
     if (plain) {
       if (dead()) return { kind: 'retryable' };

@@ -121,19 +121,38 @@ test('not-epoch falls through to the contact-update path unharmed (its decryptor
   assert.notEqual(s.rows[0].reason, 'unverified-frame');
 });
 
-test('a package the seam cannot open, or whose open throws, falls through to the contact-update path and receive is never asked', async () => {
-  for (const open of [async () => null, async () => { throw new Error('cannot open'); }]) {
-    let decrypted = 0;
-    let asked = 0;
-    const acks: string[][] = [];
-    const r = relay([{ envelope_id: 'e1', blob: 'OTHER' }], acks);
+test('a package the seam cannot open (open answers null) falls through to the contact-update path and receive is never asked', async () => {
+  let decrypted = 0;
+  let asked = 0;
+  const acks: string[][] = [];
+  const r = relay([{ envelope_id: 'e1', blob: 'OTHER' }], acks);
+  await consumeInboundContactUpdates(deps({
+    epoch: { open: async () => null, receive: async () => { asked++; return { kind: 'adopted' }; } },
+    decrypt: async () => { decrypted++; return null; }, fetchImpl: r.fetchImpl,
+  }));
+  assert.equal(decrypted, 1);
+  assert.equal(asked, 0);
+});
+
+test('an open that THROWS (the seam cannot tell: a locked or ended cycle) is left for retry: no ack, the contact-update path is NOT tried, receive is never asked', async () => {
+  let decrypted = 0;
+  let asked = 0;
+  const acks: string[][] = [];
+  const r = relay([{ envelope_id: 'e1', blob: 'EPOCH' }], acks);
+  const quiet = console.error;
+  console.error = () => {};
+  try {
     await consumeInboundContactUpdates(deps({
-      epoch: { open, receive: async () => { asked++; return { kind: 'adopted' }; } },
+      epoch: { open: async () => { throw new Error('cycle ended'); }, receive: async () => { asked++; return { kind: 'adopted' }; } },
       decrypt: async () => { decrypted++; return null; }, fetchImpl: r.fetchImpl,
     }));
-    assert.equal(decrypted, 1);
-    assert.equal(asked, 0);
+  } finally {
+    console.error = quiet;
   }
+  assert.equal(decrypted, 0, 'an epoch package must not fall through to the contact-update path');
+  assert.equal(asked, 0);
+  assert.deepEqual(acks, []);
+  assert.deepEqual(r.left(), ['e1']);
 });
 
 test('with no epoch seam nothing changes: the package takes the contact-update path exactly as before', async () => {

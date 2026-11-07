@@ -14,9 +14,10 @@ import { buildEpochSealedPlaintext } from '@/lib/trust/psi-epoch-sealed';
 import { restoreEpochRecord } from '@/lib/trust/psi-epoch-book';
 import { createPairSecretCache } from '@/lib/trust/psi-pair-secret-cache';
 import { buildPsiEpochAdoption, type ContactRecord } from '@/lib/identity/client-store';
-import { buildEpochSeam, type EpochSeamDeps } from './epoch-seam';
+import { UnlockCycleEnded, makeUnlockCycle } from '@/lib/crypto/unlock-cycle';
+import { buildEpochSeam, installEpochSeam, openEpochPackage, ownerSeedFromCycle, type EpochSeamDeps } from './epoch-seam';
 
-interface Id { fp: string; seed: Uint8Array; record: ContactRecord }
+interface Id { fp: string; seed: Uint8Array; record: ContactRecord; privateKey: string; passphrase: string }
 
 async function identity(name: string): Promise<Id> {
   const passphrase = `pw-${name}`;
@@ -26,7 +27,7 @@ async function identity(name: string): Promise<Id> {
   const { fingerprint } = await mintCanonicalFingerprint({ decryptedIdentityKey: decrypted, kemPublicKey: pq.kem.publicKey, sigPublicKey: pq.signing.publicKey });
   const { seed } = extractRawSign(decrypted);
   return {
-    fp: fingerprint, seed,
+    fp: fingerprint, seed, privateKey, passphrase,
     record: {
       id: `c-${name}`, owner_fingerprint: 'owner', fingerprint, name, email: '', public_key: publicKey, trust_level: 'unverified', added_at: 't',
       pq_kem_public_key: uint8ToBase64(pq.kem.publicKey), pq_sig_public_key: uint8ToBase64(pq.signing.publicKey),
@@ -180,7 +181,65 @@ test('two notes from two different contacts handled at the same time each use TH
   assert.equal(w.deps.cache.size(), 2);
 });
 
+test('SAME CONTACT, TWO NOTES AT ONCE, with the book answering R1 then R2: each note derives from the record ITS lookup returned', async () => {
+  const w = world();
+  const good = x.record;
+  const unbound = { ...x.record, public_key: y.record.public_key }; // the same contact after a (bad) change: Y's key under X's fingerprint
+  const answers = [good, unbound];
+  let n = 0;
+  const seam = buildEpochSeam({ ...w.deps, getContactByFingerprint: async () => { const rec = answers[n++] ?? unbound; await Promise.resolve(); return rec; } });
+  const [nx1, nx2] = [await noteFrom(x, NOW * 2 ** 20 + 1), await noteFrom(x, NOW * 2 ** 20 + 2)];
+  const [r1, r2] = await Promise.all([seam.receive(nx1), seam.receive(nx2)]);
+  assert.deepEqual(r1, { kind: 'adopted' }, 'note 1 used R1, the record its own lookup returned');
+  assert.deepEqual(r2, { kind: 'unverified' }, 'note 2 used R2, which does not bind to the fingerprint');
+});
+
+test('openEpochPackage: not an envelope is null; bytes come back as bytes; a package that does not open (any ordinary error) is null, not a throw', async () => {
+  const pkg = { v: 1 };
+  assert.equal(await openEpochPackage('x', { asPackage: () => null, open: async () => new Uint8Array(3) }), null);
+  assert.deepEqual(await openEpochPackage('x', { asPackage: () => pkg, open: async () => Uint8Array.of(1, 2, 3) }), Uint8Array.of(1, 2, 3));
+  assert.equal(await openEpochPackage('x', { asPackage: () => pkg, open: async () => null }), null);
+  assert.equal(await openEpochPackage('x', { asPackage: () => pkg, open: async () => { throw new Error('wrong key / corrupt'); } }), null, 'a malformed package is not a poison pill');
+});
+
+test('openEpochPackage: an ENDED unlock cycle is rethrown (cannot tell), never turned into "not an epoch package"', async () => {
+  await assert.rejects(openEpochPackage('x', { asPackage: () => ({}), open: async () => { throw new UnlockCycleEnded(); } }), UnlockCycleEnded);
+});
+
+test('installEpochSeam: with the switch off nothing is BUILT and nothing is returned; only exactly true installs it', () => {
+  let built = 0;
+  const build = () => { built++; return buildEpochSeam(world().deps); };
+  for (const off of [false, undefined, null, 0, 1, 'true', {}] as unknown[]) {
+    assert.equal(installEpochSeam(off as boolean, build), undefined, String(off));
+  }
+  assert.equal(built, 0, 'the builder was never called while off');
+  assert.ok(installEpochSeam(true, build));
+  assert.equal(built, 1);
+});
+
 test('GUARD: the seam builder never names the epoch field', () => {
   const src = readFileSync(new URL('./epoch-seam.ts', import.meta.url), 'utf8').replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
   assert.doesNotMatch(src, /psi_epoch|PSI_EPOCH_FIELD|adoptPsiEpoch|buildPsiEpochAdoption/);
+});
+
+test('NEG: after an epoch derive the cycle\'s key is intact: a second extractRawSign on the SAME cycle still passes its seed/signPub invariant and returns the same seed', async () => {
+  const cycle = makeUnlockCycle(me.privateKey, me.passphrase);
+  try {
+    const w = world();
+    const seam = buildEpochSeam({ ...w.deps, ownerSeed: ownerSeedFromCycle(cycle) });
+    assert.deepEqual(await seam.receive(await noteFrom(x)), { kind: 'adopted' }, 'control: the derive ran through the real cycle');
+    const again = extractRawSign(await cycle.key()); // throws "seed<->signPub mismatch" if the derive zeroed the key's own seed
+    assert.deepEqual([...again.seed], [...me.seed]);
+  } finally {
+    cycle.drop();
+  }
+});
+
+test('an ended cycle gives no seed: the secret cannot be derived and nothing is adopted', async () => {
+  const cycle = makeUnlockCycle(me.privateKey, me.passphrase);
+  cycle.drop();
+  const w = world();
+  const seam = buildEpochSeam({ ...w.deps, ownerSeed: ownerSeedFromCycle(cycle) });
+  assert.deepEqual(await seam.receive(await noteFrom(x)), { kind: 'unverified' });
+  assert.equal(w.log.adopts, 0);
 });

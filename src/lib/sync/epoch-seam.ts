@@ -17,6 +17,8 @@ import { deriveSharedSecret } from '@/lib/crypto/mutual-trust';
 import { signPubForContact } from '@/lib/identity/raw-sign-public';
 import { receiveEpochNote, type EpochReceiveDeps } from '@/lib/trust/psi-epoch-receive';
 import type { PairSecretCache } from '@/lib/trust/psi-pair-secret-cache';
+import { UnlockCycleEnded } from '@/lib/crypto/unlock-cycle';
+import { extractRawSign } from '@/lib/identity/raw-sign';
 import type { EpochNoteSeam } from './consume-mailbox';
 
 export interface EpochSeamDeps {
@@ -36,24 +38,23 @@ export interface EpochSeamDeps {
 }
 
 export function buildEpochSeam(d: EpochSeamDeps): EpochNoteSeam {
-  // The record each lookup returned, by contact id, for the life of this seam (one poll). The secret is derived from THIS record, never from a second
-  // read that could see a key rotated in between.
-  const seen = new Map<string, ContactRecord>();
+  // The record each lookup returned travels with the contact it describes (EpochContact.ref), so the secret for a note is derived from the record THAT
+  // note's decision saw: not from a second read, and not from anything shared with another note in the same poll (two notes from one contact with a
+  // key rotation between them each keep their own record).
   return {
     open: d.openPackage,
     receive: (plain) =>
-      receiveEpochNote(plain, {
+      receiveEpochNote<ContactRecord>(plain, {
         receiveOn: d.receiveOn,
         ownerFp: d.ownerFp,
         findContact: async (fp) => {
           const rec = await d.getContactByFingerprint(d.ownerFp, fp);
           if (!rec) return null;
-          seen.set(rec.id, rec);
-          return { id: rec.id, fingerprint: rec.fingerprint, blocked: !admitContact(rec) };
+          return { id: rec.id, fingerprint: rec.fingerprint, blocked: !admitContact(rec), ref: rec };
         },
-        pairSecretFor: async (contactId) => {
-          const rec = seen.get(contactId);
-          if (!rec) return null;
+        pairSecretFor: async (contact) => {
+          const rec = contact.ref;
+          const contactId = contact.id;
           const peerSignPub = await signPubForContact(rec);
           if (!peerSignPub) return null;
           const cached = d.cache.get(contactId, peerSignPub);
@@ -74,5 +75,53 @@ export function buildEpochSeam(d: EpochSeamDeps): EpochNoteSeam {
         nowMinutes: d.nowMinutes,
         adopt: d.adopt,
       }),
+  };
+}
+
+/**
+ * Open a sealed package to its plaintext, or say it is not one that opens here. "Not an envelope" is null. A package that does not open with our keys
+ * (a wrong key, a corrupt body) is also null, exactly as every other opener treats it: it is not ours to read, and the contact-update path then deals
+ * with it as it always has. The ONE exception is a cycle that has ended (the session locked or switched): then we cannot tell whether this is ours,
+ * so the error is rethrown and the consume pipeline leaves the envelope on the relay for a later poll. It must never fall through to the
+ * contact-update path, which is the thing this seam exists to keep an epoch package away from. (Rethrowing EVERY error would make one malformed
+ * package a poison pill, retried and never acknowledged on every poll.)
+ */
+export async function openEpochPackage(
+  blob: string,
+  parts: {
+    asPackage: (blob: string) => unknown | null;
+    open: (pkg: never) => Promise<Uint8Array | null>;
+  },
+): Promise<Uint8Array | null> {
+  const pkg = parts.asPackage(blob);
+  if (!pkg) return null;
+  try {
+    return await parts.open(pkg as never);
+  } catch (e) {
+    if (e instanceof UnlockCycleEnded) throw e;
+    return null;
+  }
+}
+
+/**
+ * The seam is installed ONLY when the receive switch is on. With it off nothing is built and nothing is supplied, so the poll path is exactly what it
+ * is without this feature: no extra open per package, no new acknowledgement behaviour.
+ */
+export function installEpochSeam(receiveOn: boolean, build: () => EpochNoteSeam): EpochNoteSeam | undefined {
+  return receiveOn === true ? build() : undefined;
+}
+
+/**
+ * The seam's source of our signing seed: a COPY of the seed of this cycle's one unlocked key, or null when the cycle is locked or has ended (cannot
+ * verify). It is a copy because extractRawSign hands back the key's OWN buffer, which the rest of the cycle still signs with: the seam zeroes the copy and
+ * the cycle's key stays usable (epoch-seed-ownership.test.ts shows both halves).
+ */
+export function ownerSeedFromCycle(cycle: { key(): Promise<unknown> }): () => Promise<Uint8Array | null> {
+  return async () => {
+    try {
+      return extractRawSign(await cycle.key()).seed.slice();
+    } catch {
+      return null; // locked, or the cycle ended: cannot verify
+    }
   };
 }

@@ -8,25 +8,34 @@ import { readFileSync } from 'node:fs';
 const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const code = (s: string) => s.replace(/^\s*(\/\/|\*|\/\*).*$/gm, '');
 
-test('PIN: the poll gives the consume pipeline an epoch seam whose receive switch is READ from the flags, never fixed on', () => {
+test('PIN: the epoch seam is installed ONLY through the gate on the receive switch, read from the flags and never fixed on', () => {
   const lbp = code(read('./live-book-poll.ts'));
-  assert.match(lbp, /epoch: buildEpochSeam\(\{/);
-  assert.match(lbp, /receiveOn: readPsiEpochFlags\(\)\.receive,/);
+  assert.match(lbp, /const epochFlags = readPsiEpochFlags\(\);/);
+  assert.match(lbp, /epoch: installEpochSeam\(epochFlags\.receive, \(\) =>\s*buildEpochSeam\(\{/);
+  assert.match(lbp, /receiveOn: epochFlags\.receive,/);
   assert.doesNotMatch(lbp, /receiveOn:\s*true/);
+  assert.doesNotMatch(lbp, /epoch: buildEpochSeam\(/, 'no unconditional install');
 });
 
-test('PIN: the seam is supplied the shared memory-only cache, the store\'s epoch writer, the reviewed hybrid opener, and a COPY of the seed from this cycle\'s one unlock', () => {
+test('PIN: the seam is supplied the shared memory-only cache, the store\'s epoch writer, the reviewed hybrid opener (through the cycle-ended-aware wrapper), and a COPY of the seed from this cycle\'s one unlock', () => {
   const lbp = code(read('./live-book-poll.ts'));
   assert.match(lbp, /cache: epochPairSecretCache,/);
   assert.match(lbp, /adopt: adoptPsiEpoch,/);
-  assert.match(lbp, /openHybridForCycle\(owner, hybrid\)\(pkg\)/);
-  assert.match(lbp, /asMailboxEnvelopePackage\(blob\)/);
-  assert.match(lbp, /extractRawSign\(await cycle\.key\(\)\)\.seed\.slice\(\)/);
+  assert.match(lbp, /openPackage: \(blob\) => openEpochPackage\(blob, \{ asPackage: asMailboxEnvelopePackage, open: hybrid \? openHybridForCycle\(owner, hybrid\) : async \(\) => null \}\),/);
+  assert.match(lbp, /ownerSeed: ownerSeedFromCycle\(cycle\),/);
+  assert.match(code(read('./epoch-seam.ts')), /extractRawSign\(await cycle\.key\(\)\)\.seed\.slice\(\)/);
+});
+
+test('PIN: the poll never zeroes the unlocked key\'s own seed (it is the buffer the rest of the cycle signs with); only the seam\'s copy is zeroed', () => {
+  const lbp = code(read('./live-book-poll.ts'));
+  assert.doesNotMatch(lbp, /extractRawSign\([^)]*\)[^;]*\.fill\(0\)/);
+  const seam = code(read('./epoch-seam.ts'));
+  assert.match(seam, /seed\?\.fill\(0\)/);
 });
 
 test('PIN: a locked or ended cycle gives no seed (cannot verify), it does not throw out of the seam', () => {
   const lbp = code(read('./live-book-poll.ts'));
-  assert.match(lbp, /ownerSeed: async \(\) => \{\s*try \{\s*return extractRawSign\(await cycle\.key\(\)\)\.seed\.slice\(\);\s*\} catch \{\s*return null;/);
+  assert.match(code(read('./epoch-seam.ts')), /return async \(\) => \{\s*try \{\s*return extractRawSign\(await cycle\.key\(\)\)\.seed\.slice\(\);\s*\} catch \{\s*return null;/);
 });
 
 test('PIN: in the consume pipeline the epoch seam sits AFTER the receipt seam and BEFORE the contact-update decrypt, so it cannot eat or be eaten', () => {
