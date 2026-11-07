@@ -13,7 +13,9 @@ pin() { node -p "require('./pins.json').$1"; }
 fail() { echo "REHEARSAL FAILED: $*" >&2; exit 1; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 strip() { sed 's/\x1b\[[0-9;]*m//g'; }
-W=build/rehearsal; rm -rf "$W"; mkdir -p "$W"
+unset REHEARSAL   # the real-shaped chain below runs WITHOUT the rehearsal flag; only the NEGs that set a test seam pass REHEARSAL=1
+W=build/rehearsal; rm -rf "$W"; mkdir -p "$W/tmp"
+export TMPDIR="$PWD/$W/tmp"   # contribute.sh's private copy of its input lands here, so we can assert it cleans up after itself
 # the prepared file: build it if absent (temp + rename), then it MUST equal the pinned hash
 [ -s build/ptau_prepared.ptau ] || { $S powersoftau prepare phase2 "$PSE_PTAU" build/ptau_prepared.ptau.tmp >/dev/null && mv build/ptau_prepared.ptau.tmp build/ptau_prepared.ptau; }
 [ "$(sha build/ptau_prepared.ptau)" = "$(pin phase1_ptau.prepared_sha256)" ] || fail "prepared ptau differs from the pin"
@@ -31,9 +33,11 @@ for i in 0 1 2; do
   [ "$(stage_sha "$res")" = "$(sha "$out")" ] || fail "printed stage sha256 != file sha256 for $n"
   prev=$out
 done
+[ -z "$(ls -A "$TMPDIR")" ] || fail "contribute.sh left its private temp dir behind: $(ls -A "$TMPDIR")"
+echo "ASSERT contribute.sh left no private temp dir behind"
 BEACON=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')   # rehearsal only: the real one is pre-announced
 $S zkey beacon $W/z3.zkey $W/final.zkey "$BEACON" 10 -n="rehearsal beacon" >/dev/null
-v=$($S zkey verify build/slotbind.r1cs build/ptau_prepared.ptau $W/final.zkey 2>&1 | strip) || fail "final zkey verify exited nonzero"
+v=$($S zkey verify build/slotbind.r1cs build/ptau_prepared.ptau $W/final.zkey 2>&1 | strip) || fail "final zkey verify exited nonzero. Its output: $v"
 grep -q 'ZKey Ok!' <<<"$v" || fail "final chain: ZKey Ok! missing"
 got=$(sed -n 's/^\[INFO\]  snarkJS: contribution #\([0-9]*\) \(.*\):$/\1 \2/p' <<<"$v" | sort -n | cut -d' ' -f2- | paste -sd'|')
 [ "$got" = "archie|weft|peter|rehearsal beacon" ] || fail "final chain list is [$got]"
@@ -56,11 +60,12 @@ in1=$W/z1.zkey; in1sha=$(sha $in1)
 neg "wrong hand-off sha"        "does not match the expected hand-off" ceremony/contribute.sh $in1 $W/n1.zkey weft "$(printf '0%.0s' {1..64})" "archie|weft"
 neg "dropped contribution"      "chain contribution list is" ceremony/contribute.sh $in1 $W/n2.zkey weft "$in1sha" "weft"
 neg "wrong last name"           "must end with this contributor's name" ceremony/contribute.sh $in1 $W/n3.zkey weft "$in1sha" "archie|peter"
-neg "swapped ptau (the PSE file, not the prepared one)" "ptau is not the pinned prepared file" env PTAU="$PSE_PTAU" ceremony/contribute.sh $in1 $W/n4.zkey weft "$in1sha" "archie|weft"
+neg "swapped ptau (the PSE file, not the prepared one)" "ptau is not the pinned prepared file" env REHEARSAL=1 PTAU="$PSE_PTAU" ceremony/contribute.sh $in1 $W/n4.zkey weft "$in1sha" "archie|weft"
 sed 's/"snarkjs_cli_cjs_sha256": "./"snarkjs_cli_cjs_sha256": "0/' pins.json > $W/pins_bad.json
-neg "unpinned snarkjs"          "build/cli.cjs differs from the pin" env PINS=$W/pins_bad.json ceremony/contribute.sh $in1 $W/n5.zkey weft "$in1sha" "archie|weft"
+neg "unpinned snarkjs"          "build/cli.cjs differs from the pin" env REHEARSAL=1 PINS=$W/pins_bad.json ceremony/contribute.sh $in1 $W/n5.zkey weft "$in1sha" "archie|weft"
+neg "test seam outside a rehearsal" "outside a rehearsal" env -u REHEARSAL PINS=$W/pins_bad.json ceremony/contribute.sh $in1 $W/n7.zkey weft "$in1sha" "archie|weft"
 neg "timeout"                   "timed out" env LIMIT=1 ceremony/contribute.sh $in1 $W/n6.zkey weft "$in1sha" "archie|weft"
-for f in n1 n2 n3 n4 n5 n6; do [ ! -e $W/$f.zkey ] || fail "NEG left an output zkey: $f"; done
+for f in n1 n2 n3 n4 n5 n6 n7; do [ ! -e $W/$f.zkey ] || fail "NEG left an output zkey: $f"; done
 echo "ASSERT no NEG left an output zkey"
 # other-chain vkey must reject this proof (and exit nonzero)
 $S groth16 setup build/slotbind.r1cs build/ptau_prepared.ptau $W/o0.zkey >/dev/null

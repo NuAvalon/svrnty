@@ -20,6 +20,8 @@ IN=$(realpath -e -- "$1") || die "input zkey $1 not found"
 OUT=$(realpath -m -- "$2"); NAME=$3; EXP_IN=$4; EXP_CHAIN=$5
 cd "$(dirname "$0")/.."
 SEAMS=""; for v in PINS R1CS PTAU; do [ -z "${!v:-}" ] || SEAMS="$SEAMS $v"; done   # which test seams the caller set (a real run sets none)
+# A test seam outside a rehearsal is refused (S2): in a real ceremony a stray PINS/R1CS/PTAU would otherwise only be PRINTED on the transcript, and nobody might read it.
+[ -z "$SEAMS" ] || [ "${REHEARSAL:-}" = 1 ] || die "test seam(s) set ($SEAMS ) outside a rehearsal; unset them (REHEARSAL=1 is for ceremony/rehearsal.sh only)"
 PINS=${PINS:-pins.json}   # test seam for the NEGs only; the real run never sets it
 R1CS=${R1CS:-build/slotbind.r1cs}; PTAU=${PTAU:-build/ptau_prepared.ptau}; LIMIT=${LIMIT:-300}
 S=node_modules/.bin/snarkjs
@@ -35,10 +37,12 @@ pin() { node -p "require('./$PINS').$1"; }
 # 2. the circuit and the phase-1 base are the pinned ones
 [ "$(sha256sum "$R1CS" | cut -d' ' -f1)" = "$(pin r1cs_sha256)" ] || die "r1cs differs from the pin"
 [ "$(sha256sum "$PTAU" | cut -d' ' -f1)" = "$(pin phase1_ptau.prepared_sha256)" ] || die "ptau is not the pinned prepared file"
-# 3. the hand-off pin
-[ "$(sha256sum "$IN" | cut -d' ' -f1)" = "$EXP_IN" ] || die "input zkey sha256 does not match the expected hand-off sha256"
+# 3. the hand-off pin, checked on a PRIVATE COPY (S1): the copy is what snarkjs reads, so whoever can write $IN cannot swap it between the check and the use
+WORK=$(mktemp -d) || die "cannot make a private temp dir"; chmod 700 "$WORK"; trap 'rm -rf "$WORK"' EXIT
+cp -- "$IN" "$WORK/in.zkey" || die "cannot copy the input zkey"
+[ "$(sha256sum "$WORK/in.zkey" | cut -d' ' -f1)" = "$EXP_IN" ] || die "input zkey sha256 does not match the expected hand-off sha256"
 # contribute
-if ! { head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; } | timeout "$LIMIT" $S zkey contribute "$IN" "$OUT" --name="$NAME" >/dev/null 2>&1; then
+if ! { head -c 64 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; } | timeout "$LIMIT" $S zkey contribute "$WORK/in.zkey" "$OUT" --name="$NAME" >/dev/null 2>&1; then
   rm -f "$OUT"; die "contribute exited nonzero or timed out after ${LIMIT}s (no output kept)"
 fi
 LOG="$OUT.verify.log"
