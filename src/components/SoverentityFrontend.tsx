@@ -283,11 +283,13 @@ export function SoverentityFrontend({
   /** Binary .svrnty only: daily passphrase unlock vs v4 seed-only (lost passphrase). */
   const [restorePath, setRestorePath] = useState<'passphrase' | 'seed'>('passphrase');
   /** After plaintext restore: kept Known vs skipped unbindable rows. Not an error. */
-  // The gate instance starts empty (a lock must not bring back an old note); the Identity-tab instance starts from the page's note, which the gate instance set
-  // just before it was replaced.
-  const [plaintextImportNote, setPlaintextImportNoteLocal] = useState<string | null>(existingIdentity ? (importNote ?? null) : null);
+  // Where the note lives. The Identity-tab instance SHOWS the page's note (no copy of its own, so when the page clears it on a lock or an identity change it
+  // is gone here too); the gate instance keeps its own, because it has no page-held identity to belong to. Every change is reported to the page, which is
+  // what carries a note set at the gate across the swap to the tab instance.
+  const [localImportNote, setLocalImportNote] = useState<string | null>(null);
+  const plaintextImportNote = onImportNoteChange && existingIdentity ? (importNote ?? null) : localImportNote;
   const setPlaintextImportNote = (note: string | null) => {
-    setPlaintextImportNoteLocal(note);
+    setLocalImportNote(note);
     onImportNoteChange?.(note);
   };
   /** Do-No-Harm: after opening a v3 backup, prompt re-export before a loss event. */

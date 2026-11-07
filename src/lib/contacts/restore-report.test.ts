@@ -95,13 +95,28 @@ test('PIN: the module projects nothing (no spread of the contact) and still logs
   assert.match(mod, /await add\(contact as never\);/);
 });
 
-test('PIN: the PAGE holds the note and gives it to BOTH mounts of the component (the gate, and the Identity tab that replaces it); the gate starts empty, the tab starts from the page, and every change is reported up', () => {
+test('PIN: the PAGE holds the note and gives it to BOTH mounts of the component; the tab SHOWS the page note (no copy of its own), the gate keeps its own, and every change is reported up', () => {
   const page = strip(readFileSync(new URL('../../../app/page.tsx', import.meta.url), 'utf8'));
   assert.match(page, /const \[importNote, setImportNote\] = useState<string \| null>\(null\);/);
   assert.equal((page.match(/importNote=\{importNote\}/g) ?? []).length, 2, 'both mounts');
   assert.equal((page.match(/onImportNoteChange=\{setImportNote\}/g) ?? []).length, 2, 'both mounts');
-  assert.match(frontend, /useState<string \| null>\(existingIdentity \? \(importNote \?\? null\) : null\)/);
-  assert.match(frontend, /setPlaintextImportNoteLocal\(note\);\s*onImportNoteChange\?\.\(note\);/);
+  assert.match(frontend, /const plaintextImportNote = onImportNoteChange && existingIdentity \? \(importNote \?\? null\) : localImportNote;/);
+  assert.match(frontend, /setLocalImportNote\(note\);\s*onImportNoteChange\?\.\(note\);/);
+});
+
+test('PIN: the page drops the note when the identity becomes null (every lock path, and every switch, which goes through the locked screen) or changes to another, and not when it first appears', () => {
+  const page = strip(readFileSync(new URL('../../../app/page.tsx', import.meta.url), 'utf8'));
+  assert.match(page, /const noteIdentityFp: string \| null = identity\?\.identity\?\.fingerprint \?\? null;/);
+  assert.match(page, /if \(previous !== null && previous !== noteIdentityFp\) setImportNote\(null\);/);
+  assert.match(page, /\}, \[noteIdentityFp\]\);/);
+});
+
+test('PIN: the note is memory only: it never reaches localStorage, sessionStorage or the database', () => {
+  const page = strip(readFileSync(new URL('../../../app/page.tsx', import.meta.url), 'utf8'));
+  for (const src of [page, frontend]) {
+    assert.doesNotMatch(src, /(local|session)Storage\.\w+\([^)]*(importNote|ImportNote)/);
+    assert.doesNotMatch(src, /(storeIdentity|txPut|setSetting|saveLocalMethods)\([^)]*(importNote|ImportNote)/);
+  }
 });
 
 test('PIN: a real-browser spec drives the whole restore and asserts the note on the screen (the source pins above cannot see a remount)', () => {
@@ -109,4 +124,6 @@ test('PIN: a real-browser spec drives the whole restore and asserts the note on 
   assert.match(spec, /getByTestId\('plaintext-import-note'\)/);
   assert.match(spec, /toBeVisible\(\{ timeout: 10_000 \}\)/);
   assert.match(spec, /1 of 3 contacts from the backup are on this device\./);
+  assert.match(spec, /after a lock and unlock the note is gone/);
+  assert.match(spec, /switching to another identity on the same device shows no note/);
 });
