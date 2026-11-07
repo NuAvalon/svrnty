@@ -455,7 +455,7 @@ async function txPutMany(ops: TxOp[]): Promise<void> {
     for (const op of ops) {
       const store = tx.objectStore(op.store);
       const req = 'delete' in op ? store.delete(op.delete) : store.put(op.value);
-      req.onerror = () => { firstError = req.error; }; // capture (e.g. ConstraintError) before the abort
+      req.onerror = () => { firstError = firstError ?? req.error; }; // capture the FIRST error (e.g. ConstraintError) before the abort; later requests report AbortError
     }
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onabort = () => { db.close(); reject(firstError ?? tx.error ?? new Error('transaction aborted')); };
@@ -1089,7 +1089,8 @@ export function commitIfUnchanged(db: IDBDatabase, expects: Expect[], ops: TxOp[
       for (const op of ops) {
         const store = tx.objectStore(op.store);
         const req = 'delete' in op ? store.delete(op.delete) : store.put(op.value);
-        req.onerror = () => { firstError = req.error; };
+        // The FIRST error is the real one: once a write fails the transaction aborts, and every request still pending reports an AbortError after it.
+        req.onerror = () => { firstError = firstError ?? req.error; };
       }
     };
     for (const e of expects) {
@@ -1098,7 +1099,7 @@ export function commitIfUnchanged(db: IDBDatabase, expects: Expect[], ops: TxOp[
         if (!sameStoredRow((req.result ?? null) as StoredRow, e.expected)) conflict = true;
         if (--waiting === 0) settle();
       };
-      req.onerror = () => { firstError = req.error; };
+      req.onerror = () => { firstError = firstError ?? req.error; };
     }
     if (expects.length === 0) settle();
     tx.oncomplete = () => { db.close(); resolve(true); };
