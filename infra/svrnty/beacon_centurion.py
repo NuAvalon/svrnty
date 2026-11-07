@@ -37,6 +37,10 @@ VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"
 _CANON = re.compile(r"^(0|[1-9][0-9]{0,76})$")
 ACCEPTED = b'{"status":"accepted"}'
 ALREADY = b'{"status":"already"}'
+MATCH = b'{"status":"match"}'
+NONE = b'{"status":"none"}'
+WITHDRAWN = b'{"status":"withdrawn"}'
+NONCE_TTL_SECONDS = 60
 _REASONS = {"wire", "epoch", "point:pi_a:identity", "point:pi_a:off-curve", "point:pi_c:identity", "point:pi_c:off-curve",
             "point:pi_b:identity", "point:pi_b:off-curve", "point:pi_b:not-in-subgroup", "vkey", "proof", "usage",
             "internal", "timeout", "rate", "full"}
@@ -102,6 +106,10 @@ def parse_verifier_output(code: int, out: bytes) -> dict:
     if not all(isinstance(res[k], str) and _CANON.match(res[k]) for k in ("e", "H_e", "N", "K")):
         return bad
     return res
+
+
+def parse_auth_output(code: int, out: bytes) -> bool:
+    return False   # STUB (tests first)
 
 
 def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: str, at: str) -> None:
@@ -206,3 +214,16 @@ class Centurion:
             raise
         finally:
             db.close()
+
+    # STUB (tests first): poll / withdraw / nonce refuse everything until the implementation commit.
+    def nonce(self, raw: bytes, ip: str) -> bytes:
+        return refused("internal")
+
+    def _authenticate(self, req: dict) -> bool:
+        return False
+
+    def poll(self, raw: bytes, ip: str) -> bytes:
+        return refused("internal")
+
+    def withdraw(self, raw: bytes, ip: str) -> bytes:
+        return refused("internal")

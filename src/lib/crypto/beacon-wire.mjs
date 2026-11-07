@@ -145,3 +145,14 @@ export function serializeProof(p) {
 export function serializeDeposit(d) {
   return JSON.stringify({ proof: serializeProof(d.proof), publicSignals: serializeSignals(d.signals) });
 }
+
+// ---- Poll / withdraw authentication (K = Poseidon(DS_K, pk_lo, pk_hi); Ed25519 over a domain-separated message) ----
+// STUB (tests first): every export below throws until the implementation commit.
+export const K_TAG = 'svrnty:588:k:v1';
+export const AUTH_OPS = Object.freeze({ poll: 'svrnty:588:poll:v1', withdraw: 'svrnty:588:withdraw:v1' });
+export function asciiTag(_s) { throw new Error('not implemented'); }
+export const DS_K = 0n;
+export function be32(_v) { throw new Error('not implemented'); }
+export function pkSplit(_pk) { throw new Error('not implemented'); }
+export function kInputs(_pk) { throw new Error('not implemented'); }
+export function authMessage(_op, _H_e, _N, _nonce) { throw new Error('not implemented'); }
