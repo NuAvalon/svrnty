@@ -65,6 +65,7 @@ import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/id
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
+import { contactBookEntries, importContactBook, importMessage } from '@/lib/contacts/book-import';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -783,23 +784,21 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
     try {
       setLoading(true);
       setImportError(null);
-      const parsed = JSON.parse(importData);
-      const contactList = Array.isArray(parsed) ? parsed : (parsed.contacts || []);
-      for (const c of contactList) {
-        if (c.fingerprint && c.public_key) {
-          await addContact(fingerprint, {
-            name: c.name || c.display_name || 'Unknown',
-            email: c.email || '',
-            fingerprint: c.fingerprint,
-            public_key: c.public_key,
-            trust_level: c.trust_level || 'unverified',
-            metadata: c.metadata,
-          });
-        }
+      const entries = contactBookEntries(importData);
+      // A file carries identity only: book-import builds each contact field by field, always 'unverified', and the store still checks every binding.
+      const summary = await importContactBook(entries, (contact) => addContact(fingerprint, contact));
+      await loadContacts();
+      const message = importMessage(summary);
+      if (message) {
+        setImportError(message);
+        return;
+      }
+      if (summary.total === 0) {
+        setImportError('No contacts found in that file.');
+        return;
       }
       setImportData('');
       setShowImportDialog(false);
-      await loadContacts();
     } catch (err) {
       if (err instanceof SyntaxError) {
         setImportError('Invalid JSON format');
