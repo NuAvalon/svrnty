@@ -5,6 +5,7 @@
 // C2 / Invariant-1: the ONE crypto import this storage layer takes —
 // a fail-closed fingerprint↔key binding check so no caller can persist a forged contact.
 import { fingerprintMatchesKey } from './fingerprint';
+import { restoreVaultContacts, type VaultContactsReport } from '../contacts/restore-report';
 // Type-only (erased at compile — no runtime import, no cycle): the shape importVaultContents persists.
 import type { VaultContents } from '../sync/vault';
 // enc-b crypto seam (Flint ◆5701/◆5702, KB#89159): per-contact encryption. deriveContactCryptoKeys
@@ -1680,6 +1681,14 @@ export async function importVaultContents(
   contents: VaultContents,
   fingerprint: string,
 ): Promise<string> {
+  return (await importVaultContentsReport(contents, fingerprint)).fingerprint;
+}
+
+/** importVaultContents, plus what happened to the contacts: how many restored and which the store refused (named, with a plain reason). */
+export async function importVaultContentsReport(
+  contents: VaultContents,
+  fingerprint: string,
+): Promise<{ fingerprint: string; contacts: VaultContactsReport }> {
   const fp = (fingerprint || contents.identity?.identity?.fingerprint || '').trim();
   if (!fp) throw new Error('Invalid vault: no fingerprint');
 
@@ -1718,18 +1727,10 @@ export async function importVaultContents(
   // A single unbindable/malformed contact is skipped (fail-closed) rather than aborting
   // the whole restore: the identity + keys are the launch-blocker, not one bad contact.
   const contacts = (contents.trustGraph as unknown as { contacts?: any[] } | null)?.contacts;
-  if (Array.isArray(contacts)) {
-    for (const contact of contacts) {
-      try {
-        await addContact(fp, contact);
-      } catch (e) {
-        console.warn('[restore] skipped a contact that failed to persist:', (e as Error)?.message);
-      }
-    }
-  }
+  const contactsReport = await restoreVaultContacts(contacts, (contact) => addContact(fp, contact));
 
   await setActiveFingerprint(fp);
-  return fp;
+  return { fingerprint: fp, contacts: contactsReport };
 }
 
 // ── Check if identity exists (for UI flow) ──────────────────────

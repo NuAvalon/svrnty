@@ -17,11 +17,12 @@
 
 import { readPrivateKey, decryptKey } from 'openpgp';
 import type { VaultContents } from '@/lib/sync/vault';
+import type { VaultContactsReport } from '@/lib/contacts/restore-report';
 import { reconstructCanonicalIdentityForRestore } from '@/lib/identity/fingerprint';
 import {
   initSessionKey,
   isSessionUnlocked,
-  importVaultContents,
+  importVaultContentsReport,
 } from '@/lib/identity/client-store';
 
 /**
@@ -34,6 +35,14 @@ export async function restoreIdentityFromVault(
   contents: VaultContents,
   vaultPassphrase: string,
 ): Promise<string> {
+  return (await restoreIdentityFromVaultReport(contents, vaultPassphrase)).fingerprint;
+}
+
+/** restoreIdentityFromVault, plus what happened to the contacts (restored, and which were refused, named). */
+export async function restoreIdentityFromVaultReport(
+  contents: VaultContents,
+  vaultPassphrase: string,
+): Promise<{ fingerprint: string; contacts: VaultContactsReport }> {
   const classical = contents.keys?.classical;
   if (!classical?.privateKey) {
     throw new Error('This backup is missing its identity key and cannot be restored.');
@@ -81,5 +90,5 @@ export async function restoreIdentityFromVault(
   }
 
   // (c) Persist identity + keys + pq + recovery-vault + contacts under the DERIVED fp.
-  return importVaultContents(contents, derivedFp);
+  return importVaultContentsReport(contents, derivedFp);
 }

@@ -52,7 +52,8 @@ const MAX_KEY_CHARS = 16384;
 const MAX_NAME = 120;
 const MAX_EMAIL = 254;
 const MAX_LABEL = 60;
-const SHOWN = 5;
+/** At most this many names are listed in a message; the rest are counted ("and K more"). */
+export const MAX_NAMED = 5;
 const CANONICAL_FP = /^[0-9a-f]{64}$/;
 
 const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -61,16 +62,18 @@ function cleanText(v: unknown, max: number): string {
   return asString(v).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-function safeLabel(v: unknown): string {
+/** A name from an untrusted file or backup, made safe to show: control characters removed, length capped. */
+export function safeContactLabel(v: unknown): string {
   const s = cleanText(v, 100000);
   if (!s) return 'Unnamed contact';
   return s.length > MAX_LABEL ? `${s.slice(0, MAX_LABEL)}…` : s;
 }
 
 /** Plain words for why the store refused; the raw error text is never shown. */
-function reasonFor(err: unknown): string {
+export function storeRefusalReason(err: unknown): string {
   const m = err instanceof Error ? err.message : '';
   if (m.includes('binding failed')) return 'its key does not match its fingerprint';
+  if (m.includes('verify-before-trust')) return 'it was marked trusted without a recorded verification';
   if (m.includes('Session locked')) return 'the app is locked';
   return 'could not be saved';
 }
@@ -125,7 +128,7 @@ export async function importContactBook(entries: unknown[], add: (contact: Impor
     return summary;
   }
   for (const entry of entries) {
-    const label = safeLabel((entry as { name?: unknown } | null)?.name ?? (entry as { display_name?: unknown } | null)?.display_name);
+    const label = safeContactLabel((entry as { name?: unknown } | null)?.name ?? (entry as { display_name?: unknown } | null)?.display_name);
     const problem = entryProblem(entry);
     const contact = problem === null ? toImportedContact(entry) : null;
     if (!contact) {
@@ -137,7 +140,7 @@ export async function importContactBook(entries: unknown[], add: (contact: Impor
       if (outcome === 'existing') summary.existing++;
       else summary.added++;
     } catch (err) {
-      summary.failed.push({ label, reason: reasonFor(err) });
+      summary.failed.push({ label, reason: storeRefusalReason(err) });
     }
   }
   return summary;
@@ -148,7 +151,7 @@ export function importMessage(s: ImportSummary): string | null {
   if (s.refused) return s.refused;
   const counts = `Added ${s.added}, already in your contacts ${s.existing}`;
   if (s.failed.length === 0) return s.existing > 0 ? `${counts}.` : null;
-  const shown = s.failed.slice(0, SHOWN).map((f) => `${f.label} (${f.reason})`).join('; ');
-  const more = s.failed.length > SHOWN ? `; and ${s.failed.length - SHOWN} more` : '';
+  const shown = s.failed.slice(0, MAX_NAMED).map((f) => `${f.label} (${f.reason})`).join('; ');
+  const more = s.failed.length > MAX_NAMED ? `; and ${s.failed.length - MAX_NAMED} more` : '';
   return `${counts}, not imported ${s.failed.length} of ${s.total}. Not imported: ${shown}${more}.`;
 }
