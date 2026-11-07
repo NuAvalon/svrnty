@@ -6,6 +6,7 @@ import { VaultExportDialog } from '@/components/export/VaultExportDialog';
 import { ExportAuthGate } from '@/components/export/ExportAuthGate';
 import { getBrowserIdentity } from '@/lib/identity/browser-identity';
 import { loadKey, storeKey, loadPQKeys, loadIdentity, initSessionKey, isSessionUnlocked, storeIdentity, getAllContacts, formatPlaintextImportReport, importPlaintextContacts } from '@/lib/identity/client-store';
+import { formatVaultRestoreReport } from '@/lib/contacts/restore-report';
 import { sendContactUpdate } from '@/lib/sync/send-contact-update';
 import { buildMethodDelta } from '@/lib/contacts/method-send-delta';
 import { base64ToUint8 } from '@/lib/crypto/pq';
@@ -847,8 +848,11 @@ export function SoverentityFrontend({
         // the session key for at-rest equivalence, mirroring genesis + the recovery-code
         // path (restoreIdentityFromSeedVault). Runs BEFORE setIdentity so a vault that
         // fails its integrity check throws here and never reaches the main surface.
-        const { restoreIdentityFromVault } = await import('@/components/recovery/vaultPassphraseRestore');
-        await restoreIdentityFromVault(contents, vaultPassphrase);
+        const { restoreIdentityFromVaultReport } = await import('@/components/recovery/vaultPassphraseRestore');
+        const restored = await restoreIdentityFromVaultReport(contents, vaultPassphrase);
+        // A contact the store refused is skipped, not fatal; the owner is told how many and which (same note as the plain-backup import).
+        const skippedNote = formatVaultRestoreReport(restored.contacts);
+        if (skippedNote) setPlaintextImportNote(skippedNote);
 
         setIdentity(contents.identity);
         onIdentityUpdate?.(contents.identity);
