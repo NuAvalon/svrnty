@@ -261,3 +261,31 @@ def test_poll_body_is_strict_and_refused_before_spawning(cen, keys, patch, monke
 ])
 def test_auth_output_is_parsed_fail_closed(stdout, code, ok):
     assert bc.parse_auth_output(code, stdout) is ok
+
+
+FIX = os.environ.get("BEACON_FIXTURES")
+
+
+@pytest.mark.skipif(not (FIX and os.path.exists(os.path.join(FIX or "", "seeds.json"))),
+                    reason="needs the THROWAWAY distinct-K fixtures with seeds (v3+) in $BEACON_FIXTURES")
+def test_real_proofs_distinct_k_each_owner_polls_only_its_own_nullifier(tmp_path):
+    """Two REAL proofs at one slot with DISTINCT K (each Poseidon of its own Ed25519 key), through the pinned snarkjs and the
+    real auth.mjs: before the 2nd deposit A sees no match; after it, each key sees the match for its OWN N only."""
+    seeds = json.load(open(os.path.join(FIX, "seeds.json")))
+    pub = {w: json.load(open(os.path.join(FIX, f"public_{w}e.json"))) for w in "AB"}
+    e, slot = pub["A"][0], pub["A"][1]
+    assert pub["B"][1] == slot and pub["A"][2] != pub["B"][2] and pub["A"][3] != pub["B"][3]
+    for w in "AB":                              # the seed's key hashes to exactly the K inside its proof
+        assert client(seeds[w]["seed_hex"], "poll", "1", "1", "00" * 32)["K"] == pub[w][3]
+    c = bc.Centurion(str(tmp_path / "real.db"), vkey_path=os.path.join(FIX, "vkey.json"), node=NODE,
+                     clock=lambda: int(e) * bc.EPOCH_SECONDS + 5, per_epoch_cap=10, ip_per_minute=100, timeout_s=60)
+    dep_body = lambda w: json.dumps({"proof": json.load(open(os.path.join(FIX, f"proof_{w}e.json"))),
+                                     "publicSignals": pub[w]}).encode()
+    nA, nB, sA, sB = pub["A"][2], pub["B"][2], seeds["A"]["seed_hex"], seeds["B"]["seed_hex"]
+    assert c.deposit(dep_body("A"), "a") == bc.ACCEPTED
+    assert call(c, "poll", sA, slot, nA) == bc.NONE                          # 13b with a real proof
+    assert c.deposit(dep_body("B"), "b") == bc.ACCEPTED
+    assert call(c, "poll", sA, slot, nB) == AUTH_REFUSED                     # A's key can't poll B's nullifier
+    assert call(c, "withdraw", sA, slot, nB) == AUTH_REFUSED                 # ...or withdraw it
+    assert call(c, "poll", sA, slot, nA) == bc.MATCH                         # A sees its own
+    assert call(c, "poll", sB, slot, nB) == bc.MATCH                         # B sees its own
