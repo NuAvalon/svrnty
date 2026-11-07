@@ -183,6 +183,35 @@ jobs:
             fi
           fi
 
+      # ---- Satellite Python tests (infra/svrnty) -------------------------------------------------------
+      # A step of `unified` for the same reason as the claim sweep: `unified` is the only required check.
+      # The image is built from THIS checkout's infra/svrnty/Dockerfile (the image self-host runs: liboqs,
+      # pinned fastapi/cryptography), plus pinned pytest/httpx. EACH test file runs in its own container,
+      # because the files set env at import, with --network none. Fails closed: no test files, an empty
+      # collection (pytest exit 5) or any failing file fails `unified`. Per-file tallies go to the summary.
+      - name: Satellite Python tests — every infra/svrnty/test_*.py, one process each, offline (blocking)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(infra/svrnty/test_*.py)
+          [ "${#FILES[@]}" -gt 0 ] || { echo "::error::no infra/svrnty/test_*.py found — refusing to pass"; exit 1; }
+          docker build -q -f infra/svrnty/Dockerfile -t svrnty-sat-ci infra/svrnty
+          printf 'FROM svrnty-sat-ci\nUSER root\nRUN pip install --no-cache-dir pytest==9.0.2 httpx==0.28.1\nUSER satellite\n' \
+            | docker build -q -t svrnty-sat-ci-test -
+          FAIL=0
+          { echo "### Satellite Python tests"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          for path in "${FILES[@]}"; do
+            f="${path#infra/svrnty/}"
+            rc=0
+            out="$(docker run --rm --network none -v "$PWD/infra/svrnty:/src:ro" -w /src -e HOME=/tmp \
+                     -e REG_FILE=/src/registration.py svrnty-sat-ci-test \
+                     timeout 300 python3 -m pytest -q -p no:cacheprovider "$f" 2>&1)" || rc=$?
+            echo "- $f: $(printf '%s\n' "$out" | tail -1) (exit $rc)" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$rc" -ne 0 ]; then FAIL=1; printf '%s\n' "$out" | tail -80; fi
+          done
+          [ "$FAIL" -eq 0 ] || { echo "::error::satellite Python tests failed (see the per-file lines above)"; exit 1; }
+
       - name: Summary
         if: always()
         run: |
