@@ -4,7 +4,8 @@
 // pinned signal order [e, H_e, N, K]. Every accepted input round-trips byte-for-byte, and dedupe keys are bigints.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { R, Q, MAX_DIGITS, parseSignals, serializeSignals, parseProof, parseDeposit, WireError } from './beacon-wire.mjs';
+import { R, Q, MAX_DIGITS, MAX_DEPOSIT_BYTES, parseSignals, serializeSignals, parseProof, parseDeposit, serializeProof,
+  serializeDeposit, WireError } from './beacon-wire.mjs';
 
 const R_STR = '21888242871839275222246405745257275088548364400416034343698204186575808495617';
 const Q_STR = '21888242871839275222246405745257275088696311157297823662689037894645226208583';
@@ -117,4 +118,28 @@ test('deposit = { proof, publicSignals } and NOTHING else (slot/N/K are derived,
   refused(() => parseDeposit('not json'));
   refused(() => parseDeposit(JSON.stringify([PROOF, SIG])));
   refused(() => parseDeposit('x'.repeat(65 * 1024)));                     // raw size cap before JSON.parse
+});
+
+test('the size cap counts UTF-8 BYTES, not UTF-16 code units', () => {
+  const three = '\u20ac';                                     // 1 code unit, 3 UTF-8 bytes
+  const body = three.repeat(Math.floor(MAX_DEPOSIT_BYTES / 3) + 10);
+  assert.ok(body.length < MAX_DEPOSIT_BYTES);                // under the cap by code units...
+  assert.throws(() => parseDeposit(body), (e) => e instanceof WireError && /too large/.test(e.message));   // ...over it in bytes
+});
+
+test('serializeDeposit is the one serializer: both round trips hold', () => {
+  const canonical = JSON.stringify({ proof: PROOF, publicSignals: SIG });
+  const parsed = parseDeposit(canonical);
+  assert.equal(serializeDeposit(parsed), canonical);         // serialize(parse(s)) === s
+  assert.deepEqual(parseDeposit(serializeDeposit(parsed)), parsed);   // parse(serialize(x)) deep-equals x
+  assert.deepEqual(serializeProof(parsed.proof), PROOF);
+  assert.throws(() => serializeProof({ ...parsed.proof, pi_a: [Q, 2n] }), WireError);
+});
+
+test('a duplicated JSON key resolves ONCE, at parse: what is serialized is what was parsed', () => {
+  const body = `{"proof":${JSON.stringify(PROOF)},"publicSignals":${JSON.stringify(SIG)},` +
+    `"publicSignals":${JSON.stringify(['7', '1', '2', '3'])}}`;
+  const parsed = parseDeposit(body);                          // JSON.parse keeps the LAST value
+  assert.equal(parsed.signals.N, 2n);
+  assert.deepEqual(JSON.parse(serializeDeposit(parsed)).publicSignals, ['7', '1', '2', '3']);
 });

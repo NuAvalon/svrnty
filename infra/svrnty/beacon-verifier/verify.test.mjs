@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildBn128 } from 'ffjavascript';
-import { epochOk, checkPoints, EPOCH_SECONDS, GRACE_SECONDS } from './verify.mjs';
+import { epochOk, checkPoints, verifyDeposit, EPOCH_SECONDS, GRACE_SECONDS } from './verify.mjs';
 import { R } from '../../../src/lib/crypto/beacon-wire.mjs';
 
 const VERIFY = new URL('./verify.mjs', import.meta.url).pathname;
@@ -144,3 +144,16 @@ test('a VALID throwaway proof is accepted and prints the canonical tuple; its N 
     const bad = run(JSON.stringify({ proof, publicSignals: alias }), { vkeyPath, vkeySha: sha(readFileSync(vkeyPath)), now });
     assert.deepEqual(bad.out, { ok: false, reason: 'wire' });
   });
+
+test('snarkjs receives exactly the parsed values; with a duplicated key, the N verified IS the N returned', async () => {
+  const f = await fakeSetup();
+  const seen = [];
+  const fake = async (vk, pub, proof) => { seen.push({ pub, proof }); return true; };
+  const body = `{"proof":${JSON.stringify(f.proof)},"publicSignals":["2900","12345","11111","424242"],` +
+    `"publicSignals":["2900","12345","22222","424242"]}`;
+  const out = await verifyDeposit(body, { vkeyPath: f.vkeyPath, vkeySha256: f.vkeySha, now: START + 5, groth16Verify: fake });
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].pub, ['2900', '12345', '22222', '424242']);
+  assert.equal(out.N, seen[0].pub[2]);                                     // stored N === verified N
+  assert.deepEqual(seen[0].proof, f.proof);                                // re-serialized, canonical
+});

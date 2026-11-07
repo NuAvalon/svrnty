@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { buildBn128 } from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
-import { parseDeposit, serializeSignals, R, WireError } from '../../../src/lib/crypto/beacon-wire.mjs';
+import { parseDeposit, serializeSignals, serializeProof, R, WireError } from '../../../src/lib/crypto/beacon-wire.mjs';
 
 export const EPOCH_SECONDS = 604800;
 export const GRACE_SECONDS = 600;
@@ -59,7 +59,9 @@ function args(argv) {
   return out;
 }
 
-export async function verifyDeposit(raw, { vkeyPath, vkeySha256, now }) {
+// `groth16Verify` is a test seam only (default = the pinned snarkjs). snarkjs always receives values RE-SERIALIZED from the
+// parsed bigints, never the raw body, so what is verified is exactly what the caller stores and dedupes on.
+export async function verifyDeposit(raw, { vkeyPath, vkeySha256, now, groth16Verify = snarkjs.groth16.verify }) {
   let dep;
   try {
     dep = parseDeposit(raw);
@@ -79,14 +81,7 @@ export async function verifyDeposit(raw, { vkeyPath, vkeySha256, now }) {
   const vkey = JSON.parse(vbytes.toString('utf8'));
   if (vkey.protocol !== 'groth16' || vkey.curve !== 'bn128' || vkey.nPublic !== 4) throw new Refused('vkey');
   const signals = serializeSignals(dep.signals);
-  const s = (v) => v.toString(10);
-  const proofJson = {
-    protocol: 'groth16', curve: 'bn128',
-    pi_a: [s(dep.proof.pi_a[0]), s(dep.proof.pi_a[1]), '1'],
-    pi_b: [dep.proof.pi_b[0].map(s), dep.proof.pi_b[1].map(s), ['1', '0']],
-    pi_c: [s(dep.proof.pi_c[0]), s(dep.proof.pi_c[1]), '1'],
-  };
-  if (!(await snarkjs.groth16.verify(vkey, signals, proofJson))) throw new Refused('proof');
+  if (!(await groth16Verify(vkey, signals, serializeProof(dep.proof)))) throw new Refused('proof');
   const [e, H_e, N, K] = signals;
   return { ok: true, e, H_e, N, K };
 }

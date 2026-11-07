@@ -18,7 +18,8 @@ export const R = 218882428718392752222464057452572750885483644004160343436982041
 export const Q = 21888242871839275222246405745257275088696311157297823662689037894645226208583n;
 /** Both orders have 77 decimal digits, so no canonical value is longer. */
 export const MAX_DIGITS = 77;
-/** Raw deposit body cap, checked before JSON.parse. A canonical deposit is about 1.3 KB. */
+/** Raw deposit body cap in UTF-8 BYTES (TextEncoder, so browser and node agree), checked before JSON.parse. A canonical
+ * deposit is about 1.3 KB. The satellite also caps the raw request bytes before it spawns the verifier. */
 export const MAX_DEPOSIT_BYTES = 16 * 1024;
 /** The circuit's public signal order (compiled .sym, witness indices 1..4). */
 export const SIGNAL_ORDER = Object.freeze(['e', 'H_e', 'N', 'K']);
@@ -107,7 +108,9 @@ export function parseProof(p) {
  */
 export function parseDeposit(raw) {
   if (typeof raw !== 'string') throw new WireError('deposit: not a string');
-  if (raw.length > MAX_DEPOSIT_BYTES) throw new WireError('deposit: too large');
+  if (raw.length > MAX_DEPOSIT_BYTES || new TextEncoder().encode(raw).length > MAX_DEPOSIT_BYTES) {
+    throw new WireError('deposit: too large');   // the length test first: no encoding work on a huge string
+  }
   let obj;
   try {
     obj = JSON.parse(raw);
@@ -116,4 +119,29 @@ export function parseDeposit(raw) {
   }
   exactKeys(obj, ['proof', 'publicSignals'], 'deposit');
   return { proof: parseProof(obj.proof), signals: parseSignals(obj.publicSignals) };
+}
+
+/** @param {{ pi_a: bigint[], pi_b: bigint[][], pi_c: bigint[] }} p  The canonical snarkjs JSON, built ONLY from parsed values. */
+export function serializeProof(p) {
+  const d = (v) => {
+    if (typeof v !== 'bigint' || v < 0n || v >= Q) throw new WireError('proof: coordinate out of range');
+    return v.toString(10);
+  };
+  return {
+    protocol: 'groth16',
+    curve: 'bn128',
+    pi_a: [d(p.pi_a[0]), d(p.pi_a[1]), '1'],
+    pi_b: [[d(p.pi_b[0][0]), d(p.pi_b[0][1])], [d(p.pi_b[1][0]), d(p.pi_b[1][1])], ['1', '0']],
+    pi_c: [d(p.pi_c[0]), d(p.pi_c[1]), '1'],
+  };
+}
+
+/**
+ * The ONE way to build a deposit body (the prover must use this, never its own JSON).
+ * parseDeposit(serializeDeposit(x)) deep-equals x, and serializeDeposit(parseDeposit(s)) === s for every canonical s.
+ * @param {{ proof: { pi_a: bigint[], pi_b: bigint[][], pi_c: bigint[] }, signals: { e: bigint, H_e: bigint, N: bigint, K: bigint } }} d
+ * @returns {string}
+ */
+export function serializeDeposit(d) {
+  return JSON.stringify({ proof: serializeProof(d.proof), publicSignals: serializeSignals(d.signals) });
 }
