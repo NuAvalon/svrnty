@@ -65,6 +65,7 @@ import { buildSignedIdentityCard, classifyImportedCard } from '@/lib/identity/id
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { toVCardFile } from '@/lib/contacts/vcard';
 import { toContactBookJson } from '@/lib/contacts/book-export';
+import { emptyBookCopy } from '@/lib/contacts/empty-book-copy';
 import {
   ClassicalFieldsEditor,
   fieldsFromContactInfo,
@@ -380,6 +381,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
   const trustedCount = contacts.filter((c) => isSvrnNetworkContact(c) && isTrusted(c) && !isContactBlocked(c)).length;
   const knownCount = contacts.filter((c) => isSvrnNetworkContact(c) && !isTrusted(c) && !isContactBlocked(c)).length;
   const blockedCount = contacts.filter((c) => isContactBlocked(c)).length;
+  const emptyCopy = emptyBookCopy({ searching: !!searchQuery, showBlocked, totalCount: contacts.length, blockedCount });
   const activeContacts = contacts.filter((c) => !isContactBlocked(c));
 
   const toggleSelected = (id: string) => {
@@ -1623,18 +1625,10 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                   {searchQuery ? <Search className="h-8 w-8" style={{ color: E.dim }} /> : <UserPlus className="h-8 w-8" style={{ color: E.dim }} />}
                 </div>
                 <p style={{ fontFamily: E.fontSerif, fontSize: 22, fontWeight: 300, color: E.text, margin: 0 }}>
-                  {searchQuery
-                    ? 'No matching contacts'
-                    : showBlocked
-                      ? 'No blocked contacts'
-                      : 'No contacts yet'}
+                  {emptyCopy.title}
                 </p>
                 <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
-                  {searchQuery
-                    ? 'Try a different search'
-                    : showBlocked
-                      ? 'Blocked stays out of the main book — exit via ⋯'
-                      : 'Import a VCF or add someone to start your master book'}
+                  {emptyCopy.hint}
                 </p>
               </div>
             ) : (
