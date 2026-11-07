@@ -1,0 +1,8 @@
+{
+  "name": "svrnty-beacon-verifier",
+  "private": true,
+  "type": "module",
+  "description": "Satellite-side verifier for mutual-trust beacon deposits. Never shipped to the client.",
+  "scripts": { "test": "node --test verify.test.mjs" },
+  "dependencies": { "snarkjs": "0.7.6", "ffjavascript": "0.3.1" }
+}
