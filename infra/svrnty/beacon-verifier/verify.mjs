@@ -10,7 +10,8 @@
 // pi_b in the prime-order subgroup: snarkjs checks only the curve equation and accepts the identity) -> vkey pin -> pairing.
 // The vkey file is re-hashed on every run and must equal the sha the satellite pinned at start, so a vkey that changes while
 // the satellite runs refuses every deposit until a restart re-pins it. No network, no state: the caller stores what we print.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildBn128 } from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
@@ -70,16 +71,18 @@ export async function verifyDeposit(raw, { vkeyPath, vkeySha256, now, groth16Ver
     throw e;
   }
   if (!epochOk(dep.signals.e, now)) throw new Refused('epoch');
-  const curve = await buildBn128(true);            // single-threaded: no worker can outlive us
+  const vbytes = readFileSync(vkeyPath);           // a file hash is cheaper than a G2 scalar mul: pin check first
+  if (createHash('sha256').update(vbytes).digest('hex') !== vkeySha256) throw new Refused('vkey');
+  const vkey = JSON.parse(vbytes.toString('utf8'));
+  if (vkey.protocol !== 'groth16' || vkey.curve !== 'bn128' || vkey.nPublic !== 4) throw new Refused('vkey');
+  // Our point-check curve is single-threaded. snarkjs's verify builds and caches its OWN (threaded) bn128; its worker threads
+  // die with this process, because main() always ends in process.exit.
+  const curve = await buildBn128(true);
   try {
     await checkPoints(dep.proof, curve);
   } finally {
     await curve.terminate();
   }
-  const vbytes = readFileSync(vkeyPath);
-  if (createHash('sha256').update(vbytes).digest('hex') !== vkeySha256) throw new Refused('vkey');
-  const vkey = JSON.parse(vbytes.toString('utf8'));
-  if (vkey.protocol !== 'groth16' || vkey.curve !== 'bn128' || vkey.nPublic !== 4) throw new Refused('vkey');
   const signals = serializeSignals(dep.signals);
   if (!(await groth16Verify(vkey, signals, serializeProof(dep.proof)))) throw new Refused('proof');
   const [e, H_e, N, K] = signals;
@@ -110,4 +113,13 @@ async function main() {
   process.stdout.write(JSON.stringify(line) + '\n', () => process.exit(code));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+// Run main() whenever THIS file is the entry point, however it was launched (symlink, relative path, encoded characters):
+// compare real paths, never URL strings. A mismatch here used to mean exit 0 with empty stdout.
+function isEntryPoint() {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+if (isEntryPoint()) main();

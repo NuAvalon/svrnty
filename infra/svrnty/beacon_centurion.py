@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -33,6 +34,7 @@ GRACE_SECONDS = 600
 MAX_BODY_BYTES = 16 * 1024
 VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"
 
+_CANON = re.compile(r"^(0|[1-9][0-9]{0,76})$")
 ACCEPTED = b'{"status":"accepted"}'
 ALREADY = b'{"status":"already"}'
 _REASONS = {"wire", "epoch", "point:pi_a:identity", "point:pi_a:off-curve", "point:pi_c:identity", "point:pi_c:off-curve",
@@ -75,6 +77,31 @@ def open_epochs(now: float) -> list[int]:
     if now > start + EPOCH_SECONDS - GRACE_SECONDS:
         out.append(cur + 1)
     return out
+
+
+def parse_verifier_output(code: int, out: bytes) -> dict:
+    """FAIL CLOSED: accept ONLY exit 0 with exactly one newline-terminated JSON line holding exactly {ok: true, e, H_e, N, K},
+    each a canonical decimal. Empty output, two lines, extra keys, non-canonical numbers: refused ("internal")."""
+    bad = {"ok": False, "reason": "internal"}
+    try:
+        text = out.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        return bad
+    if not text.endswith("\n") or text.count("\n") != 1:
+        return bad
+    try:
+        res = json.loads(text)
+    except ValueError:
+        return bad
+    if not isinstance(res, dict):
+        return bad
+    if code == 1 and set(res) == {"ok", "reason"} and res["ok"] is False and isinstance(res["reason"], str):
+        return {"ok": False, "reason": res["reason"]}
+    if code != 0 or set(res) != {"ok", "e", "H_e", "N", "K"} or res["ok"] is not True:
+        return bad
+    if not all(isinstance(res[k], str) and _CANON.match(res[k]) for k in ("e", "H_e", "N", "K")):
+        return bad
+    return res
 
 
 def _insert_match(db: sqlite3.Connection, epoch: int, slot: str, n_a: str, n_b: str, at: str) -> None:
@@ -136,16 +163,7 @@ class Centurion:
                 pass
             proc.communicate()                              # reap
             return {"ok": False, "reason": "timeout"}
-        if proc.returncode != 0:
-            try:
-                return {"ok": False, "reason": json.loads(out.decode() or "{}").get("reason", "internal")}
-            except ValueError:
-                return {"ok": False, "reason": "internal"}
-        try:
-            res = json.loads(out.decode())
-        except ValueError:
-            return {"ok": False, "reason": "internal"}
-        return res if res.get("ok") is True else {"ok": False, "reason": "internal"}
+        return parse_verifier_output(proc.returncode, out)
 
     def deposit(self, raw: bytes, ip: str) -> bytes:
         now = self.clock()

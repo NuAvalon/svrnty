@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildBn128 } from 'ffjavascript';
@@ -128,12 +128,12 @@ test('CLI: bad arguments refused, never a default', async () => {
 });
 
 const FIX = process.env.BEACON_FIXTURES;
-const haveFix = FIX && existsSync(join(FIX, 'verification_key.json'));
+const haveFix = FIX && existsSync(join(FIX, 'vkey.json'));
 test('a VALID throwaway proof is accepted and prints the canonical tuple; its N + r twin is refused at the wire',
   { skip: haveFix ? false : 'needs the rehearsal THROWAWAY fixtures in $BEACON_FIXTURES' }, () => {
-    const vkeyPath = join(FIX, 'verification_key.json');
-    const proof = JSON.parse(readFileSync(join(FIX, 'proof_a.json'), 'utf8'));
-    const pub = JSON.parse(readFileSync(join(FIX, 'public_a.json'), 'utf8'));
+    const vkeyPath = join(FIX, 'vkey.json');
+    const proof = JSON.parse(readFileSync(join(FIX, 'proof_A.json'), 'utf8'));
+    const pub = JSON.parse(readFileSync(join(FIX, 'public_A.json'), 'utf8'));
     const e = Number(pub[0]);
     const now = e * WEEK + 5;
     const ok = run(JSON.stringify({ proof, publicSignals: pub }), { vkeyPath, vkeySha: sha(readFileSync(vkeyPath)), now });
@@ -156,4 +156,13 @@ test('snarkjs receives exactly the parsed values; with a duplicated key, the N v
   assert.deepEqual(seen[0].pub, ['2900', '12345', '22222', '424242']);
   assert.equal(out.N, seen[0].pub[2]);                                     // stored N === verified N
   assert.deepEqual(seen[0].proof, f.proof);                                // re-serialized, canonical
+});
+
+test('launched through a SYMLINK, the verifier still runs main() (never exit 0 with empty stdout)', async () => {
+  const f = await fakeSetup();
+  const link = join(f.dir, 'verify-link.mjs');
+  symlinkSync(VERIFY, link);
+  const r = spawnSync(process.execPath, [link, '--vkey', f.vkeyPath], { input: '{}', timeout: 30_000 });
+  assert.equal(r.status, 1);
+  assert.deepEqual(JSON.parse(r.stdout.toString()), { ok: false, reason: 'usage' });
 });

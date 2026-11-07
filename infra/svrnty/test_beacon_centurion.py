@@ -174,3 +174,43 @@ def test_verifier_timeout_kills_the_whole_process_group(tmp_path):
     else:
         pytest.fail("the grandchild outlived the timeout")
     assert rows(c, "beacon_deposits") == 0
+
+
+@pytest.mark.parametrize("stdout,code", [
+    (b"", 0),                                                                           # the old fail-open: exit 0, nothing printed
+    (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}', 0),                            # no newline
+    (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}\n{"ok":true}\n', 0),            # two lines
+    (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3","x":1}\n', 0),                   # extra key
+    (b'{"ok":true,"e":"2900","H_e":"1","N":"007","K":"3"}\n', 0),                       # non-canonical N
+    (b'{"ok":"yes","e":"2900","H_e":"1","N":"2","K":"3"}\n', 0),                        # ok not exactly true
+    (b'{"ok":true,"e":"2900","H_e":"1","N":"2","K":"3"}\n', 2),                         # right line, wrong exit code
+])
+def test_verifier_output_is_parsed_fail_closed(tmp_path, stdout, code):
+    script = f"import sys; sys.stdout.buffer.write({stdout!r}); sys.exit({code})"
+    c = bc.Centurion(str(tmp_path / "o.db"), verify_cmd=[sys.executable, "-c", script], clock=lambda: NOW,
+                     per_epoch_cap=10, ip_per_minute=10, timeout_s=10)
+    assert c.deposit(b"{}", "a") == bc.refused("internal")
+    assert rows(c, "beacon_deposits") == 0
+
+
+FIX = os.environ.get("BEACON_FIXTURES")
+NODE = os.environ.get("BEACON_NODE", "node")
+
+
+@pytest.mark.skipif(not (FIX and os.path.exists(os.path.join(FIX or "", "vkey.json"))),
+                    reason="needs the rehearsal THROWAWAY fixtures in $BEACON_FIXTURES")
+def test_end_to_end_real_proofs_through_the_real_verifier_form_one_bond(tmp_path):
+    """Two real throwaway proofs (same slot, different nullifiers) through node + the pinned snarkjs -> exactly one match."""
+    e = int(json.load(open(os.path.join(FIX, "public_A.json")))[0])
+    c = bc.Centurion(str(tmp_path / "e2e.db"), vkey_path=os.path.join(FIX, "vkey.json"), node=NODE,
+                     clock=lambda: e * bc.EPOCH_SECONDS + 5, per_epoch_cap=10, ip_per_minute=10, timeout_s=60)
+    dep = lambda who: json.dumps({"proof": json.load(open(os.path.join(FIX, f"proof_{who}.json"))),
+                                  "publicSignals": json.load(open(os.path.join(FIX, f"public_{who}.json")))}).encode()
+    assert c.deposit(dep("A"), "a") == bc.ACCEPTED
+    assert c.deposit(dep("A"), "a") == bc.ALREADY
+    assert c.deposit(dep("B"), "b") == bc.ACCEPTED
+    with sqlite3.connect(c.db_path) as db:
+        (n1, n2, rel, formed), = db.execute("SELECT n1, n2, released_at, formed_at FROM beacon_matches").fetchall()
+        assert db.execute("SELECT count(*) FROM beacon_deposits").fetchone()[0] == 2
+    ns = sorted((json.load(open(os.path.join(FIX, f"public_{w}.json")))[2] for w in "AB"), key=int)
+    assert [n1, n2] == ns and rel == formed
