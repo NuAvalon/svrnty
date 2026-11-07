@@ -1626,7 +1626,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                 style={{ border: `1px dashed ${E.border}` }}
               >
                 <div
-                  className="inline-flex justify-center items-center w-16 h-16 rounded-full mb-4"
+                  data-testid="empty-book-icon"
+                  // On a phone the empty-book icon is dropped so the passphrase notice below fits on the first screen (e2e/passphrase-loss-notice.spec.ts).
+                  className={`${!searchQuery && !showBlocked ? 'hidden sm:inline-flex' : 'inline-flex'} justify-center items-center w-16 h-16 rounded-full mb-4`}
                   style={{
                     background: 'color-mix(in srgb, var(--se-accent) 10%, transparent)',
                     border: `1px solid ${E.border}`,
@@ -1641,6 +1643,15 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       ? 'No blocked contacts'
                       : 'No contacts yet'}
                 </p>
+                {/* Directly under the title and above the hint, so a phone user sees it without scrolling (e2e/passphrase-loss-notice.spec.ts). */}
+                {!searchQuery && !showBlocked && (
+                  <p
+                    data-testid="passphrase-loss-notice"
+                    style={{ fontFamily: E.fontSans, fontSize: 12, fontWeight: 300, color: E.dim, marginTop: 10, maxWidth: 380, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5 }}
+                  >
+                    {PASSPHRASE_LOSS_NOTICE_CONTACTS}
+                  </p>
+                )}
                 <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
                   {searchQuery
                     ? 'Try a different search'
@@ -1648,14 +1659,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       ? 'Blocked stays out of the main book — exit via ⋯'
                       : 'Import a VCF or add someone to start your master book'}
                 </p>
-                {!searchQuery && !showBlocked && (
-                  <p
-                    data-testid="passphrase-loss-notice"
-                    style={{ fontFamily: E.fontSans, fontSize: 12, fontWeight: 300, color: E.dim, marginTop: 16, maxWidth: 380, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5 }}
-                  >
-                    {PASSPHRASE_LOSS_NOTICE_CONTACTS}
-                  </p>
-                )}
               </div>
             ) : (
               <div

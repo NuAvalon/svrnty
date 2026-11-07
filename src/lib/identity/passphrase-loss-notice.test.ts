@@ -24,14 +24,16 @@ test('wording rules: "may" not "are" about the contacts; no promise that nothing
   assert.match(PASSPHRASE_LOSS_NOTICE_CONTACTS, /\bmay still be stored\b/);
 });
 
-test('PIN: the contacts notice sits in the "No contacts yet" state only (no search, not the blocked list), right after the empty-state hint', () => {
+test('PIN: the contacts notice sits in the "No contacts yet" state only (no search, not the blocked list), under the title and above the hint', () => {
   const ui = strip(read('../../components/ContactManagement.tsx'));
   assert.equal((ui.match(/PASSPHRASE_LOSS_NOTICE_CONTACTS/g) ?? []).length, 2, 'imported once, used once');
   const i = ui.indexOf('{PASSPHRASE_LOSS_NOTICE_CONTACTS}');
   const guard = ui.lastIndexOf('{!searchQuery && !showBlocked && (', i);
   assert.ok(guard > 0 && i - guard < 500, 'inside the no-search, not-blocked block');
+  const title = ui.indexOf("'No contacts yet'");
   const hint = ui.indexOf("'Import a VCF or add someone to start your master book'");
-  assert.ok(hint > 0 && hint < guard && guard - hint < 300, 'directly after the empty-state hint');
+  assert.ok(title > 0 && title < guard && guard - title < 200, 'directly after the "No contacts yet" title');
+  assert.ok(hint > i, 'above the "Import a VCF" hint, so a phone user sees it on the first screen');
 });
 
 test('PIN: the backup notice is in the backup dialog header and nowhere else; the two notices are used in no other file', () => {
