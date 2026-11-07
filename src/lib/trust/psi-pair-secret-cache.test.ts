@@ -4,10 +4,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createPairSecretCache, PAIR_SECRET_BYTES } from './psi-pair-secret-cache';
 
+const noHook = (_clear: () => void): void => {};
 const secret = (seed: number) => Uint8Array.from({ length: PAIR_SECRET_BYTES }, (_, i) => (seed + i) % 256);
 
 test('a secret set for a contact comes back equal, and an unknown contact has none', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   c.set('c1', secret(1));
   assert.deepEqual(c.get('c1'), secret(1));
   assert.equal(c.get('nobody'), undefined);
@@ -15,7 +16,7 @@ test('a secret set for a contact comes back equal, and an unknown contact has no
 });
 
 test('the cache keeps and returns COPIES: changing the caller\'s buffer, or what get returned, changes nothing held', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   const mine = secret(5);
   c.set('c1', mine);
   mine.fill(0);
@@ -26,7 +27,7 @@ test('the cache keeps and returns COPIES: changing the caller\'s buffer, or what
 });
 
 test('a secret that is not exactly 32 bytes, or an empty contact id, is a programming error', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   for (const bad of [new Uint8Array(31), new Uint8Array(33), new Uint8Array(0), 'x' as unknown as Uint8Array, [1, 2] as unknown as Uint8Array]) {
     assert.throws(() => c.set('c1', bad), TypeError);
   }
@@ -35,7 +36,7 @@ test('a secret that is not exactly 32 bytes, or an empty contact id, is a progra
 });
 
 test('replacing a contact\'s secret keeps one entry', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   c.set('c1', secret(1));
   c.set('c1', secret(2));
   assert.equal(c.size(), 1);
@@ -43,7 +44,7 @@ test('replacing a contact\'s secret keeps one entry', () => {
 });
 
 test('clear empties the cache', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   c.set('c1', secret(1));
   c.set('c2', secret(2));
   c.clear();
@@ -87,7 +88,7 @@ function recordFilled<T>(fn: () => T): { filled: Uint8Array[]; result: T } {
 }
 
 test('replacing a contact\'s secret zeroes the old held bytes', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   c.set('c1', secret(1));
   const { filled } = recordFilled(() => c.set('c1', secret(2)));
   const zeroed = filled.filter((b) => b.length === PAIR_SECRET_BYTES && b.every((x) => x === 0));
@@ -95,10 +96,16 @@ test('replacing a contact\'s secret zeroes the old held bytes', () => {
 });
 
 test('clear zeroes every held buffer before dropping them', () => {
-  const c = createPairSecretCache();
+  const c = createPairSecretCache(noHook);
   c.set('c1', secret(1));
   c.set('c2', secret(2));
   const { filled } = recordFilled(() => c.clear());
   const zeroed = filled.filter((b) => b.length === PAIR_SECRET_BYTES && b.every((x) => x === 0));
   assert.equal(zeroed.length, 2);
+});
+
+test('the lock hook is REQUIRED: a cache created without one is refused, not silently left to never clear', () => {
+  for (const bad of [undefined, null, 'x', 5, {}]) {
+    assert.throws(() => createPairSecretCache(bad as never), TypeError);
+  }
 });

@@ -13,6 +13,11 @@
  *
  * `inBook`, `blocked` and `macOk` are thunks (they may be async: a book lookup and a key derivation are) so that a step that is not reached never
  * runs: the pairwise-secret derivation and the MAC are only paid for, and only exposed, at step 4.
+ *
+ * FAIL CLOSED. Each answer must be exactly the boolean the step needs; anything else (undefined from a contact deleted mid-poll, null from a store
+ * error, a truthy number or string) takes the safe side: not exactly `true` for "in the book" is unverified, not exactly `false` for "blocked" is
+ * treated as blocked, and only exactly `true` from the MAC adopts. A thunk that THROWS rejects the whole decision; the caller must treat that as
+ * "not acknowledged, try again" and never as benign.
  */
 export type EpochDeliveryOutcome = 'benign-ack' | 'unverified' | 'blocked-drop' | 'bad-mac' | 'adopt';
 
@@ -27,7 +32,7 @@ export interface EpochDeliveryInputs {
 
 export async function epochDeliveryOutcome(i: EpochDeliveryInputs): Promise<EpochDeliveryOutcome> {
   if (i.receiveOn !== true) return 'benign-ack';
-  if (!(await i.inBook())) return 'unverified';
-  if (await i.blocked()) return 'blocked-drop';
-  return (await i.macOk()) ? 'adopt' : 'bad-mac';
+  if ((await i.inBook()) !== true) return 'unverified';
+  if ((await i.blocked()) !== false) return 'blocked-drop';
+  return (await i.macOk()) === true ? 'adopt' : 'bad-mac';
 }

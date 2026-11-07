@@ -74,3 +74,33 @@ test('async answers that are FALSE (or true for blocked) are honoured, each step
   assert.equal(await epochDeliveryOutcome({ ...ok, macOk: later(false) }), 'bad-mac');
   assert.equal(await epochDeliveryOutcome(ok), 'adopt');
 });
+
+test('FAIL CLOSED: an answer that is not exactly the boolean takes the safe side, and later steps do not run', async () => {
+  const calls: string[] = [];
+  const mk = (v: { inBook?: unknown; blocked?: unknown; macOk?: unknown }): EpochDeliveryInputs => ({
+    receiveOn: true,
+    inBook: () => { calls.push('inBook'); return ('inBook' in v ? v.inBook : true) as boolean; },
+    blocked: () => { calls.push('blocked'); return ('blocked' in v ? v.blocked : false) as boolean; },
+    macOk: () => { calls.push('mac'); return ('macOk' in v ? v.macOk : true) as boolean; },
+  });
+  for (const bad of [undefined, null, 1, 'true', {}]) {
+    calls.length = 0;
+    assert.equal(await epochDeliveryOutcome(mk({ inBook: bad })), 'unverified', `inBook=${String(bad)}`);
+    assert.deepEqual(calls, ['inBook']);
+  }
+  for (const bad of [undefined, null, 0, 'false', {}]) {
+    calls.length = 0;
+    assert.equal(await epochDeliveryOutcome(mk({ blocked: bad })), 'blocked-drop', `blocked=${String(bad)}`);
+    assert.deepEqual(calls, ['inBook', 'blocked'], 'no secret is derived and no MAC is checked');
+  }
+  for (const bad of [undefined, null, 1, 'yes', {}]) {
+    assert.equal(await epochDeliveryOutcome(mk({ macOk: bad })), 'bad-mac', `macOk=${String(bad)}`);
+  }
+});
+
+test('a thunk that throws rejects the whole decision (the caller must retry, never treat it as benign)', async () => {
+  const base: EpochDeliveryInputs = { receiveOn: true, inBook: () => true, blocked: () => false, macOk: () => true };
+  await assert.rejects(epochDeliveryOutcome({ ...base, inBook: async () => { throw new Error('x'); } }));
+  await assert.rejects(epochDeliveryOutcome({ ...base, blocked: () => { throw new Error('x'); } }));
+  await assert.rejects(epochDeliveryOutcome({ ...base, macOk: async () => { throw new Error('x'); } }));
+});
