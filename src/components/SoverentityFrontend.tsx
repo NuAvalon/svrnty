@@ -241,6 +241,12 @@ async function safeJson(response: Response): Promise<any> {
   }
 }
 
+// "Set Passphrase" is OFF until the re-key fix ships. handleSetPassphrase re-derives the session key and re-stores ONLY the identity key and the post-quantum
+// keys; on an identity that is already encrypted at rest the contacts, the recovery vault, the shards and the device mailbox stay under the OLD passphrase and
+// stop opening (measured: the whole book disappears, the owner is told nothing, and a vault export then produces no file). This card-menu item is the only UI
+// entry point to the dialog and the handler; both stay in place, unreachable, so turning this back on is one line once the re-key is in.
+const SET_PASSPHRASE_ENTRY_ENABLED = false;
+
 export function SoverentityFrontend({
   existingIdentity,
   onIdentityUpdate,
@@ -1881,13 +1887,15 @@ export function SoverentityFrontend({
                   close();
                 }}
               />
-              <CardMenuItem
-                label={passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
-                onClick={() => {
-                  setShowPassphraseDialog(true);
-                  close();
-                }}
-              />
+              {SET_PASSPHRASE_ENTRY_ENABLED && (
+                <CardMenuItem
+                  label={passphraseFlash ? 'Passphrase set' : 'Set Passphrase'}
+                  onClick={() => {
+                    setShowPassphraseDialog(true);
+                    close();
+                  }}
+                />
+              )}
               <CardMenuItem
                 label="Lenses & vault"
                 onClick={() => {
