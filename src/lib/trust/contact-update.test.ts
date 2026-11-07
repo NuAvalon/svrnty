@@ -180,6 +180,12 @@ test('I-6: a last_seen/presence field is refused (field-not-allowed), pre-crypto
   await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
 });
 
+test('psi_epoch: a friend\'s epoch record can never be set by a wire update (field-not-allowed), pre-crypto', async () => {
+  const env = baseEnv({ changed_fields: ['psi_epoch'], delta: { psi_epoch: 'x' } });
+  const s = { envelope: env, signature: { classical: 'unused' } };
+  await assert.rejects(verifyIncomingContactUpdate(s, known()), rejectsWith('field-not-allowed'));
+});
+
 test('I-4: a device-location field is refused (field-not-allowed), pre-crypto', async () => {
   const env = baseEnv({ changed_fields: ['location'], delta: { location: { lat: 51.5, lng: -0.12 } } });
   const s = { envelope: env, signature: { classical: 'unused' } };

@@ -109,7 +109,7 @@ for (const field of CONTACT_UPDATE_ALLOWED_FIELDS) {
 }
 
 // ── Fields OUTSIDE the spartan allowlist fail-close at the firewall ──────────
-for (const field of ['given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing']) {
+for (const field of ['given_name', 'family_name', 'org', 'title', 'photo', 'birthday', 'postal_addresses', 'routing', 'psi_epoch']) {
   test(`non-allowlisted field '${field}' throws field-not-allowed (defence-in-depth firewall)`, () => {
     assert.throws(
       () => applyVerifiedContactUpdate(contact(), update({ changed_fields: [field], delta: { [field]: 'x' } }), NOW),

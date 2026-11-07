@@ -244,7 +244,8 @@ test('ContactConflictError carries the contact and the attempts and is an Error'
 test('GUARD: updateContact and updateContactIf both go through casUpdateWith, decide through the pure merge, and report applied from the CAS result', () => {
   const store = readFileSync(new URL('./client-store.ts', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
   assert.match(store, /await casUpdateWith\(contactCasIO, id, \(existing\) => mergeContactUpdate\(existing, updates\)\);/);
-  assert.match(store, /const r = await casUpdateWith\(contactCasIO, id, \(existing\) => \{\s*const patch = decide\(existing\);\s*return patch === null \? null : mergeContactUpdate\(existing, patch\);\s*\}\);\s*return \{ applied: r\.applied \};/);
+  assert.match(store, /const r = await casUpdateWith\(contactCasIO, id, \(existing\) => buildContactUpdateIf\(existing, decide\)\);\s*return \{ applied: r\.applied \};/);
+  assert.match(store, /const patch = decide\(withoutPsiEpoch\(existing\)\);\s*return patch === null \? null : mergeContactUpdate\(existing, patch\);/);
   assert.match(store, /assertUnlockedForContactWrite\('updateContact'\)/);
   assert.match(store, /assertUnlockedForContactWrite\('updateContactIf'\)/);
 });

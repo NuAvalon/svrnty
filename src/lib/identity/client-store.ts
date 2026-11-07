@@ -16,6 +16,7 @@ import { isHeldAffirmatives, type HeldAffirmatives } from '../trust/held-affirma
 import { withSafetyWrite } from '@/lib/contacts/safety-write';
 import { casUpdateWith, casRetry, sameStoredRow, ContactConflictError, type CasIO, type Expect, type StoredRow } from './contact-cas';
 import { ownerHasVerified } from '../trust/trust-recipe';
+import { admitContact } from '../trust/admit-contact';
 // ★★ TRUSTED-DEFINITION CONSISTENCY (#158853): the §G sweep derives "trusted" from the ONE shared
 // reveal predicate so sweep ≡ clamp ≡ disable ≡ reveal by construction (edgeTrusted is a pure fn —
 // no browser coupling, safe to import here).
@@ -983,6 +984,7 @@ export async function addContact(ownerFingerprint: string, contact: Omit<Contact
       throw new Error('verify-before-trust: refusing to create a trusted contact without owner verification (in-person / other-channel). [pt5 survivor-safety gate]');
     }
   }
+  delete record[PSI_EPOCH_FIELD]; // a record that is added or restored never starts with an epoch record (see PSI_EPOCH_FIELD)
   const stored = await buildStoredContact(record);
   // enc-b B4: recompute the book manifest over the POST-insert set (existing owner contacts + this new
   // record) and write it in the SAME tx as the record. Decrypt-all + MAC happen BEFORE the tx (the
@@ -1033,11 +1035,63 @@ export type ContactUpdate = Partial<ContactRecord> | ((existing: ContactRecord) 
  * throws, because an `await` inside would reopen the window between the read and the write that the function form exists to close.
  */
 export function mergeContactUpdate(existing: ContactRecord, updates: ContactUpdate): ContactRecord {
-  const patch = typeof updates === 'function' ? updates(existing) : updates;
+  const patch = typeof updates === 'function' ? updates(withoutPsiEpoch(existing)) : updates;
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch) || typeof (patch as { then?: unknown }).then === 'function') {
     throw new Error('updateContact: the updater must synchronously return a plain patch object (not a Promise)');
   }
-  return { ...existing, ...patch, id: existing.id };
+  const merged: ContactRecord = { ...existing, ...patch, id: existing.id };
+  // psi_epoch is a friend's secret held for them, written ONLY by adoptPsiEpoch. No patch built through here (a contact update, an imported
+  // card, a restore merge, a UI edit) can plant it, change it or clear it.
+  if (PSI_EPOCH_FIELD in existing) merged[PSI_EPOCH_FIELD] = existing[PSI_EPOCH_FIELD];
+  else delete merged[PSI_EPOCH_FIELD];
+  return merged;
+}
+
+/**
+ * The field that holds, for one friend, the epoch secrets this device learned from that friend's own notes (see psi-epoch-book). It lives
+ * inside the encrypted contact body like every field but id and owner_fingerprint. It is a friend's secret held for them: it never leaves this
+ * device and is never part of the owner's book. It is created only by adoptPsiEpoch; every other way a record is built, added, merged or
+ * exported goes through withoutPsiEpoch or mergeContactUpdate above.
+ */
+export const PSI_EPOCH_FIELD = 'psi_epoch';
+
+/** A copy of `record` without the psi_epoch field (a no-op copy when there is none). */
+export function withoutPsiEpoch<T extends Record<string, unknown>>(record: T): T {
+  if (!(PSI_EPOCH_FIELD in record)) return record;
+  const copy = { ...record };
+  delete copy[PSI_EPOCH_FIELD];
+  return copy;
+}
+
+/**
+ * The pure part of adoptPsiEpoch: the record to store, or null for "do not write". A contact the owner has blocked is never written (the same
+ * predicate as every other contact-driven write), and a decision of null from the caller is "nothing to store". `decide` is given the HELD epoch
+ * record (the only place outside the store that sees it) and the contact without that field.
+ */
+export function buildPsiEpochAdoption(
+  existing: ContactRecord,
+  decide: (heldEpoch: string | null, contact: ContactRecord) => string | null,
+): ContactRecord | null {
+  if (!admitContact(existing)) return null;
+  const held = existing[PSI_EPOCH_FIELD];
+  const value = decide(typeof held === 'string' && held.length > 0 ? held : null, withoutPsiEpoch(existing));
+  if (value === null) return null;
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError('adoptPsiEpoch: the stored form must be a non-empty string');
+  return { ...existing, [PSI_EPOCH_FIELD]: value };
+}
+
+/**
+ * Store a friend's epoch record on their contact by compare-and-swap. The ONLY writer of psi_epoch. `decide` runs on the record held when the
+ * write commits (again on each retry) and returns the new serialized record or null; it must be pure. Not an owner-protecting write: callers
+ * run it under the poll guard, and a blocked contact is never written. Resolves with whether anything was written.
+ */
+export async function adoptPsiEpoch(
+  id: string,
+  decide: (heldEpoch: string | null, contact: ContactRecord) => string | null,
+): Promise<{ applied: boolean }> {
+  assertUnlockedForContactWrite('adoptPsiEpoch');
+  const r = await casUpdateWith(contactCasIO, id, (existing) => buildPsiEpochAdoption(existing, decide));
+  return { applied: r.applied };
 }
 
 /**
@@ -1155,11 +1209,17 @@ export async function updateContactIf(
   decide: (existing: ContactRecord) => Partial<ContactRecord> | null,
 ): Promise<{ applied: boolean }> {
   assertUnlockedForContactWrite('updateContactIf');
-  const r = await casUpdateWith(contactCasIO, id, (existing) => {
-    const patch = decide(existing);
-    return patch === null ? null : mergeContactUpdate(existing, patch);
-  });
+  const r = await casUpdateWith(contactCasIO, id, (existing) => buildContactUpdateIf(existing, decide));
   return { applied: r.applied };
+}
+
+/** The pure part of updateContactIf: the record to store, or null for "do not write". `decide` sees the record without psi_epoch. */
+export function buildContactUpdateIf(
+  existing: ContactRecord,
+  decide: (existing: ContactRecord) => Partial<ContactRecord> | null,
+): ContactRecord | null {
+  const patch = decide(withoutPsiEpoch(existing));
+  return patch === null ? null : mergeContactUpdate(existing, patch);
 }
 
 /**
@@ -1249,7 +1309,7 @@ async function decryptContactIfNeeded(rec: any): Promise<ContactRecord> {
 
 export async function getContact(id: string): Promise<ContactRecord | null> {
   const rec = await txGet<any>('contacts', id);
-  return rec ? decryptContactIfNeeded(rec) : null;
+  return rec ? withoutPsiEpoch(await decryptContactIfNeeded(rec)) : null; // a friend's epoch secret is not handed to callers (see PSI_EPOCH_FIELD)
 }
 
 export async function getContactByFingerprint(ownerFingerprint: string, fingerprint: string): Promise<ContactRecord | null> {
@@ -1259,12 +1319,12 @@ export async function getContactByFingerprint(ownerFingerprint: string, fingerpr
   const idx = _contactKeys ? await blindFingerprint(_contactKeys.indexKey, fingerprint) : null;
   const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
   const found = recs.find(c => (idx !== null && c.fingerprint === idx) || c.fingerprint === fingerprint);
-  return found ? decryptContactIfNeeded(found) : null;
+  return found ? withoutPsiEpoch(await decryptContactIfNeeded(found)) : null;
 }
 
 export async function getAllContacts(ownerFingerprint: string): Promise<ContactRecord[]> {
   const recs = await txGetByIndex<any>('contacts', 'owner', ownerFingerprint);
-  return Promise.all(recs.map(decryptContactIfNeeded));
+  return Promise.all(recs.map(async (r) => withoutPsiEpoch(await decryptContactIfNeeded(r))));
 }
 
 // ── enc-b B5: on-unlock heal + book-integrity establish/verify ────
@@ -1307,7 +1367,7 @@ async function migrateAndVerifyContactsOnUnlock(): Promise<void> {
   for (const rec of stored) {
     if (rec && rec.enc_version) continue; // already encrypted — idempotent skip
     try {
-      await txPut('contacts', await buildStoredContact(rec as unknown as ContactRecord));
+      await txPut('contacts', await buildStoredContact(withoutPsiEpoch(rec) as unknown as ContactRecord));
     } catch (e) {
       console.warn('[enc-b] contact migration skipped a record (retries next unlock)', e);
     }
@@ -1499,7 +1559,7 @@ export async function exportAll(fingerprint: string, includePrivateKeys: boolean
     version: '1.0',
     exported_at: new Date().toISOString(),
     identity,
-    contacts: await getAllContacts(fingerprint),
+    contacts: (await getAllContacts(fingerprint)).map(withoutPsiEpoch), // a friend's epoch secret is never part of the owner's backup
   };
 
   if (includePrivateKeys) {
