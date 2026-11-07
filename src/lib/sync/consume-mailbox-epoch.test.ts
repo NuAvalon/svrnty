@@ -202,3 +202,27 @@ test('N10 control: with no lock the same flow asks the decision and acks', async
   assert.equal(spy.received, 1);
   assert.deepEqual(acks, [['e1']]);
 });
+
+test('ACK GATE: the cycle ends and the open then says null (what the live opener does for an ended cycle): the epoch envelope is not acked, not recorded as lost, and is still on the relay for the next poll', async () => {
+  const cycle = makeUnlockCycle(owner.privateKeyArmored, owner.passphrase);
+  const s = sink();
+  const acks: string[][] = [];
+  const r = relay([{ envelope_id: 'e1', blob: 'EPOCH' }], acks);
+  const ending: EpochNoteSeam = { open: async () => { lockSession(); return null; }, receive: async () => ({ kind: 'adopted' }) };
+  const summary = await consumeInboundContactUpdates(deps({ owner: { ...owner, cycle }, epoch: ending, deadLetter: s.deadLetter, fetchImpl: r.fetchImpl }));
+  assert.deepEqual(acks, [], 'nothing decided after the end is acknowledged');
+  assert.deepEqual(r.left(), ['e1'], 'redelivered next poll');
+  assert.equal(s.rows.length, 0, 'no decrypt-failed record for something that will be delivered again');
+  assert.equal(summary.deadLettered, 0);
+});
+
+test('ACK GATE control: the same open that says null in a LIVE cycle is the existing decrypt-failed record and is acked', async () => {
+  const cycle = makeUnlockCycle(owner.privateKeyArmored, owner.passphrase);
+  const s = sink();
+  const acks: string[][] = [];
+  const r = relay([{ envelope_id: 'e1', blob: 'EPOCH' }], acks);
+  const quiet: EpochNoteSeam = { open: async () => null, receive: async () => ({ kind: 'adopted' }) };
+  await consumeInboundContactUpdates(deps({ owner: { ...owner, cycle }, epoch: quiet, deadLetter: s.deadLetter, fetchImpl: r.fetchImpl }));
+  assert.deepEqual(acks, [['e1']]);
+  assert.equal(s.rows.length, 1);
+});

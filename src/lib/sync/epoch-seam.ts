@@ -79,12 +79,16 @@ export function buildEpochSeam(d: EpochSeamDeps): EpochNoteSeam {
 }
 
 /**
- * Open a sealed package to its plaintext, or say it is not one that opens here. "Not an envelope" is null. A package that does not open with our keys
- * (a wrong key, a corrupt body) is also null, exactly as every other opener treats it: it is not ours to read, and the contact-update path then deals
- * with it as it always has. The ONE exception is a cycle that has ended (the session locked or switched): then we cannot tell whether this is ours,
- * so the error is rethrown and the consume pipeline leaves the envelope on the relay for a later poll. It must never fall through to the
- * contact-update path, which is the thing this seam exists to keep an epoch package away from. (Rethrowing EVERY error would make one malformed
- * package a poison pill, retried and never acknowledged on every poll.)
+ * Open a sealed package to its plaintext, or say it is not one that opens here. Not an envelope is null; a package that does not open with our keys is
+ * null (the envelope opener returns null for every rejection of hostile input, and a catch here keeps any unexpected throw from making one malformed
+ * package a poison pill that is retried and never acknowledged on every poll). Only a cycle that has ended is rethrown, so consume leaves the envelope.
+ *
+ * What protects the ended-cycle case, though, is the ACK GATE, not this rethrow: the common ended-cycle open returns null (openHybridForCycle checks the
+ * cycle first), the contact-update path then calls the blob undecryptable, and that verdict is downgraded to retryable because the cycle ended; nothing
+ * is acknowledged or recorded after the end, and the envelope comes back on the next poll.
+ *
+ * The one real loss window: a transient failure that is not a cycle end, in a LIVE cycle, becomes null here and ends as decrypt-failed and acknowledged.
+ * Accepted for an epoch note, which is sent again every period.
  */
 export async function openEpochPackage(
   blob: string,
