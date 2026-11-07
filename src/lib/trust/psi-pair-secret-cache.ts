@@ -5,8 +5,11 @@
  *
  * MEMORY ONLY. It is a plain in-process Map: nothing here reads or writes any storage, and nothing in the cache is ever part of the owner's book, a
  * backup or an outbound payload. A pairwise secret lives in the unlocked session and dies with it: the cache is emptied (and the bytes it held
- * zeroed) when the session locks or the active identity changes. The factory takes the registration function for that lock hook, so this module
- * imports nothing from the store and the hook can be faked in a test.
+ * zeroed) when the lock hook it is registered with fires. The factory takes the registration function for that lock hook, so this module
+ * imports nothing from the store and the hook can be faked in a test. The hook is REQUIRED: a cache that is never told to clear would quietly break
+ * the memory-only promise above. The store fires its lock hook from lockSession and from setActiveFingerprint, so registering this clear with it
+ * empties the cache on a lock AND on an active-identity switch; this module only guarantees that it clears when the hook it was given fires, and the
+ * code that registers it carries the test for the real events.
  *
  * Keyed by contact id. Values are 32 bytes. `get` hands back a copy and `set` keeps a copy, so a caller zeroing or reusing its own buffer cannot
  * change what is cached, and the cache cannot be used to reach into a caller's memory.
@@ -21,7 +24,8 @@ export interface PairSecretCache {
   size(): number;
 }
 
-export function createPairSecretCache(registerOnLock?: (clear: () => void) => void): PairSecretCache {
+export function createPairSecretCache(registerOnLock: (clear: () => void) => void): PairSecretCache {
+  if (typeof registerOnLock !== 'function') throw new TypeError('psi-pair-secret-cache: a lock hook is required, or the cache would never clear');
   const held = new Map<string, Uint8Array>();
   const cache: PairSecretCache = {
     get(contactId) {
@@ -44,6 +48,6 @@ export function createPairSecretCache(registerOnLock?: (clear: () => void) => vo
       return held.size;
     },
   };
-  registerOnLock?.(() => cache.clear());
+  registerOnLock(() => cache.clear());
   return cache;
 }
