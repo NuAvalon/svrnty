@@ -13,7 +13,7 @@ import { generatePQKeypairBundle, uint8ToBase64 } from '@/lib/crypto/pq';
 import { ownerHasVerified } from '@/lib/trust/trust-recipe';
 import type { ContactRecord } from '@/lib/identity/client-store';
 import { toContactBookJson } from './book-export';
-import { ContactBookTooLarge, MAX_FILE_CHARS, contactBookEntries, importContactBook, importMessage, toImportedContact } from './book-import';
+import { ContactBookTooLarge, MAX_CONTACTS_PER_FILE, MAX_FILE_CHARS, contactBookEntries, importContactBook, importMessage, toImportedContact } from './book-import';
 
 async function identity(name: string): Promise<ContactRecord> {
   const passphrase = `pw-${name}`;
@@ -257,11 +257,11 @@ test('COUNTS: a book that already has some of the contacts says so, and says it 
 });
 
 // ── file size: refused before the parse ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
-test('SIZE (text): text over 20,000,000 characters is refused BEFORE it is parsed, with the plain message; exactly 20,000,000 reaches the parser', () => {
+test('SIZE (text): text over the cap is refused BEFORE it is parsed, with the plain message; exactly the cap reaches the parser', () => {
   const over = 'x'.repeat(MAX_FILE_CHARS + 1); // not JSON: if the parser ran first this would be a SyntaxError
   assert.throws(() => contactBookEntries(over), (e) => e instanceof ContactBookTooLarge && !(e instanceof SyntaxError) && e.message === 'That file is too large to import.');
   assert.throws(() => contactBookEntries('x'.repeat(MAX_FILE_CHARS)), SyntaxError, 'at the cap the text is parsed (and is not JSON)');
-  assert.equal(MAX_FILE_CHARS, 20_000_000);
+  assert.equal(MAX_FILE_CHARS, 52_000_000);
 });
 
 test('SIZE (text): a normal book is unaffected, and the refusal does not look at the content', () => {
@@ -276,4 +276,16 @@ test('PIN: the import handler shows the too-large message itself, before the Syn
   const iSyntax = body.indexOf('err instanceof SyntaxError');
   assert.ok(iLarge > 0 && iLarge < iSyntax, 'the too-large branch comes first');
   assert.match(body, /setImportError\(err\.message\);/);
+});
+
+test('SIZE (agreement): a full export of MAX_CONTACTS_PER_FILE canonical contacts is NOT refused by the size check, and the cap keeps at least 1.5x headroom over it', async () => {
+  const text = toContactBookJson(Array.from({ length: MAX_CONTACTS_PER_FILE }, () => ann), '2026-01-02T03:04:05.000Z');
+  const perContact = text.length / MAX_CONTACTS_PER_FILE;
+  assert.ok(perContact > 5000 && perContact < 9000, `a canonical contact is about 6.7k characters, measured ${Math.round(perContact)}`);
+  assert.ok(text.length * 1.5 <= MAX_FILE_CHARS, `5,000 contacts = ${text.length} chars; the cap ${MAX_FILE_CHARS} must leave 1.5x`);
+  const entries = contactBookEntries(text); // does not throw ContactBookTooLarge
+  assert.equal(entries.length, MAX_CONTACTS_PER_FILE);
+  const summary = await importContactBook(entries, async () => {});
+  assert.equal(summary.refused, undefined);
+  assert.equal(summary.added, MAX_CONTACTS_PER_FILE);
 });

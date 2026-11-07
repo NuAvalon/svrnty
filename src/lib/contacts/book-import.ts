@@ -11,7 +11,7 @@
 //   - The store's own checks stay exactly as strict: addContact refuses any contact whose fingerprint does not match its keys (the post-quantum
 //     keys are part of that match, so they are passed through for the check to use), and refuses to create a trusted contact without a real
 //     owner verification. This module adds no way around either.
-//   - Size is bounded before any work is done: text over 20 MB is refused before it is parsed, a file with too many contacts is refused whole, and a contact with an oversized key is refused
+//   - Size is bounded before any work is done: text over 52 million characters is refused before it is parsed, a file with too many contacts is refused whole, and a contact with an oversized key is refused
 //     before the store's (expensive) binding check runs on it. Text fields are cleaned and capped.
 //
 // One contact at a time: a contact that fails is counted and named, and the rest are still imported.
@@ -56,8 +56,12 @@ export interface ImportSummary {
 }
 
 export const MAX_CONTACTS_PER_FILE = 5000;
-/** A real book of 5,000 contacts with every key is well under 20 MB; anything larger is not a contact book. */
-export const MAX_FILE_CHARS = 20_000_000;
+/**
+ * The text-size cap agrees with the contact cap. MEASURED, not guessed: a canonical exported contact is about 6,750 characters (public key 840, ML-KEM key 2,092,
+ * ML-DSA key 3,456, plus fingerprint, name, email and the export's indentation), so MAX_CONTACTS_PER_FILE contacts is about 33.7 million characters. This cap is
+ * that times 1.5, rounded up: a legitimate full export is never refused here, and anything beyond it is not a contact book.
+ */
+export const MAX_FILE_CHARS = 52_000_000;
 const MAX_KEY_CHARS = 16384;
 const MAX_NAME = 120;
 const MAX_EMAIL = 254;
