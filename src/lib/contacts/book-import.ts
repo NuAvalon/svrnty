@@ -87,7 +87,7 @@ export function safeContactLabel(v: unknown): string {
 export function storeRefusalReason(err: unknown): string {
   const m = err instanceof Error ? err.message : '';
   if (m.includes('binding failed')) return 'its key does not match its fingerprint';
-  if (m.includes('verify-before-trust')) return 'it was marked trusted without a recorded verification';
+  if (m.includes('verify-before-trust')) return "it was marked as trusted, but there's no record of verifying it";
   if (m.includes('Session locked')) return 'the app is locked';
   return 'could not be saved';
 }

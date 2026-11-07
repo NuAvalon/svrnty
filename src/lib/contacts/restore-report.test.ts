@@ -38,11 +38,11 @@ test('a contact the store refuses is counted and NAMED with a plain reason, and 
   assert.equal(r.restored, 2);
   assert.deepEqual(r.skipped, [
     { label: 'b', reason: 'its key does not match its fingerprint' },
-    { label: 'd', reason: 'it was marked trusted without a recorded verification' },
+    { label: 'd', reason: "it was marked as trusted, but there's no record of verifying it" },
     { label: 'e', reason: 'could not be saved' },
   ]);
   assert.deepEqual(s.seen.map((c) => (c as { name: string }).name), ['a', 'b', 'c', 'd', 'e'], 'every contact was tried, in order');
-  assert.equal(formatVaultRestoreReport(r), 'Restored 2 of 5 contacts. Not restored: b (its key does not match its fingerprint); d (it was marked trusted without a recorded verification); e (could not be saved).');
+  assert.equal(formatVaultRestoreReport(r), "2 of 5 contacts from the backup are on this device. Not restored: b (its key does not match its fingerprint); d (it was marked as trusted, but there's no record of verifying it); e (could not be saved).");
   assert.equal(formatVaultRestoreReport(r)!.includes('secret'), false, 'the raw error text is never shown');
 });
 
@@ -52,7 +52,7 @@ test('names are made safe and capped at five, with the rest counted', async () =
   const r = await restoreVaultContacts(names.map((name) => ({ name })), store(refuse).add);
   const msg = formatVaultRestoreReport(r)!;
   assert.ok(!/[\u0000-\u001f]/.test(msg));
-  assert.ok(msg.startsWith('Restored 0 of 8 contacts.'));
+  assert.ok(msg.startsWith('0 of 8 contacts from the backup are on this device.'));
   assert.ok(msg.endsWith('; and 3 more.'));
   assert.ok(r.skipped.every((f) => f.label.length <= 61));
 });

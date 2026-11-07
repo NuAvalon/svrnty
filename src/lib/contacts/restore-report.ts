@@ -37,5 +37,5 @@ export function formatVaultRestoreReport(r: VaultContactsReport): string | null 
   if (r.skipped.length === 0) return null;
   const shown = r.skipped.slice(0, MAX_NAMED).map((f) => `${f.label} (${f.reason})`).join('; ');
   const more = r.skipped.length > MAX_NAMED ? `; and ${r.skipped.length - MAX_NAMED} more` : '';
-  return `Restored ${r.restored} of ${r.total} contacts. Not restored: ${shown}${more}.`;
+  return `${r.restored} of ${r.total} contacts from the backup are on this device. Not restored: ${shown}${more}.`;
 }
