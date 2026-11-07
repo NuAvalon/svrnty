@@ -41,6 +41,7 @@ import {
   onSessionLock,
   getContactByFingerprint,
   updateContactIf,
+  adoptPsiEpoch,
   loadIssuedCodeMap,
   isCodeOutstanding,
   codeUnderCap,
@@ -52,7 +53,11 @@ import { resolveHybrid, type HybridSecretsSource, type LivingBookHybridSecrets }
 import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receive';
 // L7 single dual-read chokepoint (Option-B): the 3 openers are classical-only; the hybrid leg + fallback
 // compose HERE, once per seam, off the owner's derived mailbox secrets (openMailboxEnvelope).
-import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
+import { makeHybridOpener, dualReadOpener, asMailboxEnvelopePackage, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
+import { buildEpochSeam } from '@/lib/sync/epoch-seam';
+import { epochPairSecretCache } from '@/lib/sync/epoch-pair-cache';
+import { readPsiEpochFlags } from '@/lib/trust/psi-epoch-config';
+import { extractRawSign } from '@/lib/identity/raw-sign';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
 import { holdBackoff } from '@/lib/sync/hold-backoff';
@@ -566,6 +571,34 @@ export async function buildConsumeDeps(
       await emitDeliveredReceipt(wire, { fetchImpl: opts.fetchImpl });
     }, legs, adoptCounts),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
+    // Epoch notes (N132 / P1, F1 receive). The seam always recognises the type, so an epoch package is never eaten by the contact-update path; with the
+    // switch off (the default: NEXT_PUBLIC_PSI_EPOCH_RECEIVE must be exactly "true") it acknowledges and stores nothing. The package is opened by the
+    // same hybrid opener as every other sealed type; the signing seed comes from this cycle's one unlock, as a copy that the seam zeroes after use.
+    epoch: buildEpochSeam({
+      ownerFp: fingerprint,
+      receiveOn: readPsiEpochFlags().receive,
+      openPackage: async (blob) => {
+        if (!hybrid) return null;
+        const pkg = asMailboxEnvelopePackage(blob);
+        if (!pkg) return null;
+        try {
+          return await openHybridForCycle(owner, hybrid)(pkg);
+        } catch {
+          return null;
+        }
+      },
+      getContactByFingerprint,
+      ownerSeed: async () => {
+        try {
+          return extractRawSign(await cycle.key()).seed.slice();
+        } catch {
+          return null; // locked, or the cycle ended: cannot verify
+        }
+      },
+      cache: epochPairSecretCache,
+      nowMinutes: () => Math.floor(Date.now() / 60_000),
+      adopt: adoptPsiEpoch,
+    }),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
     // RETRY by consumeOne, never silently acked+dropped. Keyed on ACTUAL derivability (re-evaluated every
