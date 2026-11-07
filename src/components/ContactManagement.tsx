@@ -987,6 +987,16 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               Every imported contact (VCF and exchange). Classical entries you can edit;
               SVRNTY peers are key-bound. Share your own identity from the Identity tab.
             </p>
+            {/* An empty book with no search and not the Blocked view. Up here, not in the empty box below: on a phone the card above that box
+                is ~600px tall, so a notice inside it starts below the fold (e2e/passphrase-loss-notice.spec.ts measures it at scrollY 0). */}
+            {!loading && filteredContacts.length === 0 && !searchQuery && !showBlocked && (
+              <p
+                data-testid="passphrase-loss-notice"
+                style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 12, maxWidth: 480, lineHeight: 1.5 }}
+              >
+                {PASSPHRASE_LOSS_NOTICE_CONTACTS}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)} style={emberGhostBtn}>
@@ -1626,9 +1636,7 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                 style={{ border: `1px dashed ${E.border}` }}
               >
                 <div
-                  data-testid="empty-book-icon"
-                  // On a phone the empty-book icon is dropped so the passphrase notice below fits on the first screen (e2e/passphrase-loss-notice.spec.ts).
-                  className={`${!searchQuery && !showBlocked ? 'hidden sm:inline-flex' : 'inline-flex'} justify-center items-center w-16 h-16 rounded-full mb-4`}
+                  className="inline-flex justify-center items-center w-16 h-16 rounded-full mb-4"
                   style={{
                     background: 'color-mix(in srgb, var(--se-accent) 10%, transparent)',
                     border: `1px solid ${E.border}`,
@@ -1643,15 +1651,6 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                       ? 'No blocked contacts'
                       : 'No contacts yet'}
                 </p>
-                {/* Directly under the title and above the hint, so a phone user sees it without scrolling (e2e/passphrase-loss-notice.spec.ts). */}
-                {!searchQuery && !showBlocked && (
-                  <p
-                    data-testid="passphrase-loss-notice"
-                    style={{ fontFamily: E.fontSans, fontSize: 12, fontWeight: 300, color: E.dim, marginTop: 10, maxWidth: 380, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.5 }}
-                  >
-                    {PASSPHRASE_LOSS_NOTICE_CONTACTS}
-                  </p>
-                )}
                 <p style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 8, maxWidth: 360, marginLeft: 'auto', marginRight: 'auto', lineHeight: 1.55 }}>
                   {searchQuery
                     ? 'Try a different search'

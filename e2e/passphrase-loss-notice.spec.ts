@@ -3,7 +3,7 @@ import path from 'node:path';
 import { PASSPHRASE_LOSS_NOTICE_BACKUP, PASSPHRASE_LOSS_NOTICE_CONTACTS } from '../src/lib/identity/passphrase-loss-notice';
 
 // The notice for people whose contacts or backup went missing after a passphrase change or a restore. It is shown in two places and nowhere else:
-// under "No contacts yet" on the Contacts screen, and in the backup dialog. A new user, with contacts or in a search, must not see the contacts one.
+// at the top of the Contacts card while the book is empty, and in the backup dialog. A new user, with contacts or in a search, must not see the contacts one.
 const UNLOCK_PW = 'unlock-e2e-pass-1234';
 const VCF = path.join(__dirname, 'fixtures', 'contacts.vcf'); // 3 contacts
 
@@ -20,25 +20,28 @@ async function createIdentity(page: Page) {
   await expect(page.getByRole('tab', { name: 'Contacts', exact: true })).toBeVisible({ timeout: 15_000 });
 }
 
-// On a phone the notice has to be on the first screen, above the "Import a VCF" hint: its whole job is to be SEEN before someone clears their data.
-test.describe('on a phone', () => {
-  test.use({ viewport: { width: 390, height: 844 } });
-  test('the notice is fully on the first screen, above the import hint', async ({ page }) => {
-    test.setTimeout(150_000);
-    await createIdentity(page);
-    await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
-    const notice = page.getByTestId('passphrase-loss-notice');
-    await expect(notice).toHaveText(PASSPHRASE_LOSS_NOTICE_CONTACTS);
-    if (process.env.NOTICE_SHOT) await page.screenshot({ path: process.env.NOTICE_SHOT }); // before the assertion, so a failure still leaves the picture
-    await expect(page.getByTestId('empty-book-icon')).toBeHidden(); // the icon is what made room; on a phone it is dropped for the empty book
-    await expect(notice).toBeInViewport({ ratio: 1, timeout: 10_000 });
-    const hint = page.getByText('Import a VCF or add someone to start your master book', { exact: true });
-    await expect(hint).toBeVisible();
-    const n = await notice.boundingBox();
-    const h = await hint.boundingBox();
-    expect(n && h && n.y + n.height <= h.y + 1, `notice ${JSON.stringify(n)} must end above the hint ${JSON.stringify(h)}`).toBeTruthy();
+// On a phone the notice has to be on the FIRST screen, unscrolled: its whole job is to be SEEN before someone clears their data.
+// The page can be left scrolled after genesis (scrollY 24-33), which once hid a clipped last line, so each test scrolls to 0 and asserts it.
+for (const vp of [{ width: 390, height: 844 }, { width: 375, height: 667 }]) {
+  test.describe(`on a phone ${vp.width}x${vp.height}`, () => {
+    test.use({ viewport: vp });
+    test('the whole notice is on the first screen at scrollY 0, above the import buttons', async ({ page }) => {
+      test.setTimeout(150_000);
+      await createIdentity(page);
+      await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
+      const notice = page.getByTestId('passphrase-loss-notice');
+      await expect(notice).toHaveText(PASSPHRASE_LOSS_NOTICE_CONTACTS);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      if (process.env.NOTICE_SHOT_DIR) await page.screenshot({ path: `${process.env.NOTICE_SHOT_DIR}/notice_${vp.width}x${vp.height}.png` }); // before the assertions, so a failure still leaves the picture
+      const innerHeight = await page.evaluate(() => window.innerHeight);
+      const n = await notice.boundingBox();
+      const btn = await page.getByTestId('import-contacts-trigger').boundingBox();
+      expect(n && n.y >= 0 && n.y + n.height <= innerHeight, `notice ${JSON.stringify(n)} must lie inside the first screen (innerHeight ${innerHeight}) at scrollY 0`).toBeTruthy();
+      expect(n && btn && n.y + n.height <= btn.y + 1, `notice ${JSON.stringify(n)} must end above the import buttons ${JSON.stringify(btn)}`).toBeTruthy();
+    });
   });
-});
+}
 
 test('the notice appears under "No contacts yet" and in the backup dialog, and not where it does not belong', async ({ page }) => {
   test.setTimeout(150_000);
@@ -48,7 +51,6 @@ test('the notice appears under "No contacts yet" and in the backup dialog, and n
   await page.getByRole('tab', { name: 'Contacts', exact: true }).click();
   await expect(page.getByText('No contacts yet', { exact: true })).toBeVisible();
   await expect(page.getByTestId('passphrase-loss-notice')).toHaveText(PASSPHRASE_LOSS_NOTICE_CONTACTS);
-  await expect(page.getByTestId('empty-book-icon')).toBeVisible(); // desktop keeps its icon
 
   // 2. A search with no match is a different state: no notice.
   await page.getByPlaceholder(/search/i).first().fill('zzzz-no-such-contact');

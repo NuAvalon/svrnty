@@ -4,9 +4,9 @@
 // Wording rules (the claims ledger): "may", never "are"; no "not lost" / "safe"; no date; a secondary line, so a new user is not alarmed.
 // ONE place for the words, so a change of wording is a change to this file only.
 
-/** Under "No contacts yet" on the Contacts screen. */
+/** ONE short banner line at the top of the address book while the book is empty (Archie's ruling; the full sentence stays in the backup dialog). */
 export const PASSPHRASE_LOSS_NOTICE_CONTACTS =
-  "If your contacts disappeared after you changed your passphrase or restored a backup, don't clear this browser's data. They may still be stored on this device, and we're working on a way to bring them back. Keep your previous passphrase.";
+  "Contacts missing after a passphrase change or restore? Don't clear this browser's data, and keep your old passphrase. We're working on recovery.";
 
 /** In the backup (vault export) dialog. */
 export const PASSPHRASE_LOSS_NOTICE_BACKUP =
