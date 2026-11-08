@@ -19,6 +19,7 @@ import { bytesToHex, concatBytes, randomBytes } from '@noble/hashes/utils.js';
 import { canonicalize } from '@/lib/format/canonical';
 import { lpBin, lpStr } from '@/lib/crypto/lp-tlv';
 import { mailboxConfig } from './mailbox-config';
+import { claimOwnerNonce } from './owner-replay-cache';
 
 export const DOMAIN_MAILBOX_ID_V2 = 'svrnty:mailbox-id:v2';
 export const DOMAIN_MAILBOX_OWNER_V2 = 'svrnty:mailbox-owner:v2';
@@ -146,6 +147,7 @@ export async function verifyOwnerRequestV2(
   mailboxId: string,
   now: number,
   envelopeIds?: string[],
+  deps: { mlDsaVerify?: (sig: Uint8Array, msg: Uint8Array, pub: Uint8Array) => boolean } = {},
 ): Promise<boolean> {
   try {
     if (!OPS.has(op) || !isMailboxIdV2(mailboxId)) return false;
@@ -163,7 +165,10 @@ export async function verifyOwnerRequestV2(
     if (sig.length !== ED_SIG_LEN || pq.length !== DSA_SIG_LEN) return false;
     const msg = ownerSignedMessageV2(op, mailboxId, b.nonce, b.ts, envelopeIds);
     if (!ed25519.verify(sig, msg, pub.edPublicKey)) return false;
-    return ml_dsa87.verify(pq, msg, pub.dsaPublicKey);
+    // (4) one-time use: a replay of this exact bundle (same mailbox + nonce, still fresh) stops HERE, after the cheap Ed25519 proof
+    //     and BEFORE the ~22 ms ML-DSA-87 verify, on the same uniform false. Recorded only once Ed25519 proved the key holder sent it.
+    if (!claimOwnerNonce(mailboxId, b.nonce, b.ts + mailboxConfig().ownerAuthWindowMs, now)) return false;
+    return (deps.mlDsaVerify ?? ((s, m, k) => ml_dsa87.verify(s, m, k)))(pq, msg, pub.dsaPublicKey);
   } catch {
     return false;
   }

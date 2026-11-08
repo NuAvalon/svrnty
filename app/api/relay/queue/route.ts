@@ -12,6 +12,7 @@ import { verifyMailboxPollAuth } from '@/lib/relay/mailbox-auth';
 import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
 import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { isMailboxClaimed } from '@/lib/relay/claim-registry';
+import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
 
 // The single uniform non-owner response — computed WITHOUT touching the store, so its latency and
 // bytes are independent of any mailbox's state. It never contains a stored blob.
@@ -20,6 +21,10 @@ function nonOwner() {
 }
 
 export async function GET(request: Request) {
+  // Per-IP budget FIRST, before the URL, the body or any auth header is parsed: a refused request never reaches a verifier, and
+  // the refusal (uniform 429) is decided before the mailbox id is read, so it can't vary on R (I-4).
+  const gated = ownerRouteGate(request);
+  if (gated) return gated;
   try {
     const { searchParams } = new URL(request.url);
     const mailboxId = searchParams.get('mailbox_id') ?? '';

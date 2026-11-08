@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { deriveMailboxId, verifyMailboxClaimAuth } from '@/lib/relay/mailbox-auth';
 import { decodeBetaAccessToken, verifyBetaAccessToken, type PinnedIssuer } from '@/lib/relay/beta-access';
 import { isJtiRedeemed, recordClaim } from '@/lib/relay/claim-registry';
+import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
 
 // Uniform reject — identical for every verify failure (bad token / bad issuer / bad owner-auth /
 // claims-disabled). An attacker can't tell which gate rejected. 200 only on a resolved claim.
@@ -37,6 +38,10 @@ function pinnedIssuer(): PinnedIssuer | null {
 }
 
 export async function POST(request: Request) {
+  // Per-IP budget FIRST, before the URL, the body or any auth header is parsed: a refused request never reaches a verifier, and
+  // the refusal (uniform 429) is decided before the mailbox id is read, so it can't vary on R (I-4).
+  const gated = ownerRouteGate(request);
+  if (gated) return gated;
   try {
     const issuer = pinnedIssuer();
     if (!issuer) return reject(); // no issuer pinned → beta-claims disabled, fail-closed
