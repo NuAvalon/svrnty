@@ -35,6 +35,29 @@ export interface MailboxConfig {
   /** Owner-auth (signed poll/ack) freshness window in ms — bounds replay of a captured request. */
   ownerAuthWindowMs: number;
   /**
+   * Per-IP ceiling on the OWNER routes (queue / ack / claim) within ownerRateLimitWindowMs, checked before any decode or verify.
+   * NOT the deposit budget: a browser polls every 1.5 s when active and every 0.35 s in a burst (live-book-poll.ts), and several
+   * clients can share one IP (a household NAT, the fleet host), so 10/min would lock real owners out. 300/min (5/s) covers an
+   * active tab in burst plus a few idle clients behind one address.
+   */
+  ownerRateLimitMax: number;
+  ownerRateLimitWindowMs: number;
+  /** Most distinct IPs the owner-route limiter tracks; past it (after a sweep) new IPs share one overflow bucket. */
+  ownerRateLimitIpCap: number;
+  /** Most live (mailbox_id, nonce) entries in the owner replay cache; when full (after a sweep) the one-time check is skipped and logged. */
+  replayCacheMax: number;
+  /**
+   * Process-wide LAST-RESORT budget for the expensive owner-auth step, sized from measured capacity, not from a guess at legit load:
+   * every owner verify spends it, legit ones included, so it must sit above launch-scale polling (an active tab ≈ 0.67 polls/s). The
+   * limit is main-thread CPU (owner-verify-budget.ts has the measurements): default 120/s × ~2.4 ms ≈ 29% of a core. Burst 90 keeps
+   * a worst-case burst near 200 ms of main-thread work.
+   */
+  ownerVerifyPerSec: number;
+  ownerVerifyBurst: number;
+  /** One address's fair share of that budget (requests within it may use the reserve): 1/s covers an active tab, burst 4 its bursts. */
+  ownerVerifyFairPerSec: number;
+  ownerVerifyFairBurst: number;
+  /**
    * §5.1 LAUNCH seam: when true (svrnty.is nursery profile), mailbox CREATION is gated behind an
    * explicit owner-claim carrying an invite_token+chain. That claim machinery lands WITH the invite
    * system (launch hardening) and is deliberately NOT retrofitted into the 9/10 build.
@@ -51,6 +74,14 @@ export function mailboxConfig(): MailboxConfig {
     rateLimitMax: intEnv('RELAY_RATE_LIMIT_MAX', 10),
     rateLimitWindowMs: intEnv('RELAY_RATE_LIMIT_WINDOW_MS', 60_000),
     ownerAuthWindowMs: intEnv('RELAY_OWNER_AUTH_WINDOW_MS', 60_000),
+    ownerRateLimitMax: intEnv('RELAY_OWNER_RATE_LIMIT_MAX', 300),
+    ownerRateLimitWindowMs: intEnv('RELAY_OWNER_RATE_LIMIT_WINDOW_MS', 60_000),
+    ownerRateLimitIpCap: intEnv('RELAY_OWNER_RATE_LIMIT_IP_CAP', 50_000),
+    replayCacheMax: intEnv('RELAY_REPLAY_CACHE_MAX', 100_000),
+    ownerVerifyPerSec: intEnv('RELAY_OWNER_VERIFY_PER_SEC', 120),
+    ownerVerifyBurst: intEnv('RELAY_OWNER_VERIFY_BURST', 90),
+    ownerVerifyFairPerSec: intEnv('RELAY_OWNER_VERIFY_FAIR_PER_SEC', 1),
+    ownerVerifyFairBurst: intEnv('RELAY_OWNER_VERIFY_FAIR_BURST', 4),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
   };
 }

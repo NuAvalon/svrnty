@@ -12,6 +12,9 @@ import { verifyMailboxPollAuth } from '@/lib/relay/mailbox-auth';
 import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
 import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { isMailboxClaimed } from '@/lib/relay/claim-registry';
+import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
+import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
+import { verifyMlDsaPooled } from '@/lib/relay/mldsa-verify-pool.server';
 
 // The single uniform non-owner response — computed WITHOUT touching the store, so its latency and
 // bytes are independent of any mailbox's state. It never contains a stored blob.
@@ -20,6 +23,10 @@ function nonOwner() {
 }
 
 export async function GET(request: Request) {
+  // Per-IP budget FIRST, before the URL, the body or any auth header is parsed: a refused request never reaches a verifier, and
+  // the refusal (uniform 429) is decided before the mailbox id is read, so it can't vary on R (I-4).
+  const gated = ownerRouteGate(request);
+  if (gated) return gated;
   try {
     const { searchParams } = new URL(request.url);
     const mailboxId = searchParams.get('mailbox_id') ?? '';
@@ -29,7 +36,7 @@ export async function GET(request: Request) {
     // #721: a v2 (mbx2_) id is verified ONLY by its own auth key (no fingerprint, no identity key); a v1 id ONLY by v1. A bundle of the
     // other version fails here, on the same uniform path.
     const isOwner = isMailboxIdV2(mailboxId)
-      ? await verifyOwnerRequestV2(request, 'poll', mailboxId, Date.now())
+      ? await verifyOwnerRequestV2(request, 'poll', mailboxId, Date.now(), undefined, { mlDsaVerify: verifyMlDsaPooled })
       : await verifyMailboxPollAuth(request, mailboxId, Date.now());
     if (!isOwner) return nonOwner();
 
@@ -48,7 +55,8 @@ export async function GET(request: Request) {
     // an older client ignores the field.
     const list = pollMailbox(mailboxId, Date.now()).map((e) => ({ ...e, expires_at: new Date(e.expires_at).toISOString() }));
     return NextResponse.json(list);
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) return ownerVerifyBusyResponse(); // shed before the expensive verify (uniform 503)
     // Even on error, return the uniform non-owner shape — never leak state via an error path.
     return nonOwner();
   }

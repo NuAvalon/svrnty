@@ -9,12 +9,19 @@ import { NextResponse } from 'next/server';
 import { ackDelete } from '@/lib/relay/mailbox-store';
 import { verifyMailboxAckAuth } from '@/lib/relay/mailbox-auth';
 import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
+import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
+import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
+import { verifyMlDsaPooled } from '@/lib/relay/mldsa-verify-pool.server';
 
 function nonOwner() {
   return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 }
 
 export async function POST(request: Request) {
+  // Per-IP budget FIRST, before the URL, the body or any auth header is parsed: a refused request never reaches a verifier, and
+  // the refusal (uniform 429) is decided before the mailbox id is read, so it can't vary on R (I-4).
+  const gated = ownerRouteGate(request);
+  if (gated) return gated;
   try {
     const body = await request.json().catch(() => null);
     const mailboxId = typeof body?.mailbox_id === 'string' ? body.mailbox_id : '';
@@ -25,13 +32,14 @@ export async function POST(request: Request) {
     const now = Date.now();
     // #721: version by the id itself; the other version's bundle fails on the uniform path.
     const isOwner = isMailboxIdV2(mailboxId)
-      ? await verifyOwnerRequestV2(request, 'ack', mailboxId, now, envelopeIds)
+      ? await verifyOwnerRequestV2(request, 'ack', mailboxId, now, envelopeIds, { mlDsaVerify: verifyMlDsaPooled })
       : await verifyMailboxAckAuth(request, mailboxId, envelopeIds, now);
     if (!isOwner) return nonOwner();
 
     const deleted = ackDelete(mailboxId, envelopeIds, now);
     return NextResponse.json({ deleted });
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) return ownerVerifyBusyResponse(); // shed before the expensive verify (uniform 503)
     return nonOwner();
   }
 }

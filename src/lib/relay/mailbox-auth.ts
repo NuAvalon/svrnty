@@ -23,6 +23,9 @@ import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
+import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
+import { OwnerVerifyBusyError, takeOwnerVerifyToken } from './owner-verify-budget';
+import { ownerClientKey } from './owner-route-budget';
 
 // Domain-separation tags for the two owner-authenticated mailbox ops. A poll signature can never be
 // replayed as an ack (or vice-versa): different domain → different signed bytes (sign-envelope LP).
@@ -251,7 +254,7 @@ export async function verifyMailboxPollAuth(request: Request, mailboxId: string,
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
-  return verifyOwner(bundle, DOMAIN_MAILBOX_POLL, input, mailboxId, now);
+  return verifyOwner(bundle, DOMAIN_MAILBOX_POLL, input, mailboxId, now, ownerClientKey(request));
 }
 
 export async function verifyMailboxAckAuth(
@@ -263,7 +266,7 @@ export async function verifyMailboxAckAuth(
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = ackSigningInput({ mailbox_id: mailboxId, envelope_ids: envelopeIds, nonce: bundle.nonce, ts: bundle.ts });
-  return verifyOwner(bundle, DOMAIN_MAILBOX_ACK, input, mailboxId, now);
+  return verifyOwner(bundle, DOMAIN_MAILBOX_ACK, input, mailboxId, now, ownerClientKey(request));
 }
 
 /**
@@ -275,7 +278,7 @@ export async function verifyMailboxClaimAuth(request: Request, mailboxId: string
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
-  return verifyOwner(bundle, DOMAIN_MAILBOX_CLAIM, input, mailboxId, now);
+  return verifyOwner(bundle, DOMAIN_MAILBOX_CLAIM, input, mailboxId, now, ownerClientKey(request));
 }
 
 async function verifyOwner(
@@ -284,12 +287,17 @@ async function verifyOwner(
   signingInput: string,
   mailboxId: string,
   now: number,
+  clientKey: string,
 ): Promise<boolean> {
   try {
     // (1) freshness — bound replay of a captured request to the configured window.
     if (!Number.isFinite(bundle.ts) || Math.abs(now - bundle.ts) > mailboxConfig().ownerAuthWindowMs) return false;
     // (2) mailbox binding — the presented fingerprint must derive THIS mailbox_id (owner-of-record).
     if (deriveMailboxId(bundle.fingerprint) !== mailboxId) return false;
+    // (2b) one-time use: an already-used (mailbox, nonce) is refused before the key parse and signature verify below.
+    if (isOwnerNonceSeen(mailboxId, bundle.nonce, now)) return false;
+    // (2c) the process-wide budget for the expensive steps below (throws OwnerVerifyBusyError → the route's uniform 503).
+    takeOwnerVerifyToken(now, clientKey);
     // (3) fp↔key binding (Canon Invariant-1) — the key can't be swapped under the fingerprint.
     //     §5: pass the PQ pubkeys so a 64-hex canonical id recomputes SHA256(sign‖enc‖kem‖sig) and
     //     matches. fingerprintMatchesKey length-gates them (kem=1568/sig=2592) and falls back to the
@@ -300,8 +308,12 @@ async function verifyOwner(
     }))) return false;
     // (4) private-key possession over EXACTLY this request, under the op-specific domain.
     const envSig = envelopeSignatureOf(bundle.signature, bundle.pq_signature); // raw: '' / null refuse (#717)
-    return await verifyWithEnvelope(domain, signingInput, envSig, bundle.public_key);
-  } catch {
+    if (!(await verifyWithEnvelope(domain, signingInput, envSig, bundle.public_key))) return false;
+    // (5) record the nonce only now that the owner is proven. Synchronous check-and-insert: of two identical requests verified
+    //     concurrently, exactly one gets here first; the other reads as a replay.
+    return claimOwnerNonce(mailboxId, bundle.nonce, bundle.ts + mailboxConfig().ownerAuthWindowMs, now);
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) throw e; // the one thing a verifier throws: "shed", not "refused"
     return false;
   }
 }

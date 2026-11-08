@@ -6,7 +6,15 @@
 // many refusals arrive (a flood of the cheapest 429 path must not become a flood of log writes). `count` is the running total
 // for that reason, `since_last` the refusals folded into this line. Both are per process and start at 0 on restart.
 
-export type Deposit429Reason = 'rate_limit' | 'mailbox_cap';
+export type Deposit429Reason = 'rate_limit' | 'mailbox_cap' | 'owner_rate_limit' | 'owner_verify_busy' | 'replay_cache_full';
+// The line names what happened, per reason: the deposit lines are unchanged; the owner routes (queue/ack/claim) say so.
+const LINE_PREFIX: Record<Deposit429Reason, string> = {
+  rate_limit: 'relay deposit 429',
+  mailbox_cap: 'relay deposit 429',
+  owner_rate_limit: 'relay owner 429',
+  owner_verify_busy: 'relay owner 503',
+  replay_cache_full: 'relay owner replay-cache full (one-time check skipped)',
+};
 
 export const LOG_EVERY_MS = 60_000;
 
@@ -22,21 +30,21 @@ declare global {
 }
 
 function state(): Record<Deposit429Reason, ReasonState> {
-  if (!globalThis.__deposit429State) {
-    globalThis.__deposit429State = {
-      rate_limit: { count: 0, sinceLast: 0, lastLogAt: null },
-      mailbox_cap: { count: 0, sinceLast: 0, lastLogAt: null },
-    };
-  }
+  if (!globalThis.__deposit429State) globalThis.__deposit429State = {} as Record<Deposit429Reason, ReasonState>;
   return globalThis.__deposit429State;
+}
+// Lazily per reason, so adding a reason is one line in the union and a state left by an older module version can't crash on it.
+function reasonState(reason: Deposit429Reason): ReasonState {
+  const all = state();
+  return (all[reason] ??= { count: 0, sinceLast: 0, lastLogAt: null });
 }
 
 export function logDeposit429(reason: Deposit429Reason, now: number = Date.now()): void {
-  const s = state()[reason];
+  const s = reasonState(reason);
   s.count++;
   s.sinceLast++;
   if (s.lastLogAt !== null && now - s.lastLogAt < LOG_EVERY_MS) return;
-  console.warn(`relay deposit 429 reason=${reason} count=${s.count} since_last=${s.sinceLast}`);
+  console.warn(`${LINE_PREFIX[reason]} reason=${reason} count=${s.count} since_last=${s.sinceLast}`);
   s.sinceLast = 0;
   s.lastLogAt = now;
 }

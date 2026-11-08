@@ -19,6 +19,9 @@ import { bytesToHex, concatBytes, randomBytes } from '@noble/hashes/utils.js';
 import { canonicalize } from '@/lib/format/canonical';
 import { lpBin, lpStr } from '@/lib/crypto/lp-tlv';
 import { mailboxConfig } from './mailbox-config';
+import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
+import { OwnerVerifyBusyError, takeOwnerVerifyToken } from './owner-verify-budget';
+import { ownerClientKey } from './owner-route-budget';
 
 export const DOMAIN_MAILBOX_ID_V2 = 'svrnty:mailbox-id:v2';
 export const DOMAIN_MAILBOX_OWNER_V2 = 'svrnty:mailbox-owner:v2';
@@ -138,7 +141,7 @@ export function signOwnerRequestV2(args: {
   return { mailboxId, headers: { [OWNER_AUTH_V2_HEADER]: bytesToB64url(new TextEncoder().encode(JSON.stringify(bundle))) } };
 }
 
-// ── SERVER: verify a request is from the owner of THIS v2 mailbox. Before any store access (I-4), never throws. ──
+// ── SERVER: verify a request is from the owner of THIS v2 mailbox. Before any store access (I-4). Throws only OwnerVerifyBusyError. ──
 
 export async function verifyOwnerRequestV2(
   request: Request,
@@ -146,6 +149,7 @@ export async function verifyOwnerRequestV2(
   mailboxId: string,
   now: number,
   envelopeIds?: string[],
+  deps: { mlDsaVerify?: (sig: Uint8Array, msg: Uint8Array, pub: Uint8Array) => boolean | Promise<boolean> } = {},
 ): Promise<boolean> {
   try {
     if (!OPS.has(op) || !isMailboxIdV2(mailboxId)) return false;
@@ -157,14 +161,23 @@ export async function verifyOwnerRequestV2(
     const pub = { edPublicKey: b64urlToBytes(b.ed_pub), dsaPublicKey: b64urlToBytes(b.dsa_pub) };
     if (pub.edPublicKey.length !== ED_PUB_LEN || pub.dsaPublicKey.length !== DSA_PUB_LEN) return false;
     if (deriveMailboxIdV2(pub) !== mailboxId) return false;
-    // (3) possession of BOTH halves over exactly this request, under the op.
+    // (3) shapes, then one-time use: a replay of this exact bundle (same mailbox + nonce, still fresh) stops HERE, on the same uniform
+    //     false, before any signature check, and spends no verify budget. A read only: nothing is recorded until the owner is proven.
     const sig = b64urlToBytes(b.sig);
     const pq = b64urlToBytes(b.pq_sig);
     if (sig.length !== ED_SIG_LEN || pq.length !== DSA_SIG_LEN) return false;
+    if (isOwnerNonceSeen(mailboxId, b.nonce, now)) return false;
+    // (4) the process-wide budget for BOTH signature checks (throws OwnerVerifyBusyError → the route's uniform 503). Before Ed25519:
+    //     that check is main-thread CPU too, and a wrong signature costs it as fully as a right one.
+    takeOwnerVerifyToken(now, ownerClientKey(request));
+    // (5) possession of BOTH halves over exactly this request, under the op. The nonce is recorded once the Ed25519 half is proven.
     const msg = ownerSignedMessageV2(op, mailboxId, b.nonce, b.ts, envelopeIds);
     if (!ed25519.verify(sig, msg, pub.edPublicKey)) return false;
-    return ml_dsa87.verify(pq, msg, pub.dsaPublicKey);
-  } catch {
+    if (!claimOwnerNonce(mailboxId, b.nonce, b.ts + mailboxConfig().ownerAuthWindowMs, now)) return false;
+    // The server routes inject the off-event-loop pool (mldsa-verify-pool.server.ts); without it (tests, other callers) it runs inline.
+    return (await (deps.mlDsaVerify ?? ((s, m, k) => ml_dsa87.verify(s, m, k)))(pq, msg, pub.dsaPublicKey)) === true;
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) throw e; // the one thing a verifier throws: "shed", not "refused"
     return false;
   }
 }
