@@ -50,7 +50,7 @@ WITHDRAWN = b'{"status":"withdrawn"}'
 NONCE_TTL_SECONDS = 60
 _REASONS = {"wire", "epoch", "point:pi_a:identity", "point:pi_a:off-curve", "point:pi_c:identity", "point:pi_c:off-curve",
             "point:pi_b:identity", "point:pi_b:off-curve", "point:pi_b:not-in-subgroup", "vkey", "proof", "usage",
-            "internal", "timeout", "rate", "full"}
+            "internal", "timeout", "rate", "full", "auth"}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS beacon_deposits (
