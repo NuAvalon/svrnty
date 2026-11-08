@@ -201,3 +201,49 @@ test('pollStatusOf table: only a clean, fully-acked, answered list is ok', () =>
   assert.equal(pollStatusOf(z, true), 'locked');
   assert.equal(refreshNoteFor('checked-waiting'), REFRESH_NOTE.checkedWaiting);
 });
+
+// ---- a shed poll (429/503) is retried silently; the user sees nothing until 30 s of continuous failure ----
+
+function fakeClock() {
+  let t = 0;
+  const sleeps: number[] = [];
+  // The runaway guard ends a retry loop that never gives up (a microtask loop would otherwise starve the test timeout itself).
+  return { sleeps, now: () => t, sleep: async (ms: number) => { sleeps.push(ms); t += ms; if (t > 120_000) throw new Error('runaway retry loop'); } };
+}
+
+test('R1 busy then answered: retried silently with backoff, and the note is the answer', async () => {
+  const c = fakeClock();
+  const seq = ['busy', 'busy', 'ok'] as const;
+  let i = 0;
+  assert.equal(await refreshNoteAfter(async () => seq[i++], c), REFRESH_NOTE.ok);
+  assert.equal(i, 3);
+  assert.deepEqual(c.sleeps, [1000, 2000]);
+});
+
+test('R2 still busy after 30 s: only then the plain line, and not before', async () => {
+  const c = fakeClock();
+  let calls = 0;
+  const note = await refreshNoteAfter(async () => { calls++; return 'busy'; }, c);
+  assert.equal(note, REFRESH_NOTE.failed);
+  assert.equal(note, 'Could not check right now.');
+  assert.ok(c.now() >= 30_000, `gave up at ${c.now()} ms`);
+  assert.ok(c.now() < 38_000, `one backoff past 30 s at most (${c.now()} ms)`);
+  assert.ok(calls > 3);
+});
+
+test('R3 NEG: a real refusal is not retried (only a shed poll is)', async () => {
+  const c = fakeClock();
+  let calls = 0;
+  assert.equal(await refreshNoteAfter(async () => { calls++; return 'rejected'; }, c), REFRESH_NOTE.failed);
+  assert.equal(calls, 1);
+  assert.deepEqual(c.sleeps, []);
+});
+
+test('R4 pollStatusOf: 503 and 429 are busy, 401 and 500 stay rejected, a lock still wins', () => {
+  const s = (rejected: number) => ({ rejected, polled: 0, acked: 0, held: 0, unrecorded: 0 });
+  assert.equal(pollStatusOf(s(503)), 'busy');
+  assert.equal(pollStatusOf(s(429)), 'busy');
+  assert.equal(pollStatusOf(s(401)), 'rejected');
+  assert.equal(pollStatusOf(s(500)), 'rejected');
+  assert.equal(pollStatusOf(s(503), true), 'locked');
+});
