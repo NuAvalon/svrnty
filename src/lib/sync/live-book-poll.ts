@@ -34,7 +34,7 @@ import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import { clearHeldReport, reportHeld } from '@/lib/notes/held-events';
-import { clearPollStatus, reportPollStatus } from '@/lib/notes/poll-status-events';
+import { busyBackoffMs, clearPollStatus, reportPollStatus } from '@/lib/notes/poll-status-events';
 import {
   loadKey,
   loadPQKeys,
@@ -612,16 +612,18 @@ export interface LiveBookPollHandle {
  *   status that may be shown as "Caught up."
  * - 'checked-waiting': the relay answered with a list, but envelopes are still on it (held, unrecorded, retryable, or an ack that failed).
  * - 'rejected': the poll was refused (non-OK status). NOT an empty mailbox.
+ * - 'busy': the relay is shedding load (429/503). NOT a refusal of this device and NOT an empty mailbox; retried silently with backoff.
  * - 'unreadable': the relay answered 2xx but the body was not a list. Also NOT an empty mailbox, and not a refusal.
  * - 'locked': no poll ran (locked / no identity), or the unlock cycle ended mid-poll, so the mailbox state is unknown.
  */
-export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'unreadable' | 'locked';
+export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'busy' | 'unreadable' | 'locked';
 
 export function pollStatusOf(
   summary: Pick<ConsumeSummary, 'rejected' | 'polled' | 'acked' | 'held' | 'unrecorded'>,
   cycleEnded = false,
 ): PollOnceStatus {
   if (cycleEnded) return 'locked';
+  if (summary.rejected === 429 || summary.rejected === 503) return 'busy';
   if (summary.rejected !== undefined) return summary.rejected >= 200 && summary.rejected < 300 ? 'unreadable' : 'rejected';
   if (summary.held > 0 || summary.unrecorded > 0 || summary.acked < summary.polled) return 'checked-waiting';
   return 'ok';
@@ -646,7 +648,7 @@ export async function pollLiveBookOnce(
   try {
     const summary = await consumeInboundContactUpdates(deps);
     const status = pollStatusOf(summary, deps.owner.cycle?.ended);
-    reportPollStatus(status);
+    reportPollStatus(status, Date.now(), summary.rejected);
     return status;
   } finally {
     deps.owner.cycle?.drop();
@@ -706,10 +708,12 @@ export function startLiveBookPolling(
   let bursting = false;
   let steady = false;
   let idleTicks = 0; // consecutive polls that found nothing; reset by any non-empty poll, a burst, or a keepSteady change
+  let busyStreak = 0; // consecutive polls the relay shed (429/503); any other answer resets it
 
   // The burst cadence stays exact; every other delay is jittered.
   const nextDelay = () => {
     const base = nextPollDelayMs({ idleTicks, bursting, steady, intervalMs, maxIdleMs });
+    if (busyStreak > 0) return jitterDelayMs(Math.max(base, busyBackoffMs(busyStreak)), random); // a busy relay gets backed off, burst or not
     return bursting ? base : jitterDelayMs(base, random);
   };
 
@@ -735,8 +739,9 @@ export function startLiveBookPolling(
       try {
         const summary = await consumeInboundContactUpdates(deps);
         const status = pollStatusOf(summary, deps.owner.cycle?.ended);
-        reportPollStatus(status); // copy v1 §B: 3 refused in a row → Chat notice
-        if (status === 'locked') counts = false;
+        reportPollStatus(status, Date.now(), summary.rejected); // copy v1 §B: 3 refused in a row → Chat notice
+        busyStreak = status === 'busy' ? busyStreak + 1 : 0;
+        if (status === 'locked' || status === 'busy') counts = false; // a shed poll says nothing about whether the mailbox is idle
         active = summary.polled > 0;
       } finally {
         deps.owner.cycle?.drop();
