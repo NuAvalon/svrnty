@@ -21,8 +21,8 @@ import { mailboxConfig } from './mailbox-config';
 import { safeEnvelopeId } from '@/lib/sync/dead-letter';
 
 export interface Envelope {
-  /** Relay-assigned (or client-supplied, Apollo retry-dedup contract) unique id — the handle for
-   *  ack-delete + client-side dedup. Unique within a mailbox. */
+  /** Relay-assigned unique id — the handle for ack-delete + client-side dedup. Unique within a mailbox. Over HTTP the relay
+   *  ALWAYS assigns it (see depositEnvelope's clientEnvelopeId note). */
   envelope_id: string;
   /** Opaque payload (≤ maxPayloadBytes). The relay never reads or interprets this. */
   blob: string;
@@ -106,9 +106,14 @@ export type DepositResult = { ok: true } | { ok: false; status: 400 | 413 | 429 
  *
  * (400/413 are request-shape errors — about the deposit itself, NOT R's mailbox state.)
  *
- * `clientEnvelopeId` (optional, Apollo retry-dedup contract): when the client supplies a STABLE id,
+ * NOT REACHABLE OVER HTTP (lane:svrnty #2310-#2315): the deposit route (app/api/relay/envelope/route.ts) never passes
+ * `clientEnvelopeId`, so every envelope that arrives over the network gets a relay-assigned random id, and a depositor cannot
+ * choose or reuse one. #720 v5.2's malformed-id rule and #318's held-frame schedule rely on that. The parameter below is
+ * internal/test-only; wiring it into the route trips envelope-id-relay-assigned.test.ts on purpose (re-check v5.2 first).
+ *
+ * `clientEnvelopeId` (optional, the designed-but-unwired retry-dedup contract): when a caller supplies a STABLE id,
  * a retry with the same (mailbox, id) is IDEMPOTENT — returns ok:true without a second row and
- * without re-counting against cap. Absent → the relay assigns a random id (legacy callers). The
+ * without re-counting against cap. Absent → the relay assigns a random id (every HTTP deposit today). The
  * idempotent-OK is uniform with a fresh OK (no read-state leak). [Flint co-verified GREEN: the only
  * residual is AT-CAP + OWN-MESSAGE — sweepExpired runs before the dedup SELECT, so re-depositing a
  * still-PENDING X returns ok (dedup, pre-cap) while a consumed/expired X returns 429, letting a

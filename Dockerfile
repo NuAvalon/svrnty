@@ -42,6 +42,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
+# The relay mailbox store (RELAY_DB_PATH=/data/relay/mailbox.sqlite, durable since b327b2f, no in-memory
+# fallback) lives on a named volume. Docker seeds an EMPTY named volume from this directory, ownership
+# included, so it must exist here owned by nextjs; otherwise a fresh volume is root:root 0755 and the
+# relay can't create its database (task #661).
+RUN mkdir -p /data/relay && chown nextjs:nodejs /data/relay && chmod 0700 /data/relay
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules

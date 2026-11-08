@@ -20,6 +20,7 @@
 // React — the book just stays static until a later successful tick. All custody/verify/whitelist
 // logic lives inside the caller; nothing here is smart about the social graph.
 
+import { noteRewriteRefused } from '@/lib/messaging/rewrite-refused';
 import {
   consumeInboundContactUpdates,
   type ConsumeDeps,
@@ -33,12 +34,13 @@ import { makeUnlockCycle, type UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { emitContactChange } from '@/lib/contacts/contact-events';
 import { emitNoteArrival } from '@/lib/notes/note-events';
 import { clearHeldReport, reportHeld } from '@/lib/notes/held-events';
+import { clearPollStatus, reportPollStatus } from '@/lib/notes/poll-status-events';
 import {
   loadKey,
   loadPQKeys,
   onSessionLock,
   getContactByFingerprint,
-  updateContact,
+  updateContactIf,
   loadIssuedCodeMap,
   isCodeOutstanding,
   codeUnderCap,
@@ -53,20 +55,23 @@ import { deriveOwnerHybridSecretsFromKey } from '@/lib/crypto/living-book-receiv
 import { makeHybridOpener, dualReadOpener, type EnvelopeOpener } from '@/lib/sync/hybrid-dual-read';
 import { emitDeliveredReceipt } from '@/lib/messaging/receipt-emit';
 import { receiptOutbox, type ReceiptOutbox } from '@/lib/sync/receipt-outbox';
+import { holdBackoff } from '@/lib/sync/hold-backoff';
 import { counted, createOpenLegCounter, type OpenLegCounter } from '@/lib/sync/open-leg-counter';
+import { pollWriteUnlessSafety } from '@/lib/contacts/safety-write';
+import { createAdoptCounter, type AdoptCounter } from '@/lib/messaging/session-adopt-policy';
 import { openMailboxEnvelope } from '@/lib/crypto/mailbox-envelope';
 import type { KnownContactIdentity } from '@/lib/trust/contact-update';
 import { admitContact } from '@/lib/trust/admit-contact';
 import type { StoredContact } from '@/lib/contacts/apply-contact-update';
 import { verifyJoinerResponse, type PendingJoiner } from '@/lib/trust/joiner-response';
 import { acceptJoinerAtGate } from '@/lib/trust/grow-gate';
-import type { JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
+import type { ConsumeSummary, JoinerResponseSeam, NoteResponseSeam, ReceiptResponseSeam } from './consume-mailbox';
 import { acceptInboundNote } from '@/lib/messaging/transport';
 import { noteOpenpgpDecryptor, parseNoteWire } from '@/lib/messaging/seal';
 import { parseReceiptWireV1 } from '@/lib/messaging/receipt-wire-v1';
 import { receiptKeyFromHex, verifyReceiptTag } from '@/lib/crypto/receipt-mac';
 import { initNotesStore, isNotesStoreUnlocked, notesStoreOwner, getNote, putNote } from '@/lib/messaging/store';
-import { getDeadLetter, pruneDeadLetters, putDeadLetter, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
+import { getDeadLetter, pruneDeadLetters, putDeadLetter, releasedByReset, removeDeadLetter } from '@/lib/messaging/dead-letter-store';
 import { assertNotesStoreOpenFor } from '@/lib/messaging/notes-owner-guard';
 import type { NoteWireV0 } from '@/lib/messaging/types';
 
@@ -75,6 +80,12 @@ export const DEFAULT_POLL_INTERVAL_MS = 1_500;
 /** After Grow mint / unlock / tab-focus — catch a joiner in ~a second, not a minute. */
 export const BURST_POLL_INTERVAL_MS = 350;
 export const DEFAULT_BURST_MS = 12_000;
+/** Idle backoff: after this many consecutive empty polls the steady cadence doubles each poll, up to the ceiling. */
+export const IDLE_TICKS_BEFORE_BACKOFF = 4;
+export const MAX_IDLE_POLL_INTERVAL_MS = 15_000;
+/** Relay-visible timing is metadata: idle delays get ±25% random jitter, and the first poll after a wake waits 0-1 s. Timing depends ONLY on local UI state. */
+export const IDLE_JITTER_FRACTION = 0.25;
+export const BURST_START_JITTER_MS = 1_000;
 
 /**
  * Project a stored contact record into the verify seam's KnownContactIdentity.
@@ -104,11 +115,14 @@ export function buildContactStore(ownerFingerprint: string): ContactStore {
       const current = rec as unknown as StoredContact; // ContactRecord ⊇ StoredContact (structural superset)
       return { known: recordToKnownContact(rec), current };
     },
-    async persist(id: string, next: StoredContact): Promise<void> {
-      // updateContact re-checks the fail-closed fingerprint↔key binding. A verified apply keeps the
-      // fingerprint immutable and only rotates public_key to a validly-bound key, so the binding holds.
-      await updateContact(id, next as Partial<ContactRecord>);
+    async persist(id: string, next: StoredContact): Promise<{ applied: boolean }> {
+      // The write re-checks the fail-closed fingerprint↔key binding. A verified apply keeps the fingerprint immutable and only rotates
+      // public_key to a validly-bound key, so the binding holds. Decided on the record held when the write commits (compare-and-swap), so a
+      // block that lands after the poll's read still stops it: blocked → no write.
+      return updateContactIf(id, (existing) => (admitContact(existing) ? (next as Partial<ContactRecord>) : null));
     },
+    // A contact can make this write happen as often as they like, so it yields to a write that protects the owner (block, trust, go-private).
+    guard: (run) => pollWriteUnlessSafety(run),
   };
 }
 
@@ -176,6 +190,7 @@ export function buildNoteSeam(
   // tests / legacy callers → exact prior behaviour (no receipt sent).
   sendReceipt?: (wire: NoteWireV0) => Promise<void>,
   legs?: OpenLegCounter, // #720: which leg opened (counts only)
+  adoptCounts?: AdoptCounter, // #720 R5: stored notes the adopt replay guard ignored for being future-dated (counts only)
 ): NoteResponseSeam {
   // Single dual-read chokepoint: hybrid-FIRST (makeHybridOpener → openMailboxEnvelope + parseNoteWire),
   // classical FALLBACK (noteOpenpgpDecryptor, off the N10 unlock cycle). parseNoteWire is the type-gate on BOTH legs → no-cross-swallow.
@@ -201,16 +216,21 @@ export function buildNoteSeam(
       // (in-book) THEN putNote; returns null on any drop (unsigned / forged / stranger — silent I-1/I-2).
       // A LOCKED notes store makes putNote throw → that propagates to the consume loop as RETRYABLE
       // (the note waits in the mailbox, never ack-deleted-unseen). buildConsumeDeps unlocks it below.
-      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | undefined;
+      let dropReason: 'unverified' | 'not-in-book' | 'ratchet-unopenable' | 'ratchet-local' | 'ratchet-desync' | undefined;
+      let dropCause: string | undefined;
       const rec = await deps.accept({
-        onDrop: (r) => {
+        onDrop: (r, c) => {
           dropReason = r;
+          dropCause = c;
         },
+        onRewriteRefused: noteRewriteRefused,
         wire,
         isAdmitted: async (fp) => admitContact(await getContactByFingerprint(owner.fingerprint, fp)),
-        openRatchet: async (fromFp, body) => {
+        openRatchet: async (fromFp, body, ctx) => {
           const { loadOwnerRatchetIdentity, loadPeerRatchet } = await import('@/lib/messaging/ratchet-keys');
           const { openDirectNoteStagedTyped, ownerBoundRatchetIO } = await import('@/lib/messaging/direct-session');
+          const { buildAdoptFirstFrame } = await import('@/lib/messaging/session-adopt-policy');
+          const { listInboundSentAtFrom } = await import('@/lib/messaging/store');
           const { openRatchetClassified } = await import('@/lib/messaging/ratchet-open');
           // v5.3: every failure comes back TYPED (local = this device, verdict = the frame/card), never a bare null. R4 + R2: open WITHOUT
           // persisting (acceptInboundNote commits after the note is stored), against the session store bound to THIS owner.
@@ -222,15 +242,45 @@ export function buildNoteSeam(
               }),
             contactExists: async () => !!(await getContactByFingerprint(owner.fingerprint, fromFp)),
             loadPeer: () => loadPeerRatchet(owner.fingerprint, fromFp),
-            open: (self, peer) => openDirectNoteStagedTyped(fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint)),
+            // R5/R6: a peer's NEW first frame may replace our session, but only if the policy agrees (signed sent_at newer than every stored note from them,
+            // lower-fp tie-break while ours is unconfirmed). The stored notes are read only on a desync.
+            open: (self, peer) =>
+              openDirectNoteStagedTyped(
+                fromFp, body, self, peer, ownerBoundRatchetIO(owner.fingerprint),
+                buildAdoptFirstFrame({
+                  ownFingerprint: owner.fingerprint,
+                  peerFingerprint: fromFp,
+                  sentAt: ctx?.sentAt,
+                  storedSentAts: () => listInboundSentAtFrom(fromFp),
+                  adoptedFloorAt: async () => (await import('@/lib/messaging/adopt-floor-store')).getAdoptFloor(fromFp),
+                  now: Date.now,
+                  onIgnoredFuture: (n) => adoptCounts?.bumpFutureIgnored(n),
+                }),
+              ),
           });
+        },
+        // R5: after the replacing note is stored and the session committed, that contact's held frames are released as session-reset records.
+        onSessionReplaced: async (fp) => {
+          const { markSessionReset } = await import('@/lib/messaging/dead-letter-store');
+          await markSessionReset(fp);
+        },
+        // L-318a: this open started the session (a first frame, or a replacement): its signed sent_at becomes the contact's adopt floor, so deleting the
+        // conversation can no longer lower the replay guard.
+        onSessionStarted: async (fp, signedSentAt) => {
+          const { raiseAdoptFloor } = await import('@/lib/messaging/adopt-floor-store');
+          await raiseAdoptFloor(fp, signedSentAt);
+        },
+        // R4: a frame from this contact opened, so "this device reset them and has received no frame since" is over.
+        onFrameOpened: async (fp) => {
+          const { clearResetFlagIfSet } = await import('@/lib/messaging/reset-flag-store');
+          await clearResetFlagIfSet(fp);
         },
       });
       if (!rec) {
         // dropped (unsigned / forged / stranger) — no receipt for a note we didn't accept. #720: say WHY, so the record is honest. A fingerprint
         // travels only for the reasons that come AFTER authentication (wire.from_fingerprint is attacker-controlled until then: F3).
         if (!dropReason) return null;
-        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint };
+        return dropReason === 'unverified' ? { dropped: 'unverified' } : { dropped: dropReason, fp: wire.from_fingerprint, ...(dropCause ? { cause: dropCause } : {}) };
       }
       // Best-effort delivery receipt back to the sender. The wire was AUTHENTICATED by acceptInboundNote
       // (verifyNoteSender bound public_key↔from_fingerprint), so wire.public_key + wire.from_fingerprint
@@ -398,7 +448,9 @@ export function cycleDroppingHybrid(base: UnlockCycle, getHybrid: () => LivingBo
 // #720: the "kept because this device can't open it yet" report belongs to ONE identity. Drop it on session lock AND on identity switch
 // (client-store fires these hooks from both), so identity A's count can never show under identity B.
 onSessionLock(clearHeldReport);
+onSessionLock(clearPollStatus); // copy v1 §B: identity A's refused-poll state never shows under identity B
 onSessionLock(() => receiptOutbox.clear()); // queued receipts and the dedupe set belong to the session that was locked
+onSessionLock(() => holdBackoff.clear()); // the retry schedule of held frames belongs to the identity that was unlocked
 
 /**
  * #720: the dead-letter sink bound to THIS owner. Every call first checks that the notes store is open FOR THIS OWNER (the same guard the
@@ -419,6 +471,10 @@ export function buildDeadLetterSink(owner: OwnerIdentity, openOwner: () => strin
     settle: async () => {
       assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
       await pruneDeadLetters(Date.now());
+    },
+    releasedByReset: async () => {
+      assertNotesStoreOpenFor(openOwner(), owner.fingerprint);
+      return releasedByReset();
     },
   };
 }
@@ -491,9 +547,11 @@ export async function buildConsumeDeps(
   // contact-update (the consume catch-all): single dual-read chokepoint — hybrid-first + classical fallback.
   const classicalCU = openpgpEnvelopeDecryptor(key.privateKey, key.passphrase, owner.cycle);
   const legs = createOpenLegCounter(); // #720: opened_hybrid / opened_classical per poll (counts only)
+  const adoptCounts = createAdoptCounter(); // #720 R5: future-dated stored notes the adopt replay guard ignored (counts only)
   return {
     owner,
     openLegs: legs,
+    adoptCounts,
     decrypt: hybrid
       ? dualReadOpener(
           counted(makeHybridOpener(openHybridForCycle(owner, hybrid), parseContactUpdateWire), 'hybrid', legs),
@@ -506,7 +564,7 @@ export async function buildConsumeDeps(
     // the send is QUEUED (receipt-outbox.ts), never awaited, so a failed or slow receipt cannot fail or delay the note.
     note: buildNoteSeam(owner, undefined, hybrid, async (wire) => {
       await emitDeliveredReceipt(wire, { fetchImpl: opts.fetchImpl });
-    }, legs),
+    }, legs, adoptCounts),
     receipt: buildReceiptSeam(owner, hybrid, undefined, legs),
     // ③ loud-not-silent (Flint #168225): a hybrid blob is never acked unopened. advertise-kem-pub but
     // the ML-KEM secret did NOT derive (loadPQKeys failed / transiently locked) ⇒ a hybrid blob is LEFT FOR
@@ -517,21 +575,25 @@ export async function buildConsumeDeps(
     emit: (e) => emitContactChange({ ids: [e.id], reason: 'live-apply' }),
     // Over-wire note persisted on the shared poll → fan the inbox-repaint to the Notes tab
     // (NotesInbox subscribes to subscribeNoteArrivals). Mirrors emit: for contacts. (Athena — live-repaint wire.)
-    emitNote: (e) => emitNoteArrival(e),
+    // kind + to_fingerprint (Athena, notifications spec v1): a listener can tell a NEW inbound note from a receipt, and whose mail it is.
+    emitNote: (e) => emitNoteArrival({ ...e, kind: 'note', to_fingerprint: owner.fingerprint }),
     // Delivery receipt verified on the shared poll → an OUTBOUND note is now 'Delivered'. Reuse the note-
     // arrival bus so the open thread re-reads + repaints the status (no new emitter). (Athena — delivered-repaint.)
-    emitReceipt: (e) => emitNoteArrival(e),
+    emitReceipt: (e) => emitNoteArrival({ ...e, kind: 'receipt', to_fingerprint: owner.fingerprint }),
     // #720: hybrid blobs this device cannot open YET stay on the relay; tell the Chat tab how many (0 clears) and the earliest relay deadline.
     emitHeld: (n, info) => reportHeld(n, info),
     deadLetter: buildDeadLetterSink(owner),
+    holdBackoff, // T2b: held ratchet-desync frames are retried every poll for an hour, then hourly
     fetchImpl: opts.fetchImpl,
   };
 }
 
 export interface LiveBookPollHandle {
   stop: () => void;
-  /** Temporarily poll at BURST_POLL_INTERVAL_MS, then settle back. Immediate tick. */
+  /** Temporarily poll at BURST_POLL_INTERVAL_MS, then settle back. The first poll waits 0-1 s (BURST_START_JITTER_MS). Resets the idle backoff. */
   burst: (durationMs?: number) => void;
+  /** While on, the idle backoff is disabled and the cadence stays at the steady interval (used while the Notes tab is open). */
+  keepSteady: (on: boolean) => void;
 }
 
 /**
@@ -545,41 +607,137 @@ export interface LiveBookPollHandle {
  * a full interval.
  */
 /**
+ * What one poll can honestly say (copy v4, Hypatia c109fb20; Archie #2401/#2404/#2414):
+ * - 'ok': the relay answered with a list and nothing was left on it (every polled envelope acked; none held, none unrecorded). The ONLY
+ *   status that may be shown as "Caught up."
+ * - 'checked-waiting': the relay answered with a list, but envelopes are still on it (held, unrecorded, retryable, or an ack that failed).
+ * - 'rejected': the poll was refused (non-OK status). NOT an empty mailbox.
+ * - 'unreadable': the relay answered 2xx but the body was not a list. Also NOT an empty mailbox, and not a refusal.
+ * - 'locked': no poll ran (locked / no identity), or the unlock cycle ended mid-poll, so the mailbox state is unknown.
+ */
+export type PollOnceStatus = 'ok' | 'checked-waiting' | 'rejected' | 'unreadable' | 'locked';
+
+export function pollStatusOf(
+  summary: Pick<ConsumeSummary, 'rejected' | 'polled' | 'acked' | 'held' | 'unrecorded'>,
+  cycleEnded = false,
+): PollOnceStatus {
+  if (cycleEnded) return 'locked';
+  if (summary.rejected !== undefined) return summary.rejected >= 200 && summary.rejected < 300 ? 'unreadable' : 'rejected';
+  if (summary.held > 0 || summary.unrecorded > 0 || summary.acked < summary.polled) return 'checked-waiting';
+  return 'ok';
+}
+
+/**
  * One consume tick — used by Galaxy pull-to-refresh. Fail-soft: locked / no
  * identity is a no-op (the book is still re-read by the caller). Does not invent
- * a living wire; it only consumes what the mailbox already has.
+ * a living wire; it only consumes what the mailbox already has. Returns what the
+ * poll can honestly report, so the caller never says "Caught up." for a poll that
+ * was refused or never ran. A thrown error (network) still propagates.
  */
 export async function pollLiveBookOnce(
   identity: unknown,
-  opts: { fetchImpl?: typeof fetch } = {},
-): Promise<void> {
-  const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-  if (!deps) return;
+  opts: { fetchImpl?: typeof fetch; buildDeps?: typeof buildConsumeDeps } = {},
+): Promise<PollOnceStatus> {
+  const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+  if (!deps) {
+    reportPollStatus('locked');
+    return 'locked';
+  }
   try {
-    await consumeInboundContactUpdates(deps);
+    const summary = await consumeInboundContactUpdates(deps);
+    const status = pollStatusOf(summary, deps.owner.cycle?.ended);
+    reportPollStatus(status);
+    return status;
   } finally {
     deps.owner.cycle?.drop();
   }
 }
 
+/**
+ * Poll delay policy (pure). The steady cadence doubles after IDLE_TICKS_BEFORE_BACKOFF consecutive empty polls, capped at
+ * maxIdleMs. A burst always polls at BURST_POLL_INTERVAL_MS; `steady` (the Notes tab is open) switches the backoff off.
+ */
+export function nextPollDelayMs(a: { idleTicks: number; bursting: boolean; steady?: boolean; intervalMs: number; maxIdleMs: number }): number {
+  if (a.bursting) return BURST_POLL_INTERVAL_MS;
+  const over = a.idleTicks - IDLE_TICKS_BEFORE_BACKOFF;
+  if (a.steady || over <= 0) return a.intervalMs;
+  return Math.max(a.intervalMs, Math.min(a.maxIdleMs, a.intervalMs * 2 ** Math.min(over, 10)));
+}
+
+/** base ± IDLE_JITTER_FRACTION, uniformly. `random` is injectable for tests. Never keyed on content. */
+export function jitterDelayMs(baseMs: number, random: () => number = Math.random): number {
+  return Math.round(baseMs * (1 + (random() * 2 - 1) * IDLE_JITTER_FRACTION));
+}
+
+/** 0..BURST_START_JITTER_MS random wait before the first poll of a burst. */
+export function burstStartDelayMs(random: () => number = Math.random): number {
+  return Math.floor(random() * BURST_START_JITTER_MS);
+}
+
+/** Timer functions, injectable so the scheduler can be driven deterministically in tests. Defaults to the real ones. */
+export interface PollTimers {
+  set: (fn: () => void, ms: number) => unknown;
+  clear: (handle: unknown) => void;
+}
+const REAL_TIMERS: PollTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
 export function startLiveBookPolling(
   identity: unknown,
-  opts: { intervalMs?: number; fetchImpl?: typeof fetch } = {},
+  opts: {
+    intervalMs?: number;
+    maxIdleIntervalMs?: number;
+    fetchImpl?: typeof fetch;
+    buildDeps?: typeof buildConsumeDeps;
+    random?: () => number;
+    timers?: PollTimers;
+  } = {},
 ): LiveBookPollHandle {
   const intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const maxIdleMs = opts.maxIdleIntervalMs ?? MAX_IDLE_POLL_INTERVAL_MS;
+  const random = opts.random ?? Math.random;
+  const T = opts.timers ?? REAL_TIMERS;
   let stopped = false;
   let inFlight = false;
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let burstTimer: ReturnType<typeof setTimeout> | null = null;
+  let timer: unknown = null;
+  let burstTimer: unknown = null;
+  let bursting = false;
+  let steady = false;
+  let idleTicks = 0; // consecutive polls that found nothing; reset by any non-empty poll, a burst, or a keepSteady change
+
+  // The burst cadence stays exact; every other delay is jittered.
+  const nextDelay = () => {
+    const base = nextPollDelayMs({ idleTicks, bursting, steady, intervalMs, maxIdleMs });
+    return bursting ? base : jitterDelayMs(base, random);
+  };
+
+  const schedule = () => {
+    if (timer) T.clear(timer);
+    timer = null;
+    if (stopped) return;
+    timer = T.set(() => void tick(), nextDelay());
+  };
 
   const tick = async () => {
     if (stopped || inFlight) return; // never overlap polls
     inFlight = true;
+    let counts = true; // a poll that never reached the relay (locked / cycle ended) says nothing about idleness
+    let active = false;
     try {
-      const deps = await buildConsumeDeps(identity, { fetchImpl: opts.fetchImpl });
-      if (!deps) return; // locked / no identity — stay static, retry next tick
+      const deps = await (opts.buildDeps ?? buildConsumeDeps)(identity, { fetchImpl: opts.fetchImpl });
+      if (!deps) {
+        reportPollStatus('locked');
+        counts = false;
+        return; // locked / no identity — stay static, retry at the current cadence
+      }
       try {
-        await consumeInboundContactUpdates(deps);
+        const summary = await consumeInboundContactUpdates(deps);
+        const status = pollStatusOf(summary, deps.owner.cycle?.ended);
+        reportPollStatus(status); // copy v1 §B: 3 refused in a row → Chat notice
+        if (status === 'locked') counts = false;
+        active = summary.polled > 0;
       } finally {
         deps.owner.cycle?.drop();
       }
@@ -588,37 +746,47 @@ export function startLiveBookPolling(
       console.error('[live-book-poll] poll tick failed (will retry):', err);
     } finally {
       inFlight = false;
+      if (counts) idleTicks = active ? 0 : idleTicks + 1;
+      schedule();
     }
-  };
-
-  const setCadence = (ms: number) => {
-    if (timer) clearInterval(timer);
-    if (stopped) return;
-    timer = setInterval(() => void tick(), ms);
   };
 
   const burst = (durationMs = DEFAULT_BURST_MS) => {
     if (stopped) return;
-    void tick();
-    setCadence(BURST_POLL_INTERVAL_MS);
-    if (burstTimer) clearTimeout(burstTimer);
-    burstTimer = setTimeout(() => {
+    idleTicks = 0;
+    bursting = true;
+    if (burstTimer) T.clear(burstTimer);
+    burstTimer = T.set(() => {
       burstTimer = null;
-      if (!stopped) setCadence(intervalMs);
+      bursting = false;
+      idleTicks = 0;
     }, durationMs);
+    // The first poll after a wake waits 0-1 s (not an exact focus timestamp). If a poll is already in flight, its
+    // finally{} reschedules at the burst cadence instead.
+    if (!inFlight) {
+      if (timer) T.clear(timer);
+      timer = T.set(() => void tick(), burstStartDelayMs(random));
+    }
   };
 
-  void tick(); // immediate first poll
-  setCadence(intervalMs);
+  const keepSteady = (on: boolean) => {
+    if (stopped || steady === on) return;
+    steady = on;
+    idleTicks = 0;
+    if (!inFlight && !bursting) schedule(); // take the new cadence now, not after a pending long wait
+  };
+
+  void tick(); // immediate first poll; each poll schedules the next
 
   return {
     stop: () => {
       stopped = true;
-      if (timer) clearInterval(timer);
+      if (timer) T.clear(timer);
       timer = null;
-      if (burstTimer) clearTimeout(burstTimer);
+      if (burstTimer) T.clear(burstTimer);
       burstTimer = null;
     },
     burst,
+    keepSteady,
   };
 }

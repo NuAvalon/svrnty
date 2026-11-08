@@ -4,7 +4,7 @@
 // from it, never a sender the device did not authenticate. A record is committed BEFORE the relay is told to delete the envelope.
 
 import { deleteEncryptedSetting, getEncryptedSetting, listEncryptedSettings, putEncryptedSetting } from './store';
-import { parseDeadLetterRow, planPrune, safeEnvelopeId, type DeadLetterRow } from '@/lib/sync/dead-letter';
+import { heldCountFor, parseDeadLetterRow, planPrune, resetMarksFor, safeEnvelopeId, type DeadLetterRow } from '@/lib/sync/dead-letter';
 
 const PREFIX = 'dead_letter:';
 
@@ -42,6 +42,29 @@ export async function listDeadLetters(): Promise<DeadLetterRow[]> {
   return out.sort((a, b) => Date.parse(a.first_seen) - Date.parse(b.first_seen) || (a.envelope_id < b.envelope_id ? -1 : 1));
 }
 
+/** How many frames from this contact are held right now (the reset dialog's count). */
+export async function countHeldFor(peerFp: string): Promise<number> {
+  return heldCountFor(await listDeadLetters(), peerFp);
+}
+
+/**
+ * R2: turn this contact's held ratchet rows into session-reset records. Returns how many. Idempotent (a second call finds none held).
+ * Call it AFTER the session row was deleted: if marking fails the frames simply stay held and a repeated reset marks them; the other order
+ * could release frames for a reset that then failed.
+ */
+export async function markSessionReset(peerFp: string): Promise<number> {
+  const marks = resetMarksFor(await listDeadLetters(), peerFp);
+  for (const m of marks) await putDeadLetter(m);
+  return marks.length;
+}
+
+/** The envelopes a reset released, by record key -> the contact's fp. Read ONCE per poll: the poll acks them without opening them. */
+export async function releasedByReset(): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const r of await listDeadLetters()) if (r.reason === 'session-reset' && r.fp) out.set(r.envelope_id, r.fp);
+  return out;
+}
+
 /** Clear the record once the message opens (R5: the message replaces the flag). */
 export async function removeDeadLetter(envelopeId: string): Promise<void> {
   await deleteEncryptedSetting(keyFor(envelopeId));
@@ -53,4 +76,19 @@ export async function pruneDeadLetters(nowMs: number): Promise<number> {
   const drop = planPrune(rows, nowMs);
   for (const id of drop) await removeDeadLetter(id);
   return drop.length;
+}
+
+// #731: when the user last dismissed the inbox's "people who aren't in your contacts" line. Only the user's own dismissal time is kept,
+// never anything from a row, so the line can't be turned into a timestamp of when a stranger wrote.
+const S_DISMISSED_KEY = 'notice_seen:cant_open_s';
+
+/** The last dismissal (ISO), or null if never dismissed or unreadable. THROWS while the store is locked, like every settings read. */
+export async function getCantOpenSDismissedAt(): Promise<string | null> {
+  const v = await getEncryptedSetting<unknown>(S_DISMISSED_KEY);
+  return typeof v === 'string' && Number.isFinite(Date.parse(v)) ? v : null;
+}
+
+export async function setCantOpenSDismissedAt(iso: string): Promise<void> {
+  if (!Number.isFinite(Date.parse(iso))) throw new Error('invalid dismissal time');
+  await putEncryptedSetting(S_DISMISSED_KEY, iso);
 }

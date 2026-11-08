@@ -14,13 +14,17 @@ import { isBetaIssuerProvisioned } from '@/components/beta-messaging/is-beta-gat
 import { RecoverySheet } from '@/components/RecoverySheet';
 import { AppearanceToggle } from '@/components/ui-prefs/AppearanceToggle';
 import { useAppLock } from '@/components/app-lock/useAppLock';
+import { useMailNotifications } from '@/components/notes/useMailNotifications';
 import { TopNav } from '@/components/nav/TopNav';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import type { TrustEdge, TrustEvent } from '@/lib/trust/types';
+import type { TrustEdge } from '@/lib/trust/types';
 import { contactRecordToEdge } from '@/lib/trust/contact-edge';
 import { starsOnly } from '@/lib/trust/grow-gate';
 import { subscribeContactChanges } from '@/lib/contacts/contact-events';
 import { startLiveBookPolling } from '@/lib/sync/live-book-poll';
+import { withSafetyWrite, describeSafetyWriteFailure } from '@/lib/contacts/safety-write';
+import { consentFromRecord, NO_CONSENT } from '@/lib/contacts/share-settings-patch';
+import { blockPatch, ownerVerifyHeldPatch, distressWentHeldPatch, acceptIntroHeldPatch, addLabelHeldPatch, trustMapEditPatch } from '@/lib/contacts/metadata-patches';
 import { reconcileAllowedOnConsentChange } from '@/lib/sync/reconcile-allowed-hook';
 import { applyTrustTransition } from '@/lib/trust/apply-trust-transition';
 import { applyBlockSuppression } from '@/lib/trust/block-suppression';
@@ -34,6 +38,7 @@ import {
   getActiveFingerprint,
   loadIdentity,
   getAllContacts,
+  getContact,
   hasEncryptedKeys,
   initSessionKey,
   isSessionUnlocked,
@@ -49,8 +54,7 @@ import { IdentitySeal } from '@/components/identity/IdentitySeal';
 import { ContactMethodReviseDialog } from '@/components/identity/ContactMethodReviseDialog';
 import type { MethodKind } from '@/components/identity/SovereignIdentityCard';
 import { loadLocalMethods, saveLocalMethods } from '@/components/identity/local-methods';
-import { ownerVerifyPersistPatch, TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
-import { distressWentPersistPatch } from '@/lib/trust/distress';
+import { TRUST_RECIPE_COPY } from '@/lib/trust/trust-recipe';
 import { BiometricUnlockButton } from '@/components/biometric/BiometricUnlockButton';
 import {
   getBiometricEnrollment,
@@ -73,6 +77,17 @@ const shellBg: CSSProperties = {
 export default function Home() {
   const [appState, setAppState] = useState<AppState>('checking');
   const [identity, setIdentity] = useState<any>(null);
+  // The report note a backup import/restore leaves for the owner. Held here because the gate and the Identity tab each mount their own SoverentityFrontend.
+  const [importNote, setImportNote] = useState<string | null>(null);
+  // The note names contacts of ONE identity's unlocked session. It must not survive that session: when the identity becomes null (every lock path, manual or
+  // automatic, and every switch, which goes through the locked screen) or changes to another, it is dropped here, before the next identity's tab mounts.
+  const noteIdentityFp: string | null = identity?.identity?.fingerprint ?? null;
+  const previousNoteIdentityFp = useRef<string | null>(null);
+  useEffect(() => {
+    const previous = previousNoteIdentityFp.current;
+    previousNoteIdentityFp.current = noteIdentityFp;
+    if (previous !== null && previous !== noteIdentityFp) setImportNote(null);
+  }, [noteIdentityFp]);
   const [contacts, setContacts] = useState<TrustEdge[]>([]);
   const [lockedIdentity, setLockedIdentity] = useState<{ name: string; fingerprint: string } | null>(null);
   const [passphrase, setPassphrase] = useState('');
@@ -310,7 +325,7 @@ export default function Home() {
 
   // Living book + Gate: poll at the shell so a share-link joiner lands while you're
   // on Galaxy / Grow, not only after opening Contacts. Burst after unlock, Grow, and focus.
-  const livePollRef = useRef<{ burst: (ms?: number) => void } | null>(null);
+  const livePollRef = useRef<{ burst: (ms?: number) => void; keepSteady: (on: boolean) => void } | null>(null);
   useEffect(() => {
     if (!identity?.identity?.fingerprint) return;
     const handle = startLiveBookPolling(identity);
@@ -319,11 +334,18 @@ export default function Home() {
     const onVis = () => {
       if (document.visibilityState === 'visible') handle.burst(8_000);
     };
+    // The idle backoff stretches the cadence to ~15 s; wake it the moment the user comes back (window focus) or
+    // the network returns (online), same as tab-visible.
+    const onWake = () => handle.burst(8_000);
     document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onWake);
+    window.addEventListener('online', onWake);
     return () => {
       livePollRef.current = null;
       handle.stop();
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onWake);
+      window.removeEventListener('online', onWake);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on stable fingerprint; identity
     // object ref is not a dep (public key stable per fp; private key re-loaded each tick).
@@ -333,15 +355,26 @@ export default function Home() {
     if (growOpen) livePollRef.current?.burst(20_000);
   }, [growOpen]);
 
+  // While the Notes tab is open the poll stays at the steady cadence (no idle backoff), so a reply lands within ~1.5 s;
+  // elsewhere it backs off when idle. Re-runs when the poller is (re)created, so a persisted Notes tab is honoured.
   useEffect(() => {
-    if (mainTab === 'trust-map') livePollRef.current?.burst(8_000);
-  }, [mainTab]);
+    const poll = livePollRef.current;
+    if (!poll) return;
+    poll.keepSteady(mainTab === 'notes');
+    if (mainTab === 'trust-map' || mainTab === 'notes') poll.burst(8_000);
+  }, [mainTab, identity?.identity?.fingerprint]);
 
   useEffect(() => {
     return subscribeNoteArrivals(() => {
       if (mainTab !== 'notes') setNotesActivity(true);
     });
   }, [mainTab]);
+
+  // Phase 1 mail notifications (opt-in in Settings; only while open or in a background tab). Active, unlocked identity only (N3/N4).
+  useMailNotifications({
+    activeFingerprint: appState === 'unlocked' ? identity?.identity?.fingerprint ?? null : null,
+    unlocked: appState === 'unlocked',
+  });
 
   useEffect(() => {
     if (mainTab === 'notes') setNotesActivity(false);
@@ -653,7 +686,7 @@ export default function Home() {
 
       <main className="max-w-6xl mx-auto">
         {!identity ? (
-          <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} />
+          <SoverentityFrontend onIdentityUpdate={handleIdentityUpdate} importNote={importNote} onImportNoteChange={setImportNote} />
         ) : (
           <Tabs value={mainTab} onValueChange={setMainTab} className="w-full">
             <TabsList
@@ -723,6 +756,8 @@ export default function Home() {
               <SoverentityFrontend
                 existingIdentity={identity}
                 onIdentityUpdate={handleIdentityUpdate}
+                importNote={importNote}
+                onImportNoteChange={setImportNote}
                 appLockPrefs={canLock ? appLockPrefs : undefined}
                 onAppLockPrefsChange={canLock ? setAppLockPrefs : undefined}
                 onLockNow={canLock ? handleLockNow : undefined}
@@ -771,14 +806,16 @@ export default function Home() {
                 }}
                 onRefresh={async () => {
                   const { pollLiveBookOnce } = await import('@/lib/sync/live-book-poll');
-                  await pollLiveBookOnce(identity);
+                  const status = await pollLiveBookOnce(identity);
                   await refreshContacts();
+                  return status;
                 }}
                 methodHistory={methodHistory}
                 onMethodHistoryChange={() => setMethodHistoryTick((t) => t + 1)}
                 onAssignGroup={async (fingerprints, groupName) => {
                   const label = groupName.trim();
                   if (!label) return;
+                  // The snapshot is used only to find each contact's id; each write is built from the record held when it runs.
                   const records = await getAllContacts(identity.identity.fingerprint);
                   for (const fp of fingerprints) {
                     const rec = records.find(
@@ -787,37 +824,20 @@ export default function Home() {
                     const edge = contacts.find((c) => c.peer_fingerprint === fp);
                     const id = rec?.id || edge?.id;
                     if (!id) continue;
-                    const prevTags = (rec as any)?.tags || (rec as any)?.metadata?.tags || edge?.tags || [];
-                    const tags = Array.from(new Set([...prevTags, label]));
-                    await updateContact(id, {
-                      tags,
-                      metadata: { ...((rec as any)?.metadata || {}), tags },
-                    } as any);
+                    await updateContact(id, (fresh) => addLabelHeldPatch(fresh, label));
                   }
                   await refreshContacts();
                 }}
                 onOwnerVerify={async (edge, method) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const patch = ownerVerifyPersistPatch((rec as any)?.metadata, method);
-                  await updateContact(edge.id, patch as any);
+                  await updateContact(edge.id, (fresh) => ownerVerifyHeldPatch(fresh, method));
                   await refreshContacts();
                 }}
                 onDistressWent={async (edge) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const patch = distressWentPersistPatch((rec as any)?.metadata);
-                  await updateContact(edge.id, patch as any);
+                  await updateContact(edge.id, (fresh) => distressWentHeldPatch(fresh));
                   await refreshContacts();
                 }}
                 onTrustToggle={async (edge) => {
                   const nextTrusted = !edge.trusted;
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
-                  const priorHistory = ((rec as { trust_history?: TrustEvent[] })?.trust_history
-                    || edge.trust_history
-                    || []) as TrustEvent[];
                   // Route through the single trust-transition chokepoint (the SAME fn as the contact-
                   // LIST toggle) so the trust-MAP surface also blind-satellite-commits AND deposits the
                   // signed affirmation — no fork-drift (Flint floor-verify #173014). EMIT-ONLY: nothing
@@ -833,15 +853,6 @@ export default function Home() {
                       contactId: edge.id,
                       fingerprint: edge.peer_fingerprint,
                       publicKeyArmored: edge.peer_public_key,
-                      blocked: edge.blocked === true,
-                      openVisibility:
-                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
-                          ?.open_visibility === true,
-                      perContactPrivate:
-                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
-                          ?.per_contact_private === true,
-                      metadata: recMeta,
-                      priorTrustHistory: priorHistory,
                     },
                     nextTrusted,
                   );
@@ -853,63 +864,41 @@ export default function Home() {
                   // exit (TrustMap path) — DELETE the satellite allowed_senders row so a deleted-not-
                   // blocked peer can't keep discovering the survivor. All-false consent → unconditional DELETE.
                   const removedFp = edge.peer_fingerprint;
-                  await removeContact(edge.id);
+                  // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison.
+                  // The caller shows a failure's message, so a contention failure is rethrown in plain words.
+                  try {
+                    await withSafetyWrite(edge.id, () => removeContact(edge.id));
+                  } catch (err) {
+                    const words = describeSafetyWriteFailure(err, 'Remove');
+                    throw words ? new Error(words) : err;
+                  }
                   if (removedFp) {
                     void reconcileAllowedOnConsentChange({
                       ownerFp: identity.identity.fingerprint,
                       senderFp: removedFp,
-                      consent: { trusted: false, openVisibility: false, blocked: false, perContactPrivate: false },
+                      consent: NO_CONSENT,
                     });
                   }
                   await refreshContacts();
                 }}
                 onBlockContact={async (edge, blocked) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const recMeta = (rec as unknown as { metadata?: Record<string, unknown> })?.metadata ?? {};
-                  await updateContact(edge.id, {
-                    blocked,
-                    // Block clears local Trust — no trusted+blocked half-state.
-                    ...(blocked
-                      ? {
-                          trusted: false,
-                          trust_level: 'unverified',
-                          trusted_since: null,
-                        }
-                      : {}),
-                    metadata: {
-                      ...recMeta,
-                      blocked,
-                      // #111 (survivor-safety): block clears open_visibility (TrustMap path)
-                      // so the peer leaves every PSI reveal set — mirrors the ContactManagement
-                      // handler; read side is fail-closed too (ownerEdges !blocked).
-                      ...(blocked
-                        ? {
-                            share_settings: {
-                              ...((recMeta.share_settings as Record<string, unknown>) ?? {}),
-                              open_visibility: false,
-                            },
-                          }
-                        : {}),
-                    },
-                  } as any);
-                  // #572 part 2 (flip-blocker b + #111 satellite-completeness, TrustMap path): block →
-                  // DELETE the allowed_senders row (close the stale-row adversary-discovery hole).
-                  // Unblock does NOT re-add — trust + open-vis must be re-granted explicitly.
+                  // A write that protects the owner: it takes the book lock (shared) and the contact's lock so a poll-driven write cannot make it lose its comparison, and it
+                  // is built from the record held when it runs. Blocking clears trust and open_visibility so the peer leaves every PSI reveal set
+                  // (the read side is fail-closed too: ownerEdges !blocked). See blockPatch. The caller shows a failure's message, so a contention
+                  // failure is rethrown in plain words.
+                  try {
+                    await withSafetyWrite(edge.id, () => updateContact(edge.id, (fresh) => blockPatch(fresh, blocked)));
+                  } catch (err) {
+                    const words = describeSafetyWriteFailure(err, blocked ? 'Block' : 'Unblock');
+                    throw words ? new Error(words) : err;
+                  }
+                  // TrustMap path: block -> DELETE the allowed_senders row, so a blocked peer cannot keep discovering the owner through a stale row.
+                  // Unblock does NOT re-add: trust + open-vis must be re-granted explicitly. The consent is read back from the stored record.
+                  const afterBlock = await getContact(edge.id);
                   void reconcileAllowedOnConsentChange({
                     ownerFp: identity.identity.fingerprint,
                     senderFp: edge.peer_fingerprint,
-                    consent: {
-                      trusted: blocked ? false : edge.trusted === true,
-                      openVisibility:
-                        !blocked &&
-                        (recMeta.share_settings as { open_visibility?: boolean } | undefined)
-                          ?.open_visibility === true,
-                      blocked,
-                      perContactPrivate:
-                        (recMeta.share_settings as { per_contact_private?: boolean } | undefined)
-                          ?.per_contact_private === true,
-                    },
+                    consent: afterBlock ? consentFromRecord(afterBlock) : NO_CONSENT,
                   });
                   // Piece-2 (#579): block ALSO populates the durable suppression RECORD (load-bearing
                   // emit-side source; the `blocked` flag is defense-in-depth). Fire-and-forget + fail-closed.
@@ -917,40 +906,11 @@ export default function Home() {
                   await refreshContacts();
                 }}
                 onAcceptIntro={async (edge) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  await updateContact(edge.id, {
-                    connection_status: 'accepted',
-                    metadata: {
-                      ...((rec as any)?.metadata || {}),
-                      connection_status: 'accepted',
-                      pending_intro: undefined,
-                    },
-                    pending_intro: undefined,
-                  } as any);
+                  await updateContact(edge.id, (fresh) => acceptIntroHeldPatch(fresh));
                   await refreshContacts();
                 }}
                 onUpdateContact={async (edge, patch) => {
-                  const records = await getAllContacts(identity.identity.fingerprint);
-                  const rec = records.find((r) => r.id === edge.id);
-                  const phones = patch.phones ?? edge.contact_info?.phones;
-                  await updateContact(edge.id, {
-                    name: patch.name ?? edge.peer_name,
-                    email: patch.email ?? edge.peer_email,
-                    notes: patch.notes ?? edge.notes,
-                    contact_info: {
-                      ...(edge.contact_info || {}),
-                      ...(rec as any)?.contact_info,
-                      phones,
-                      emails: patch.email
-                        ? [patch.email]
-                        : edge.contact_info?.emails,
-                    },
-                    metadata: {
-                      ...((rec as any)?.metadata || {}),
-                      notes: patch.notes ?? edge.notes,
-                    },
-                  } as any);
+                  await updateContact(edge.id, (fresh) => trustMapEditPatch(fresh, patch));
                   await refreshContacts();
                 }}
                 onSendMethodUpdate={(edge) => {

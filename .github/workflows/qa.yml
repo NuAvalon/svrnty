@@ -100,13 +100,25 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BODY: ${{ github.event.pull_request.body }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           ZERO=0000000000000000000000000000000000000000
           if [ "$EVENT_NAME" = "pull_request" ]; then
-            BASE="$PR_BASE_SHA"
+            # >>> merge-ref base (run as-is by scripts/sensitive-paths.test.ts). On a pull_request run HEAD is the merge
+            # ref: the PR merged onto the CURRENT base tip, which is its FIRST parent. NOT pull_request.base.sha: that
+            # stays at the base from when the PR opened, so every later change to the base branch counted as the PR's
+            # (#337). INLINE on purpose: no PR-modifiable script picks the base (Flint #3013; same rule as the patterns
+            # below). Parents come from the commit HEADER (the depth-1 checkout hides them from rev-list; stopping at the
+            # first blank line means a message line can't add one). Fails closed unless HEAD is this PR's 2-parent merge.
+            [[ "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::PR head sha missing or malformed — refusing to skip the sensitive-paths check"; exit 1; }
+            HDR=$(git cat-file commit HEAD)
+            mapfile -t PARENTS < <(sed -n '/^$/q; s/^parent //p' <<<"$HDR")
+            [ "${#PARENTS[@]}" -eq 2 ] && [ "${PARENTS[1]}" = "$PR_HEAD_SHA" ] \
+              || { echo "::error::HEAD is not this PR's merge ref (${#PARENTS[@]} parent(s)) — refusing to skip the sensitive-paths check"; exit 1; }
+            BASE="${PARENTS[0]}"
+            # <<< merge-ref base
           elif [ "$EVENT_NAME" = "push" ] && [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "$ZERO" ]; then
             BASE="$PUSH_BEFORE_SHA"
           else
@@ -170,6 +182,35 @@ jobs:
               exit 1
             fi
           fi
+
+      # ---- Satellite Python tests (infra/svrnty) -------------------------------------------------------
+      # A step of `unified` for the same reason as the claim sweep: `unified` is the only required check.
+      # The image is built from THIS checkout's infra/svrnty/Dockerfile (the image self-host runs: liboqs,
+      # pinned fastapi/cryptography), plus pinned pytest/httpx. EACH test file runs in its own container,
+      # because the files set env at import, with --network none. Fails closed: no test files, an empty
+      # collection (pytest exit 5) or any failing file fails `unified`. Per-file tallies go to the summary.
+      - name: Satellite Python tests — every infra/svrnty/test_*.py, one process each, offline (blocking)
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(infra/svrnty/test_*.py)
+          [ "${#FILES[@]}" -gt 0 ] || { echo "::error::no infra/svrnty/test_*.py found — refusing to pass"; exit 1; }
+          docker build -q -f infra/svrnty/Dockerfile -t svrnty-sat-ci infra/svrnty
+          printf 'FROM svrnty-sat-ci\nUSER root\nRUN pip install --no-cache-dir pytest==9.0.2 httpx==0.28.1\nUSER satellite\n' \
+            | docker build -q -t svrnty-sat-ci-test -
+          FAIL=0
+          { echo "### Satellite Python tests"; echo; } >> "$GITHUB_STEP_SUMMARY"
+          for path in "${FILES[@]}"; do
+            f="${path#infra/svrnty/}"
+            rc=0
+            out="$(docker run --rm --network none -v "$PWD/infra/svrnty:/src:ro" -w /src -e HOME=/tmp \
+                     -e REG_FILE=/src/registration.py svrnty-sat-ci-test \
+                     timeout 300 python3 -m pytest -q -p no:cacheprovider "$f" 2>&1)" || rc=$?
+            echo "- $f: $(printf '%s\n' "$out" | tail -1) (exit $rc)" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$rc" -ne 0 ]; then FAIL=1; printf '%s\n' "$out" | tail -80; fi
+          done
+          [ "$FAIL" -eq 0 ] || { echo "::error::satellite Python tests failed (see the per-file lines above)"; exit 1; }
 
       - name: Summary
         if: always()

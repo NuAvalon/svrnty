@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { CLIENT_IP_HEADER, UNKNOWN_CLIENT, getClientIP } from './client-ip';
 import { checkMailboxRateLimit, getClientIP as rateLimitGetClientIP } from './mailbox-rate-limit';
 import { relayDiskFull, resetDiskWatermarkCache, usedFraction } from './disk-watermark';
+import { resetDeposit429Counts } from './deposit-429-log';
 
 const req = (h: Record<string, string>) => new Request('http://r.test/x', { headers: h });
 
@@ -109,6 +110,34 @@ test('route: the deposit route answers 429 while the data filesystem is above th
   assert.deepEqual(await r.json(), { error: 'Relay storage full.' });
 });
 
+test('route: a disk-full refusal leaves a reason=disk_full log line, like every other refused deposit, with no IP or mailbox id', async () => {
+  process.env.RELAY_DB_PATH = join(mkdtempSync(join(tmpdir(), 'relay-l4-')), 'mailbox.sqlite');
+  const { POST } = await import('../../../app/api/relay/envelope/route');
+  resetDeposit429Counts();
+  resetDiskWatermarkCache();
+  process.env.RELAY_DISK_WATERMARK_PCT = '1';
+  const mailbox = 'mbx_' + 'b'.repeat(64);
+  const lines: string[] = [];
+  const warn = console.warn;
+  const error = console.error;
+  console.warn = (...a: unknown[]) => { lines.push(a.map(String).join(' ')); };
+  console.error = () => {};
+  try {
+    const r = await POST(new Request('http://r.test/api/relay/envelope', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [CLIENT_IP_HEADER]: '203.0.113.51' },
+      body: JSON.stringify({ mailbox_id: mailbox, blob: 'x' }),
+    }));
+    assert.equal(r.status, 429);
+  } finally {
+    console.warn = warn;
+    console.error = error;
+  }
+  const ours = lines.filter((l) => l.includes('reason=disk_full'));
+  assert.equal(ours.length, 1);
+  assert.ok(!ours[0].includes('203.0.113.51') && !ours[0].includes(mailbox));
+});
+
 test('polls and acks are never refused by the watermark (draining frees the disk)', () => {
   for (const f of ['queue', 'ack']) {
     const src = readFileSync(join(__dirname, '..', '..', '..', 'app', 'api', 'relay', f, 'route.ts'), 'utf8');
@@ -133,9 +162,14 @@ test('C3 NEG (repo-wide): nothing under app/ or src/ except client-ip.ts reads x
   const offenders = ['app', 'src']
     .flatMap((d) => walkSrc(join(root, d)))
     .filter((p) => !p.endsWith(join('relay', 'client-ip.ts')))
+    // Sets X-Forwarded-For on its OWN outbound request to the satellite, from getClientIP. Pinned just below to do only that.
+    .filter((p) => !p.endsWith(join('satellite', 'forward-client-ip.ts')))
     .filter((p) => /x-forwarded-for|cf-connecting-ip|x-real-ip/i.test(readFileSync(p, 'utf8')))
     .map((p) => p.slice(root.length + 1));
   assert.deepEqual(offenders, []);
+  const forward = readFileSync(join(root, 'src', 'lib', 'satellite', 'forward-client-ip.ts'), 'utf8');
+  assert.ok(forward.includes('getClientIP(request)'), 'the forwarded address comes from getClientIP');
+  assert.ok(!/headers\.get\(/.test(forward), 'and that file reads no request header itself');
 });
 
 test('self-host: the shipped Caddyfile sets X-Svrnty-Client-IP from the real peer on the app upstream', () => {

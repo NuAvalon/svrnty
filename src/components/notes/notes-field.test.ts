@@ -1,7 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NoteThread } from '../../lib/messaging/types';
-import { filterFieldPeople, mergeFieldPeople, previewLine, sortFieldPeople, threadPeerFp } from './notes-field';
+import {
+  filterFieldPeople,
+  formatNoteClock,
+  formatNoteDay,
+  formatNoteListWhen,
+  mergeFieldPeople,
+  previewLine,
+  sortFieldPeople,
+  threadPeerFp,
+} from './notes-field';
 
 function thread(peer: string, id: string, name = 'Ada'): NoteThread {
   return {
@@ -108,5 +117,82 @@ describe('thread field people', () => {
     assert.equal(hit.length, 1);
     assert.equal(hit[0].name, 'Ada');
     assert.equal(filterFieldPeople(people, 'zzz').length, 0);
+  });
+});
+
+describe('formatNoteListWhen — contact-list buckets', () => {
+  const yesterdayWord = () =>
+    new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-1, 'day');
+
+  function localIso(now: Date, daysAgo: number, hour = 15, minute = 12): string {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, hour, minute, 0);
+    return d.toISOString();
+  }
+
+  it('same local day renders as a clock (formatNoteClock)', () => {
+    const now = new Date(2026, 9, 31, 15, 12, 0);
+    const iso = new Date(2026, 9, 31, 9, 4, 0).toISOString();
+    assert.equal(formatNoteListWhen(iso, now), formatNoteClock(iso));
+  });
+
+  it('midnight boundary: 00:01 today is a clock; 23:59 yesterday is relative yesterday', () => {
+    const now = new Date(2026, 9, 31, 10, 0, 0);
+    const today = new Date(2026, 9, 31, 0, 1, 0).toISOString();
+    const yest = new Date(2026, 9, 30, 23, 59, 0).toISOString();
+    assert.equal(formatNoteListWhen(today, now), formatNoteClock(today));
+    assert.equal(formatNoteListWhen(yest, now), yesterdayWord());
+    assert.notEqual(formatNoteListWhen(yest, now), formatNoteClock(yest));
+  });
+
+  it('6 local days ago is a weekday; 7 local days ago is a date, not a clock', () => {
+    const now = new Date(2026, 9, 31, 15, 12, 0);
+    const six = localIso(now, 6);
+    const seven = localIso(now, 7);
+    const sixDate = new Date(six);
+    assert.equal(formatNoteListWhen(six, now), sixDate.toLocaleDateString(undefined, { weekday: 'short' }));
+    assert.notEqual(formatNoteListWhen(seven, now), formatNoteClock(seven));
+    assert.equal(
+      formatNoteListWhen(seven, now),
+      new Date(seven).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    );
+  });
+
+  it('NEG: a note from 8 days ago never renders as only a clock', () => {
+    const now = new Date(2026, 9, 31, 15, 12, 0);
+    const iso = localIso(now, 8);
+    const got = formatNoteListWhen(iso, now);
+    assert.notEqual(got, formatNoteClock(iso));
+    assert.doesNotMatch(got, /^\d{1,2}:\d{2}/);
+  });
+
+  it('Dec 31 → Jan 1 is yesterday, not a year-stamped date', () => {
+    const now = new Date(2026, 0, 1, 12, 0, 0);
+    const iso = new Date(2025, 11, 31, 18, 0, 0).toISOString();
+    assert.equal(formatNoteListWhen(iso, now), yesterdayWord());
+    assert.doesNotMatch(formatNoteListWhen(iso, now), /2025/);
+  });
+
+  it('older different year includes the year', () => {
+    const now = new Date(2026, 0, 8, 12, 0, 0);
+    const iso = new Date(2025, 11, 31, 18, 0, 0).toISOString();
+    assert.equal(
+      formatNoteListWhen(iso, now),
+      new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+    );
+  });
+
+  it('NEG: a future lastAt within 5 minutes renders as a time, never Tomorrow', () => {
+    const now = new Date(2026, 9, 31, 23, 58, 0);
+    const iso = new Date(now.getTime() + 2 * 60 * 1000).toISOString();
+    const got = formatNoteListWhen(iso, now);
+    assert.equal(got, formatNoteClock(iso));
+    assert.doesNotMatch(got, /tomorrow/i);
+  });
+
+  it('keeps in-thread day headings on formatNoteDay (year always present)', () => {
+    const iso = new Date(2026, 9, 24, 15, 12, 0).toISOString();
+    const now = new Date(2026, 9, 31, 15, 12, 0);
+    assert.notEqual(formatNoteDay(iso), formatNoteListWhen(iso, now));
+    assert.match(formatNoteDay(iso), /2026/);
   });
 });

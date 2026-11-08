@@ -430,7 +430,7 @@
    "id": "G-3",
    "kind": "gated",
    "gate": "isPQWireLive",
-   "gate_value_at_sha": true,
+   "gate_value_at_sha": "env",
    "claim": "PQ-blinded mutual DISCOVERY (the PSI transport wire is hybrid)",
    "patterns": [
     "\\bpost.?quantum\\b.{0,30}\\b(?:discovery|mutual)",
@@ -456,10 +456,10 @@
    "id": "G-4",
    "kind": "gated",
    "gate": "isPSIDiscoveryLive",
-   "gate_value_at_sha": true,
+   "gate_value_at_sha": "env",
    "claim": "Find your mutual contacts (KNOW-layer trust map)",
    "scope": "dev (flip 2026-10-04); block = DIRECT only",
-   "conflict": "RULED (Flint lane:svrnty #41, Archie #39): hard-coded `return true` since ce8420b (Athena, 2026-10-04, one-branch era) → ON for ANYTHING built from main (prod, self-hosters). Prod commit UNKNOWN (svrnty.is/api/version reports \"unknown\"). Flint did NOT give a PROD/self-host go. Fix: env flag NEXT_PUBLIC_PSI_DISCOVERY_LIVE, default OFF on main, true in the dev build (PR to dev → main); prod-on = Peter's call. When it lands, set gate_value_at_sha to \"env\" (the validator enforces it).",
+   "conflict": "RULED (Flint lane:svrnty #41, Archie #39): hard-coded `return true` since ce8420b (Athena, 2026-10-04, one-branch era) → ON for ANYTHING built from main (prod, self-hosters). Prod commit UNKNOWN (svrnty.is/api/version reports \"unknown\"). Flint did NOT give a PROD/self-host go. Fix: env flag NEXT_PUBLIC_PSI_DISCOVERY_LIVE, default OFF on main, true in the dev build (PR to dev → main); prod-on = Peter's call. LANDED on apollo/psi-prod-off-v2 (Archie #2601 re-ruled the flag): the gate is isDevBuild(NEXT_PUBLIC_SVRNTY_DOMAIN), the SAME predicate as the /api/satellite proxy fence (src/lib/satellite/satellite-base-url.ts); gate_value_at_sha is \"env\"; a build with an unset or non-dev domain is prod and has isPSIDiscoveryLive() AND isPQWireLive() false. No separate build arg.",
    "source": [
     "claim-gates.ts",
     "DAG S29/C1"
@@ -686,8 +686,8 @@
     },
     {
      "file": "src/lib/sync/receipt-seam.test.ts",
-     "test": "structure: `delivered: true` is written on exactly ONE line of non-test source, and only after verifyReceiptTag",
-     "invariant": "delivered:true on ONE line, only after verifyReceiptTag",
+     "test": "structure: `delivered: true` is written on exactly ONE line per seam (FE + headless), and each is reached only after verifyReceiptTag",
+     "invariant": "delivered:true on exactly two source lines, one per seam (FE live-book-poll.ts; headless headless-store.ts via markDelivered, called once from headless-client.ts), each after its own verifyReceiptTag (line order in the same seam: a structural check, not a dataflow proof)",
      "resolved": true
     },
     {
@@ -1559,5 +1559,127 @@
   "W3": "H-8",
   "W4": "CR-1",
   "W5b": "H-9"
- }
+ },
+ "order_rows": [
+  {
+   "id": "OR-1",
+   "kind": "order",
+   "claim": "\"Caught up.\" ('ok') only after the refused/unreadable and held/unrecorded/unacked cases have been ruled out",
+   "file": "src/lib/sync/live-book-poll.ts",
+   "anchor_kind": "function",
+   "function": "^export function pollStatusOf\\(",
+   "event": {
+    "pattern": "if \\(summary\\.rejected !== undefined\\)|if \\(summary\\.held > 0",
+    "count": 2
+   },
+   "status": {
+    "pattern": "return 'ok';",
+    "count": 1
+   },
+   "rule": "event-before-status",
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#325",
+    "Hypatia copy v4 c109fb20"
+   ]
+  },
+  {
+   "id": "OR-2",
+   "kind": "order",
+   "claim": "a 2xx /queue whose body is not a list sets rejected (it is not an empty mailbox)",
+   "file": "src/lib/sync/consume-mailbox.ts",
+   "anchor_kind": "function",
+   "function": "^async function consumeOnce\\(",
+   "event": {
+    "pattern": "if \\(!Array\\.isArray\\(envelopes\\)\\)",
+    "count": 1
+   },
+   "status": {
+    "pattern": "summary\\.rejected = res\\.status",
+    "count": 2
+   },
+   "rule": "status-only-on-branch",
+   "in_branch": 1,
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "Archie #2401",
+    "9dd2cf2",
+    "spec v2 1da9cf5f + v3 9cae8b68 (anchor = consumeOnce)"
+   ]
+  },
+  {
+   "id": "OR-3",
+   "kind": "order",
+   "claim": "poll-json prints UNREADABLE only for a 2xx non-list answer and REFUSED only otherwise",
+   "file": "scripts/devin-comm.ts",
+   "anchor_kind": "block",
+   "function": "^  if \\(cmd === 'poll-json'\\) \\{",
+   "event": {
+    "pattern": "if \\(consumed\\.rejected >= 200 && consumed\\.rejected <= 299\\)",
+    "count": 1
+   },
+   "status": {
+    "pattern": "POLL UNREADABLE",
+    "count": 1
+   },
+   "rule": "status-only-on-branch",
+   "in_branch": 1,
+   "else_status": {
+    "pattern": "POLL REFUSED",
+    "count": 1
+   },
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#340",
+    "Hypatia #3019"
+   ]
+  },
+  {
+   "id": "OR-4",
+   "kind": "order",
+   "claim": "the hop trail says 'dropped' only after that envelope's ack returned 2xx (recorded AND acked)",
+   "file": "src/lib/sync/consume-mailbox.ts",
+   "anchor_kind": "function",
+   "function": "const flushAckChunk = async \\(",
+   "event": {
+    "pattern": "if \\(ackRes\\.ok\\) \\{",
+    "count": 1
+   },
+   "status": {
+    "pattern": "hop\\(deps, 'dropped'",
+    "count": 1
+   },
+   "rule": "status-only-on-branch",
+   "in_branch": 1,
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#344 R2 4fcc559",
+    "Hypatia #3123",
+    "Flint #3124"
+   ]
+  },
+  {
+   "id": "OR-5",
+   "kind": "order",
+   "claim": "with a staging sink, the hop trail says 'held' only after settle() wrote the held rows (the non-staging record-time hop is not pinned here)",
+   "file": "src/lib/sync/consume-mailbox.ts",
+   "anchor_kind": "function",
+   "function": "^async function consumeOnce\\(",
+   "event": {
+    "pattern": "await sink\\.settle\\(\\);",
+    "count": 1
+   },
+   "status": {
+    "pattern": "for \\(const h of pendingHeld\\) hop\\(deps, 'held'",
+    "count": 1
+   },
+   "rule": "status-in-event-block",
+   "limit": "Protects this site only. It cannot find a new site that writes a status before its event; the PR-template status line is the control for new sites.",
+   "source": [
+    "#344 R2 4fcc559",
+    "Hypatia #3123",
+    "spec v4 b66cbec3 (Flint #3152: event-before-status could not see the try/catch)"
+   ]
+  }
+ ]
 }

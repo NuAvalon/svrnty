@@ -11,10 +11,13 @@ Satellite = identity storage + message relay + bouncer list (allowed_senders).
 Part of the svrnty + Cairn ecosystem.
 """
 
+import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import socket
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -26,7 +29,6 @@ from collections import defaultdict
 
 from fastapi import Depends, FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -58,6 +60,40 @@ RETENTION_DAYS = int(os.environ.get("SATELLITE_RETENTION_DAYS", "30"))
 # a route/reversal deposit never GCs before the mailbox it guards.
 UNDELIVERED_MSG_TTL_DAYS = int(os.environ.get("SATELLITE_MSG_TTL_DAYS", "30"))
 UNDELIVERED_MSG_TTL_SECONDS = UNDELIVERED_MSG_TTL_DAYS * 86400
+
+
+def _parse_cleanup_interval(raw: Optional[str]) -> int:
+    """SATELLITE_CLEANUP_INTERVAL_S: seconds between scheduled retention cleanups. DEFAULT 0 = OFF.
+
+    A feature that deletes data ships off: it runs only where an operator sets a positive interval
+    explicitly (self-host compose; prod/dev via the reviewed env apply). Unset, empty, 0, negative or
+    unparseable all mean off. A positive value below CLEANUP_MIN_INTERVAL_S is raised to it, so a typo
+    can't turn the satellite into a delete loop.
+    With N uvicorn workers each runs its own loop: N runs per interval. Harmless (the deletes are
+    idempotent and the stamp is replaced atomically); prod and self-host run one worker."""
+    try:
+        v = int((raw or "").strip() or "0")
+    except ValueError:
+        return 0
+    return max(v, CLEANUP_MIN_INTERVAL_S) if v > 0 else 0
+
+
+CLEANUP_MIN_INTERVAL_S = 3600
+
+
+CLEANUP_INTERVAL_S = _parse_cleanup_interval(os.environ.get("SATELLITE_CLEANUP_INTERVAL_S"))
+
+
+def _cleanup_start_refusal() -> Optional[str]:
+    """Why the scheduled cleanup must NOT start, or None. A schedule turns a cutoff typo into recurring
+    silent data loss: SATELLITE_MSG_TTL_DAYS=0 would delete every unacknowledged message on each run,
+    and a negative value puts the cutoff in the future. Fail safe = no task, said in the startup line."""
+    if UNDELIVERED_MSG_TTL_DAYS < 1:
+        return f"SATELLITE_MSG_TTL_DAYS must be >= 1 (is {UNDELIVERED_MSG_TTL_DAYS})"
+    if RETENTION_DAYS < 0:
+        return f"SATELLITE_RETENTION_DAYS must be >= 0 (is {RETENTION_DAYS})"
+    return None
+CLEANUP_STAMP_NAME = "cleanup_last.json"
 PORT = int(os.environ.get("PORT", "8100"))
 SATELLITE_MODE = os.environ.get("SATELLITE_MODE", "registry")  # "registry" (T1) or "full" (T2)
 
@@ -219,6 +255,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_allowed_owner
             ON allowed_senders(owner_fingerprint);
 
+        -- Orders /allowed changes. A removal records the server time plus the signature window here; an add signed at or before it is refused, so an add that
+        -- arrives after the removal it preceded cannot bring the row back. Rows expire (see ALLOWED_CLOCK_KEEP_SECONDS).
+        CREATE TABLE IF NOT EXISTS allowed_clock (
+            owner_fingerprint TEXT NOT NULL,
+            sender_fingerprint TEXT NOT NULL,
+            last_remove_unix INTEGER NOT NULL,
+            PRIMARY KEY (owner_fingerprint, sender_fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_allowed_clock_unix
+            ON allowed_clock(last_remove_unix);
+
         CREATE TABLE IF NOT EXISTS candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fingerprint TEXT NOT NULL,
@@ -375,6 +422,9 @@ async def lifespan(app: FastAPI):
     init_db()
     mode_label = "REGISTRY (contacts only)" if SATELLITE_MODE == "registry" else "FULL (contacts + messaging)"
     print(f"[satellite] Mode: {mode_label} | SATELLITE_MODE={SATELLITE_MODE}")
+    await refresh_proxy_names()
+    print(f"[satellite] Trusted proxies: {sorted(trusted_proxies())} | "
+          f"names={_csv_env('SATELLITE_TRUSTED_PROXY_NAMES') or 'none'}")
 
     # Onion blind-router: fail-fast if liboqs ML-KEM-1024 is missing/broken (else every /onion would
     # silently 400 at runtime), then mint the satellite's own routing keypair on first start (idempotent).
@@ -393,8 +443,21 @@ async def lifespan(app: FastAPI):
             _rate_limiter.cleanup()
 
     cleanup_task = asyncio.create_task(_rate_limiter_cleanup_loop())
+    retention_task = None
+    refusal = _cleanup_start_refusal() if CLEANUP_INTERVAL_S > 0 else None
+    if refusal:
+        print(f"[satellite] Retention cleanup: OFF — {refusal}")
+    elif CLEANUP_INTERVAL_S > 0:
+        import random
+        retention_task = asyncio.create_task(
+            _retention_cleanup_loop(CLEANUP_INTERVAL_S, first_delay_s=random.uniform(0, 600)))
+        print(f"[satellite] Retention cleanup: ON every {CLEANUP_INTERVAL_S}s")
+    else:
+        print("[satellite] Retention cleanup: OFF (set SATELLITE_CLEANUP_INTERVAL_S to enable)")
     yield
     cleanup_task.cancel()
+    if retention_task is not None:
+        retention_task.cancel()
 
 app = FastAPI(
     title="Satellite Relay",
@@ -505,19 +568,94 @@ def check_identity_send_rate(fingerprint: str) -> bool:
     return True
 
 
-_TRUSTED_PROXIES = {"127.0.0.1", "::1", "172.17.0.1"}  # localhost + Docker bridge
+# ── Trusted proxies: who may set X-Forwarded-For ──────────────────────────
+# EXACT addresses only, never a CIDR: on a shared docker network any container could otherwise
+# claim to be the edge and spoof a client IP. Two sources, unioned with localhost:
+#   SATELLITE_TRUSTED_PROXIES      comma list of exact IPs (a CIDR or junk entry is ignored); read at import
+#   SATELLITE_TRUSTED_PROXY_NAMES  comma list of docker DNS names (e.g. "caddy,svrnty"), resolved OFF the
+#                                  event loop (loop.getaddrinfo, _PROXY_RESOLVE_TIMEOUT s) and cached for
+#                                  _PROXY_NAME_TTL s; refreshed by the rate-limit middleware when stale
+# A name that does not resolve, times out, or resolves to more than one address contributes nothing
+# (fail-closed: those requests key on the peer address, the pre-fix behaviour). Peer and client
+# addresses are normalised (an IPv4-mapped ::ffff:a.b.c.d is a.b.c.d). The client IP is the RIGHTMOST
+# X-Forwarded-For entry (the one the trusted hop wrote), and must parse as an IP.
+_LOCAL_PROXIES = frozenset({"127.0.0.1", "::1"})
+_PROXY_NAME_TTL = 30.0
+_PROXY_RESOLVE_TIMEOUT = 2.0
+_proxy_name_cache: dict = {"at": float("-inf"), "ips": frozenset()}
 
+
+def _norm_ip(value: str) -> Optional[str]:
+    try:
+        ip = ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return str(mapped or ip)
+
+
+def _csv_env(name: str) -> list[str]:
+    return [p.strip() for p in os.environ.get(name, "").split(",") if p.strip()]
+
+
+def _parse_static_trusted_proxies() -> frozenset:
+    out = set(_LOCAL_PROXIES)
+    for p in _csv_env("SATELLITE_TRUSTED_PROXIES"):
+        ip = _norm_ip(p)
+        if ip:
+            out.add(ip)  # exact addresses only: "a.b.c.d/16" does not parse as an address
+    return frozenset(out)
+
+
+_STATIC_TRUSTED_PROXIES = _parse_static_trusted_proxies()
+
+
+async def refresh_proxy_names(now: Optional[float] = None) -> frozenset:
+    """Re-resolve SATELLITE_TRUSTED_PROXY_NAMES when the cache is stale; return the resolved set."""
+    now = time.monotonic() if now is None else now
+    c = _proxy_name_cache
+    if now - c["at"] < _PROXY_NAME_TTL:
+        return c["ips"]
+    c["at"] = now  # claim the refresh first: concurrent requests keep the old set (no stampede)
+    loop = asyncio.get_running_loop()
+    names = _csv_env("SATELLITE_TRUSTED_PROXY_NAMES")
+
+    async def resolve(name: str) -> frozenset:
+        # ANY failure (gaierror, a timeout, or a malformed name, which raises UnicodeError from IDNA)
+        # trusts that name for nothing: never a 500, never a failed startup.
+        try:
+            infos = await asyncio.wait_for(loop.getaddrinfo(name, None, proto=socket.IPPROTO_TCP),
+                                           _PROXY_RESOLVE_TIMEOUT)
+        except Exception:
+            return frozenset()
+        addrs = {a for a in (_norm_ip(info[4][0]) for info in infos) if a}
+        return frozenset(addrs) if len(addrs) == 1 else frozenset()  # several addresses -> none
+
+    results = await asyncio.gather(*(resolve(n) for n in names))  # concurrent: one timeout bounds the refresh
+    failed = sum(1 for r in results if not r)
+    if failed:
+        print(f"[satellite] trusted proxy names: {failed} of {len(names)} did not resolve to exactly one address")
+    c["ips"] = frozenset().union(*results) if results else frozenset()
+    return c["ips"]
+
+
+def trusted_proxies() -> frozenset:
+    return _STATIC_TRUSTED_PROXIES | _proxy_name_cache["ips"]
+
+
+def client_ip_for(peer_ip: str, forwarded: Optional[str]) -> str:
+    """The rate-limit key: the trusted hop's rightmost X-Forwarded-For entry, else the peer address."""
+    peer = _norm_ip(peer_ip) or peer_ip
+    if forwarded and peer in trusted_proxies():
+        return _norm_ip(forwarded.split(",")[-1]) or peer
+    return peer
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Extract client IP — only trust X-Forwarded-For from known proxies (M-1)
-        forwarded = request.headers.get("x-forwarded-for")
         peer_ip = request.client.host if request.client else "unknown"
-        if forwarded and peer_ip in _TRUSTED_PROXIES:
-            # Rightmost entry is set by the trusted proxy (Caddy)
-            client_ip = forwarded.split(",")[-1].strip()
-        else:
-            client_ip = peer_ip
+        await refresh_proxy_names()
+        client_ip = client_ip_for(peer_ip, request.headers.get("x-forwarded-for"))
 
         allowed, remaining = _rate_limiter.check(client_ip, request.url.path)
         if not allowed:
@@ -534,6 +672,47 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(RateLimitMiddleware)
+
+
+# ── PSI request-body cap (checked from the headers, BEFORE any byte of the body is read) ──
+# The PSI routes take a sealed JSON body that FastAPI would otherwise read and parse whole, before
+# any auth. Bound it by what the route can legitimately carry today: /respond holds two lists of at
+# most 5000 elements (PSIRespondRequest), ~48 B each in JSON (base64 of 32 B), so the inner JSON is
+# ~481 KB and the sealed body (base64 ct + envelope) ~644 KB. 1 MiB leaves headroom; it grows with
+# the per-tier table when larger tiers land. A body-carrying method must state an exact
+# Content-Length within the cap; chunked/any Transfer-Encoding, a missing, duplicate or non-numeric
+# length are refused with 413. Body-less methods (GET/HEAD/DELETE/OPTIONS) pass unless they
+# declare an oversized or chunked body.
+PSI_MAX_BODY_BYTES = 1024 * 1024
+_PSI_PATH_PREFIX = "/trust/psi/"
+_BODYLESS_METHODS = frozenset({"GET", "HEAD", "DELETE", "OPTIONS"})
+
+
+def psi_body_allowed(method: str, headers: list[tuple[bytes, bytes]]) -> bool:
+    lengths = [v for k, v in headers if k.lower() == b"content-length"]
+    if any(k.lower() == b"transfer-encoding" for k, _ in headers) or len(lengths) > 1:
+        return False
+    if not lengths:
+        return method in _BODYLESS_METHODS
+    raw = lengths[0].strip()
+    return raw.isdigit() and int(raw) <= PSI_MAX_BODY_BYTES
+
+
+class PSIBodyCapMiddleware:
+    """Pure ASGI (not BaseHTTPMiddleware) so a refusal never touches `receive`: the body is not read."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith(_PSI_PATH_PREFIX) \
+                and not psi_body_allowed(scope["method"], scope.get("headers", [])):
+            await JSONResponse(status_code=413, content={"detail": "Request body too large or without a length"})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(PSIBodyCapMiddleware)  # added LAST = outermost: refuses before the rate limiter or any parse
 
 
 # ── Mode Guard ────────────────────────────────────────────
@@ -715,8 +894,10 @@ def verify_request_signature(fingerprint: str, signature: str, db: sqlite3.Conne
     (tag#1) can never be replayed here (the live pre-gated-A bug).
 
     During a migration window (GATED_A_ACCEPT_LEGACY_BARE=1) the legacy untagged proof
-    signed by the IDENTITY key is also accepted so un-bound identities keep working; that
-    branch is removed once every identity has bound.
+    signed by the IDENTITY key is also accepted, but ONLY for an identity that has NOT bound
+    a sig_pubkey, so un-bound identities keep working while a bound identity can never be
+    authenticated by a replayable bare proof. That branch is removed once every identity
+    has bound.
     """
     if not signature:
         return False
@@ -752,14 +933,15 @@ def verify_request_signature(fingerprint: str, signature: str, db: sqlite3.Conne
                 if auth_pk and _verify_with_key(auth_pk, sig_bytes,
                                                 _psi_auth_preimage(fingerprint, client_ts)):
                     return True
-            # migration-only fallback: legacy bare "{fp}:{unix}" signed by the identity key
-            if GATED_A_ACCEPT_LEGACY_BARE:
+            # migration-only fallback: legacy bare "{fp}:{unix}" signed by the identity key,
+            # for UN-BOUND identities only (a bound identity authenticates with tag#3 or not at all)
+            if GATED_A_ACCEPT_LEGACY_BARE and not sig_pubkey_hex:
                 return _verify_with_key(base64.b64decode(identity["public_key"]),
                                         sig_bytes, f"{fingerprint}:{client_ts}".encode())
             return False
 
-        # legacy bare base64 (minute window) — migration-only, default OFF
-        if GATED_A_ACCEPT_LEGACY_BARE:
+        # legacy bare base64 (minute window) — migration-only, default OFF, UN-BOUND identities only
+        if GATED_A_ACCEPT_LEGACY_BARE and not sig_pubkey_hex:
             idpk = base64.b64decode(identity["public_key"])
             sig_bytes = base64.b64decode(signature.replace(" ", "+"))
             ts_minute = int(time.time()) // 60
@@ -818,7 +1000,7 @@ def verify_allowed_change_signature(
             return False
         ts_str, sig_b64 = signature.split(":", 1)
         client_ts = int(ts_str)
-        if abs(int(time.time()) - client_ts) > 30:
+        if abs(int(time.time()) - client_ts) > ALLOWED_SIG_WINDOW_SECONDS:
             return False  # replay / clock drift > 30s
         sig_bytes = base64.b64decode(sig_b64.replace(" ", "+"))
         try:
@@ -828,6 +1010,27 @@ def verify_allowed_change_signature(
         return _verify_with_key(auth_pk, sig_bytes, preimage_fn(owner_fp, sender_fp, client_ts))
     except Exception:
         return False
+
+
+# A removal records the SERVER's time plus the signature window, not its own signed time. An accepted request's signed time is never more
+# than the window ahead of the server's clock at arrival, so an add that was signed before the removal (by a device whose clock runs ahead of
+# the one that removed) is still at or before the recorded value and is refused. The cost is that a re-open right after a removal is refused
+# for up to the window.
+ALLOWED_SIG_WINDOW_SECONDS = 30
+
+# A clock row only matters while an add could still arrive with a signed time at or before it. A row holds at most server time + the window,
+# and an add that it could refuse arrives within the window after that, so a row is dropped once it is older than the keep time below:
+# 120 s > 30 s + 30 s + the clock difference the window allows. Rows go so the table does not keep a record of who was removed.
+ALLOWED_CLOCK_KEEP_SECONDS = 120
+
+
+def _allowed_signed_unix(signature: str) -> int:
+    """The signed time of an /allowed change. Call only after verify_allowed_change_signature accepted `signature`."""
+    return int(signature.split(":", 1)[0])
+
+
+def _prune_allowed_clock(db: sqlite3.Connection, now_unix: int) -> None:
+    db.execute("DELETE FROM allowed_clock WHERE last_remove_unix < ?", (now_unix - ALLOWED_CLOCK_KEEP_SECONDS,))
 
 
 def _verify_with_key(pubkey_bytes: bytes, sig_bytes: bytes, message: bytes) -> bool:
@@ -859,22 +1062,9 @@ def _verify_with_key(pubkey_bytes: bytes, sig_bytes: bytes, message: bytes) -> b
 
 # ── Routes ────────────────────────────────────────────────
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    """Trust Network Dashboard — visual overview of satellite status."""
-    dashboard_path = Path(__file__).parent / "dashboard.html"
-    if dashboard_path.exists():
-        return HTMLResponse(content=dashboard_path.read_text())
-    return HTMLResponse(content="<h1>Satellite Online</h1><p>Dashboard not found.</p>")
-
-
-@app.get("/chat")
-async def chat_client():
-    """Serve the E2E encrypted chat client."""
-    chat_path = Path(__file__).parent / "chat.html"
-    if chat_path.exists():
-        return HTMLResponse(content=chat_path.read_text())
-    return HTMLResponse(content="<h1>Chat client not found</h1>", status_code=404)
+# The satellite serves no HTML pages. The legacy dashboard ("/") and chat page ("/chat") were
+# removed: the chat page stored private keys in localStorage on whatever origin served it, and
+# every proxy door that reached the satellite re-exposed both. Its API is JSON only.
 
 
 @app.get("/identities")
@@ -1491,15 +1681,13 @@ async def export_satellite(fingerprint: str, x_signature: Optional[str] = Header
             # Relay source — EVERY module satellite.py imports at module scope MUST be bundled:
             # mailbox_envelope + satellite_keys are REQUIRED (omitting them = ModuleNotFound on
             # startup — the pre-existing break that made self-host never run) + crypto_utils
-            # (client kit) + registration + the served UI (dashboard/chat, COPY'd by the keystone
-            # Dockerfile). Read the REAL tracked files — no heredoc copies that silently drift.
+            # (client kit) + registration. The satellite serves no HTML pages, so none are bundled.
+            # Read the REAL tracked files — no heredoc copies that silently drift.
             zf.writestr('satellite.py', satellite_src)
             zf.writestr('mailbox_envelope.py', (src_dir / "mailbox_envelope.py").read_text())
             zf.writestr('satellite_keys.py', (src_dir / "satellite_keys.py").read_text())
             zf.writestr('crypto_utils.py', crypto_src)
             zf.writestr('registration.py', registration_src)
-            zf.writestr('dashboard.html', (src_dir / "dashboard.html").read_text())
-            zf.writestr('chat.html', (src_dir / "chat.html").read_text())
             # registration UI (COPY'd by Dockerfile.registration)
             zf.writestr('landing.html', (src_dir / "landing.html").read_text())
             zf.writestr('profile.html', (src_dir / "profile.html").read_text())
@@ -1695,6 +1883,17 @@ async def add_allowed_sender(owner_fingerprint: str, req: AllowedSenderRequest):
         if owner_fingerprint == req.sender_fingerprint:
             raise HTTPException(status_code=400, detail="Cannot add yourself to allowed list")
 
+        # Check the order and apply in one transaction: an add signed at or before the last removal of this pair is refused.
+        db.execute("BEGIN IMMEDIATE")
+        _prune_allowed_clock(db, int(time.time()))
+        last = db.execute(
+            "SELECT last_remove_unix FROM allowed_clock WHERE owner_fingerprint = ? AND sender_fingerprint = ?",
+            (owner_fingerprint, req.sender_fingerprint)
+        ).fetchone()
+        if last is not None and _allowed_signed_unix(req.signature) <= last["last_remove_unix"]:
+            db.commit()
+            return JSONResponse(status_code=409, content={"status": "superseded", "sender_fingerprint": req.sender_fingerprint})
+
         now = now_iso()
         try:
             db.execute(
@@ -1702,6 +1901,7 @@ async def add_allowed_sender(owner_fingerprint: str, req: AllowedSenderRequest):
                 (owner_fingerprint, req.sender_fingerprint, now)
             )
         except sqlite3.IntegrityError:
+            db.commit()
             return {"status": "already_allowed", "sender_fingerprint": req.sender_fingerprint}
 
         audit(db, "allowed_added", owner_fingerprint, f"sender={req.sender_fingerprint[:16]}...")
@@ -1759,11 +1959,23 @@ async def remove_allowed_sender(
         if not verify_allowed_change_signature(owner_fingerprint, sender_fingerprint, x_signature, db, _allowed_remove_preimage):
             raise HTTPException(status_code=403, detail="Invalid signature — X-Signature header required")
 
+        # A removal always applies. It records the server time plus the signature window (the latest one kept) even when there is no row, so an
+        # add that was signed before it and arrives later is refused, whatever the clocks of the owner's devices say.
+        db.execute("BEGIN IMMEDIATE")
+        now_unix = int(time.time())
+        _prune_allowed_clock(db, now_unix)
+        db.execute(
+            "INSERT INTO allowed_clock (owner_fingerprint, sender_fingerprint, last_remove_unix) VALUES (?, ?, ?) "
+            "ON CONFLICT(owner_fingerprint, sender_fingerprint) DO UPDATE SET "
+            "last_remove_unix = MAX(last_remove_unix, excluded.last_remove_unix)",
+            (owner_fingerprint, sender_fingerprint, now_unix + ALLOWED_SIG_WINDOW_SECONDS)
+        )
         result = db.execute(
             "DELETE FROM allowed_senders WHERE owner_fingerprint = ? AND sender_fingerprint = ?",
             (owner_fingerprint, sender_fingerprint)
         )
         if result.rowcount == 0:
+            db.commit()
             raise HTTPException(status_code=404, detail="Sender not in allowed list")
 
         audit(db, "allowed_removed", owner_fingerprint, f"sender={sender_fingerprint[:16]}...")
@@ -2285,15 +2497,7 @@ async def message_cleanup(admin_key: str = Header(None, alias="X-Admin-Key")):
 
     db = get_db()
     try:
-        from datetime import timedelta
-        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=UNDELIVERED_MSG_TTL_SECONDS)).isoformat()
-        result = db.execute(
-            "DELETE FROM messages WHERE retrieved = 0 AND created_at < ?",
-            (cutoff,)
-        )
-        count = result.rowcount
-        if count > 0:
-            audit(db, "ttl_cleanup", None, f"purged {count} expired messages")
+        count = _purge_unacknowledged(db)
         db.commit()
         return {"status": "ok", "purged": count}
     finally:
@@ -2682,6 +2886,8 @@ async def delete_identity(fingerprint: str, req: DeleteIdentityRequest):
 
         # Remove from allowed_senders (both as owner and as sender)
         db.execute("DELETE FROM allowed_senders WHERE owner_fingerprint = ? OR sender_fingerprint = ?",
+                   (fingerprint, fingerprint))
+        db.execute("DELETE FROM allowed_clock WHERE owner_fingerprint = ? OR sender_fingerprint = ?",
                    (fingerprint, fingerprint))
         db.execute("DELETE FROM messages WHERE recipient = ?", (fingerprint,))
         db.execute("DELETE FROM identities WHERE fingerprint = ?", (fingerprint,))
@@ -3446,6 +3652,14 @@ def _psi_sinkhole_commit(db: sqlite3.Connection, blinded_set=None):
     db.commit()
 
 
+def _psi_sinkhole_touch(db: sqlite3.Connection):
+    """One ring-buffer write with no commit: the stand-in for a write that did not happen, so a request that changed
+    nothing still looks like one that did (the caller commits once, as the genuine path does)."""
+    import secrets
+    db.execute("INSERT OR REPLACE INTO psi_sinkhole (slot, blob, created_at) VALUES (?, ?, ?)",
+               (secrets.randbelow(_PSI_SINKHOLE_RING), "{}", now_iso()))
+
+
 # ── PQ-wrap PSI helpers (single-shell seal-TO-satellite; the satellite READS the blinders) ──────
 def _open_psi_sealed(body) -> dict:
     """Open a PQ-wrapped PSI request body (sealed to THIS satellite's key) → inner JSON dict.
@@ -3691,15 +3905,14 @@ async def psi_get_blinded(session_id: str, body: dict):
         if not verify_request_signature(fingerprint, signature, db):
             raise HTTPException(status_code=403, detail="Invalid signature — ownership proof required")
 
+        # Only the responder may fetch the initiator's blinded set. The role check is part of the lookup so that "not
+        # your session" and "no such session" are one answer.
         session = db.execute(
-            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending'",
-            (session_id,)
+            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending' AND responder = ?",
+            (session_id, fingerprint)
         ).fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="PSI session not found or expired")
-
-        if session["responder"] != fingerprint:
-            raise HTTPException(status_code=403, detail="Only the responder can access the initiator's blinded set")
 
         # Register the responder's ephemeral response_pub (first session touch) so this response
         # — and any later responder-facing one — can be sealed back. Idempotent (retry re-sets same).
@@ -3742,25 +3955,26 @@ async def psi_respond(session_id: str, body: dict):
         if not verify_request_signature(req.responder_fingerprint, req.signature, db):
             raise HTTPException(status_code=403, detail="Invalid signature — prove you own this key")
 
+        # The designated-responder check is part of the lookup (see /blinded): not-yours and not-there are one answer.
         session = db.execute(
-            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending'",
-            (session_id,)
+            "SELECT * FROM psi_sessions WHERE session_id = ? AND status = 'pending' AND responder = ?",
+            (session_id, req.responder_fingerprint)
         ).fetchone()
         if not session:
             raise HTTPException(status_code=404, detail="PSI session not found or expired")
 
-        if session["responder"] != req.responder_fingerprint:
-            raise HTTPException(status_code=403, detail="Not the designated responder")
-
-        # Store responder's data
-        db.execute(
+        # Store responder's data. The first answer wins: the write is conditional on the session still being pending and
+        # the lookup above is not relied on to have kept it so; an answer that lost is refused like one to a closed session.
+        stored = db.execute(
             """UPDATE psi_sessions
                SET responder_blinded = ?, reblinded_initiator = ?,
                    status = 'responded', completed_at = ?
-               WHERE session_id = ?""",
+               WHERE session_id = ? AND status = 'pending'""",
             (json.dumps(req.blinded_set), json.dumps(req.reblinded_initiator_set),
              now_iso(), session_id)
         )
+        if stored.rowcount == 0:
+            raise HTTPException(status_code=404, detail="PSI session not found or expired")
 
         # Notify initiator
         notification = json.dumps({
@@ -3848,7 +4062,14 @@ async def psi_cancel(
     fingerprint: str,
     x_signature: Optional[str] = Header(None, alias="X-Signature"),
 ):
-    """Cancel a PSI session. Either party can cancel."""
+    """Cancel a PSI session. Either party can cancel.
+
+    Idempotent for any caller who proves who they are: the answer is the same 200 {"status": "cancelled"} whether the
+    session existed, never existed, or belongs to someone else, so the response does not depend on what the id names.
+    The delete is scoped to the caller's own sessions in the one statement, so a non-party deletes nothing.
+    A cancel that deleted nothing still pays the same write profile as one that did (one DELETE, one INSERT, one
+    commit), the same way the sinkhole mirrors a genuine /initiate.
+    """
     init_psi_tables()
     db = get_db()
     try:
@@ -3856,18 +4077,14 @@ async def psi_cancel(
         if not verify_request_signature(fingerprint, x_signature, db):
             raise HTTPException(status_code=403, detail="Invalid signature — X-Signature header required")
 
-        session = db.execute(
-            "SELECT initiator, responder FROM psi_sessions WHERE session_id = ?",
-            (session_id,)
-        ).fetchone()
-        if not session:
-            raise HTTPException(status_code=404, detail="PSI session not found")
-
-        if fingerprint not in (session["initiator"], session["responder"]):
-            raise HTTPException(status_code=403, detail="Not a party to this session")
-
-        db.execute("DELETE FROM psi_sessions WHERE session_id = ?", (session_id,))
-        audit(db, "psi_cancelled", fingerprint, f"session={session_id}")
+        deleted = db.execute(
+            "DELETE FROM psi_sessions WHERE session_id = ? AND (initiator = ? OR responder = ?)",
+            (session_id, fingerprint, fingerprint)
+        ).rowcount
+        if deleted:
+            audit(db, "psi_cancelled", fingerprint, f"session={session_id}")
+        else:
+            _psi_sinkhole_touch(db)
         db.commit()
 
         return {"status": "cancelled", "session_id": session_id}
@@ -3886,33 +4103,117 @@ async def cleanup_old_messages(admin_key: str = Header(None, alias="X-Admin-Key"
 
     db = get_db()
     try:
-        cutoff = datetime.now(timezone.utc).timestamp() - (RETENTION_DAYS * 86400)
-        cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
-
-        result = db.execute(
-            "DELETE FROM messages WHERE retrieved = 1 AND retrieved_at < ?",
-            (cutoff_iso,)
-        )
-        deleted = result.rowcount
-
-        # Clean up expired/completed PSI sessions
-        psi_cutoff = datetime.now(timezone.utc).timestamp() - PSI_SESSION_TTL
-        psi_cutoff_iso = datetime.fromtimestamp(psi_cutoff, timezone.utc).isoformat()
-        try:
-            psi_result = db.execute(
-                "DELETE FROM psi_sessions WHERE status IN ('complete', 'pending') AND created_at < ?",
-                (psi_cutoff_iso,)
-            )
-            psi_deleted = psi_result.rowcount
-        except sqlite3.OperationalError:
-            psi_deleted = 0  # table may not exist yet
-
-        audit(db, "cleanup", details=f"messages={deleted},psi_sessions={psi_deleted}")
+        deleted, psi_deleted = _purge_retained(db)
         db.commit()
-
         return {"deleted": deleted, "psi_deleted": psi_deleted, "retention_days": RETENTION_DAYS}
     finally:
         db.close()
+
+
+# ── Retention cleanup: shared by the two admin routes and the scheduled task ─────────────
+# The cutoffs are fixed server-side (nothing a caller sends can move them), and the routes and
+# the task call the SAME helpers, so a scheduled run can never delete anything a manual run
+# wouldn't. The task is OFF unless SATELLITE_CLEANUP_INTERVAL_S > 0 (see _parse_cleanup_interval).
+
+def _purge_unacknowledged(db, now: Optional[datetime] = None) -> int:
+    """Delete messages never acknowledged by the recipient's app, older than UNDELIVERED_MSG_TTL."""
+    from datetime import timedelta
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(seconds=UNDELIVERED_MSG_TTL_SECONDS)).isoformat()
+    count = db.execute(
+        "DELETE FROM messages WHERE retrieved = 0 AND created_at < ?",
+        (cutoff,)
+    ).rowcount
+    if count > 0:
+        audit(db, "ttl_cleanup", None, f"purged {count} expired messages")
+    return count
+
+
+def _purge_retained(db, now: Optional[datetime] = None) -> tuple:
+    """Delete collected messages past RETENTION_DAYS and expired PSI sessions. Returns (messages, psi)."""
+    now = now or datetime.now(timezone.utc)
+    cutoff_iso = datetime.fromtimestamp(now.timestamp() - (RETENTION_DAYS * 86400), timezone.utc).isoformat()
+    deleted = db.execute(
+        "DELETE FROM messages WHERE retrieved = 1 AND retrieved_at < ?",
+        (cutoff_iso,)
+    ).rowcount
+    psi_cutoff_iso = datetime.fromtimestamp(now.timestamp() - PSI_SESSION_TTL, timezone.utc).isoformat()
+    try:
+        psi_deleted = db.execute(
+            "DELETE FROM psi_sessions WHERE status IN ('complete', 'pending') AND created_at < ?",
+            (psi_cutoff_iso,)
+        ).rowcount
+    except sqlite3.OperationalError:
+        psi_deleted = 0  # table may not exist yet
+    audit(db, "cleanup", details=f"messages={deleted},psi_sessions={psi_deleted}")
+    return deleted, psi_deleted
+
+
+_cleanup_lock = asyncio.Lock()
+
+
+def _write_cleanup_stamp(stamp: dict) -> None:
+    """Dead-man stamp: {ts, ok, counts}. 0600 on the data volume, written atomically. Not served.
+    The temp file has a random name and is opened O_EXCL|O_NOFOLLOW, so a planted file or symlink
+    can't be followed or reused."""
+    import secrets as _secrets
+    path = DATA_DIR / CLEANUP_STAMP_NAME
+    tmp = DATA_DIR / f".{CLEANUP_STAMP_NAME}.{_secrets.token_hex(8)}.tmp"
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(stamp, f)
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
+
+
+def _run_cleanup_db() -> dict:
+    """The DB half of a run, executed in a worker thread (sync sqlite must not block the event loop).
+    get_db() is the routes' own connection (same busy timeout), so live writers wait, not fail."""
+    db = get_db()
+    try:
+        unacked = _purge_unacknowledged(db)
+        retained, psi = _purge_retained(db)
+        db.commit()
+    finally:
+        db.close()
+    return {"unacknowledged": unacked, "retained": retained, "psi_sessions": psi}
+
+
+async def run_retention_cleanup() -> dict:
+    """One scheduled cleanup run. Single-flight: a run that finds another in progress is skipped.
+    Logs counts only; never raises (a failure is logged and stamped ok=false)."""
+    if _cleanup_lock.locked():
+        return {"skipped": True}
+    async with _cleanup_lock:
+        ts = datetime.now(timezone.utc).isoformat()
+        try:
+            counts = await asyncio.to_thread(_run_cleanup_db)
+            unacked, retained, psi = counts["unacknowledged"], counts["retained"], counts["psi_sessions"]
+            print(f"[satellite] cleanup: deleted {retained} messages past their retention period; "
+                  f"deleted {unacked} unacknowledged messages older than {UNDELIVERED_MSG_TTL_DAYS} days; "
+                  f"deleted {psi} expired discovery sessions")
+            stamp = {"ts": ts, "ok": True, "counts": counts}
+        except Exception as e:  # never fatal: the stamp carries the failure to the dead-man check
+            print(f"[satellite] cleanup FAILED: {type(e).__name__}")
+            stamp = {"ts": ts, "ok": False, "counts": None}
+        try:
+            await asyncio.to_thread(_write_cleanup_stamp, stamp)
+        except Exception as e:
+            print(f"[satellite] cleanup stamp write FAILED: {type(e).__name__}")
+        return stamp
+
+
+async def _retention_cleanup_loop(interval_s: int, first_delay_s: float):
+    await asyncio.sleep(first_delay_s)
+    while True:
+        await run_retention_cleanup()
+        await asyncio.sleep(interval_s)
 
 
 if __name__ == "__main__":

@@ -35,6 +35,24 @@ export interface MailboxConfig {
   /** Owner-auth (signed poll/ack) freshness window in ms — bounds replay of a captured request. */
   ownerAuthWindowMs: number;
   /**
+   * Per-IP ceiling on the OWNER routes (queue / ack / claim) within ownerRateLimitWindowMs, checked before any decode or verify.
+   * NOT the deposit budget: a browser polls every 1.5 s when active and every 0.35 s in a burst (live-book-poll.ts), and several
+   * clients can share one IP (a household NAT, the fleet host), so 10/min would lock real owners out. 300/min (5/s) covers an
+   * active tab in burst plus a few idle clients behind one address.
+   */
+  ownerRateLimitMax: number;
+  ownerRateLimitWindowMs: number;
+  /** Most distinct IPs the owner-route limiter tracks; past it (after a sweep) new IPs share one overflow bucket. */
+  ownerRateLimitIpCap: number;
+  /** Most live (mailbox_id, nonce) entries in the owner replay cache; when full (after a sweep) the one-time check is skipped and logged. */
+  replayCacheMax: number;
+  /**
+   * Whether the owner routes (queue / ack) accept v2 (mbx2_) mailboxes. Default false: no client signs v2 yet, and a v2 owner verify
+   * is the costliest request an attacker can send, so until clients move to it these routes refuse v2 with the uniform non-owner 401,
+   * before any decode or signature check. Deposits to a v2 id are unaffected. Turning this on needs replay protection in the v2 verifier first.
+   */
+  ownerV2Enabled: boolean;
+  /**
    * §5.1 LAUNCH seam: when true (svrnty.is nursery profile), mailbox CREATION is gated behind an
    * explicit owner-claim carrying an invite_token+chain. That claim machinery lands WITH the invite
    * system (launch hardening) and is deliberately NOT retrofitted into the 9/10 build.
@@ -53,6 +71,11 @@ export function mailboxConfig(): MailboxConfig {
     rateLimitMax: intEnv('RELAY_RATE_LIMIT_MAX', 10),
     rateLimitWindowMs: intEnv('RELAY_RATE_LIMIT_WINDOW_MS', 60_000),
     ownerAuthWindowMs: intEnv('RELAY_OWNER_AUTH_WINDOW_MS', 60_000),
+    ownerRateLimitMax: intEnv('RELAY_OWNER_RATE_LIMIT_MAX', 300),
+    ownerRateLimitWindowMs: intEnv('RELAY_OWNER_RATE_LIMIT_WINDOW_MS', 60_000),
+    ownerRateLimitIpCap: intEnv('RELAY_OWNER_RATE_LIMIT_IP_CAP', 50_000),
+    replayCacheMax: intEnv('RELAY_REPLAY_CACHE_MAX', 100_000),
+    ownerV2Enabled: boolEnv('RELAY_OWNER_V2_ENABLED', false),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
     diskWatermarkPct: Math.min(intEnv('RELAY_DISK_WATERMARK_PCT', 80), 100),
   };

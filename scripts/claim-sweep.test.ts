@@ -225,7 +225,9 @@ describe('scanner mechanics', () => {
   });
   it('real claim-gates.ts values match the registry gate_value_at_sha (drift = flip without registry update)', () => {
     for (const c of reg.claims.filter((x) => x.kind === 'gated')) {
-      assert.equal(realGateValue(c.gate as string), c.gate_value_at_sha, `${c.id} ${c.gate}`);
+      // 'env' = decided per BUILD (NEXT_PUBLIC_*_LIVE === 'true'); an unconfigured build must be dark, so the unset-env value is false.
+      const expected = c.gate_value_at_sha === 'env' ? false : c.gate_value_at_sha;
+      assert.equal(realGateValue(c.gate as string), expected, `${c.id} ${c.gate}`);
     }
   });
 });
@@ -301,3 +303,7 @@ describe('runner: a gate name is matched literally in an annotation reason (Flin
     assert.equal(escapeRegExp('isMutualTrustWireLive'), 'isMutualTrustWireLive');
   });
 });
+
+// The `order` kind's NEGs (scripts/claim-order.test.ts) run in THIS CI step (qa.yml runs claim-sweep.test.ts by name): importing them here
+// keeps them in CI without a workflow edit (the NuAvalon token has no workflow scope).
+import './claim-order.test';

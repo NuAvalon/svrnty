@@ -9,8 +9,8 @@
 // isPSIDiscoveryLive flips. (The GET-challenge handler below is vestigial — the deployed satellite /bind
 // is POST-only and self-nonce'd; reconciling runBindCeremony to POST-direct is the paired client fix.)
 import { NextRequest, NextResponse } from 'next/server';
-
-const SATELLITE_URL = process.env.SATELLITE_URL || 'http://registration:8101';
+import { satelliteBaseUrl } from '@/lib/satellite/satellite-base-url';
+import { forwardedClientIp } from '@/lib/satellite/forward-client-ip';
 
 const POST_FIELDS = ['fingerprint', 'sig_pubkey', 'nonce', 'epoch', 'binding_sig'] as const;
 
@@ -21,7 +21,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'fingerprint is required' }, { status: 400 });
     }
     const res = await fetch(
-      `${SATELLITE_URL}/bind?fingerprint=${encodeURIComponent(fingerprint)}`,
+      `${satelliteBaseUrl()}/bind?fingerprint=${encodeURIComponent(fingerprint)}`,
+      { headers: forwardedClientIp(request) },
     );
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
@@ -45,9 +46,9 @@ export async function POST(request: NextRequest) {
     if (!body.fingerprint || !body.sig_pubkey || !body.binding_sig) {
       return NextResponse.json({ error: 'fingerprint, sig_pubkey, and binding_sig are required' }, { status: 400 });
     }
-    const res = await fetch(`${SATELLITE_URL}/bind`, {
+    const res = await fetch(`${satelliteBaseUrl()}/bind`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...forwardedClientIp(request) },
       body: JSON.stringify(body),
     });
     const data = await res.json();

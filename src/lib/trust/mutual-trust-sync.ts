@@ -127,7 +127,7 @@ export interface OrchestratorDeps {
    * into discovery (the leak `trust_visibility` exists to prevent, Flint #172393). The trust-layer PSI
    * input + consent gate = getTrustVisiblePeers (the opt-in subset), NOT this.
    */
-  getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null; pending?: boolean }>>;
+  getTrustedPeers: () => Promise<Array<{ fingerprint: string; lastSync?: string | null; pending?: boolean; lastTrySeq?: number }>>;
   /**
    * KNOW layer (Flint co-review D2, 2026-09-03): the peers this owner has CONSENTED to mutual
    * visibility with — the `open_visibility` SUBSET of the book, NOT the whole book. This IS the
@@ -392,8 +392,36 @@ async function psiPending(
   return list.map((s) => ({
     session_id: String(s.session_id ?? ''),
     initiator: String(s.initiator_fingerprint ?? s.initiator ?? ''),
-    created_at: Number(s.created_at ?? 0),
+    created_at: createdAtSeconds(s.created_at),
   }));
+}
+
+/**
+ * A pending session's creation time as unix SECONDS. The satellite returns an ISO-8601 string; older shapes and the tests use seconds. Number() on an
+ * ISO string is NaN, which made the age check in respondToTrustSync (Date.now() - created_at * 1000 > TTL) always false, so it never skipped anything.
+ * Anything that cannot be read becomes 0, which the age check treats as expired: skipped, the same as a missing field always was.
+ */
+export function createdAtSeconds(v: unknown): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (typeof v === 'string') {
+    const t = v.trim();
+    if (/^\d+(\.\d+)?$/.test(t)) return Number(t);
+    const ms = Date.parse(normalizeIsoForParse(t));
+    if (Number.isFinite(ms)) return ms / 1000;
+  }
+  return 0;
+}
+
+/**
+ * The satellite writes created_at with Python's isoformat(): SIX fractional digits (microseconds) and "+00:00", or no fraction at all when the
+ * microseconds are 0. Not every JS engine reads more than three fractional digits, and an unreadable value becomes 0 = expired = every pending
+ * session skipped, so the fraction is cut to three digits (truncated, not rounded) before parsing. A date-time with NO offset is local time to
+ * Date.parse; the satellite's clock is UTC, so it is read as UTC.
+ */
+export function normalizeIsoForParse(t: string): string {
+  let iso = t.replace(/(\.\d{3})\d+/, '$1');
+  if (/T\d{2}:\d{2}/.test(iso) && !/(Z|[+-]\d{2}(:?\d{2})?)$/i.test(iso)) iso += 'Z';
+  return iso;
 }
 
 /**
@@ -769,6 +797,10 @@ export async function respondToTrustSync(
   // allowlist (Flint D1/D2).
   const fps = await getLayerFingerprints(deps, layer);
   if (fps.length === 0) return results;
+  // A set over the bucket cannot be padded, and sending it raw (or cut to fit) is not an option: raw tells the peer and the relay exactly how
+  // many contacts we share, and a cut set would be stored by the initiator as the whole result (applyMutualResult replaces it). The initiator
+  // side refuses the same set (gateError in the resync initiate), so the responder does not answer either.
+  if (fps.length > PSI_BLINDED_BUCKET_N) return results;
   const consentSet = new Set(fps);
 
   for (const session of pending) {
@@ -798,8 +830,10 @@ export async function respondToTrustSync(
     // Re-blind initiator's set with our key
     const reblindedInitiator = reblindSet(initiatorBlinded, keypair.privateKey);
 
-    // Blind our own set (responder computes no intersection — no fpOrder needed here).
-    const ourBlinded = blindFingerprints(fps, keypair.privateKey);
+    // Blind our own set and pad it to the fixed bucket, the same way the initiator does, so the peer and the relay see N entries whatever
+    // our contact count is. The responder computes no intersection, so the padded fp order is not kept.
+    const ours = blindFingerprintsWithOrder(fps, keypair.privateKey);
+    const ourBlinded = padBlindedSet(ours.blinded, ours.fpOrder, shuffle, keypair.privateKey).blinded;
 
     // Submit response
     const ok = await psiRespond(
@@ -856,6 +890,8 @@ export async function syncMutualTrust(
     pqSession?: PsiSessionKey;
   }>;
   errors: string[];
+  /** Peers a real (non-cover) request was attempted to this tick, whether or not it succeeded, so the caller can rotate the queue. */
+  attempted?: string[];
 }> {
   const responded: PSISyncResult[] = [];
   const initiated: Array<{
@@ -866,6 +902,7 @@ export async function syncMutualTrust(
     pqSession?: PsiSessionKey;
   }> = [];
   const errors: string[] = [];
+  const attempted: string[] = [];
 
   // Step 1: Respond to any pending sessions (consent-gated per layer inside).
   try {
@@ -886,15 +923,21 @@ export async function syncMutualTrust(
     }
     try {
       // getTrustedPeers is the staleness scheduler only; WHO may be contacted is the layer's opt-in set.
-      let due = (await deps.getTrustedPeers())
-        .filter(p => !p.pending && isStale(p.lastSync))
-        .map(p => p.fingerprint);
+      let dueRows = (await deps.getTrustedPeers()).filter(p => !p.pending && isStale(p.lastSync));
       if (!CONSENT_EXEMPT.has(layer)) {
         const consented = new Set(await getLayerFingerprints(deps, layer));
-        due = due.filter(fp => consented.has(fp));
+        dueRows = dueRows.filter(p => consented.has(p.fingerprint));
       }
+      // Least recently ATTEMPTED first. lastTrySeq is a logical sequence number (never a wall-clock; a peer never tried has none and sorts
+      // first), and ties keep book order. Without this the queue always starts at the same peer: one whose request errors, or whose session
+      // expires unanswered, is first again next tick and a peer behind it is never reached.
+      const due = dueRows
+        .map((p, i) => ({ fp: p.fingerprint, seq: p.lastTrySeq ?? 0, i }))
+        .sort((a, b) => a.seq - b.seq || a.i - b.i)
+        .map(x => x.fp);
       for (let k = 0; k < PSI_REQUESTS_PER_TICK_K; k++) {
         const slot = await options.slots.nextSlot();
+        if (due[k]) attempted.push(due[k]);
         const r = await sendResyncRequest(deps, due[k] ?? null, options, layer, slot);
         if (r.error) errors.push(`Resync request ${k}: ${r.error}`);
         if (r.initiated) initiated.push(r.initiated);
@@ -902,7 +945,7 @@ export async function syncMutualTrust(
     } catch (e) {
       errors.push(`Initiate phase: ${e instanceof Error ? e.message : String(e)}`);
     }
-    return { responded, initiated, errors };
+    return { responded, initiated, errors, attempted };
   }
 
   // Step 2: Initiate sessions with peers that haven't synced recently. For KNOW, restrict to the

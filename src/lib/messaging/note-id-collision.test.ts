@@ -92,7 +92,7 @@ test('K4: the collision is refused BEFORE any ratchet work (openRatchet is never
   assert.equal(st.rows.size, before);
 });
 
-test('K5 HEADLESS store (Chaos #170, pinned): a colliding id from another sender, or one matching our outbound copy, lands as its OWN row and never replaces; the same sender\'s redelivery replaces only its own', () => {
+test('K5 HEADLESS store (Chaos #170; CHANGED ON PURPOSE by first-write-wins, Archie #2653): a colliding id from another sender, or one matching our outbound copy, lands as its OWN row and never replaces; the same sender\'s DIFFERENT content under its own stored id is now REFUSED (it used to replace)', () => {
   const s = new HeadlessStore();
   const base = (over: Partial<NoteRecord>): NoteRecord => ({ note_id: 'dup', thread_id: 't', direction: 'inbound', from_fingerprint: 'fp-A', to_fingerprints: [], sent_at: '2026-10-30T12:00:00.000Z', body: 'A', participant_kind: 'human', retention: { expires_at: null }, wire_type: NOTE_WIRE_TYPE, ...over } as NoteRecord);
   s.putNote(base({ direction: 'outbound', from_fingerprint: 'self', to_fingerprints: ['fp-B'], body: 'our outbound' }));
@@ -103,7 +103,7 @@ test('K5 HEADLESS store (Chaos #170, pinned): a colliding id from another sender
   assert.equal(rows.length, 3, 'outbound + B + C, each its own row');
   assert.equal(rows.find((n) => n.direction === 'outbound')!.body, 'our outbound');
   assert.equal(rows.find((n) => n.from_fingerprint === 'fp-C')!.body, 'C reuses the id');
-  assert.equal(rows.find((n) => n.from_fingerprint === 'fp-B')!.body, 'B redelivers (updated)', 'only the same sender\'s own row was replaced');
+  assert.equal(rows.find((n) => n.from_fingerprint === 'fp-B')!.body, 'B reuses the id', 'FIRST WRITE WINS: B\'s different content under its own stored id did not replace it');
 });
 
 test('K7 self-note: a delivery whose sender fingerprint EQUALS the fingerprint on our stored OUTBOUND row (we wrote to ourselves) still must not replace that row: direction is checked, not just the sender', async () => {

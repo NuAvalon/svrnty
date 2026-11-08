@@ -55,9 +55,11 @@ test('W4 the FE dead-letter sink refuses when the notes store is open for ANOTHE
   }
 });
 
-test('W5 static: the app consume deps include the sink (so the door is live in the PWA), and the headless path deliberately does not', () => {
+test('W5 static: the app consume deps include the sink (so the door is live in the PWA), and headless records too (#713, Flint #189046)', () => {
   const lbp = readFileSync(new URL('./live-book-poll.ts', import.meta.url), 'utf8');
   assert.match(lbp, /deadLetter: buildDeadLetterSink\(owner\)/);
+  // Headless has no IndexedDB, so its sink is a metadata file in the agent dir (headless-dead-letter.ts); without it a headless loss was
+  // only COUNTED. The sink is opt-in by path, and the CLI always passes it (headless-dead-letter.test D6).
   const headless = readFileSync(new URL('../headless/headless-client.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(headless, /deadLetter/, 'headless agents have no IndexedDB; their own tombstone/dead-notice path stays as is');
+  assert.match(headless, /deadLetter: opts\.deadLetterPath \? headlessDeadLetterSink\(opts\.deadLetterPath\) : undefined/);
 });
