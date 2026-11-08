@@ -19,7 +19,8 @@ import { bytesToHex, concatBytes, randomBytes } from '@noble/hashes/utils.js';
 import { canonicalize } from '@/lib/format/canonical';
 import { lpBin, lpStr } from '@/lib/crypto/lp-tlv';
 import { mailboxConfig } from './mailbox-config';
-import { claimOwnerNonce } from './owner-replay-cache';
+import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
+import { OwnerVerifyBusyError, takeOwnerVerifyToken } from './owner-verify-budget';
 
 export const DOMAIN_MAILBOX_ID_V2 = 'svrnty:mailbox-id:v2';
 export const DOMAIN_MAILBOX_OWNER_V2 = 'svrnty:mailbox-owner:v2';
@@ -139,7 +140,7 @@ export function signOwnerRequestV2(args: {
   return { mailboxId, headers: { [OWNER_AUTH_V2_HEADER]: bytesToB64url(new TextEncoder().encode(JSON.stringify(bundle))) } };
 }
 
-// ── SERVER: verify a request is from the owner of THIS v2 mailbox. Before any store access (I-4), never throws. ──
+// ── SERVER: verify a request is from the owner of THIS v2 mailbox. Before any store access (I-4). Throws only OwnerVerifyBusyError. ──
 
 export async function verifyOwnerRequestV2(
   request: Request,
@@ -166,10 +167,14 @@ export async function verifyOwnerRequestV2(
     const msg = ownerSignedMessageV2(op, mailboxId, b.nonce, b.ts, envelopeIds);
     if (!ed25519.verify(sig, msg, pub.edPublicKey)) return false;
     // (4) one-time use: a replay of this exact bundle (same mailbox + nonce, still fresh) stops HERE, after the cheap Ed25519 proof
-    //     and BEFORE the ~22 ms ML-DSA-87 verify, on the same uniform false. Recorded only once Ed25519 proved the key holder sent it.
+    //     and BEFORE the ~22 ms ML-DSA-87 verify, on the same uniform false, and it spends no verify budget.
+    if (isOwnerNonceSeen(mailboxId, b.nonce, now)) return false;
+    // (5) the process-wide budget for the expensive step (throws OwnerVerifyBusyError → the route's uniform 503).
+    takeOwnerVerifyToken(now);
     if (!claimOwnerNonce(mailboxId, b.nonce, b.ts + mailboxConfig().ownerAuthWindowMs, now)) return false;
     return (deps.mlDsaVerify ?? ((s, m, k) => ml_dsa87.verify(s, m, k)))(pq, msg, pub.dsaPublicKey);
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) throw e; // the one thing a verifier throws: "shed", not "refused"
     return false;
   }
 }

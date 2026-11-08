@@ -3,14 +3,16 @@
 // re-sent for the whole window, each copy costing the relay a full signature verify. Every owner bundle carries a random nonce;
 // this remembers (mailbox_id, nonce) until the request's freshness window closes, so a second copy is refused like a non-owner.
 //
-// Only a VERIFIED request is recorded (v2: after Ed25519, before ML-DSA; v1: after the full check), so a stranger cannot fill the
-// cache with nonces of mailboxes they don't own. Bounded: at replayCacheMax live entries a sweep runs; if still full the request
-// fails CLOSED. Evicting a live entry would re-open its replay. Filling the cache needs that many VALID fresh signatures through
-// the per-IP limiter inside one window.
+// Only a request whose signature already checked out is recorded (v2: after Ed25519, before ML-DSA; v1: after the full check), so a
+// stranger cannot fill the cache with nonces of mailboxes they don't own. Bounded: at replayCacheMax live entries a sweep runs; if it
+// is still full, the one-time check is SKIPPED for that request (fail OPEN, counted and logged), never an eviction (that would re-open
+// a recorded replay) and never a refusal (filling it needs only cheap Ed25519 signatures, so failing closed would hand any requester a
+// cheap global outage). Skipping is never worse than before this cache: a replay costs CPU, and polls are read-only.
 //
 // Environment-neutral (plain Map on globalThis): mailbox-auth-v2.ts is also loaded by the browser, which never calls this.
 
 import { mailboxConfig } from './mailbox-config';
+import { logDeposit429 } from './deposit-429-log';
 
 const MAX_NONCE_LEN = 128;
 
@@ -46,8 +48,8 @@ export function isOwnerNonceSeen(mailboxId: string, nonce: string, now: number):
 }
 
 /**
- * Record a verified request's nonce until `expiresAt` (its ts + the freshness window). True = first use, proceed. False = a replay,
- * a malformed nonce, or the cache is full of live entries (fail closed). Synchronous, so check-and-insert is atomic.
+ * Record a verified request's nonce until `expiresAt` (its ts + the freshness window). True = proceed (first use, or the cache is full
+ * and the check is skipped: fail open, logged). False = a replay or a malformed nonce. Synchronous, so check-and-insert is atomic.
  */
 export function claimOwnerNonce(mailboxId: string, nonce: string, expiresAt: number, now: number): boolean {
   if (isOwnerNonceSeen(mailboxId, nonce, now)) return false;
@@ -55,7 +57,10 @@ export function claimOwnerNonce(mailboxId: string, nonce: string, expiresAt: num
   trimOldest(c, now);
   if (c.size >= mailboxConfig().replayCacheMax) {
     sweep(c, now);
-    if (c.size >= mailboxConfig().replayCacheMax) return false;
+    if (c.size >= mailboxConfig().replayCacheMax) {
+      logDeposit429('replay_cache_full', now);
+      return true;
+    }
   }
   c.set(keyOf(mailboxId, nonce), expiresAt);
   return true;

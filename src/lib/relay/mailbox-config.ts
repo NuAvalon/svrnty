@@ -44,8 +44,11 @@ export interface MailboxConfig {
   ownerRateLimitWindowMs: number;
   /** Most distinct IPs the owner-route limiter tracks; past it (after a sweep) new IPs share one overflow bucket. */
   ownerRateLimitIpCap: number;
-  /** Most live (mailbox_id, nonce) entries in the owner replay cache; when full (after a sweep) a new request fails closed. */
+  /** Most live (mailbox_id, nonce) entries in the owner replay cache; when full (after a sweep) the one-time check is skipped and logged. */
   replayCacheMax: number;
+  /** Process-wide budget for the EXPENSIVE owner-auth step (ML-DSA / key parse + verify, ~22 ms each): sustained per second, and burst. */
+  ownerVerifyPerSec: number;
+  ownerVerifyBurst: number;
   /**
    * §5.1 LAUNCH seam: when true (svrnty.is nursery profile), mailbox CREATION is gated behind an
    * explicit owner-claim carrying an invite_token+chain. That claim machinery lands WITH the invite
@@ -67,6 +70,8 @@ export function mailboxConfig(): MailboxConfig {
     ownerRateLimitWindowMs: intEnv('RELAY_OWNER_RATE_LIMIT_WINDOW_MS', 60_000),
     ownerRateLimitIpCap: intEnv('RELAY_OWNER_RATE_LIMIT_IP_CAP', 50_000),
     replayCacheMax: intEnv('RELAY_REPLAY_CACHE_MAX', 100_000),
+    ownerVerifyPerSec: intEnv('RELAY_OWNER_VERIFY_PER_SEC', 10),
+    ownerVerifyBurst: intEnv('RELAY_OWNER_VERIFY_BURST', 20),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
   };
 }

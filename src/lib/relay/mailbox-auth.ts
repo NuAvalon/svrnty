@@ -24,6 +24,7 @@ import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, type Envelop
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
 import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
+import { OwnerVerifyBusyError, takeOwnerVerifyToken } from './owner-verify-budget';
 
 // Domain-separation tags for the two owner-authenticated mailbox ops. A poll signature can never be
 // replayed as an ack (or vice-versa): different domain → different signed bytes (sign-envelope LP).
@@ -293,6 +294,8 @@ async function verifyOwner(
     if (deriveMailboxId(bundle.fingerprint) !== mailboxId) return false;
     // (2b) one-time use: an already-used (mailbox, nonce) is refused before the key parse and signature verify below.
     if (isOwnerNonceSeen(mailboxId, bundle.nonce, now)) return false;
+    // (2c) the process-wide budget for the expensive steps below (throws OwnerVerifyBusyError → the route's uniform 503).
+    takeOwnerVerifyToken(now);
     // (3) fp↔key binding (Canon Invariant-1) — the key can't be swapped under the fingerprint.
     //     §5: pass the PQ pubkeys so a 64-hex canonical id recomputes SHA256(sign‖enc‖kem‖sig) and
     //     matches. fingerprintMatchesKey length-gates them (kem=1568/sig=2592) and falls back to the
@@ -307,7 +310,8 @@ async function verifyOwner(
     // (5) record the nonce only now that the owner is proven. Synchronous check-and-insert: of two identical requests verified
     //     concurrently, exactly one gets here first; the other reads as a replay.
     return claimOwnerNonce(mailboxId, bundle.nonce, bundle.ts + mailboxConfig().ownerAuthWindowMs, now);
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) throw e; // the one thing a verifier throws: "shed", not "refused"
     return false;
   }
 }

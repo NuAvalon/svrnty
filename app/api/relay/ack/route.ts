@@ -10,6 +10,7 @@ import { ackDelete } from '@/lib/relay/mailbox-store';
 import { verifyMailboxAckAuth } from '@/lib/relay/mailbox-auth';
 import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2';
 import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
+import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
 
 function nonOwner() {
   return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
@@ -36,7 +37,8 @@ export async function POST(request: Request) {
 
     const deleted = ackDelete(mailboxId, envelopeIds, now);
     return NextResponse.json({ deleted });
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) return ownerVerifyBusyResponse(); // shed before the expensive verify (uniform 503)
     return nonOwner();
   }
 }

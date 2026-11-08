@@ -10,6 +10,7 @@ import { deriveMailboxId, verifyMailboxClaimAuth } from '@/lib/relay/mailbox-aut
 import { decodeBetaAccessToken, verifyBetaAccessToken, type PinnedIssuer } from '@/lib/relay/beta-access';
 import { isJtiRedeemed, recordClaim } from '@/lib/relay/claim-registry';
 import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
+import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
 
 // Uniform reject — identical for every verify failure (bad token / bad issuer / bad owner-auth /
 // claims-disabled). An attacker can't tell which gate rejected. 200 only on a resolved claim.
@@ -72,7 +73,8 @@ export async function POST(request: Request) {
     const alreadyJti = isJtiRedeemed(mailboxId, token.jti);
     recordClaim(mailboxId, token.jti);
     return NextResponse.json({ status: 'claimed', idempotent: alreadyJti });
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) return ownerVerifyBusyResponse(); // shed before the expensive verify (uniform 503)
     return reject(); // never throw — a verifier refuses uniformly
   }
 }

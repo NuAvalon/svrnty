@@ -13,6 +13,7 @@ import { isMailboxIdV2, verifyOwnerRequestV2 } from '@/lib/relay/mailbox-auth-v2
 import { mailboxConfig } from '@/lib/relay/mailbox-config';
 import { isMailboxClaimed } from '@/lib/relay/claim-registry';
 import { ownerRouteGate } from '@/lib/relay/owner-route-budget';
+import { OwnerVerifyBusyError, ownerVerifyBusyResponse } from '@/lib/relay/owner-verify-budget';
 
 // The single uniform non-owner response — computed WITHOUT touching the store, so its latency and
 // bytes are independent of any mailbox's state. It never contains a stored blob.
@@ -53,7 +54,8 @@ export async function GET(request: Request) {
     // an older client ignores the field.
     const list = pollMailbox(mailboxId, Date.now()).map((e) => ({ ...e, expires_at: new Date(e.expires_at).toISOString() }));
     return NextResponse.json(list);
-  } catch {
+  } catch (e) {
+    if (e instanceof OwnerVerifyBusyError) return ownerVerifyBusyResponse(); // shed before the expensive verify (uniform 503)
     // Even on error, return the uniform non-owner shape — never leak state via an error path.
     return nonOwner();
   }

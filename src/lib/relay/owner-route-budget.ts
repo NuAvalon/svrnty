@@ -11,6 +11,7 @@
 
 import { mailboxConfig } from './mailbox-config';
 import { getClientIP } from './mailbox-rate-limit';
+import { logDeposit429 } from './deposit-429-log';
 
 interface Bucket { count: number; resetAt: number }
 const OVERFLOW = '\u0000overflow';
@@ -28,11 +29,35 @@ function sweep(b: Map<string, Bucket>, now: number): void {
   for (const [k, v] of b) if (now > v.resetAt) b.delete(k);
 }
 
-/** True if this owner-route request may proceed; false if the IP (or the overflow bucket) is over its ceiling for the window. */
+/**
+ * The budget key for an address: an IPv4 address as is; an IPv6 address by its /64 (one host or subscriber usually owns a whole /64,
+ * so per-address keying would give it unlimited budget and let it fill the map); an IPv4-mapped IPv6 address as its IPv4. Anything
+ * that doesn't parse is keyed as given.
+ */
+export function budgetKeyOf(ip: string): string {
+  let s = ip.trim().toLowerCase();
+  if (s.startsWith('[') && s.includes(']')) s = s.slice(1, s.indexOf(']'));
+  if (!s.includes(':')) return s;
+  s = s.split('%')[0]; // drop a zone id
+  const mapped = /^(?:::|(?:0{1,4}:){5})(?:0{1,4}:)?ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+  if (mapped) return mapped[1];
+  const halves = s.split('::');
+  if (halves.length > 2) return s;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const width = (parts: string[]) => parts.reduce((w, p) => w + (p.includes('.') ? 2 : 1), 0);
+  const fill = halves.length === 2 ? 8 - width(head) - width(tail) : 0;
+  if (fill < 0 || (halves.length === 1 && width(head) !== 8)) return s;
+  const first4 = [...head, ...Array<string>(fill).fill('0'), ...tail].slice(0, 4);
+  if (first4.length < 4 || !first4.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return s;
+  return first4.map((g) => parseInt(g, 16).toString(16)).join(':') + '::/64';
+}
+
+/** True if this owner-route request may proceed; false if the address (its /64 for IPv6) or the overflow bucket is over its ceiling. */
 export function checkOwnerRouteBudget(ip: string, now: number): boolean {
   const cfg = mailboxConfig();
   const b = buckets();
-  let key = ip;
+  let key = budgetKeyOf(ip);
   if (!b.has(key) && b.size >= cfg.ownerRateLimitIpCap) {
     sweep(b, now);
     if (b.size >= cfg.ownerRateLimitIpCap) key = OVERFLOW;
@@ -59,5 +84,6 @@ export function resetOwnerRouteBudgets(): void {
  */
 export function ownerRouteGate(request: Request, now: number = Date.now()): Response | null {
   if (checkOwnerRouteBudget(getClientIP(request), now)) return null;
+  logDeposit429('owner_rate_limit', now); // at most one line per reason per 60 s, reason + counts only (no IP, no mailbox)
   return Response.json({ error: 'Rate limit exceeded.' }, { status: 429 });
 }
