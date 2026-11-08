@@ -21,6 +21,7 @@ import { Download, Eye, EyeOff, RefreshCw, ShieldCheck } from 'lucide-react';
 import { solarEmber as E } from '@/components/recovery/solar-ember';
 import { ExportAuthGate } from './ExportAuthGate';
 import { MIN_PASSPHRASE_LENGTH } from '@/lib/crypto/kdf';
+import { PASSPHRASE_LOSS_NOTICE_BACKUP } from '@/lib/identity/passphrase-loss-notice';
 
 export interface VaultExportDialogProps {
   open: boolean;
@@ -163,6 +164,9 @@ export function VaultExportDialog({
               ? 'Store the .svrnty file somewhere safe. Restore needs this encryption password (or your recovery code for password-free recovery on v4).'
               : 'Choose an encryption password (12+ characters). This protects keys, contacts, and trust — remember it for restore. It is not your recovery code.'}
           </DialogDescription>
+          <p data-testid="passphrase-loss-notice-backup" style={{ color: E.dim, fontSize: 12, lineHeight: 1.5, margin: '8px 0 0' }}>
+            {PASSPHRASE_LOSS_NOTICE_BACKUP}
+          </p>
         </DialogHeader>
 
         {error && (

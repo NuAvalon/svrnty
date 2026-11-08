@@ -43,10 +43,10 @@ RUN pip install --no-cache-dir \
       cryptography==50.0.2 liboqs-python==0.16.0.1
 ENV OQS_INSTALL_PATH=/usr/local
 
-# crypto_utils.py (satellite.py imports it) + chat.html (served surface) live in the BOX
-# build ctx (satellite-dev/), synced by svrnty_deploy.sh — NOT in the local infra/satellite
-# tree (local crypto_utils.py is a different 10506B file; chat.html is box-only). Build on box.
-COPY satellite.py mailbox_envelope.py satellite_keys.py crypto_utils.py dashboard.html chat.html ./
+# crypto_utils.py (satellite.py imports it) lives in the BOX build ctx (satellite-dev/), synced by
+# svrnty_deploy.sh — NOT in the local infra/satellite tree (local crypto_utils.py is a different
+# 10506B file). Build on box. The satellite serves no HTML pages, so no .html is copied.
+COPY satellite.py mailbox_envelope.py satellite_keys.py crypto_utils.py ./
 
 # Non-root (hardening pt3 — the relay is internet-facing). The persistent /data volume
 # (SQLite DB + SATELLITE_KEY_PATH keypair, minted 0600 on first start) must be writable by
