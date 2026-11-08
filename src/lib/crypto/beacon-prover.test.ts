@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { deriveDeposit, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, ProverRefused, type DepositKeys } from './beacon-prover';
+import { deriveSignals, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, defaultRandomBytes, ProverRefused, type DepositKeys } from './beacon-prover';
 import * as wire from './beacon-wire.mjs';   // namespace import: the epoch constants are asserted below (Athena adds them to the module)
 const refusedWith = (reason: string) => (e: unknown) => e instanceof ProverRefused && e.reason === reason;
 import { authMessage, parseDeposit, serializeDeposit } from './beacon-wire.mjs';
@@ -27,26 +27,31 @@ const expected = (side: 'A' | 'B') => ({ e: BigInt(V.epoch), H_e: BigInt(V.slotH
 
 // ---- derivation: the known answers ----
 test('derive: side A reproduces the known answer [e, H_e, N_A, K_A]', async () => {
-  assert.deepEqual((await deriveDeposit(keysFor('A'))).signals, expected('A'));
+  assert.deepEqual(await deriveSignals(keysFor('A')), expected('A'));
 });
 test('derive: side B reproduces the known answer [e, H_e, N_B, K_B]', async () => {
-  assert.deepEqual((await deriveDeposit(keysFor('B'))).signals, expected('B'));
+  assert.deepEqual(await deriveSignals(keysFor('B')), expected('B'));
 });
 test('derive: the two sides meet at ONE slot with DISTINCT nullifiers and DISTINCT poll keys', async () => {
-  const a = (await deriveDeposit(keysFor('A'))).signals, b = (await deriveDeposit(keysFor('B'))).signals;
+  const a = await deriveSignals(keysFor('A')), b = await deriveSignals(keysFor('B'));
   assert.equal(a.H_e, b.H_e); assert.notEqual(a.N, b.N); assert.notEqual(a.K, b.K);
 });
-test('derive: the circuit input is all canonical decimal strings and carries the public signals unchanged', async () => {
-  const d = await deriveDeposit(keysFor('A'));
-  for (const [k, v] of Object.entries(d.input)) assert.match(v, /^(0|[1-9][0-9]*)$/, `input.${k}`);
-  assert.equal(d.input.e, String(d.signals.e)); assert.equal(d.input.H_e, String(d.signals.H_e));
-  assert.equal(d.input.N, String(d.signals.N)); assert.equal(d.input.K, String(d.signals.K));
+test('SECRETS: deriveSignals returns exactly {e, H_e, N, K} and the module exports no function that returns the witness (it holds x)', async () => {
+  for (const side of ['A', 'B'] as const) {
+    const r = await deriveSignals(keysFor(side));
+    assert.deepEqual(Object.keys(r).sort(), ['H_e', 'K', 'N', 'e']);
+    const blob = JSON.stringify(r, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)).toLowerCase();
+    for (const s of secretStrings(side)) assert.ok(!blob.includes(s.toLowerCase()), 'a secret value is in the return value');
+  }
+  const mod = (await import('./beacon-prover')) as Record<string, unknown>;
+  assert.equal(mod.deriveDeposit, undefined, 'deriveDeposit (it returned x as a decimal string) must not be exported');
+  assert.equal(mod.deriveWitness, undefined, 'the witness builder must stay internal');
 });
 
 // ---- derivation: what the prover must refuse (these hold with or without the verified-contact rule) ----
 const P_FIELD = BigInt('21888242871839275222246405745257275088548364400416034343698204186575808495617');
 const refuse = (name: string, reason: string, mutate: (k: DepositKeys) => DepositKeys) =>
-  test(`derive REFUSES ${name} [${reason}]`, async () => { await assert.rejects(() => deriveDeposit(mutate(keysFor('A'))), refusedWith(reason)); });
+  test(`derive REFUSES ${name} [${reason}]`, async () => { await assert.rejects(() => deriveSignals(mutate(keysFor('A'))), refusedWith(reason)); });
 refuse('a counterpart key that is the identity (0,1)', 'y-identity', (k) => ({ ...k, counterpartY: [BigInt('0'), BigInt('1')] }));
 refuse('a counterpart key that is off the curve', 'y-off-curve', (k) => ({ ...k, counterpartY: [k.counterpartY[0], k.counterpartY[1] + BigInt('1')] }));
 refuse('a counterpart key of small order (0,-1): no prime-order subgroup', 'y-small-order', (k) => ({ ...k, counterpartY: [BigInt('0'), P_FIELD - BigInt('1')] }));
@@ -165,7 +170,7 @@ test('SECRETS: no refusal message contains x (decimal or hex) or the Ed25519 see
   for (const side of ['A', 'B'] as const) {
     for (const [reason, mut] of cases) {
       let msg = '';
-      await assert.rejects(() => deriveDeposit(mut(keysFor(side))), (e: unknown) => { msg = String((e as Error).message); return refusedWith(reason)(e); });
+      await assert.rejects(() => deriveSignals(mut(keysFor(side))), (e: unknown) => { msg = String((e as Error).message); return refusedWith(reason)(e); });
       for (const s of secretStrings(side)) assert.ok(!msg.includes(s), `message for ${reason} leaks a secret value`);
     }
   }
@@ -190,9 +195,9 @@ test('FRESH K: the random source is a test seam and is used for the seed (same b
 });
 test('FRESH K: the same pair and epoch with two fresh one-time keys give the SAME slot and nullifier but DIFFERENT poll keys', async () => {
   const base = keysFor('A');
-  const d1 = await deriveDeposit({ ...base, oneTimePk: (await newOneTimeKey()).pk });
-  const d2 = await deriveDeposit({ ...base, oneTimePk: (await newOneTimeKey()).pk });
-  assert.equal(d1.signals.H_e, d2.signals.H_e); assert.equal(d1.signals.N, d2.signals.N); assert.notEqual(d1.signals.K, d2.signals.K);
+  const d1 = await deriveSignals({ ...base, oneTimePk: (await newOneTimeKey()).pk });
+  const d2 = await deriveSignals({ ...base, oneTimePk: (await newOneTimeKey()).pk });
+  assert.equal(d1.H_e, d2.H_e); assert.equal(d1.N, d2.N); assert.notEqual(d1.K, d2.K);
 });
 test('GUARD: no Math.random in any beacon-*.ts / beacon-*.mjs source (the re-deposit sampler included)', () => {
   const dir = new URL('./', import.meta.url).pathname;
@@ -217,4 +222,19 @@ test('GUARD: beacon-prover.ts defines no epoch or grace constant of its own and 
   assert.match(src, /from\s*'\.\/beacon-wire\.mjs'/, 'must import from beacon-wire.mjs');
   assert.match(src, /\bwire(?: as any)?\)?\.EPOCH_SECONDS\b|import\s*\{[^}]*\bEPOCH_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'/, 'must take EPOCH_SECONDS from beacon-wire.mjs');
   assert.match(src, /\bwire(?: as any)?\)?\.GRACE_SECONDS\b|import\s*\{[^}]*\bGRACE_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'/, 'must take GRACE_SECONDS from beacon-wire.mjs');
+});
+
+// ---- the CSPRNG is pinned by a spy, not only by reading the code (Flint #5288 item 3) ----
+test('CSPRNG: defaultRandomBytes, newOneTimeKey and the default re-deposit sampler all call crypto.getRandomValues', async () => {
+  const real = globalThis.crypto; const calls: number[] = [];
+  const spy = { getRandomValues: (a: Uint8Array) => { calls.push(a.length); return real.getRandomValues(a); }, subtle: real.subtle };
+  Object.defineProperty(globalThis, 'crypto', { value: spy, configurable: true });
+  try {
+    defaultRandomBytes(16);
+    await newOneTimeKey();
+    scheduleRedeposit({ epochStartMs: 0 });
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', { value: real, configurable: true });
+  }
+  assert.deepEqual(calls, [16, 32, 4], 'each default source must go through crypto.getRandomValues, with these sizes');
 });

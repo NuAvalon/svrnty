@@ -22,8 +22,8 @@ export interface DepositKeys {
 
 export interface Signals { e: bigint; H_e: bigint; N: bigint; K: bigint }
 
-export interface DerivedDeposit {
-  /** The circuit's witness input, every value a canonical decimal string. */
+interface DerivedDeposit {
+  /** The circuit's witness input, every value a canonical decimal string. INTERNAL: it contains x. */
   input: Record<string, string>;
   /** What the proof's publicSignals will be, in the pinned order [e, H_e, N, K]. */
   signals: Signals;
@@ -93,10 +93,16 @@ export function scheduleRedeposit(o: { epochStartMs: number; epochSeconds?: numb
 
 const isId = (bj: any, p: any) => bj.F.toObject(p[0]) === big('0') && bj.F.toObject(p[1]) === big('1');
 
-/** Derive the circuit input and the expected public signals. Refuses, with a reason code and BEFORE any proving file is touched: an out-of-range
- * x or epoch, a one-time key that is not 32 bytes, and a counterpart key that is the identity, off the curve, of small order, not in the
- * prime-order subgroup (a prime-order point plus a torsion point), or equal to our own. */
-export async function deriveDeposit(k: DepositKeys): Promise<DerivedDeposit> {
+/** The public signals [e, H_e, N, K] ONLY. This is the only exported derivation: the witness (which holds the beacon secret x) never leaves this
+ * module, so no caller can log or store it by accident. Same refusals as the witness builder, up front. */
+export async function deriveSignals(k: DepositKeys): Promise<Signals> {
+  return (await deriveWitness(k)).signals;
+}
+
+/** INTERNAL (not exported): derive the circuit input and the expected public signals. Refuses, with a reason code and BEFORE any proving file is
+ * touched: an out-of-range x or epoch, a one-time key that is not 32 bytes, and a counterpart key that is the identity, off the curve, of small
+ * order, not in the prime-order subgroup, or equal to our own. */
+async function deriveWitness(k: DepositKeys): Promise<DerivedDeposit> {
   // pure range checks first: they need no curve library
   if (typeof k.x !== 'bigint' || k.x < big('1') || k.x >= L) throw new ProverRefused('x-range');
   if (typeof k.epoch !== 'bigint' || k.epoch < big('0') || k.epoch >= R) throw new ProverRefused('epoch-range');
@@ -136,7 +142,7 @@ export async function deriveDeposit(k: DepositKeys): Promise<DerivedDeposit> {
 /** Prove and serialize: groth16.fullProve on in-memory wasm + zkey (read ONLY after the inputs were accepted), check the proof's signals equal
  * the derived ones, then beacon-wire.mjs's serializeDeposit. Nothing else is ever placed in the body. */
 export async function buildDeposit(k: DepositKeys, files: { wasm: Uint8Array; zkey: Uint8Array }): Promise<string> {
-  const d = await deriveDeposit(k);                                  // refuses here, before the files are touched
+  const d = await deriveWitness(k);                                  // refuses here, before the files are touched
   const snarkjs: any = await import('snarkjs');
   let proof: unknown, publicSignals: unknown;
   try {
