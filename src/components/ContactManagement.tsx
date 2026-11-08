@@ -1770,8 +1770,8 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                     />
                   ) : null}
                   <CardMenuItem
-                    label="Block"
-                    danger
+                    label={isContactBlocked(focused) ? 'Unblock' : 'Block'}
+                    danger={!isContactBlocked(focused)}
                     onClick={() => {
                       setConfirmKind(isContactBlocked(focused) ? 'unblock' : 'block');
                       closeMenu();
