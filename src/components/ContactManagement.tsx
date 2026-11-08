@@ -74,6 +74,7 @@ import {
 } from '@/components/contacts/ClassicalFieldsEditor';
 import type { TrustEdge } from '@/lib/trust/types';
 import { TrustActionConfirmDialog } from '@/components/trust-actions/TrustActionConfirmDialog';
+import { PASSPHRASE_LOSS_NOTICE_CONTACTS } from '@/lib/identity/passphrase-loss-notice';
 import {
   applyTrustAction,
   isContactBlocked,
@@ -986,6 +987,16 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
               Every imported contact (VCF and exchange). Classical entries you can edit;
               SVRNTY peers are key-bound. Share your own identity from the Identity tab.
             </p>
+            {/* An empty book with no search and not the Blocked view. Up here, not in the empty box below: on a phone the card above that box
+                is ~600px tall, so a notice inside it starts below the fold (e2e/passphrase-loss-notice.spec.ts measures it at scrollY 0). */}
+            {!loading && filteredContacts.length === 0 && !searchQuery && !showBlocked && (
+              <p
+                data-testid="passphrase-loss-notice"
+                style={{ fontFamily: E.fontSans, fontSize: 13, fontWeight: 300, color: E.muted, marginTop: 12, maxWidth: 480, lineHeight: 1.5 }}
+              >
+                {PASSPHRASE_LOSS_NOTICE_CONTACTS}
+              </p>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowImportExchangeDialog(true)} style={emberGhostBtn}>
