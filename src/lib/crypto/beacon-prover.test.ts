@@ -213,6 +213,8 @@ const captureOutput = async (fn: () => Promise<void>): Promise<string[]> => {
   const savedOut = process.stdout.write, savedErr = process.stderr.write;
   methods.forEach((m) => { console[m] = (...a: unknown[]) => { seen.push(a.map(String).join(' ')); }; });
   // string chunks are captured; binary chunks (the node:test runner frames its own events that way) are passed through untouched, or results go missing
+// BOUND: this guard is not total. Only string output is seen; text written as a Buffer/Uint8Array passes through untested. It holds today because circom's
+// witness calculator and snarkjs log through console with strings. A circuit that logs, or a dependency that changes how it prints, needs this revisited.
   process.stdout.write = ((c: unknown, ...rest: unknown[]) => { if (typeof c === 'string') { seen.push(c); return true; } return (savedOut as (...a: unknown[]) => boolean).call(process.stdout, c, ...rest); }) as typeof process.stdout.write;
   process.stderr.write = ((c: unknown, ...rest: unknown[]) => { if (typeof c === 'string') { seen.push(c); return true; } return (savedErr as (...a: unknown[]) => boolean).call(process.stderr, c, ...rest); }) as typeof process.stderr.write;
   try { await fn(); } finally { methods.forEach((m, i) => { console[m] = savedC[i] as never; }); process.stdout.write = savedOut; process.stderr.write = savedErr; }
