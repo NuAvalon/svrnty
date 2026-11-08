@@ -8,7 +8,7 @@
 // The trap: a receiver builds its `known` contact WITHOUT the sender's PQ public key (live-book-poll.ts recordToKnownContact, "omitted by
 // design"), and hybrid.ts refuses a hybrid signature when it has no PQ key. So if the sender starts reading the nested key (T1 flips) while
 // receivers still omit it (T5 stays), EVERY update from that sender is silently dropped (the relay still answers 200). Verifiers first:
-// receivers must map pq_sig_public_key (#775 part 2) BEFORE the sender is changed. When that lands, T1 and T5 flip TOGETHER, on purpose.
+// receivers must map pq_sig_public_key (the receiver-mapping change) BEFORE the sender is changed. When that lands, T1 and T5 flip TOGETHER, on purpose.
 //
 // Run: npx tsx --test src/lib/identity/pq-signing-secret.test.ts
 
@@ -77,7 +77,7 @@ test('T4 CHAIN, real shapes: genesis sender -> classical-signed update -> receiv
   assert.deepEqual(verified.delta, { handles: { signal: 'pin-handle' } }, 'the receiver applies the delta the sender signed');
 });
 
-test('T5 TRAP PIN: a HYBRID-signed update is REFUSED by a receiver built as today (no sender PQ key); flips with #775 part 2, together with T1', async () => {
+test('T5 TRAP PIN: a HYBRID-signed update is REFUSED by a receiver built as today (no sender PQ key); flips with the receiver-mapping change, together with T1', async () => {
   const s = await sender();
   const signed = await buildAndSignContactUpdate(envelopeArgs(s.fp), s.privateKey, PASS, s.pq.signing.secretKey);
   assert.ok('pq_signature' in (signed.signature as object), 'precondition: this signature IS hybrid');

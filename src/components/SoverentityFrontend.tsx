@@ -1764,7 +1764,7 @@ export function SoverentityFrontend({
     try {
       const pq = await loadPQKeys(fp);
       // ⚠ This is undefined for every normal identity TODAY (see pq-signing-secret.ts), so updates go out CLASSICAL and receivers apply them.
-      // Do NOT make it read the nested PQ key until receivers map pq_sig_public_key (#775 part 2; verifiers first), or every update is dropped.
+      // Do NOT make it read the nested PQ key until receivers map pq_sig_public_key (the receiver-mapping change; verifiers first), or every update is dropped.
       pqSigningSecretKey = pqSigningSecretForSend(pq);
     } catch {
       /* classical-only if the PQ half can't be read — never block the send on it */

@@ -7,7 +7,7 @@
 // signed CLASSICAL and every receiver applies them. If it started returning a key, updates would be signed HYBRID, and a receiver built as
 // today (live-book-poll.ts recordToKnownContact omits the PQ key by design) refuses a hybrid signature it cannot check (hybrid.ts: "hybrid sig
 // but no PQ public key"): EVERY update from that sender would be silently dropped while the relay still answers 200 and the sender sees "sent".
-// Rollout rule: verifiers first, signers later (#775 part 2: receiver maps pq_sig_public_key under the conditions Flint set), THEN change this
+// Rollout rule: verifiers first, signers later (the receiver-mapping change: receivers map pq_sig_public_key, with the sender's key bound to its fingerprint at card admission and classical-only records still accepted), THEN change this
 // and flip pq-signing-secret.test.ts T1 and T5 together.
 
 import { base64ToUint8 } from '@/lib/crypto/pq';
