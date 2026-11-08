@@ -200,6 +200,74 @@ test('NEG: a trust toggle on a contact blocked AFTER the caller took its copy re
   assert.equal(allowedRowShouldExist(consents[0]), false);
 });
 
+/** Like toggleViaChokepoint, but returns the outcome instead of throwing, plus every side effect that ran. */
+async function attempt(A: Id, B: Id, nextTrusted: boolean, held: Record<string, unknown>) {
+  const relay = mockRelay();
+  const patches: Array<Record<string, unknown>> = [];
+  const consents: PeerConsent[] = [];
+  let error: unknown = null;
+  try {
+    await applyTrustTransition(
+      { fingerprint: A.fp, publicKeyArmored: A.pub, pqKemPublicKey: A.kem, pqSigPublicKey: A.sig },
+      { contactId: 'c_' + B.fp.slice(0, 8), fingerprint: B.fp, publicKeyArmored: B.pub },
+      nextTrusted,
+      {
+        updateContact: async (_id, patch) => { patches.push(typeof patch === 'function' ? patch(held) : patch); },
+        getContact: async () => held as never,
+        reconcile: async (a) => { consents.push(a.consent as PeerConsent); },
+        fetchImpl: relay.fetchImpl,
+        satelliteBase: '',
+        now: () => FIXED_NOW,
+      },
+    );
+  } catch (e) {
+    error = e;
+  }
+  return { error, patches, consents, trustCalls: relay.trustCalls, boxes: relay.boxes };
+}
+
+const NOTHING_RAN = (r: Awaited<ReturnType<typeof attempt>>) => {
+  assert.equal(r.patches.length, 0, 'no local trust write');
+  assert.equal(r.trustCalls.length, 0, 'no satellite commit or revoke');
+  assert.equal(r.consents.length, 0, 'no reveal-set reconcile');
+  assert.equal([...r.boxes.values()].flat().length, 0, 'nothing deposited anywhere');
+};
+
+test('REFUSED: trusting a contact the STORED record says is blocked (metadata.blocked) writes nothing and tells the owner to unblock first', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const r = await attempt(A, B, true, { trust_level: 'unverified', metadata: { blocked: true } });
+  assert.ok(r.error instanceof Error, 'the transition refuses');
+  assert.match((r.error as Error).message, /unblock/i);
+  NOTHING_RAN(r);
+});
+
+test('REFUSED: the top-level blocked flag is honoured the same way (both spellings of blocked)', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const r = await attempt(A, B, true, { trust_level: 'unverified', blocked: true });
+  assert.ok(r.error instanceof Error);
+  NOTHING_RAN(r);
+});
+
+test('NEG: a contact that is NOT blocked is still trusted: local write, satellite commit, reconcile all run', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const r = await attempt(A, B, true, { trust_level: 'unverified', metadata: { blocked: false } });
+  assert.equal(r.error, null);
+  assert.equal(r.patches.length, 1);
+  assert.equal(r.patches[0].trusted, true);
+  assert.deepEqual(r.trustCalls.map((c) => c.op), ['commit']);
+  assert.equal(r.consents.length, 1);
+});
+
+test('NEG: retracting trust on a blocked contact still works (the safe direction): break written, satellite REVOKE, reconcile', async () => {
+  const [A, B] = [await mint(), await mint()];
+  const r = await attempt(A, B, false, { trust_level: 'trusted', trusted: true, metadata: { blocked: true } });
+  assert.equal(r.error, null);
+  assert.equal(r.patches.length, 1);
+  assert.equal(r.patches[0].trusted, false);
+  assert.deepEqual(r.trustCalls.map((c) => c.op), ['revoke']);
+  assert.equal(r.consents.length, 1);
+});
+
 test('an untrust reconciles from the stored, cleared open_visibility, whatever the caller carried', async () => {
   const [A, B] = [await mint(), await mint()];
   const stored = { trust_level: 'unverified', trusted: false, metadata: { share_settings: { open_visibility: false } } };
