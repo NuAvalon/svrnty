@@ -182,6 +182,28 @@ test('SECRETS: the serialized body contains none of x (decimal/hex) or the one-t
   }
 });
 
+test('SECRETS: a failure INSIDE the prover (corrupt wasm or zkey) surfaces as ProverRefused("prove-failed"): fixed message, no cause, no secret anywhere in the error', { skip: skipWhy }, async () => {
+  const good = files();
+  const flipped = Uint8Array.from(good.wasm); for (let i = 64; i < flipped.length; i += 97) flipped[i] ^= 0xff;
+  const cases: [string, { wasm: Uint8Array; zkey: Uint8Array }][] = [
+    ['garbage wasm', { wasm: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), zkey: good.zkey }],
+    ['truncated wasm', { wasm: good.wasm.slice(0, Math.floor(good.wasm.length / 2)), zkey: good.zkey }],
+    ['bit-flipped wasm', { wasm: flipped, zkey: good.zkey }],
+    ['truncated zkey', { wasm: good.wasm, zkey: good.zkey.slice(0, Math.floor(good.zkey.length / 2)) }],
+  ];
+  for (const side of ['A', 'B'] as const) {
+    for (const [name, bad] of cases) {
+      let err: unknown;
+      await assert.rejects(() => buildDeposit(keysFor(side), bad), (e: unknown) => { err = e; return refusedWith('prove-failed')(e); }, `${name}: raw error escaped`);
+      const e = err as Error;
+      assert.equal(e.message, 'refused: prove-failed', `${name}: message is not the fixed one`);
+      assert.equal((e as { cause?: unknown }).cause, undefined, `${name}: a cause is attached`);
+      const everything = `${e.message}\n${e.stack ?? ''}\n${Object.getOwnPropertyNames(e).map((p) => String((e as unknown as Record<string, unknown>)[p])).join('\n')}`.toLowerCase();
+      for (const s of secretStrings(side)) assert.ok(!everything.includes(s.toLowerCase()), `${name}: error carries a secret value`);
+    }
+  }
+});
+
 // ---- 4. a FRESH one-time key per deposit, from the CSPRNG; never Math.random ----
 test('FRESH K: two default one-time keys differ, and each public key is 32 bytes', async () => {
   const a = await newOneTimeKey(), b = await newOneTimeKey();

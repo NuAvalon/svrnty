@@ -147,6 +147,9 @@ export async function buildDeposit(k: DepositKeys, files: { wasm: Uint8Array; zk
   let proof: unknown, publicSignals: unknown;
   try {
     ({ proof, publicSignals } = await snarkjs.groth16.fullProve(d.input, { type: 'mem', data: files.wasm }, { type: 'mem', data: files.zkey }));
+  } catch {
+    // The raw error can carry witness values (a witness-calculator failure, a circuit log()); the caller logs what it catches. Fixed reason, no cause.
+    throw new ProverRefused('prove-failed');
   } finally {
     // snarkjs keeps a multi-threaded curve (worker threads) in a global; release it so no worker outlives the proof. The next proof rebuilds it.
     const c = (globalThis as any).curve_bn128;
