@@ -214,3 +214,14 @@ def test_end_to_end_real_proofs_through_the_real_verifier_form_one_bond(tmp_path
         assert db.execute("SELECT count(*) FROM beacon_deposits").fetchone()[0] == 2
     ns = sorted((json.load(open(os.path.join(FIX, f"public_{w}.json")))[2] for w in "AB"), key=int)
     assert [n1, n2] == ns and rel == formed
+
+
+def test_python_epoch_constants_equal_the_shared_js_module():
+    """Python can't import the JS module, so it keeps its own copy; this pins the copy to beacon-wire.mjs (the one the
+    prover and verify.mjs import). A drift here = every deposit lands in an epoch the other side never matches."""
+    import subprocess
+    wire = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src", "lib", "crypto", "beacon-wire.mjs")
+    code = ("import(process.argv[1]).then(m => process.stdout.write(JSON.stringify("
+            "{e: m.EPOCH_SECONDS ?? null, g: m.GRACE_SECONDS ?? null})))")
+    out = subprocess.run([NODE, "-e", code, os.path.realpath(wire)], capture_output=True, text=True, timeout=60, check=True)
+    assert json.loads(out.stdout) == {"e": bc.EPOCH_SECONDS, "g": bc.GRACE_SECONDS}
