@@ -28,7 +28,9 @@ export interface DerivedDeposit {
 
 /** Every deliberate refusal throws this, with one of a fixed set of reason codes (the tests assert the REASON, so a stub that throws
  * for any other cause cannot satisfy a refusal test). Reasons: y-identity, y-off-curve, y-small-order, x-range, epoch-range, pk-length,
- * epoch-too-short, rand-range, op, nonce, signals-mismatch. */
+ * epoch-too-short, rand-range, op, nonce, signals-mismatch, plus (Flint #5282) y-not-in-subgroup (a prime-order point + a torsion point: on the
+ * curve, not small-order, but L*Y != identity) and y-self (the counterpart key equals our own). The refusal happens UP FRONT, never inside witness
+ * generation. Messages are fixed strings: they never contain a secret value. */
 export class ProverRefused extends Error {
   constructor(public readonly reason: string) { super(`refused: ${reason}`); this.name = 'ProverRefused'; }
 }
@@ -42,8 +44,17 @@ export async function deriveDeposit(_k: DepositKeys): Promise<DerivedDeposit> { 
 /** Prove and serialize: groth16.fullProve on in-memory wasm + zkey, check the proof's signals equal the derived ones, then serializeDeposit. */
 export async function buildDeposit(_k: DepositKeys, _files: { wasm: Uint8Array; zkey: Uint8Array }): Promise<string> { return todo('buildDeposit'); }
 
-/** The absolute time (ms) to re-deposit inside an epoch: uniform over [start + grace, end - grace], never at a boundary. `rand` is injected. */
-export function scheduleRedeposit(_o: { epochStartMs: number; epochSeconds: number; graceSeconds: number; rand: () => number }): number { return todo('scheduleRedeposit'); }
+/** The absolute time (ms) to re-deposit inside an epoch: uniform over [start + grace, end - grace], never at a boundary. `rand` is injected
+ * (the default source is crypto.getRandomValues, never Math.random). epochSeconds / graceSeconds DEFAULT to the constants in beacon-wire.mjs,
+ * the ONE place they are defined (Flint #5282 item 5); this module must not define its own. */
+export function scheduleRedeposit(_o: { epochStartMs: number; epochSeconds?: number; graceSeconds?: number; rand?: () => number }): number { return todo('scheduleRedeposit'); }
+
+/** Random bytes from the platform CSPRNG (crypto.getRandomValues). The ONLY default randomness source in the beacon modules. */
+export function defaultRandomBytes(_n: number): Uint8Array { return todo('defaultRandomBytes'); }
+
+/** A FRESH one-time Ed25519 key per deposit: a seed from the CSPRNG and its public key (the 32 bytes whose Poseidon split is K).
+ * `random` is a test seam; its default is defaultRandomBytes. The seed is returned to the caller only and never serialized. */
+export async function newOneTimeKey(_random?: (n: number) => Uint8Array): Promise<{ seed: Uint8Array; pk: Uint8Array }> { return todo('newOneTimeKey'); }
 
 /** Sign a poll / withdraw: calls `sign` with exactly authMessage(op, H_e, N, nonce) from beacon-wire.mjs, nothing else. */
 export async function signAuth(_op: 'poll' | 'withdraw', _H_e: bigint, _N: bigint, _nonce: Uint8Array, _sign: (msg: Uint8Array) => Promise<Uint8Array>): Promise<Uint8Array> { return todo('signAuth'); }

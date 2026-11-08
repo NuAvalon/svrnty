@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { deriveDeposit, buildDeposit, scheduleRedeposit, signAuth, ProverRefused, type DepositKeys } from './beacon-prover';
+import { deriveDeposit, buildDeposit, scheduleRedeposit, signAuth, newOneTimeKey, ProverRefused, type DepositKeys } from './beacon-prover';
+import * as wire from './beacon-wire.mjs';   // namespace import: the epoch constants are asserted below (Athena adds them to the module)
 const refusedWith = (reason: string) => (e: unknown) => e instanceof ProverRefused && e.reason === reason;
 import { authMessage, parseDeposit, serializeDeposit } from './beacon-wire.mjs';
 
@@ -127,4 +128,90 @@ test('GUARD: no static import of snarkjs or circomlibjs anywhere in src/ (only d
   };
   walk(new URL('../../', import.meta.url).pathname);
   assert.deepEqual(bad, [], 'static import found');
+});
+
+// =====================================================================================================================
+// Added after Flint's review of the first commit (task:588 #5282), items 1-5.
+// =====================================================================================================================
+
+// ---- 1. a MIXED-ORDER counterpart key and the other torsion points (up-front refusal, not a crash inside witness generation) ----
+refuse('a MIXED-ORDER counterpart key (prime-order point + an order-8 torsion point): on the curve, not small-order', 'y-not-in-subgroup', (k) => ({ ...k, counterpartY: pt(V.mixedOrderY) }));
+refuse('a counterpart key of order exactly 8 (a pure torsion point)', 'y-small-order', (k) => ({ ...k, counterpartY: pt(V.order8Y) }));
+test('the refusal for a mixed-order key happens BEFORE any proving files are touched', async () => {
+  let touched = 0;
+  const trap = { get wasm(): Uint8Array { touched++; return new Uint8Array(0); }, get zkey(): Uint8Array { touched++; return new Uint8Array(0); } };
+  await assert.rejects(() => buildDeposit({ ...keysFor('A'), counterpartY: pt(V.mixedOrderY) }, trap), refusedWith('y-not-in-subgroup'));
+  assert.equal(touched, 0, 'the prover read the wasm/zkey before refusing');
+});
+
+// ---- 2. self-pair ----
+refuse('a counterpart key equal to our OWN beacon key (self-pair)', 'y-self', (k) => ({ ...k, counterpartY: pt(V.A.P) }));
+
+// ---- 3. secrets never leave: not in the serialized body, not in any refusal message ----
+const secretStrings = (side: 'A' | 'B') => {
+  const x = scalar(V[side].xLabel), seed = sha(V[side].edSeedLabel);
+  const xHex = x.toString(16);
+  return [x.toString(), xHex, xHex.padStart(64, '0'), seed.toString('hex')];
+};
+test('SECRETS: no refusal message contains x (decimal or hex) or the Ed25519 seed, for either side and every refusal', async () => {
+  const cases: [string, (k: DepositKeys) => DepositKeys][] = [
+    ['y-identity', (k) => ({ ...k, counterpartY: [BigInt('0'), BigInt('1')] })],
+    ['y-off-curve', (k) => ({ ...k, counterpartY: [k.counterpartY[0], k.counterpartY[1] + BigInt('1')] })],
+    ['y-not-in-subgroup', (k) => ({ ...k, counterpartY: pt(V.mixedOrderY) })],
+    ['y-small-order', (k) => ({ ...k, counterpartY: pt(V.order8Y) })],
+    ['epoch-range', (k) => ({ ...k, epoch: BigInt('-1') })],
+    ['pk-length', (k) => ({ ...k, oneTimePk: new Uint8Array(3) })],
+  ];
+  for (const side of ['A', 'B'] as const) {
+    for (const [reason, mut] of cases) {
+      let msg = '';
+      await assert.rejects(() => deriveDeposit(mut(keysFor(side))), (e: unknown) => { msg = String((e as Error).message); return refusedWith(reason)(e); });
+      for (const s of secretStrings(side)) assert.ok(!msg.includes(s), `message for ${reason} leaks a secret value`);
+    }
+  }
+});
+test('SECRETS: the serialized body contains none of x (decimal/hex) or the one-time seed, for A and B', { skip: skipWhy }, async () => {
+  for (const side of ['A', 'B'] as const) {
+    const body = await buildDeposit(keysFor(side), files());
+    for (const s of secretStrings(side)) assert.ok(!body.toLowerCase().includes(s.toLowerCase()), `body leaks a secret value (${s.slice(0, 6)}...)`);
+  }
+});
+
+// ---- 4. a FRESH one-time key per deposit, from the CSPRNG; never Math.random ----
+test('FRESH K: two default one-time keys differ, and each public key is 32 bytes', async () => {
+  const a = await newOneTimeKey(), b = await newOneTimeKey();
+  assert.equal(a.pk.length, 32); assert.equal(a.seed.length, 32);
+  assert.notDeepEqual(a.pk, b.pk); assert.notDeepEqual(a.seed, b.seed);
+});
+test('FRESH K: the random source is a test seam and is used for the seed (same bytes in, same key out)', async () => {
+  const fixed = (n: number) => new Uint8Array(n).fill(9);
+  const a = await newOneTimeKey(fixed), b = await newOneTimeKey(fixed);
+  assert.deepEqual(a.seed, new Uint8Array(32).fill(9)); assert.deepEqual(a.pk, b.pk);
+});
+test('FRESH K: the same pair and epoch with two fresh one-time keys give the SAME slot and nullifier but DIFFERENT poll keys', async () => {
+  const base = keysFor('A');
+  const d1 = await deriveDeposit({ ...base, oneTimePk: (await newOneTimeKey()).pk });
+  const d2 = await deriveDeposit({ ...base, oneTimePk: (await newOneTimeKey()).pk });
+  assert.equal(d1.signals.H_e, d2.signals.H_e); assert.equal(d1.signals.N, d2.signals.N); assert.notEqual(d1.signals.K, d2.signals.K);
+});
+test('GUARD: no Math.random in any beacon-*.ts / beacon-*.mjs source (the re-deposit sampler included)', () => {
+  const dir = new URL('./', import.meta.url).pathname;
+  const bad = readdirSync(dir).filter((f) => /^beacon-.*\.(ts|mjs)$/.test(f) && !/\.test\./.test(f))
+    .filter((f) => /Math\.random/.test(readFileSync(join(dir, f), 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '')));
+  assert.deepEqual(bad, []);
+});
+
+// ---- 5. ONE epoch constant: the prover imports it, it does not define its own ----
+test('EPOCH: beacon-wire.mjs exports EPOCH_SECONDS = 604800 and GRACE_SECONDS = 600 (the one definition)', () => {
+  assert.equal((wire as Record<string, unknown>).EPOCH_SECONDS, 604800);
+  assert.equal((wire as Record<string, unknown>).GRACE_SECONDS, 600);
+});
+test('EPOCH: scheduleRedeposit with no epoch/grace given uses the module constants (the window is [start+600 s, start+604800-600 s])', () => {
+  const start = 1_700_000_000_000; const lo = start + 600_000, hi = start + (604800 - 600) * 1000;
+  for (const r of [0, 0.5, 0.999999]) { const t = scheduleRedeposit({ epochStartMs: start, rand: () => r }); assert.ok(t >= lo && t <= hi, `t=${t}`); }
+});
+test('GUARD: beacon-prover.ts defines no epoch or grace constant of its own and imports them from beacon-wire.mjs', () => {
+  const src = readFileSync(new URL('./beacon-prover.ts', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(src, /\b604800\b|\b604_800\b|\bEPOCH_SECONDS\s*=|\bGRACE_SECONDS\s*=|=\s*600\b/, 'a literal epoch/grace constant');
+  assert.match(src, /import\s*\{[^}]*\bEPOCH_SECONDS\b[^}]*\bGRACE_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'|import\s*\{[^}]*\bGRACE_SECONDS\b[^}]*\bEPOCH_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'/, 'must IMPORT both constants from beacon-wire.mjs');
 });
