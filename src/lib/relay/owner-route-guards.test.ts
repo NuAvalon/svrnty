@@ -299,6 +299,49 @@ test('B9 a v1 replay stops BEFORE the key parse and signature verify (the seen-c
   assert.ok(seen > 0 && seen < body.indexOf('fingerprintMatchesKey(') && seen < body.indexOf('verifyWithEnvelope('));
 });
 
+test('B10 only a request whose signature checked out is recorded: a wrong signature leaves no nonce behind, and the owner can still use it', async () => {
+  // Mailbox id and fingerprint are public. If a bad signature were recorded, a stranger could fill the cache for free, which switches replay protection off.
+  assert.ok(replayMod, 'owner-replay-cache module exists');
+  const size = replayMod!.ownerReplayCacheSize as (now: number) => number;
+  const { queue } = await routes();
+  const mbx = deriveMailboxId(OWNER.fp);
+  depositEnvelope(mbx, 'V1-BLOB', Date.now());
+  const good = await signMailboxPollRequest({ mailboxId: mbx, now: Date.now(), ...v1Args(OWNER) });
+  const other = await signMailboxPollRequest({ mailboxId: mbx, now: Date.now(), ...v1Args(OWNER) });
+  const decode = (h: Record<string, string>) => JSON.parse(Buffer.from(h[OWNER_AUTH_HEADER], 'base64url').toString('utf8'));
+  const g = decode(good);
+  const o = decode(other);
+  assert.notEqual(g.nonce, o.nonce, 'two signings, two nonces');
+  // Right timestamp, fingerprint and key; a real signature, but over a different nonce, so it does not cover this request.
+  const wrong = { [OWNER_AUTH_HEADER]: Buffer.from(JSON.stringify({ ...g, signature: o.signature, pq_signature: o.pq_signature }), 'utf8').toString('base64url') };
+  const before = size(Date.now());
+  const refused = await snap(await queue(queueReq(mbx, '192.0.2.40', wrong)));
+  assert.deepEqual(refused, await snap(await queue(queueReq(mbx, '192.0.2.41'))), 'the same 401 as a non-owner');
+  assert.equal(size(Date.now()), before, 'a refused signature records no nonce');
+  assert.equal((await queue(queueReq(mbx, '192.0.2.42', good))).status, 200, 'the real signature over that same nonce still works');
+});
+
+test('B11 the full-cache sweep runs at most once a second, and the next allowed sweep reclaims expired entries', () => {
+  assert.ok(replayMod, 'owner-replay-cache module exists');
+  process.env.RELAY_REPLAY_CACHE_MAX = '6';
+  const claim = replayMod!.claimOwnerNonce as (m: string, n: string, expiresAt: number, now: number) => boolean;
+  const T = 5_000_000;
+  const far = T + 60_000;
+  const n = (c: string) => c.repeat(32);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    // The oldest four outlive the test, so the small per-call trim cannot free anything; only a full sweep can.
+    for (const c of 'abcd') assert.equal(claim('mbx', n(c), far, T), true);
+    for (const c of 'ef') assert.equal(claim('mbx', n(c), T + 100, T), true);
+    assert.equal(claim('mbx', n('g'), far, T + 1), true, 'full: the first sweep frees nothing, so the check is skipped');
+    assert.equal(claim('mbx', n('h'), far, T + 200), true, 'e and f have expired, but a sweep ran under a second ago');
+    assert.equal(claim('mbx', n('h'), far, T + 201), true, 'not recorded: no sweep ran, so the cache is still full');
+    assert.equal(claim('mbx', n('h'), far, T + 1_002), true, 'over a second later a sweep frees e and f, and h is recorded');
+    assert.equal(claim('mbx', n('h'), far, T + 1_003), false, 'recorded: its replay is refused');
+  } finally { console.warn = warn; }
+});
+
 // ---------------- v2 owner requests: refused until clients move to v2 ----------------
 
 test('V1 by default a validly signed v2 poll and ack get the SAME bytes as a non-owner', async () => {
