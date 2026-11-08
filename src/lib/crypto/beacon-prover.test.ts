@@ -204,6 +204,31 @@ test('SECRETS: a failure INSIDE the prover (corrupt wasm or zkey) surfaces as Pr
   }
 });
 
+// A circom log() is printed by the witness calculator straight to the console during a SUCCESSFUL proof, so no catch can stop it; only the circuit can.
+// This pins the real proof path: nothing is written to the console or stdout/stderr while a deposit is built (a circuit that logs a signal turns it red).
+const captureOutput = async (fn: () => Promise<void>): Promise<string[]> => {
+  const seen: string[] = [];
+  const methods = ['log', 'info', 'warn', 'error', 'debug'] as const;
+  const savedC = methods.map((m) => console[m]);
+  const savedOut = process.stdout.write, savedErr = process.stderr.write;
+  methods.forEach((m) => { console[m] = (...a: unknown[]) => { seen.push(a.map(String).join(' ')); }; });
+  // string chunks are captured; binary chunks (the node:test runner frames its own events that way) are passed through untouched, or results go missing
+  process.stdout.write = ((c: unknown, ...rest: unknown[]) => { if (typeof c === 'string') { seen.push(c); return true; } return (savedOut as (...a: unknown[]) => boolean).call(process.stdout, c, ...rest); }) as typeof process.stdout.write;
+  process.stderr.write = ((c: unknown, ...rest: unknown[]) => { if (typeof c === 'string') { seen.push(c); return true; } return (savedErr as (...a: unknown[]) => boolean).call(process.stderr, c, ...rest); }) as typeof process.stderr.write;
+  try { await fn(); } finally { methods.forEach((m, i) => { console[m] = savedC[i] as never; }); process.stdout.write = savedOut; process.stderr.write = savedErr; }
+  return seen;
+};
+test('CONTROL: the output capture sees console.log and stdout writes (so the next test is not vacuous)', async () => {
+  const seen = await captureOutput(async () => { console.log('c1'); process.stdout.write('c2'); });
+  assert.deepEqual(seen, ['c1', 'c2']);
+});
+test('SECRETS: a successful buildDeposit writes NOTHING to the console or stdout/stderr (a circuit log() would print signals there)', { skip: skipWhy }, async () => {
+  for (const side of ['A', 'B'] as const) {
+    const seen = await captureOutput(async () => { await buildDeposit(keysFor(side), files()); });
+    assert.deepEqual(seen, [], `side ${side}: the proof path printed output`);
+  }
+});
+
 // ---- 4. a FRESH one-time key per deposit, from the CSPRNG; never Math.random ----
 test('FRESH K: two default one-time keys differ, and each public key is 32 bytes', async () => {
   const a = await newOneTimeKey(), b = await newOneTimeKey();
