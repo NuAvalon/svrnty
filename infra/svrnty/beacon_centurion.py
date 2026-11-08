@@ -32,7 +32,7 @@ from contextlib import closing
 from pathlib import Path
 
 FLAG_ENV = "BEACON_CENTURION"
-EPOCH_SECONDS = 604800          # must equal verify.mjs EPOCH_SECONDS (weekly; one named constant)
+EPOCH_SECONDS = 604800          # copy of beacon-wire.mjs's (the one definition); pinned equal by a test
 GRACE_SECONDS = 600
 MAX_BODY_BYTES = 16 * 1024
 VERIFY_JS = Path(__file__).resolve().parent / "beacon-verifier" / "verify.mjs"

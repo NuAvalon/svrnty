@@ -21,6 +21,10 @@ export const MAX_DIGITS = 77;
 /** Raw deposit body cap in UTF-8 BYTES (TextEncoder, so browser and node agree), checked before JSON.parse. A canonical
  * deposit is about 1.3 KB. The satellite also caps the raw request bytes before it spawns the verifier. */
 export const MAX_DEPOSIT_BYTES = 16 * 1024;
+/** THE epoch length (weekly) and the grace window at each boundary, in seconds. The ONE definition: the prover and
+ * verify.mjs import these; beacon_centurion.py keeps a copy that a test pins to these values. */
+export const EPOCH_SECONDS = 604800;
+export const GRACE_SECONDS = 600;
 /** The circuit's public signal order (compiled .sym, witness indices 1..4). */
 export const SIGNAL_ORDER = Object.freeze(['e', 'H_e', 'N', 'K']);
 

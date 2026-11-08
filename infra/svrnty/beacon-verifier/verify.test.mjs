@@ -166,3 +166,13 @@ test('launched through a SYMLINK, the verifier still runs main() (never exit 0 w
   assert.equal(r.status, 1);
   assert.deepEqual(JSON.parse(r.stdout.toString()), { ok: false, reason: 'usage' });
 });
+
+test('ONE epoch constant: verify.mjs re-exports beacon-wire.mjs\'s values and defines none of its own', async () => {
+  const wire = await import('../../../src/lib/crypto/beacon-wire.mjs');
+  assert.equal(wire.EPOCH_SECONDS, 604800);
+  assert.equal(wire.GRACE_SECONDS, 600);
+  assert.equal(EPOCH_SECONDS, wire.EPOCH_SECONDS);
+  assert.equal(GRACE_SECONDS, wire.GRACE_SECONDS);
+  const src = readFileSync(new URL('./verify.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(src, /\b(const|let|var)\s+(EPOCH|GRACE)_SECONDS\s*=/);
+});

@@ -15,10 +15,11 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { buildBn128 } from 'ffjavascript';
 import * as snarkjs from 'snarkjs';
-import { parseDeposit, serializeSignals, serializeProof, R, WireError } from '../../../src/lib/crypto/beacon-wire.mjs';
+import {
+  parseDeposit, serializeSignals, serializeProof, R, WireError, EPOCH_SECONDS, GRACE_SECONDS,
+} from '../../../src/lib/crypto/beacon-wire.mjs';
 
-export const EPOCH_SECONDS = 604800;
-export const GRACE_SECONDS = 600;
+export { EPOCH_SECONDS, GRACE_SECONDS };   // the shared module's values, re-exported (never redefined here)
 const MAX_STDIN = 16 * 1024 + 1;
 
 class Refused extends Error {
