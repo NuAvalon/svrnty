@@ -213,5 +213,8 @@ test('EPOCH: scheduleRedeposit with no epoch/grace given uses the module constan
 test('GUARD: beacon-prover.ts defines no epoch or grace constant of its own and imports them from beacon-wire.mjs', () => {
   const src = readFileSync(new URL('./beacon-prover.ts', import.meta.url), 'utf8').replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
   assert.doesNotMatch(src, /\b604800\b|\b604_800\b|\bEPOCH_SECONDS\s*=|\bGRACE_SECONDS\s*=|=\s*600\b/, 'a literal epoch/grace constant');
-  assert.match(src, /import\s*\{[^}]*\bEPOCH_SECONDS\b[^}]*\bGRACE_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'|import\s*\{[^}]*\bGRACE_SECONDS\b[^}]*\bEPOCH_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'/, 'must IMPORT both constants from beacon-wire.mjs');
+  // the constants may be reached by a named import or through the wire module's namespace (the namespace form still LOADS before the module exports them)
+  assert.match(src, /from\s*'\.\/beacon-wire\.mjs'/, 'must import from beacon-wire.mjs');
+  assert.match(src, /\bwire(?: as any)?\)?\.EPOCH_SECONDS\b|import\s*\{[^}]*\bEPOCH_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'/, 'must take EPOCH_SECONDS from beacon-wire.mjs');
+  assert.match(src, /\bwire(?: as any)?\)?\.GRACE_SECONDS\b|import\s*\{[^}]*\bGRACE_SECONDS\b[^}]*\}\s*from\s*'\.\/beacon-wire\.mjs'/, 'must take GRACE_SECONDS from beacon-wire.mjs');
 });
