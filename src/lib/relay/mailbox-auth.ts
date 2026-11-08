@@ -25,6 +25,7 @@ import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/
 import { mailboxConfig } from './mailbox-config';
 import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
 import { OwnerVerifyBusyError, takeOwnerVerifyToken } from './owner-verify-budget';
+import { ownerClientKey } from './owner-route-budget';
 
 // Domain-separation tags for the two owner-authenticated mailbox ops. A poll signature can never be
 // replayed as an ack (or vice-versa): different domain → different signed bytes (sign-envelope LP).
@@ -253,7 +254,7 @@ export async function verifyMailboxPollAuth(request: Request, mailboxId: string,
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
-  return verifyOwner(bundle, DOMAIN_MAILBOX_POLL, input, mailboxId, now);
+  return verifyOwner(bundle, DOMAIN_MAILBOX_POLL, input, mailboxId, now, ownerClientKey(request));
 }
 
 export async function verifyMailboxAckAuth(
@@ -265,7 +266,7 @@ export async function verifyMailboxAckAuth(
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = ackSigningInput({ mailbox_id: mailboxId, envelope_ids: envelopeIds, nonce: bundle.nonce, ts: bundle.ts });
-  return verifyOwner(bundle, DOMAIN_MAILBOX_ACK, input, mailboxId, now);
+  return verifyOwner(bundle, DOMAIN_MAILBOX_ACK, input, mailboxId, now, ownerClientKey(request));
 }
 
 /**
@@ -277,7 +278,7 @@ export async function verifyMailboxClaimAuth(request: Request, mailboxId: string
   const bundle = decodeBundle(request.headers.get(OWNER_AUTH_HEADER));
   if (!bundle) return false;
   const input = pollSigningInput({ mailbox_id: mailboxId, nonce: bundle.nonce, ts: bundle.ts });
-  return verifyOwner(bundle, DOMAIN_MAILBOX_CLAIM, input, mailboxId, now);
+  return verifyOwner(bundle, DOMAIN_MAILBOX_CLAIM, input, mailboxId, now, ownerClientKey(request));
 }
 
 async function verifyOwner(
@@ -286,6 +287,7 @@ async function verifyOwner(
   signingInput: string,
   mailboxId: string,
   now: number,
+  clientKey: string,
 ): Promise<boolean> {
   try {
     // (1) freshness — bound replay of a captured request to the configured window.
@@ -295,7 +297,7 @@ async function verifyOwner(
     // (2b) one-time use: an already-used (mailbox, nonce) is refused before the key parse and signature verify below.
     if (isOwnerNonceSeen(mailboxId, bundle.nonce, now)) return false;
     // (2c) the process-wide budget for the expensive steps below (throws OwnerVerifyBusyError → the route's uniform 503).
-    takeOwnerVerifyToken(now);
+    takeOwnerVerifyToken(now, clientKey);
     // (3) fp↔key binding (Canon Invariant-1) — the key can't be swapped under the fingerprint.
     //     §5: pass the PQ pubkeys so a 64-hex canonical id recomputes SHA256(sign‖enc‖kem‖sig) and
     //     matches. fingerprintMatchesKey length-gates them (kem=1568/sig=2592) and falls back to the

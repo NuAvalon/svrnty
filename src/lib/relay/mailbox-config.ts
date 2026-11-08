@@ -47,12 +47,16 @@ export interface MailboxConfig {
   /** Most live (mailbox_id, nonce) entries in the owner replay cache; when full (after a sweep) the one-time check is skipped and logged. */
   replayCacheMax: number;
   /**
-   * Process-wide LAST-RESORT budget for the expensive owner-auth step, sized from capacity, not from a guess at legit load: every
-   * owner verify spends it, legit ones included, so it must sit above launch-scale polling (an active tab ≈ 0.67 polls/s). Default
-   * 120/s ≈ 4 pool workers × ~40 verifies/s, minus headroom. The ML-DSA pool (mldsa-verify-pool.server.ts) is the real isolation.
+   * Process-wide LAST-RESORT budget for the expensive owner-auth step, sized from measured capacity, not from a guess at legit load:
+   * every owner verify spends it, legit ones included, so it must sit above launch-scale polling (an active tab ≈ 0.67 polls/s). The
+   * limit is main-thread CPU (owner-verify-budget.ts has the measurements): default 120/s × ~2.4 ms ≈ 29% of a core. Burst 90 keeps
+   * a worst-case burst near 200 ms of main-thread work.
    */
   ownerVerifyPerSec: number;
   ownerVerifyBurst: number;
+  /** One address's fair share of that budget (requests within it may use the reserve): 1/s covers an active tab, burst 4 its bursts. */
+  ownerVerifyFairPerSec: number;
+  ownerVerifyFairBurst: number;
   /**
    * §5.1 LAUNCH seam: when true (svrnty.is nursery profile), mailbox CREATION is gated behind an
    * explicit owner-claim carrying an invite_token+chain. That claim machinery lands WITH the invite
@@ -75,7 +79,9 @@ export function mailboxConfig(): MailboxConfig {
     ownerRateLimitIpCap: intEnv('RELAY_OWNER_RATE_LIMIT_IP_CAP', 50_000),
     replayCacheMax: intEnv('RELAY_REPLAY_CACHE_MAX', 100_000),
     ownerVerifyPerSec: intEnv('RELAY_OWNER_VERIFY_PER_SEC', 120),
-    ownerVerifyBurst: intEnv('RELAY_OWNER_VERIFY_BURST', 240),
+    ownerVerifyBurst: intEnv('RELAY_OWNER_VERIFY_BURST', 90),
+    ownerVerifyFairPerSec: intEnv('RELAY_OWNER_VERIFY_FAIR_PER_SEC', 1),
+    ownerVerifyFairBurst: intEnv('RELAY_OWNER_VERIFY_FAIR_BURST', 4),
     inviteRequired: boolEnv('INVITE_REQUIRED', false),
   };
 }

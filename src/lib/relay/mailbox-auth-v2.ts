@@ -21,6 +21,7 @@ import { lpBin, lpStr } from '@/lib/crypto/lp-tlv';
 import { mailboxConfig } from './mailbox-config';
 import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
 import { OwnerVerifyBusyError, takeOwnerVerifyToken } from './owner-verify-budget';
+import { ownerClientKey } from './owner-route-budget';
 
 export const DOMAIN_MAILBOX_ID_V2 = 'svrnty:mailbox-id:v2';
 export const DOMAIN_MAILBOX_OWNER_V2 = 'svrnty:mailbox-owner:v2';
@@ -160,17 +161,18 @@ export async function verifyOwnerRequestV2(
     const pub = { edPublicKey: b64urlToBytes(b.ed_pub), dsaPublicKey: b64urlToBytes(b.dsa_pub) };
     if (pub.edPublicKey.length !== ED_PUB_LEN || pub.dsaPublicKey.length !== DSA_PUB_LEN) return false;
     if (deriveMailboxIdV2(pub) !== mailboxId) return false;
-    // (3) possession of BOTH halves over exactly this request, under the op.
+    // (3) shapes, then one-time use: a replay of this exact bundle (same mailbox + nonce, still fresh) stops HERE, on the same uniform
+    //     false, before any signature check, and spends no verify budget. A read only: nothing is recorded until the owner is proven.
     const sig = b64urlToBytes(b.sig);
     const pq = b64urlToBytes(b.pq_sig);
     if (sig.length !== ED_SIG_LEN || pq.length !== DSA_SIG_LEN) return false;
+    if (isOwnerNonceSeen(mailboxId, b.nonce, now)) return false;
+    // (4) the process-wide budget for BOTH signature checks (throws OwnerVerifyBusyError → the route's uniform 503). Before Ed25519:
+    //     that check is main-thread CPU too, and a wrong signature costs it as fully as a right one.
+    takeOwnerVerifyToken(now, ownerClientKey(request));
+    // (5) possession of BOTH halves over exactly this request, under the op. The nonce is recorded once the Ed25519 half is proven.
     const msg = ownerSignedMessageV2(op, mailboxId, b.nonce, b.ts, envelopeIds);
     if (!ed25519.verify(sig, msg, pub.edPublicKey)) return false;
-    // (4) one-time use: a replay of this exact bundle (same mailbox + nonce, still fresh) stops HERE, after the cheap Ed25519 proof
-    //     and BEFORE the ~22 ms ML-DSA-87 verify, on the same uniform false, and it spends no verify budget.
-    if (isOwnerNonceSeen(mailboxId, b.nonce, now)) return false;
-    // (5) the process-wide budget for the expensive step (throws OwnerVerifyBusyError → the route's uniform 503).
-    takeOwnerVerifyToken(now);
     if (!claimOwnerNonce(mailboxId, b.nonce, b.ts + mailboxConfig().ownerAuthWindowMs, now)) return false;
     // The server routes inject the off-event-loop pool (mldsa-verify-pool.server.ts); without it (tests, other callers) it runs inline.
     return (await (deps.mlDsaVerify ?? ((s, m, k) => ml_dsa87.verify(s, m, k)))(pq, msg, pub.dsaPublicKey)) === true;

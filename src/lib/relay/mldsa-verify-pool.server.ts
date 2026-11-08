@@ -1,5 +1,5 @@
 // src/lib/relay/mldsa-verify-pool.server.ts — SERVER ONLY (imported by the relay route handlers, never by client code).
-// ML-DSA-87 verification (~20 ms of CPU) moved OFF the event loop that also serves the website. The owner routes inject
+// ML-DSA-87 verification (~4 ms of CPU, warm) moved OFF the event loop that also serves the website. The owner routes inject
 // `verifyMlDsaPooled` into verifyOwnerRequestV2 (its `deps.mlDsaVerify`), so the browser bundle never sees worker_threads.
 //
 // - A small pool of worker threads (RELAY_MLDSA_WORKERS, default min(4, cores - 1)), each importing @noble/post-quantum.

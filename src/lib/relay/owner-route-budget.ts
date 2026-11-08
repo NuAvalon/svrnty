@@ -1,6 +1,6 @@
 // src/lib/relay/owner-route-budget.ts
 // Per-IP limiter for the OWNER routes (queue / ack / claim). It is the FIRST thing those routes do: before the URL, the body or
-// any auth header is parsed, so a refused request costs a Map lookup and never reaches a verifier (the ~22 ms ML-DSA-87 step).
+// any auth header is parsed, so a refused request costs a Map lookup and never reaches a verifier (owner-verify-budget.ts has the costs).
 // One budget per IP across all three routes. Its own budget, not the deposit one (mailbox-config.ts: ownerRateLimitMax).
 //
 // The refusal is about the REQUESTER, never about a mailbox: it is decided before the mailbox id is read, so it cannot depend on
@@ -15,9 +15,11 @@ import { logDeposit429 } from './deposit-429-log';
 
 interface Bucket { count: number; resetAt: number }
 const OVERFLOW = '\u0000overflow';
+const SWEEP_EVERY_MS = 1_000; // at most one O(n) sweep per second, however many new addresses arrive while the map is full
 
 declare global {
   var __ownerRouteRateLimits: Map<string, Bucket> | undefined;
+  var __ownerRouteSweptAt: number | undefined;
 }
 
 function buckets(): Map<string, Bucket> {
@@ -26,6 +28,8 @@ function buckets(): Map<string, Bucket> {
 }
 
 function sweep(b: Map<string, Bucket>, now: number): void {
+  if (now - (globalThis.__ownerRouteSweptAt ?? 0) < SWEEP_EVERY_MS) return;
+  globalThis.__ownerRouteSweptAt = now;
   for (const [k, v] of b) if (now > v.resetAt) b.delete(k);
 }
 
@@ -75,6 +79,12 @@ export function checkOwnerRouteBudget(ip: string, now: number): boolean {
 /** Test seam: forget every bucket. */
 export function resetOwnerRouteBudgets(): void {
   globalThis.__ownerRouteRateLimits = new Map();
+  globalThis.__ownerRouteSweptAt = undefined;
+}
+
+/** The key a request is budgeted under: its client address, by /64 for IPv6. */
+export function ownerClientKey(request: Request): string {
+  return budgetKeyOf(getClientIP(request));
 }
 
 /**
