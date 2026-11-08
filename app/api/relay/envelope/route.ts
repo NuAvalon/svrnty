@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
     // Per-IP rate limit (about the depositor, not R's mailbox — uniform w.r.t. R).
     if (!checkMailboxRateLimit(getClientIP(request), now)) {
-      logDeposit429('rate_limit');
+      logDeposit429('rate_limit', now);
       return NextResponse.json({ error: 'Rate limit exceeded.' }, { status: 429 });
     }
 
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     const result = depositEnvelope(mailboxId, blob, now);
     if (!result.ok) {
       if (result.status === 429) {
-        logDeposit429('mailbox_cap');
+        logDeposit429('mailbox_cap', now);
         return NextResponse.json({ error: 'Mailbox at capacity.' }, { status: 429 });
       }
       if (result.status === 413) return NextResponse.json({ error: 'Payload too large.' }, { status: 413 });
