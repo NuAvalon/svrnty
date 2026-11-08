@@ -1746,7 +1746,9 @@ export function ContactManagement({ identity, onContactsChange, onOpenChat, onSe
                     label="Edit"
                     onClick={() => { openEditDialog(focused); closeMenu(); }}
                   />
-                  {svrn && !pending ? (
+                  {/* A blocked contact is not offered "Trust" (a mis-tap would deposit trust for someone the owner is hiding from; Unblock first).
+                      Retracting trust that already exists stays available. */}
+                  {svrn && !pending && (trusted || !isContactBlocked(focused)) ? (
                     <CardMenuItem
                       testId={trusted ? 'galaxy-trust-remove' : 'galaxy-trust'}
                       label={trusted ? 'Remove trust' : 'Trust'}
