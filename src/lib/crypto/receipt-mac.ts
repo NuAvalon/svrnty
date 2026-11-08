@@ -17,6 +17,7 @@
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { ctEqual } from './ct-equal';
 
 export const RECEIPT_MAC_DOMAIN = 'svrnty:receipt:v2';
 export const RECEIPT_KEY_BYTES = 32;
@@ -78,14 +79,6 @@ export function receiptTag(rk: Uint8Array, noteId: string, code: ReceiptCode): U
   const domain = enc.encode(RECEIPT_MAC_DOMAIN);
   const k = hkdf(sha256, rk, domain, id, 32);
   return hmac(sha256, k, concat(lp(domain), lp(id), lp(enc.encode(code))));
-}
-
-/** Constant-time over equal-length inputs; a length mismatch is rejected up front (lengths are public). */
-function ctEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
 }
 
 /**

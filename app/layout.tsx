@@ -2,6 +2,7 @@ import './globals.css'
 import localFont from 'next/font/local'
 import { AppearanceProvider } from '@/components/ui-prefs/AppearanceProvider'
 import { UI_PREFS_KEY } from '@/components/recovery/solar-ember'
+import { LEGACY_CHAT_KEYS_BOOT_SCRIPT } from '@/lib/identity/legacy-keys'
 
 // Fonts are served locally — no build-time dependency on fonts.googleapis.com / fonts.gstatic.com.
 // Each family's latin subset is a single Google *variable* woff2 (its wght axis spans all the
@@ -86,6 +87,7 @@ export default function RootLayout({
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: appearanceBoot }} />
+        <script dangerouslySetInnerHTML={{ __html: LEGACY_CHAT_KEYS_BOOT_SCRIPT }} />
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#c8a84e" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
