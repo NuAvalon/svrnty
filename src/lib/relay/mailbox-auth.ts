@@ -23,6 +23,7 @@ import type { UnlockCycle } from '@/lib/crypto/unlock-cycle';
 import { signWithEnvelope, verifyWithEnvelope, envelopeSignatureOf, type EnvelopeSignature } from '@/lib/crypto/sign-envelope';
 import { fingerprintMatchesKey, KEM_PUB_LEN, SIG_PUB_LEN } from '@/lib/identity/fingerprint';
 import { mailboxConfig } from './mailbox-config';
+import { claimOwnerNonce, isOwnerNonceSeen } from './owner-replay-cache';
 
 // Domain-separation tags for the two owner-authenticated mailbox ops. A poll signature can never be
 // replayed as an ack (or vice-versa): different domain → different signed bytes (sign-envelope LP).
@@ -290,6 +291,8 @@ async function verifyOwner(
     if (!Number.isFinite(bundle.ts) || Math.abs(now - bundle.ts) > mailboxConfig().ownerAuthWindowMs) return false;
     // (2) mailbox binding — the presented fingerprint must derive THIS mailbox_id (owner-of-record).
     if (deriveMailboxId(bundle.fingerprint) !== mailboxId) return false;
+    // (2b) one-time use: an already-used (mailbox, nonce) is refused before the key parse and signature verify below.
+    if (isOwnerNonceSeen(mailboxId, bundle.nonce, now)) return false;
     // (3) fp↔key binding (Canon Invariant-1) — the key can't be swapped under the fingerprint.
     //     §5: pass the PQ pubkeys so a 64-hex canonical id recomputes SHA256(sign‖enc‖kem‖sig) and
     //     matches. fingerprintMatchesKey length-gates them (kem=1568/sig=2592) and falls back to the
@@ -300,7 +303,10 @@ async function verifyOwner(
     }))) return false;
     // (4) private-key possession over EXACTLY this request, under the op-specific domain.
     const envSig = envelopeSignatureOf(bundle.signature, bundle.pq_signature); // raw: '' / null refuse (#717)
-    return await verifyWithEnvelope(domain, signingInput, envSig, bundle.public_key);
+    if (!(await verifyWithEnvelope(domain, signingInput, envSig, bundle.public_key))) return false;
+    // (5) record the nonce only now that the owner is proven. Synchronous check-and-insert: of two identical requests verified
+    //     concurrently, exactly one gets here first; the other reads as a replay.
+    return claimOwnerNonce(mailboxId, bundle.nonce, bundle.ts + mailboxConfig().ownerAuthWindowMs, now);
   } catch {
     return false;
   }
