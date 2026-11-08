@@ -289,3 +289,13 @@ def test_real_proofs_distinct_k_each_owner_polls_only_its_own_nullifier(tmp_path
     assert call(c, "withdraw", sA, slot, nB) == AUTH_REFUSED                 # ...or withdraw it
     assert call(c, "poll", sA, slot, nA) == bc.MATCH                         # A sees its own
     assert call(c, "poll", sB, slot, nB) == bc.MATCH                         # B sees its own
+
+
+def test_refusal_bytes_are_literal_not_built_by_the_function_under_test():
+    """The constants above come from bc.refused(), so a reason missing from its allow-list silently became "internal"
+    while every comparison still passed. Pin the exact bytes a client parses."""
+    assert bc.refused("auth") == b'{"status":"refused","reason":"auth"}'
+    assert bc.refused("rate") == b'{"status":"refused","reason":"rate"}'
+    assert bc.refused("wire") == b'{"status":"refused","reason":"wire"}'
+    assert bc.refused("not-a-reason") == b'{"status":"refused","reason":"internal"}'
+    assert (bc.MATCH, bc.NONE, bc.WITHDRAWN) == (b'{"status":"match"}', b'{"status":"none"}', b'{"status":"withdrawn"}')
